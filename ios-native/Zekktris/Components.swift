@@ -171,6 +171,9 @@ struct AbyssBackground: View {
                         .position(x: star.x * w, y: star.y * h)
                 }
             }
+            // Flatten the blurred gradients into one offscreen texture so the
+            // 40pt blur is paid once, not on every compositor pass.
+            .drawingGroup()
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
@@ -338,10 +341,12 @@ func snowflakeGreater(_ a: String, than b: String) -> Bool {
     return a > b
 }
 
-// ── Speaking indicator (web .zk-alien-pulse parity) ─────────────────────────
-// Three concentric rings in the fixed plasma palette expand outward and fade
-// on a 1.4s ease-out cycle — the web's multi-layer sonar ripple, replacing
-// the Discord-style flat emerald ring.
+// ── Speaking indicator (web .zk-alien-pulse, themed) ────────────────────────
+// Three concentric rings expand outward and fade on a 1.4s ease-out cycle —
+// the web's multi-layer sonar ripple. Colors follow the ACTIVE THEME's
+// accent trio (accent / accent-2 / accent-3), so Sunset pulses orange,
+// Forest pulses blue/green, etc. On the default theme this resolves to the
+// same cyan→violet→magenta the web ships.
 struct AlienPulse: ViewModifier {
     let active: Bool
     @State private var animating = false
@@ -351,11 +356,11 @@ struct AlienPulse: ViewModifier {
             .overlay {
                 if active {
                     ZStack {
-                        pulseRing(Theme.plasmaCyan, alpha: 0.55, spread: 5)
-                        pulseRing(Theme.plasmaViolet, alpha: 0.40, spread: 10)
-                        pulseRing(Theme.plasmaMagenta, alpha: 0.25, spread: 16)
+                        pulseRing(Theme.accent, alpha: 0.55, spread: 5)
+                        pulseRing(Theme.accent2, alpha: 0.40, spread: 10)
+                        pulseRing(Theme.accent3, alpha: 0.25, spread: 16)
                         // Resting edge so the avatar reads "live" between pulses.
-                        Circle().strokeBorder(Theme.plasmaCyan.opacity(0.7), lineWidth: 2)
+                        Circle().strokeBorder(Theme.accent.opacity(0.7), lineWidth: 2)
                     }
                     .onAppear { animating = true }
                     .onDisappear { animating = false }

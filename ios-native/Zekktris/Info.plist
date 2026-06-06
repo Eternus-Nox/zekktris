@@ -30,16 +30,6 @@
 	<string>Zekktris uses your microphone for voice channels, calls, and voice messages.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Zekktris can save images you receive to your photo library.</string>
-	<key>UIAppFonts</key>
-	<array>
-		<string>SpaceGrotesk-Regular.ttf</string>
-		<string>SpaceGrotesk-Medium.ttf</string>
-		<string>SpaceGrotesk-SemiBold.ttf</string>
-		<string>SpaceGrotesk-Bold.ttf</string>
-		<string>JetBrainsMono-Regular.ttf</string>
-		<string>JetBrainsMono-Medium.ttf</string>
-		<string>JetBrainsMono-SemiBold.ttf</string>
-	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -42,8 +42,24 @@ final class PushManager: ObservableObject {
 }
 
 /// Minimal app delegate, bridged into the SwiftUI App via
-/// `@UIApplicationDelegateAdaptor`, purely to receive the APNs token.
+/// `@UIApplicationDelegateAdaptor`, to receive the APNs token and do
+/// one-time process setup.
 final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        // AsyncImage (avatars, banners, attachments, emoji) loads through
+        // URLSession.shared, whose default URLCache is tiny. A bigger cache
+        // means scrollback and the member list stop re-fetching the same
+        // avatars over and over.
+        URLCache.shared = URLCache(
+            memoryCapacity: 32 * 1024 * 1024,   // 32 MB
+            diskCapacity: 256 * 1024 * 1024     // 256 MB
+        )
+        return true
+    }
+
     func application(_ application: UIApplication,
                      didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         Task { @MainActor in PushManager.shared.didRegister(tokenData: deviceToken) }

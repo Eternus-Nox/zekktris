@@ -316,6 +316,10 @@ final class AppStore: ObservableObject {
         voiceStatesByUser = [:]
         voiceTokenMissing = false
         incomingCall = nil
+        stageChannelId = nil
+        stageParticipants = []
+        myStageSpeaker = false
+        stageTokenMissing = false
         Task { await voice.disconnect() }
         currentUserId = nil
         selectedGuild = nil
@@ -418,8 +422,12 @@ final class AppStore: ObservableObject {
         defer { loadingDMs = false }
         do {
             let fetched = try await api.listDMs()
-            // Most-recently-active first (snowflake ids sort by time).
-            dms = fetched.sorted { ($0.lastMessageId ?? "") > ($1.lastMessageId ?? "") }
+            // Most-recently-active first. Numeric snowflake comparison — plain
+            // string > is wrong across id-length boundaries ("99" > "100").
+            // Channels with no messages fall back to their own id (creation).
+            dms = fetched.sorted {
+                snowflakeGreater($0.lastMessageId ?? $0.id, than: $1.lastMessageId ?? $1.id)
+            }
             // Seed presence from recipients so dots render before any live
             // PRESENCE_UPDATE arrives (live events override these).
             for dm in dms {
@@ -475,7 +483,19 @@ final class AppStore: ObservableObject {
             let fetched = try await api.messages(channelId: channel.id, limit: 50)
             // The API returns newest-first; show oldest-first (bottom = newest).
             guard channel.id == selectedChannel?.id else { return }
-            messages = fetched.sorted { $0.createdAt < $1.createdAt }
+            var merged = fetched.sorted { $0.createdAt < $1.createdAt }
+            // Keep anything that arrived over the gateway while the fetch was
+            // in flight (it's in `messages` but not in the page) — replacing
+            // the array outright dropped those rows.
+            let fetchedIds = Set(merged.map { $0.id })
+            let live = messages.filter {
+                $0.channelId == channel.id && !fetchedIds.contains($0.id)
+            }
+            if !live.isEmpty {
+                merged.append(contentsOf: live)
+                merged.sort { $0.createdAt < $1.createdAt }
+            }
+            messages = merged
             // A full page implies there may be older history to page back into.
             hasMoreMessages = fetched.count >= 50
             decryptVisible()
@@ -526,7 +546,17 @@ final class AppStore: ObservableObject {
         readStates[channel.id] = ReadState(channelId: channel.id, lastMessageId: last, mentionCount: 0)
         Task {
             if let rs = try? await api.ackChannel(channelId: channel.id, messageId: last) {
-                readStates[channel.id] = rs
+                // Only apply if the server marker is >= the local one — a slow
+                // response for an older ack must not regress a newer marker
+                // (the server itself upserts with GREATEST).
+                let local = readStates[channel.id]?.lastMessageId
+                let apply: Bool
+                if let serverMarker = rs.lastMessageId, let localMarker = local {
+                    apply = serverMarker == localMarker || snowflakeGreater(serverMarker, than: localMarker)
+                } else {
+                    apply = (local == nil)
+                }
+                if apply { readStates[channel.id] = rs }
             }
         }
     }
@@ -611,6 +641,10 @@ final class AppStore: ObservableObject {
         voiceTokenMissing = false
         defer { voiceConnecting = false }
         do {
+            // One room at a time: properly leave a stage (server + SFU) before
+            // joining voice — otherwise the server keeps us in the stage roster
+            // and the old LiveKit room stays connected.
+            if stageChannelId != nil { await leaveStage() }
             let res = try await api.joinVoice(channelId: channel.id)
             voiceChannelId = channel.id
             voiceStates = res.channelVoiceStates
@@ -645,7 +679,10 @@ final class AppStore: ObservableObject {
         defer { stageConnecting = false }
         do {
             // Leaving any plain voice room first (one LiveKit room at a time).
-            if voiceChannelId != nil { voiceChannelId = nil; voiceStates = [] }
+            // Must be a REAL leave: tell the server and disconnect the SFU —
+            // otherwise we stay in the old voice roster and keep receiving the
+            // old room's audio under the stage UI.
+            if voiceChannelId != nil { await leaveCurrentVoice() }
             let res = try await api.joinStage(channelId: channel.id)
             stageChannelId = channel.id
             myStageSpeaker = res.participant.isSpeaker
@@ -2125,12 +2162,17 @@ final class AppStore: ObservableObject {
                 // the socket was down (the web client re-bootstraps here too).
                 Task { await loadGuilds() }
                 Task { await loadDMs() }
+                Task { await loadReadStates() }
                 if let c = selectedChannel { Task { await loadMessages(c) } }
             }
             didInitialReady = true
         case "MESSAGE_CREATE":
             guard let message = try? JSONDecoder().decode(Message.self, from: data) else { return }
             bumpChannelLastMessage(message.channelId, message.id)
+            // A user's message supersedes their typing indicator (web parity).
+            if let author = message.authorId ?? message.author?.id {
+                typing.removeValue(forKey: author)
+            }
             if message.channelId == selectedChannel?.id {
                 upsert(message)
                 if let c = selectedChannel { markChannelRead(c) }
@@ -2256,6 +2298,64 @@ final class AppStore: ObservableObject {
                ((d["guildId"] as? String) ?? (d["guild_id"] as? String)) == g.id {
                 Task { await loadEvents() }
             }
+        case "GUILD_UPDATE":
+            // Full guild DTO: name/icon/banner/description edits, live.
+            if let g = try? JSONDecoder().decode(Guild.self, from: data) {
+                if let i = guilds.firstIndex(where: { $0.id == g.id }) { guilds[i] = g }
+                if selectedGuild?.id == g.id { selectedGuild = g }
+            }
+        case "GUILD_MEMBER_UPDATE":
+            // Full member DTO: nickname / role changes, live.
+            if let m = try? JSONDecoder().decode(GuildMember.self, from: data),
+               m.guildId == nil || m.guildId == selectedGuild?.id {
+                members[m.userId] = m
+            }
+        case "GUILD_ROLE_CREATE", "GUILD_ROLE_UPDATE":
+            // Full role DTO. Only the selected guild's roles are held locally.
+            if let r = try? JSONDecoder().decode(Role.self, from: data),
+               r.guildId == nil || r.guildId == selectedGuild?.id {
+                if let i = roles.firstIndex(where: { $0.id == r.id }) {
+                    roles[i] = r
+                } else {
+                    roles.append(r)
+                }
+            }
+        case "GUILD_ROLE_DELETE":
+            // Payload is snake_case: { guild_id, role_id }.
+            if let d = jsonDict(data),
+               (d["guild_id"] as? String) == selectedGuild?.id,
+               let rid = d["role_id"] as? String {
+                roles.removeAll { $0.id == rid }
+            }
+        case "MESSAGE_DELIVERED", "MESSAGE_VIEWED":
+            // DM read receipts, sent to the message author. Payload is
+            // snake_case: { channel_id, message_ids[], delivered_at|viewed_at }.
+            if let d = jsonDict(data),
+               let cid = d["channel_id"] as? String, cid == selectedChannel?.id,
+               let ids = d["message_ids"] as? [String] {
+                let idSet = Set(ids)
+                for i in messages.indices where idSet.contains(messages[i].id) {
+                    if event == "MESSAGE_VIEWED" {
+                        messages[i].viewedAt = d["viewed_at"] as? String
+                        if messages[i].deliveredAt == nil {
+                            messages[i].deliveredAt = messages[i].viewedAt
+                        }
+                    } else {
+                        messages[i].deliveredAt = d["delivered_at"] as? String
+                    }
+                }
+            }
+        case "DM_SETTINGS_UPDATE":
+            // Cross-device sync of the DM auto-delete TTL. Payload is
+            // camelCase: { channelId, ttlSecondsAfterRead }.
+            if let d = jsonDict(data),
+               let cid = d["channelId"] as? String, cid == selectedChannel?.id {
+                dmTtl = d["ttlSecondsAfterRead"] as? Int
+            }
+        case "FAMILY_REQUEST_CREATE", "FAMILY_FLAG_CREATE":
+            // Parental-controls activity: refresh the summary if it's loaded
+            // so badges/requests appear without reopening the Family screen.
+            if family != nil { Task { await loadFamily() } }
         default:
             break
         }

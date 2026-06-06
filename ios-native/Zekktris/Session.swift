@@ -92,10 +92,15 @@ final class Session: ObservableObject {
 
     func logout() {
         keychain.delete(tokenKey)
-        api.token = nil
         currentUser = nil
         phase = .signedOut
-        Task { await api.logout() }
+        // Revoke server-side BEFORE dropping the token — clearing the token
+        // first made the logout request go out unauthenticated, so the
+        // server-side session was never actually revoked.
+        Task { [api] in
+            await api.logout()
+            api.token = nil
+        }
     }
 
     /// Update display name. Returns nil on success or an error message.

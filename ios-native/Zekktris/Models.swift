@@ -127,6 +127,10 @@ struct Message: Codable, Identifiable, Hashable {
     var stickerId: String?
     var sticker: Sticker?
     var embeds: [MessageEmbed]?
+    /// 1:1 DM read receipts: set when a recipient's device received /
+    /// viewed the message (drives the Sent → Delivered → Read label).
+    var deliveredAt: String?
+    var viewedAt: String?
     /// Client-only send state for optimistic messages: "sending" | "failed" |
     /// nil (a normal/confirmed message). Absent from server JSON, so it decodes
     /// as nil and (being optional) is omitted when encoded.
@@ -148,6 +152,7 @@ extension Message {
             reactions: nil, attachments: nil, poll: nil,
             replyToId: replyToId, pinned: nil, forwardedFromMessageId: nil,
             forwardedFrom: nil, stickerId: nil, sticker: nil, embeds: nil,
+            deliveredAt: nil, viewedAt: nil,
             sendState: "sending"
         )
     }

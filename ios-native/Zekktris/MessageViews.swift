@@ -62,6 +62,7 @@ struct MessageListView: View {
                                     }
                             }
 
+                            let receiptAnchors = dmReceiptAnchors()
                             ForEach(Array(store.messages.enumerated()), id: \.element.id) { index, message in
                                 if shouldShowDateDivider(at: index) {
                                     DateDividerView(label: dateDividerLabel(message.createdAt))
@@ -72,7 +73,8 @@ struct MessageListView: View {
                                 MessageRow(
                                     message: message,
                                     channel: channel,
-                                    showHeader: showHeader(at: index)
+                                    showHeader: showHeader(at: index),
+                                    dmReceipt: dmReceipt(for: message, anchors: receiptAnchors)
                                 )
                                 .id(message.id)
                                 .padding(.top, showHeader(at: index) ? 10 : 0)
@@ -131,6 +133,29 @@ struct MessageListView: View {
         .sheet(isPresented: $showDmSettings) {
             DmSettingsSheet(channel: channel)
         }
+    }
+
+    /// 1:1 DM read receipts (web parity): "Read" anchors on the newest own
+    /// message the recipient has viewed; "Sent"/"Delivered" anchors on the
+    /// newest own message when it's still unread. Group DMs and guild
+    /// channels render no receipts. Computed ONCE per render pass.
+    private func dmReceiptAnchors() -> (latest: Message?, lastRead: Message?) {
+        guard channel.type == "dm", let selfId = store.currentUserId else { return (nil, nil) }
+        var latest: Message? = nil
+        var lastRead: Message? = nil
+        for m in store.messages where (m.authorId ?? m.author?.id) == selfId && m.sendState == nil {
+            latest = m
+            if m.viewedAt != nil { lastRead = m }
+        }
+        return (latest, lastRead)
+    }
+
+    private func dmReceipt(for message: Message, anchors: (latest: Message?, lastRead: Message?)) -> String? {
+        if message.id == anchors.lastRead?.id { return "Read" }
+        if message.id == anchors.latest?.id, anchors.lastRead?.id != anchors.latest?.id {
+            return message.deliveredAt != nil ? "Delivered" : "Sent"
+        }
+        return nil
     }
 
     /// Encrypted DM with no key on this device → show the unlock panel.
@@ -760,6 +785,9 @@ struct MessageRow: View {
     let message: Message
     let channel: Channel
     let showHeader: Bool
+    /// 1:1 DM read receipt rendered under this row ("Sent" / "Delivered" /
+    /// "Read") — set only on the anchor messages, mirroring the web.
+    var dmReceipt: String? = nil
 
     private let gutter: CGFloat = 52
 
@@ -945,6 +973,13 @@ struct MessageRow: View {
                 embedsView
                 reactionsView
                 sendStatusView
+                if let dmReceipt {
+                    Text(dmReceipt)
+                        .font(.zkSans(10))
+                        .foregroundColor(Theme.ink3)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.top, 1)
+                }
             }
             Spacer(minLength: 0)
         }
