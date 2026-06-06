@@ -367,9 +367,15 @@ struct ServerRailView: View {
                         .fill(Theme.line)
                         .frame(width: 32, height: 1)
 
-                    RailIconButton(symbol: "safari") { store.toggleRailPage(.discover) }
-                    RailIconButton(symbol: "plus") { store.toggleRailPage(.createServer) }
-                    RailIconButton(symbol: "link") { store.toggleRailPage(.joinInvite) }
+                    RailIconButton(symbol: "safari", active: store.railPage == .discover) {
+                        store.toggleRailPage(.discover)
+                    }
+                    RailIconButton(symbol: "plus", active: store.railPage == .createServer) {
+                        store.toggleRailPage(.createServer)
+                    }
+                    RailIconButton(symbol: "link", active: store.railPage == .joinInvite) {
+                        store.toggleRailPage(.joinInvite)
+                    }
                 }
                 .padding(.vertical, 12)
             }
@@ -378,9 +384,13 @@ struct ServerRailView: View {
 
             VStack(spacing: 10) {
                 if session.currentUser?.isAdmin == true {
-                    RailIconButton(symbol: "lock.shield") { store.toggleRailPage(.admin) }
+                    RailIconButton(symbol: "lock.shield", active: store.railPage == .admin) {
+                        store.toggleRailPage(.admin)
+                    }
                 }
-                RailIconButton(symbol: "person.2.fill") { store.toggleRailPage(.family) }
+                RailIconButton(symbol: "person.2.fill", active: store.railPage == .family) {
+                    store.toggleRailPage(.family)
+                }
 
                 Menu {
                     Section(session.currentUser?.name ?? "Account") {
@@ -1945,10 +1955,11 @@ private struct MentionRow: View {
 
 private struct RailIconButton: View {
     let symbol: String
+    var active: Bool = false
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            RailTile(active: false) {
+            RailTile(active: active) {
                 Image(systemName: symbol)
                     .font(.system(size: 19, weight: .semibold))
             }
