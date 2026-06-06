@@ -406,14 +406,12 @@ struct VoiceChannelView: View {
                         .clipShape(Circle())
                 } else {
                     Avatar(url: avatarURL, name: displayName, size: 54,
-                           ringColor: isSpeaking ? Theme.online : Color.white.opacity(0.12))
+                           ringColor: Color.white.opacity(0.12), toneId: vs.userId)
                 }
             }
-            .overlay(
-                Circle().strokeBorder(isSpeaking ? Theme.online : Color.clear, lineWidth: 2.5)
-            )
-            .shadow(color: isSpeaking ? Theme.online.opacity(0.6) : Color.black.opacity(0.4),
-                    radius: isSpeaking ? 10 : 6)
+            // Web .zk-alien-pulse: plasma sonar ripple while speaking.
+            .alienPulse(isSpeaking)
+            .shadow(color: Color.black.opacity(0.4), radius: 6)
 
             HStack(spacing: 3) {
                 if vs.isMuted {
@@ -767,10 +765,8 @@ struct StageChannelView: View {
         let isSpeaking = voice.speakingUserIds.contains(p.userId)
         return VStack(spacing: 6) {
             ZStack(alignment: .bottomTrailing) {
-                Avatar(url: user?.avatarUrl, name: name, size: 56, ringColor: Theme.bg2)
-                    .overlay(
-                        Circle().strokeBorder(isSpeaking ? Theme.online : Color.clear, lineWidth: 2.5)
-                    )
+                Avatar(url: user?.avatarUrl, name: name, size: 56, ringColor: Theme.bg2, toneId: p.userId)
+                    .alienPulse(isSpeaking)
                 if speaker {
                     Image(systemName: "mic.fill").font(.system(size: 10)).foregroundColor(.white)
                         .padding(4).background(Theme.accent).clipShape(Circle())

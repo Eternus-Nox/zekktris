@@ -180,7 +180,9 @@ struct LoginView: View {
             .frame(maxWidth: 440)
             .frame(maxWidth: .infinity)
         }
-        .background(Theme.bg1)
+        .background {
+            ZStack { Theme.bg1; AbyssBackground() }.ignoresSafeArea()
+        }
         .sheet(isPresented: $showForgot) { ForgotPasswordView() }
     }
 
@@ -371,7 +373,9 @@ struct RegisterView: View {
             .frame(maxWidth: 440)
             .frame(maxWidth: .infinity)
         }
-        .background(Theme.bg1)
+        .background {
+            ZStack { Theme.bg1; AbyssBackground() }.ignoresSafeArea()
+        }
     }
 
     private func submit() {

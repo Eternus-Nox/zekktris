@@ -338,6 +338,53 @@ func snowflakeGreater(_ a: String, than b: String) -> Bool {
     return a > b
 }
 
+// ── Speaking indicator (web .zk-alien-pulse parity) ─────────────────────────
+// Three concentric rings in the fixed plasma palette expand outward and fade
+// on a 1.4s ease-out cycle — the web's multi-layer sonar ripple, replacing
+// the Discord-style flat emerald ring.
+struct AlienPulse: ViewModifier {
+    let active: Bool
+    @State private var animating = false
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                if active {
+                    ZStack {
+                        pulseRing(Theme.plasmaCyan, alpha: 0.55, spread: 5)
+                        pulseRing(Theme.plasmaViolet, alpha: 0.40, spread: 10)
+                        pulseRing(Theme.plasmaMagenta, alpha: 0.25, spread: 16)
+                        // Resting edge so the avatar reads "live" between pulses.
+                        Circle().strokeBorder(Theme.plasmaCyan.opacity(0.7), lineWidth: 2)
+                    }
+                    .onAppear { animating = true }
+                    .onDisappear { animating = false }
+                }
+            }
+    }
+
+    @ViewBuilder
+    private func pulseRing(_ color: Color, alpha: Double, spread: CGFloat) -> some View {
+        GeometryReader { geo in
+            let d = min(geo.size.width, geo.size.height)
+            Circle()
+                .stroke(color.opacity(animating ? 0 : alpha), lineWidth: 2.5)
+                .scaleEffect(animating ? (d + spread * 2) / d : 1)
+                .animation(
+                    .easeOut(duration: 1.4).repeatForever(autoreverses: false),
+                    value: animating
+                )
+        }
+    }
+}
+
+extension View {
+    /// Web `.zk-alien-pulse`: apply to circular avatars while speaking.
+    func alienPulse(_ active: Bool) -> some View {
+        modifier(AlienPulse(active: active))
+    }
+}
+
 // ── Emoji picker (web EmojiPicker parity: recent / unicode categories /
 //    server emoji, with name search) ──────────────────────────────────────────
 

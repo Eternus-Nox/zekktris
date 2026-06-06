@@ -2648,7 +2648,10 @@ struct SavedView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Theme.bg1.ignoresSafeArea())
+            .background {
+                // Opaque base -> abyss nebula -> 90% column wash (web bg-1/90).
+                ZStack { Theme.bg1; AbyssBackground(); Theme.bg1.opacity(0.9) }.ignoresSafeArea()
+            }
             .navigationTitle("Saved Messages")
             .navigationBarTitleDisplayMode(.inline)
         }

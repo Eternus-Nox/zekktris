@@ -787,55 +787,164 @@ struct RailPip: View {
     }
 }
 
-/// List of the current user's direct-message conversations.
+/// List of the current user's direct-message conversations. Mirrors the web
+/// DMList: quick-switcher rows (Friends / Your events / Saved / Scheduled)
+/// above an uppercase "DIRECT MESSAGES" section of conversation rows.
 struct DMListView: View {
     @EnvironmentObject private var store: AppStore
     @State private var showFriends = false
+    @State private var showMyEvents = false
+    @State private var showScheduled = false
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Direct Messages")
-                    .font(.zkSans(16, weight: .semibold))
-                    .foregroundColor(Theme.ink1)
-                Spacer()
-                Button { showFriends = true } label: {
-                    Image(systemName: "person.badge.plus")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(Theme.accent)
-                }
-            }
-            .padding(.horizontal, 16)
-            .frame(height: 48)
-            .overlay(Rectangle().fill(Theme.lineSoft).frame(height: 1), alignment: .bottom)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    quickRow("person.2.fill", "Friends") { showFriends = true }
+                    quickRow("calendar", "Your events") { showMyEvents = true }
+                    quickRow("bookmark", "Saved messages") { store.showSaved() }
+                    quickRow("clock", "Scheduled messages") { showScheduled = true }
 
-            if store.loadingDMs && store.dms.isEmpty {
-                Spacer(); ProgressView().tint(Theme.accent); Spacer()
-            } else if store.dms.isEmpty {
-                Spacer()
-                Text("No direct messages yet")
-                    .font(.zkSans(14))
-                    .foregroundColor(Theme.ink3)
-                Spacer()
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 2) {
+                    HStack {
+                        Text("DIRECT MESSAGES")
+                            .font(.zkSans(11, weight: .semibold))
+                            .tracking(0.5)
+                            .foregroundColor(Theme.ink3)
+                        Spacer()
+                        Button { showFriends = true } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(Theme.ink3)
+                                .frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.top, 12)
+                    .padding(.bottom, 2)
+
+                    if store.loadingDMs && store.dms.isEmpty {
+                        ProgressView().tint(Theme.accent)
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 24)
+                    } else if store.dms.isEmpty {
+                        Text("No direct messages yet")
+                            .font(.zkSans(13))
+                            .foregroundColor(Theme.ink3)
+                            .padding(.horizontal, 8)
+                            .padding(.top, 8)
+                    } else {
                         ForEach(store.dms) { dm in
                             Button { store.selectChannel(dm) } label: { DMRow(dm: dm) }
                                 .buttonStyle(.plain)
                         }
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 8)
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 8)
             }
         }
         .background(Theme.bg2.opacity(0.85))
         .sheet(isPresented: $showFriends) {
             FriendsView()
         }
+        .sheet(isPresented: $showMyEvents) {
+            MyEventsView()
+        }
+        .sheet(isPresented: $showScheduled) {
+            ScheduledMessagesSheet()
+        }
         .sheet(item: $store.profileUser) { ProfileCardView(user: $0) }
         .fullScreenCover(item: $store.lightbox) { ImageLightboxView(url: $0.url) }
+    }
+
+    /// Web quick-switcher row: icon 16 ink-3 + 14pt ink-2 label.
+    private func quickRow(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: symbol)
+                    .font(.system(size: 14))
+                    .foregroundColor(Theme.ink3)
+                    .frame(width: 18)
+                Text(label)
+                    .font(.zkSans(14))
+                    .foregroundColor(Theme.ink2)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Pending scheduled messages (web /scheduled view): content preview, target
+/// channel, fire time, cancel affordance.
+struct ScheduledMessagesSheet: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if store.scheduledMessages.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "clock")
+                            .font(.system(size: 30, weight: .light))
+                            .foregroundColor(Theme.ink3)
+                        Text("No scheduled messages")
+                            .font(.zkSans(14)).foregroundColor(Theme.ink3)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(store.scheduledMessages) { sm in
+                                scheduledRow(sm)
+                            }
+                        }
+                        .padding(12)
+                    }
+                }
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Scheduled").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .task { await store.loadScheduled() }
+        }
+    }
+
+    private func scheduledRow(_ sm: ScheduledMessage) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "clock")
+                    .font(.system(size: 11)).foregroundColor(Theme.accent)
+                Text(scheduledTimeLabel(sm.scheduledFor))
+                    .font(.zkSans(12, weight: .medium)).foregroundColor(Theme.ink2)
+                Spacer()
+                Button(role: .destructive) {
+                    Task { await store.cancelScheduled(sm) }
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12)).foregroundColor(Theme.dangerSoft)
+                }
+            }
+            Text(sm.content ?? "")
+                .font(.zkSans(14)).foregroundColor(Theme.ink1)
+                .lineLimit(3)
+        }
+        .padding(12)
+        .background(Theme.bg2)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.rMD, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.rMD).strokeBorder(Theme.line, lineWidth: 1))
+    }
+
+    private func scheduledTimeLabel(_ iso: String) -> String {
+        guard let d = messageDate(iso) else { return iso }
+        let f = DateFormatter()
+        f.dateStyle = .medium; f.timeStyle = .short
+        return f.string(from: d)
     }
 }
 
@@ -1443,7 +1552,10 @@ struct MentionsView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Theme.bg1.ignoresSafeArea())
+            .background {
+                // Opaque base -> abyss nebula -> 90% column wash (web bg-1/90).
+                ZStack { Theme.bg1; AbyssBackground(); Theme.bg1.opacity(0.9) }.ignoresSafeArea()
+            }
             .navigationTitle("Mentions")
             .navigationBarTitleDisplayMode(.inline)
             .task { await store.loadMentions() }
