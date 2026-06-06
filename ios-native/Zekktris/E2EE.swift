@@ -84,6 +84,35 @@ enum E2EE {
 
     /// Decrypt a wire-format string → plaintext. Returns nil on any failure
     /// (wrong key, tampering, malformed, or a legacy non-v3 format).
+    /// Encrypt raw bytes (attachments) with the channel key. Output is
+    /// nonce(12) + ciphertext + tag(16) — the same AES-256-GCM layout as
+    /// text messages, just unwrapped binary instead of base64 text.
+    static func encryptData(_ plaintext: Data, key: Data) -> Data? {
+        guard key.count == 32 else { return nil }
+        let symKey = SymmetricKey(data: key)
+        do {
+            let nonce = AES.GCM.Nonce()
+            let sealed = try AES.GCM.seal(plaintext, using: symKey, nonce: nonce)
+            var out = Data(nonce)
+            out.append(sealed.ciphertext)
+            out.append(sealed.tag)
+            return out
+        } catch { return nil }
+    }
+
+    /// Decrypt attachment bytes produced by `encryptData`.
+    static func decryptData(_ blob: Data, key: Data) -> Data? {
+        guard key.count == 32, blob.count > 28 else { return nil }
+        let symKey = SymmetricKey(data: key)
+        do {
+            let nonce = try AES.GCM.Nonce(data: blob.prefix(12))
+            let ciphertext = blob.dropFirst(12).dropLast(16)
+            let tag = blob.suffix(16)
+            let box = try AES.GCM.SealedBox(nonce: nonce, ciphertext: ciphertext, tag: tag)
+            return try AES.GCM.open(box, using: symKey)
+        } catch { return nil }
+    }
+
     static func decrypt(_ wire: String, key: Data) -> String? {
         guard key.count == keyBytes, wire.hasPrefix(wirePrefixV3) else { return nil }
         let b64 = String(wire.dropFirst(wirePrefixV3.count))

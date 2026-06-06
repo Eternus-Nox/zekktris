@@ -146,6 +146,11 @@ final class AppStore: ObservableObject {
     private func wireCallKit() {
         CallManager.shared.onAnswer = { [weak self] channelId in
             guard let self else { return }
+            // CallKit is a ringer, not the in-call session owner: end the
+            // system call right away so AVAudioSession is fully released to
+            // LiveKit before the room connects (a CallKit-held session left
+            // both sides silent).
+            CallManager.shared.callEnded(channelId: channelId, remoteEnded: false)
             if let call = self.incomingCall, call.channelId == channelId {
                 self.incomingCall = nil
                 self.openVoice(call.channel)
@@ -786,14 +791,9 @@ final class AppStore: ObservableObject {
             voiceStates = res.channelVoiceStates
             // Merge the authoritative snapshot into the sidebar presence map.
             for vs in res.channelVoiceStates { voiceStatesByUser[vs.userId] = vs }
-            // Outgoing 1:1 ring: surface it as a system call. If the callee
-            // is already in (we're answering), report it connected at once.
-            if channel.type == "dm", let callee = channel.recipients?.first {
-                CallManager.shared.startOutgoing(channelId: channel.id, calleeName: callee.name)
-                if res.channelVoiceStates.contains(where: { $0.userId == callee.id }) {
-                    CallManager.shared.outgoingConnected(channelId: channel.id)
-                }
-            }
+            // (CallKit is ring-only now — outgoing calls don't register a
+            // system call; the in-app Calling… overlay handles the UX and
+            // LiveKit keeps full ownership of the audio session.)
             if let token = res.token, let url = res.wsUrl, !token.isEmpty, !url.isEmpty {
                 let key: Data? = channel.isE2EE ? e2eeKey(for: channel) : nil
                 await voice.connect(url: url, token: token, e2eeKey: key)
@@ -977,11 +977,7 @@ final class AppStore: ObservableObject {
             voiceStates.append(vs)
         }
 
-        // Callee picked up our outgoing 1:1 — flip the system call state.
-        if !wasInCall, vs.channelId == active, vs.userId != currentUserId,
-           let dm = dms.first(where: { $0.id == active }), dm.type == "dm" {
-            CallManager.shared.outgoingConnected(channelId: active)
-        }
+
 
         // 1:1 DM auto-end (web parity): the peer who WAS in this call just
         // left it — hang up our side too instead of stranding a solo call.
@@ -1069,12 +1065,14 @@ final class AppStore: ObservableObject {
     private func presentIncomingCall(dm: Channel, callerId: String) {
         let channelId = dm.id
         let callerName = dm.recipients?.first(where: { $0.id == callerId })?.name ?? dm.dmTitle
-        // Ring like a real phone call (lock-screen UI, system answer) —
-        // unless the user turned call ringing off in Settings →
-        // Notifications (the silent in-app overlay still appears).
+        // Ring policy: the system (CallKit) call screen rings ONLY when the
+        // app isn't frontmost — in the foreground the in-app overlay is the
+        // ring. This also keeps CallKit's audio-session ownership away from
+        // live calls (it silenced both directions). Settings → Notifications
+        // can turn the system ring off entirely.
         let ringEnabled = UserDefaults.standard.object(forKey: "zk.notifyCalls") == nil
             || UserDefaults.standard.bool(forKey: "zk.notifyCalls")
-        if ringEnabled {
+        if ringEnabled && UIApplication.shared.applicationState != .active {
             CallManager.shared.reportIncoming(channelId: channelId, callerName: callerName)
         }
         incomingCall = IncomingCall(
@@ -1421,17 +1419,54 @@ final class AppStore: ObservableObject {
         uploading = true
         defer { uploading = false }
         do {
-            let file = UploadFile(data: data, filename: filename, contentType: contentType)
+            var sendData = data
+            var sendName = filename
+            var sendType = contentType
+            var wireCaption = caption
+            if channel.isE2EE {
+                // Same key + AES-GCM as the message text; the .zke suffix
+                // tells recipients to decrypt before rendering. The server
+                // only ever sees ciphertext.
+                guard let key = e2eeKey(for: channel) else {
+                    e2eeError = "Unlock this conversation to send."
+                    return
+                }
+                guard let enc = E2EE.encryptData(data, key: key) else {
+                    errorText = "Encryption failed."
+                    return
+                }
+                sendData = enc
+                sendName = filename + ".zke"
+                sendType = "application/octet-stream"
+                if !caption.isEmpty {
+                    guard let encCaption = E2EE.encrypt(caption, key: key) else {
+                        errorText = "Encryption failed."
+                        return
+                    }
+                    wireCaption = encCaption
+                }
+            }
+            let file = UploadFile(data: sendData, filename: sendName, contentType: sendType)
             let message = try await api.sendMessageMultipart(
-                channelId: channel.id, content: caption, nonce: nonce, files: [file], replyToId: replyingTo?.id
+                channelId: channel.id, content: wireCaption, nonce: nonce, files: [file], replyToId: replyingTo?.id
             )
             if channel.id == selectedChannel?.id {
                 upsert(message)
+                if channel.isE2EE, !caption.isEmpty { decrypted[message.id] = caption }
                 replyingTo = nil
             }
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
         }
+    }
+
+    /// Fetch + decrypt an encrypted attachment (.zke) with the channel key.
+    /// Returns nil when the key isn't unlocked or the blob doesn't verify.
+    func decryptedAttachmentData(_ attachment: Attachment, in channel: Channel) async -> Data? {
+        guard channel.isE2EE, let key = e2eeKey(for: channel),
+              let url = assetURL(attachment.url) else { return nil }
+        guard let (blob, _) = try? await URLSession.shared.data(from: url) else { return nil }
+        return E2EE.decryptData(blob, key: key)
     }
 
     /// Send a recorded voice message: the audio file plus its duration and
@@ -1701,11 +1736,23 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func loadDiscoverable() async {
+    func loadDiscoverable(q: String? = nil, category: String? = nil) async {
         loadingDiscoverable = true
         defer { loadingDiscoverable = false }
-        do { discoverable = try await api.listDiscoverable() }
+        do { discoverable = try await api.listDiscoverable(q: q, category: category) }
         catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
+    }
+
+    /// Guild Settings → Discovery opt-in (MANAGE_GUILD). Returns an error
+    /// string on failure; GUILD_UPDATE propagates the new state.
+    func setGuildDiscovery(discoverable: Bool, description: String?, category: String?) async -> String? {
+        guard let guild = selectedGuild else { return "No server selected." }
+        do {
+            try await api.setGuildDiscovery(
+                guildId: guild.id, discoverable: discoverable,
+                description: description, category: category)
+            return nil
+        } catch { return (error as? APIError)?.message ?? error.localizedDescription }
     }
 
     func joinDiscoverable(_ guild: DiscoverableGuild) async {

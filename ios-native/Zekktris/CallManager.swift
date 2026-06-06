@@ -185,10 +185,10 @@ extension CallManager: CXProviderDelegate {
     }
 
     nonisolated func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
-        // LiveKit owns the session during the call; nudge it into a
-        // voice-chat-appropriate configuration on CallKit activation.
-        try? audioSession.setCategory(.playAndRecord, mode: .voiceChat,
-                                      options: [.allowBluetoothHFP, .allowBluetoothA2DP])
+        // Intentionally empty: CallKit is used as a RINGER only. The call
+        // is reported ended at answer time, releasing the session before
+        // LiveKit configures it — configuring it here fought WebRTC's own
+        // audio unit and silenced calls in both directions.
     }
 
     nonisolated func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {}

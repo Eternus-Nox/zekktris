@@ -167,6 +167,41 @@ final class VoiceManager: ObservableObject {
         }
     }
 
+    /// Rebuild the remote track maps from the room's source of truth.
+    private func syncRemoteTracks() {
+        guard let room else { return }
+        var video: [String: VideoTrack] = [:]
+        var screens: [String: VideoTrack] = [:]
+        var audio: [String: RemoteTrackPublication] = [:]
+        for (_, participant) in room.remoteParticipants {
+            guard let identity = participant.identity else { continue }
+            let uid = "\(identity)"
+            guard !uid.isEmpty else { continue }
+            for pub in participant.trackPublications.values {
+                guard let remotePub = pub as? RemoteTrackPublication else { continue }
+                if let vt = remotePub.track as? VideoTrack {
+                    if remotePub.source == .screenShareVideo { screens[uid] = vt }
+                    else { video[uid] = vt }
+                } else if remotePub.track is AudioTrack {
+                    audio[uid] = remotePub
+                }
+            }
+        }
+        // Assign unconditionally — Track equality isn't guaranteed and the
+        // sync cadence is modest, so the extra publishes are cheap.
+        remoteVideoTracks = video
+        screenTracks = screens
+        // Preserve deafen/mute-for-me on newly discovered audio pubs.
+        for (uid, pub) in audio where audioPubs[uid] == nil {
+            audioPubs[uid] = pub
+            if isDeafened || mutedForMe.contains(uid) {
+                Task { try? await pub.set(enabled: false) }
+            }
+        }
+        audioPubs = audioPubs.filter { audio[$0.key] != nil }
+
+    }
+
     func disconnect() async {
         if let room { await room.disconnect() }
         room = nil
@@ -188,7 +223,7 @@ extension VoiceManager: RoomDelegate {
     nonisolated func room(_ room: Room, didUpdateConnectionState connectionState: ConnectionState, from oldConnectionState: ConnectionState) {
         Task { @MainActor in
             switch connectionState {
-            case .connected: self.state = .connected
+            case .connected: self.state = .connected; self.syncRemoteTracks()
             case .connecting: self.state = .connecting
             case .reconnecting: self.state = .reconnecting
             case .disconnected: if self.state != .failed { self.state = .idle }
@@ -212,6 +247,8 @@ extension VoiceManager: RoomDelegate {
                 if let identity = p.identity { ids.insert("\(identity)") }
             }
             self.speakingUserIds = ids
+            // Frequent during calls — doubles as the remote-track refresh.
+            self.syncRemoteTracks()
         }
     }
 
@@ -305,12 +342,14 @@ struct VoiceChannelView: View {
             ZStack {
                 Color.black
                 StarfieldView()
-                VStack(spacing: 0) {
-                    if !videoParticipants.isEmpty || !screenSharers.isEmpty {
-                        videoStrip
-                            .padding(.horizontal, 14)
-                            .padding(.top, 12)
+                if hasAnyVideo {
+                    VStack(spacing: 0) {
+                        videoStage
+                            .padding(.horizontal, 10)
+                            .padding(.top, 10)
+                        audioOnlyStrip
                     }
+                } else {
                     arena
                 }
                 VStack {
@@ -391,19 +430,88 @@ struct VoiceChannelView: View {
         }
     }
 
-    /// Large SQUARE video tiles — always 1:1, scaling from ~220pt up to
-    /// 512pt with the window, side by side when several cameras are on.
-    /// A tile disappears the moment its camera stops publishing (the
-    /// track unpublish empties videoParticipants).
-    private var videoStrip: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 220, maximum: 512), spacing: 10)], spacing: 10) {
-            ForEach(screenSharers) { vs in
-                screenTile(vs)
-            }
-            ForEach(videoParticipants) { vs in
-                videoTile(vs)
+    private var hasAnyVideo: Bool {
+        !videoParticipants.isEmpty || !screenSharers.isEmpty
+    }
+
+    /// Every live feed in display order: screens first, then cameras (max 8).
+    private var feeds: [(vs: VoiceState, isScreen: Bool)] {
+        let screens = screenSharers.map { ($0, true) }
+        let cams = videoParticipants.map { ($0, false) }
+        return Array((screens + cams).prefix(8))
+    }
+
+    /// Full-screen feed grid replacing the arena: 1 fills the stage,
+    /// 2 stack top/bottom, 3-4 form 2x2, 5-6 2x3, 7-8 2x4.
+    private var videoStage: some View {
+        GeometryReader { geo in
+            let items = feeds
+            let cols = items.count <= 2 ? 1 : 2
+            let rows = Int(ceil(Double(items.count) / Double(cols)))
+            let spacing: CGFloat = 8
+            let cellW = (geo.size.width - CGFloat(cols - 1) * spacing) / CGFloat(cols)
+            let cellH = (geo.size.height - CGFloat(rows - 1) * spacing) / CGFloat(rows)
+            VStack(spacing: spacing) {
+                ForEach(0..<rows, id: \.self) { r in
+                    HStack(spacing: spacing) {
+                        ForEach(0..<cols, id: \.self) { c in
+                            let idx = r * cols + c
+                            if idx < items.count {
+                                feedTile(items[idx].vs, isScreen: items[idx].isScreen)
+                                    .frame(width: cellW, height: cellH)
+                            } else {
+                                Color.clear.frame(width: cellW, height: cellH)
+                            }
+                        }
+                    }
+                }
             }
         }
+    }
+
+    /// Participants with no live feed: a static avatar row under the grid
+    /// (no orbiting while video is on stage).
+    @ViewBuilder
+    private var audioOnlyStrip: some View {
+        let feedIds = Set(feeds.map { $0.vs.userId })
+        let rest = store.voiceStates.filter { !feedIds.contains($0.userId) }
+        if !rest.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 14) {
+                    ForEach(rest) { vs in
+                        let isSelf = vs.userId == session.currentUser?.id
+                        let name: String = {
+                            if isSelf { return session.currentUser?.name ?? "You" }
+                            if channel.isDM, let u = channel.recipients?.first(where: { $0.id == vs.userId }) { return u.name }
+                            return store.memberName(vs.userId) ?? "Member"
+                        }()
+                        VStack(spacing: 4) {
+                            Avatar(url: isSelf ? session.currentUser?.avatarUrl
+                                       : (channel.isDM
+                                          ? channel.recipients?.first(where: { $0.id == vs.userId })?.avatarUrl
+                                          : store.memberUser(vs.userId)?.avatarUrl),
+                                   name: name, size: 40,
+                                   ringColor: Color.white.opacity(0.12), toneId: vs.userId)
+                                .alienPulse(voice.speakingUserIds.contains(vs.userId))
+                            Text(name)
+                                .font(.zkSans(10, weight: .medium))
+                                .foregroundColor(.white.opacity(0.85))
+                                .lineLimit(1)
+                        }
+                        .frame(width: 64)
+                    }
+                }
+                .padding(.horizontal, 14)
+            }
+            .frame(height: 76)
+            .padding(.vertical, 6)
+        }
+    }
+
+    /// One stage tile (camera fills, screens letterbox), name + speaking ring.
+    @ViewBuilder
+    private func feedTile(_ vs: VoiceState, isScreen: Bool) -> some View {
+        if isScreen { screenTile(vs) } else { videoTile(vs) }
     }
 
     /// Screen-share tile: same square cell, but the content letterboxes
@@ -429,8 +537,7 @@ struct VoiceChannelView: View {
             .clipShape(Capsule())
             .padding(8)
         }
-        .aspectRatio(1, contentMode: .fit)
-        .frame(maxWidth: 512, maxHeight: 512)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg0)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
@@ -461,8 +568,7 @@ struct VoiceChannelView: View {
                 .clipShape(Capsule())
                 .padding(8)
         }
-        .aspectRatio(1, contentMode: .fit)
-        .frame(maxWidth: 512, maxHeight: 512)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg0)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(

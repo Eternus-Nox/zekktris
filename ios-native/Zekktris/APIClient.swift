@@ -792,13 +792,35 @@ extension APIClient {
         try await send("POST", "/invites/\(code)")
     }
 
-    func listDiscoverable() async throws -> [DiscoverableGuild] {
-        let wrap: DiscoverWrap = try await send("GET", "/discovery")
+    func listDiscoverable(q: String? = nil, category: String? = nil) async throws -> [DiscoverableGuild] {
+        var path = "/discovery"
+        var params: [String] = []
+        if let q, !q.isEmpty {
+            let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
+            params.append("q=\(enc)")
+        }
+        if let category, !category.isEmpty {
+            let enc = category.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? category
+            params.append("category=\(enc)")
+        }
+        if !params.isEmpty { path += "?" + params.joined(separator: "&") }
+        let wrap: DiscoverWrap = try await send("GET", path)
         return wrap.guilds
     }
 
     func joinDiscoverable(guildId: String) async throws {
         try await sendVoid("POST", "/guilds/\(guildId)/discovery/join")
+    }
+
+    /// Guild Settings → Discovery: opt the server in/out of the public
+    /// directory (MANAGE_GUILD).
+    func setGuildDiscovery(guildId: String, discoverable: Bool,
+                           description: String?, category: String?) async throws {
+        var body: [String: Any] = ["discoverable": discoverable]
+        body["discoveryDescription"] = description ?? NSNull()
+        body["discoveryCategory"] = category ?? NSNull()
+        let data = try JSONSerialization.data(withJSONObject: body)
+        try await sendVoid("PATCH", "/guilds/\(guildId)/discovery", bodyData: data)
     }
 
     // MARK: Admin (instance)

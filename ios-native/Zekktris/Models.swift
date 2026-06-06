@@ -48,6 +48,10 @@ struct Guild: Codable, Identifiable, Hashable {
     var ownerId: String?
     var description: String?
     var rulesContent: String?
+    /// Server discovery opt-in state (Guild Settings → Discovery).
+    var discoverable: Bool?
+    var discoveryDescription: String?
+    var discoveryCategory: String?
 }
 
 struct GuildFolder: Codable, Identifiable, Hashable {
@@ -533,10 +537,18 @@ struct DiscoverableGuild: Codable, Identifiable {
     var name: String
     var description: String?
     var discoveryDescription: String?
+    var discoveryCategory: String?
     var iconUrl: String?
     var bannerUrl: String?
     var memberCount: Int?
 }
+
+/// Canonical discovery categories — mirrors DISCOVERY_CATEGORIES server-side.
+let ZKDiscoveryCategories = [
+    "Gaming", "Music", "Entertainment", "Education",
+    "Science & Technology", "Content Creator", "Anime & Manga",
+    "Movies & TV", "Other",
+]
 struct DiscoverWrap: Codable { let guilds: [DiscoverableGuild] }
 
 struct CreateGuildResult: Codable {

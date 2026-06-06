@@ -53,11 +53,15 @@ struct MainView: View {
     /// environment.
     private var shell: some View {
         HStack(spacing: 0) {
-            ServerRailView()
-                .frame(width: 72)
-                .background(Theme.bg0.opacity(0.85))
+            // iPhone: a conversation takes the WHOLE screen — the rail only
+            // shows at the root (channel/DM lists). The < button pops back.
+            if isWide || store.stack.isEmpty {
+                ServerRailView()
+                    .frame(width: 72)
+                    .background(Theme.bg0.opacity(0.85))
 
-            Rectangle().fill(Theme.line).frame(width: 1)
+                Rectangle().fill(Theme.line).frame(width: 1)
+            }
 
             if isWide, let page = store.railPage {
                 // Full-page rail destination: takes the sidebar + detail
@@ -323,6 +327,7 @@ struct ServerRailView: View {
     @AppStorage("zk.notifyMessages") private var notifyMessages = true
     @AppStorage("zk.notifyCalls") private var notifyCalls = true
     @ObservedObject private var push = PushManager.shared
+    @Environment(\.zkDismissPage) private var zkDismissPage
 
     var body: some View {
         VStack(spacing: 0) {
@@ -403,18 +408,7 @@ struct ServerRailView: View {
                     }
                 }
 
-                Menu {
-                    Section(session.currentUser?.name ?? "Account") {
-                        Button { store.toggleRailPage(.settings) } label: {
-                            Label("Settings", systemImage: "gearshape")
-                        }
-                        Button(role: .destructive) {
-                            session.logout()
-                        } label: {
-                            Label("Log Out", systemImage: "rectangle.portrait.and.arrow.right")
-                        }
-                    }
-                } label: {
+                Button { store.toggleRailPage(.settings) } label: {
                     Avatar(
                         url: session.currentUser?.avatarUrl,
                         name: session.currentUser?.name ?? "?",
@@ -425,7 +419,9 @@ struct ServerRailView: View {
                         decoration: session.currentUser?.avatarDecoration
                     )
                     .frame(maxWidth: .infinity)
+                    .overlay(alignment: .leading) { RailPip(active: store.railPage == .settings) }
                 }
+                .buttonStyle(.plain)
             }
             .padding(.vertical, 12)
             }
@@ -1455,6 +1451,7 @@ struct SettingsView: View {
                     featuresSection
                     securitySection
                     accountSection
+                    logoutSection
                 }
                 .padding(16)
             }
@@ -1739,6 +1736,24 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    /// Log Out lives at the very bottom of Settings.
+    private var logoutSection: some View {
+        Button(role: .destructive) {
+            (zkDismissPage ?? {})()
+            session.logout()
+        } label: {
+            Label("Log Out", systemImage: "rectangle.portrait.and.arrow.right")
+                .font(.zkSans(15, weight: .semibold))
+                .foregroundColor(Theme.danger)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 13)
+                .background(Theme.danger.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 8)
     }
 
     private var notificationsSection: some View {
@@ -2281,23 +2296,53 @@ struct JoinByInviteSheet: View {
 struct DiscoveryView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    @State private var category: String?
+    @State private var searchTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
-            Group {
-                if store.loadingDiscoverable && store.discoverable.isEmpty {
-                    ProgressView().tint(Theme.accent)
-                } else if store.discoverable.isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: "globe").font(.system(size: 30)).foregroundColor(Theme.ink3)
-                        Text("No public servers found").font(.system(size: 14)).foregroundColor(Theme.ink3)
-                    }
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 10) {
-                            ForEach(store.discoverable) { DiscoverRow(guild: $0) }
+            VStack(spacing: 0) {
+                // Search + category filters.
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 13)).foregroundColor(Theme.ink3)
+                    TextField("Search servers", text: $query)
+                        .foregroundColor(Theme.ink1)
+                        .autocorrectionDisabled()
+                        .onChange(of: query) { _ in debouncedReload() }
+                }
+                .padding(10).background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal, 16).padding(.top, 10)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        categoryChip(nil, label: "All")
+                        ForEach(ZKDiscoveryCategories, id: \.self) { c in
+                            categoryChip(c, label: c)
                         }
-                        .padding(16)
+                    }
+                    .padding(.horizontal, 16)
+                }
+                .padding(.vertical, 8)
+
+                Group {
+                    if store.loadingDiscoverable && store.discoverable.isEmpty {
+                        ProgressView().tint(Theme.accent)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if store.discoverable.isEmpty {
+                        VStack(spacing: 8) {
+                            Image(systemName: "globe").font(.system(size: 30)).foregroundColor(Theme.ink3)
+                            Text("No public servers found").font(.zkSans(14)).foregroundColor(Theme.ink3)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: 10) {
+                                ForEach(store.discoverable) { DiscoverRow(guild: $0) }
+                            }
+                            .padding(16)
+                        }
                     }
                 }
             }
@@ -2305,7 +2350,33 @@ struct DiscoveryView: View {
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Discover").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .navigationBarLeading) { PageBackButton() } }
-            .task { await store.loadDiscoverable() }
+            .task { await store.loadDiscoverable(q: query, category: category) }
+        }
+    }
+
+    private func categoryChip(_ value: String?, label: String) -> some View {
+        let selected = category == value
+        return Button {
+            category = value
+            Task { await store.loadDiscoverable(q: query, category: category) }
+        } label: {
+            Text(label)
+                .font(.zkSans(12, weight: selected ? .semibold : .regular))
+                .foregroundColor(selected ? Theme.bg0 : Theme.ink2)
+                .padding(.horizontal, 11).padding(.vertical, 6)
+                .background(selected ? Theme.accent : Theme.bg2)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 300ms debounce on typing, matching the web's search fields.
+    private func debouncedReload() {
+        searchTask?.cancel()
+        searchTask = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            await store.loadDiscoverable(q: query, category: category)
         }
     }
 }
@@ -3407,6 +3478,9 @@ struct GuildSettingsView: View {
     @State private var guildIconItem: PhotosPickerItem?
     @State private var guildBannerItem: PhotosPickerItem?
     @State private var guildImageUploading = false
+    @State private var discoverable = false
+    @State private var discoveryCategory: String?
+    @State private var discoveryBusy = false
 
     private var isOwner: Bool { store.isGuildOwner }
     private var isAdmin: Bool { store.canManageGuild }
@@ -3417,6 +3491,7 @@ struct GuildSettingsView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     overviewSection
                     getRolesSection
+                    if isAdmin { discoverySection }
                     if isAdmin { managementSection }
                     dangerSection
                 }
@@ -3430,6 +3505,8 @@ struct GuildSettingsView: View {
                 name = store.selectedGuild?.name ?? ""
                 guildDescription = store.selectedGuild?.description ?? ""
                 guildRules = store.selectedGuild?.rulesContent ?? ""
+                discoverable = store.selectedGuild?.discoverable ?? false
+                discoveryCategory = store.selectedGuild?.discoveryCategory
             }
             .sheet(isPresented: $showRoles) { RolesListView() }
             .sheet(isPresented: $showMembers) { MemberListView() }
@@ -3472,6 +3549,68 @@ struct GuildSettingsView: View {
                 kind: kind, filename: "\(kind).\(ext)", contentType: mime, data: data) {
                 saveError = err
             }
+        }
+    }
+
+    /// Discovery opt-in: list the server in the public directory with an
+    /// optional category tag.
+    private var discoverySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("DISCOVERY")
+            Toggle(isOn: Binding(
+                get: { discoverable },
+                set: { newValue in
+                    discoverable = newValue
+                    saveDiscovery()
+                }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Show in Discovery")
+                        .font(.zkSans(15)).foregroundColor(Theme.ink1)
+                    Text("Anyone can find and join this server from the Discover menu.")
+                        .font(.zkSans(11)).foregroundColor(Theme.ink4)
+                }
+            }
+            .tint(Theme.accent)
+            .disabled(discoveryBusy)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+
+            if discoverable {
+                Menu {
+                    Button("None") { discoveryCategory = nil; saveDiscovery() }
+                    ForEach(ZKDiscoveryCategories, id: \.self) { c in
+                        Button(c) { discoveryCategory = c; saveDiscovery() }
+                    }
+                } label: {
+                    HStack {
+                        Text("Category")
+                            .font(.zkSans(14)).foregroundColor(Theme.ink2)
+                        Spacer()
+                        Text(discoveryCategory ?? "None")
+                            .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 11)).foregroundColor(Theme.ink3)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 11)
+                    .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+            }
+        }
+    }
+
+    private func saveDiscovery() {
+        discoveryBusy = true
+        Task {
+            if let err = await store.setGuildDiscovery(
+                discoverable: discoverable,
+                description: guildDescription.isEmpty ? nil : guildDescription,
+                category: discoveryCategory) {
+                saveError = err
+                // Revert the optimistic toggle on failure.
+                discoverable = store.selectedGuild?.discoverable ?? false
+            }
+            discoveryBusy = false
         }
     }
 

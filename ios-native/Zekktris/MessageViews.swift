@@ -151,11 +151,13 @@ struct MessageListView: View {
     }
 
     private func dmReceipt(for message: Message, anchors: (latest: Message?, lastRead: Message?)) -> String? {
-        if message.id == anchors.lastRead?.id { return "Read" }
-        if message.id == anchors.latest?.id, anchors.lastRead?.id != anchors.latest?.id {
-            return message.deliveredAt != nil ? "Delivered" : "Sent"
+        // The receipt lives ONLY under the newest own message — the moment a
+        // newer one is sent, any older "Read" status disappears with it.
+        guard message.id == anchors.latest?.id else { return nil }
+        if let viewedAt = message.viewedAt {
+            return "Read \(shortTime(viewedAt))"
         }
-        return nil
+        return message.deliveredAt != nil ? "Delivered" : "Sent"
     }
 
     /// Encrypted DM with no key on this device → show the unlock panel.
@@ -377,8 +379,17 @@ struct MessageListView: View {
                 // accent glow ring while focused. Attach menu leads (the
                 // web's paperclip), emoji opens the unified picker, send
                 // trails.
-                HStack(alignment: .bottom, spacing: 4) {
-                    if !channel.isE2EE {
+                HStack(alignment: .center, spacing: 4) {
+                    if channel.isE2EE {
+                        // Encrypted DMs: photos only — the bytes are sealed
+                        // with the same channel key as the messages.
+                        Button { showPhotoPicker = true } label: {
+                            Image(systemName: "paperclip")
+                                .font(.system(size: 17))
+                                .foregroundColor(Theme.ink2)
+                                .frame(width: 28, height: 32)
+                        }
+                    } else {
                         Menu {
                             Button { showPhotoPicker = true } label: { Label("Photo", systemImage: "photo") }
                             Button { showPollSheet = true } label: { Label("Poll", systemImage: "chart.bar.xaxis") }
@@ -1433,7 +1444,9 @@ struct MessageRow: View {
         if let attachments = message.attachments, !attachments.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(attachments) { att in
-                    if att.isVoiceMessage == true {
+                    if channel.isE2EE, att.filename?.hasSuffix(".zke") == true {
+                        EncryptedAttachmentView(attachment: att, channel: channel)
+                    } else if att.isVoiceMessage == true {
                         VoiceMessageView(attachment: att)
                     } else if att.isImage, let url = assetURL(att.url) {
                         AsyncImage(url: url) { phase in
@@ -2089,7 +2102,7 @@ struct ProfileCardView: View {
                     )
                 }
             }
-            .frame(height: 84)
+            .frame(height: 210)
             .frame(maxWidth: .infinity)
             .clipped()
 
@@ -2097,8 +2110,7 @@ struct ProfileCardView: View {
             VStack(alignment: .leading, spacing: 14) {
                 Avatar(url: user.avatarUrl, name: user.name, size: 76,
                        status: liveStatus, ringColor: Theme.bg1, decoration: user.avatarDecoration)
-                    .offset(y: -46)
-                    .padding(.bottom, -46)
+                    .padding(.top, 12)
 
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
@@ -3148,5 +3160,77 @@ struct DmSettingsSheet: View {
             .padding(.horizontal, 12).padding(.vertical, 12)
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Downloads an encrypted (.zke) attachment, decrypts it with the DM's
+/// channel key, and renders the result — images inline (tap to zoom via a
+/// temporary file is skipped; encrypted images stay in-memory), anything
+/// else as a sealed-file chip. Shows a lock placeholder until the key is
+/// unlocked on this device.
+struct EncryptedAttachmentView: View {
+    let attachment: Attachment
+    let channel: Channel
+    @EnvironmentObject private var store: AppStore
+    @State private var image: UIImage?
+    @State private var failed = false
+    @State private var loading = true
+
+    /// Original name without the .zke wire suffix.
+    private var displayName: String {
+        let n = attachment.filename ?? "file"
+        return n.hasSuffix(".zke") ? String(n.dropLast(4)) : n
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable().scaledToFit()
+                    .frame(maxWidth: 240, maxHeight: 240, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(alignment: .topTrailing) {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 7, weight: .bold))
+                            .foregroundColor(Theme.accent)
+                            .frame(width: 14, height: 14)
+                            .background(Theme.bg0.opacity(0.8))
+                            .clipShape(Circle())
+                            .padding(5)
+                    }
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: failed ? "lock.slash" : "lock.doc")
+                        .foregroundColor(failed ? Theme.dangerSoft : Theme.accent)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(displayName)
+                            .font(.zkSans(13, weight: .medium))
+                            .foregroundColor(Theme.ink1)
+                            .lineLimit(1)
+                        Text(failed
+                             ? "Couldn't decrypt"
+                             : (loading ? "Decrypting…" : "Encrypted file"))
+                            .font(.zkSans(11))
+                            .foregroundColor(failed ? Theme.dangerSoft : Theme.ink3)
+                    }
+                    if loading && !failed { ProgressView().scaleEffect(0.7) }
+                }
+                .padding(8)
+                .background(Theme.bg3)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+        }
+        .task(id: store.e2eeUnlockVersion) {
+            loading = true
+            failed = false
+            guard let data = await store.decryptedAttachmentData(attachment, in: channel) else {
+                loading = false
+                failed = true
+                return
+            }
+            image = UIImage(data: data)
+            loading = false
+            failed = (image == nil && !data.isEmpty) ? false : failed
+        }
     }
 }
