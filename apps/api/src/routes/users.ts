@@ -68,6 +68,45 @@ usersRouter.get('/@me', requireAuth, async (c) => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────
+// Achievements — computed on demand; see services/achievements.
+// ───────────────────────────────────────────────────────────────────────────
+
+usersRouter.get('/@me/achievements', requireAuth, async (c) => {
+  const userId = requireUserId(c);
+  const { achievementsForUser } = await import('../services/achievements');
+  const [me] = await db
+    .select({ pub: schema.users.achievementsPublic })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .limit(1);
+  return c.json({
+    achievements: await achievementsForUser(userId),
+    public: me?.pub ?? false,
+  });
+});
+
+usersRouter.get(
+  '/:userId/achievements',
+  requireAuth,
+  validate('param', z.object({ userId: snowflakeSchema })),
+  async (c) => {
+    const targetId = BigInt(c.req.valid('param').userId);
+    const [target] = await db
+      .select({ pub: schema.users.achievementsPublic })
+      .from(schema.users)
+      .where(eq(schema.users.id, targetId))
+      .limit(1);
+    if (!target) throw errors.notFound('User');
+    if (!target.pub && targetId !== requireUserId(c)) {
+      // Private: act as empty rather than revealing the toggle state.
+      return c.json({ achievements: [], public: false });
+    }
+    const { achievementsForUser } = await import('../services/achievements');
+    return c.json({ achievements: await achievementsForUser(targetId), public: target.pub });
+  },
+);
+
+// ───────────────────────────────────────────────────────────────────────────
 // PATCH /@me
 // ───────────────────────────────────────────────────────────────────────────
 //
@@ -104,6 +143,9 @@ const patchMeSchema = z
     /** Banner URL — same shape as avatarUrl. POST /@me/banner is
         the upload path; PATCH accepts a /cdn/ reference or null. */
     bannerUrl: cdnPathOrNullSchema.optional(),
+    /** Achievements visibility: when true, anyone can view this user's
+        achievements; when false (default) only the owner sees them. */
+    achievementsPublic: z.boolean().optional(),
     /** DM read-receipts opt-out. When false, the server skips
         delivered_at/viewed_at stamping for messages this user
         receives — so senders to this user see "Sent" forever and

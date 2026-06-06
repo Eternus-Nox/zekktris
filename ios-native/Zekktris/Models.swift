@@ -87,6 +87,9 @@ struct Channel: Codable, Identifiable, Hashable {
     /// True when permission overrides hide this channel from @everyone —
     /// drives the corner padlock badge on the sidebar row (web parity).
     var restricted: Bool?
+    /// 1:1 DM messaging streak (consecutive days both sides messaged).
+    /// Absent/0 while broken; capped at 10,000.
+    var streak: Int?
 
     var isText: Bool { type == "guild_text" }
     var isCategory: Bool { type == "guild_category" }
@@ -806,3 +809,42 @@ struct ChildRelationship: Codable, Identifiable, Hashable {
     var id: String { user.id }
 }
 struct ChildRelationshipsWrap: Codable { let relationships: [ChildRelationship] }
+
+
+// ── Security (Admin → Security) ─────────────────────────────────────────────
+struct SecurityEvent: Codable, Identifiable, Hashable {
+    let id: String
+    var kind: String              // spam_limited | banned_word
+    var userId: String?
+    var username: String?
+    var displayName: String?
+    var guildId: String?
+    var channelId: String?
+    var detail: String
+    var contentSnapshot: String?
+    var createdAt: String
+    var actorName: String { displayName ?? username ?? "Unknown" }
+}
+struct SecurityEventsWrap: Codable { let events: [SecurityEvent] }
+struct SecurityWordsWrap: Codable { let words: [String] }
+struct SecurityConfig: Codable, Hashable {
+    var spamEnabled: Bool
+    var spamMaxMessages: Int
+    var spamWindowSeconds: Int
+    var spamCooldownSeconds: Int
+    var wordFilterEnabled: Bool
+}
+struct SecurityConfigWrap: Codable { let config: SecurityConfig }
+
+// ── Achievements ────────────────────────────────────────────────────────────
+struct Achievement: Codable, Identifiable, Hashable {
+    let id: String
+    var name: String
+    var description: String
+    var marker: String
+    var value: Int
+}
+struct AchievementsWrap: Codable {
+    let achievements: [Achievement]
+    var `public`: Bool?
+}

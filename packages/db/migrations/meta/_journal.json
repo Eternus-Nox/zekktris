@@ -505,6 +505,13 @@
       "when": 1784600080000,
       "tag": "0072_apns_device_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1784600090000,
+      "tag": "0073_security_streaks_achievements",
+      "breakpoints": true
     }
   ]
 }

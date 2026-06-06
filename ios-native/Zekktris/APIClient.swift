@@ -1049,6 +1049,47 @@ extension APIClient {
         return wrap.messages
     }
 
+    // ── Security (Admin → Security) ──────────────────────────────────────────
+    func adminSecurityEvents(kind: String? = nil, before: String? = nil) async throws -> [SecurityEvent] {
+        var path = "/admin/security/events?limit=50"
+        if let kind { path += "&kind=\(kind)" }
+        if let before { path += "&before=\(before)" }
+        let wrap: SecurityEventsWrap = try await send("GET", path)
+        return wrap.events
+    }
+    func adminSecurityWords() async throws -> [String] {
+        let wrap: SecurityWordsWrap = try await send("GET", "/admin/security/words")
+        return wrap.words
+    }
+    func adminAddSecurityWord(_ word: String) async throws -> [String] {
+        let body = try JSONSerialization.data(withJSONObject: ["word": word])
+        let wrap: SecurityWordsWrap = try await send("POST", "/admin/security/words", bodyData: body)
+        return wrap.words
+    }
+    func adminRemoveSecurityWord(_ word: String) async throws -> [String] {
+        let enc = word.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? word
+        let wrap: SecurityWordsWrap = try await send("DELETE", "/admin/security/words/\(enc)")
+        return wrap.words
+    }
+    func adminSecurityConfig() async throws -> SecurityConfig {
+        let wrap: SecurityConfigWrap = try await send("GET", "/admin/security/config")
+        return wrap.config
+    }
+    func adminPatchSecurityConfig(_ patch: [String: Any]) async throws -> SecurityConfig {
+        let body = try JSONSerialization.data(withJSONObject: patch)
+        let wrap: SecurityConfigWrap = try await send("PATCH", "/admin/security/config", bodyData: body)
+        return wrap.config
+    }
+
+    // ── Achievements ─────────────────────────────────────────────────────────
+    func myAchievements() async throws -> AchievementsWrap {
+        return try await send("GET", "/users/@me/achievements")
+    }
+    func userAchievements(userId: String) async throws -> [Achievement] {
+        let wrap: AchievementsWrap = try await send("GET", "/users/\(userId)/achievements")
+        return wrap.achievements
+    }
+
     // ── Admin (instance) ──────────────────────────────────────────────────────
     func adminListUsers(q: String?, bannedOnly: Bool) async throws -> [AdminUser] {
         // The server's query validator caps limit at 50 (zod max(50)) and

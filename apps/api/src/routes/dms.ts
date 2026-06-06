@@ -70,11 +70,17 @@ dmsRouter.get('/', async (c) => {
     for (const r of recips) involved.push(r.id);
   }
   const e2eeAllowed = await supervision.buildE2eePolicy(involved);
+  // Live messaging streaks (1:1 only; 0/absent while broken).
+  const { streaksForChannels } = await import('../services/streaks');
+  const streaks = await streaksForChannels(channelIds);
   return c.json({
     channels: list.map((ch) => {
       const recips = recipientsByChannel.get(ch.id.toString()) ?? [];
       const suppressed = ch.type === 'dm' && recips[0] ? !e2eeAllowed(userId, recips[0].id) : false;
-      return toChannel(ch, null, recips, suppressed);
+      const dto = toChannel(ch, null, recips, suppressed) as Record<string, unknown>;
+      const streak = streaks.get(ch.id.toString()) ?? 0;
+      if (streak > 0) dto.streak = streak;
+      return dto;
     }),
   });
 });

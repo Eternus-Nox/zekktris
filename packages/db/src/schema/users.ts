@@ -52,6 +52,8 @@ export const users = pgTable(
     customStatus: text('custom_status'),
     /** Instance-level admin (server owner / operator), not per-guild. */
     isAdmin: boolean('is_admin').notNull().default(false),
+    /** Achievements visibility: false = only the owner sees them. */
+    achievementsPublic: boolean('achievements_public').notNull().default(false),
     /** True for bot accounts. Bots are real user rows that authenticate
         via a static bot token rather than password+JWT. Drives the BOT
         badge + bot-only/human-only behavior gates. */

@@ -26,3 +26,4 @@ export * from './botCommands';
 export * from './family';
 export * from './instanceSettings';
 export * from './reports';
+export * from './security';

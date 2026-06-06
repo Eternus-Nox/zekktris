@@ -962,6 +962,68 @@ adminRouter.get(
 );
 
 // ───────────────────────────────────────────────────────────────────────────
+// Security (Admin → Security): event log, banned words, throttle config.
+// ───────────────────────────────────────────────────────────────────────────
+
+const securityEventsQuery = z.object({
+  kind: z.enum(['spam_limited', 'banned_word']).optional(),
+  before: z.string().regex(/^[0-9]+$/).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
+adminRouter.get('/security/events', validate('query', securityEventsQuery), async (c) => {
+  const q = c.req.valid('query');
+  const security = await import('../services/security');
+  const events = await security.listEvents({
+    kind: q.kind,
+    before: q.before ? BigInt(q.before) : undefined,
+    limit: q.limit,
+  });
+  return c.json({ events });
+});
+
+adminRouter.get('/security/words', async (c) => {
+  const security = await import('../services/security');
+  return c.json({ words: await security.listBannedWords() });
+});
+
+adminRouter.post(
+  '/security/words',
+  validate('json', z.object({ word: z.string().min(1).max(64) })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const security = await import('../services/security');
+    await security.addBannedWord(c.req.valid('json').word, userId);
+    return c.json({ words: await security.listBannedWords() }, 201);
+  },
+);
+
+adminRouter.delete('/security/words/:word', async (c) => {
+  const word = decodeURIComponent(c.req.param('word'));
+  const security = await import('../services/security');
+  await security.removeBannedWord(word);
+  return c.json({ words: await security.listBannedWords() });
+});
+
+adminRouter.get('/security/config', async (c) => {
+  const security = await import('../services/security');
+  return c.json({ config: await security.getConfig() });
+});
+
+const securityConfigPatch = z.object({
+  spamEnabled: z.boolean().optional(),
+  spamMaxMessages: z.coerce.number().int().min(2).max(100).optional(),
+  spamWindowSeconds: z.coerce.number().int().min(2).max(300).optional(),
+  spamCooldownSeconds: z.coerce.number().int().min(60).max(86400).optional(),
+  wordFilterEnabled: z.boolean().optional(),
+});
+
+adminRouter.patch('/security/config', validate('json', securityConfigPatch), async (c) => {
+  const security = await import('../services/security');
+  return c.json({ config: await security.updateConfig(c.req.valid('json')) });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
 // GET /admin/embed-test?url=... — link preview diagnostic
 //
 // Synchronously runs the embed pipeline for a single URL and returns every

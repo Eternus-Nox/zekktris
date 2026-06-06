@@ -328,6 +328,7 @@ struct ServerRailView: View {
     @AppStorage("zk.notifyCalls") private var notifyCalls = true
     @ObservedObject private var push = PushManager.shared
     @Environment(\.zkDismissPage) private var zkDismissPage
+    @State private var achievementsPublic = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1191,6 +1192,9 @@ private struct DMRow: View {
                 .font(.zkSans(15, weight: unread ? .semibold : .regular))
                 .foregroundColor(unread ? Theme.ink1 : Theme.ink2)
                 .lineLimit(1)
+            if let streak = dm.streak, streak > 0 {
+                StreakChip(days: streak)
+            }
             Spacer(minLength: 0)
             if mentions > 0 {
                 Text("\(min(mentions, 99))")
@@ -1442,6 +1446,7 @@ struct SettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     profileHeader
+                    AchievementsSection(userId: nil)
                     statusSection
                     displayNameSection
                     customStatusSection
@@ -1858,6 +1863,29 @@ struct SettingsView: View {
             .tint(Theme.accent)
             .padding(.horizontal, 12).padding(.vertical, 10)
             .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+
+            Toggle(isOn: Binding(
+                get: { achievementsPublic },
+                set: { newValue in
+                    achievementsPublic = newValue
+                    Task { _ = try? await APIClient.shared.updateProfile(["achievementsPublic": newValue]) }
+                }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Public achievements")
+                        .font(.zkSans(15)).foregroundColor(Theme.ink1)
+                    Text("Let others see your achievements on your profile. Off keeps them private to you.")
+                        .font(.zkSans(11)).foregroundColor(Theme.ink4)
+                }
+            }
+            .tint(Theme.accent)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .task {
+            if let wrap = try? await APIClient.shared.myAchievements() {
+                achievementsPublic = wrap.public ?? false
+            }
         }
     }
 
@@ -2441,6 +2469,7 @@ struct AdminView: View {
                     Text("Users").tag(1)
                     Text("Servers").tag(2)
                     Text("Storage").tag(3)
+                    Text("Security").tag(4)
                 }
                 .pickerStyle(.segmented)
                 .padding(12)
@@ -2448,7 +2477,8 @@ struct AdminView: View {
                 if tab == 0 { overview }
                 else if tab == 1 { users }
                 else if tab == 2 { guilds }
-                else { storage }
+                else if tab == 3 { storage }
+                else { AdminSecurityTab() }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.bg1.ignoresSafeArea())
@@ -6271,4 +6301,371 @@ func storageByteString(_ bytes: Int) -> String {
     if b >= mb { return String(format: "%.1f MB", b / mb) }
     if b >= kb { return String(format: "%.0f KB", b / kb) }
     return "\(bytes) B"
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Messaging streaks — flame chip (DM rows + DM headers).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Little number-in-a-box with a flame behind it. Shows for live streaks
+/// (both sides messaged daily); works in E2EE DMs since only timestamps
+/// are counted.
+struct StreakChip: View {
+    let days: Int
+    var body: some View {
+        HStack(spacing: 2) {
+            Image(systemName: "flame.fill")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundColor(Theme.plasmaAmber)
+            Text("\(min(days, 10_000))")
+                .font(.zkMono(10, weight: .semibold))
+                .foregroundColor(Theme.ink1)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2.5)
+        .background(Theme.plasmaAmber.opacity(0.16))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(Theme.plasmaAmber.opacity(0.4), lineWidth: 1)
+        )
+        .accessibilityLabel("\(days) day messaging streak")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Admin → Security: event log, banned words, spam throttle config.
+// ═══════════════════════════════════════════════════════════════════════════
+
+struct AdminSecurityTab: View {
+    @State private var events: [SecurityEvent] = []
+    @State private var words: [String] = []
+    @State private var config: SecurityConfig?
+    @State private var newWord = ""
+    @State private var kindFilter: String?
+    @State private var loading = true
+    @State private var error: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                if let error {
+                    Text(error).font(.zkSans(12)).foregroundColor(Theme.dangerSoft)
+                }
+
+                // ── Spam throttle ──
+                sectionLabel("SPAM PROTECTION")
+                if let cfg = config {
+                    VStack(spacing: 0) {
+                        toggleRow("Rate-limit spammers", isOn: cfg.spamEnabled) { v in
+                            patchConfig(["spamEnabled": v])
+                        }
+                        Divider().overlay(Theme.line)
+                        stepperRow("Trigger", value: cfg.spamMaxMessages,
+                                   detail: "msgs / \(cfg.spamWindowSeconds)s",
+                                   range: 2...100) { v in patchConfig(["spamMaxMessages": v]) }
+                        Divider().overlay(Theme.line)
+                        stepperRow("Cooldown", value: cfg.spamCooldownSeconds / 60,
+                                   detail: "minutes at 1 msg/min",
+                                   range: 1...1440) { v in patchConfig(["spamCooldownSeconds": v * 60]) }
+                    }
+                    .background(Theme.bg2)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    Text("After the trigger, the user can only send one message per minute until the cooldown ends. Encrypted conversations are never metered or inspected.")
+                        .font(.zkSans(11)).foregroundColor(Theme.ink4)
+                }
+
+                // ── Banned words ──
+                sectionLabel("BANNED WORDS")
+                if let cfg = config {
+                    VStack(spacing: 0) {
+                        toggleRow("Block banned words", isOn: cfg.wordFilterEnabled) { v in
+                            patchConfig(["wordFilterEnabled": v])
+                        }
+                    }
+                    .background(Theme.bg2)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                HStack(spacing: 8) {
+                    TextField("add a word…", text: $newWord)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .foregroundColor(Theme.ink1)
+                        .padding(10).background(Theme.bg2)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .onSubmit { addWord() }
+                    Button { addWord() } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(width: 38, height: 38)
+                            .background(Theme.accent)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .disabled(newWord.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if words.isEmpty {
+                    Text("No banned words yet. Messages containing a banned word are rejected and reported here.")
+                        .font(.zkSans(11)).foregroundColor(Theme.ink4)
+                } else {
+                    FlowWords(words: words) { w in removeWord(w) }
+                }
+
+                // ── Event log ──
+                sectionLabel("SECURITY LOG")
+                HStack(spacing: 6) {
+                    filterChip(nil, label: "All")
+                    filterChip("spam_limited", label: "Spam")
+                    filterChip("banned_word", label: "Banned words")
+                }
+                if loading && events.isEmpty {
+                    ProgressView().tint(Theme.accent).frame(maxWidth: .infinity).padding(.top, 16)
+                } else if events.isEmpty {
+                    Text("Nothing logged. That's a good sign.")
+                        .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                        .frame(maxWidth: .infinity).padding(.vertical, 16)
+                } else {
+                    VStack(spacing: 8) {
+                        ForEach(events) { ev in eventRow(ev) }
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 16)
+        }
+        .task { await reload() }
+    }
+
+    private func sectionLabel(_ t: String) -> some View {
+        Text(t).font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+    }
+
+    private func toggleRow(_ label: String, isOn: Bool, set: @escaping (Bool) -> Void) -> some View {
+        Toggle(isOn: Binding(get: { isOn }, set: set)) {
+            Text(label).font(.zkSans(14)).foregroundColor(Theme.ink1)
+        }
+        .tint(Theme.accent)
+        .padding(.horizontal, 12).padding(.vertical, 9)
+    }
+
+    private func stepperRow(_ label: String, value: Int, detail: String,
+                            range: ClosedRange<Int>, set: @escaping (Int) -> Void) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label).font(.zkSans(14)).foregroundColor(Theme.ink1)
+                Text(detail).font(.zkSans(10)).foregroundColor(Theme.ink4)
+            }
+            Spacer()
+            Text("\(value)")
+                .font(.zkMono(14, weight: .semibold)).foregroundColor(Theme.accent)
+            Stepper("", value: Binding(get: { value }, set: { set($0.clamped(to: range)) }), in: range)
+                .labelsHidden()
+        }
+        .padding(.horizontal, 12).padding(.vertical, 7)
+    }
+
+    private func filterChip(_ value: String?, label: String) -> some View {
+        let selected = kindFilter == value
+        return Button {
+            kindFilter = value
+            Task { await loadEvents() }
+        } label: {
+            Text(label)
+                .font(.zkSans(12, weight: selected ? .semibold : .regular))
+                .foregroundColor(selected ? Theme.bg0 : Theme.ink2)
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(selected ? Theme.accent : Theme.bg2)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func eventRow(_ ev: SecurityEvent) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: ev.kind == "banned_word" ? "exclamationmark.bubble.fill" : "speedometer")
+                    .font(.system(size: 11))
+                    .foregroundColor(ev.kind == "banned_word" ? Theme.dangerSoft : Theme.plasmaAmber)
+                Text(ev.actorName)
+                    .font(.zkSans(13, weight: .semibold)).foregroundColor(Theme.ink1)
+                Spacer()
+                Text(shortTime(ev.createdAt))
+                    .font(.zkSans(10)).foregroundColor(Theme.ink4)
+            }
+            Text(ev.detail)
+                .font(.zkSans(12)).foregroundColor(Theme.ink2)
+            if let snapshot = ev.contentSnapshot, !snapshot.isEmpty {
+                Text(snapshot)
+                    .font(.zkMono(11))
+                    .foregroundColor(Theme.ink3)
+                    .lineLimit(3)
+                    .padding(6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.bg0.opacity(0.6))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+        }
+        .padding(10)
+        .background(Theme.bg2)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    // ── Data ──
+    private func reload() async {
+        loading = true
+        async let e: () = loadEvents()
+        async let w: () = loadWords()
+        async let c: () = loadConfig()
+        _ = await (e, w, c)
+        loading = false
+    }
+    private func loadEvents() async {
+        do { events = try await APIClient.shared.adminSecurityEvents(kind: kindFilter) }
+        catch { self.error = (error as? APIError)?.message ?? error.localizedDescription }
+    }
+    private func loadWords() async {
+        words = (try? await APIClient.shared.adminSecurityWords()) ?? words
+    }
+    private func loadConfig() async {
+        config = (try? await APIClient.shared.adminSecurityConfig()) ?? config
+    }
+    private func patchConfig(_ patch: [String: Any]) {
+        Task {
+            if let updated = try? await APIClient.shared.adminPatchSecurityConfig(patch) {
+                config = updated
+            }
+        }
+    }
+    private func addWord() {
+        let word = newWord.trimmingCharacters(in: .whitespaces)
+        guard !word.isEmpty else { return }
+        newWord = ""
+        Task {
+            if let updated = try? await APIClient.shared.adminAddSecurityWord(word) { words = updated }
+        }
+    }
+    private func removeWord(_ word: String) {
+        Task {
+            if let updated = try? await APIClient.shared.adminRemoveSecurityWord(word) { words = updated }
+        }
+    }
+}
+
+private extension Int {
+    func clamped(to range: ClosedRange<Int>) -> Int {
+        Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
+    }
+}
+
+/// Simple wrapping word-pill list with delete affordances.
+private struct FlowWords: View {
+    let words: [String]
+    let onDelete: (String) -> Void
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 6)], spacing: 6) {
+            ForEach(words, id: \.self) { w in
+                HStack(spacing: 4) {
+                    Text(w)
+                        .font(.zkMono(12)).foregroundColor(Theme.ink1)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Button { onDelete(w) } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(Theme.ink3)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 9).padding(.vertical, 6)
+                .background(Theme.bg2)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Achievements — badge grid for profiles.
+// ═══════════════════════════════════════════════════════════════════════════
+
+struct AchievementsSection: View {
+    /// Whose achievements; nil = the signed-in user (always visible).
+    let userId: String?
+    @State private var achievements: [Achievement] = []
+    @State private var loaded = false
+
+    var body: some View {
+        Group {
+            if !achievements.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("ACHIEVEMENTS")
+                        .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
+                        ForEach(achievements) { a in
+                            AchievementBadge(achievement: a)
+                        }
+                    }
+                }
+            } else if !loaded {
+                EmptyView()
+            }
+        }
+        .task {
+            if let userId {
+                achievements = (try? await APIClient.shared.userAchievements(userId: userId)) ?? []
+            } else {
+                achievements = (try? await APIClient.shared.myAchievements())?.achievements ?? []
+            }
+            loaded = true
+        }
+    }
+}
+
+struct AchievementBadge: View {
+    let achievement: Achievement
+
+    private var symbol: String {
+        switch true {
+        case achievement.id.hasPrefix("veteran"): return "calendar.badge.checkmark"
+        case achievement.id.hasPrefix("chatterbox"): return "bubble.left.and.bubble.right.fill"
+        case achievement.id.hasPrefix("social"): return "person.2.fill"
+        case achievement.id == "night_owl": return "moon.stars.fill"
+        case achievement.id == "first_responder": return "bolt.fill"
+        case achievement.id == "marathon": return "flame.fill"
+        case achievement.id == "founder": return "building.columns.fill"
+        case achievement.id == "voice_of_people": return "mic.fill"
+        default: return "rosette"
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 5) {
+            ZStack {
+                Circle()
+                    .fill(LinearGradient(colors: [Theme.accent.opacity(0.35), Theme.accent2.opacity(0.25)],
+                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 40, height: 40)
+                Image(systemName: symbol)
+                    .font(.system(size: 16))
+                    .foregroundColor(Theme.accent)
+                Text(achievement.marker)
+                    .font(.zkMono(8, weight: .bold))
+                    .foregroundColor(Theme.bg0)
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(Theme.accent)
+                    .clipShape(Capsule())
+                    .offset(x: 13, y: 14)
+            }
+            Text(achievement.name)
+                .font(.zkSans(10, weight: .medium))
+                .foregroundColor(Theme.ink2)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(Theme.bg2)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .help("\(achievement.description)")
+    }
 }

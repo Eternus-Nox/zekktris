@@ -211,6 +211,10 @@ struct MessageListView: View {
                     .font(.zkSans(16, weight: .semibold))
                     .foregroundColor(Theme.ink1)
                     .lineLimit(1)
+                if let streak = (store.dms.first(where: { $0.id == channel.id })?.streak ?? channel.streak),
+                   streak > 0 {
+                    StreakChip(days: streak)
+                }
             } else {
                 Image(systemName: "number")
                     .font(.system(size: 15))
@@ -2149,6 +2153,8 @@ struct ProfileCardView: View {
                         .font(.zkSans(13))
                         .foregroundColor(Theme.ink2)
                 }
+
+                AchievementsSection(userId: isSelf ? nil : user.id)
 
                 if (user.customStatus?.isEmpty == false) || (user.customStatusEmoji?.isEmpty == false) {
                     HStack(spacing: 6) {

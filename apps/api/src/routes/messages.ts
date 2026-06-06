@@ -244,6 +244,22 @@ messagesRouter.post(
       if (!hasPermission(ctx.channelPerms, Permissions.MANAGE_MESSAGES)) {
         await messages.enforceSlowmode(channelId, userId, ctx.channel.rateLimitPerUser);
       }
+      // Instance security (Admin → Security): spam throttle + banned-word
+      // gate. Guild plaintext only — E2EE/DMs are exempt by design.
+      if (ctx.channel.guildId) {
+        const security = await import('../services/security');
+        await security.checkSpam({
+          userId,
+          guildId: ctx.channel.guildId,
+          channelId: ctx.channel.id,
+        });
+        await security.checkBannedWords({
+          userId,
+          guildId: ctx.channel.guildId,
+          channelId: ctx.channel.id,
+          content: payload.content,
+        });
+      }
       // Automod — last gate. Runs only for guild messages. Hits the
       // partial enabled-index, so zero-rule guilds pay an index probe
       // and bail. Rules can OPTIONALLY apply a timeout in addition
@@ -838,6 +854,27 @@ messagesRouter.post(
         // Push is non-critical; failure here mustn't surface anywhere.
       }
     })();
+
+    // Messaging streaks: count the day once both 1:1 participants have
+    // messaged (timestamps only — E2EE content is never read).
+    if (ctx.isDM && ctx.channel.type === 'dm') {
+      void (async () => {
+        try {
+          const recipients = await dms.listAllRecipients(channelId);
+          const other = recipients.find((id) => id !== userId);
+          if (other) {
+            const streaks = await import('../services/streaks');
+            await streaks.recordDmMessage({
+              channelId,
+              authorId: userId,
+              recipientId: other,
+            });
+          }
+        } catch {
+          // Streaks are decorative; never fail a send over them.
+        }
+      })();
+    }
 
     return c.json({ message: messageDTO }, 201);
   },
