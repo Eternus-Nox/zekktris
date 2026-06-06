@@ -1444,7 +1444,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
+                LazyVStack(alignment: .leading, spacing: 22) {
                     profileHeader
                     AchievementsSection(userId: nil)
                     statusSection
@@ -1464,9 +1464,7 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
-                }
+                ToolbarItem(placement: .navigationBarLeading) { PageBackButton() }
             }
             .onAppear {
                 displayName = session.currentUser?.displayName ?? ""
