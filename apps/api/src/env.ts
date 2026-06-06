@@ -181,6 +181,11 @@ const envSchema = z.object({
   //   APNS_PRODUCTION — "true" for TestFlight/App Store (default), "false"
   //                     only for Xcode debug "Run" builds (sandbox host).
   APNS_KEY_P8: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
+  // Alternative to APNS_KEY_P8: absolute path to the .p8 file (bind-mount
+  // it into the container). Sidesteps every multiline/quoting pitfall of
+  // stuffing PEM or base64 into env files. If both are set, APNS_KEY_P8
+  // wins.
+  APNS_KEY_P8_FILE: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
   APNS_KEY_ID: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
   APNS_TEAM_ID: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
   APNS_BUNDLE_ID: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),

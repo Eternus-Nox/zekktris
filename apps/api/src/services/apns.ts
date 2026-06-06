@@ -68,11 +68,24 @@ function normalizeP8(raw: string): string {
  */
 export async function initApns(): Promise<boolean> {
   if (configured) return true;
-  if (!env.APNS_KEY_P8 || !env.APNS_KEY_ID || !env.APNS_TEAM_ID || !env.APNS_BUNDLE_ID) {
+  // Key material: inline env value, or a bind-mounted file via
+  // APNS_KEY_P8_FILE (the file form avoids multiline-env headaches).
+  let keyMaterial = env.APNS_KEY_P8 ?? null;
+  if (!keyMaterial && env.APNS_KEY_P8_FILE) {
+    try {
+      const { readFile } = await import('node:fs/promises');
+      keyMaterial = await readFile(env.APNS_KEY_P8_FILE, 'utf8');
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('APNs: cannot read APNS_KEY_P8_FILE:', (err as Error).message);
+      return false;
+    }
+  }
+  if (!keyMaterial || !env.APNS_KEY_ID || !env.APNS_TEAM_ID || !env.APNS_BUNDLE_ID) {
     return false;
   }
   try {
-    signingKey = await importPKCS8(normalizeP8(env.APNS_KEY_P8), 'ES256');
+    signingKey = await importPKCS8(normalizeP8(keyMaterial), 'ES256');
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('APNs: failed to load .p8 signing key:', (err as Error).message);
