@@ -338,6 +338,204 @@ func snowflakeGreater(_ a: String, than b: String) -> Bool {
     return a > b
 }
 
+// ── Emoji picker (web EmojiPicker parity: recent / unicode categories /
+//    server emoji, with name search) ──────────────────────────────────────────
+
+enum EmojiCatalog {
+    /// Compact unicode catalog: (glyph, searchable name). Ordered into the
+    /// same category groups the web picker uses.
+    static let categories: [(name: String, symbol: String, emoji: [(String, String)])] = [
+        ("Smileys", "face.smiling", [
+            ("😀","grinning"),("😃","smiley"),("😄","smile"),("😁","grin"),("😆","laughing"),("😅","sweat smile"),
+            ("😂","joy"),("🤣","rofl"),("🙂","slight smile"),("😉","wink"),("😊","blush"),("😇","innocent"),
+            ("🥰","hearts face"),("😍","heart eyes"),("🤩","star struck"),("😘","kiss"),("😋","yum"),("😜","winking tongue"),
+            ("🤪","zany"),("🤔","thinking"),("🤨","raised eyebrow"),("😐","neutral"),("😏","smirk"),("🙄","eye roll"),
+            ("😬","grimace"),("😴","sleeping"),("🤒","sick"),("🤯","mind blown"),("😎","sunglasses"),("🥳","party face"),
+            ("😢","cry"),("😭","sob"),("😡","rage"),("🤬","cursing"),("😱","scream"),("😳","flushed"),
+            ("🥺","pleading"),("😈","smiling imp"),("💀","skull"),("👻","ghost"),("🤖","robot"),("💩","poop"),
+        ]),
+        ("People", "hand.raised", [
+            ("👍","thumbs up"),("👎","thumbs down"),("👌","ok hand"),("✌️","victory"),("🤞","crossed fingers"),
+            ("🤘","rock on"),("🤙","call me"),("👈","point left"),("👉","point right"),("👆","point up"),
+            ("👇","point down"),("✋","raised hand"),("🖐️","hand splayed"),("👋","wave"),("🤝","handshake"),
+            ("🙏","pray thanks"),("👏","clap"),("🙌","raised hands"),("💪","muscle flex"),("🫶","heart hands"),
+            ("🤷","shrug"),("🤦","facepalm"),("🧠","brain"),("👀","eyes"),("👑","crown"),("🫡","salute"),
+        ]),
+        ("Nature", "leaf", [
+            ("🐶","dog"),("🐱","cat"),("🐭","mouse"),("🐹","hamster"),("🐰","rabbit"),("🦊","fox"),
+            ("🐻","bear"),("🐼","panda"),("🐨","koala"),("🐯","tiger"),("🦁","lion"),("🐸","frog"),
+            ("🐵","monkey"),("🐔","chicken"),("🐧","penguin"),("🦄","unicorn"),("🐝","bee"),("🦋","butterfly"),
+            ("🌵","cactus"),("🌲","evergreen"),("🌹","rose"),("🌻","sunflower"),("🍀","clover luck"),("🍄","mushroom"),
+            ("🌙","moon"),("⭐","star"),("🌈","rainbow"),("⚡","zap lightning"),("🔥","fire"),("❄️","snowflake"),
+            ("💧","droplet"),("🌊","wave water"),
+        ]),
+        ("Food", "fork.knife", [
+            ("🍎","apple"),("🍌","banana"),("🍉","watermelon"),("🍇","grapes"),("🍓","strawberry"),("🍒","cherries"),
+            ("🍑","peach"),("🥭","mango"),("🍍","pineapple"),("🥑","avocado"),("🍔","burger"),("🍟","fries"),
+            ("🍕","pizza"),("🌭","hotdog"),("🌮","taco"),("🌯","burrito"),("🍜","ramen noodles"),("🍣","sushi"),
+            ("🍩","donut"),("🍪","cookie"),("🎂","birthday cake"),("🍰","cake"),("🍫","chocolate"),("🍿","popcorn"),
+            ("☕","coffee"),("🍺","beer"),("🍷","wine"),("🥤","cup straw"),
+        ]),
+        ("Travel", "car", [
+            ("🚗","car"),("🚕","taxi"),("🚌","bus"),("🏎️","race car"),("🚓","police car"),("🚑","ambulance"),
+            ("🚒","fire engine"),("🚲","bike"),("🏍️","motorcycle"),("✈️","airplane"),("🚀","rocket"),("🛸","ufo"),
+            ("🚁","helicopter"),("⛵","sailboat"),("🚢","ship"),("🗽","statue liberty"),("🗼","tokyo tower"),("🏰","castle"),
+            ("🏝️","desert island"),("⛰️","mountain"),("🏠","house"),("🌋","volcano"),
+        ]),
+        ("Activity", "gamecontroller", [
+            ("⚽","soccer"),("🏀","basketball"),("🏈","football"),("⚾","baseball"),("🎾","tennis"),("🏐","volleyball"),
+            ("🎱","8ball"),("🏓","ping pong"),("🥊","boxing"),("⛳","golf"),("🎣","fishing"),("🎽","running"),
+            ("🛹","skateboard"),("🎿","ski"),("🏆","trophy"),("🥇","gold medal"),("🎯","dart target"),("🎮","video game"),
+            ("🕹️","joystick"),("🎲","dice"),("♟️","chess"),("🎰","slot machine"),("🎳","bowling"),("🎤","microphone sing"),
+            ("🎧","headphones"),("🎸","guitar"),("🎹","piano"),("🥁","drum"),("🎨","art palette"),("🎬","clapper movie"),
+        ]),
+        ("Objects", "lightbulb", [
+            ("⌚","watch"),("📱","phone"),("💻","laptop"),("⌨️","keyboard"),("🖥️","desktop"),("🖨️","printer"),
+            ("📷","camera"),("🎥","movie camera"),("🔍","magnifier search"),("💡","bulb idea"),("🔦","flashlight"),("📚","books"),
+            ("📝","memo note"),("✏️","pencil"),("📌","pushpin"),("📎","paperclip"),("🔒","lock"),("🔑","key"),
+            ("🔨","hammer"),("🛠️","tools"),("⚙️","gear"),("🧲","magnet"),("💣","bomb"),("🧪","test tube"),
+            ("💊","pill"),("💰","money bag"),("💎","gem diamond"),("📦","package"),("🎁","gift"),("🎈","balloon"),
+            ("🎉","party popper tada"),("🎊","confetti"),
+        ]),
+        ("Symbols", "heart", [
+            ("❤️","red heart"),("🧡","orange heart"),("💛","yellow heart"),("💚","green heart"),("💙","blue heart"),
+            ("💜","purple heart"),("🖤","black heart"),("🤍","white heart"),("💔","broken heart"),("💕","two hearts"),
+            ("💖","sparkling heart"),("💯","hundred"),("💢","anger"),("💥","collision boom"),("💫","dizzy"),("💦","sweat drops"),
+            ("✨","sparkles"),("❗","exclamation"),("❓","question"),("✅","check mark"),("❌","cross mark"),("⚠️","warning"),
+            ("🚫","prohibited"),("♻️","recycle"),("🔞","18 plus"),("🆒","cool"),("🆕","new"),("🆓","free"),
+        ]),
+        ("Flags", "flag", [
+            ("🏁","checkered flag"),("🚩","triangular flag"),("🏴‍☠️","pirate flag"),("🏳️","white flag"),
+            ("🏳️‍🌈","rainbow flag"),("🇺🇸","usa"),("🇬🇧","uk"),("🇨🇦","canada"),("🇦🇺","australia"),("🇩🇪","germany"),
+            ("🇫🇷","france"),("🇪🇸","spain"),("🇮🇹","italy"),("🇯🇵","japan"),("🇰🇷","korea"),("🇧🇷","brazil"),
+            ("🇲🇽","mexico"),("🇮🇳","india"),
+        ]),
+    ]
+
+    static let recentKey = "zk.recentEmoji"
+    static func recents() -> [String] {
+        UserDefaults.standard.stringArray(forKey: recentKey) ?? []
+    }
+    static func pushRecent(_ emoji: String) {
+        var r = recents()
+        r.removeAll { $0 == emoji }
+        r.insert(emoji, at: 0)
+        if r.count > 24 { r = Array(r.prefix(24)) }
+        UserDefaults.standard.set(r, forKey: recentKey)
+    }
+}
+
+/// Unified emoji picker sheet (web EmojiPicker parity): search across
+/// unicode + server emoji, a Recently Used row, unicode category sections,
+/// and the guild's custom emoji. Calls back with either a literal unicode
+/// glyph or a `:name:` token for custom emoji.
+struct EmojiPickerSheet: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    let onPick: (String) -> Void
+
+    @State private var query = ""
+    private let cols = [GridItem(.adaptive(minimum: 44), spacing: 6)]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    if query.trimmingCharacters(in: .whitespaces).isEmpty {
+                        if !EmojiCatalog.recents().isEmpty {
+                            section("RECENTLY USED") {
+                                grid(EmojiCatalog.recents().map { ($0, "") })
+                            }
+                        }
+                        if !store.guildEmojis.isEmpty {
+                            section("SERVER") { customGrid(store.guildEmojis) }
+                        }
+                        ForEach(EmojiCatalog.categories, id: \.name) { cat in
+                            section(cat.name.uppercased()) { grid(cat.emoji) }
+                        }
+                    } else {
+                        let q = query.lowercased()
+                        let unicodeHits = EmojiCatalog.categories.flatMap(\.emoji)
+                            .filter { $0.1.contains(q) }
+                        let customHits = store.guildEmojis.filter { $0.name.lowercased().contains(q) }
+                        if unicodeHits.isEmpty && customHits.isEmpty {
+                            Text("No emoji found")
+                                .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                                .frame(maxWidth: .infinity).padding(.top, 24)
+                        }
+                        if !customHits.isEmpty { section("SERVER") { customGrid(customHits) } }
+                        if !unicodeHits.isEmpty { section("EMOJI") { grid(unicodeHits) } }
+                    }
+                }
+                .padding(12)
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search emoji")
+            .navigationTitle("Add Reaction")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .task { await store.loadEmojis() }
+        }
+    }
+
+    private func section(_ title: String, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.zkMono(10.5))
+                .tracking(Theme.capTracking(10.5))
+                .foregroundColor(Theme.ink3)
+            content()
+        }
+    }
+
+    private func grid(_ items: [(String, String)]) -> some View {
+        LazyVGrid(columns: cols, spacing: 6) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                Button {
+                    EmojiCatalog.pushRecent(item.0)
+                    onPick(item.0)
+                } label: {
+                    Text(item.0)
+                        .font(.system(size: 28))
+                        .frame(width: 44, height: 44)
+                        .background(Theme.bg2)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func customGrid(_ emojis: [GuildEmoji]) -> some View {
+        LazyVGrid(columns: cols, spacing: 6) {
+            ForEach(emojis) { e in
+                Button {
+                    onPick(":\(e.name):")
+                } label: {
+                    Group {
+                        if let img = store.emojiImage(for: e) {
+                            Image(uiImage: img).resizable().scaledToFit()
+                        } else {
+                            AsyncImage(url: assetURL(e.url)) { phase in
+                                if case .success(let image) = phase {
+                                    image.resizable().scaledToFit()
+                                } else {
+                                    Text(":\(e.name):").font(.zkSans(9)).foregroundColor(Theme.ink3)
+                                }
+                            }
+                        }
+                    }
+                    .padding(8)
+                    .frame(width: 44, height: 44)
+                    .background(Theme.bg2)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
 // ── Password strength (approximate port of the web meter) ───────────────────
 func passwordStrength(_ pw: String) -> Int {
     if pw.isEmpty { return 0 }

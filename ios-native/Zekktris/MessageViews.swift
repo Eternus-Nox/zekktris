@@ -20,6 +20,7 @@ struct MessageListView: View {
     @State private var showPollSheet = false
     @State private var showStickers = false
     @State private var showSchedule = false
+    @State private var showEmojiPicker = false
     @StateObject private var recorder = VoiceRecorder()
     @State private var showSearch = false
     @State private var showPins = false
@@ -79,7 +80,7 @@ struct MessageListView: View {
 
                             Color.clear.frame(height: 1).id(bottomAnchor)
                         }
-                        .padding(.horizontal, 12)
+                        .padding(.horizontal, 16)
                         .padding(.vertical, 8)
                     }
                     .onChange(of: store.messages.count) { _ in
@@ -116,10 +117,10 @@ struct MessageListView: View {
                         }
                     }
                 }
-                .background(Theme.bg1)
+                .background(Theme.bg1.opacity(0.9))
             }
         }
-        .background(Theme.bg1)
+        .background(Theme.bg1.opacity(0.9))
         .onAppear { store.openChannel(channel) }
         .safeAreaInset(edge: .bottom) {
             if !isLocked { composer }
@@ -244,8 +245,8 @@ struct MessageListView: View {
         }
         .padding(.horizontal, 14)
         .frame(height: 48)
-        .background(Theme.bg2)
-        .overlay(Rectangle().fill(Theme.line).frame(height: 1), alignment: .bottom)
+        .background(Theme.bg2.opacity(0.85))
+        .overlay(Rectangle().fill(Theme.lineSoft).frame(height: 1), alignment: .bottom)
         .sheet(isPresented: $showSearch) {
             SearchSheet(channel: channel)
         }
@@ -296,10 +297,11 @@ struct MessageListView: View {
                             .foregroundColor(Theme.ink3)
                     }
                 }
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 12)
                 .padding(.vertical, 6)
                 .background(Theme.bg3)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
             if let typingText {
                 HStack {
@@ -347,15 +349,11 @@ struct MessageListView: View {
             HStack(alignment: .bottom, spacing: 8) {
                 autocompleteBar
 
-                // Text field and send button live inside one rounded pill, so
-                // the send affordance is part of the input (matches the web).
-                HStack(alignment: .bottom, spacing: 6) {
-                    TextField(composerPlaceholder, text: $draft, axis: .vertical)
-                        .lineLimit(1...5)
-                        .focused($composerFocused)
-                        .foregroundColor(Theme.ink1)
-                        .padding(.vertical, 6)
-
+                // Web composer row: bg-2/60, rounded-lg, 1px line border,
+                // accent glow ring while focused. Attach menu leads (the
+                // web's paperclip), emoji opens the unified picker, send
+                // trails.
+                HStack(alignment: .bottom, spacing: 4) {
                     if !channel.isE2EE {
                         Menu {
                             Button { showPhotoPicker = true } label: { Label("Photo", systemImage: "photo") }
@@ -367,10 +365,23 @@ struct MessageListView: View {
                             Button { showSchedule = true } label: { Label("Schedule message", systemImage: "clock") }
                         } label: {
                             Image(systemName: "paperclip")
-                                .font(.system(size: 20))
+                                .font(.system(size: 17))
                                 .foregroundColor(Theme.ink2)
-                                .frame(height: 34)
+                                .frame(width: 28, height: 32)
                         }
+                    }
+
+                    TextField(composerPlaceholder, text: $draft, axis: .vertical)
+                        .lineLimit(1...5)
+                        .focused($composerFocused)
+                        .foregroundColor(Theme.ink1)
+                        .padding(.vertical, 6)
+
+                    Button { showEmojiPicker = true } label: {
+                        Image(systemName: "face.smiling")
+                            .font(.system(size: 17))
+                            .foregroundColor(Theme.ink2)
+                            .frame(width: 28, height: 32)
                     }
 
                     Button(action: send) {
@@ -384,17 +395,29 @@ struct MessageListView: View {
                     }
                     .disabled(!canSend || store.uploading)
                 }
-                .padding(.leading, 14)
-                .padding(.trailing, 5)
-                .background(Theme.bg3)
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Theme.bg2.opacity(0.6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(composerFocused ? Theme.accentGlow : Theme.line, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .shadow(color: composerFocused ? Theme.accentGlow : .clear, radius: 9)
             }
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Theme.bg2)
-        .overlay(Rectangle().fill(Theme.line).frame(height: 1), alignment: .top)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
+        .background(Theme.bg1.opacity(0.9))
+        .overlay(Rectangle().fill(Theme.lineSoft).frame(height: 1), alignment: .top)
+        .sheet(isPresented: $showEmojiPicker) {
+            EmojiPickerSheet { emoji in
+                showEmojiPicker = false
+                draft += draft.isEmpty || draft.hasSuffix(" ") ? emoji : " " + emoji
+            }
+        }
         .onChange(of: pickerItem) { newItem in
             loadPickedItem(newItem)
         }
@@ -703,15 +726,16 @@ private enum ContentSeg {
 struct DateDividerView: View {
     let label: String
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             Rectangle().fill(Theme.line).frame(height: 1)
-            Text(label)
-                .font(.zkSans(11, weight: .semibold))
+            Text(label.uppercased())
+                .font(.zkSans(10, weight: .semibold))
+                .tracking(0.8)
                 .foregroundColor(Theme.ink3)
                 .fixedSize()
             Rectangle().fill(Theme.line).frame(height: 1)
         }
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
     }
 }
 
@@ -742,6 +766,7 @@ struct MessageRow: View {
     @State private var showEdit = false
     @State private var showDeleteConfirm = false
     @State private var showForward = false
+    @State private var showReactionPicker = false
     @State private var editText = ""
 
     var body: some View {
@@ -752,6 +777,12 @@ struct MessageRow: View {
             }
             .sheet(isPresented: $showForward) {
                 ForwardSheet(message: message)
+            }
+            .sheet(isPresented: $showReactionPicker) {
+                EmojiPickerSheet { emoji in
+                    showReactionPicker = false
+                    react(emoji)
+                }
             }
             .confirmationDialog("Delete message?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
                 Button("Delete", role: .destructive) {
@@ -768,6 +799,10 @@ struct MessageRow: View {
         Menu {
             ForEach(MessageRow.quickEmoji, id: \.self) { e in
                 Button(e) { react(e) }
+            }
+            Divider()
+            Button { showReactionPicker = true } label: {
+                Label("More…", systemImage: "plus.circle")
             }
         } label: {
             Label("Add reaction", systemImage: "face.smiling")
@@ -877,25 +912,26 @@ struct MessageRow: View {
                 if showHeader {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(message.author?.name ?? "Unknown")
-                            .font(.zkSans(14, weight: .semibold))
+                            .font(.zkSans(15, weight: .medium))
                             .foregroundColor(store.memberColor(message.authorId ?? message.author?.id ?? "") ?? Theme.ink1)
                             .onTapGesture { if let a = message.author { store.openProfile(a) } }
                         if message.author?.isBot == true {
                             Text("BOT")
-                                .font(.zkSans(9, weight: .bold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(Theme.accent2)
-                                .clipShape(RoundedRectangle(cornerRadius: 3))
+                                .font(.zkSans(8.5, weight: .bold))
+                                .tracking(0.5)
+                                .foregroundColor(Theme.accent)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(Theme.accent.opacity(0.2))
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
                         }
                         Text(shortTime(message.createdAt))
                             .font(.zkSans(11))
                             .foregroundColor(Theme.ink3)
                         if message.editedAt != nil {
                             Text("(edited)")
-                                .font(.zkSans(10))
-                                .foregroundColor(Theme.ink4)
+                                .font(.zkSans(11))
+                                .foregroundColor(Theme.ink3)
                         }
                     }
                 }
@@ -912,6 +948,12 @@ struct MessageRow: View {
             }
             Spacer(minLength: 0)
         }
+        // Web parity: pinned rows carry a faint amber wash.
+        .background(
+            message.pinned == true
+                ? Color(hex: 0xF59E0B).opacity(0.04)
+                : Color.clear
+        )
     }
 
     @ViewBuilder
@@ -1026,18 +1068,17 @@ struct MessageRow: View {
 
     @ViewBuilder
     private func codeBlockView(_ code: String) -> some View {
+        // Web `pre`: bg-bg-3, rounded-md, px-3 py-2, mono at 0.9em — no border.
         ScrollView(.horizontal, showsIndicators: false) {
             Text(code)
-                .font(.zkMono(13))
+                .font(.zkMono(13.5))
                 .foregroundColor(Theme.ink1)
                 .textSelection(.enabled)
-                .padding(10)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
         }
-        .background(Theme.bg0)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.line, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(Theme.bg3)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
     // ── Custom emoji (`:name:`) inline rendering ────────────────────────────
@@ -1098,8 +1139,9 @@ struct MessageRow: View {
                 result.append(markdownAttributed(ns.substring(with: NSRange(location: last, length: m.range.location - last))))
             }
             var chip = AttributedString(mentionLabel(ns.substring(with: m.range)))
-            chip.foregroundColor = Theme.accent
-            chip.font = .zkSans(15, weight: .semibold)
+            chip.foregroundColor = Theme.accentSoft
+            chip.backgroundColor = Theme.accent.opacity(0.2)
+            chip.font = .zkSans(15, weight: .medium)
             result.append(chip)
             last = m.range.location + m.range.length
         }
@@ -1328,10 +1370,21 @@ struct MessageRow: View {
     private var reactionsView: some View {
         if let reactions = message.reactions, !reactions.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
+                HStack(spacing: 4) {
                     ForEach(reactions, id: \.emoji) { r in
                         ReactionPill(reaction: r) { react(r.emoji) }
                     }
+                    // Web parity: trailing "+" pill opens the emoji picker.
+                    Button { showReactionPicker = true } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(Theme.ink3)
+                            .frame(width: 28, height: 24)
+                            .background(Theme.bg2)
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.line, lineWidth: 1))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             .padding(.top, 2)
@@ -1349,27 +1402,46 @@ private func byteString(_ bytes: Int) -> String {
 }
 
 struct ReactionPill: View {
+    @EnvironmentObject private var store: AppStore
     let reaction: ReactionAggregate
     let onTap: () -> Void
 
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 4) {
-                Text(reaction.emoji).font(.zkSans(13))
+                glyph
                 Text("\(reaction.count)")
-                    .font(.zkSans(12, weight: .medium))
-                    .foregroundColor(reaction.me ? Theme.accent : Theme.ink2)
+                    .font(.zkSans(11))
+                    .foregroundColor(Theme.ink2)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(reaction.me ? Theme.accent.opacity(0.18) : Theme.bg3)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(reaction.me ? Theme.accent.opacity(0.2) : Theme.bg2)
             .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(reaction.me ? Theme.accent.opacity(0.6) : Color.clear, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(reaction.me ? Theme.accent.opacity(0.6) : Theme.line, lineWidth: 1)
             )
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
+    }
+
+    /// Unicode reactions render as text; `:name:` custom reactions resolve
+    /// against the guild emoji index (web ReactionGlyph parity).
+    @ViewBuilder
+    private var glyph: some View {
+        if reaction.emoji.hasPrefix(":") && reaction.emoji.hasSuffix(":"),
+           let e = store.emojiByName[String(reaction.emoji.dropFirst().dropLast())],
+           let img = store.emojiImage(for: e) {
+            Image(uiImage: img)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 18, height: 18)
+        } else {
+            Text(reaction.emoji)
+                .font(.zkSans(13))
+                .frame(height: 18)
+        }
     }
 }
 
