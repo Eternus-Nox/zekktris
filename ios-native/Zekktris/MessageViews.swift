@@ -457,6 +457,16 @@ struct MessageListView: View {
             loadPickedItem(newItem)
         }
         .onChange(of: draft) { newValue in
+            // Return key sends (the multi-line field inserts a newline
+            // instead of submitting — catch it, strip it, send). The
+            // keyboard then dismisses inside send().
+            if newValue.hasSuffix("\n") {
+                draft = String(newValue.dropLast())
+                if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || pendingImage != nil {
+                    send()
+                }
+                return
+            }
             guard !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             if Date().timeIntervalSince(lastTypingSent) > 3 {
                 lastTypingSent = Date()
