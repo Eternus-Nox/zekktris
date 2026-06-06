@@ -28,6 +28,7 @@ struct SelfUser: Codable, Identifiable, Hashable {
     var username: String?
     var displayName: String?
     var avatarUrl: String?
+    var bannerUrl: String?
     var email: String?
     var status: String?
     var customStatus: String?
