@@ -16,6 +16,9 @@ struct Avatar: View {
     var squircle: Bool = false
     /// Cosmetic ring/glow decoration id (see Avatar.decorations); nil/"none" = none.
     var decoration: String? = nil
+    /// Stable id used for the deterministic fallback tone (web hashes the
+    /// user/guild id). When nil, the name is hashed instead.
+    var toneId: String? = nil
 
     var body: some View {
         Group {
@@ -33,7 +36,7 @@ struct Avatar: View {
             }
         }
         .frame(width: size, height: size)
-        .clipShape(squircle ? AnyShape(RoundedRectangle(cornerRadius: size * 0.33, style: .continuous)) : AnyShape(Circle()))
+        .clipShape(squircle ? AnyShape(RoundedRectangle(cornerRadius: size * Theme.squircleFraction, style: .continuous)) : AnyShape(Circle()))
         .overlay { decorationOverlay }
         .overlay(alignment: .bottomTrailing) {
             if let status {
@@ -48,7 +51,7 @@ struct Avatar: View {
     private var decorationOverlay: some View {
         if let deco = decoration, deco != "none", !deco.isEmpty {
             if squircle {
-                decoStroke(RoundedRectangle(cornerRadius: size * 0.33, style: .continuous), deco)
+                decoStroke(RoundedRectangle(cornerRadius: size * Theme.squircleFraction, style: .continuous), deco)
             } else {
                 decoStroke(Circle(), deco)
             }
@@ -90,13 +93,59 @@ struct Avatar: View {
     }
 
     private var placeholder: some View {
-        ZStack {
-            Theme.bg3
-            Text(String(name.prefix(1)).uppercased())
-                .font(.system(size: size * 0.42, weight: .semibold))
-                .foregroundColor(Theme.ink2)
+        // Web parity (lib/avatar.ts): deterministic FNV-1a tone keyed by
+        // the same id string the web hashes, plus two-word initials. The
+        // id used on web is the user/guild id; fall back to the name when
+        // no id is available so old call sites still render something.
+        let tone = avatarTone(toneId ?? name)
+        return ZStack {
+            tone.bg
+            Text(avatarInitials(name))
+                .font(.system(size: size * 0.36, weight: .semibold))
+                .foregroundColor(tone.fg)
         }
     }
+}
+
+// ── Deterministic avatar tones (port of web lib/avatar.ts) ──────────────────
+// Same FNV-1a 32-bit hash over the id, same 8-color palette (Tailwind
+// rose-700…pink-700 with their -50 text pairs), so a given user renders the
+// identical fallback color on web and iOS.
+struct AvatarTone { let bg: Color; let fg: Color }
+
+private let avatarPalette: [AvatarTone] = [
+    AvatarTone(bg: Color(hex: 0xBE123C), fg: Color(hex: 0xFFF1F2)), // rose-700 / rose-50
+    AvatarTone(bg: Color(hex: 0xD97706), fg: Color(hex: 0xFFFBEB)), // amber-600 / amber-50
+    AvatarTone(bg: Color(hex: 0x047857), fg: Color(hex: 0xECFDF5)), // emerald-700 / emerald-50
+    AvatarTone(bg: Color(hex: 0x0F766E), fg: Color(hex: 0xF0FDFA)), // teal-700 / teal-50
+    AvatarTone(bg: Color(hex: 0x0369A1), fg: Color(hex: 0xF0F9FF)), // sky-700 / sky-50
+    AvatarTone(bg: Color(hex: 0x4338CA), fg: Color(hex: 0xEEF2FF)), // indigo-700 / indigo-50
+    AvatarTone(bg: Color(hex: 0x7E22CE), fg: Color(hex: 0xFAF5FF)), // purple-700 / purple-50
+    AvatarTone(bg: Color(hex: 0xBE185D), fg: Color(hex: 0xFDF2F8)), // pink-700 / pink-50
+]
+
+/// FNV-1a 32-bit over UTF-16 code units — byte-for-byte the web's hash
+/// (charCodeAt ^ then Math.imul by the FNV prime), including the
+/// Math.abs(Int32) behavior via `magnitude`.
+func avatarTone(_ id: String?) -> AvatarTone {
+    guard let id, !id.isEmpty else { return avatarPalette[0] }
+    var hash = Int32(bitPattern: 0x811c9dc5)
+    for u in id.utf16 {
+        hash ^= Int32(u)
+        hash = hash &* Int32(bitPattern: 0x01000193)
+    }
+    return avatarPalette[Int(hash.magnitude) % avatarPalette.count]
+}
+
+/// Two-word initials, matching web `avatarInitials` ("My Cool Server" → "MC",
+/// empty → "?").
+func avatarInitials(_ name: String?) -> String {
+    guard let name else { return "?" }
+    let letters = name.split(whereSeparator: { $0.isWhitespace })
+        .prefix(2)
+        .compactMap { $0.first.map { String($0).uppercased() } }
+        .joined()
+    return letters.isEmpty ? "?" : letters
 }
 
 /// Small status indicator dot with a ring that blends into its background.
@@ -111,20 +160,28 @@ struct PresenceDot: View {
 }
 
 func presenceColor(_ status: String) -> Color {
+    // Web parity (ProfileCard.tsx): emerald-500 / amber-500 / red-500 / ink-3.
     switch status {
     case "online": return Theme.online
-    case "idle": return Color(hex: 0xF0B232)
-    case "dnd": return Theme.danger
-    default: return Theme.ink4 // offline / invisible / unknown
+    case "idle": return Theme.idle
+    case "dnd": return Theme.dnd
+    default: return Theme.offline // offline / invisible / unknown
     }
 }
 
-/// Squircle guild icon for the server rail. Shows the icon image, or the
-/// guild's initials, and an accent ring/indicator when selected.
+/// Squircle guild icon for the server rail, matching the web GuildTile:
+///   - With an icon image: bg-2 tile; when active, a 1px accent-glow ring
+///     plus a soft outer glow.
+///   - Without an icon: deterministic tone tile (same FNV-1a hash as web)
+///     at 90% opacity; when active, an accent→accent-2 gradient with the
+///     initials in bg-0.
 struct GuildIcon: View {
     let guild: Guild
     let isSelected: Bool
     var size: CGFloat = 48
+
+    private var radius: CGFloat { size * Theme.squircleFraction }
+    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: radius, style: .continuous) }
 
     var body: some View {
         Group {
@@ -132,27 +189,33 @@ struct GuildIcon: View {
                 AsyncImage(url: resolved) { phase in
                     switch phase {
                     case .success(let image): image.resizable().scaledToFill()
-                    default: initials
+                    default: Color.clear
                     }
                 }
+                .frame(width: size, height: size)
+                .background(Theme.bg2)
+            } else if isSelected {
+                LinearGradient(colors: [Theme.accent, Theme.accent2],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                    .frame(width: size, height: size)
+                    .overlay(initials(color: Theme.bg0))
             } else {
-                initials
+                let tone = avatarTone(guild.id)
+                tone.bg.opacity(0.9)
+                    .frame(width: size, height: size)
+                    .overlay(initials(color: tone.fg))
             }
         }
-        .frame(width: size, height: size)
-        .background(Theme.bg3)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(isSelected ? Theme.accent : Color.clear, lineWidth: 2)
-        )
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(isSelected ? Theme.accentGlow : Color.clear, lineWidth: 1))
+        .shadow(color: isSelected ? Theme.accentGlow : .clear, radius: 14, x: 0, y: 8)
         .animation(.easeOut(duration: 0.15), value: isSelected)
     }
 
-    private var initials: some View {
+    private func initials(color: Color) -> some View {
         Text(guildInitials(guild.name))
             .font(.system(size: size * 0.34, weight: .semibold))
-            .foregroundColor(Theme.ink1)
+            .foregroundColor(color)
     }
 }
 

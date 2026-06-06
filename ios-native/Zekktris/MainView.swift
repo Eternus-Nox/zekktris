@@ -906,9 +906,9 @@ struct SettingsView: View {
 
     private let statuses: [(String, String, Color)] = [
         ("Online", "online", Theme.online),
-        ("Idle", "idle", Color(hex: 0xF0B232)),
-        ("Do Not Disturb", "dnd", Theme.danger),
-        ("Invisible", "invisible", Theme.ink4),
+        ("Idle", "idle", Theme.idle),
+        ("Do Not Disturb", "dnd", Theme.dnd),
+        ("Invisible", "invisible", Theme.offline),
     ]
 
     var body: some View {
