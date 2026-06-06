@@ -1,0 +1,96 @@
+# electron-builder configuration
+# Docs: https://www.electron.build/configuration/configuration
+#
+# Change appId to your own reverse-DNS identifier before distributing.
+appId: com.zekktris.desktop
+productName: Zekktris
+copyright: Copyright © Zekktris
+
+# Inject metadata directly into the effective package.json electron-
+# builder uses. The Linux .deb (FPM) target requires a homepage, and
+# reading it from package.json can fail depending on how the project is
+# laid out — setting it here guarantees it's present.
+extraMetadata:
+  homepage: https://zekktris.com
+  author: Zekktris <support@zekktris.com>
+
+directories:
+  output: release
+  buildResources: build
+
+# Auto-update feed. electron-updater reads this (via the generated
+# app-update.yml) to find new versions. The "generic" provider points
+# at a folder on your own server — upload the build output (the
+# installer + latest.yml + blockmap) there on each release.
+#   On each release, copy these from release/ to the URL below:
+#     - Zekktris Setup <version>.exe
+#     - latest.yml          (Windows update manifest)
+#     - *.blockmap          (delta-update support)
+#   macOS/Linux produce latest-mac.yml / latest-linux.yml similarly.
+publish:
+  provider: generic
+  url: https://zekktris.com/desktop/updates/
+
+# What goes inside the packaged app. We ship the compiled main/preload
+# (dist/), the static setup page, and the tray/app icons (build/).
+files:
+  - dist/**/*
+  - build/**/*
+  - package.json
+
+# Register the zekktris:// deep-link scheme on install.
+protocols:
+  - name: Zekktris
+    schemes:
+      - zekktris
+
+win:
+  target:
+    - nsis
+  icon: build/icon.ico
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  # Installer filename: just "Zekktris.exe" rather than the default
+  # "Zekktris Setup <version>.exe". electron-updater still resolves the
+  # right file via the generated latest.yml, which uses this same name.
+  artifactName: ${productName}.${ext}
+
+mac:
+  target:
+    - dmg
+    - zip
+  icon: build/icon.icns
+  category: public.app-category.social-networking
+  # Clean filenames "Zekktris.dmg" / "Zekktris.zip" (no version),
+  # matching the Windows + Linux artifacts. macOS auto-update needs the
+  # zip (Squirrel.Mac); latest-mac.yml carries the version, so the fixed
+  # name is fine and each build overwrites it.
+  artifactName: ${productName}.${ext}
+  # For notarized distribution you'll set up signing identities here.
+  # Local/unsigned builds work for personal use (note: macOS auto-update
+  # only applies to a SIGNED app — unsigned builds download but won't
+  # self-install).
+
+linux:
+  # AppImage only by default: it's a single portable binary that runs
+  # on any distro and needs none of the Debian build tooling. The .deb
+  # target requires `fpm` + `ar`/`dpkg` (GNU binutils) on the BUILD
+  # host; Unraid and most minimal hosts don't have these, which fails
+  # with "Need executable 'ar' to convert dir to deb". To also build a
+  # .deb, install binutils/fpm on the host (or build in the official
+  # electron-builder Docker image) and add `- deb` back below.
+  target:
+    - AppImage
+  icon: build/icon.png
+  category: Network
+  maintainer: Zekktris <support@zekktris.com>
+  # Clean filename "Zekktris.AppImage" (no version), matching the
+  # Windows installer. electron-updater still resolves the version from
+  # latest-linux.yml, so auto-update is unaffected; each build overwrites
+  # the file in the release/feed folder.
+  artifactName: ${productName}.${ext}

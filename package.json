@@ -1,0 +1,30 @@
+{
+  "name": "zekktris",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A communications app for communities",
+  "license": "AGPL-3.0",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "db:generate": "pnpm --filter @zekktris/db generate",
+    "db:migrate": "pnpm --filter @zekktris/db migrate",
+    "db:studio": "pnpm --filter @zekktris/db studio",
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md}\"",
+    "test": "turbo run test"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "prettier": "^3.3.0",
+    "turbo": "^2.0.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {}
+}

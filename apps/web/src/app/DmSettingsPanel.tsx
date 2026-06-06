@@ -1,0 +1,829 @@
+/**
+ * DmSettingsPanel
+ * ---------------
+ * Compact dropdown UI for the DM auto-delete TTL. Anchored to the
+ * Settings cog in the DM header; closes on outside click or Escape.
+ *
+ * The TTL is a property of the conversation, not the user — changing
+ * it here affects both recipients. Server enforces; this UI just
+ * surfaces the four canonical options (off + 30 / 60 / 120 seconds)
+ * which match the user's requested values. Other values are still
+ * accepted by the API (10–86400 inclusive) but we keep the UI to a
+ * curated set to avoid analysis paralysis.
+ *
+ * Behaviour:
+ *   - Opens with a brief loading state while we fetch the current
+ *     TTL. Subsequent open calls in the same session start with the
+ *     last-known value (the gateway DM_SETTINGS_UPDATE event keeps
+ *     a cached local value in sync across tabs).
+ *   - Selecting a different option PATCHes the new value immediately,
+ *     optimistically updates local state, and surfaces a toast on
+ *     failure with a rollback to the previous selection.
+ *   - The "What does this mean?" footer is a short, plain-language
+ *     explanation that the lifetime starts when the OTHER party reads
+ *     the message — important to avoid the assumption that the timer
+ *     starts when the message is sent.
+ */
+
+import { useEffect, useRef, useState, type RefObject } from 'react';
+import { ApiError, type Channel } from '@zekktris/client';
+import { useAuth } from '../auth/AuthContext';
+import { useToasts } from '../state/Toasts';
+import { Shield } from '../lib/icons';
+
+const OPTIONS: { value: number | null; label: string; sublabel?: string }[] = [
+  { value: null, label: 'Off', sublabel: 'Messages stay forever' },
+  { value: 30, label: '30 seconds' },
+  { value: 60, label: '1 minute' },
+  { value: 120, label: '2 minutes' },
+];
+
+export function DmSettingsPanel({
+  channel,
+  selfId,
+  onClose,
+  toggleButtonRef,
+}: {
+  channel: Channel;
+  selfId: string;
+  onClose: () => void;
+  /** Ref to the cog button that opens/closes this panel. The
+      outside-click handler ignores clicks inside this element so
+      that clicking the cog to close doesn't fire onClose + the
+      button's own toggle handler back-to-back (which would
+      reopen the panel immediately). */
+  toggleButtonRef?: RefObject<HTMLButtonElement | null>;
+}) {
+  const channelId = channel.id;
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  const [ttl, setTtl] = useState<number | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [pending, setPending] = useState(false);
+
+  // Initial fetch. Best-effort — if it fails the user sees the
+  // default ("Off") selected and any subsequent write still works.
+  useEffect(() => {
+    let cancelled = false;
+    rest
+      .getDmSettings(channelId)
+      .then((r) => {
+        if (cancelled) return;
+        setTtl(r.ttlSecondsAfterRead);
+      })
+      .catch(() => {
+        // Don't toast — the panel is opening, surfacing an error
+        // here would be noisy. The user can still pick an option.
+      })
+      .finally(() => {
+        if (!cancelled) setLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [channelId, rest]);
+
+  // Outside-click + Escape close. The toggle-button exception is
+  // critical: clicking the cog to close fires mousedown FIRST (the
+  // document listener catches it), then click (the button's onClick
+  // toggles). Without the exception, the document listener would
+  // call onClose() first (state → false), then the button's onClick
+  // toggles (state → true) — and the panel reopens. Ignoring clicks
+  // inside the toggle button lets the button's onClick own the
+  // close action exclusively.
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      const target = e.target as Node;
+      if (toggleButtonRef?.current?.contains(target)) return;
+      if (panelRef.current && !panelRef.current.contains(target)) {
+        onClose();
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    document.addEventListener('mousedown', onDocClick);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [onClose, toggleButtonRef]);
+
+  async function choose(next: number | null) {
+    if (pending) return;
+    const prev = ttl;
+    // Optimistic update so the radio dot moves immediately. Rolls
+    // back below on failure.
+    setTtl(next);
+    setPending(true);
+    try {
+      await rest.updateDmSettings(channelId, next);
+      toasts.push(
+        next === null
+          ? 'Auto-delete turned off'
+          : `Auto-delete set to ${labelFor(next)}`,
+        'success',
+      );
+    } catch (e) {
+      setTtl(prev);
+      toasts.push(
+        e instanceof ApiError ? e.message : 'Failed to update setting',
+        'error',
+      );
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div
+      ref={panelRef}
+      className="absolute right-0 top-10 z-30 w-72 bg-bg-2 border border-line rounded-lg shadow-xl overflow-hidden"
+    >
+      <header className="px-3 py-2 border-b border-line">
+        <h3 className="text-sm font-semibold text-ink-1">Auto-delete messages</h3>
+        <p className="text-xs text-ink-3 mt-0.5 leading-snug">
+          Messages will be removed after this delay <span className="text-ink-2 font-medium">once the other person reads them</span>.
+        </p>
+      </header>
+      <ul className="py-1">
+        {OPTIONS.map((opt) => {
+          const selected = ttl === opt.value;
+          return (
+            <li key={String(opt.value)}>
+              <button
+                type="button"
+                onClick={() => void choose(opt.value)}
+                disabled={pending || !loaded}
+                className={`w-full text-left px-3 py-2 flex items-center gap-2.5 transition-colors disabled:opacity-60 ${
+                  selected ? 'bg-accent/10' : 'hover:bg-bg-3'
+                }`}
+              >
+                <span
+                  className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                    selected ? 'border-accent' : 'border-ink-3'
+                  }`}
+                  aria-hidden
+                >
+                  {selected && <span className="w-2 h-2 rounded-full bg-accent" />}
+                </span>
+                <span className="flex-1 min-w-0">
+                  <span className={`block text-sm ${selected ? 'text-ink-1 font-medium' : 'text-ink-2'}`}>
+                    {opt.label}
+                  </span>
+                  {opt.sublabel && (
+                    <span className="block text-[0.7rem] text-ink-3 mt-0.5">{opt.sublabel}</span>
+                  )}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      <ReadReceiptsToggle />
+      <E2eeToggle channel={channel} selfId={selfId} />
+    </div>
+  );
+}
+
+/**
+ * Per-user read-receipts toggle. Distinct from the auto-delete TTL
+ * above because its scope is the USER, not the conversation —
+ * flipping this affects every DM you participate in, not just
+ * this one. When off, the server suppresses delivered_at + viewed_at
+ * stamping for messages this user receives, so senders see "Sent"
+ * forever on DMs to you. The toggle is reciprocal: turning it off
+ * also hides incoming senders' read status from your own view,
+ * matching iMessage's privacy contract.
+ *
+ * Reads the current value from the SelfUser in AuthContext; writes
+ * via patchMe and surfaces failures with a toast + rollback.
+ */
+function ReadReceiptsToggle() {
+  const { rest, user, updateUser } = useAuth();
+  const toasts = useToasts();
+  const [pending, setPending] = useState(false);
+  // SelfUser.dmReadReceiptsEnabled is optional in the type (back-compat
+  // with sessions from before the column existed); treat undefined as
+  // the server default `true`.
+  const enabled = user?.dmReadReceiptsEnabled !== false;
+
+  async function toggle() {
+    if (!user || pending) return;
+    setPending(true);
+    const next = !enabled;
+    // Optimistic. Rollback by writing the prior value back on error.
+    updateUser({ dmReadReceiptsEnabled: next });
+    try {
+      const res = await rest.patchMe({ dmReadReceiptsEnabled: next });
+      // Sync to the canonical server response in case anything else
+      // changed concurrently (different tab, etc).
+      updateUser(res.user);
+    } catch (err) {
+      updateUser({ dmReadReceiptsEnabled: enabled });
+      const msg = err instanceof ApiError ? err.message : 'Could not update read receipts.';
+      toasts.push(msg, 'error');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="border-t border-line px-3 py-3">
+      <div className="flex items-start gap-3">
+        <div className="flex-1 min-w-0">
+          <h3 className="text-sm font-semibold text-ink-1">Send read receipts</h3>
+          <p className="text-xs text-ink-3 mt-0.5 leading-snug">
+            Let people you DM with see <span className="text-ink-2">Delivered</span> and{' '}
+            <span className="text-ink-2">Read</span> under their messages. When off, you also
+            won't see receipts on messages sent to you.
+          </p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          onClick={() => void toggle()}
+          disabled={pending || !user}
+          className={`relative w-10 h-6 rounded-full transition-colors shrink-0 disabled:opacity-60 ${
+            enabled ? 'bg-accent' : 'bg-bg-3'
+          }`}
+          title={enabled ? 'Turn off read receipts' : 'Turn on read receipts'}
+        >
+          <span
+            className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
+              enabled ? 'left-[18px]' : 'left-0.5'
+            }`}
+            aria-hidden
+          />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Per-DM E2EE toggle + key backup affordances.
+ *
+ * Encryption status for a DM is stored server-side in
+ * dm_recipients.public_key for each participant, surfaced back to
+ * the client as `channel.e2eeKeys[userId]`. A user is enrolled on
+ * this DM iff their entry exists in that map.
+ *
+ * Enable: generate the per-DM keypair (`getOrCreateDmKeyPair`),
+ *   upload the public half via PUT, optimistically update local
+ *   channel state with the new keys map.
+ *
+ * Disable: DELETE the server entry, clear the local private key,
+ *   update local channel state. We keep the private key on
+ *   disable? NO — for per-DM keys, we drop it. Re-enabling
+ *   generates a fresh pair (because each DM has its own key, and
+ *   keeping the old one would just leak the previous identity
+ *   if the user toggles off->on). If the user wants to keep
+ *   historic-message decryption, they should download the key
+ *   first.
+ *
+ * Backup: a single download bundles ALL per-DM keys (so one file
+ * restores access to every conversation on a new device).
+ */
+/**
+ * E2EE toggle (shared-key model)
+ * ------------------------------
+ * Per-DM toggle in the settings cog. The conversation has ONE
+ * shared symmetric key — both users have an identical key derived
+ * client-side from a passphrase one of them picks. Server stores
+ * only the salt + verifier (never the password or the key).
+ *
+ * State machine:
+ *   Disabled            — toggle off. Tapping opens the
+ *                         pick-password modal.
+ *   Enabled + no key    — server says E2EE is on, but this device
+ *                         has no cached key. Show an "Enter password"
+ *                         prompt inside the panel; on submit derive
+ *                         the key and verify against the server's
+ *                         stored verifier.
+ *   Enabled + have key  — normal state. Toggle on; show backup
+ *                         affordances + disable button.
+ *
+ * Modals:
+ *   PickPasswordModal   — opens when enabling; user picks + confirms
+ *                         the conversation password.
+ *   DisableConfirmModal — opens when disabling; explains the purge.
+ *
+ * Disabling DELETEs /e2ee-disable which clears the server state AND
+ * purges every encrypted message in the conversation server-side.
+ * Re-enabling generates a fresh salt; the old password is dead.
+ */
+function E2eeToggle({ channel, selfId }: { channel: Channel; selfId: string }) {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const [pending, setPending] = useState(false);
+  const [pickModalOpen, setPickModalOpen] = useState(false);
+  const [disableModalOpen, setDisableModalOpen] = useState(false);
+  const [unlockPassword, setUnlockPassword] = useState('');
+  const [unlockError, setUnlockError] = useState<string | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Hide selfId — not used in the shared-key flow but keeps the
+  // prop signature compatible with the panel's existing call site.
+  void selfId;
+
+  const enabled = channel.e2eeEnabled === true;
+
+  // Whether THIS device has the derived key cached. Tracked via
+  // state so the component re-renders after a successful unlock /
+  // import / disable.
+  const [haveLocalKey, setHaveLocalKey] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const { hasLocalKey } = await import('../lib/e2ee');
+      if (!cancelled) setHaveLocalKey(hasLocalKey(channel.id));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [channel.id, channel.e2eeEnabled, channel.e2eeSalt]);
+
+  async function unlockWithPassword() {
+    if (pending) return;
+    if (!channel.e2eeSalt || !channel.e2eeVerifier) {
+      setUnlockError('This conversation isn\'t encrypted right now.');
+      return;
+    }
+    if (!unlockPassword) {
+      setUnlockError('Enter a password.');
+      return;
+    }
+    setPending(true);
+    setUnlockError(null);
+    try {
+      const { deriveKeyFromPassword, computeVerifier, saveLocalKey } =
+        await import('../lib/e2ee');
+      const key = await deriveKeyFromPassword(unlockPassword, channel.e2eeSalt);
+      const verifier = await computeVerifier(key);
+      if (verifier !== channel.e2eeVerifier) {
+        setUnlockError("That password doesn't match this conversation.");
+        return;
+      }
+      saveLocalKey(channel.id, key);
+      setHaveLocalKey(true);
+      setUnlockPassword('');
+      toasts.push('Encrypted conversation unlocked.', 'success');
+    } catch {
+      setUnlockError('Could not derive the key. Try again.');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function disableE2ee() {
+    if (pending) return;
+    setPending(true);
+    try {
+      await rest.disableDmE2ee(channel.id);
+      const { clearLocalKey } = await import('../lib/e2ee');
+      clearLocalKey(channel.id);
+      setHaveLocalKey(false);
+      setDisableModalOpen(false);
+      toasts.push(
+        'Encryption disabled. Encrypted messages were deleted.',
+        'info',
+      );
+    } catch (e) {
+      toasts.push(
+        e instanceof ApiError ? e.message : 'Could not disable encryption',
+        'error',
+      );
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function downloadKeys() {
+    try {
+      const { exportAllDmKeys } = await import('../lib/e2ee');
+      const backup = exportAllDmKeys();
+      if (!backup) {
+        toasts.push(
+          'No encryption keys on this device yet.',
+          'error',
+        );
+        return;
+      }
+      const blob = new Blob([JSON.stringify(backup, null, 2)], {
+        type: 'application/json',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const datestamp = new Date().toISOString().slice(0, 10);
+      a.download = `zekktris-e2ee-keys-${datestamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      const count = Object.keys(backup.keys).length;
+      toasts.push(
+        `Downloaded ${count} key${count === 1 ? '' : 's'}. Keep this file safe.`,
+        'success',
+      );
+    } catch {
+      toasts.push('Download failed', 'error');
+    }
+  }
+
+  async function onImportFile(file: File) {
+    if (pending) return;
+    const ok = window.confirm(
+      'Importing keys will replace any matching keys on this device. ' +
+        'Continue?',
+    );
+    if (!ok) return;
+    setPending(true);
+    try {
+      const raw = await file.text();
+      const { importAllDmKeys, hasLocalKey } = await import('../lib/e2ee');
+      const restored = importAllDmKeys(raw);
+      if (!restored) {
+        toasts.push("That file isn't a valid Zekktris keys backup.", 'error');
+        return;
+      }
+      setHaveLocalKey(hasLocalKey(channel.id));
+      toasts.push(
+        `Restored ${restored.length} key${restored.length === 1 ? '' : 's'}.`,
+        'success',
+      );
+    } catch (e) {
+      toasts.push(
+        e instanceof ApiError ? e.message : 'Import failed',
+        'error',
+      );
+    } finally {
+      setPending(false);
+      if (importInputRef.current) importInputRef.current.value = '';
+    }
+  }
+
+  return (
+    <div className="border-t border-line px-3 py-3 space-y-3">
+      <div className="flex items-start gap-3">
+        <div className="flex-1 min-w-0">
+          <h3 className="text-sm font-semibold text-ink-1 flex items-center gap-1.5">
+            <Shield size={13} className="text-accent" />
+            End-to-end encryption
+          </h3>
+          <p className="text-xs text-ink-3 mt-0.5 leading-snug">
+            {enabled
+              ? haveLocalKey
+                ? 'Messages in this conversation are encrypted with a shared key only you and the other person hold.'
+                : 'This conversation is encrypted. Enter the shared password to read and send messages.'
+              : 'Off. Messages travel in plain text. Turn on to pick a shared password that encrypts this conversation.'}
+          </p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          onClick={() => {
+            if (pending) return;
+            if (enabled) {
+              setDisableModalOpen(true);
+            } else {
+              setPickModalOpen(true);
+            }
+          }}
+          disabled={pending}
+          className={`relative w-10 h-6 rounded-full transition-colors shrink-0 disabled:opacity-60 ${
+            enabled ? 'bg-accent' : 'bg-bg-3'
+          }`}
+          title={enabled ? 'Turn off encryption' : 'Turn on encryption'}
+        >
+          <span
+            className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
+              enabled ? 'left-[18px]' : 'left-0.5'
+            }`}
+            aria-hidden
+          />
+        </button>
+      </div>
+
+      {/* Enabled + no local key on this device. Prompt to enter the
+          password the OTHER party shared (or that you set earlier on
+          another device). */}
+      {enabled && !haveLocalKey && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 space-y-2">
+          <p className="text-xs text-amber-200 leading-snug">
+            Enter the conversation password to unlock this DM on this device.
+          </p>
+          <input
+            type="password"
+            value={unlockPassword}
+            onChange={(e) => {
+              setUnlockPassword(e.target.value);
+              setUnlockError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void unlockWithPassword();
+            }}
+            placeholder="Conversation password"
+            className="w-full bg-bg-2 border border-line rounded-md px-2.5 py-1.5 text-sm text-ink-1 outline-none focus:border-accent transition-colors"
+            autoComplete="off"
+          />
+          {unlockError && (
+            <p className="text-xs text-red-300">{unlockError}</p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void unlockWithPassword()}
+              disabled={pending}
+              className="px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 disabled:opacity-60 text-white text-xs"
+            >
+              Unlock
+            </button>
+            <button
+              type="button"
+              onClick={() => importInputRef.current?.click()}
+              disabled={pending}
+              className="px-3 py-1.5 rounded-md bg-bg-3 hover:bg-bg-1 disabled:opacity-60 text-ink-1 text-xs border border-line"
+            >
+              Or import from backup
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void onImportFile(f);
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Enabled + key cached locally. Backup affordances. */}
+      {enabled && haveLocalKey && (
+        <div className="space-y-2">
+          <p className="text-xs text-ink-3 leading-snug">
+            Your local key is stored only on this device. Download a backup
+            so you can keep reading messages if you change devices or clear
+            your browser data.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void downloadKeys()}
+              disabled={pending}
+              className="px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 disabled:opacity-60 text-white text-xs"
+            >
+              Download keys
+            </button>
+            <button
+              type="button"
+              onClick={() => importInputRef.current?.click()}
+              disabled={pending}
+              className="px-3 py-1.5 rounded-md bg-bg-3 hover:bg-bg-1 disabled:opacity-60 text-ink-1 text-xs border border-line"
+            >
+              Import from backup
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void onImportFile(f);
+              }}
+            />
+          </div>
+          <p className="text-[0.7rem] text-ink-3 italic leading-snug">
+            Anyone with this file can read your encrypted messages.
+          </p>
+        </div>
+      )}
+
+      {/* Modals */}
+      {pickModalOpen && (
+        <PickPasswordModal
+          channel={channel}
+          onClose={() => setPickModalOpen(false)}
+          onEnabled={() => {
+            setPickModalOpen(false);
+            setHaveLocalKey(true);
+          }}
+        />
+      )}
+      {disableModalOpen && (
+        <DisableConfirmModal
+          pending={pending}
+          onClose={() => setDisableModalOpen(false)}
+          onConfirm={() => void disableE2ee()}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Modal shown when enabling E2EE on a DM. User picks a passphrase
+ * and confirms it. On submit: generate salt, derive key, compute
+ * verifier, PUT /e2ee-enable, cache local key.
+ *
+ * Includes a tip line that the user needs to share this password
+ * with the other person via any out-of-band channel — text message,
+ * in person, paper, etc. We deliberately don't offer to "send the
+ * password through Zekktris" because that defeats the point.
+ */
+function PickPasswordModal({
+  channel,
+  onClose,
+  onEnabled,
+}: {
+  channel: Channel;
+  onClose: () => void;
+  onEnabled: () => void;
+}) {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+
+  async function submit() {
+    if (pending) return;
+    if (password.length < 6) {
+      setError('Use at least 6 characters.');
+      return;
+    }
+    if (password !== confirm) {
+      setError("Passwords don't match.");
+      return;
+    }
+    setPending(true);
+    setError(null);
+    try {
+      const {
+        generateSalt,
+        deriveKeyFromPassword,
+        computeVerifier,
+        saveLocalKey,
+      } = await import('../lib/e2ee');
+      const salt = generateSalt();
+      const key = await deriveKeyFromPassword(password, salt);
+      const verifier = await computeVerifier(key);
+      await rest.enableDmE2ee(channel.id, salt, verifier);
+      saveLocalKey(channel.id, key);
+      toasts.push(
+        'Encryption enabled. Share the password with the other person through any other channel.',
+        'success',
+      );
+      onEnabled();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not enable encryption');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-bg-2 border border-line rounded-lg max-w-md w-full p-5 space-y-3"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-base font-semibold text-ink-1 flex items-center gap-2">
+          <Shield size={16} className="text-accent" />
+          Set a conversation password
+        </h2>
+        <p className="text-sm text-ink-2 leading-relaxed">
+          Pick a password for this conversation. You'll need to share it with
+          the other person through some other channel — text message, in
+          person, etc. — so they can unlock the conversation on their device.
+        </p>
+        <p className="text-xs text-ink-3 italic">
+          The password never leaves your devices. The server only sees an
+          irreversible verifier hash.
+        </p>
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => {
+            setPassword(e.target.value);
+            setError(null);
+          }}
+          placeholder="Password"
+          className="w-full bg-bg-1 border border-line rounded-md px-3 py-2 text-sm text-ink-1 outline-none focus:border-accent transition-colors"
+          autoComplete="new-password"
+        />
+        <input
+          type="password"
+          value={confirm}
+          onChange={(e) => {
+            setConfirm(e.target.value);
+            setError(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void submit();
+          }}
+          placeholder="Confirm password"
+          className="w-full bg-bg-1 border border-line rounded-md px-3 py-2 text-sm text-ink-1 outline-none focus:border-accent transition-colors"
+          autoComplete="new-password"
+        />
+        {error && <p className="text-xs text-red-300">{error}</p>}
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={pending}
+            className="px-3 py-1.5 rounded-md hover:bg-bg-3 text-sm text-ink-2"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void submit()}
+            disabled={pending}
+            className="px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 disabled:opacity-60 text-white text-sm font-medium"
+          >
+            Enable encryption
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Modal shown when disabling E2EE. Explains the purge — both
+ * participants lose all encrypted message history in this
+ * conversation.
+ */
+function DisableConfirmModal({
+  pending,
+  onClose,
+  onConfirm,
+}: {
+  pending: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-bg-2 border border-line rounded-lg max-w-md w-full p-5 space-y-3"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-base font-semibold text-ink-1 flex items-center gap-2">
+          <Shield size={16} className="text-red-400" />
+          Disable encryption?
+        </h2>
+        <p className="text-sm text-ink-2 leading-relaxed">
+          Disabling will <span className="font-semibold text-red-300">permanently delete every encrypted message</span> in this
+          conversation for both of you. Plaintext messages from before
+          encryption was enabled are preserved.
+        </p>
+        <p className="text-sm text-ink-2 leading-relaxed">
+          You can re-enable encryption later, but it'll require a new password.
+        </p>
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={pending}
+            className="px-3 py-1.5 rounded-md hover:bg-bg-3 text-sm text-ink-2"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={pending}
+            className="px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-500 disabled:opacity-60 text-white text-sm font-medium"
+          >
+            Disable + delete history
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function labelFor(seconds: number): string {
+  if (seconds < 60) return `${seconds} second${seconds === 1 ? '' : 's'}`;
+  const minutes = Math.round(seconds / 60);
+  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+}

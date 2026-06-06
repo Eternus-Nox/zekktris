@@ -1,0 +1,1058 @@
+/**
+ * Family / parental controls settings (Phase 1)
+ * ---------------------------------------------
+ * Lets a guardian request supervision of a child account, manage active
+ * links + outgoing requests, and lets any user accept/decline a request
+ * to supervise THEIR account. Supervision is consent-gated (the child
+ * accepts) and transparent (a supervised user sees it here and in the
+ * app-wide banner).
+ *
+ * Monitoring (viewing a child's messages/contacts), watch-words, and
+ * restrictions attach to these links in later phases.
+ */
+import { useEffect, useRef, useState } from 'react';
+import { useAppState } from '../state/AppState';
+import { useAuth } from '../auth/AuthContext';
+import { useToasts } from '../state/Toasts';
+import {
+  ApiError,
+  type FamilyUser,
+  type FamilyChildChannel,
+  type FamilyChildMessage,
+  type ChildRestrictions,
+  type FamilyRequest,
+  type FamilyChildGuild,
+  type FamilyFlag,
+  type PublicUser,
+} from '@zekktris/client';
+import { avatarColor, avatarInitials } from '../lib/avatar';
+import { AvatarImage } from '../lib/AvatarImage';
+import { Users, ChevronLeft } from '../lib/icons';
+import { useNavigate } from 'react-router-dom';
+
+/** Mirrors the server cap (supervision.MAX_CHILDREN_PER_PARENT). */
+const MAX_CHILDREN = 6;
+
+function PersonRow({
+  user,
+  children,
+  onClick,
+}: {
+  user: FamilyUser;
+  children?: React.ReactNode;
+  onClick?: () => void;
+}) {
+  const name = user.displayName || user.username;
+  return (
+    <li
+      className={`flex items-center gap-3 px-3 py-2 bg-bg-2 border border-line rounded-md ${
+        onClick ? 'cursor-pointer hover:bg-bg-3' : ''
+      }`}
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
+    >
+      <span
+        className="relative overflow-hidden shrink-0 w-9 h-9 rounded-full grid place-items-center text-xs font-semibold text-white"
+        style={{ background: avatarColor(user.id) }}
+      >
+        {avatarInitials(name)}
+        <AvatarImage src={user.avatarUrl} alt={name} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm text-ink-1">{name}</span>
+        <span className="block truncate text-xs text-ink-3">@{user.username}</span>
+      </span>
+      {children}
+    </li>
+  );
+}
+
+/**
+ * Read-only profile view for a contact in the child's orbit (a friend,
+ * or a DM recipient). The parent isn't acting on the relationship — no
+ * add/message/block — they're just seeing who this person is. Seeds from
+ * the FamilyUser we already have, then enriches with the public profile.
+ */
+function ContactProfileModal({
+  user,
+  onClose,
+}: {
+  user: FamilyUser;
+  onClose: () => void;
+}) {
+  const { rest } = useAuth();
+  const [profile, setProfile] = useState<PublicUser | null>(null);
+  useEffect(() => {
+    let off = false;
+    rest
+      .getUser(user.id)
+      .then((r) => !off && setProfile(r.user))
+      .catch(() => undefined);
+    return () => {
+      off = true;
+    };
+  }, [rest, user.id]);
+
+  const name = profile?.displayName || user.displayName || user.username;
+  const username = profile?.username || user.username;
+  const avatarUrl = profile?.avatarUrl ?? user.avatarUrl;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-sm bg-bg-1 border border-line rounded-lg overflow-hidden shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="h-20 bg-bg-3 relative">
+          {profile?.bannerUrl && (
+            <img src={profile.bannerUrl} alt="" className="w-full h-full object-cover" />
+          )}
+        </div>
+        <div className="px-4 pb-4">
+          <span
+            className="relative overflow-hidden inline-grid place-items-center -mt-9 w-16 h-16 rounded-full border-4 border-bg-1 text-lg font-semibold text-white"
+            style={{ background: avatarColor(user.id) }}
+          >
+            {avatarInitials(name)}
+            <AvatarImage src={avatarUrl} alt={name} />
+          </span>
+          <div className="mt-2 flex items-center gap-2">
+            <h3 className="text-base font-semibold text-ink-1 truncate">{name}</h3>
+            {profile?.isBot && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/20 text-accent uppercase">
+                Bot
+              </span>
+            )}
+          </div>
+          <p className="text-sm text-ink-3">@{username}</p>
+          {profile && (
+            <p className="text-xs text-ink-3 mt-1 capitalize">{profile.status}</p>
+          )}
+          {profile?.customStatus && (
+            <p className="text-sm text-ink-2 mt-2 break-words">
+              {profile.customStatusEmoji ? `${profile.customStatusEmoji} ` : ''}
+              {profile.customStatus}
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="mt-4 w-full text-sm px-3 py-2 rounded-md border border-line bg-bg-2 text-ink-2 hover:bg-bg-3"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function FamilySettings() {
+  const navigate = useNavigate();
+  const { state, reloadSupervision, loadDMs } = useAppState();
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const sup = state.supervision;
+
+  const [username, setUsername] = useState('');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [viewingChild, setViewingChild] = useState<FamilyUser | null>(null);
+  const [requests, setRequests] = useState<FamilyRequest[]>([]);
+
+  const supervisesChildren = !!sup && sup.children.length > 0;
+  useEffect(() => {
+    if (!supervisesChildren) {
+      setRequests([]);
+      return;
+    }
+    let off = false;
+    rest
+      .familyRequests()
+      .then((r) => !off && setRequests(r.requests))
+      .catch(() => undefined);
+    return () => {
+      off = true;
+    };
+  }, [rest, supervisesChildren, state.familyNudge]);
+
+  const resolveRequest = async (id: string, action: 'approve' | 'deny') => {
+    setBusy(`req-${id}`);
+    try {
+      await (action === 'approve'
+        ? rest.familyApproveRequest(id)
+        : rest.familyDenyRequest(id));
+      setRequests((rs) => rs.filter((r) => r.id !== id));
+      toasts.push(action === 'approve' ? 'Approved' : 'Declined', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Something went wrong', 'error');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  async function run(key: string, fn: () => Promise<unknown>, ok?: string) {
+    setBusy(key);
+    try {
+      await fn();
+      await reloadSupervision();
+      // Linking changes a supervised user's DM E2EE policy; refresh the
+      // DM channels so encryption flips on/off immediately rather than
+      // waiting for a reconnect.
+      void loadDMs().catch(() => undefined);
+      if (ok) toasts.push(ok, 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Something went wrong', 'error');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const addChild = () => {
+    const u = username.trim();
+    if (!u) return;
+    void run('add', () => rest.familyRequestLink(u), 'Supervision request sent').then(() =>
+      setUsername(''),
+    );
+  };
+
+  if (!sup) {
+    return <p className="text-sm text-ink-3">Loading…</p>;
+  }
+
+  if (viewingChild) {
+    return <ChildMonitor child={viewingChild} onBack={() => setViewingChild(null)} nudge={state.familyNudge} />;
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header styled to match Settings — small accent icon + title over a
+          soft divider — so parental controls feels part of the same surface. */}
+      <header
+        className="flex items-center gap-2 sm:gap-3 pb-3 border-b -mx-4 sm:-mx-6 px-4 sm:px-6"
+        style={{ borderBottomColor: 'var(--zk-line-soft)' }}
+      >
+        <button
+          onClick={() => navigate('/channels/@me')}
+          className="xl:hidden -ml-1 w-7 h-7 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3 shrink-0"
+          aria-label="Back to direct messages"
+        >
+          <ChevronLeft size={18} />
+        </button>
+        <Users size={16} className="text-accent shrink-0" />
+        <div className="min-w-0">
+          <h1 className="text-base sm:text-lg font-semibold text-ink-1 leading-tight truncate">
+            Family
+          </h1>
+          <p className="text-xs text-ink-3 leading-tight">Parental controls &amp; supervision</p>
+        </div>
+      </header>
+
+      <div className="rounded-xl border border-line bg-bg-1/60 p-3.5 text-xs text-ink-3 leading-relaxed">
+        Supervise a child account to help keep them safe. They must accept your
+        request, and a supervised account is always shown that it's supervised —
+        this is never hidden. While supervised, the child's direct messages
+        aren't end-to-end encrypted (so you can review them), except messages
+        between the two of you, which stay private.
+      </div>
+
+      {/* Requests awaiting MY acceptance */}
+      {sup.incomingRequests.length > 0 && (
+        <section className="space-y-2">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
+            Requests to supervise your account
+          </h4>
+          <ul className="space-y-1.5">
+            {sup.incomingRequests.map((u) => (
+              <PersonRow key={u.id} user={u}>
+                <span className="flex gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    disabled={busy !== null}
+                    onClick={() =>
+                      void run(`acc-${u.id}`, () => rest.familyAcceptLink(u.id), 'Request accepted')
+                    }
+                    className="text-xs px-2.5 py-1 rounded border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40"
+                  >
+                    Accept
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy !== null}
+                    onClick={() => void run(`dec-${u.id}`, () => rest.familyRemoveLink(u.id))}
+                    className="text-xs px-2.5 py-1 rounded border border-line text-ink-2 hover:bg-bg-3 disabled:opacity-40"
+                  >
+                    Decline
+                  </button>
+                </span>
+              </PersonRow>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* Approval requests from supervised children */}
+      {requests.length > 0 && (
+        <section className="space-y-2">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
+            Requests to approve
+          </h4>
+          <ul className="space-y-1.5">
+            {requests.map((r) => {
+              const childName = r.child.displayName || r.child.username;
+              const what =
+                r.type === 'friend'
+                  ? `add ${r.target ? r.target.displayName || r.target.username : 'a friend'}`
+                  : `join ${r.guild?.name ? `“${r.guild.name}”` : 'a server'}`;
+              return (
+                <li
+                  key={r.id}
+                  className="px-3 py-2 bg-bg-2 border border-line rounded-md text-sm"
+                >
+                  <p className="text-ink-1">
+                    <span className="font-medium">{childName}</span>
+                    <span className="text-ink-2"> wants to {what}</span>
+                  </p>
+                  {r.note && <p className="text-xs text-ink-3 mt-0.5">“{r.note}”</p>}
+                  <div className="flex gap-1.5 mt-1.5">
+                    <button
+                      type="button"
+                      disabled={busy !== null}
+                      onClick={() => void resolveRequest(r.id, 'approve')}
+                      className="text-xs px-2.5 py-1 rounded border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40"
+                    >
+                      Approve
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy !== null}
+                      onClick={() => void resolveRequest(r.id, 'deny')}
+                      className="text-xs px-2.5 py-1 rounded border border-line text-ink-2 hover:bg-bg-3 disabled:opacity-40"
+                    >
+                      Decline
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+
+      {/* Who supervises me */}
+      {sup.supervisedBy.length > 0 && (
+        <section className="space-y-2">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
+            Supervising your account
+            <span className="ml-1.5 font-normal normal-case">
+              {sup.supervisedBy.length} of 2
+            </span>
+          </h4>
+          <ul className="space-y-1.5">
+            {sup.supervisedBy.map((u) => (
+              <PersonRow key={u.id} user={u}>
+                <span className="shrink-0 text-xs text-ink-3 px-1.5">Guardian</span>
+              </PersonRow>
+            ))}
+          </ul>
+          <p className="text-xs text-ink-3">
+            Only a guardian can remove supervision.
+          </p>
+        </section>
+      )}
+
+      {/* Children I supervise */}
+      <section className="space-y-2">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
+          Children you supervise
+          <span className="ml-1.5 font-normal normal-case">
+            {sup.children.length} of {MAX_CHILDREN}
+          </span>
+        </h4>
+        {sup.children.length === 0 ? (
+          <p className="text-xs text-ink-3">No supervised accounts yet.</p>
+        ) : (
+          <ul className="space-y-1.5">
+            {sup.children.map((u) => (
+              <PersonRow key={u.id} user={u}>
+                <span className="flex gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setViewingChild(u)}
+                    className="text-xs px-2.5 py-1 rounded border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25"
+                  >
+                    View
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy !== null}
+                    onClick={() => void run(`rm-${u.id}`, () => rest.familyRemoveLink(u.id))}
+                    className="text-xs px-2.5 py-1 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-40"
+                  >
+                    Remove
+                  </button>
+                </span>
+              </PersonRow>
+            ))}
+          </ul>
+        )}
+
+        {/* Add a child by username */}
+        {sup.children.length >= MAX_CHILDREN ? (
+          <p className="text-xs text-ink-3 pt-1">
+            You're supervising the maximum of {MAX_CHILDREN} accounts. Remove one
+            to add another.
+          </p>
+        ) : (
+          <div className="flex gap-2 pt-1">
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') addChild();
+              }}
+              placeholder="Child's username"
+              className="flex-1 min-w-0 text-sm bg-bg-2 border border-line rounded-md px-3 py-2 text-ink-1 placeholder:text-ink-3"
+            />
+            <button
+              type="button"
+              disabled={busy !== null || username.trim().length === 0}
+              onClick={addChild}
+              className="shrink-0 text-sm px-3 py-2 rounded-md border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40"
+            >
+              {busy === 'add' ? 'Sending…' : 'Send request'}
+            </button>
+          </div>
+        )}
+      </section>
+
+      {/* Outgoing requests */}
+      {sup.outgoingRequests.length > 0 && (
+        <section className="space-y-2">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
+            Pending requests you've sent
+          </h4>
+          <ul className="space-y-1.5">
+            {sup.outgoingRequests.map((u) => (
+              <PersonRow key={u.id} user={u}>
+                <button
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={() => void run(`cx-${u.id}`, () => rest.familyRemoveLink(u.id))}
+                  className="shrink-0 text-xs px-2.5 py-1 rounded border border-line text-ink-2 hover:bg-bg-3 disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+              </PersonRow>
+            ))}
+          </ul>
+        </section>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Parent read view of one supervised child: their conversations (read
+ * only) and their friends. Authorized server-side by the active link.
+ */
+function ChildMonitor({
+  child,
+  onBack,
+  nudge,
+}: {
+  child: FamilyUser;
+  onBack: () => void;
+  nudge: number;
+}) {
+  const { rest } = useAuth();
+  const [tab, setTab] = useState<
+    'chats' | 'friends' | 'restrictions' | 'watchwords' | 'flags'
+  >('chats');
+  const [channels, setChannels] = useState<FamilyChildChannel[] | null>(null);
+  const [friends, setFriends] = useState<
+    Array<{ type: string; user: FamilyUser }> | null
+  >(null);
+  const [openChannel, setOpenChannel] = useState<FamilyChildChannel | null>(null);
+  const [messages, setMessages] = useState<FamilyChildMessage[] | null>(null);
+  const [hasMoreOlder, setHasMoreOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [restrictions, setRestrictions] = useState<ChildRestrictions | null>(null);
+  const [guilds, setGuilds] = useState<FamilyChildGuild[] | null>(null);
+  const [watchWords, setWatchWords] = useState<string[] | null>(null);
+  const [newWord, setNewWord] = useState('');
+  const [flags, setFlags] = useState<FamilyFlag[] | null>(null);
+  const [profileUser, setProfileUser] = useState<FamilyUser | null>(null);
+  const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
+  const [savingRestr, setSavingRestr] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let off = false;
+    rest
+      .familyChildChannels(child.id)
+      .then((r) => !off && setChannels(r.channels))
+      .catch((e) => !off && setErr(e instanceof ApiError ? e.message : 'Failed to load'));
+    rest
+      .familyChildFriends(child.id)
+      .then((r) => !off && setFriends(r.relationships))
+      .catch(() => undefined);
+    rest
+      .familyChildRestrictions(child.id)
+      .then((r) => !off && setRestrictions(r.restrictions))
+      .catch(() => undefined);
+    rest
+      .familyChildGuilds(child.id)
+      .then((r) => !off && setGuilds(r.guilds))
+      .catch(() => undefined);
+    rest
+      .familyChildWatchWords(child.id)
+      .then((r) => !off && setWatchWords(r.words))
+      .catch(() => undefined);
+    rest
+      .familyChildFlags(child.id)
+      .then((r) => !off && setFlags(r.flags))
+      .catch(() => undefined);
+    return () => {
+      off = true;
+    };
+  }, [rest, child.id]);
+
+  const PAGE = 25;
+  useEffect(() => {
+    if (!openChannel) return;
+    let off = false;
+    setMessages(null);
+    setHasMoreOlder(false);
+    rest
+      .familyChildMessages(child.id, openChannel.id, { limit: PAGE })
+      .then((r) => {
+        if (off) return;
+        // listMessages returns newest-first; show chronological.
+        const sorted = [...r.messages].sort((a, b) =>
+          BigInt(a.id) > BigInt(b.id) ? 1 : -1,
+        );
+        setMessages(sorted);
+        setHasMoreOlder(r.messages.length >= PAGE);
+      })
+      .catch((e) => !off && setErr(e instanceof ApiError ? e.message : 'Failed to load'));
+    return () => {
+      off = true;
+    };
+  }, [rest, child.id, openChannel]);
+
+  // Cursor paging: fetch the next 25 OLDER messages and prepend them.
+  const loadOlder = async () => {
+    if (!openChannel || !messages || messages.length === 0 || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const r = await rest.familyChildMessages(child.id, openChannel.id, {
+        before: messages[0].id, // chronological: index 0 is the oldest loaded
+        limit: PAGE,
+      });
+      const older = [...r.messages].sort((a, b) =>
+        BigInt(a.id) > BigInt(b.id) ? 1 : -1,
+      );
+      setMessages((cur) => [...older, ...(cur ?? [])]);
+      setHasMoreOlder(r.messages.length >= PAGE);
+    } catch {
+      /* leave the button; user can retry */
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+
+  // Live refresh of the flag feed when a new flag arrives over the
+  // gateway (parent is watching this child). Skips the initial mount
+  // (nudge starts unchanged) — the mount effect already loaded flags.
+  const mountedNudge = useRef(nudge);
+  useEffect(() => {
+    if (nudge === mountedNudge.current) return;
+    let off = false;
+    rest
+      .familyChildFlags(child.id)
+      .then((r) => !off && setFlags(r.flags))
+      .catch(() => undefined);
+    return () => {
+      off = true;
+    };
+  }, [rest, child.id, nudge]);
+
+  const childName = child.displayName || child.username;
+  const friendList = (friends ?? []).filter((f) => f.type === 'friend');
+
+  const toggle = async (key: keyof ChildRestrictions) => {
+    if (!restrictions || savingRestr) return;
+    const next = { ...restrictions, [key]: !restrictions[key] };
+    setRestrictions(next);
+    setSavingRestr(true);
+    try {
+      const r = await rest.familySetRestrictions(child.id, { [key]: next[key] });
+      setRestrictions(r.restrictions);
+    } catch {
+      setRestrictions(restrictions); // revert
+    } finally {
+      setSavingRestr(false);
+    }
+  };
+
+  const toggleGuildBlock = async (g: FamilyChildGuild) => {
+    if (!guilds) return;
+    const next = guilds.map((x) => (x.id === g.id ? { ...x, blocked: !x.blocked } : x));
+    setGuilds(next);
+    try {
+      if (g.blocked) await rest.familyUnblockGuild(child.id, g.id);
+      else await rest.familyBlockGuild(child.id, g.id);
+    } catch {
+      setGuilds(guilds); // revert
+    }
+  };
+
+  const addWord = async () => {
+    const raw = newWord.trim();
+    if (!raw) return;
+    setNewWord('');
+    try {
+      const r = await rest.familyAddWatchWord(child.id, raw);
+      setWatchWords(r.words);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const removeWord = async (w: string) => {
+    try {
+      const r = await rest.familyRemoveWatchWord(child.id, w);
+      setWatchWords(r.words);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // Click a flag → jump to that conversation if it's a DM we can open.
+  const openFlag = (f: FamilyFlag) => {
+    const ch = (channels ?? []).find((c) => c.id === f.channelId);
+    if (ch) {
+      setHighlightMessageId(f.messageId);
+      setOpenChannel(ch);
+      setTab('chats');
+    }
+    // Viewing clears the flag from the alert list (server marks it
+    // reviewed, so it won't come back on refresh either).
+    void rest.familyMarkFlagReviewed(f.id).catch(() => undefined);
+    setFlags((fs) => (fs ?? []).filter((x) => x.id !== f.id));
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={onBack}
+          aria-label="Back"
+          className="shrink-0 w-8 h-8 grid place-items-center rounded-lg border border-line text-ink-2 hover:bg-bg-3 hover:text-ink-1 transition-colors"
+        >
+          <ChevronLeft size={16} />
+        </button>
+        <span
+          className="relative overflow-hidden shrink-0 w-10 h-10 rounded-full grid place-items-center text-sm font-semibold text-white"
+          style={{ background: avatarColor(child.id) }}
+        >
+          {avatarInitials(childName)}
+          <AvatarImage src={child.avatarUrl} alt={childName} />
+        </span>
+        <div className="min-w-0">
+          <h3 className="text-base font-semibold text-ink-1 truncate leading-tight">
+            {childName}
+          </h3>
+          <p className="text-xs text-ink-3">Supervised view</p>
+        </div>
+      </div>
+
+      <div className="-mx-1 px-1 flex gap-1.5 overflow-x-auto zk-no-scrollbar">
+        {(
+          [
+            { id: 'chats', label: 'Conversations' },
+            { id: 'friends', label: 'Friends' },
+            { id: 'restrictions', label: 'Restrictions' },
+            { id: 'watchwords', label: 'Watch Words' },
+            {
+              id: 'flags',
+              label:
+                flags && flags.some((f) => !f.reviewed)
+                  ? `Flags · ${flags.filter((f) => !f.reviewed).length}`
+                  : 'Flags',
+            },
+          ] as const
+        ).map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setTab(t.id)}
+            className={`shrink-0 text-xs font-medium px-3 py-1.5 rounded-full border transition-colors ${
+              tab === t.id
+                ? 'bg-accent/15 border-accent/40 text-accent'
+                : 'bg-bg-2 border-line text-ink-2 hover:bg-bg-3 hover:text-ink-1'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {err && <p className="text-sm text-red-400">{err}</p>}
+
+      {tab === 'chats' &&
+        (openChannel ? (
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => {
+                setOpenChannel(null);
+                setHighlightMessageId(null);
+              }}
+              className="text-xs text-accent hover:underline"
+            >
+              ← All conversations
+            </button>
+            <p className="text-xs text-ink-3">
+              with {openChannel.recipient?.displayName || openChannel.recipient?.username || 'unknown'}
+            </p>
+            {!messages ? (
+              <p className="text-sm text-ink-3">Loading messages…</p>
+            ) : messages.length === 0 ? (
+              <p className="text-sm text-ink-3">No messages.</p>
+            ) : (
+              <>
+                {hasMoreOlder && (
+                  <button
+                    type="button"
+                    disabled={loadingOlder}
+                    onClick={() => void loadOlder()}
+                    className="w-full text-xs px-3 py-1.5 rounded-md border border-line bg-bg-2 text-ink-2 hover:bg-bg-3 disabled:opacity-40"
+                  >
+                    {loadingOlder ? 'Loading…' : 'Load older messages'}
+                  </button>
+                )}
+                <ul className="space-y-2">
+                  {messages.map((m) => (
+                  <li
+                    key={m.id}
+                    ref={
+                      m.id === highlightMessageId
+                        ? (el) => el?.scrollIntoView({ block: 'center' })
+                        : undefined
+                    }
+                    className={`text-sm rounded-md transition-colors ${
+                      m.id === highlightMessageId
+                        ? 'bg-accent/10 ring-1 ring-accent/40 -mx-2 px-2 py-1'
+                        : ''
+                    }`}
+                  >
+                    <span className="text-ink-3 text-xs">
+                      {m.authorId === child.id ? childName : m.authorDisplayName || m.authorUsername || 'Them'}
+                      {' · '}
+                      {new Date(m.createdAt).toLocaleString(undefined, {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: 'numeric',
+                        minute: '2-digit',
+                      })}
+                      {m.deleted && (
+                        <span className="ml-1.5 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-red-500/15 text-red-300">
+                          Deleted
+                        </span>
+                      )}
+                    </span>
+                    {m.content && (
+                      <p
+                        className={`whitespace-pre-wrap break-words ${
+                          m.deleted ? 'text-ink-3 italic line-through decoration-red-400/40' : 'text-ink-1'
+                        }`}
+                      >
+                        {m.content}
+                      </p>
+                    )}
+                    {m.attachments.map((at) =>
+                      at.contentType.startsWith('image/') ? (
+                        <img
+                          key={at.id}
+                          src={at.url}
+                          alt={at.filename}
+                          className="mt-1 max-h-48 rounded border border-line"
+                        />
+                      ) : (
+                        <a
+                          key={at.id}
+                          href={at.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="mt-1 inline-block text-xs text-accent hover:underline"
+                        >
+                          📎 {at.filename}
+                        </a>
+                      ),
+                    )}
+                  </li>
+                ))}
+                </ul>
+              </>
+            )}
+          </div>
+        ) : !channels ? (
+          <p className="text-sm text-ink-3">Loading conversations…</p>
+        ) : channels.length === 0 ? (
+          <p className="text-sm text-ink-3">No direct-message conversations.</p>
+        ) : (
+          <ul className="space-y-1.5">
+            {channels.map((ch) => (
+              <li key={ch.id}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHighlightMessageId(null);
+                    setOpenChannel(ch);
+                  }}
+                  className="w-full flex items-center gap-3 px-3 py-2 bg-bg-2 border border-line rounded-md hover:bg-bg-3 text-left"
+                >
+                  <span
+                    className="relative overflow-hidden shrink-0 w-9 h-9 rounded-full grid place-items-center text-xs font-semibold text-white"
+                    style={{ background: avatarColor(ch.recipient?.id ?? ch.id) }}
+                  >
+                    {avatarInitials(ch.recipient?.displayName || ch.recipient?.username || '?')}
+                    <AvatarImage
+                      src={ch.recipient?.avatarUrl}
+                      alt={ch.recipient?.displayName || ch.recipient?.username || ''}
+                    />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm text-ink-1">
+                      {ch.recipient?.displayName || ch.recipient?.username || 'Unknown'}
+                    </span>
+                    {ch.recipient?.username && (
+                      <span className="block truncate text-xs text-ink-3">
+                        @{ch.recipient.username}
+                      </span>
+                    )}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        ))}
+
+      {tab === 'friends' &&
+        (!friends ? (
+          <p className="text-sm text-ink-3">Loading friends…</p>
+        ) : friendList.length === 0 ? (
+          <p className="text-sm text-ink-3">No friends.</p>
+        ) : (
+          <ul className="space-y-1.5">
+            {friendList.map((f) => (
+              <PersonRow key={f.user.id} user={f.user} onClick={() => setProfileUser(f.user)} />
+            ))}
+          </ul>
+        ))}
+
+      {tab === 'restrictions' &&
+        (!restrictions ? (
+          <p className="text-sm text-ink-3">Loading…</p>
+        ) : (
+          <div className="space-y-1.5">
+            <p className="text-xs text-ink-3 leading-relaxed pb-1">
+              Turn an ability off to restrict it. For friends and servers,{' '}
+              {childName} can still send you a request to approve.
+            </p>
+            {(
+              [
+                { key: 'canAddFriends', label: 'Add friends' },
+                { key: 'canRemoveFriends', label: 'Remove friends' },
+                { key: 'allowVoice', label: 'Voice calls' },
+                { key: 'allowVideo', label: 'Video' },
+                { key: 'allowStream', label: 'Screen sharing' },
+                { key: 'allowCreateGuild', label: 'Create servers' },
+              ] as const
+            ).map((r) => {
+              const on = restrictions[r.key];
+              return (
+                <div
+                  key={r.key}
+                  className="flex items-center justify-between px-3 py-2 bg-bg-2 border border-line rounded-md"
+                >
+                  <span className="text-sm text-ink-1">{r.label}</span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={on}
+                    disabled={savingRestr}
+                    onClick={() => void toggle(r.key)}
+                    className={`relative w-10 h-6 rounded-full transition-colors disabled:opacity-50 ${
+                      on ? 'bg-accent/70' : 'bg-bg-3'
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
+                        on ? 'left-[1.125rem]' : 'left-0.5'
+                      }`}
+                    />
+                  </button>
+                </div>
+              );
+            })}
+
+            <div className="pt-3 space-y-1.5">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
+                Servers
+              </h4>
+              {!guilds ? (
+                <p className="text-xs text-ink-3">Loading…</p>
+              ) : guilds.length === 0 ? (
+                <p className="text-xs text-ink-3">{childName} isn't in any servers.</p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {guilds.map((g) => (
+                    <li
+                      key={g.id}
+                      className="flex items-center justify-between gap-2 px-3 py-2 bg-bg-2 border border-line rounded-md"
+                    >
+                      <span className="text-sm text-ink-1 truncate">{g.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => void toggleGuildBlock(g)}
+                        className={`shrink-0 text-xs px-2.5 py-1 rounded border ${
+                          g.blocked
+                            ? 'border-red-500/40 bg-red-500/15 text-red-200'
+                            : 'border-line text-ink-2 hover:bg-bg-3'
+                        }`}
+                      >
+                        {g.blocked ? 'Blocked' : 'Block'}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="text-[0.7rem] text-ink-3 leading-relaxed">
+                A blocked server can't be joined. {childName} can ask you to approve a
+                specific server with an invite link.
+              </p>
+            </div>
+          </div>
+        ))}
+
+      {tab === 'watchwords' && (
+        <div className="space-y-2">
+          <p className="text-xs text-ink-3 leading-relaxed">
+            Messages {childName} sends or receives that contain one of these
+            words get flagged for you to review. Matching is case-insensitive.
+            Add several at once by separating them with commas.
+          </p>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={newWord}
+              onChange={(e) => setNewWord(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void addWord();
+              }}
+              placeholder="e.g. address, phone number, meet up"
+              className="flex-1 min-w-0 text-sm bg-bg-2 border border-line rounded-md px-3 py-2 text-ink-1 placeholder:text-ink-3"
+            />
+            <button
+              type="button"
+              disabled={newWord.trim().length === 0}
+              onClick={() => void addWord()}
+              className="shrink-0 text-sm px-3 py-2 rounded-md border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40"
+            >
+              Add
+            </button>
+          </div>
+          {!watchWords ? (
+            <p className="text-sm text-ink-3">Loading…</p>
+          ) : watchWords.length === 0 ? (
+            <p className="text-sm text-ink-3">No watch words yet.</p>
+          ) : (
+            <ul className="flex flex-wrap gap-1.5">
+              {watchWords.map((w) => (
+                <li
+                  key={w}
+                  className="inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 bg-bg-2 border border-line rounded-full text-sm text-ink-1"
+                >
+                  <span className="leading-none">{w}</span>
+                  <button
+                    type="button"
+                    onClick={() => void removeWord(w)}
+                    aria-label={`Remove ${w}`}
+                    className="shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-base leading-none text-ink-3 hover:text-ink-1 hover:bg-bg-3"
+                  >
+                    <span className="-mt-px">×</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {tab === 'flags' &&
+        (!flags ? (
+          <p className="text-sm text-ink-3">Loading…</p>
+        ) : flags.length === 0 ? (
+          <p className="text-sm text-ink-3">No flagged messages.</p>
+        ) : (
+          <ul className="space-y-1.5">
+            {flags.map((f) => (
+              <li key={f.id}>
+                <button
+                  type="button"
+                  onClick={() => openFlag(f)}
+                  className={`w-full text-left px-3 py-2 rounded-md border ${
+                    f.reviewed
+                      ? 'bg-bg-2 border-line'
+                      : 'bg-amber-500/10 border-amber-500/30'
+                  } hover:bg-bg-3`}
+                >
+                  <div className="flex items-center gap-2 text-xs text-ink-3">
+                    <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300">
+                      {f.matchedWord}
+                    </span>
+                    <span>{f.byChild ? `${childName} sent` : 'received'}</span>
+                    <span className="ml-auto">
+                      {new Date(f.createdAt).toLocaleString(undefined, {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: 'numeric',
+                        minute: '2-digit',
+                      })}
+                    </span>
+                  </div>
+                  {f.snippet && (
+                    <p className="mt-1 text-sm text-ink-1 line-clamp-2 break-words">
+                      {f.snippet}
+                    </p>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        ))}
+
+      {profileUser && (
+        <ContactProfileModal user={profileUser} onClose={() => setProfileUser(null)} />
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,22 @@
+-- Mentions inbox watermark
+-- ------------------------
+-- Persistent "cleared up to here" marker on the user record. When a
+-- user taps Clear all on the Mentions inbox, we want the visible list
+-- to stay empty across reloads — not just for the current session.
+-- Previously the clear endpoint only zeroed per-channel mention_count
+-- (for the sidebar badges); the underlying message_user_mentions
+-- rows remained, so the next listUserMentions call refetched the same
+-- pile of mentions as if nothing had happened.
+--
+-- The watermark records the id of the most recent message that
+-- existed at the moment Clear all fired. listUserMentions then filters
+-- to rows with id > watermark, hiding everything the user has already
+-- dismissed while still letting brand-new mentions surface normally.
+-- The user can be re-mentioned in the same channel afterwards and
+-- the new message (with a higher id) will appear in their inbox.
+--
+-- Nullable; NULL means "the user has never cleared", which is the
+-- default for every existing user. Add WITHOUT a default so the
+-- ALTER TABLE doesn't rewrite every row to set a sentinel value —
+-- the IS NULL check in the query handles the unset case.
+ALTER TABLE users ADD COLUMN mentions_cleared_message_id BIGINT;

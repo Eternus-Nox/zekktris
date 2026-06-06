@@ -1,0 +1,206 @@
+/**
+ * Redis-backed event bus
+ * -----------------------
+ * The in-memory bus (bus.ts) only reaches WebSocket connections held by the
+ * current process, which is correct for a single API instance. To run several
+ * API replicas behind a load balancer, an event published on one replica must
+ * also reach connections on the others. This bus adds that cross-instance
+ * fan-out using Redis pub/sub, exactly as the bus.ts header anticipated.
+ *
+ * Design:
+ *   - It WRAPS an InMemoryEventBus for local handler management + delivery, so
+ *     same-instance delivery is immediate and does NOT depend on a Redis
+ *     round-trip (and keeps working — degraded to local-only — if Redis is
+ *     temporarily down).
+ *   - publish(): deliver locally now, AND publish to a single Redis channel
+ *     ("zekktris:gateway") tagged with this process's instance id.
+ *   - On a Redis message FROM ANOTHER instance, deliver to local handlers.
+ *     Messages tagged with our own instance id are ignored (we already
+ *     delivered them locally) — this is what prevents double-delivery, since
+ *     Redis echoes a publish back to the publishing subscriber too.
+ *
+ * Wire format: a single JSON channel keeps subscriptions O(replicas) rather
+ * than O(guilds × replicas); the cheap Audience filter runs per-connection on
+ * the receiving side after the broadcast (same as in-process). Snowflake ids
+ * in the Audience are bigints, which JSON can't represent, so they're encoded
+ * to decimal strings here and decoded back to bigint on receipt; the event
+ * payload (`d`) is serialized with the same bigint→string replacer the gateway
+ * uses when writing to clients, so it crosses the wire in client form.
+ */
+
+import Redis from 'ioredis';
+import { randomUUID } from 'node:crypto';
+import { jsonReplacer } from './connection';
+import { InMemoryEventBus, type EventBus, type PublishedEvent } from './bus';
+import type { Audience } from './types';
+
+const CHANNEL = 'zekktris:gateway';
+
+// ── Audience codec ──────────────────────────────────────────────────────────
+// Explicit per-kind encode/decode: the receiving registry compares these ids as
+// bigints against connection state, so they must survive the round-trip exactly.
+
+type WireAudience =
+  | { kind: 'user'; userId: string }
+  | { kind: 'guild'; guildId: string }
+  | { kind: 'channel'; channelId: string; guildId: string | null }
+  | { kind: 'users'; userIds: string[] };
+
+export function encodeAudience(a: Audience): WireAudience {
+  switch (a.kind) {
+    case 'user':
+      return { kind: 'user', userId: a.userId.toString() };
+    case 'guild':
+      return { kind: 'guild', guildId: a.guildId.toString() };
+    case 'channel':
+      return {
+        kind: 'channel',
+        channelId: a.channelId.toString(),
+        guildId: a.guildId === null ? null : a.guildId.toString(),
+      };
+    case 'users':
+      return { kind: 'users', userIds: a.userIds.map((id) => id.toString()) };
+  }
+}
+
+export function decodeAudience(a: WireAudience): Audience {
+  switch (a.kind) {
+    case 'user':
+      return { kind: 'user', userId: BigInt(a.userId) };
+    case 'guild':
+      return { kind: 'guild', guildId: BigInt(a.guildId) };
+    case 'channel':
+      return {
+        kind: 'channel',
+        channelId: BigInt(a.channelId),
+        guildId: a.guildId === null ? null : BigInt(a.guildId),
+      };
+    case 'users':
+      return { kind: 'users', userIds: a.userIds.map((id) => BigInt(id)) };
+    default:
+      throw new Error(`unknown audience kind: ${JSON.stringify(a)}`);
+  }
+}
+
+interface WireMessage {
+  /** Publishing instance id — used to drop our own echo. */
+  i: string;
+  t: PublishedEvent['t'];
+  d: unknown;
+  a: WireAudience;
+}
+
+export function serializeEvent(instanceId: string, event: PublishedEvent): string {
+  const msg: WireMessage = {
+    i: instanceId,
+    t: event.t,
+    d: event.d,
+    a: encodeAudience(event.audience),
+  };
+  // jsonReplacer mirrors the gateway's client serialization (bigint → string),
+  // so any stray bigint in `d` crosses the wire exactly as a client would see it.
+  return JSON.stringify(msg, jsonReplacer);
+}
+
+export function deserializeEvent(raw: string): {
+  instanceId: string;
+  event: PublishedEvent;
+} {
+  const msg = JSON.parse(raw) as WireMessage;
+  return {
+    instanceId: msg.i,
+    event: { t: msg.t, d: msg.d, audience: decodeAudience(msg.a) },
+  };
+}
+
+// ── Bus ──────────────────────────────────────────────────────────────────────
+
+/** The subset of an ioredis client this bus uses. Lets tests inject fakes. */
+export interface RedisLike {
+  publish(channel: string, message: string): Promise<unknown> | unknown;
+  subscribe(channel: string): Promise<unknown> | unknown;
+  on(event: 'message', listener: (channel: string, message: string) => void): unknown;
+  quit?(): Promise<unknown> | unknown;
+}
+
+export interface RedisEventBusOptions {
+  instanceId?: string;
+  channel?: string;
+  /** Reported on serialize/deserialize/transport failures. Never throws into delivery. */
+  onError?: (err: unknown) => void;
+}
+
+export class RedisEventBus implements EventBus {
+  private readonly local = new InMemoryEventBus();
+  private readonly instanceId: string;
+  private readonly channel: string;
+  private readonly onError?: (err: unknown) => void;
+
+  constructor(
+    private readonly pub: RedisLike,
+    private readonly sub: RedisLike,
+    opts: RedisEventBusOptions = {},
+  ) {
+    this.instanceId = opts.instanceId ?? randomUUID();
+    this.channel = opts.channel ?? CHANNEL;
+    this.onError = opts.onError;
+
+    Promise.resolve(this.sub.subscribe(this.channel)).catch((e) => this.onError?.(e));
+    this.sub.on('message', (channel, raw) => {
+      if (channel !== this.channel) return;
+      let decoded: { instanceId: string; event: PublishedEvent };
+      try {
+        decoded = deserializeEvent(raw);
+      } catch (e) {
+        this.onError?.(e);
+        return;
+      }
+      // Our own publish is echoed back by Redis — we already delivered it
+      // locally, so skip it here to avoid double-delivery.
+      if (decoded.instanceId === this.instanceId) return;
+      this.local.publish(decoded.event);
+    });
+  }
+
+  publish(event: PublishedEvent): void {
+    // Deliver to this instance's own connections immediately, independent of
+    // Redis (so local realtime survives a Redis hiccup).
+    this.local.publish(event);
+    let raw: string;
+    try {
+      raw = serializeEvent(this.instanceId, event);
+    } catch (e) {
+      this.onError?.(e);
+      return;
+    }
+    Promise.resolve(this.pub.publish(this.channel, raw)).catch((e) => this.onError?.(e));
+  }
+
+  subscribe(handler: (event: PublishedEvent) => void): () => void {
+    return this.local.subscribe(handler);
+  }
+
+  async close(): Promise<void> {
+    await Promise.allSettled([
+      Promise.resolve(this.pub.quit?.()),
+      Promise.resolve(this.sub.quit?.()),
+    ]);
+  }
+}
+
+/**
+ * Build a RedisEventBus backed by two real ioredis connections (pub/sub mode
+ * requires a dedicated subscriber connection). Error listeners are attached so
+ * a connection blip emits to `onError` instead of crashing the process; ioredis
+ * reconnects automatically.
+ */
+export function createRedisEventBus(
+  url: string,
+  onError?: (err: unknown) => void,
+): RedisEventBus {
+  const pub = new Redis(url, { maxRetriesPerRequest: null, lazyConnect: false });
+  const sub = new Redis(url, { maxRetriesPerRequest: null, lazyConnect: false });
+  pub.on('error', (e) => onError?.(e));
+  sub.on('error', (e) => onError?.(e));
+  return new RedisEventBus(pub, sub, { onError });
+}

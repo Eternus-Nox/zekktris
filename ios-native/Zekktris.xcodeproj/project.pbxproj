@@ -1,0 +1,422 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0EFBBAFB7A69E99A08A0F085 /* Voice.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5F187A696EC8CAC9D837A4F /* Voice.swift */; };
+		1ECD00762CE6B71CBD905B52 /* Push.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3049E4EB8347C9C4E63FA39 /* Push.swift */; };
+		384A537D59460C34162951DE /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2232CBA6A56F9DFE142335BF /* Theme.swift */; };
+		40F515E3FE190F65007139CA /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0503A3312574F4248568EACD /* Keychain.swift */; };
+		55F6CBB55B4D73852E4C6094 /* Session.swift in Sources */ = {isa = PBXBuildFile; fileRef = D29D733AAD46444723023905 /* Session.swift */; };
+		583583622BA465A94561DE6B /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 83FB276D06CBDD1F5974ABD0 /* LiveKit */; };
+		5F41FABD554532C5B318DDCB /* MessageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F5AACAE9FF771E91106E82E /* MessageViews.swift */; };
+		61FF74D009D65D2054199944 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42797CA878D26DB332BEF804 /* Config.swift */; };
+		8E99A2F05E4F879FA6B3CF0C /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B29C5101ACD0AD964CE564A4 /* MainView.swift */; };
+		8FB40EE668DAB651B1A36DC6 /* AuthViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17409CC125FA64E8BD4AB3AA /* AuthViews.swift */; };
+		906E635F36708A5EBEBB8442 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAE4782BEFCECFF65F8EAD34 /* Components.swift */; };
+		927EF8923215A96F66A136F6 /* Gateway.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2136069A842EF82A1167EBC /* Gateway.swift */; };
+		A8063E459DE41FBCAAC5EC8D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B00D99F1C7CCFC6FE3B52D73 /* Assets.xcassets */; };
+		C11C9FD38A8F9B33DF12D3B2 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4B0548FCFD7075D00943D03 /* AppStore.swift */; };
+		D0F37BFCBEE259ACED492D79 /* ZekktrisApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B171229A0C558CF65D219D70 /* ZekktrisApp.swift */; };
+		D332A340A90AB44568410F28 /* ThreadViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9FA9F6B39015D93E0C768A2 /* ThreadViews.swift */; };
+		E3A9D7AF651C5C6724220ED4 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E9D6FF0387EF512329B39D5 /* Models.swift */; };
+		E4AB58F4FB01793924E57D89 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9F3789F4ADB83F7BDF66983 /* APIClient.swift */; };
+		E64B9F7A95C88E6C6B25CC72 /* VoiceMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32957B535EA27A17B00EEBCF /* VoiceMessage.swift */; };
+		EB8ECC29D87BB4388F1A8AB0 /* E2EE.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0503A3312574F4248568EACD /* Keychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keychain.swift; sourceTree = "<group>"; };
+		17409CC125FA64E8BD4AB3AA /* AuthViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthViews.swift; sourceTree = "<group>"; };
+		1E9D6FF0387EF512329B39D5 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		2232CBA6A56F9DFE142335BF /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		2F5AACAE9FF771E91106E82E /* MessageViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageViews.swift; sourceTree = "<group>"; };
+		2FE126AEC7DC839E13F12E94 /* Zekktris.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Zekktris.entitlements; sourceTree = "<group>"; };
+		32957B535EA27A17B00EEBCF /* VoiceMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceMessage.swift; sourceTree = "<group>"; };
+		42797CA878D26DB332BEF804 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
+		6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = E2EE.swift; sourceTree = "<group>"; };
+		928A96BF32CD0722F5B2AD6B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		B00D99F1C7CCFC6FE3B52D73 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B171229A0C558CF65D219D70 /* ZekktrisApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZekktrisApp.swift; sourceTree = "<group>"; };
+		B2136069A842EF82A1167EBC /* Gateway.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Gateway.swift; sourceTree = "<group>"; };
+		B29C5101ACD0AD964CE564A4 /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainView.swift; sourceTree = "<group>"; };
+		B4B0548FCFD7075D00943D03 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
+		B5F187A696EC8CAC9D837A4F /* Voice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Voice.swift; sourceTree = "<group>"; };
+		D29D733AAD46444723023905 /* Session.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Session.swift; sourceTree = "<group>"; };
+		D9F3789F4ADB83F7BDF66983 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		D9FA9F6B39015D93E0C768A2 /* ThreadViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadViews.swift; sourceTree = "<group>"; };
+		DAE4782BEFCECFF65F8EAD34 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
+		E3049E4EB8347C9C4E63FA39 /* Push.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Push.swift; sourceTree = "<group>"; };
+		F8BBAD9D14CEB87EDC845C3A /* Zekktris.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Zekktris.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		95A2D83F23F86AAEBDC90B71 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				583583622BA465A94561DE6B /* LiveKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		332519DF1A3E28CF16E7F315 = {
+			isa = PBXGroup;
+			children = (
+				429C77DDB5D4A1CEE2773387 /* Zekktris */,
+				B1C1C1E50B8397F67EB5AB5D /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		429C77DDB5D4A1CEE2773387 /* Zekktris */ = {
+			isa = PBXGroup;
+			children = (
+				D9F3789F4ADB83F7BDF66983 /* APIClient.swift */,
+				B4B0548FCFD7075D00943D03 /* AppStore.swift */,
+				B00D99F1C7CCFC6FE3B52D73 /* Assets.xcassets */,
+				17409CC125FA64E8BD4AB3AA /* AuthViews.swift */,
+				DAE4782BEFCECFF65F8EAD34 /* Components.swift */,
+				42797CA878D26DB332BEF804 /* Config.swift */,
+				6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */,
+				B2136069A842EF82A1167EBC /* Gateway.swift */,
+				928A96BF32CD0722F5B2AD6B /* Info.plist */,
+				0503A3312574F4248568EACD /* Keychain.swift */,
+				B29C5101ACD0AD964CE564A4 /* MainView.swift */,
+				2F5AACAE9FF771E91106E82E /* MessageViews.swift */,
+				1E9D6FF0387EF512329B39D5 /* Models.swift */,
+				E3049E4EB8347C9C4E63FA39 /* Push.swift */,
+				D29D733AAD46444723023905 /* Session.swift */,
+				2232CBA6A56F9DFE142335BF /* Theme.swift */,
+				D9FA9F6B39015D93E0C768A2 /* ThreadViews.swift */,
+				B5F187A696EC8CAC9D837A4F /* Voice.swift */,
+				32957B535EA27A17B00EEBCF /* VoiceMessage.swift */,
+				2FE126AEC7DC839E13F12E94 /* Zekktris.entitlements */,
+				B171229A0C558CF65D219D70 /* ZekktrisApp.swift */,
+			);
+			path = Zekktris;
+			sourceTree = "<group>";
+		};
+		B1C1C1E50B8397F67EB5AB5D /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				F8BBAD9D14CEB87EDC845C3A /* Zekktris.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		4F148025DEECAC5AAA31FEFD /* Zekktris */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B54FB9E40F385399E285C383 /* Build configuration list for PBXNativeTarget "Zekktris" */;
+			buildPhases = (
+				9F1C1476DE77542FDAD236D3 /* Sources */,
+				E747D35533817DFD195C2C9C /* Resources */,
+				95A2D83F23F86AAEBDC90B71 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Zekktris;
+			packageProductDependencies = (
+				83FB276D06CBDD1F5974ABD0 /* LiveKit */,
+			);
+			productName = Zekktris;
+			productReference = F8BBAD9D14CEB87EDC845C3A /* Zekktris.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		4230464D4664DE2E7495AA74 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					4F148025DEECAC5AAA31FEFD = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = A7499FB005E2502A0D873F25 /* Build configuration list for PBXProject "Zekktris" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 332519DF1A3E28CF16E7F315;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				FE7B864AB759FCC09DAB9FE1 /* XCRemoteSwiftPackageReference "client-sdk-swift" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = B1C1C1E50B8397F67EB5AB5D /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				4F148025DEECAC5AAA31FEFD /* Zekktris */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E747D35533817DFD195C2C9C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A8063E459DE41FBCAAC5EC8D /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		9F1C1476DE77542FDAD236D3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E4AB58F4FB01793924E57D89 /* APIClient.swift in Sources */,
+				C11C9FD38A8F9B33DF12D3B2 /* AppStore.swift in Sources */,
+				8FB40EE668DAB651B1A36DC6 /* AuthViews.swift in Sources */,
+				906E635F36708A5EBEBB8442 /* Components.swift in Sources */,
+				61FF74D009D65D2054199944 /* Config.swift in Sources */,
+				EB8ECC29D87BB4388F1A8AB0 /* E2EE.swift in Sources */,
+				927EF8923215A96F66A136F6 /* Gateway.swift in Sources */,
+				40F515E3FE190F65007139CA /* Keychain.swift in Sources */,
+				8E99A2F05E4F879FA6B3CF0C /* MainView.swift in Sources */,
+				5F41FABD554532C5B318DDCB /* MessageViews.swift in Sources */,
+				E3A9D7AF651C5C6724220ED4 /* Models.swift in Sources */,
+				1ECD00762CE6B71CBD905B52 /* Push.swift in Sources */,
+				55F6CBB55B4D73852E4C6094 /* Session.swift in Sources */,
+				384A537D59460C34162951DE /* Theme.swift in Sources */,
+				D332A340A90AB44568410F28 /* ThreadViews.swift in Sources */,
+				0EFBBAFB7A69E99A08A0F085 /* Voice.swift in Sources */,
+				E64B9F7A95C88E6C6B25CC72 /* VoiceMessage.swift in Sources */,
+				D0F37BFCBEE259ACED492D79 /* ZekktrisApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		430B159712443BBC1FEAA918 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "IconSunset IconForest IconCrimson IconBlossom IconAmethyst";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CODE_SIGN_ENTITLEMENTS = Zekktris/Zekktris.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4QF34MB8R3;
+				INFOPLIST_FILE = Zekktris/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zekktris.native;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		A17FD84F511FC28E6F4FE045 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		A55BE5544AED5600A54C9CE4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "IconSunset IconForest IconCrimson IconBlossom IconAmethyst";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CODE_SIGN_ENTITLEMENTS = Zekktris/Zekktris.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4QF34MB8R3;
+				INFOPLIST_FILE = Zekktris/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zekktris.native;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		FC142B906871DD547E9CD8B4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A7499FB005E2502A0D873F25 /* Build configuration list for PBXProject "Zekktris" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FC142B906871DD547E9CD8B4 /* Debug */,
+				A17FD84F511FC28E6F4FE045 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B54FB9E40F385399E285C383 /* Build configuration list for PBXNativeTarget "Zekktris" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A55BE5544AED5600A54C9CE4 /* Debug */,
+				430B159712443BBC1FEAA918 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		FE7B864AB759FCC09DAB9FE1 /* XCRemoteSwiftPackageReference "client-sdk-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/livekit/client-sdk-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.14.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		83FB276D06CBDD1F5974ABD0 /* LiveKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FE7B864AB759FCC09DAB9FE1 /* XCRemoteSwiftPackageReference "client-sdk-swift" */;
+			productName = LiveKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 4230464D4664DE2E7495AA74 /* Project object */;
+}

@@ -1,0 +1,468 @@
+/**
+ * Client-side E2EE for DMs — shared-key model
+ * --------------------------------------------
+ * Both users of a 1:1 DM share a single symmetric key, derived
+ * client-side from a passphrase one of them picks and tells the
+ * other via any out-of-band channel. The server never sees the
+ * passphrase or the derived key — only:
+ *
+ *   salt:     16 random bytes (base64) used by PBKDF2 alongside
+ *             the passphrase to deterministically derive the key.
+ *             Same on both clients.
+ *   verifier: SHA-256 of the derived key (base64). Lets each
+ *             client confirm "I typed the right password" without
+ *             the server learning the key.
+ *
+ * Algorithm: PBKDF2-SHA-256 (250 000 iterations, 32-byte output)
+ * → 256-bit symmetric key → AES-256-GCM with a 12-byte random IV
+ * per message (the AES-GCM standard). Every algorithm here is a
+ * recognized international standard (NIST FIPS / IETF RFC) — there is
+ * no proprietary or non-standard cipher in the message path.
+ *
+ * Wire format: `zkE2EE/3:<base64(iv(12) || ciphertext||tag)>` (AES-256-GCM)
+ * is the only format messages are written in OR read from.
+ *
+ * Legacy prefixes `zkE2EE/2:` (XSalsa20-Poly1305 / NaCl secretbox) and
+ * `zkE2EE/1:` (per-user keypair) are still recognized as encrypted but are
+ * NO LONGER decryptable — the XSalsa20 code path has been removed. Any
+ * messages remaining in those formats are dead history and render as
+ * "couldn't decrypt" tombstones.
+ *
+ * Local storage:
+ *   - `zekktris.e2ee.shared.<channelId>.v2` → the derived key
+ *     (base64). Cleared on disable; user re-types password to
+ *     restore on a new device, OR imports from a saved backup.
+ *
+ * Disabling clears the local cached key + server purges encrypted
+ * message history. Re-enabling generates a fresh salt; the old
+ * password is dead.
+ */
+
+import naclUtil from 'tweetnacl-util';
+
+const STORAGE_PREFIX = 'zekktris.e2ee.shared.';
+const STORAGE_SUFFIX = '.v2';
+// Wire-format prefixes. Messages are written in and read from v3
+// (AES-256-GCM) ONLY — the single cipher in the message path. The legacy
+// v2 (XSalsa20-Poly1305 / NaCl secretbox) and v1 (per-user keypair)
+// prefixes are still recognized so old messages render as "couldn't
+// decrypt" tombstones instead of raw ciphertext, but they are no longer
+// decryptable — the XSalsa20 code path has been removed.
+const WIRE_PREFIX_V3 = 'zkE2EE/3:';
+const WIRE_PREFIX_V2 = 'zkE2EE/2:';
+const KEY_BYTES = 32;
+const GCM_IV_BYTES = 12; // 96-bit IV — the AES-GCM standard
+const SALT_BYTES = 16;
+const PBKDF2_ITERATIONS = 250_000;
+
+// Latest wire/cipher version. The KEY scheme is unchanged (still the shared
+// PBKDF2 key), so stored keys / backups stay on their v2 layout.
+export const LATEST_VERSION = '3';
+
+const cache = new Map<string, Uint8Array>();
+
+// Cache of imported AES-GCM CryptoKeys, keyed by base64 of the raw key bytes.
+// crypto.subtle.importKey is async; caching the promise avoids re-importing on
+// every message in a conversation. Keyed by key-content, so a rotated key can
+// never collide with a stale entry.
+const aesKeyCache = new Map<string, Promise<CryptoKey>>();
+
+function importAesKey(keyBytes: Uint8Array): Promise<CryptoKey> {
+  const id = naclUtil.encodeBase64(keyBytes);
+  let p = aesKeyCache.get(id);
+  if (!p) {
+    p = crypto.subtle.importKey(
+      'raw',
+      keyBytes.slice() as BufferSource,
+      { name: 'AES-GCM' },
+      false,
+      ['encrypt', 'decrypt'],
+    );
+    aesKeyCache.set(id, p);
+  }
+  return p;
+}
+
+// ── Reactive key-availability tracking ──────────────────────────────────
+//
+// MessageItem decrypts inside a useMemo. Without a key-availability
+// signal in the memo's deps, a message rendered BEFORE the user
+// unlocked the conversation stays rendered as "Enter password" even
+// after the key arrives — the memo doesn't re-run. We export a
+// React-friendly subscribe API that increments a version counter
+// whenever any key is added/removed/imported so subscribed
+// components re-render in lockstep with key changes.
+//
+// Used via useSyncExternalStore in MessageItem:
+//   const ver = useSyncExternalStore(subscribeToKeyChanges, getKeyVersion);
+//   // include `ver` in the decryption useMemo's deps
+let keyVersion = 0;
+const keyListeners = new Set<() => void>();
+
+function notifyKeyChange(): void {
+  keyVersion++;
+  for (const fn of keyListeners) {
+    try {
+      fn();
+    } catch {
+      // listener errors must not affect other listeners
+    }
+  }
+}
+
+export function getKeyVersion(): number {
+  return keyVersion;
+}
+
+export function subscribeToKeyChanges(listener: () => void): () => void {
+  keyListeners.add(listener);
+  return () => {
+    keyListeners.delete(listener);
+  };
+}
+
+function storageKey(channelId: string): string {
+  return STORAGE_PREFIX + channelId + STORAGE_SUFFIX;
+}
+
+// ── Salt + key derivation ────────────────────────────────────────────────
+
+/**
+ * Generate a fresh 16-byte PBKDF2 salt. Called by the user who is
+ * enabling E2EE; the salt is uploaded to the server alongside the
+ * key verifier so the other participant can rederive the same key
+ * from the same passphrase.
+ */
+export function generateSalt(): string {
+  return naclUtil.encodeBase64(crypto.getRandomValues(new Uint8Array(SALT_BYTES)));
+}
+
+/**
+ * Derive the symmetric key from a passphrase + salt. Uses Web
+ * Crypto's PBKDF2-SHA-256 at 250 000 iterations — slow enough to
+ * make offline password-cracking computationally expensive while
+ * still completing in <1s on a typical phone. Returns the key
+ * base64-encoded.
+ *
+ * The same (password, salt) pair always produces the same key, so
+ * both participants in a DM arrive at the identical key without
+ * any server-mediated exchange of the key itself.
+ */
+export async function deriveKeyFromPassword(
+  password: string,
+  saltBase64: string,
+): Promise<string> {
+  const salt = naclUtil.decodeBase64(saltBase64);
+  const passwordBytes = naclUtil.decodeUTF8(password);
+  // Import the password as a "raw" key material for PBKDF2.
+  // crypto.subtle.importKey is the only way to feed bytes into the
+  // PBKDF2 step. Cast to BufferSource — TS narrows Uint8Array's
+  // backing buffer to ArrayBufferLike (could be SharedArrayBuffer)
+  // but Web Crypto only accepts plain ArrayBuffer; at runtime the
+  // call works either way.
+  const baseKey = await crypto.subtle.importKey(
+    'raw',
+    passwordBytes as BufferSource,
+    { name: 'PBKDF2' },
+    false,
+    ['deriveBits'],
+  );
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: salt as BufferSource,
+      iterations: PBKDF2_ITERATIONS,
+      hash: 'SHA-256',
+    },
+    baseKey,
+    KEY_BYTES * 8, // bits
+  );
+  return naclUtil.encodeBase64(new Uint8Array(derivedBits));
+}
+
+/**
+ * Compute the verifier hash for a derived key — base64 SHA-256.
+ * Server stores this; second user's client recomputes it from their
+ * typed password and checks it matches. Includes a domain-separation
+ * tag so this hash is never reusable for any other crypto purpose
+ * (a precaution against future protocol mistakes that might want
+ * to hash the same value differently).
+ */
+export async function computeVerifier(keyBase64: string): Promise<string> {
+  const keyBytes = naclUtil.decodeBase64(keyBase64);
+  // Domain-separate the verifier hash from any other use of the
+  // key. Without this, an attacker who learned the verifier might
+  // try to use it as input to some downstream operation that
+  // also hashes the key directly. The tag bytes break any such
+  // accidental overlap.
+  const tag = naclUtil.decodeUTF8('zkE2EE/verify-v2');
+  const combined = new Uint8Array(keyBytes.length + tag.length);
+  combined.set(keyBytes, 0);
+  combined.set(tag, keyBytes.length);
+  const hash = await crypto.subtle.digest('SHA-256', combined as BufferSource);
+  return naclUtil.encodeBase64(new Uint8Array(hash));
+}
+
+// ── Local key storage ────────────────────────────────────────────────────
+
+export function saveLocalKey(channelId: string, keyBase64: string): void {
+  const keyBytes = naclUtil.decodeBase64(keyBase64);
+  if (keyBytes.length !== KEY_BYTES) return;
+  cache.set(channelId, keyBytes);
+  try {
+    localStorage.setItem(storageKey(channelId), keyBase64);
+  } catch {
+    // Private mode etc — in-memory cache still works this session.
+  }
+  // Fire reactive notification so MessageItem (and anyone else who
+  // subscribed) re-renders against the freshly-available key.
+  notifyKeyChange();
+}
+
+export function getLocalKey(channelId: string): Uint8Array | null {
+  const cached = cache.get(channelId);
+  if (cached) return cached;
+  try {
+    const raw = localStorage.getItem(storageKey(channelId));
+    if (!raw) return null;
+    const bytes = naclUtil.decodeBase64(raw);
+    if (bytes.length !== KEY_BYTES) return null;
+    cache.set(channelId, bytes);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+export function hasLocalKey(channelId: string): boolean {
+  return getLocalKey(channelId) !== null;
+}
+
+export function clearLocalKey(channelId: string): void {
+  cache.delete(channelId);
+  try {
+    localStorage.removeItem(storageKey(channelId));
+  } catch {
+    // ignore
+  }
+  notifyKeyChange();
+}
+
+// ── Encrypt / decrypt ────────────────────────────────────────────────────
+
+/**
+ * Encrypt `plaintext` for the given DM using the local cached key.
+ * Returns the wire-format string or null if no local key exists.
+ * Caller should check hasLocalKey first or surface "enter password"
+ * UI when this returns null.
+ */
+export async function encryptForDm(
+  plaintext: string,
+  channelId: string,
+): Promise<string | null> {
+  const key = getLocalKey(channelId);
+  if (!key) return null;
+  try {
+    const cryptoKey = await importAesKey(key);
+    const iv = crypto.getRandomValues(new Uint8Array(GCM_IV_BYTES));
+    const plaintextBytes = naclUtil.decodeUTF8(plaintext);
+    // WebCrypto AES-GCM appends the 16-byte auth tag onto the ciphertext.
+    const ct = new Uint8Array(
+      await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv: iv as BufferSource },
+        cryptoKey,
+        plaintextBytes as BufferSource,
+      ),
+    );
+    const combined = new Uint8Array(iv.length + ct.length);
+    combined.set(iv, 0);
+    combined.set(ct, iv.length);
+    return WIRE_PREFIX_V3 + naclUtil.encodeBase64(combined);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decrypt a wire-format string back to plaintext using the local
+ * cached key. Returns null on any failure (no local key, malformed
+ * wire format, MAC failure).
+ */
+export async function decryptForDm(
+  wireFormat: string,
+  channelId: string,
+): Promise<string | null> {
+  const key = getLocalKey(channelId);
+  if (!key) return null;
+  try {
+    // v3 — AES-256-GCM (current). WebCrypto throws on an auth-tag mismatch,
+    // which the surrounding catch turns into a null (failed) result.
+    if (wireFormat.startsWith(WIRE_PREFIX_V3)) {
+      const combined = naclUtil.decodeBase64(wireFormat.slice(WIRE_PREFIX_V3.length));
+      if (combined.length <= GCM_IV_BYTES) return null;
+      const iv = combined.slice(0, GCM_IV_BYTES);
+      const ct = combined.slice(GCM_IV_BYTES);
+      const cryptoKey = await importAesKey(key);
+      const pt = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: iv as BufferSource },
+        cryptoKey,
+        ct as BufferSource,
+      );
+      return naclUtil.encodeUTF8(new Uint8Array(pt));
+    }
+    // v2 (legacy XSalsa20-Poly1305 / NaCl secretbox) and v1 (per-user
+    // keypair) are no longer decryptable — the XSalsa20 path was removed.
+    // They're still recognized as encrypted (see isEncryptedWireFormat) so
+    // they render as "couldn't decrypt" rather than as raw ciphertext.
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Cheap prefix check used by the message renderer to decide whether to
+ * attempt decryption. v3 is the only decryptable format; the legacy v2
+ * (XSalsa20) and v1 prefixes are still recognized so those old messages
+ * render as "couldn't decrypt" tombstones rather than raw ciphertext.
+ */
+export function isEncryptedWireFormat(s: string): boolean {
+  return (
+    s.startsWith(WIRE_PREFIX_V3) ||
+    s.startsWith(WIRE_PREFIX_V2) ||
+    s.startsWith('zkE2EE/1:')
+  );
+}
+
+// ── Voice/video call key material ─────────────────────────────────────────
+
+/**
+ * Produce raw key material for a 1:1 DM call's LiveKit media E2EE,
+ * derived from the SAME shared key this DM uses for message E2EE.
+ *
+ * Returns a fresh standalone ArrayBuffer holding the 32-byte derived
+ * key, suitable for LiveKit's ExternalE2EEKeyProvider.setKey() — which
+ * runs HKDF over the bytes to obtain the media key. Because both
+ * participants derive the identical key from the same password + salt
+ * (the verifier gate at unlock guarantees this), they feed setKey the
+ * same bytes and converge on the same media key, so each can decrypt
+ * the other's audio/video. Mismatched passwords mean different (or
+ * absent) keys, so the media is mutually undecryptable and the call
+ * carries no audio/video — the intended "calls won't work unless the
+ * passwords match" behavior.
+ *
+ * Returns null when there is nothing safe to key the call with:
+ *   - no key is cached locally for this channel (the user hasn't
+ *     unlocked the conversation on this device), or
+ *   - `expectedVerifier` is supplied and the cached key no longer
+ *     matches it — a stale key left over from a previous E2EE epoch
+ *     after the DM was disabled and re-enabled with a fresh salt.
+ *
+ * In either case the caller should refuse to start the call and prompt
+ * the user to (re-)enter the conversation password, rather than placing
+ * a call whose media the encrypted peer can't decode.
+ */
+export async function getCallKeyMaterial(
+  channelId: string,
+  expectedVerifier?: string | null,
+): Promise<ArrayBuffer | null> {
+  const keyBytes = getLocalKey(channelId);
+  if (!keyBytes || keyBytes.length !== KEY_BYTES) return null;
+  if (expectedVerifier) {
+    try {
+      const verifier = await computeVerifier(naclUtil.encodeBase64(keyBytes));
+      if (verifier !== expectedVerifier) return null;
+    } catch {
+      return null;
+    }
+  }
+  // .slice() returns a copy backed by a fresh ArrayBuffer sized to
+  // exactly KEY_BYTES. getLocalKey may hand back a Uint8Array that is a
+  // view onto a larger buffer (e.g. a cached subarray); copying first
+  // guarantees setKey() receives precisely the 32 key bytes — not a
+  // window into a bigger buffer that would hash to a different key.
+  return keyBytes.slice().buffer;
+}
+
+// ── Backup / restore ─────────────────────────────────────────────────────
+
+interface StoredKey {
+  keyBase64: string;
+  /** Approximate timestamp the key was first cached locally. Optional
+      so backups from older clients still import. */
+  cachedAt?: string;
+}
+
+export interface SharedKeysBackup {
+  type: 'zekktris-e2ee-shared-keys';
+  version: number;
+  exportedAt: string;
+  keys: Record<string, StoredKey>;
+}
+
+/**
+ * Bundle every cached shared-key from this device into a single
+ * backup object. Used by users who'd rather not remember their
+ * passphrase — the backup file restores access without needing
+ * to re-type the password on a new device.
+ *
+ * Returns null when no shared keys are cached locally.
+ */
+export function exportAllDmKeys(): SharedKeysBackup | null {
+  const keys: Record<string, StoredKey> = {};
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k) continue;
+      if (!k.startsWith(STORAGE_PREFIX)) continue;
+      if (!k.endsWith(STORAGE_SUFFIX)) continue;
+      const channelId = k.slice(STORAGE_PREFIX.length, -STORAGE_SUFFIX.length);
+      const raw = localStorage.getItem(k);
+      if (!raw) continue;
+      keys[channelId] = { keyBase64: raw };
+    }
+  } catch {
+    return null;
+  }
+  if (Object.keys(keys).length === 0) return null;
+  return {
+    type: 'zekktris-e2ee-shared-keys',
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    keys,
+  };
+}
+
+/**
+ * Restore per-DM keys from a backup file. Returns the list of
+ * channel ids successfully restored, or null on whole-file failure.
+ * Individual bad entries are silently skipped.
+ *
+ * Restored keys are saved BOTH in memory and to localStorage.
+ */
+export function importAllDmKeys(rawJson: string): string[] | null {
+  try {
+    const parsed = JSON.parse(rawJson) as Partial<SharedKeysBackup>;
+    if (parsed.type !== 'zekktris-e2ee-shared-keys') return null;
+    if (parsed.version !== 2) return null;
+    if (!parsed.keys || typeof parsed.keys !== 'object') return null;
+    const restored: string[] = [];
+    for (const [channelId, entry] of Object.entries(parsed.keys)) {
+      if (!entry || typeof entry !== 'object') continue;
+      if (typeof entry.keyBase64 !== 'string') continue;
+      try {
+        const bytes = naclUtil.decodeBase64(entry.keyBase64);
+        if (bytes.length !== KEY_BYTES) continue;
+        cache.set(channelId, bytes);
+        localStorage.setItem(storageKey(channelId), entry.keyBase64);
+        restored.push(channelId);
+      } catch {
+        // skip
+      }
+    }
+    if (restored.length > 0) notifyKeyChange();
+    return restored;
+  } catch {
+    return null;
+  }
+}

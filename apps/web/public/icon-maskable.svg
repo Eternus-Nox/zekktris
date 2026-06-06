@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="abyss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#0a0f1c" />
+      <stop offset="100%" stop-color="#131a2a" />
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="50%" r="40%">
+      <stop offset="0%"   stop-color="#3dd7ec" stop-opacity="0.32" />
+      <stop offset="50%"  stop-color="#9d7bff" stop-opacity="0.14" />
+      <stop offset="100%" stop-color="#ec5fb5" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="zsigil" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0"   stop-color="#3dd7ec" />
+      <stop offset="0.5" stop-color="#9d7bff" />
+      <stop offset="1"   stop-color="#ec5fb5" />
+    </linearGradient>
+  </defs>
+  <!-- Full-bleed background for Android adaptive icon masks -->
+  <rect x="0" y="0" width="1024" height="1024" fill="url(#abyss)" />
+  <rect x="0" y="0" width="1024" height="1024" fill="url(#halo)" />
+  <!-- Z scaled to the 80% safe zone. Original at viewBox 32×32 went
+       from (6,7) to (26,26) — width 20, height 19. Maskable scales
+       this to fit within a centered ~512px box (256→768). Each
+       coord shifted: (x-6)*32 = original 1024 coord, then for
+       maskable: scale by 0.8 and center.
+         (6,7)   → (256, 288)
+         (26,7)  → (768, 288)
+         (26,11) → (768, 390)
+         (13,22) → (435, 670)
+         (26,22) → (768, 670)
+         (26,26) → (768, 772)
+         (6,26)  → (256, 772)
+         (6,22)  → (256, 670)
+         (19,11) → (589, 390)
+         (6,11)  → (256, 390) -->
+  <path
+    d="M256 288 L768 288 L768 390 L435 670 L768 670 L768 772 L256 772 L256 670 L589 390 L256 390 Z"
+    fill="url(#zsigil)"
+  />
+  <path
+    d="M256 288 L768 288 L768 390 L435 670 L768 670 L768 772 L256 772 L256 670 L589 390 L256 390 Z"
+    fill="none"
+    stroke="#f3f6fa"
+    stroke-opacity="0.25"
+    stroke-width="3"
+    stroke-linejoin="round"
+  />
+</svg>

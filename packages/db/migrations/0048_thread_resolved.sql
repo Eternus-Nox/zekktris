@@ -1,0 +1,21 @@
+-- ── v1.77 forum thread completion ────────────────────────────────────────
+--
+-- Adds thread_resolved_at to channels. When non-null, the forum
+-- thread / post is marked as "complete" / "resolved". This is a
+-- soft signal:
+--
+--   - The thread is NOT archived or locked — it stays openly
+--     visible and accepts new replies.
+--   - It just renders with a visual marker (checkmark on the
+--     row, "Resolved" badge in the header) so participants
+--     and visitors know the question has been answered or the
+--     task is done.
+--
+-- Permission to toggle: the thread creator (op) + anyone with
+-- MANAGE_THREADS / MANAGE_MESSAGES on the parent forum.
+--
+-- Why TIMESTAMPTZ and not BOOLEAN: timestamps are strictly more
+-- informative (also encodes "when was this resolved") for
+-- effectively zero cost. UI casts to a boolean on the way out.
+
+ALTER TABLE channels ADD COLUMN thread_resolved_at TIMESTAMPTZ;

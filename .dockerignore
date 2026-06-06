@@ -1,0 +1,33 @@
+# Build artifacts and host-installed deps must never reach the image —
+# they'd either clobber the cleanly-installed in-image versions or balloon
+# the build context into the hundreds of megabytes.
+
+# Dependencies
+**/node_modules
+**/.pnpm-store
+
+# Build outputs
+**/dist
+**/build
+**/.turbo
+**/*.tsbuildinfo
+
+# IDE / OS noise
+.vscode
+.idea
+.DS_Store
+
+# Local env (the operator's secrets shouldn't be baked into the image —
+# compose injects them at runtime via env_file or the shell).
+.env
+.env.local
+
+# Logs / runtime data
+*.log
+/data
+/tmp
+
+# Git history isn't needed for image builds
+.git
+.gitignore
+.github

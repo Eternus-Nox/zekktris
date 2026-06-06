@@ -1,0 +1,41 @@
+# LiveKit server config for Zekktris's voice MVP.
+#
+# Single-node, no Redis (clustering not needed for self-hosted scale).
+# Single UDP port for media so we don't expose a wide range. The
+# `node_ip` (what LiveKit advertises to browsers in SDP) comes from
+# the LIVEKIT_RTC__NODE_IP env var set in docker-compose, which itself
+# is sourced from LIVEKIT_HOST in .env.
+
+# WebSocket signaling port. Browsers connect here first.
+port: 7880
+
+logging:
+  level: info
+  json: false
+
+rtc:
+  # Single UDP port — every participant's RTP traffic gets multiplexed
+  # over this one socket. Simpler firewall story than a UDP range.
+  udp_port: 7882
+
+  # TCP fallback for restrictive networks where UDP is blocked. Published
+  # on the host (docker-compose maps 7881/tcp) and advertised as an ICE-TCP
+  # candidate, so clients that can't get UDP through still connect instead
+  # of timing out. Keep it open in the firewall alongside UDP 7882.
+  tcp_port: 7881
+
+  # NOTE: how the advertised media IP is resolved (use_external_ip / node_ip)
+  # is set via environment variables in docker-compose.yml, NOT here. Keeping
+  # use_external_ip out of this file avoids livekit/livekit#4049, where a
+  # config-file use_external_ip:true silently overrides an explicitly pinned
+  # node IP. See the `livekit` service env block for the knobs:
+  #   LIVEKIT_USE_EXTERNAL_IP (default true → STUN-discover public IP)
+  #   LIVEKIT_HOST            (pin an explicit IP; requires the flag above=false)
+
+# Keys are loaded from LIVEKIT_KEYS env var (KEY: SECRET form).
+# Setting them inline here would be redundant.
+
+# No webhooks for round 2 — round 3 will add a webhook endpoint at
+# /api/v1/webhooks/livekit so we can reconcile participant-left events
+# against voice_states (covers the case where the browser dies without
+# a clean disconnect).

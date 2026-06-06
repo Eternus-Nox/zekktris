@@ -1,0 +1,1087 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ════════════════════════════════════════════════════════════════════
+   ZEKKTRIS — DESIGN TOKENS (CSS custom properties)
+   ════════════════════════════════════════════════════════════════════
+   These OKLCH values are the source of truth for the visual language.
+   Tailwind's utility classes resolve to the hex equivalents declared
+   in tailwind.config.js (because the utility generator runs at build
+   time and can't read CSS variables), but components that need
+   wide-gamut color — gradient strokes, glass edges, ambient halos —
+   reference these variables directly via `style={{...}}` or `var(...)`
+   in CSS. Both layers stay in sync by maintaining the OKLCH → hex
+   mapping deliberately. */
+
+:root {
+  /* Base surfaces — abyssal navy ladder */
+  --zk-void:        oklch(0.10 0.025 265);
+  --zk-void-2:      oklch(0.13 0.030 265);
+  --zk-shell:       oklch(0.16 0.032 265);
+  --zk-panel:       oklch(0.20 0.035 265);
+  --zk-panel-2:     oklch(0.24 0.038 265);
+  --zk-elev:        oklch(0.28 0.040 265);
+  --zk-hover:       oklch(0.32 0.045 265);
+
+  /* Edges */
+  --zk-line:        oklch(0.36 0.045 265 / 0.45);
+  --zk-line-soft:   oklch(0.50 0.05 265 / 0.18);
+  --zk-line-glow:   oklch(0.60 0.08 265 / 0.35);
+
+  /* Text */
+  --zk-ink-1:       oklch(0.97 0.012 265);
+  --zk-ink-2:       oklch(0.78 0.025 265);
+  --zk-ink-3:       oklch(0.58 0.030 265);
+  --zk-ink-4:       oklch(0.42 0.030 265);
+
+  /* Plasma accents — user-themeable primary, with fixed secondary/
+     tertiary for gradient strokes and multi-stop highlights */
+  --zk-cyan:        oklch(0.82 0.16 215);
+  --zk-violet:      oklch(0.72 0.20 290);
+  --zk-magenta:     oklch(0.72 0.22 335);
+  --zk-lime:        oklch(0.88 0.20 140);
+  --zk-amber:       oklch(0.82 0.18 75);
+  --zk-rose:        oklch(0.72 0.22 25);
+
+  /* Active accent — overrideable at runtime by the palette picker.
+     Defaults to cyan. The accent-2 / accent-3 pair are used on
+     gradient surfaces (SceneSwitcher pill, primary buttons) and the
+     glow stop. */
+  --accent:         var(--zk-cyan);
+  --accent-2:       var(--zk-violet);
+  --accent-3:       var(--zk-magenta);
+  --accent-glow:    oklch(0.82 0.16 215 / 0.45);
+
+  /* Radii — Zekktris's softer corner ladder */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+
+  /* Density multiplier — set per-user from the Settings palette. The
+     Shell reads this and rebases its row-height + spacing on it. */
+  --density: 1;
+
+  /* ── Themeable channels (R G B) ──────────────────────────────────────
+     Tailwind tokens (bg.*, accent*, line) resolve to rgb(var(--c-*) /
+     <alpha>). These defaults equal the original navy hex, so the
+     "Default" theme is unchanged. A [data-theme] block (below) swaps
+     these to re-skin the whole app at runtime. */
+  --c-bg-0: 10 15 28;
+  --c-bg-1: 14 20 34;
+  --c-bg-2: 19 26 42;
+  --c-bg-3: 28 36 56;
+  --c-line: 42 52 80;
+  --c-accent: 61 215 236;
+  --c-accent-soft: 45 182 200;
+  --c-accent-2: 157 123 255;
+  --c-accent-3: 236 95 181;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   THEMES — set via document.documentElement.dataset.theme (Settings →
+   Appearance). Each block swaps the channel vars (Tailwind utilities)
+   plus the direct semantic vars (glows / gradient strokes). The OLED
+   variants also drop the surface ladder to near-black.
+   ════════════════════════════════════════════════════════════════════ */
+
+/* Shared OLED surface ladder (applied by every *-oled theme). */
+[data-theme='oled'],
+[data-theme='sunset-oled'],
+[data-theme='forest-oled'],
+[data-theme='crimson-oled'],
+[data-theme='blossom-oled'],
+[data-theme='amethyst-oled'] {
+  --c-bg-0: 0 0 0;
+  --c-bg-1: 6 8 12;
+  --c-bg-2: 13 16 23;
+  --c-bg-3: 22 27 38;
+  --c-line: 36 43 60;
+  --zk-void: #000000;
+  --zk-void-2: #06080c;
+  --zk-shell: #0d1017;
+  --zk-panel: #161b26;
+  --zk-panel-2: #1c222f;
+  --zk-elev: #232838;
+  --zk-hover: #2a3040;
+}
+
+/* Orange + yellow (blue→orange, purple→yellow). */
+[data-theme='sunset'],
+[data-theme='sunset-oled'] {
+  --c-accent: 255 138 61;
+  --c-accent-soft: 224 112 42;
+  --c-accent-2: 255 209 61;
+  --c-accent-3: 255 122 122;
+  --accent: rgb(var(--c-accent));
+  --accent-2: rgb(var(--c-accent-2));
+  --accent-3: rgb(var(--c-accent-3));
+  --accent-glow: rgb(var(--c-accent) / 0.45);
+}
+
+/* Green + blue (blue→blue, purple→green). */
+[data-theme='forest'],
+[data-theme='forest-oled'] {
+  --c-accent: 61 155 255;
+  --c-accent-soft: 45 127 224;
+  --c-accent-2: 79 221 143;
+  --c-accent-3: 61 216 192;
+  --accent: rgb(var(--c-accent));
+  --accent-2: rgb(var(--c-accent-2));
+  --accent-3: rgb(var(--c-accent-3));
+  --accent-glow: rgb(var(--c-accent) / 0.45);
+}
+
+/* Red + grey (blue→red, purple→grey). */
+[data-theme='crimson'],
+[data-theme='crimson-oled'] {
+  --c-accent: 255 77 77;
+  --c-accent-soft: 224 58 58;
+  --c-accent-2: 154 163 184;
+  --c-accent-3: 255 128 128;
+  --accent: rgb(var(--c-accent));
+  --accent-2: rgb(var(--c-accent-2));
+  --accent-3: rgb(var(--c-accent-3));
+  --accent-glow: rgb(var(--c-accent) / 0.45);
+}
+
+/* Pink + peach (blue→pink, purple→peach). */
+[data-theme='blossom'],
+[data-theme='blossom-oled'] {
+  --c-accent: 255 95 162;
+  --c-accent-soft: 224 70 138;
+  --c-accent-2: 255 176 136;
+  --c-accent-3: 255 158 207;
+  --accent: rgb(var(--c-accent));
+  --accent-2: rgb(var(--c-accent-2));
+  --accent-3: rgb(var(--c-accent-3));
+  --accent-glow: rgb(var(--c-accent) / 0.45);
+}
+
+/* Purple + gold (blue→purple, purple→gold). */
+[data-theme='amethyst'],
+[data-theme='amethyst-oled'] {
+  --c-accent: 168 85 247;
+  --c-accent-soft: 139 63 214;
+  --c-accent-2: 245 185 66;
+  --c-accent-3: 216 167 255;
+  --accent: rgb(var(--c-accent));
+  --accent-2: rgb(var(--c-accent-2));
+  --accent-3: rgb(var(--c-accent-3));
+  --accent-glow: rgb(var(--c-accent) / 0.45);
+}
+
+/* Reset focus rings to use the accent color. Many of the controls below
+ * are bare buttons; without this they get a default browser ring that
+ * clashes with the dark palette. */
+@layer base {
+  /* Densify the entire app by rebasing rem to 15px (browser default
+   * 16px). Every Tailwind sizing token (text-sm, p-2, gap-1, etc.) is
+   * defined in rem, so this single change tightens fonts, paddings,
+   * and gaps proportionally — the Fluxer-style denser layout without
+   * touching component-level classes. iOS-zoom-prevention input
+   * override below keeps inputs at 16px on small screens regardless. */
+  html {
+    font-size: 15px;
+  }
+  body {
+    /* OpenType features Space Grotesk supports — ss01 swaps the
+     * single-story 'a' for a less ambiguous form at small sizes,
+     * cv11 tunes the lowercase 'l' to disambiguate from '1' / 'I'.
+     * Subtle but noticeable at 12-13px UI text. */
+    font-feature-settings: 'ss01', 'cv11';
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  :focus-visible {
+    outline: 2px solid theme('colors.accent.DEFAULT');
+    outline-offset: 2px;
+  }
+  input,
+  textarea,
+  select {
+    /* Without this, the browser/OS renders the native parts of these
+       controls in light mode — most visibly the <select> dropdown
+       popup on desktop and the full-screen picker wheel on iOS, which
+       come up stark white against the dark UI. Declaring the dark
+       scheme makes those native surfaces match the app. */
+    color-scheme: dark;
+  }
+  /* Belt-and-suspenders for the dropdown popup: some desktop browsers
+     (notably Chrome on Windows/Linux) still paint <option> rows white
+     even under color-scheme: dark, so set the colors explicitly. */
+  select option,
+  select optgroup {
+    background-color: theme('colors.bg.2');
+    color: theme('colors.ink.1');
+  }
+  ::selection {
+    background: var(--accent-glow);
+    color: white;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   ZEKKTRIS — AMBIENT BACKGROUND
+   ════════════════════════════════════════════════════════════════════
+   `.abyss` is mounted once at the Shell root as a fixed-position
+   pseudo-canvas behind everything else. Two layers:
+   - ::before paints soft plasma auroras at the four corners,
+     blurred and color-mixed for the deep-space-with-nebula feel
+   - ::after sprinkles tiny starfield dots so the void doesn't
+     feel like flat black
+   Both layers are pointer-events: none so they never intercept
+   clicks. */
+@layer components {
+  .abyss {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    overflow: hidden;
+  }
+  .abyss::before {
+    content: '';
+    position: absolute;
+    inset: -20%;
+    background:
+      radial-gradient(60% 50% at 12% 8%, oklch(0.55 0.22 290 / 0.18), transparent 60%),
+      radial-gradient(50% 40% at 92% 14%, oklch(0.70 0.18 215 / 0.16), transparent 65%),
+      radial-gradient(40% 30% at 78% 92%, oklch(0.65 0.22 335 / 0.12), transparent 70%),
+      radial-gradient(35% 28% at 18% 86%, oklch(0.70 0.18 195 / 0.10), transparent 70%);
+    filter: blur(40px);
+  }
+  .abyss::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image:
+      radial-gradient(1px 1px at 24% 30%, oklch(0.95 0.01 265 / 0.6) 50%, transparent 100%),
+      radial-gradient(1px 1px at 80% 12%, oklch(0.95 0.01 265 / 0.5) 50%, transparent 100%),
+      radial-gradient(1px 1px at 62% 78%, oklch(0.95 0.01 265 / 0.4) 50%, transparent 100%),
+      radial-gradient(1px 1px at 14% 70%, oklch(0.95 0.01 265 / 0.5) 50%, transparent 100%),
+      radial-gradient(1px 1px at 92% 56%, oklch(0.95 0.01 265 / 0.4) 50%, transparent 100%),
+      radial-gradient(1px 1px at 46% 22%, oklch(0.95 0.01 265 / 0.3) 50%, transparent 100%);
+  }
+
+  /* ════════════════════════════════════════════════════════════════
+     GLASSMORPHISM PANELS
+     ════════════════════════════════════════════════════════════════
+     `.glass` is the floating-panel surface used by the scene switcher,
+     modals, and the call banner. The double-layer treatment
+     (background gradient + top sheen) keeps the surface feeling
+     thicker than a flat translucent panel; `.glass-edge` adds a
+     subtle inner stroke that catches light at the rim. */
+  .glass {
+    background: linear-gradient(
+      180deg,
+      oklch(0.30 0.045 265 / 0.55),
+      oklch(0.18 0.035 265 / 0.55)
+    );
+    border: 1px solid var(--zk-line);
+    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    position: relative;
+  }
+  .glass::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    background: linear-gradient(180deg, oklch(0.95 0.02 265 / 0.06), transparent 30%);
+  }
+  .glass-edge {
+    position: relative;
+  }
+  .glass-edge::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(180deg, oklch(0.95 0.02 265 / 0.18), oklch(0.95 0.02 265 / 0.02));
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+            mask-composite: exclude;
+  }
+
+  /* Hex + squircle clips — used by Zekktris's guild glyphs (hex) and
+     server-rail brand tile (squircle). Components opt in by class. */
+  .zk-hex {
+    clip-path: polygon(25% 5%, 75% 5%, 100% 50%, 75% 95%, 25% 95%, 0% 50%);
+  }
+  .zk-squircle {
+    border-radius: 30%;
+  }
+
+  /* Modal / large-panel radius. Distinct from .zk-squircle because
+     squircle's 30% percentage works for small fixed-size avatars
+     (≈14px at 48×48) but balloons absurdly on large modals (60-80px
+     at 600px wide). A fixed pixel radius gives modals a "definitely
+     rounded, definitely not a soft squircle" feel that reads as
+     more crisp/structured. 14px puts it just shy of half a line-
+     height — visible curvature without softening corners into
+     blobs. */
+  .zk-modal {
+    border-radius: 14px;
+  }
+
+  /* Monospace chrome — channel timestamps, code chips, the small
+     all-caps "SCENES" label on the scene switcher. Slight letter-
+     spacing makes JetBrains Mono read better at the tiny sizes
+     used here. */
+  .zk-mono {
+    font-family: theme('fontFamily.mono');
+    letter-spacing: 0.01em;
+  }
+  .zk-cap {
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-family: theme('fontFamily.mono');
+    font-size: 10.5px;
+    color: var(--zk-ink-3);
+  }
+
+  /* Header strip used by standalone views (Discover, Mentions,
+     Settings, Admin, CreateServer, JoinServer, InvitePage, ForumView).
+     Pairs with the bulk-applied `h-12 border-b bg-bg-2/85 backdrop-blur-sm`
+     class string in those views to give the top strip a consistent
+     soft-bordered glass look. */
+  .zk-header-strip {
+    border-bottom-color: var(--zk-line-soft);
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   ZEKKTRIS — KEYFRAMES (live indicators)
+   ════════════════════════════════════════════════════════════════════
+   `.zk-orb-pulse` is the soft halo around a presence dot when a user
+   is actively in voice. Wave-bar drives the speaking visualizer
+   that appears next to mic-on participants in voice channels. */
+@layer utilities {
+  @keyframes zk-orb-pulse {
+    0%   { box-shadow: 0 0 0 0 var(--accent-glow), 0 0 0 1px var(--zk-shell); }
+    70%  { box-shadow: 0 0 0 6px oklch(from var(--accent) l c h / 0), 0 0 0 1px var(--zk-shell); }
+    100% { box-shadow: 0 0 0 0 oklch(from var(--accent) l c h / 0),     0 0 0 1px var(--zk-shell); }
+  }
+  .zk-orb-pulse { animation: zk-orb-pulse 2.4s ease-out infinite; }
+
+  /* Alien-wavelength pulse for the "is speaking" indicator. Replaces
+   * the Discord-style flat emerald ring with a multi-layer sonar
+   * ripple in the Zekktris cyan + violet accent colors — three
+   * offset box-shadows that expand outward and fade, producing the
+   * concentric "ping" look without any extra DOM. The three layers
+   * fire at different radii so the effect reads as a continuous
+   * ripple rather than a single ring, and the alpha-to-zero fades
+   * use oklch so the color stays true through the fade (rgba fades
+   * to white-grey on the way out which looks washed). 1.4s cycle
+   * paces ~50bpm — slow enough to feel deliberate, fast enough that
+   * sustained speech produces continuous motion. */
+  @keyframes zk-alien-pulse {
+    0% {
+      box-shadow:
+        0 0 0 0   oklch(.82 .16 215 / .55),
+        0 0 0 0   oklch(.72 .20 290 / .40),
+        0 0 0 0   oklch(.72 .22 335 / .25);
+    }
+    70% {
+      box-shadow:
+        0 0 0 5px  oklch(.82 .16 215 / .15),
+        0 0 0 10px oklch(.72 .20 290 / .10),
+        0 0 0 16px oklch(.72 .22 335 / 0);
+    }
+    100% {
+      box-shadow:
+        0 0 0 8px  oklch(.82 .16 215 / 0),
+        0 0 0 14px oklch(.72 .20 290 / 0),
+        0 0 0 20px oklch(.72 .22 335 / 0);
+    }
+  }
+  .zk-alien-pulse {
+    animation: zk-alien-pulse 1.4s ease-out infinite;
+    will-change: box-shadow;
+  }
+
+  /* Horizontal scroll for the single-line AlienWave. The path
+   * extends one full wave cycle past each edge of the viewBox; this
+   * keyframe translates the path by exactly one cycle (-6 viewBox
+   * units) over 0.9s and loops, which wraps seamlessly because the
+   * sine pattern is periodic and the extension covers the edges
+   * that would otherwise expose a gap during translation. */
+  @keyframes zk-alien-wave-scroll {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-6px); }
+  }
+  /* Animate the single solid path. translate operates in SVG user-
+   * space units, so the -6 viewBox-unit translation matches the
+   * 6-unit cycle width regardless of the SVG's rendered pixel size. */
+  .zk-alien-wave path {
+    animation: zk-alien-wave-scroll 0.9s linear infinite;
+    transform-box: fill-box;
+  }
+
+  /* AlienRing rotation. The wavy ring around the avatar spins
+   * slowly around its center — the wave peaks orbit the speaker's
+   * head like a transmission cycling. transform-box: fill-box +
+   * transform-origin: center pin the rotation to the path's own
+   * geometric center (50,50 in the viewBox). 8s/revolution is
+   * gentle: noticeable motion without strobing.
+   *
+   * Distinct keyframe from zk-alien-wave's translateX so they
+   * don't share behavior — earlier the ring inherited the wave's
+   * horizontal scroll and slid sideways instead of rotating. */
+  @keyframes zk-alien-ring-rotate {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+  .zk-alien-ring path {
+    animation: zk-alien-ring-rotate 8s linear infinite;
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+
+  @keyframes zk-wave {
+    0%, 100% { transform: scaleY(0.30); }
+    50%      { transform: scaleY(1.0); }
+  }
+  .zk-wave-bar {
+    display: inline-block;
+    width: 2px;
+    background: currentColor;
+    border-radius: 1px;
+    animation: zk-wave 1.3s ease-in-out infinite;
+  }
+
+  /* Spatial voice arena drift. The Zekktris mockup runs a JS tick
+   * loop (every 100ms) that perturbs each seat's x/y with sin/cos at
+   * different periods + phase offsets, producing a slow ambient
+   * orbit. We replicate that purely in CSS so there's zero JS
+   * overhead, the compositor can GPU-accelerate it, and React
+   * re-renders don't reset the animation phase.
+   *
+   * Two variant classes with offset timing so adjacent seats don't
+   * drift in lockstep (same trick the mockup achieves via tick/14+i
+   * vs tick/18+i*1.7). The keyframe traces an irregular oval over
+   * 18-22s with ±10px max excursion — gentle ambient motion that
+   * doesn't make the avatars hard to click. Per-tile randomized
+   * animation-delay (set inline) phase-shifts each seat so they're
+   * all in different parts of their orbit. */
+  /* Slow ambient orbit of the participant constellation around the
+   * arena center. Replaces the per-seat drift wobble — drift could
+   * push adjacent seats into each other on close ring radii. Orbit
+   * is a rigid rotation of the whole group, so relative spacing is
+   * preserved at all angles. 90s per full revolution is barely
+   * perceptible during a conversation (≈4°/second). */
+  /* Black-hole accretion disk: a conic gradient that rotates at high
+   * speed around the singularity at the arena center. The gradient
+   * cycles through orange→red→amber to mimic the spectral coloring of
+   * a real accretion disk (heated dust emitting blackbody radiation).
+   * Linear timing — any easing produces a stutter at this rotation
+   * speed. 4s/rev is energetic enough to read as "active" without
+   * being so fast it strobes. */
+  @keyframes zk-blackhole-disk {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+  .zk-blackhole-disk {
+    animation: zk-blackhole-disk 4s linear infinite;
+    will-change: transform;
+  }
+
+  /* Speaking glow for rectangular video/stream feature tiles. A
+     pulsing cyan→violet inset border + outer shadow, matching the
+     SpeakingRing palette used on circular avatars. The pulse keeps
+     the tile readable (no full opaque overlay) while clearly
+     signalling who's talking. */
+  @keyframes zk-speaking-glow {
+    0%, 100% {
+      box-shadow:
+        inset 0 0 0 2px rgba(61, 215, 236, 0.7),
+        0 0 12px 1px rgba(157, 123, 255, 0.45);
+    }
+    50% {
+      box-shadow:
+        inset 0 0 0 2px rgba(157, 123, 255, 0.85),
+        0 0 18px 3px rgba(61, 215, 236, 0.55);
+    }
+  }
+  .zk-speaking-glow {
+    animation: zk-speaking-glow 1.6s ease-in-out infinite;
+  }
+
+  /* Solar flares — radial plume paths that pulse outward from the
+   * accretion disk. The flame SVG paths are positioned by their
+   * parent <g transform="rotate(N)"> (orientation around the
+   * center); this CSS controls the per-flame opacity + scale pulse.
+   *
+   * transform-box: fill-box + transform-origin 50% 100% pin the
+   * scale pivot to the BASE of the flame. In path coordinates the
+   * flame extends from y=-32 (tip) to y=-13 (base); in fill-box
+   * terms y=-13 is the bottom of the bbox (100%), so origin 50%
+   * 100% sits at the base. ScaleY > 1 elongates the flame outward
+   * (away from the disk surface). ScaleX at the peak adds a slight
+   * billowing bulge.
+   *
+   * Animation duration is set PER-FLARE inline (5.3s/6.7s/7.1s/
+   * 8.3s/4.9s) so the five flares never re-sync after their first
+   * cycle. The visible portion is brief (~14% of each cycle) so
+   * the flares feel like sporadic eruptions rather than a clockwork
+   * pulse — at any moment usually only 0-1 flares are bright. */
+  @keyframes zk-blackhole-flare {
+    0%, 100% {
+      opacity: 0;
+      transform: scaleY(0.5) scaleX(0.85);
+    }
+    38% {
+      opacity: 1;
+    }
+    45% {
+      transform: scaleY(1.4) scaleX(1.1);
+    }
+    52% {
+      opacity: 1;
+    }
+  }
+  .zk-blackhole-flare {
+    transform-box: fill-box;
+    transform-origin: 50% 100%;
+    opacity: 0;
+    animation-name: zk-blackhole-flare;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: infinite;
+    will-change: opacity, transform;
+  }
+
+  /* Swallow animation: pulls a participant tile from its last orbital
+   * position into the central black hole. Custom properties supply
+   * the starting position (set inline by the caller). The keyframes
+   * interpolate left/top FROM (--from-x, --from-y) TO (50%, 50%), with
+   * scale collapsing to near-zero and rotation winding up — physically
+   * suggests the tile being torn apart by tidal forces and spaghetti-
+   * fied across the event horizon. cubic-bezier(0.55, 0, 1, 0.45) is
+   * an ease-in curve: slow initial drift, accelerating into a rapid
+   * fall-in. Mimics gravitational attraction better than linear or
+   * standard ease. */
+  @keyframes zk-blackhole-swallow {
+    0% {
+      left: var(--from-x);
+      top: var(--from-y);
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1) rotate(0deg);
+    }
+    70% {
+      opacity: 0.6;
+    }
+    100% {
+      left: 50%;
+      top: 50%;
+      opacity: 0;
+      transform: translate(-50%, -50%) scale(0.05) rotate(720deg);
+    }
+  }
+  .zk-blackhole-swallow {
+    animation: zk-blackhole-swallow 1.2s cubic-bezier(0.55, 0, 1, 0.45) forwards;
+    will-change: left, top, opacity, transform;
+  }
+
+  /* Orbit rotation driven by a single registered CSS custom property
+   * (--orbit-angle). Both the orbiting container (.zk-orbit) AND each
+   * counter-rotating seat (.zk-orbit-counter) read this ONE animated
+   * value, so they're always perfectly in sync regardless of when
+   * each element mounted — a seat that joins mid-call reads the same
+   * current value of --orbit-angle as a seat that's been there since
+   * page load, and applies the exact negation. No phase drift.
+   *
+   * Without this approach, two independent CSS animations on different
+   * DOM nodes drift apart whenever one mounts later than the other —
+   * the original symptom was: after page refresh, the participant
+   * list loads asynchronously, the counter-rotation animations start
+   * at 0° while .zk-orbit was already mid-rotation, and the net visual
+   * effect was avatars tilted by whatever angle the orbit had reached
+   * before participants arrived (often ~90° depending on load timing).
+   *
+   * @property registration makes --orbit-angle an interpolatable
+   * typed value (CSS Houdini); without it, custom properties are
+   * unanimated strings. Browsers without @property support (very few
+   * now) fall back to the initial value (0deg) — the orbit just
+   * doesn't rotate, no broken visuals. */
+  @property --orbit-angle {
+    syntax: '<angle>';
+    inherits: true;
+    initial-value: 0deg;
+  }
+  @keyframes zk-orbit-angle {
+    from { --orbit-angle: 0deg; }
+    to   { --orbit-angle: 360deg; }
+  }
+  .zk-orbit {
+    animation: zk-orbit-angle 90s linear infinite;
+    transform: rotate(var(--orbit-angle));
+    transform-origin: 50% 50%;
+    will-change: transform;
+  }
+  /* Counter-rotation: same variable, negated. As --orbit-angle
+   * increases over the 90s cycle, this applies the equal-and-opposite
+   * rotation — net rotation on the wrapped content is always 0deg.
+   * The variable cascades from the .zk-orbit ancestor so this works
+   * regardless of when the .zk-orbit-counter element was created. */
+  .zk-orbit-counter {
+    transform: rotate(calc(0deg - var(--orbit-angle)));
+    transform-origin: 50% 50%;
+    will-change: transform;
+  }
+
+  /* Arena participant slot sizing. Mobile (default) is 25% smaller
+   * than tablet+ — the arena gets crowded fast at phone widths
+   * because the avatars + their alien-ring overlays compete for the
+   * same vmin budget as the orbital gaps between seats.
+   *
+   * Tablet/desktop (sm breakpoint = 640px+) uses the original size:
+   * clamp(56px min, 13vmin ideal, 144px max).
+   *
+   * Mobile uses the 75%-scaled variant: clamp(42px, 9.75vmin, 108px).
+   * Uniform 0.75 multiplier on all three knobs so the proportional
+   * behavior matches at every viewport. */
+  .zk-arena-slot {
+    width: clamp(42px, 9.75vmin, 108px);
+  }
+  @media (min-width: 640px) {
+    .zk-arena-slot {
+      width: clamp(56px, 13vmin, 144px);
+    }
+  }
+
+  /* Legacy drift keyframes — kept in case any other component still
+   * references the class names. Voice arena no longer uses them. */
+  @keyframes zk-drift-a {
+    0%   { transform: translate(0px,  0px); }
+    20%  { transform: translate(8px, -5px); }
+    40%  { transform: translate(4px, -9px); }
+    55%  { transform: translate(-3px, -7px); }
+    70%  { transform: translate(-7px,  2px); }
+    85%  { transform: translate(-4px,  8px); }
+    100% { transform: translate(0px,  0px); }
+  }
+  @keyframes zk-drift-b {
+    0%   { transform: translate(0px,  0px); }
+    18%  { transform: translate(-6px,  7px); }
+    36%  { transform: translate(-9px,  3px); }
+    52%  { transform: translate(-5px, -6px); }
+    72%  { transform: translate(5px, -8px); }
+    88%  { transform: translate(8px,  4px); }
+    100% { transform: translate(0px,  0px); }
+  }
+  .zk-drift-a {
+    animation: zk-drift-a 18s ease-in-out infinite;
+    will-change: transform;
+  }
+  .zk-drift-b {
+    animation: zk-drift-b 22s ease-in-out infinite;
+    will-change: transform;
+  }
+
+  /* Slow rotation of the concentric rings behind the seats. The
+   * mockup doesn't rotate the rings, but giving them slow rotation
+   * sells the "this is a living space" feeling — the alternative
+   * is dead static lines that visually compete with the drifting
+   * circles. 90s rotation is slow enough to be subconscious; faster
+   * and the eye tracks it. */
+  @keyframes zk-arena-spin {
+    0%   { transform: translate(-50%, -50%) rotate(0deg); }
+    100% { transform: translate(-50%, -50%) rotate(360deg); }
+  }
+  .zk-arena-spin {
+    animation: zk-arena-spin 90s linear infinite;
+    will-change: transform;
+  }
+  .zk-arena-spin-reverse {
+    animation: zk-arena-spin 120s linear infinite reverse;
+    will-change: transform;
+  }
+}
+
+/* Scrollbar styling — chrome's defaults are fine elsewhere but the
+ * channel/messages columns benefit from thinner, less obtrusive bars.
+ * We scope these to a single class so we don't touch the whole document. */
+@layer utilities {
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: theme('colors.bg.3');
+    border-radius: 4px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background-color: transparent;
+  }
+  /* Hide the scrollbar entirely while keeping scroll behavior — used by
+   * horizontally-scrollable pill rows (e.g. the supervised-view tabs on
+   * mobile) where a visible bar would look noisy. */
+  .zk-no-scrollbar {
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* old Edge */
+  }
+  .zk-no-scrollbar::-webkit-scrollbar {
+    display: none; /* WebKit */
+  }
+}
+
+/* Jump-highlight — used by PinPanel/SearchPanel when the user clicks a
+ * pin/result and we scroll to the message in the main view. The amber
+ * flash fades over 1.5s so the user can spot the message they jumped
+ * to before it returns to normal styling. */
+@layer utilities {
+  .jump-highlight {
+    animation: jump-flash 1.5s ease-out;
+  }
+  @keyframes jump-flash {
+    0% {
+      background-color: rgba(245, 158, 11, 0);
+    }
+    15% {
+      background-color: rgba(245, 158, 11, 0.25);
+    }
+    100% {
+      background-color: rgba(245, 158, 11, 0);
+    }
+  }
+}
+
+/* Prevent iOS Safari from auto-zooming when the user focuses an input
+ * with font-size < 16px. Mobile only; tablet/desktop keep their dense
+ * Tailwind sizing.
+ *
+ * Layer note: this used to live inside @layer base, but Tailwind utility
+ * classes like text-base / text-sm sit in @layer utilities (a higher
+ * layer), so any input or textarea with a Tailwind size utility
+ * defeated the 16px floor. Moving the rules out of @layer base puts
+ * them in the implicit "no-layer" bucket which has the highest cascade
+ * priority of all the layers — utilities lose to it on a tie of
+ * specificity. Per-component code can still opt into smaller font sizes
+ * by using text-[length:...] arbitrary values larger than 16px on
+ * mobile or by using a media query inline.
+ *
+ * Attribute selectors like input[type='text'] only match when the type
+ * attribute is LITERALLY present in the markup. A bare <input />
+ * defaults to text-behavior but won't match input[type='text']. The
+ * input:not([type]) entry catches those. */
+@media (max-width: 639px) {
+  input:not([type]),
+  input[type='text'],
+  input[type='email'],
+  input[type='password'],
+  input[type='search'],
+  input[type='url'],
+  input[type='tel'],
+  input[type='number'],
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+/* ── Polish layer ──────────────────────────────────────────────────────
+ * Universal refinements that lift the perceived quality of the app
+ * without per-component churn. Each rule is cheap and scoped narrowly
+ * to avoid collateral damage to existing layout work.
+ *
+ * 1. Typography: tighten letter-spacing on the uppercase tracking-wider
+ *    helper that ships with Tailwind so SECTION HEADERS read as
+ *    deliberate labels rather than spaced-out text. Also set body
+ *    line-height a hair higher for readability.
+ * 2. Elevated surfaces: modals and popovers get a soft shadow so they
+ *    visually float above the chrome instead of sitting flush. The
+ *    .elevation-pop and .elevation-modal utilities are opt-in.
+ * 3. Subtle hover ramp on interactive rows: the existing hover:bg-bg-3
+ *    pattern is fine but feels abrupt; a 120ms transition softens it
+ *    everywhere we use the .row-hover utility.
+ * 4. Borders: most internal dividers use `border-line` which is the
+ *    same as bg-3. We add `.border-soft` as a dimmer alternative for
+ *    places where the standard divider looks too heavy.
+ */
+@layer base {
+  body {
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Tracking-wider headers (uppercase section labels) — make them
+   * feel intentional rather than just spaced out. The default
+   * tailwind tracking-wider is 0.05em; bumping to 0.08em with a
+   * touch more weight reads as deliberate UI typography. */
+  .uppercase.tracking-wider {
+    letter-spacing: 0.08em;
+    font-weight: 600;
+  }
+}
+
+@layer utilities {
+  .elevation-pop {
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.25),
+      0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+  .elevation-modal {
+    box-shadow:
+      0 4px 6px rgba(0, 0, 0, 0.25),
+      0 24px 48px rgba(0, 0, 0, 0.5);
+  }
+
+  .row-hover {
+    transition: background-color 120ms ease-out, color 120ms ease-out;
+  }
+
+  /* Replacement border color for places where the default `border-line`
+   * (which equals bg-3) feels too punchy. Use sparingly. */
+  .border-soft {
+    border-color: rgba(255, 255, 255, 0.06);
+  }
+
+  /* Selected/active row indicator. Zekktris idiom: a 2px cyan rail-pin
+   * on the leading edge, a soft accent-tinted background, and a tiny
+   * outer glow that gives the row a sense of being "lit" against the
+   * abyss. Matches the guild-rail active tile's treatment at a row
+   * scale. Used by ChannelList and DMList. */
+  .row-active {
+    background-color: rgba(61, 215, 236, 0.10);
+    color: var(--ink-1, #f3f6fa);
+    box-shadow:
+      inset 2px 0 0 0 var(--accent),
+      0 0 12px var(--accent-glow);
+  }
+}
+
+/* CSS-variable shims so the row-active utility above and other inline
+ * styles can lean on the same palette tokens Tailwind uses. Mirror just
+ * the few that need to be reachable from raw CSS (Tailwind utility
+ * classes get the colors at build time; these vars cover the gap for
+ * components that style via `style={{ ... }}` or .row-active above). */
+@layer base {
+  :root {
+    --accent: #3dd7ec;
+    --ink-1: #f3f6fa;
+  }
+}
+
+/* Smooth focus transitions for buttons and inputs — sharper rings still
+ * appear, but the underlying color/background change eases in. */
+@layer base {
+  button,
+  input,
+  textarea,
+  select,
+  a {
+    transition: background-color 120ms ease-out, border-color 120ms ease-out,
+      color 120ms ease-out, opacity 120ms ease-out;
+  }
+}
+
+/* Selection color: the default browser blue-on-blue is hard to read
+ * against the dark surfaces. Use the accent color at low opacity so
+ * selected text stays legible. */
+::selection {
+  background: rgba(88, 101, 242, 0.4);
+  color: #ffffff;
+}
+
+/* ── PWA / mobile-specific styling ────────────────────────────────────────
+ *
+ * When the app runs in standalone mode (installed to home screen), the
+ * browser chrome is gone and our own UI fills the entire screen — including
+ * the iOS notch / Dynamic Island area at the top and the home-indicator
+ * area at the bottom. The viewport meta has viewport-fit=cover so we paint
+ * under those system regions; here we add interior padding equal to the
+ * safe-area inset values so chat content doesn't slide under them.
+ *
+ * IMPORTANT: We do NOT pad body itself, because some modals/popovers use
+ * Portal to render as body's direct children with `fixed inset-0`. Padding
+ * on body would clip them. Instead we expose the inset values as CSS
+ * variables that the Shell wrapper applies as its own padding — so chrome
+ * stays in the safe zone but full-screen overlays still cover the entire
+ * physical viewport. The .safe-area-padded utility class encodes this.
+ *
+ * env(safe-area-inset-*) is 0 in browsers without notches OR when running
+ * in a normal browser tab (where the OS UI handles its own safe regions),
+ * so these rules are no-ops outside standalone PWA mode on devices with
+ * notches. The `top: max(...)` ensures we always reserve at least 0px
+ * (defensive against unexpected env() resolution).
+ *
+ * The body becomes the canvas. We use min-height: 100dvh so iOS Safari's
+ * dynamic toolbar resize doesn't make the bottom of the chat suddenly
+ * unreachable. dvh = dynamic viewport height, finally lands the "address
+ * bar shrinks the page" issue iOS has had since 2015.
+ */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+}
+
+html, body {
+  /* dvh respects iOS's collapsing/expanding URL bar. */
+  height: 100dvh;
+  /* Disable rubber-band overscroll on iOS so pull-down doesn't dim the app
+   * with a white background. Important for chat — overscroll on the
+   * messages list is fine because that's a scrollable child container,
+   * but the document itself never scrolls. */
+  overscroll-behavior: none;
+}
+
+/* While the on-screen keyboard is open in the native iOS shell, the
+ * WKWebView frame shrinks (Capacitor Keyboard resize: 'native'), so anything
+ * pinned to the bottom of the now-shorter viewport — the guild rail's
+ * Admin/Family/Settings/Sign-out cluster — would float up over the keyboard.
+ * native.ts toggles `.zk-keyboard-open` on <body> from the Capacitor keyboard
+ * events; hide that cluster while typing and restore it on dismiss. The class
+ * is never set on web/desktop, so this is a no-op there. */
+body.zk-keyboard-open .zk-rail-actions {
+  display: none;
+}
+
+/* Apply this to the top-level Shell container (and the auth screens) so
+ * chrome respects the notch + landscape sensor cutouts. We deliberately
+ * DO NOT pad the bottom here — the elements that actually live against
+ * the screen bottom (composer, voice control bar, drawer asides) each
+ * carry their own `pb-[env(safe-area-inset-bottom)]` so their bg color
+ * extends ALL THE WAY to the physical edge while their interactive
+ * content stays clear of the iOS home indicator. Padding the wrapper
+ * instead would shrink the whole app upward by the indicator height
+ * and expose the body bg as a visible band beneath the composer —
+ * which is what we were seeing on iPhone in PWA mode.
+ *
+ * Modals that Portal directly into body intentionally bypass this so
+ * they can paint full-bleed. */
+.safe-area-padded {
+  padding-top: var(--safe-top);
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+  box-sizing: border-box;
+}
+
+/* Disable text selection on UI chrome (sidebars, headers, buttons). Long-
+ * press on iOS otherwise selects text in nav labels — annoying and offers
+ * no value. The chat content area itself (.select-text or default body
+ * text) keeps normal selection. */
+.no-select {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Global selection policy. By default NOTHING in the app is selectable
+ * — server rails, avatars, usernames, buttons, list rows, etc. — so
+ * users don't accidentally highlight UI chrome. Only message text
+ * (opted in via .zk-select-text on the message body) and editable form
+ * fields can be selected and copied. user-select inherits, so marking
+ * the message body is enough for its nested spans/links/code, but we
+ * include the descendant selector for robustness against resets. */
+#root {
+  -webkit-user-select: none;
+  user-select: none;
+}
+#root input,
+#root textarea,
+#root [contenteditable="true"],
+#root .zk-select-text,
+#root .zk-select-text * {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Tap-highlight color: iOS's default is a translucent grey rectangle that
+ * flashes when you tap any tappable element. With dense chat UIs that
+ * flash on every tap is visually noisy. We disable it globally; explicit
+ * :active states and our own hover styles convey the feedback instead. */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Standalone-mode adjustments. When running as a PWA we hide any UI
+ * affordances that only make sense in a browser tab (e.g. an "open in
+ * browser" link), and tighten paddings since we're not competing with
+ * a URL bar. */
+@media (display-mode: standalone) {
+  /* Reserved for future standalone-specific tweaks. The :root rule
+   * exists so a CSS-only selector matches; consumers can read
+   * --is-standalone with getComputedStyle if they need to feature-
+   * detect from JS. */
+  :root {
+    --is-standalone: 1;
+  }
+  /* Paint the area behind the notch the same color as the app surface
+   * so the dark surround stays uniform (otherwise iOS shows the system
+   * bg color through the notch which can look mismatched). */
+  html, body {
+    background-color: theme('colors.bg.1');
+  }
+}
+
+/* Disable iOS's "double-tap to zoom" — in a chat app, double-tap is a
+ * gesture we want to repurpose (e.g. for reactions, eventually) and the
+ * 300ms zoom delay also makes single-taps feel sluggish. touch-action
+ * manipulation gives us fast, single-tap clicks. */
+html {
+  touch-action: manipulation;
+}
+
+/* Honor reduced-motion preferences. The jump-highlight, focus
+ * transitions, and any future animations should stay still for users
+ * who've requested it via OS-level accessibility settings. */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Kill transitions while the window is being resized.
+ *
+ * The browser fires `resize` events continuously while a user drags the
+ * window edge. Every layout shift those events trigger can also fire
+ * any CSS `transition-*` rule attached to elements that move — the
+ * trailing edge of those transitions keeps animating for ~150-300ms
+ * after the user stops dragging, producing the "slow-motion drag"
+ * effect where the UI keeps creeping after the mouse stops.
+ *
+ * We add `is-resizing` to <body> on the first resize event and remove
+ * it on a short debounce after the last event (see main.tsx). While
+ * the class is present, this rule overrides every transition/animation
+ * duration to effectively zero — layout changes snap instantly so
+ * resize feels native.
+ *
+ * The `*` selector plus `::before`/`::after` covers every descendant
+ * including pseudo-elements (some hover indicators use ::after with a
+ * transition). `!important` is necessary because most transition
+ * classes are also marked important via Tailwind's specificity tricks. */
+body.is-resizing,
+body.is-resizing *,
+body.is-resizing *::before,
+body.is-resizing *::after {
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+  animation-duration: 0.01ms !important;
+}
+
+/* Message-flash: brief background highlight applied to a message
+ * row when the user navigates to it via a message link or jumps to
+ * it from search results. Both Tailwind's accent and a soft fade
+ * are used so the affordance reads at a glance without staying
+ * around long enough to distract from continued reading. */
+@keyframes message-flash {
+  0%   { background-color: rgba(88, 101, 242, 0.25); }
+  100% { background-color: transparent; }
+}
+.message-flash {
+  animation: message-flash 1.6s ease-out;
+  border-radius: 0.375rem;
+}

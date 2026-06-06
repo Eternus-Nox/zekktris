@@ -1,0 +1,33 @@
+{
+  "name": "zekktris-desktop",
+  "version": "1.0.0",
+  "description": "Zekktris desktop app — the communications app for communities.",
+  "homepage": "https://zekktris.com",
+  "author": "Zekktris <support@zekktris.com>",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build:main": "esbuild src/main.ts --bundle --platform=node --target=node18 --external:electron --outfile=dist/main.js",
+    "build:preload": "esbuild src/preload.ts --bundle --platform=node --target=node18 --external:electron --outfile=dist/preload.js",
+    "copy:static": "node -e \"const fs=require('fs');fs.mkdirSync('dist/static',{recursive:true});for(const f of fs.readdirSync('static'))fs.copyFileSync('static/'+f,'dist/static/'+f)\"",
+    "build": "npm run build:main && npm run build:preload && npm run copy:static",
+    "dev": "npm run build && electron .",
+    "start": "electron .",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:linux": "npm run build && electron-builder --linux",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "esbuild": "^0.21.0",
+    "typescript": "^5.5.0"
+  }
+}

@@ -1,0 +1,255 @@
+# Commune — Caddy reverse proxy + SPA host
+# -----------------------------------------
+# {$PUBLIC_URL} is the site address. Caddy parses this as protocol + host:
+#   - https://chat.example.com   →  HTTPS with auto Let's Encrypt cert
+#   - http://chat.example.com    →  HTTP only (no cert)
+#   - http://localhost           →  local dev / no-domain LAN
+#
+# The routing model: anything that starts with /api, /cdn, /gateway, or
+# /health is the API's territory. Everything else is the SPA — Caddy
+# serves the static bundle from /srv/web with a try_files fallback to
+# index.html so client-side routes resolve on hard refresh.
+{
+	# ACME registration is anonymous by default — no email required.
+	# If you want Let's Encrypt to send certificate-renewal warnings,
+	# uncomment the line below and put your address. We don't template
+	# it from ACME_EMAIL because Caddy's parser rejects an empty value
+	# and there's no portable conditional-include syntax in Caddyfiles.
+	#
+	# email you@example.com
+
+	# TLS behavior is driven by the site address scheme:
+	#   https://...       → auto-provision via Let's Encrypt
+	#   http://hostname   → plain HTTP only
+	#   localhost / IP    → plain HTTP only (no cert possible)
+
+	# Enable HTTP/3 (QUIC) alongside h1/h2. Only takes effect on the
+	# HTTPS deployment path (h3 is TLS-only and browsers won't negotiate
+	# it over plain http://). Faster connection setup + better behavior
+	# on lossy/mobile networks. Requires the HTTPS port mapped as UDP too
+	# (see docker-compose proxy ports).
+	servers {
+		protocols h1 h2 h3
+	}
+}
+
+# Listen on the configured HTTP port for ANY host header. This is the right
+# default for self-hosted use because the same install is hit by multiple
+# names: localhost from the box itself, the LAN IP from other machines, an
+# mDNS hostname from phones, sometimes a hostname.duckdns.org from outside.
+# Matching on a single Host (the previous {$PUBLIC_URL} syntax) silently
+# black-holed every request that didn't use that exact host.
+#
+# Trade-off: Caddy's auto-TLS won't kick in here because there's no
+# hostname to provision a cert for. To run on a real domain with TLS,
+# either: (a) front this stack with an edge proxy that terminates TLS,
+# or (b) replace `:{$HTTP_PORT:5550}` below with `https://your-domain.com`
+# and bump HTTP_PORT/HTTPS_PORT in your .env to 80/443. PUBLIC_URL in the
+# api's env still drives outgoing absolute URLs (invite links, CDN URLs)
+# regardless of which mode you pick.
+# ── Listen address ───────────────────────────────────────────────────────────
+# SITE_ADDRESS controls how Caddy serves the app. Default `:5550` listens on
+# that port for ANY host header — the right default for self-hosted/LAN use,
+# where the same install is reached by localhost, the LAN IP, an mDNS name,
+# etc. (Matching a single Host silently black-holed every other name.)
+#
+# To serve a real domain with automatic HTTPS, set SITE_ADDRESS to the full
+# https URL in your .env and map the standard ports, e.g.:
+#
+#     SITE_ADDRESS=https://zekktris.com
+#     HTTP_PORT=80          # ACME HTTP-01 challenge + HTTP->HTTPS redirect
+#     HTTPS_PORT=443        # TLS (also mapped as UDP for HTTP/3)
+#     COOKIE_SECURE=true
+#
+# With an https:// site address Caddy auto-provisions a Let's Encrypt cert,
+# listens on 443, and redirects 80->443. Requirements: a DNS A/AAAA record for
+# the domain pointing at this host, and ports 80+443 open to the internet.
+#
+# If you already have an edge proxy (Cloudflare Tunnel, nginx, Traefik, ...)
+# terminating TLS, leave SITE_ADDRESS at the default `:5550` and point that
+# proxy at this host:5550 instead.
+#
+# Custom LAN port with no domain? Set SITE_ADDRESS=:8080 (match HTTP_PORT).
+{$SITE_ADDRESS::5550} {
+	encode zstd gzip
+
+	# Security headers — modest defaults that don't break anything. CSP
+	# is intentionally NOT set here because the SPA bundle uses inline
+	# styles via Tailwind/Vite; tightening it is a follow-up.
+	header {
+		# Don't leak referrer to third parties
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Block clickjacking
+		X-Frame-Options "SAMEORIGIN"
+		# Block MIME sniffing
+		X-Content-Type-Options "nosniff"
+		# Permissions-Policy. `(self)` means "the document can use this
+		# feature, but iframes from other origins cannot". The mic and
+		# camera are allowed because voice/video is core functionality;
+		# geolocation stays denied — we never use it. If you embed
+		# Commune in an iframe on another domain, voice will still
+		# work as long as that page sets `allow="microphone; camera"`
+		# on the iframe.
+		Permissions-Policy "geolocation=(), microphone=(self), camera=(self)"
+		# Hide the server token
+		-Server
+	}
+
+	# ── API ────────────────────────────────────────────────────────────
+	# All four prefixes route to the same upstream container. We give
+	# /gateway its own block so the websocket upgrade is explicit.
+
+	# ── CDN media (served directly by Caddy) ───────────────────────────
+	# Uploaded files are content-addressed (/cdn/<id>/<file>) and
+	# immutable, so Caddy can serve them straight off the upload volume —
+	# taking all media bandwidth OFF the Node API (Caddy's file_server is
+	# far more efficient: sendfile, range requests, no event-loop cost).
+	#
+	# SAFETY: the upload volume is mounted read-only at /srv/cdn (see
+	# docker-compose). The global `nosniff` header above already applies.
+	# We additionally force any non-inline-safe type (html/svg/xml/js/css)
+	# to download as octet-stream so a malicious upload can't be served as
+	# renderable HTML (stored XSS) — mirroring what the API does.
+	#
+	# GRACEFUL FALLBACK: the `@cdnfile file` matcher only matches when the
+	# requested path actually exists on disk under /srv. If it doesn't
+	# (volume not mounted yet, or a DB-referenced file that's missing),
+	# the request falls through to the API exactly as before. So shipping
+	# this Caddyfile WITHOUT mounting the volume changes nothing.
+	@cdn path /cdn/*
+	handle @cdn {
+		root * /srv
+		@cdnfile file
+		handle @cdnfile {
+			header Cache-Control "public, max-age=31536000, immutable"
+			@cdndanger path_regexp \.(html?|xht|xhtml|svg|svgz|xml|js|mjs|css)$
+			header @cdndanger Content-Disposition "attachment"
+			header @cdndanger Content-Type "application/octet-stream"
+			file_server
+		}
+		# Not on disk → let the API handle it (current behavior).
+		reverse_proxy api:3000 {
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# ── API ────────────────────────────────────────────────────────────
+	# /api, /health (and /cdn misses, handled above) route to the API.
+	# /gateway has its own block for the websocket upgrade.
+
+	@api path /api/* /health
+	handle @api {
+		reverse_proxy api:3000 {
+			# Pass through the original Host so the API can compute absolute
+			# URLs for invite links, CDN URLs, etc.
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	@gateway path /gateway
+	handle @gateway {
+		reverse_proxy api:3000 {
+			# Long-running websocket connection. Caddy upgrades automatically
+			# when the client sends Upgrade: websocket — explicit transport
+			# settings just make the timeouts sane for a long-lived stream.
+			transport http {
+				keepalive 5m
+				keepalive_idle_conns 100
+			}
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# ── LiveKit (self-hosted voice/video SFU) signaling ────────────────
+	# The bundled LiveKit container handles voice/video. We reverse-proxy
+	# its WebSocket SIGNALING through Caddy at /livekit so the browser
+	# connects on the app's own origin — same host, same TLS cert, no
+	# extra public port and no mixed-content errors on an https:// site.
+	# handle_path strips the /livekit prefix, so the LiveKit client's
+	# /livekit/rtc lands on /rtc at the SFU.
+	#
+	# IMPORTANT: only signaling is proxied here. The actual audio/video
+	# media is WebRTC over UDP 7882 (+ TCP 7881 fallback) and flows directly
+	# between the browser and the host — it does NOT pass through Caddy. With
+	# LiveKit on host networking it advertises the host's LAN IP (same-LAN
+	# clients connect directly) and, via STUN, the public IP; open/forward
+	# UDP 7882 + TCP 7881 for clients that aren't on the LAN.
+	#
+	# LiveKit runs on host networking, so it is NOT reachable as `livekit`
+	# from this container — we reach it via host.docker.internal (the api and
+	# proxy services declare it under extra_hosts in docker-compose.yml).
+	#
+	# If you instead point voice at LiveKit Cloud (LIVEKIT_WS_URL set to a
+	# wss://…livekit.cloud URL), this block is simply never used.
+	handle_path /livekit/* {
+		reverse_proxy host.docker.internal:7880 {
+			transport http {
+				keepalive 5m
+				keepalive_idle_conns 100
+			}
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# ── Desktop auto-update feed ───────────────────────────────────────
+	# electron-updater fetches latest.yml + the installer (+ *.blockmap)
+	# from here. handle_path strips the prefix so /desktop/updates/foo
+	# serves /srv/desktop-updates/foo. file_server supports HTTP range
+	# requests, which electron-updater relies on for delta downloads.
+	# Drop new release artifacts into the mounted directory (see
+	# docker-compose proxy volume) on each release.
+	handle_path /desktop/updates/* {
+		root * /srv/desktop-updates
+		file_server
+	}
+
+	# ── Marketing website ──────────────────────────────────────────────
+	# The standalone landing/marketing site, hosted on the backbone but kept
+	# fully secluded from the SPA: its own files (/srv/site, baked from the
+	# repo's marketing/ dir), its own route, no overlap with the app bundle.
+	# handle_path strips the /site prefix, so /site/ → /srv/site/index.html.
+	# try_files keeps it resilient to sub-paths and trailing slashes.
+	handle_path /site/* {
+		root * /srv/site
+		try_files {path} /index.html
+		file_server
+	}
+	# Bare /site (no trailing slash) → /site/ so relative refs resolve.
+	redir /site /site/ 308
+
+	# ── SPA ────────────────────────────────────────────────────────────
+	# Everything else is the SPA. The try_files fallback to index.html is
+	# what makes client-side routing work on hard refresh — Caddy serves
+	# index.html for any path that doesn't match a real file.
+
+	handle {
+		root * /srv/web
+
+		# Content-hashed build assets (Vite emits /assets/<name>-<hash>.<ext>).
+		# The hash changes whenever the contents change, so these are safe
+		# to cache FOREVER and never revalidate — this is what makes repeat
+		# loads instant and keeps asset requests off the server. A new build
+		# produces new filenames, so clients pick up changes automatically.
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+
+		# Everything else — the HTML shell (served for every SPA route), the
+		# service worker, the web manifest, unhashed icons — must always be
+		# revalidated so a new deploy (and the SW update banner) is picked up
+		# promptly. no-cache = "may store, but revalidate before using".
+		@revalidate {
+			not path /assets/*
+		}
+		header @revalidate Cache-Control "no-cache"
+
+		try_files {path} /index.html
+		file_server
+	}
+
+	# Compact log line — one per request — written to stdout for
+	# `docker compose logs proxy` visibility on unraid.
+	log {
+		output stdout
+		format console
+	}
+}

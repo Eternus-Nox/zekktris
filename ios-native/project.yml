@@ -1,0 +1,67 @@
+name: Zekktris
+options:
+  bundleIdPrefix: com.zekktris
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "16.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+packages:
+  LiveKit:
+    url: https://github.com/livekit/client-sdk-swift.git
+    from: "2.14.1"
+
+targets:
+  Zekktris:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: Zekktris
+    dependencies:
+      - package: LiveKit
+    info:
+      path: Zekktris/Info.plist
+      properties:
+        CFBundleDisplayName: Zekktris
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        ITSAppUsesNonExemptEncryption: false
+        NSMicrophoneUsageDescription: "Zekktris uses your microphone for voice channels, calls, and voice messages."
+        NSCameraUsageDescription: "Zekktris uses your camera for video calls and to set your avatar."
+        NSPhotoLibraryAddUsageDescription: "Zekktris can save images you receive to your photo library."
+        NSFaceIDUsageDescription: "Zekktris uses Face ID to unlock the app and keep your conversations private."
+        UIBackgroundModes:
+          - audio
+          - voip
+          - remote-notification
+    entitlements:
+      path: Zekktris/Zekktris.entitlements
+      properties:
+        aps-environment: development
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: YES
+        ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES: "IconSunset IconForest IconCrimson IconBlossom IconAmethyst"
+        # Set your Apple Developer Team in Xcode (Signing & Capabilities)
+        # or uncomment and fill in here:
+        # DEVELOPMENT_TEAM: XXXXXXXXXX

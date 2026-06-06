@@ -1,0 +1,341 @@
+# Zekktris — docker compose orchestration
+# ---------------------------------------
+# Four services:
+#   proxy   — Caddy with the SPA baked in; the only public-facing container
+#   api     — Node.js + tsx; runs migrations + startup checks before serving
+#   db      — Postgres 16-alpine with persistent data
+#   cache   — Redis 7-alpine, optional gateway pubsub backend
+#
+# Data persistence uses bind mounts under ${APPDATA_PATH}. The default —
+# /mnt/user/appdata/zekktris — is the unraid appdata path, so a fresh
+# unraid deployment needs no edit. For local development or non-unraid
+# hosts, set APPDATA_PATH in the .env to a path that exists on your box
+# (e.g. ./data inside the repo, or ~/zekktris-data).
+#
+# To start:    docker compose up -d
+# To stop:     docker compose down
+# To rebuild:  docker compose build --no-cache && docker compose up -d
+#
+# Required env vars (see .env.example):
+#   PUBLIC_URL, DB_PASSWORD, JWT_SECRET, JWT_REFRESH_SECRET
+
+# ──────────────────────────────────────────────────────────────────────────
+
+services:
+  proxy:
+    build:
+      context: .
+      dockerfile: ops/Dockerfile.web
+    image: zekktris-proxy:latest
+    container_name: zekktris-proxy
+    restart: unless-stopped
+    # Host:container port mapping is N:N so the ports match inside and out.
+    # For LAN use, the 5550/5551 defaults are fine. To serve a real domain
+    # with HTTPS, set HTTP_PORT=80 and HTTPS_PORT=443 in .env (and set
+    # SITE_ADDRESS=https://your-domain.com). Caddy needs 80 for the ACME
+    # challenge + HTTP->HTTPS redirect and 443 for TLS (UDP 443 = HTTP/3).
+    ports:
+      - "${HTTP_PORT:-5550}:${HTTP_PORT:-5550}"
+      - "${HTTPS_PORT:-5551}:${HTTPS_PORT:-5551}"
+      # HTTP/3 (QUIC) rides on UDP at the HTTPS port. Only used on the
+      # https:// deployment path; harmless otherwise.
+      - "${HTTPS_PORT:-5551}:${HTTPS_PORT:-5551}/udp"
+    environment:
+      # How Caddy serves the app. Default ":5550" = listen on HTTP_PORT for
+      # any host (LAN/self-hosted). Set SITE_ADDRESS=https://your-domain.com
+      # (plus HTTP_PORT=80, HTTPS_PORT=443) to serve a real domain with
+      # automatic HTTPS. See ops/Caddyfile for the full explanation.
+      SITE_ADDRESS: ${SITE_ADDRESS:-:5550}
+      HTTP_PORT: ${HTTP_PORT:-5550}
+      # PUBLIC_URL is informational here — the API uses it for outgoing URLs
+      # (email links, invite links, CDN URLs). It does NOT control what Caddy
+      # listens on; that's SITE_ADDRESS above.
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:5550}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      # Caddy stores certs + config here. Persisting it across recreations
+      # avoids re-issuing certs (which is rate-limited by Let's Encrypt).
+      - ${APPDATA_PATH:-/mnt/user/appdata/zekktris}/caddy-data:/data
+      - ${APPDATA_PATH:-/mnt/user/appdata/zekktris}/caddy-config:/config
+      # Desktop auto-update feed. Drop release artifacts (the installer,
+      # latest.yml, *.blockmap) here; Caddy serves them at
+      # /desktop/updates/. electron-updater in the desktop app polls this.
+      - ${APPDATA_PATH:-/mnt/user/appdata/zekktris}/desktop-updates:/srv/desktop-updates
+      # Uploaded media, READ-ONLY. Lets Caddy serve /cdn/* straight off
+      # disk (file_server) instead of proxying every media request to the
+      # Node API. Same host path the api writes to. Read-only is enough —
+      # Caddy only ever reads. If this mount is absent, the Caddyfile
+      # falls back to proxying /cdn to the api, so nothing breaks.
+      - ${APPDATA_PATH:-/mnt/user/appdata/zekktris}/uploads:/srv/cdn:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    # LiveKit runs on host networking (see its service), so it's not reachable
+    # by the name `livekit` from this bridge network. host.docker.internal
+    # resolves to the host so the /livekit signaling proxy in ops/Caddyfile can
+    # reach it at host.docker.internal:7880. Needs Docker 20.10+ (unraid has it).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - zekktris
+
+  api:
+    build:
+      context: .
+      dockerfile: ops/Dockerfile.api
+    image: zekktris-api:latest
+    container_name: zekktris-api
+    restart: unless-stopped
+    environment:
+      # DATABASE_URL — connection string for the api → postgres.
+      # The postgres user + database are named `commune` for legacy
+      # reasons (the project's original codename). The application
+      # name is Zekktris, but the DB identifiers stay as commune to
+      # avoid the operational risk of an in-place rename on the
+      # existing data volume. Override DATABASE_URL in .env if you
+      # want a different user/database entirely.
+      #
+      # For a FRESH install on an empty data volume, the db service
+      # below will initialize with POSTGRES_USER + POSTGRES_DB =
+      # commune to match this default.
+      DATABASE_URL: ${DATABASE_URL:-postgres://commune:${DB_PASSWORD:?DB_PASSWORD must be set in .env}@db:5432/commune}
+      # Connection pool size. Raise for busier instances.
+      DB_POOL_MAX: ${DB_POOL_MAX:-10}
+      # Prepared statements. Default false for pgBouncer (transaction
+      # pooling) safety. If the api connects DIRECTLY to Postgres (the
+      # default compose setup does — no pgBouncer in front), set this to
+      # true for a free query-plan-caching speedup.
+      DB_PREPARED: ${DB_PREPARED:-false}
+      REDIS_URL: redis://cache:6379
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:5550}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env (>=32 chars)}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET must be set in .env (>=32 chars, different from JWT_SECRET)}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-open}
+      ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-900}
+      REFRESH_TOKEN_TTL_SECONDS: ${REFRESH_TOKEN_TTL_SECONDS:-2592000}
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-100}
+      MAX_FILES_PER_MESSAGE: ${MAX_FILES_PER_MESSAGE:-10}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      WORKER_ID: ${WORKER_ID:-0}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      TRUST_PROXY: "true"   # we're behind Caddy; X-Forwarded-* are trusted
+      # ── Federation (backbone role) ─────────────────────────────────────
+      # Off by default. To act as a federation backbone (let others host
+      # guild nodes against you), set both in .env: the switch AND a base64url
+      # Ed25519 PKCS8 signing key. Federation stays INERT with the switch on
+      # but the key missing/invalid — the API logs a ready-to-paste sample
+      # key on boot. KEY_ID + BACKBONE_ID are optional (sane defaults).
+      FEDERATION_ENABLED: ${FEDERATION_ENABLED:-false}
+      FEDERATION_SIGNING_KEY: ${FEDERATION_SIGNING_KEY:-}
+      FEDERATION_KEY_ID: ${FEDERATION_KEY_ID:-fed-1}
+      FEDERATION_AUTO_APPROVE: ${FEDERATION_AUTO_APPROVE:-false}
+      BACKBONE_ID: ${BACKBONE_ID:-}
+      # LiveKit (voice/video). The stack ships a self-hosted LiveKit SFU
+      # (the `livekit` service below) that runs by default, so voice works
+      # out of the box. setup.sh generates a unique key/secret on first run;
+      # the dev defaults here only exist so a bare `docker compose up` still
+      # has working voice on a LAN — DO NOT ship them to production untouched
+      # (run setup.sh, or set your own LIVEKIT_API_KEY/SECRET in .env).
+      #
+      # To use LiveKit Cloud instead of the bundled SFU, set LIVEKIT_WS_URL
+      # to your wss://…livekit.cloud URL (plus the cloud key/secret) and the
+      # bundled service simply goes unused.
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-devsecret-do-not-use-in-production-32chars}
+      # Browser-facing LiveKit URL. Leave EMPTY to use the bundled SFU: the
+      # API then derives a same-origin wss://<PUBLIC_URL host>/livekit URL
+      # that Caddy reverse-proxies to the LiveKit container (see ops/Caddyfile),
+      # so signaling rides the app's own host + TLS cert. Set this only to
+      # point voice at an external SFU (e.g. LiveKit Cloud).
+      LIVEKIT_WS_URL: ${LIVEKIT_WS_URL:-}
+      # Server→SFU admin API (RoomServiceClient, used to evict users from
+      # voice rooms). Talks to the LiveKit container directly over the
+      # internal docker network — never through Caddy.
+      LIVEKIT_HTTP_URL: ${LIVEKIT_HTTP_URL:-http://host.docker.internal:7880}
+      # SMTP (outbound email — password reset, future notifications).
+      # All optional; missing SMTP_HOST or SMTP_FROM disables sending
+      # and routes that need it return 503 with "this server hasn't
+      # enabled email". Recommended providers (which give you SMTP
+      # creds + a domain-verification flow):
+      #   - Resend     smtp.resend.com:587, user "resend", pass = API key
+      #   - Brevo      smtp-relay.brevo.com:587
+      #   - SendGrid   smtp.sendgrid.net:587, user "apikey"
+      #   - Mailgun    smtp.mailgun.org:587
+      # Cloudflare Email Routing is RECEIVE-ONLY — it can't send.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      # Web Push (browser notifications). VAPID keys are generated
+      # once and reused forever — regenerating them invalidates every
+      # existing subscription. Setup script creates these on first
+      # run; missing keys disable push entirely.
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_CONTACT_EMAIL: ${VAPID_CONTACT_EMAIL:-}
+      # Defaults baked into the Dockerfile: NODE_ENV, HOST, PORT, UPLOAD_DIR
+    volumes:
+      # Attachments. The CDN endpoint streams from this same directory.
+      - ${APPDATA_PATH:-/mnt/user/appdata/zekktris}/uploads:/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    # LiveKit runs on host networking and isn't reachable as `livekit` from the
+    # bridge; the api reaches its admin API (token/room ops) via
+    # host.docker.internal:7880 (LIVEKIT_HTTP_URL above). Requires Docker 20.10+.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - zekktris
+
+  db:
+    image: postgres:16-alpine
+    container_name: zekktris-db
+    restart: unless-stopped
+    # Postgres runtime tuning.
+    command:
+      - "postgres"
+      # Log any statement slower than 300ms to `docker logs zekktris-db`.
+      # Cheap, and the fastest way to find slow queries. Set -1 to disable.
+      - "-c"
+      - "log_min_duration_statement=300"
+      # ── Memory tuning ──────────────────────────────────────────────
+      # Conservative values that beat Postgres' tiny defaults (128MB
+      # shared_buffers) while staying safe on a modest box — they assume
+      # at least ~2GB is available to Postgres. shared_buffers is the only
+      # large up-front allocation; effective_cache_size is just a planner
+      # hint (no memory is reserved for it). To scale up for N GB dedicated
+      # to Postgres: shared_buffers ~25% of N, effective_cache_size ~50-75%
+      # of N (e.g. for 4GB: 1GB / 3GB), and raise work_mem cautiously since
+      # it's per-sort, per-connection. Leave fsync / synchronous_commit at
+      # their safe defaults — these are performance knobs only.
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "effective_cache_size=1GB"
+      - "-c"
+      - "work_mem=16MB"
+      - "-c"
+      - "maintenance_work_mem=128MB"
+      # ── Planner / IO (SSD-backed storage) ──────────────────────────
+      # Postgres' defaults assume spinning disks. unraid appdata/cache is
+      # typically SSD, so lower the random-read cost (so the planner picks
+      # index scans appropriately) and raise IO concurrency for bitmap
+      # scans. Harmless on HDD; just set random_page_cost back to 4 if so.
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "effective_io_concurrency=200"
+    environment:
+      # User/DB name. For a FRESH install, postgres uses these to
+      # initialize the volume. The Zekktris project keeps the
+      # postgres identifiers as `commune` (the original codename)
+      # so existing deployments don't need an in-place rename.
+      POSTGRES_USER: commune
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
+      POSTGRES_DB: commune
+    volumes:
+      - ${APPDATA_PATH:-/mnt/user/appdata/zekktris}/db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U commune -d commune"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - zekktris
+
+  cache:
+    image: redis:7-alpine
+    container_name: zekktris-cache
+    restart: unless-stopped
+    # Optional in v1: gateway pubsub uses the in-memory bus by default. The
+    # service is started anyway so it's ready when the bus is swapped in
+    # later (no breaking config changes).
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks:
+      - zekktris
+
+  # ── LiveKit (self-hosted voice/video SFU) ──────────────────────────────────
+  #
+  # Bundled and ON BY DEFAULT — a standalone Zekktris instance hosts its own
+  # voice/video, no external service required. `docker compose up -d` brings
+  # it up alongside the rest of the stack.
+  #
+  # How clients reach it:
+  #   - SIGNALING (WebSocket): proxied by Caddy at /livekit, so the browser
+  #     connects on the app's own origin (same host + TLS cert). The API
+  #     hands clients a same-origin wss://<host>/livekit URL automatically
+  #     when LIVEKIT_WS_URL is left empty. No need to expose port 7880.
+  #   - MEDIA (WebRTC): this is the part that needs reachable ports. RTP
+  #     flows over UDP 7882; restrictive networks that block UDP fall back
+  #     to ICE-over-TCP on 7881. BOTH are published below and BOTH must be
+  #     reachable from browsers (open them in the host firewall, and on a
+  #     home/NAT setup forward them on the router). Media never goes through
+  #     Caddy. If neither port is reachable you get "negotiation timed out"
+  #     and an endless reconnect loop — that's the #1 self-host gotcha.
+  #
+  # Advertised media IP (what the SFU puts in its ICE candidates):
+  #   - Default: LIVEKIT_USE_EXTERNAL_IP=true → the SFU STUN-discovers its
+  #     public IP. Correct for most internet-facing hosts.
+  #   - Pin it explicitly (LAN-only, or when STUN finds the wrong address —
+  #     a symptom of which is ERR_ADDRESS_INVALID in the browser console):
+  #     set LIVEKIT_HOST=<reachable IP> AND LIVEKIT_USE_EXTERNAL_IP=false.
+  #     (LiveKit ignores a pinned node IP while use_external_ip is true —
+  #     livekit/livekit#4049 — so the two MUST be set together.)
+  #
+  # To use LiveKit Cloud instead, set LIVEKIT_WS_URL (+ key/secret) in .env;
+  # this container then goes unused (you can stop it).
+  livekit:
+    # Pinned to a v1.9 line so it speaks the same signaling protocol (16) as
+    # the bundled livekit-client — older servers (e.g. v1.7) 404 the client's
+    # /rtc/v1 probe and force a fallback round-trip on every connect.
+    # Override with LIVEKIT_IMAGE_TAG to pin a specific patch.
+    image: livekit/livekit-server:${LIVEKIT_IMAGE_TAG:-v1.9}
+    container_name: zekktris-livekit
+    restart: unless-stopped
+    command: ["--config", "/etc/livekit.yaml"]
+    # HOST NETWORKING IS REQUIRED for WebRTC. On the default Docker bridge the
+    # SFU only sees its bridge IP (e.g. 192.168.144.2) and advertises THAT as
+    # its ICE host candidate — an address no browser can route to, so every
+    # candidate pair fails and you get "negotiation timed out". With host
+    # networking the SFU sees the host's real interfaces and advertises the
+    # host LAN IP (so same-LAN clients connect directly) plus, via STUN, the
+    # public IP (for remote clients). This is LiveKit's documented Docker setup.
+    #
+    # Consequences of host mode:
+    #   - No `ports:` mapping (there's no bridge to map); LiveKit binds
+    #     7880 (signaling), 7881/tcp + 7882/udp (media) directly on the host.
+    #     Open/forward UDP 7882 + TCP 7881 in the firewall/router for clients
+    #     that aren't on the LAN.
+    #   - The container is NOT on the `zekktris` bridge network, so other
+    #     services can't reach it by the name `livekit`. The api and Caddy
+    #     reach it via host.docker.internal instead (see their extra_hosts +
+    #     LIVEKIT_HTTP_URL below and the /livekit proxy in ops/Caddyfile).
+    network_mode: host
+    environment:
+      # API key/secret — colon-separated KEY: SECRET form per LiveKit spec.
+      # MUST match the api's LIVEKIT_API_KEY/SECRET (same defaults below so a
+      # bare `docker compose up` agrees out of the box). setup.sh generates
+      # secure random values on first run.
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-devsecret-do-not-use-in-production-32chars}"
+      # STUN-discover the public IP by default (correct for internet-facing
+      # hosts; gives remote clients a reachable candidate). The host LAN-IP
+      # candidate is provided automatically by host networking above, so
+      # same-LAN clients work regardless of this. Set false + LIVEKIT_HOST to
+      # pin a single advertised IP instead.
+      LIVEKIT_RTC__USE_EXTERNAL_IP: ${LIVEKIT_USE_EXTERNAL_IP:-true}
+      # Explicit advertised media IP. Only honored when USE_EXTERNAL_IP is
+      # false (livekit#4049). Leave empty for STUN + host-interface detection.
+      LIVEKIT_RTC__NODE_IP: ${LIVEKIT_HOST:-}
+    volumes:
+      - ./ops/livekit.yaml:/etc/livekit.yaml:ro
+
+networks:
+  zekktris:
+    driver: bridge

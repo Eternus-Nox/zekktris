@@ -1,0 +1,684 @@
+import Foundation
+
+// Models mirror the server's DTO shapes (see packages/client/src/types.ts).
+// The API serializes camelCase JSON, so we rely on Codable's default key
+// mapping (NO snake_case conversion). We intentionally model only the fields
+// stage 1 needs — Codable ignores any extra JSON keys, and every
+// possibly-absent field is optional so decoding stays resilient as the
+// payloads evolve.
+
+struct PublicUser: Codable, Identifiable, Hashable {
+    let id: String
+    var username: String?
+    var displayName: String?
+    var avatarUrl: String?
+    var bannerUrl: String?
+    var status: String?
+    var isBot: Bool?
+    var customStatus: String?
+    var customStatusEmoji: String?
+    var avatarDecoration: String?
+
+    /// Best display label with sensible fallbacks.
+    var name: String { displayName ?? username ?? "Unknown" }
+}
+
+struct SelfUser: Codable, Identifiable, Hashable {
+    let id: String
+    var username: String?
+    var displayName: String?
+    var avatarUrl: String?
+    var email: String?
+    var status: String?
+    var customStatus: String?
+    var customStatusEmoji: String?
+    var isAdmin: Bool?
+    var avatarDecoration: String?
+    var guildFolders: [GuildFolder]?
+
+    var name: String { displayName ?? username ?? "You" }
+}
+
+struct Guild: Codable, Identifiable, Hashable {
+    let id: String
+    var name: String
+    var iconUrl: String?
+    var ownerId: String?
+    var description: String?
+    var rulesContent: String?
+}
+
+struct GuildFolder: Codable, Identifiable, Hashable {
+    let id: String
+    var name: String
+    var color: String?
+    var guildIds: [String]
+}
+struct GuildFoldersWrap: Codable { let folders: [GuildFolder] }
+
+struct Channel: Codable, Identifiable, Hashable {
+    let id: String
+    var type: String?
+    var guildId: String?
+    var parentId: String?
+    var name: String?
+    var topic: String?
+    var position: Int?
+    var rateLimitPerUser: Int?
+    var lastMessageId: String?
+    /// Thread fields (type == public_thread).
+    var parentMessageId: String?
+    var threadArchivedAt: String?
+    var threadLastActivityAt: String?
+    /// DM / group-DM only: the OTHER recipients (excludes the current user).
+    var recipients: [PublicUser]?
+    /// Shared-key E2EE state for 1:1 DMs.
+    var e2eeEnabled: Bool?
+    var e2eeSalt: String?
+    var e2eeVerifier: String?
+
+    var isText: Bool { type == "guild_text" }
+    var isCategory: Bool { type == "guild_category" }
+    var isVoice: Bool { type == "guild_voice" || type == "guild_stage" }
+    var isStage: Bool { type == "guild_stage" }
+    var isForum: Bool { type == "guild_forum" }
+    var isThread: Bool { type == "public_thread" }
+    var isArchived: Bool { threadArchivedAt != nil }
+    var isDM: Bool { type == "dm" || type == "group_dm" }
+    var isE2EE: Bool { e2eeEnabled == true }
+
+    /// Display title for a DM: explicit name, else the recipients joined,
+    /// else a sensible fallback.
+    var dmTitle: String {
+        if let name, !name.isEmpty { return name }
+        let names = (recipients ?? []).map { $0.name }
+        if names.isEmpty { return "Direct Message" }
+        return names.joined(separator: ", ")
+    }
+
+    /// The recipient whose avatar represents a 1:1 DM (first listed).
+    var dmAvatarUser: PublicUser? { recipients?.first }
+}
+
+struct Message: Codable, Identifiable, Hashable {
+    let id: String
+    let channelId: String
+    let createdAt: String
+    var authorId: String?
+    var author: PublicUser?
+    var type: String?
+    var content: String?
+    var editedAt: String?
+    var nonce: String?
+    var reactions: [ReactionAggregate]?
+    var attachments: [Attachment]?
+    var poll: Poll?
+    var replyToId: String?
+    var pinned: Bool?
+    var forwardedFromMessageId: String?
+    var forwardedFrom: ForwardSource?
+    var stickerId: String?
+    var sticker: Sticker?
+    var embeds: [MessageEmbed]?
+    /// Client-only send state for optimistic messages: "sending" | "failed" |
+    /// nil (a normal/confirmed message). Absent from server JSON, so it decodes
+    /// as nil and (being optional) is omitted when encoded.
+    var sendState: String?
+
+    var text: String { content ?? "" }
+}
+
+extension Message {
+    /// Build a client-side optimistic placeholder shown immediately on send,
+    /// before the server confirms. Its `id` is the send nonce so the confirmed
+    /// message (which echoes the same nonce) can replace it in place.
+    init(optimisticNonce nonce: String, channelId: String, content: String,
+         author: PublicUser?, authorId: String?, replyToId: String?, createdAt: String) {
+        self.init(
+            id: nonce, channelId: channelId, createdAt: createdAt,
+            authorId: authorId, author: author, type: "default",
+            content: content, editedAt: nil, nonce: nonce,
+            reactions: nil, attachments: nil, poll: nil,
+            replyToId: replyToId, pinned: nil, forwardedFromMessageId: nil,
+            forwardedFrom: nil, stickerId: nil, sticker: nil, embeds: nil,
+            sendState: "sending"
+        )
+    }
+}
+
+struct MessageEmbed: Codable, Hashable {
+    var url: String
+    var kind: String?
+    var title: String?
+    var description: String?
+    var imageUrl: String?
+    var siteName: String?
+    var faviconUrl: String?
+}
+
+struct Sticker: Codable, Identifiable, Hashable {
+    let id: String
+    var guildId: String?
+    var name: String
+    var description: String?
+    var url: String
+    var animated: Bool?
+}
+struct StickersWrap: Codable { let stickers: [Sticker] }
+struct StickerWrap: Codable { let sticker: Sticker }
+
+struct GuildEmoji: Codable, Identifiable, Hashable {
+    let id: String
+    var guildId: String?
+    var name: String
+    var url: String
+    var animated: Bool?
+}
+struct EmojisWrap: Codable { let emojis: [GuildEmoji] }
+struct EmojiWrap: Codable { let emoji: GuildEmoji }
+
+struct Webhook: Codable, Identifiable {
+    let id: String
+    var channelId: String?
+    var guildId: String?
+    var name: String
+    var avatarUrl: String?
+    var token: String
+    var createdAt: String?
+}
+struct WebhooksWrap: Codable { let webhooks: [Webhook] }
+struct WebhookWrap: Codable { let webhook: Webhook }
+
+struct ScheduledMessage: Codable, Identifiable {
+    let id: String
+    var channelId: String?
+    var content: String?
+    var scheduledFor: String
+    var attempts: Int?
+    var lastError: String?
+}
+struct ScheduledListWrap: Codable { let items: [ScheduledMessage] }
+struct ScheduledWrap: Codable { let scheduled: ScheduledMessage }
+
+struct PermissionOverride: Codable, Identifiable {
+    var channelId: String?
+    var targetType: String
+    var targetId: String
+    var allow: String
+    var deny: String
+    var id: String { targetId }
+}
+struct OverridesWrap: Codable { let overrides: [PermissionOverride] }
+
+struct ReactionRoleMapping: Codable, Identifiable {
+    var messageId: String
+    var emoji: String
+    var channelId: String
+    var roleId: String
+    var id: String { "\(messageId):\(emoji)" }
+}
+struct ReactionRolesWrap: Codable { let items: [ReactionRoleMapping] }
+
+struct EventRsvpCounts: Codable { var going: Int; var maybe: Int; var declined: Int }
+struct ScheduledEvent: Codable, Identifiable {
+    let id: String
+    var guildId: String?
+    var creator: PublicUser?
+    var name: String
+    var description: String?
+    var startAt: String
+    var endAt: String?
+    var locationKind: String          // "voice_channel" | "external"
+    var locationChannelId: String?
+    var locationText: String?
+    var status: String                // "scheduled" | "active" | "completed" | "canceled"
+    var imageUrl: String?
+    var rsvpCounts: EventRsvpCounts?
+    var myRsvp: String?
+}
+struct EventsWrap: Codable { let events: [ScheduledEvent] }
+struct EventWrap: Codable { let event: ScheduledEvent }
+
+struct EventRsvp: Codable, Identifiable {
+    var eventId: String?
+    var user: PublicUser
+    var status: String
+    var id: String { user.id }
+}
+struct AttendeesWrap: Codable { let attendees: [EventRsvp] }
+struct MyEvent: Codable, Identifiable {
+    var event: ScheduledEvent
+    var guildName: String?
+    var guildIconUrl: String?
+    var id: String { event.id }
+}
+struct MyEventsWrap: Codable { let events: [MyEvent] }
+
+struct DmSettings: Codable { let ttlSecondsAfterRead: Int? }
+
+struct StorageItem: Codable, Identifiable {
+    let id: String
+    var filename: String?
+    var format: String?
+    var compressed: Bool?
+    var category: String
+    var sizeBytes: Int
+    var referenced: Bool
+    var guildId: String?
+}
+struct StorageListing: Codable {
+    let items: [StorageItem]
+    var total: Int?
+}
+
+struct StageParticipant: Codable, Identifiable {
+    var channelId: String?
+    var userId: String
+    var isSpeaker: Bool
+    var handRaised: Bool
+    var joinedAt: String?
+    var id: String { userId }
+}
+struct StageJoinResult: Codable { let participant: StageParticipant; let token: String?; let wsUrl: String? }
+struct StageParticipantsResult: Codable { let channel: Channel; let participants: [StageParticipant] }
+
+struct ForwardSource: Codable, Hashable {
+    var messageId: String
+    var channel: ForwardChannel?
+    var author: PublicUser?
+    var content: String
+}
+struct ForwardChannel: Codable, Hashable {
+    var id: String
+    var name: String?
+    var type: String?
+}
+
+struct ReactionAggregate: Codable, Hashable {
+    var emoji: String
+    var count: Int
+    var me: Bool
+}
+
+struct Attachment: Codable, Identifiable, Hashable {
+    let id: String
+    var url: String
+    var filename: String?
+    var contentType: String?
+    var size: Int?
+    var width: Int?
+    var height: Int?
+    var isVoiceMessage: Bool?
+    var durationSeconds: Int?
+    var waveform: String?
+
+    var isImage: Bool { (contentType ?? "").hasPrefix("image/") }
+}
+
+struct PollOption: Codable, Identifiable, Hashable {
+    var id: String
+    var text: String
+    var position: Int
+    var voteCount: Int
+}
+
+struct Poll: Codable, Hashable {
+    var id: String
+    var question: String
+    var multipleChoice: Bool
+    var options: [PollOption]
+    var totalVoters: Int
+    var myVotes: [String]
+    var expiresAt: String?
+    var closedAt: String?
+
+    var isExpired: Bool {
+        guard let expiresAt else { return false }
+        let withFractional = ISO8601DateFormatter()
+        withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = withFractional.date(from: expiresAt) { return d <= Date() }
+        if let d = ISO8601DateFormatter().date(from: expiresAt) { return d <= Date() }
+        return false
+    }
+    var isOpen: Bool { closedAt == nil && !isExpired }
+}
+
+struct VoiceState: Codable, Identifiable, Hashable {
+    var userId: String
+    var channelId: String?
+    var guildId: String?
+    var sessionId: String?
+    var selfMute: Bool?
+    var selfDeaf: Bool?
+
+    var id: String { userId }
+    var isMuted: Bool { selfMute == true }
+}
+
+struct AuthSession: Codable {
+    let user: SelfUser
+    let accessToken: String
+}
+
+// ── Response envelopes ──────────────────────────────────────────────────────
+struct UserWrap: Codable { let user: SelfUser }
+struct GuildsWrap: Codable { let guilds: [Guild] }
+struct GuildWrap: Codable { let guild: Guild }
+
+struct Invite: Codable, Identifiable {
+    let code: String
+    var channelId: String?
+    var guildId: String?
+    var uses: Int?
+    var maxUses: Int?
+    var expiresAt: String?
+    var id: String { code }
+}
+struct InviteWrap: Codable { let invite: Invite }
+
+struct AdminUser: Codable, Identifiable {
+    let id: String
+    var username: String
+    var displayName: String?
+    var email: String?
+    var avatarUrl: String?
+    var isAdmin: Bool
+    var bannedAt: String?
+    var createdAt: String?
+    var lastSeenAt: String?
+    var name: String { displayName ?? username }
+    var isBanned: Bool { bannedAt != nil }
+
+    // Defensive decode: a single null username/isAdmin shouldn't blank the
+    // whole admin user list.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        username = (try? c.decode(String.self, forKey: .username)) ?? "unknown"
+        displayName = try? c.decode(String.self, forKey: .displayName)
+        email = try? c.decode(String.self, forKey: .email)
+        avatarUrl = try? c.decode(String.self, forKey: .avatarUrl)
+        isAdmin = (try? c.decode(Bool.self, forKey: .isAdmin)) ?? false
+        bannedAt = try? c.decode(String.self, forKey: .bannedAt)
+        createdAt = try? c.decode(String.self, forKey: .createdAt)
+        lastSeenAt = try? c.decode(String.self, forKey: .lastSeenAt)
+    }
+}
+struct AdminUsersWrap: Codable { let users: [AdminUser] }
+
+struct AdminGuild: Codable, Identifiable {
+    let id: String
+    var name: String
+    var iconUrl: String?
+    var ownerId: String?
+    var memberCount: Int?
+    var createdAt: String?
+    var discoverable: Bool?
+}
+struct AdminGuildsWrap: Codable { let guilds: [AdminGuild] }
+
+struct AdminStorageCategory: Codable { let count: Int; var totalBytes: Int? }
+struct AdminStorageOnDisk: Codable {
+    let totalBytes: Int; let totalCount: Int
+    let unusedBytes: Int; let unusedCount: Int
+}
+struct AdminStorage: Codable {
+    let attachments: AdminStorageCategory
+    let avatars: AdminStorageCategory
+    let banners: AdminStorageCategory
+    let emojis: AdminStorageCategory
+    let stickers: AdminStorageCategory
+    let onDisk: AdminStorageOnDisk
+}
+struct AdminStorageWrap: Codable { let storage: AdminStorage }
+struct StorageGcResult: Codable { let scanned: Int; let deleted: Int }
+struct ChannelsWrap: Codable { let channels: [Channel] }
+struct ChannelWrap: Codable { let channel: Channel }
+struct MessagesWrap: Codable { let messages: [Message] }
+struct MessageWrap: Codable { let message: Message }
+
+/// Per-channel read marker: the last message the user has acked, plus the
+/// count of direct mentions since that ack. Drives unread indicators.
+struct ReadState: Codable {
+    let channelId: String
+    var lastMessageId: String?
+    var mentionCount: Int?
+}
+struct ReadStatesWrap: Codable { let readStates: [ReadState] }
+struct AckWrap: Codable { let readState: ReadState }
+struct OkWrap: Codable { let ok: Bool }
+struct ThreadsWrap: Codable { let threads: [Channel] }
+
+struct Relationship: Codable, Identifiable {
+    var type: String          // friend | incoming_request | outgoing_request | blocked
+    var createdAt: String
+    var user: PublicUser
+    var id: String { user.id }
+}
+struct RelationshipsWrap: Codable { let relationships: [Relationship] }
+
+struct Mention: Codable, Identifiable {
+    let id: String
+    var channelId: String
+    var createdAt: String
+    var author: PublicUser?
+    var content: String?
+    var channelName: String?
+    var guildId: String?
+
+    var text: String { content ?? "" }
+}
+struct MentionsWrap: Codable { let mentions: [Mention] }
+struct ForumPostResult: Codable { let post: Channel; let message: Message }
+struct VoiceStateWrap: Codable { let voiceState: VoiceState }
+struct JoinVoiceResult: Codable {
+    let voiceState: VoiceState
+    let channelVoiceStates: [VoiceState]
+    let token: String?
+    let wsUrl: String?
+}
+
+// ── Request bodies ──────────────────────────────────────────────────────────
+struct LoginBody: Codable { let email: String; let password: String }
+struct RegisterBody: Codable {
+    let email: String
+    let username: String
+    let displayName: String
+    let password: String
+}
+struct SendBody: Codable {
+    let content: String
+    let nonce: String
+    var replyToId: String? = nil
+}
+struct OpenDMBody: Codable { let recipientId: String }
+struct E2EEEnableBody: Codable { let salt: String; let verifier: String }
+struct ForumPostBody: Codable { let title: String; let content: String }
+
+// MARK: Server discovery / creation / invites
+
+struct DiscoverableGuild: Codable, Identifiable {
+    let id: String
+    var name: String
+    var description: String?
+    var discoveryDescription: String?
+    var iconUrl: String?
+    var bannerUrl: String?
+    var memberCount: Int?
+}
+struct DiscoverWrap: Codable { let guilds: [DiscoverableGuild] }
+
+struct CreateGuildResult: Codable {
+    let guild: Guild
+    let defaultChannelId: String?
+}
+struct AcceptInviteResult: Codable {
+    let guildId: String
+    let channelId: String?
+}
+
+// MARK: Admin (instance)
+
+struct AdminUserCounts: Codable { let total: Int; let banned: Int }
+struct AdminMessageCounts: Codable { let total: Int; let last24h: Int }
+struct AdminStats: Codable {
+    let users: AdminUserCounts
+    let guilds: Int
+    let channels: Int
+    let messages: AdminMessageCounts
+    let activeSessions: Int
+    let generatedAt: String?
+}
+struct AdminStatsWrap: Codable { let stats: AdminStats }
+
+// MARK: Family / parental controls
+
+struct FamilyUser: Codable, Identifiable {
+    let id: String
+    var username: String?
+    var displayName: String?
+    var avatarUrl: String?
+    var name: String { displayName ?? username ?? "Unknown" }
+}
+struct ChildRestrictions: Codable {
+    var canAddFriends: Bool
+    var canRemoveFriends: Bool
+    var allowVoice: Bool
+    var allowVideo: Bool
+    var allowStream: Bool
+    var allowCreateGuild: Bool
+}
+
+struct FamilyRestrictionsWrap: Codable {
+    let restrictions: ChildRestrictions
+    var blockedGuildIds: [String]?
+}
+struct FamilySummary: Codable {
+    var restrictions: ChildRestrictions?
+    var children: [FamilyUser]
+    var outgoingRequests: [FamilyUser]
+    var supervisedBy: [FamilyUser]
+    var incomingRequests: [FamilyUser]
+}
+
+// MARK: Guild members (for resolving names in voice rosters, etc.)
+
+struct GuildMember: Codable, Identifiable {
+    var guildId: String?
+    var userId: String
+    var user: PublicUser
+    var nickname: String?
+    var roleIds: [String]?
+    var membershipState: String?
+    var id: String { userId }
+}
+struct MembersWrap: Codable { let members: [GuildMember] }
+struct MemberWrap: Codable { let member: GuildMember }
+
+struct Role: Codable, Identifiable {
+    let id: String
+    var guildId: String?
+    var name: String
+    var color: Int          // RGB integer; 0 = no color
+    var position: Int
+    var permissions: String?
+    var hoist: Bool
+    var mentionable: Bool?
+    var managed: Bool?
+    var selfAssignable: Bool?
+}
+struct RolesWrap: Codable { let roles: [Role] }
+struct RoleWrap: Codable { let role: Role }
+
+struct SavedChannel: Codable {
+    var id: String
+    var type: String?
+    var name: String?
+    var guildId: String?
+}
+struct SavedMessageItem: Codable, Identifiable {
+    var savedAt: String
+    var message: Message
+    var channel: SavedChannel?
+    var id: String { message.id }
+}
+struct SavedListWrap: Codable { let items: [SavedMessageItem]; let nextCursor: String? }
+struct SavedMembershipWrap: Codable { let savedIds: [String] }
+
+/// A full-screen image presentation request.
+struct LightboxImage: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+// MARK: - Permissions
+
+struct PermissionDef: Identifiable {
+    let bit: Int
+    let key: String
+    let label: String
+    let group: String
+    var id: String { key }
+}
+
+/// Permission bitfield catalog + helpers. Bits go up to 32 (MANAGE_EVENTS),
+/// so the bitfield is a UInt64. Wire format is a decimal string. Mirrors
+/// apps/web/src/lib/permissions.ts.
+enum Permissions {
+    static let ADMINISTRATOR = 0
+    static let VIEW_CHANNEL = 1
+    static let MANAGE_CHANNELS = 10
+    static let MANAGE_ROLES = 12
+    static let KICK_MEMBERS = 13
+    static let BAN_MEMBERS = 14
+    static let MODERATE_MEMBERS = 17
+    static let MANAGE_GUILD = 18
+    static let MANAGE_WEBHOOKS = 20
+    static let MANAGE_EMOJIS = 21
+    static let MANAGE_EVENTS = 32
+
+    static let all: [PermissionDef] = [
+        .init(bit: 0,  key: "ADMINISTRATOR", label: "Administrator", group: "General"),
+        .init(bit: 18, key: "MANAGE_GUILD", label: "Manage Server", group: "General"),
+        .init(bit: 12, key: "MANAGE_ROLES", label: "Manage Roles", group: "General"),
+        .init(bit: 10, key: "MANAGE_CHANNELS", label: "Manage Channels", group: "General"),
+        .init(bit: 1,  key: "VIEW_CHANNEL", label: "View Channels", group: "General"),
+        .init(bit: 19, key: "VIEW_AUDIT_LOG", label: "View Audit Log", group: "General"),
+        .init(bit: 11, key: "CREATE_INVITE", label: "Create Invite", group: "Membership"),
+        .init(bit: 22, key: "MANAGE_INVITES", label: "Manage Invites", group: "Membership"),
+        .init(bit: 13, key: "KICK_MEMBERS", label: "Kick Members", group: "Membership"),
+        .init(bit: 14, key: "BAN_MEMBERS", label: "Ban Members", group: "Membership"),
+        .init(bit: 17, key: "MODERATE_MEMBERS", label: "Time Out Members", group: "Membership"),
+        .init(bit: 15, key: "CHANGE_NICKNAME", label: "Change Own Nickname", group: "Membership"),
+        .init(bit: 16, key: "MANAGE_NICKNAMES", label: "Manage Nicknames", group: "Membership"),
+        .init(bit: 3,  key: "SEND_MESSAGES", label: "Send Messages", group: "Text"),
+        .init(bit: 2,  key: "READ_MESSAGE_HISTORY", label: "Read Message History", group: "Text"),
+        .init(bit: 5,  key: "ATTACH_FILES", label: "Attach Files", group: "Text"),
+        .init(bit: 6,  key: "EMBED_LINKS", label: "Embed Links", group: "Text"),
+        .init(bit: 7,  key: "ADD_REACTIONS", label: "Add Reactions", group: "Text"),
+        .init(bit: 4,  key: "MANAGE_MESSAGES", label: "Manage Messages", group: "Text"),
+        .init(bit: 9,  key: "MENTION_EVERYONE", label: "Mention @everyone & Roles", group: "Text"),
+        .init(bit: 8,  key: "USE_EXTERNAL_EMOJIS", label: "Use External Emoji", group: "Text"),
+        .init(bit: 23, key: "CONNECT", label: "Connect", group: "Voice"),
+        .init(bit: 24, key: "SPEAK", label: "Speak", group: "Voice"),
+        .init(bit: 30, key: "STREAM", label: "Video / Screen Share", group: "Voice"),
+        .init(bit: 28, key: "USE_VAD", label: "Voice Activity", group: "Voice"),
+        .init(bit: 25, key: "MUTE_MEMBERS", label: "Mute Members", group: "Voice"),
+        .init(bit: 26, key: "DEAFEN_MEMBERS", label: "Deafen Members", group: "Voice"),
+        .init(bit: 27, key: "MOVE_MEMBERS", label: "Move Members", group: "Voice"),
+        .init(bit: 29, key: "PRIORITY_SPEAKER", label: "Priority Speaker", group: "Voice"),
+        .init(bit: 20, key: "MANAGE_WEBHOOKS", label: "Manage Webhooks", group: "Advanced"),
+        .init(bit: 21, key: "MANAGE_EMOJIS", label: "Manage Emoji", group: "Advanced"),
+        .init(bit: 32, key: "MANAGE_EVENTS", label: "Manage Events", group: "Advanced"),
+    ]
+    static let groupOrder = ["General", "Membership", "Text", "Voice", "Advanced"]
+
+    static func mask(_ b: Int) -> UInt64 { UInt64(1) << UInt64(b) }
+    static var allBits: UInt64 { all.reduce(UInt64(0)) { $0 | mask($1.bit) } }
+    static func parse(_ s: String?) -> UInt64 {
+        guard let s = s, let v = UInt64(s) else { return 0 }
+        return v
+    }
+    static func serialize(_ bits: UInt64) -> String { String(bits) }
+    static func has(_ bits: UInt64, _ b: Int) -> Bool { (bits & mask(b)) != 0 }
+}

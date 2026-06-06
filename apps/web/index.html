@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+
+    <!--
+      Viewport: viewport-fit=cover so the app paints under the iOS notch
+      and home-indicator area; we restore safety via env(safe-area-inset-*)
+      in CSS. maximum-scale=1.0 + user-scalable=no prevents the two-finger
+      pinch zoom that breaks chat layout — the floating action bars,
+      message composer position, and arena seat positioning all depend on
+      a stable viewport, and a zoomed page makes them misalign or scroll
+      off-screen. (Safari ignores user-scalable=no alone for accessibility,
+      so maximum-scale=1.0 is required to actually clamp it.)
+      interactive-widget=resizes-content tells mobile browsers (Chrome
+      108+) to RESIZE the visual viewport when the keyboard opens — the
+      composer stays pinned above the keyboard rather than hidden behind
+      it. Users needing magnification should use OS-level screen zoom
+      (iOS Magnifier, Android system zoom) which works regardless of
+      viewport meta.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"
+    />
+
+    <!-- Theme color drives the URL bar tint on Android Chrome and the
+         splash-screen surround when launched from the home screen.
+         Hex equivalent of Zekktris's --void (oklch 0.10 0.025 265) so the
+         status bar tints match the app's abyssal background seamlessly. -->
+    <meta name="theme-color" content="#0a0f1c" />
+    <meta name="color-scheme" content="dark" />
+
+    <!-- Favicons across sizes. The SVG renders crisp at any DPI; PNG
+         fallbacks for older browsers / Windows tile shortcuts.
+
+         `?v=zk1` cache-buster: browsers (especially Chromium-based)
+         cache favicons in a separate icon cache that persists for
+         hours regardless of disk cache settings or hard-reload. A
+         changing query string presents the URL as a "new" resource
+         and forces a fresh fetch. Bump the version string whenever
+         the icon artwork changes; the underlying files keep their
+         paths so server-side caching headers stay valid. -->
+    <link rel="icon" type="image/svg+xml" href="/icon.svg?v=zk1" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=zk1" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=zk1" />
+
+    <!-- Apple home-screen support. apple-touch-icon is the fallback that
+         iOS reads when there's no manifest.icons["any"] match it likes;
+         we provide an explicit 180x180 to be safe. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=zk1" />
+
+    <!--
+      iOS-specific PWA hints. apple-mobile-web-app-capable is the legacy
+      flag that puts the app in standalone mode when launched from the
+      home screen; on iOS 17+ the manifest's display:standalone alone is
+      enough, but the meta tag is harmless and keeps older devices happy.
+      apple-mobile-web-app-status-bar-style: black-translucent makes the
+      iOS status bar transparent so our dark theme paints behind it
+      (we use safe-area-inset-top to keep content from sliding under).
+      apple-mobile-web-app-title overrides the default home-screen label,
+      which would otherwise inherit the window title (e.g. "(3) #channel
+      Zekktris") if added at the wrong moment.
+    -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Zekktris" />
+
+    <!-- Web app manifest — the canonical metadata document for installability. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <!-- Disable the address bar's auto-detect of phone numbers on iOS —
+         the app is dynamic content, not a directory of phone numbers. -->
+    <meta name="format-detection" content="telephone=no" />
+
+    <!-- Open Graph / link-preview tags. When users share the app URL
+         in chat apps, these drive what appears in the unfurl card. -->
+    <meta property="og:title" content="Zekktris" />
+    <meta property="og:description" content="A communications app for communities. Chat, voice, and shared spaces." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/icon-512.png" />
+
+    <!-- Twitter / X / iMessage card metadata. summary_large_image
+         gives the icon-sized hero treatment in iMessage previews and
+         Twitter timelines without requiring a separate banner image. -->
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Zekktris" />
+    <meta name="twitter:description" content="A communications app for communities. Chat, voice, and shared spaces." />
+    <meta name="twitter:image" content="/icon-512.png" />
+
+    <!-- Microsoft Tile color (Windows 8/10/11 pinned site / Edge new
+         tab tile). Matches the abyssal background for visual parity
+         with Chrome's theme-color tile. -->
+    <meta name="msapplication-TileColor" content="#0a0f1c" />
+    <meta name="msapplication-TileImage" content="/icon-192.png" />
+
+    <!-- Zekktris display + mono type. Space Grotesk for the bulk of the
+         UI (humanist geometric sans with strong character at small sizes);
+         JetBrains Mono for code blocks, message timestamps, and the
+         channel-id / monospace pill chrome. Preconnect to both font
+         origins so the connection handshake overlaps with the rest of
+         page bootstrap rather than blocking first text paint. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+
+    <title>Zekktris</title>
+  </head>
+  <body class="bg-bg-1 text-ink-1 antialiased h-screen overflow-hidden font-sans">
+    <div id="root" class="h-full"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,25 @@
+-- ───────────────────────────────────────────────────────────────────────────
+-- 0015 — per-user guild rail ordering
+-- ───────────────────────────────────────────────────────────────────────────
+-- Stores each user's preferred ordering of their guild rail as a JSONB
+-- array of guild-id strings. Optional (NULL = no preference; the API
+-- falls back to the natural order returned by the membership query).
+--
+-- Why a jsonb array on users instead of a join table:
+--   - The list is small (most users are in fewer than ~30 guilds)
+--   - Reorders write the WHOLE list at once, not deltas
+--   - Read is always "give me the array" — no aggregation, no filtering
+--   - A separate (user_id, guild_id, position) row would 3x the row count
+--     for no read-side benefit
+--
+-- Format: ["310773651139985408", "311328034705637376", ...] — bigints
+-- as strings so JS can parse them without precision loss.
+--
+-- Garbage collection: server-side validation on PATCH filters the
+-- incoming array against the user's actual membership, so a stale
+-- entry (a guild the user left) is dropped on the next reorder write.
+-- The list-guilds endpoint is also resilient: any saved id that
+-- doesn't correspond to a current membership is silently skipped on
+-- read. No need for a periodic cleanup job.
+
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "guild_order" jsonb;

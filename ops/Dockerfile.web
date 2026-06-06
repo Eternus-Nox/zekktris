@@ -1,0 +1,65 @@
+# syntax=docker/dockerfile:1.7
+#
+# Zekktris web + reverse proxy
+# ---------------------------
+# Two-stage build:
+#   1. `build` runs `pnpm --filter @zekktris/web build`, producing the static
+#      SPA bundle in apps/web/dist
+#   2. `runtime` is a Caddy image that both serves the SPA AND reverse
+#      proxies /api, /cdn, /gateway, /health to the api container.
+#
+# Why a single container for proxy+SPA?
+#   - One TLS cert provisioning point (Caddy auto-renews)
+#   - One ingress, fewer services, simpler unraid composition
+#   - SPA is static — Caddy's file_server is plenty
+#
+# The trade is that bumping the SPA requires a full proxy rebuild. For an
+# unraid scale deployment that's fine; for ops this could split if needed.
+
+# ─── Stage 1: SPA build ────────────────────────────────────────────────────
+FROM node:20-alpine AS build
+
+ENV PNPM_VERSION=9.12.0
+RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY apps/web/package.json apps/web/package.json
+COPY packages/client/package.json packages/client/package.json
+COPY packages/shared/package.json packages/shared/package.json
+COPY packages/tsconfig/package.json packages/tsconfig/package.json
+
+RUN pnpm install --frozen-lockfile --filter @zekktris/web...
+
+COPY apps/web ./apps/web
+COPY packages/client ./packages/client
+COPY packages/shared ./packages/shared
+COPY packages/tsconfig ./packages/tsconfig
+
+RUN pnpm --filter @zekktris/web build
+
+# ─── Stage 2: Caddy serving SPA + reverse-proxying to API ──────────────────
+FROM caddy:2-alpine AS runtime
+
+# SPA static bundle. Caddy's file_server serves these directly; index.html
+# is the SPA fallback for any non-prefix path so client-side routing
+# (/channels/:guildId/:channelId etc.) works on hard refresh.
+COPY --from=build /app/apps/web/dist /srv/web
+
+# Marketing website — a standalone static site kept deliberately SEPARATE
+# from the SPA build. It isn't part of apps/web and never enters the app
+# bundle; it's just copied verbatim from the repo's marketing/ directory and
+# served by Caddy at /site (see Caddyfile). Updating it is a content-only
+# change — no app rebuild semantics beyond re-imaging the proxy.
+COPY marketing /srv/site
+
+# Caddyfile defines all the routing. PUBLIC_URL is templated in via the
+# env var passed by docker compose — Caddy reads it at startup.
+COPY ops/Caddyfile /etc/caddy/Caddyfile
+
+# Caddy auto-creates these. We declare them so compose can mount volumes
+# without surprising the container.
+VOLUME ["/data", "/config"]
+
+EXPOSE 80 443

@@ -1,0 +1,108 @@
+/**
+ * Server composition
+ * ------------------
+ * Builds the Hono application — middleware order, route mounting, error
+ * handling. The actual port binding lives in index.ts so tests can import
+ * the app and exercise it without a network round-trip.
+ *
+ * Routes are mounted under /api/v1. The bare /health is intentionally NOT
+ * versioned — health probes outlive API versions.
+ */
+
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { secureHeaders } from 'hono/secure-headers';
+import { healthRouter } from './routes/health';
+import { authRouter } from './routes/auth';
+import { usersRouter } from './routes/users';
+import { guildsRouter } from './routes/guilds';
+import { channelsRouter, guildChannelsRouter } from './routes/channels';
+import { invitesRouter, guildInvitesRouter } from './routes/invites';
+import { emojisRouter } from './routes/emojis';
+import { stickersRouter } from './routes/stickers';
+import { stageRouter } from './routes/stage';
+import { discoveryRouter } from './routes/discovery';
+import { adminRouter } from './routes/admin';
+import { messagesRouter } from './routes/messages';
+import { webhooksAdminRouter, webhooksExecuteRouter } from './routes/webhooks';
+import { familyRouter } from './routes/family';
+import { dmsRouter } from './routes/dms';
+import { cdnRouter } from './routes/cdn';
+import { voiceRouter } from './routes/voice';
+import { requestId, accessLog, errorHandler } from './middleware';
+import { env, isDev } from './env';
+
+export function createApp() {
+  const app = new Hono();
+
+  // ── Global middleware (order matters) ──────────────────────────────────
+  app.use('*', requestId);
+  app.use('*', accessLog);
+  app.use('*', secureHeaders());
+
+  // CORS: relaxed in dev (Vite at :5173); locked down in prod via reverse proxy.
+  // The proxy serves the SPA from the same origin as /api, so CORS isn't
+  // triggered in production.
+  if (isDev) {
+    app.use(
+      '*',
+      cors({
+        origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
+        credentials: true,
+        allowHeaders: ['Content-Type', 'Authorization', 'X-Request-Id'],
+        exposeHeaders: ['X-Request-Id'],
+      }),
+    );
+  }
+
+  // ── Routes ─────────────────────────────────────────────────────────────
+  app.route('/health', healthRouter);
+
+  // CDN: served outside the /api/v1 prefix because static-file URLs shouldn't
+  // change with API version bumps. In production Caddy serves these directly.
+  app.route('/cdn', cdnRouter);
+
+  // Versioned API root. Auth, users, guilds, channels, messages, gateway-
+  // bootstrap, etc. all hang off /api/v1. Future breaking changes get /api/v2.
+  const v1 = new Hono();
+  v1.route('/auth', authRouter);
+  v1.route('/users', usersRouter);
+  // DM channel management hangs off /users/@me/channels for symmetry with
+  // user-scoped resources.
+  v1.route('/users/@me/channels', dmsRouter);
+  // Guild-scoped sub-routers register their own /:guildId/<x> paths and need
+  // to be mounted at the same /guilds prefix as the main guildsRouter.
+  v1.route('/guilds', guildsRouter);
+  v1.route('/guilds', guildChannelsRouter);
+  v1.route('/guilds', guildInvitesRouter);
+  v1.route('/guilds', emojisRouter);
+  v1.route('/guilds', stickersRouter);
+  // Channel-scoped routers mount additively at /channels.
+  v1.route('/channels', channelsRouter);
+  v1.route('/channels', messagesRouter);
+  v1.route('/channels', voiceRouter);
+  v1.route('/channels', stageRouter);
+  v1.route('/', discoveryRouter);
+  v1.route('/invites', invitesRouter);
+  v1.route('/admin', adminRouter);
+  // Webhook admin endpoints — auth-gated, registered under /api/v1.
+  // The router itself has /channels/:channelId/webhooks and /webhooks/:id
+  // routes; mounting at the v1 root means no path prefix collision.
+  v1.route('/', webhooksAdminRouter);
+  // Parental controls — linking + supervision summary. Defines its own
+  // /family/* paths so it mounts at the v1 root.
+  v1.route('/', familyRouter);
+  app.route('/api/v1', v1);
+
+  // Public webhook execute — outside /api/v1 so the auth middleware
+  // chain doesn't apply. The token in the URL is the gate.
+  app.route('/api/webhooks', webhooksExecuteRouter);
+
+  // 404 fallback — anything not matched above.
+  app.notFound((c) => c.json({ error: { code: 'NOT_FOUND', message: 'Not found' } }, 404));
+
+  // ── Error handler — must be last ───────────────────────────────────────
+  app.onError(errorHandler);
+
+  return app;
+}

@@ -1,0 +1,13 @@
+-- 0016_message_search.sql
+--
+-- This migration was originally going to add a generated `content_tsv`
+-- column with its own GIN index for full-text search. It turned out
+-- to be unnecessary — migration 0002 already creates an expression
+-- index on `to_tsvector('english', content)`, and the search service
+-- queries against that same expression. The service change was
+-- reverted; this file is left as a no-op placeholder so the journal
+-- entry doesn't reference a missing file.
+--
+-- Drizzle's migrator runs each file's statements inside a transaction
+-- and records the hash on success. An empty body succeeds trivially.
+SELECT 1;

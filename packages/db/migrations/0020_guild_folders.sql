@@ -1,0 +1,29 @@
+-- 0020_guild_folders.sql
+-- ---------------------------------------------------------------
+-- Per-user rail folders. Each folder bundles a set of guilds under
+-- a named, colored container in the user's server rail. Stored as
+-- a single JSONB column on `users` because:
+--   - The list is small (typical: 0–20 folders, each with a handful
+--     of guilds) so a row-per-folder design is overkill.
+--   - Atomicity matters: a folder reorder touches every entry. One
+--     UPDATE with a new JSONB value is cleaner than rewriting many
+--     rows.
+--   - The data is highly user-private; no JOIN paths from other
+--     tables exist or are planned.
+--
+-- Shape:
+--   [
+--     {
+--       "id": "fldr_<uuid>",        -- client-generated stable id
+--       "name": "Gaming",
+--       "color": "#5865f2" | null,  -- folder tint, null = default
+--       "guildIds": ["3107…", "3108…"]
+--     },
+--     ...
+--   ]
+--
+-- Defaulting to '[]' means existing accounts pick up the column
+-- with an empty list — no behavioural change until they create a
+-- folder.
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS guild_folders jsonb NOT NULL DEFAULT '[]'::jsonb;

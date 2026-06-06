@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="abyss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#0a0f1c" />
+      <stop offset="100%" stop-color="#131a2a" />
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="50%" r="58%">
+      <stop offset="0%"   stop-color="#3dd7ec" stop-opacity="0.32" />
+      <stop offset="45%"  stop-color="#9d7bff" stop-opacity="0.16" />
+      <stop offset="100%" stop-color="#ec5fb5" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="zsigil" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0"   stop-color="#3dd7ec" />
+      <stop offset="0.5" stop-color="#9d7bff" />
+      <stop offset="1"   stop-color="#ec5fb5" />
+    </linearGradient>
+    <filter id="zglow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="14" />
+    </filter>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="232" ry="232" fill="url(#abyss)" />
+  <rect x="0" y="0" width="1024" height="1024" rx="232" ry="232" fill="url(#halo)" />
+  <path
+    d="M192 224 L832 224 L832 352 L416 704 L832 704 L832 832 L192 832 L192 704 L608 352 L192 352 Z"
+    fill="url(#zsigil)"
+    filter="url(#zglow)"
+    opacity="0.6"
+  />
+  <path
+    d="M192 224 L832 224 L832 352 L416 704 L832 704 L832 832 L192 832 L192 704 L608 352 L192 352 Z"
+    fill="url(#zsigil)"
+  />
+  <path
+    d="M192 224 L832 224 L832 352 L416 704 L832 704 L832 832 L192 832 L192 704 L608 352 L192 352 Z"
+    fill="none"
+    stroke="#f3f6fa"
+    stroke-opacity="0.25"
+    stroke-width="3"
+    stroke-linejoin="round"
+  />
+</svg>

@@ -1,0 +1,3594 @@
+/**
+ * SettingsView
+ * ------------
+ * Minimal v1 settings: edit display name, bio, online status, password,
+ * 2FA, audio device picks, voice prefs. The server's PATCH /users/@me
+ * handles profile fields; password + 2FA are separate endpoints.
+ *
+ * Renders as a Shell content pane (rail + content layout). Leaving
+ * happens by clicking another rail tile, matching the
+ * Discover/Admin pattern.
+ *
+ * The form starts pre-filled with the current values from
+ * `useAuth().user` and only sends fields that changed. Pending state
+ * disables the save button; toasts surface success/failure.
+ */
+
+import { useEffect, useRef, useState } from 'react';
+import { UserTag } from '../lib/UserTag';
+import { ApiError } from '@zekktris/client';
+import { useAuth } from '../auth/AuthContext';
+import { useAppState } from '../state/AppState';
+import { useParentalControlsEnabled, setParentalControlsEnabled } from '../lib/familyPrefs';
+import { isNative, requestNotificationPermission } from '../lib/native';
+import { useToasts } from '../state/Toasts';
+import { compressImage } from '../lib/compressImage';
+import { AlertTriangle, Copy, Settings as SettingsIcon, Shield, ChevronLeft } from '../lib/icons';
+import { useNavigate } from 'react-router-dom';
+import { copyText } from '../lib/clipboard';
+import { qrEncode, qrToSvg } from '../lib/qr';
+import { THEMES, applyTheme, getStoredTheme, type ThemeId } from '../lib/theme';
+import { usePwaInstall } from '../lib/pwa';
+import { avatarColor, avatarInitials } from '../lib/avatar';
+import { CustomStatusModal, formatCustomStatus } from './CustomStatusModal';
+import { AvatarImage } from '../lib/AvatarImage';
+import { AVATAR_DECORATIONS, AvatarDecoration } from '../lib/avatarDecorations';
+import {
+  type AudioDeviceList,
+  type AudioMode,
+  formatKeyCode,
+  getAudioMode,
+  getPttKey,
+  getSavedInputDeviceId,
+  getSavedOutputDeviceId,
+  getSavedCameraQuality,
+  getSavedScreenQuality,
+  listAudioDevices,
+  requestMicPermission,
+  setAudioMode,
+  setPttKey,
+  setSavedInputDeviceId,
+  setSavedOutputDeviceId,
+  setSavedCameraQuality,
+  setSavedScreenQuality,
+  CAMERA_QUALITY_PRESETS,
+  SCREEN_QUALITY_PRESETS,
+  VoiceError,
+  type CameraQuality,
+  type ScreenQuality,
+} from '../lib/voice';
+import {
+  type VoiceQuality,
+  QUALITY_PRESETS,
+  getVoiceQuality,
+  setVoiceQuality,
+} from '../lib/voiceQuality';
+import {
+  getVoicePrefs,
+  setEchoCancellation,
+  setGainMode,
+  setMicGain,
+  setNoiseSuppression,
+  subscribeVoicePrefs,
+} from '../lib/voicePrefs';
+import { MicLevelMeter } from '../lib/MicLevelMeter';
+
+type Status = 'online' | 'idle' | 'dnd' | 'invisible';
+
+const STATUS_OPTIONS: Array<{ value: Status; label: string; dot: string; help: string }> = [
+  { value: 'online', label: 'Online', dot: 'bg-emerald-500', help: 'Visible and reachable' },
+  { value: 'idle', label: 'Idle', dot: 'bg-amber-500', help: 'Away from keyboard' },
+  { value: 'dnd', label: 'Do not disturb', dot: 'bg-red-500', help: 'No notification sounds' },
+  { value: 'invisible', label: 'Invisible', dot: 'bg-ink-3', help: "Appear offline to everyone" },
+];
+
+export function SettingsView() {
+  const navigate = useNavigate();
+  const { user, rest, updateUser } = useAuth();
+  const { replaceUser, state } = useAppState();
+  const toasts = useToasts();
+
+  const [displayName, setDisplayName] = useState(user?.displayName ?? '');
+  const [bio, setBio] = useState(user?.bio ?? '');
+  const [gender, setGender] = useState(user?.gender ?? '');
+  const [genderVisible, setGenderVisible] = useState<boolean>(user?.genderVisible ?? false);
+  const [status, setStatus] = useState<Status>(
+    // Show the user's actual stored status, including 'invisible' so
+    // they can see their privacy choice persists across sessions.
+    // 'offline' here would only appear if the user is currently
+    // disconnected which is impossible from the modal POV — but we
+    // map it to 'online' just in case for the radio-display fallback.
+    (user?.status === 'offline' ? 'online' : (user?.status ?? 'online')) as Status,
+  );
+
+  // Re-sync local status state if the auth-context user changes
+  // underneath us — happens when another tab patches the status, or
+  // when we receive a USER_UPDATE from the gateway. Without this the
+  // modal's radio would lag behind reality.
+  useEffect(() => {
+    if (user && user.status !== status) {
+      setStatus((user.status === 'offline' ? 'online' : user.status) as Status);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.status]);
+  const [pending, setPending] = useState(false);
+  // Debounced auto-save plumbing for the profile text fields. `saveRef`
+  // always points at the latest `save` closure so the debounce effect
+  // can call it without depending on (and re-running for) a function
+  // identity that changes every render. `didSeedRef` skips the initial
+  // value-seeding render so we don't fire a redundant save on open.
+  const saveRef = useRef<(opts?: { silent?: boolean }) => Promise<void>>(async () => {});
+  const didSeedRef = useRef(false);
+  /** Active settings tab. Two top-level categories:
+   *    - profile  → identity, password, 2FA, avatar/banner, status, name,
+   *                 bio, notifications, install, privacy, blocked
+   *    - voice    → voice + video device settings, audio processing,
+   *                 video quality
+   *  Defaults to 'profile' so users land on the surface they're
+   *  already used to. Transient state — not persisted; each visit
+   *  starts on User Profile. */
+  const [activeTab, setActiveTab] = useState<'profile' | 'voice' | 'bots'>('profile');
+  const [theme, setTheme] = useState<ThemeId>(() => getStoredTheme());
+
+  function chooseTheme(id: ThemeId) {
+    setTheme(id);
+    applyTheme(id);
+  }
+
+  // Avatar decoration — a cosmetic ring/glow others see. Saves immediately
+  // (one-shot, like avatar/banner), updating the auth user so it re-renders
+  // everywhere at once.
+  const [decoSaving, setDecoSaving] = useState(false);
+  async function chooseDecoration(id: string) {
+    const next = id === 'none' ? null : id;
+    if ((user?.avatarDecoration ?? null) === next) return;
+    setDecoSaving(true);
+    try {
+      const r = await rest.patchMe({ avatarDecoration: next });
+      updateUser(r.user);
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not save decoration', 'error');
+    } finally {
+      setDecoSaving(false);
+    }
+  }
+  // Avatar upload state — separate from the Save Changes flow because
+  // it's a one-shot multipart upload that mutates the user row by
+  // itself. We hold a local preview URL via URL.createObjectURL so the
+  // user sees the picked image immediately, even before the server
+  // response lands. Cleared after the upload finishes.
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+  const [bannerUploading, setBannerUploading] = useState(false);
+  const [bannerPreview, setBannerPreview] = useState<string | null>(null);
+  // Status auto-save runs independently from the Save Changes button; we
+  // track its in-flight state separately so the buttons disable correctly
+  // without flickering the main Save spinner.
+  const [savingStatus, setSavingStatus] = useState(false);
+
+  /**
+   * Persist a status change immediately. Optimistic local update so the
+   * radio dot moves instantly; if the server rejects, we revert and
+   * surface the error. This is the canonical Discord pattern — status
+   * is a one-tap setting, not "fill out a form and click submit".
+   */
+  async function changeStatus(next: Status) {
+    if (next === status || savingStatus) return;
+    const prev = status;
+    setStatus(next); // optimistic
+    setSavingStatus(true);
+    try {
+      const r = await rest.patchMe({ status: next });
+      updateUser(r.user);
+      replaceUser({
+        id: r.user.id,
+        username: r.user.username,
+        displayName: r.user.displayName,
+        avatarUrl: r.user.avatarUrl,
+        status: r.user.status,
+        customStatus: r.user.customStatus,
+      });
+    } catch (e) {
+      setStatus(prev); // revert on failure
+      toasts.push(e instanceof ApiError ? e.message : 'Status update failed', 'error');
+    } finally {
+      setSavingStatus(false);
+    }
+  }
+
+  if (!user) return null;
+
+  /**
+   * Upload a picked image as the user's avatar. Validates type +
+   * size client-side before sending so the user gets immediate
+   * feedback (the server enforces both anyway). The local preview is
+   * generated via URL.createObjectURL so the new avatar appears in
+   * the modal immediately, even before the multipart upload finishes
+   * — the server response then replaces the preview with the canonical
+   * /cdn/... URL via updateUser().
+   */
+  async function uploadAvatar(file: File) {
+    if (!user || avatarUploading) return;
+    if (!/^image\/(png|jpe?g|gif|webp)$/i.test(file.type)) {
+      toasts.push('Avatar must be a PNG, JPEG, GIF, or WebP image', 'error');
+      return;
+    }
+    // Cap at 8 MB client-side. Server has its own limit via env, but
+    // bouncing here saves the upload bandwidth on egregiously large
+    // files.
+    if (file.size > 8 * 1024 * 1024) {
+      toasts.push('Avatar file is too large (max 8 MB)', 'error');
+      return;
+    }
+    setAvatarUploading(true);
+    const previewUrl = URL.createObjectURL(file);
+    setAvatarPreview(previewUrl);
+    try {
+      const r = await rest.uploadAvatar(await compressImage(file, { maxDimension: 512 }));
+      updateUser(r.user);
+      replaceUser({
+        id: r.user.id,
+        username: r.user.username,
+        displayName: r.user.displayName,
+        avatarUrl: r.user.avatarUrl,
+        status: r.user.status,
+        customStatus: r.user.customStatus,
+      });
+      toasts.push('Avatar updated', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Avatar upload failed', 'error');
+      // Drop the preview on failure so the UI reverts to the
+      // currently-saved avatar rather than leaving a stale local URL
+      // visible.
+      setAvatarPreview(null);
+    } finally {
+      setAvatarUploading(false);
+      // Free the blob URL once we no longer need it. We delay slightly
+      // so the new <img> has time to swap to the server URL without
+      // flashing to broken state.
+      setTimeout(() => URL.revokeObjectURL(previewUrl), 1500);
+    }
+  }
+
+  /** Clear the avatar (back to initials fallback). */
+  async function clearAvatar() {
+    if (!user || avatarUploading) return;
+    setAvatarUploading(true);
+    try {
+      const r = await rest.patchMe({ avatarUrl: null });
+      updateUser(r.user);
+      replaceUser({
+        id: r.user.id,
+        username: r.user.username,
+        displayName: r.user.displayName,
+        avatarUrl: r.user.avatarUrl,
+        status: r.user.status,
+        customStatus: r.user.customStatus,
+      });
+      setAvatarPreview(null);
+      toasts.push('Avatar removed', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not remove avatar', 'error');
+    } finally {
+      setAvatarUploading(false);
+    }
+  }
+
+  /**
+   * Banner upload mirrors the avatar path. Banner is purely cosmetic —
+   * shown on the profile card hero strip. Same content-type allow-list
+   * (server enforces too) and the same 8 MB client cap. We don't
+   * replaceUser() here because banners aren't part of the in-app
+   * `usersById` cache: the cache only mirrors fields that show up in
+   * member lists / message authors, and banners only render on the
+   * profile card which fetches the canonical user separately.
+   */
+  async function uploadBanner(file: File) {
+    if (!user || bannerUploading) return;
+    if (!/^image\/(png|jpe?g|gif|webp)$/i.test(file.type)) {
+      toasts.push('Banner must be a PNG, JPEG, GIF, or WebP image', 'error');
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      toasts.push('Banner file is too large (max 8 MB)', 'error');
+      return;
+    }
+    setBannerUploading(true);
+    const previewUrl = URL.createObjectURL(file);
+    setBannerPreview(previewUrl);
+    try {
+      const r = await rest.uploadBanner(await compressImage(file, { maxDimension: 1500 }));
+      updateUser(r.user);
+      toasts.push('Banner updated', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Banner upload failed', 'error');
+      setBannerPreview(null);
+    } finally {
+      setBannerUploading(false);
+      setTimeout(() => URL.revokeObjectURL(previewUrl), 1500);
+    }
+  }
+
+  async function clearBanner() {
+    if (!user || bannerUploading) return;
+    setBannerUploading(true);
+    try {
+      const r = await rest.patchMe({ bannerUrl: null });
+      updateUser(r.user);
+      setBannerPreview(null);
+      toasts.push('Banner removed', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not remove banner', 'error');
+    } finally {
+      setBannerUploading(false);
+    }
+  }
+
+  async function save(opts?: { silent?: boolean }) {
+    if (!user || pending) return;
+    setPending(true);
+    try {
+      // Send all three editable fields every time. The previous
+      // change-detection heuristic compared local state to
+      // `user!.<field>`, but that comparison was fragile in two ways:
+      //   1) After the status auto-save, `updateUser(r.user)` rewrites
+      //      the auth-context user with the server's view — but the
+      //      local `displayName` / `bio` / `customStatus` useState
+      //      values stayed at whatever the user had typed locally.
+      //      Subtle skews (e.g. server-trimmed whitespace, char-set
+      //      normalisation) made the diff falsely return "no changes".
+      //   2) Once the auth context updates from any other path
+      //      (gateway USER_UPDATE, presence patch, second tab), the
+      //      diff would silently misfire.
+      // Sending unconditionally means the user's intent — what's in
+      // the inputs right now — is what gets persisted. The server
+      // accepts no-op writes harmlessly; idempotency is its job, not
+      // ours.
+      const patch: {
+        displayName: string;
+        bio: string;
+        gender: string | null;
+        genderVisible: boolean;
+      } = {
+        displayName: displayName.trim(),
+        bio: bio.trim(),
+        gender: gender.trim() || null,
+        genderVisible,
+      };
+
+      // Validate locally before round-tripping. The server enforces
+      // the same bound but failing fast saves a 400 → toast cycle.
+      if (patch.displayName.length === 0) {
+        if (!opts?.silent) toasts.push('Display name cannot be empty', 'error');
+        return;
+      }
+
+      const r = await rest.patchMe(patch);
+
+      // Sync local state to the server's authoritative response. This
+      // pulls in any server-side normalisation (trim, casing, etc.)
+      // and prevents the local inputs from drifting past the next
+      // open of this modal.
+      updateUser(r.user);
+      replaceUser({
+        id: r.user.id,
+        username: r.user.username,
+        displayName: r.user.displayName,
+        avatarUrl: r.user.avatarUrl,
+        status: r.user.status,
+        customStatus: r.user.customStatus,
+      });
+      setDisplayName(r.user.displayName);
+      setBio(r.user.bio ?? '');
+      setGender(r.user.gender ?? '');
+      setGenderVisible(r.user.genderVisible ?? false);
+
+      if (!opts?.silent) toasts.push('Settings saved', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Save failed', 'error');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  // Keep the ref pointed at the latest closure (runs every render).
+  saveRef.current = save;
+
+  // Debounced auto-save: persist profile text edits ~1s after the user
+  // stops typing, so changes are never lost if they leave the field or
+  // close Settings without blurring (common on touch). onBlur still
+  // fires an immediate save; both are idempotent on the server.
+  useEffect(() => {
+    if (!didSeedRef.current) {
+      didSeedRef.current = true;
+      return;
+    }
+    if (!user) return;
+    const changed =
+      displayName.trim() !== (user.displayName ?? '') ||
+      bio.trim() !== (user.bio ?? '') ||
+      genderVisible !== (user.genderVisible ?? false) ||
+      (gender.trim() || null) !== (user.gender ?? null);
+    // Don't auto-save an empty display name (invalid) — wait for valid input.
+    if (!changed || displayName.trim().length === 0) return;
+    const t = setTimeout(() => void saveRef.current({ silent: true }), 1000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayName, bio, gender, genderVisible, user]);
+
+  return (
+    <div className="h-full bg-bg-1 text-ink-1 flex flex-col">
+      <header
+        className="border-b bg-bg-2/85 backdrop-blur-sm px-3 sm:px-4 shrink-0"
+        style={{ borderBottomColor: 'var(--zk-line-soft)' }}
+      >
+        <div className="h-12 flex items-center gap-2 sm:gap-3">
+          <button
+            onClick={() => navigate('/channels/@me')}
+            className="xl:hidden -ml-1 w-7 h-7 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3 shrink-0"
+            aria-label="Back to direct messages"
+          >
+            <ChevronLeft size={18} />
+          </button>
+          <SettingsIcon size={16} className="text-accent shrink-0" />
+          <h1 className="text-base sm:text-lg font-semibold truncate">Settings</h1>
+        </div>
+        {/* Tab bar. Two top-level categories — User Profile and Voice
+            & Video. Active tab gets the accent underline; inactive
+            tabs get an ink-3 label that brightens on hover. Border
+            radius is intentionally none on the bottom so the active
+            tab's underline reads as continuous with the header
+            divider. */}
+        <nav className="flex gap-1 -mb-px" role="tablist" aria-label="Settings sections">
+          {(
+            [
+              { id: 'profile', label: 'User Profile' },
+              { id: 'voice', label: 'Voice & Video' },
+              { id: 'bots', label: 'Bots' },
+            ] as const
+          ).map((t) => {
+            const active = activeTab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setActiveTab(t.id)}
+                className={`px-3 py-2 text-sm border-b-2 transition-colors ${
+                  active
+                    ? 'border-accent text-ink-1 font-medium'
+                    : 'border-transparent text-ink-3 hover:text-ink-2'
+                }`}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </nav>
+      </header>
+
+      <div className="p-4 sm:p-6 space-y-5 overflow-y-auto scrollbar-thin flex-1 min-h-0">
+        {activeTab === 'profile' && (
+          <>
+        {/* Supervision notice — shown to a supervised account so it
+            always knows, transparently, who can see its activity. Lives
+            here (above Account) rather than as a global banner. */}
+        {state.supervision && state.supervision.supervisedBy.length > 0 && (
+          <section className="rounded-xl border border-amber-500/30 bg-gradient-to-br from-amber-500/10 to-amber-500/[0.03] p-4">
+            <div className="flex items-start gap-3">
+              <div className="shrink-0 mt-0.5 w-8 h-8 rounded-full bg-amber-500/15 grid place-items-center text-amber-300">
+                <Shield size={16} />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-amber-100">
+                  This account is supervised
+                </p>
+                <p className="text-xs text-amber-200/80 leading-relaxed mt-0.5">
+                  Your messages, friends, and activity are visible to{' '}
+                  <span className="font-medium">
+                    {state.supervision.supervisedBy
+                      .map((p) => p.displayName || p.username)
+                      .join(' and ')}
+                  </span>
+                  , and your direct messages aren't end-to-end encrypted (except
+                  messages with them).
+                </p>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* ── Identity (username + email) ────────────────────────────
+            Each row shows the current value with a Change button
+            that expands an inline form. Both require the user's
+            current password as re-confirmation. Username has a
+            90-day cooldown; email goes through a verification
+            email sent to the new address. */}
+        <section className="space-y-2">
+          <div className="text-xs uppercase tracking-wider text-ink-3">Account</div>
+          <UserIdSection />
+          <UsernameSection />
+          <EmailSection />
+        </section>
+
+        {/* ── Password ───────────────────────────────────────────────────
+            Inline editor that expands when the user clicks "Change
+            password". Three fields (current / new / confirm) plus a
+            "sign out other sessions" toggle that defaults true — the
+            server treats it as the safe default after a password
+            rotation. Validation runs client-side for length + match
+              before firing the REST call. */}
+          <PasswordSection />
+          <TwoFactorSection />
+
+          {/* ── Profile ────────────────────────────────────────────────── */}
+          <section className="space-y-3">
+            <div className="text-xs uppercase tracking-wider text-ink-3">Profile</div>
+
+            {/* Avatar picker. Shows the current avatar (or local
+                preview while uploading), with a Change button that
+                triggers a hidden file input, and a Remove button when
+                an avatar is set. The hidden input pattern is
+                preferable to a styled input[type=file] because file
+                inputs are notoriously hard to style consistently
+                across browsers. */}
+            <AvatarPicker
+              user={user}
+              previewUrl={avatarPreview}
+              uploading={avatarUploading}
+              onPick={uploadAvatar}
+              onClear={clearAvatar}
+            />
+
+            {/* Banner picker — wide hero strip shown on the user's
+                profile card. Distinct from the square avatar; the
+                preview shape mirrors the rendered surface. */}
+            <BannerPicker
+              user={user}
+              previewUrl={bannerPreview}
+              uploading={bannerUploading}
+              onPick={uploadBanner}
+              onClear={clearBanner}
+            />
+
+            <label className="block">
+              <span className="text-sm text-ink-2">Display name</span>
+              <input
+                type="text"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                onBlur={() => void save({ silent: true })}
+                maxLength={32}
+                className="mt-1 w-full bg-bg-1 border border-line rounded-md px-3 py-2 outline-none focus:border-accent transition-colors"
+              />
+            </label>
+
+            {/* Custom status — emoji + text shown next to the presence dot on
+                profile cards and DM lists. Sits between name and bio; saves
+                via its own modal (expiry options need the room). */}
+            <CustomStatusRow />
+
+            <label className="block">
+              <span className="text-sm text-ink-2">Bio</span>
+              <textarea
+                value={bio}
+                onChange={(e) => setBio(e.target.value)}
+                onBlur={() => void save({ silent: true })}
+                maxLength={500}
+                rows={3}
+                className="mt-1 w-full bg-bg-1 border border-line rounded-md px-3 py-2 outline-none focus:border-accent transition-colors resize-none"
+                placeholder="A short blurb about yourself"
+              />
+              <span className="text-xs text-ink-3 block mt-1">{(bio ?? '').length}/500</span>
+            </label>
+            <div className="block">
+              <span className="text-sm text-ink-2">Gender</span>
+              <select
+                value={gender || 'N/A'}
+                onChange={(e) => setGender(e.target.value)}
+                className="mt-1 w-full bg-bg-1 border border-line rounded-md px-3 py-2 outline-none focus:border-accent transition-colors"
+              >
+                <option value="Male">Male</option>
+                <option value="Female">Female</option>
+                <option value="Non-Binary">Non-Binary</option>
+                <option value="N/A">N/A</option>
+              </select>
+              <label className="mt-2 flex items-center gap-2 text-sm text-ink-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={genderVisible}
+                  onChange={(e) => setGenderVisible(e.target.checked)}
+                  className="shrink-0"
+                />
+                Show my gender on my profile
+              </label>
+            </div>
+          </section>
+
+          {/* ── Status ───────────────────────────────────────────────────
+              Status changes apply immediately (no Save Changes click required)
+              — this matches Discord's behaviour and resolves the surprise of
+              "I picked Idle but it didn't take". The optimistic local update
+              happens before the REST round-trip so the UI is snappy. */}
+          <section className="space-y-2">
+            <div className="text-xs uppercase tracking-wider text-ink-3">Status</div>
+            <div className="grid grid-cols-2 gap-2">
+              {STATUS_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  disabled={savingStatus}
+                  onClick={() => void changeStatus(opt.value)}
+                  className={`text-left px-3 py-2 rounded-md border transition-colors disabled:opacity-60 ${
+                    status === opt.value
+                      ? 'bg-accent/15 border-accent/60'
+                      : 'bg-bg-1 border-line hover:bg-bg-3'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2.5 h-2.5 rounded-full ${opt.dot}`} aria-hidden />
+                    <span className="font-medium">{opt.label}</span>
+                  </div>
+                  <div className="text-xs text-ink-3 mt-0.5">{opt.help}</div>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          {/* ── Notifications (Web Push) ───────────────────────────────── */}
+          {/* Surfaced on the Capacitor native wrapper AND on installed PWAs
+              (Add-to-Home-Screen on iOS / Android). Desktop browsers stay
+              hidden because the section is most useful where it actually
+              changes user behavior — phones. The display-mode media query is
+              the standard signal for "installed PWA"; iOS uses the legacy
+              navigator.standalone boolean. The inner component then handles
+              all the per-platform support gates (iOS-needs-PWA, etc.). */}
+          {(isNative() ||
+            (typeof window !== 'undefined' &&
+              (window.matchMedia?.('(display-mode: standalone)').matches ||
+                (window.navigator as { standalone?: boolean }).standalone === true))) && (
+            <section className="space-y-2">
+              <div className="text-xs uppercase tracking-wider text-ink-3">Notifications</div>
+              <NotificationSettings />
+            </section>
+          )}
+
+          {/* ── App / Install ──────────────────────────────────────────── */}
+          {/* Only shown when there's something useful to do — if the app is
+              already installed, this whole section vanishes. The install
+              affordance is here (and not pushed in users' faces elsewhere)
+              because it's a power-user action; users who want it know to
+              look in settings. */}
+          <InstallSection />
+
+        {/* Appearance — app-wide theme. Each card writes the theme to
+            <html data-theme> and persists it; the whole UI re-skins live. */}
+        <section className="rounded-xl border border-line bg-bg-2 p-3">
+          <div className="flex items-baseline justify-between gap-2">
+            <h2 className="text-sm font-semibold text-ink-1">Appearance</h2>
+            <span className="text-[0.65rem] text-ink-3 shrink-0">Theme · OLED = true black</span>
+          </div>
+
+          {/* Guild Tag — the small tag shown after your name in chat and
+              the member list. */}
+          <div className="mt-3">
+            <h3 className="text-sm font-medium text-ink-1 mb-1.5">Guild Tag</h3>
+            <TagSettings />
+          </div>
+
+          <h3 className="text-sm font-medium text-ink-1 mt-4 mb-1.5">Themes</h3>
+          <div className="mt-2 grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-x-2 gap-y-2">
+            {[...new Set(THEMES.map((t) => t.group))].map((group) => (
+              <div key={group} className="flex flex-col gap-1">
+                <div className="text-[0.6rem] uppercase tracking-wider text-ink-3 font-semibold px-0.5 truncate">
+                  {group}
+                </div>
+                {THEMES.filter((t) => t.group === group).map((t) => {
+                  const active = theme === t.id;
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => chooseTheme(t.id)}
+                      aria-pressed={active}
+                      title={t.label}
+                      className={`text-left rounded-md border p-1 transition-colors ${
+                        active
+                          ? 'border-accent bg-accent/10'
+                          : 'border-line bg-bg-1 hover:border-accent/40'
+                      }`}
+                    >
+                      <div
+                        className="h-6 rounded border border-line/60 flex items-center gap-1 px-1.5"
+                        style={{ background: t.bg }}
+                      >
+                        <span className="w-2.5 h-2.5 rounded-full" style={{ background: t.swatch[0] }} />
+                        <span className="w-2.5 h-2.5 rounded-full" style={{ background: t.swatch[1] }} />
+                        {t.oled && (
+                          <span className="ml-auto text-[0.5rem] uppercase tracking-wider text-ink-3 font-semibold">
+                            OLED
+                          </span>
+                        )}
+                      </div>
+                      <div
+                        className={`mt-0.5 text-[0.65rem] font-medium truncate leading-tight ${
+                          active ? 'text-accent' : 'text-ink-1'
+                        }`}
+                      >
+                        {t.label}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+
+          {/* Avatar Frame — a cosmetic ring/glow others see on your
+              avatar. Saves immediately; previews render the live overlay. */}
+          <div className="mt-4 pt-3 border-t border-line">
+            <div className="flex items-baseline justify-between gap-2">
+              <h3 className="text-sm font-medium text-ink-1">Avatar Frame</h3>
+              <span className="text-[0.65rem] text-ink-3 shrink-0">
+                {decoSaving ? 'Saving…' : 'Shown on your avatar everywhere'}
+              </span>
+            </div>
+            <div className="mt-2 grid grid-cols-4 sm:grid-cols-5 lg:grid-cols-6 gap-2">
+              {AVATAR_DECORATIONS.map((d) => {
+                const active = (user?.avatarDecoration ?? 'none') === d.id;
+                return (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => void chooseDecoration(d.id)}
+                    disabled={decoSaving}
+                    aria-pressed={active}
+                    title={d.label}
+                    className={`flex flex-col items-center gap-1 rounded-md border p-2 transition-colors disabled:opacity-60 ${
+                      active
+                        ? 'border-accent bg-accent/10'
+                        : 'border-line bg-bg-1 hover:border-accent/40'
+                    }`}
+                  >
+                    <span className="relative w-9 h-9 shrink-0">
+                      <span
+                        className={`absolute inset-0 rounded-full text-xs flex items-center justify-center font-semibold ${avatarColor(
+                          user?.id ?? '0',
+                        )}`}
+                      >
+                        {avatarInitials(user?.displayName ?? '?')}
+                      </span>
+                      <AvatarImage src={user?.avatarUrl} />
+                      <AvatarDecoration decoration={d.id} />
+                    </span>
+                    <span
+                      className={`text-[0.6rem] font-medium truncate leading-tight max-w-full ${
+                        active ? 'text-accent' : 'text-ink-2'
+                      }`}
+                    >
+                      {d.label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+
+          {/* ── Privacy ──────────────────────────────────────────────────
+              At the bottom: who can reach you, parental controls, and
+              blocked users, all in one place. */}
+          <section className="space-y-3">
+            <div className="text-xs uppercase tracking-wider text-ink-3">Privacy</div>
+            <PrivacySettings />
+            <div className="pt-3 border-t border-line">
+              <div className="text-sm text-ink-2 font-medium mb-1">Parental controls</div>
+              <ParentalControlsToggle />
+            </div>
+            <div className="pt-3 border-t border-line">
+              <div className="text-sm text-ink-2 font-medium mb-2">Blocked users</div>
+              <BlockedSettings />
+            </div>
+          </section>
+          </>
+        )}
+
+        {activeTab === 'voice' && (
+          <>
+            {/* ── Voice & Video ──────────────────────────────────────────
+                Device selectors (input mic / output speaker / camera),
+                audio processing toggles (echo cancel, noise suppression,
+                auto gain), and video quality preference. All settings
+                here persist immediately to localStorage; no Save
+                Changes click required. */}
+            <section className="space-y-2">
+              <div className="text-xs uppercase tracking-wider text-ink-3">Voice & Video</div>
+              <VoiceDeviceSettings />
+              <VideoQualitySettings />
+            </section>
+          </>
+        )}
+        {activeTab === 'bots' && (
+          <>
+            <BotsSection />
+          </>
+        )}
+        </div>
+      </div>
+  );
+}
+
+// ── Voice & Video device settings ──────────────────────────────────────────
+//
+// Shows mic + speaker dropdowns plus a "Test microphone" button that
+// runs a quick getUserMedia round-trip. The test serves two purposes:
+//   1. Diagnostic — surfaces the precise error if mic is denied/missing.
+//   2. Permission gate — calling getUserMedia is what makes the browser
+//      reveal device LABELS in enumerateDevices(). Without it,
+//      Chrome/Firefox return device IDs with empty `label` fields, so
+//      the dropdown would just show "Microphone 1, Microphone 2" with
+//      no way to tell which is which.
+
+function VoiceDeviceSettings() {
+  const toasts = useToasts();
+  const [devices, setDevices] = useState<AudioDeviceList | null>(null);
+  const [input, setInput] = useState<string>(getSavedInputDeviceId());
+  const [output, setOutput] = useState<string>(getSavedOutputDeviceId());
+  const [quality, setQuality] = useState<VoiceQuality>(getVoiceQuality());
+  const [testing, setTesting] = useState(false);
+  const [testingSpeaker, setTestingSpeaker] = useState(false);
+  // PTT mode + key. We mirror localStorage in component state so React
+  // re-renders when the user switches mode or rebinds the key. The
+  // voice manager reads from localStorage directly on every keypress,
+  // so this state isn't authoritative — it's just the display copy.
+  const [mode, setMode] = useState<AudioMode>(getAudioMode());
+  const [pttKey, setPttKeyState] = useState<string>(getPttKey());
+  const [bindingKey, setBindingKey] = useState(false);
+
+  // Capture the next key while the rebind UI is active. We use the
+  // physical `code` (not `key`) so layouts don't matter — pressing
+  // physical-V on QWERTY and AZERTY both yield 'KeyV'.
+  useEffect(() => {
+    if (!bindingKey) return;
+    const handler = (e: KeyboardEvent) => {
+      e.preventDefault();
+      // Escape cancels without rebinding. Anything else is the new key.
+      if (e.code !== 'Escape') {
+        setPttKey(e.code);
+        setPttKeyState(e.code);
+      }
+      setBindingKey(false);
+    };
+    window.addEventListener('keydown', handler, { capture: true });
+    return () => window.removeEventListener('keydown', handler, { capture: true });
+  }, [bindingKey]);
+
+  const refresh = async () => {
+    try {
+      setDevices(await listAudioDevices());
+    } catch (e) {
+      toasts.push(e instanceof Error ? e.message : 'Could not list audio devices', 'error');
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+    // Browsers fire `devicechange` when a USB mic is plugged/unplugged or
+    // a Bluetooth headset connects. Re-enumerate so the dropdown stays
+    // current without requiring a settings re-open.
+    const handler = () => void refresh();
+    navigator.mediaDevices?.addEventListener?.('devicechange', handler);
+    return () => navigator.mediaDevices?.removeEventListener?.('devicechange', handler);
+  }, []);
+
+  async function changeInput(id: string) {
+    setInput(id);
+    await setSavedInputDeviceId(id);
+  }
+
+  async function changeOutput(id: string) {
+    setOutput(id);
+    await setSavedOutputDeviceId(id);
+  }
+
+  async function test() {
+    setTesting(true);
+    try {
+      await requestMicPermission();
+      // Re-enumerate with labels now populated.
+      await refresh();
+      toasts.push('Microphone working — labels updated', 'success');
+    } catch (e) {
+      // VoiceError carries a user-facing message; everything else gets
+      // a generic prefix.
+      toasts.push(e instanceof VoiceError ? e.message : 'Microphone test failed', 'error');
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  if (!devices) {
+    return <p className="text-sm text-ink-3">Loading audio devices…</p>;
+  }
+
+  // Native iOS shell: the WebView doesn't expose per-device enumeration —
+  // iOS routes audio through the system. Surface the secure-context state
+  // here because voice (getUserMedia) only works over https.
+  if (isNative()) {
+    if (typeof window !== 'undefined' && !window.isSecureContext) {
+      return (
+        <p className="text-sm text-ink-3">
+          The app isn't running over a secure (https) connection, so the
+          microphone is unavailable. Make sure <code>server.url</code> in
+          capacitor.config.ts points to your <code>https://</code> site, then
+          run <code>npx cap sync ios</code> and rebuild.
+        </p>
+      );
+    }
+    return (
+      <p className="text-sm text-ink-3">
+        Zekktris uses your iPhone's default microphone and speaker (including
+        Bluetooth or AirPlay when connected). Audio routing is managed by iOS.
+      </p>
+    );
+  }
+
+  // Browsers without mediaDevices (very old, or insecure-context HTTP).
+  if (!navigator.mediaDevices?.enumerateDevices) {
+    return (
+      <p className="text-sm text-ink-3">
+        Your browser doesn't support audio device selection. This usually means the page is loaded
+        over plain HTTP — voice requires HTTPS or localhost.
+      </p>
+    );
+  }
+
+  const labelFor = (d: MediaDeviceInfo) =>
+    d.label || (d.deviceId === 'default' ? 'System default' : `Device ${d.deviceId.slice(0, 6)}`);
+
+  return (
+    <div className="space-y-3">
+      {!devices.labelsAvailable && (
+        <div className="text-xs text-ink-3 bg-bg-1 border border-line rounded-md px-3 py-2">
+          Device names are hidden until you grant microphone permission. Click "Test microphone"
+          below to allow access — names will populate once you do.
+        </div>
+      )}
+
+      <label className="block">
+        <span className="text-xs text-ink-2">Microphone</span>
+        <select
+          value={input}
+          onChange={(e) => void changeInput(e.target.value)}
+          className="mt-1 w-full px-3 py-2 bg-bg-1 border border-line rounded-md text-sm text-ink-1"
+        >
+          <option value="">System default</option>
+          {devices.inputs.map((d) => (
+            <option key={d.deviceId} value={d.deviceId}>
+              {labelFor(d)}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="block">
+        <span className="text-xs text-ink-2">Speaker</span>
+        <select
+          value={output}
+          onChange={(e) => void changeOutput(e.target.value)}
+          className="mt-1 w-full px-3 py-2 bg-bg-1 border border-line rounded-md text-sm text-ink-1"
+        >
+          <option value="">System default</option>
+          {devices.outputs.map((d) => (
+            <option key={d.deviceId} value={d.deviceId}>
+              {labelFor(d)}
+            </option>
+          ))}
+        </select>
+        {devices.outputs.length === 0 && (
+          <span className="block text-xs text-ink-3 mt-1">
+            Output device selection isn't supported in this browser. Audio uses your system default.
+          </span>
+        )}
+      </label>
+
+      <div className="flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={() => void testSpeaker()}
+          disabled={testingSpeaker}
+          className="px-3 py-1.5 rounded-md text-sm bg-bg-3 hover:bg-bg-3/70 disabled:opacity-60"
+        >
+          {testingSpeaker ? 'Playing…' : 'Test speaker'}
+        </button>
+        <button
+          type="button"
+          onClick={() => void test()}
+          disabled={testing}
+          className="px-3 py-1.5 rounded-md text-sm bg-bg-3 hover:bg-bg-3/70 disabled:opacity-60"
+        >
+          {testing ? 'Testing…' : 'Test microphone'}
+        </button>
+      </div>
+
+      {/* ── Voice quality ──────────────────────────────────────────── */}
+      <div className="pt-3 border-t border-line space-y-2">
+        <span className="text-xs text-ink-2 font-medium">Voice quality</span>
+        <div className="grid grid-cols-3 gap-2">
+          {(['high', 'normal', 'low'] as const).map((key) => {
+            const preset = QUALITY_PRESETS[key];
+            const active = quality === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => {
+                  setVoiceQuality(key);
+                  setQuality(key);
+                }}
+                className={`text-left px-3 py-2 rounded-md border transition-colors ${
+                  active
+                    ? 'bg-accent/15 border-accent/60'
+                    : 'bg-bg-1 border-line hover:bg-bg-3'
+                }`}
+              >
+                <div className="font-medium text-sm">{preset.label}</div>
+                <div className="text-xs text-ink-3 mt-0.5 leading-snug">{preset.help}</div>
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-xs text-ink-3 leading-snug">
+          Changes apply on your next voice connection. Leave and rejoin a voice channel for new settings to take effect.
+        </p>
+      </div>
+
+      {/* ── Audio processing ───────────────────────────────────────
+          Three browser-native filters that shape your outgoing mic
+          stream before it leaves your machine. They're on by default
+          (standard for voice chat apps), but exposing them lets users
+          troubleshoot — e.g. if AGC is over-pumping a soft mic, or
+          noise suppression is mangling the start of words. */}
+      <AudioProcessingToggles />
+
+      {/* ── Input Mode (Voice Activity vs. Push-to-Talk) ───────────── */}
+      <div className="pt-3 border-t border-line space-y-2">
+        <span className="text-xs text-ink-2 font-medium">Input mode</span>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => changeMode('vad')}
+            className={`text-left px-3 py-2 rounded-md border transition-colors ${
+              mode === 'vad'
+                ? 'bg-accent/15 border-accent/60'
+                : 'bg-bg-1 border-line hover:bg-bg-3'
+            }`}
+          >
+            <div className="font-medium text-sm">Voice activity</div>
+            <div className="text-xs text-ink-3 mt-0.5">
+              Mic transmits when you speak. Default behavior.
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={() => changeMode('ptt')}
+            className={`text-left px-3 py-2 rounded-md border transition-colors ${
+              mode === 'ptt'
+                ? 'bg-accent/15 border-accent/60'
+                : 'bg-bg-1 border-line hover:bg-bg-3'
+            }`}
+          >
+            <div className="font-medium text-sm">Push to talk</div>
+            <div className="text-xs text-ink-3 mt-0.5">
+              Mic stays muted until you hold a key.
+            </div>
+          </button>
+        </div>
+
+        {mode === 'ptt' && (
+          <label className="block">
+            <span className="text-xs text-ink-2">Push-to-talk key</span>
+            <button
+              type="button"
+              onClick={() => setBindingKey(true)}
+              className={`mt-1 w-full px-3 py-2 bg-bg-1 border rounded-md text-sm text-left transition-colors ${
+                bindingKey ? 'border-accent ring-1 ring-accent/40' : 'border-line'
+              }`}
+            >
+              {bindingKey
+                ? 'Press any key…'
+                : <span className="font-mono">{formatKeyCode(pttKey)}</span>}
+            </button>
+            <span className="block text-xs text-ink-3 mt-1">
+              Avoid keys you use while typing — Space is fine for chat-light voice channels but
+              consider a function key (F1–F12) or a side-mouse-button-like binding for chat-heavy ones.
+            </span>
+          </label>
+        )}
+      </div>
+    </div>
+  );
+
+  // Speaker test: synthesize a 0.4s 440Hz beep using WebAudio, route
+  // it through the saved output device. This is a sanity check that
+  // (a) audio output works at all and (b) the selected output device
+  // is the one the user expects.
+  async function testSpeaker() {
+    setTestingSpeaker(true);
+    try {
+      const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+      // Try to route to the saved sink. setSinkId is on HTMLAudioElement,
+      // not on AudioContext — for a programmatic beep the cleanest path
+      // is to render to an <audio> element via MediaStreamDestination.
+      const dest = ctx.createMediaStreamDestination();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = 440;
+      gain.gain.value = 0.1;
+      osc.connect(gain);
+      gain.connect(dest);
+      osc.start();
+      const audio = new Audio();
+      audio.srcObject = dest.stream;
+      const sinkId = getSavedOutputDeviceId();
+      if (sinkId && (audio as unknown as { setSinkId?: (id: string) => Promise<void> }).setSinkId) {
+        try {
+          await (audio as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId(sinkId);
+        } catch {
+          // Sink switch failed; fall back to default. Browser still plays.
+        }
+      }
+      await audio.play();
+      await new Promise((r) => setTimeout(r, 400));
+      osc.stop();
+      audio.pause();
+      await ctx.close().catch(() => {});
+      toasts.push('If you heard a beep, your speaker is working', 'success');
+    } catch (e) {
+      toasts.push(
+        e instanceof Error ? `Speaker test failed: ${e.message}` : 'Speaker test failed',
+        'error',
+      );
+    } finally {
+      setTestingSpeaker(false);
+    }
+  }
+
+  function changeMode(next: AudioMode) {
+    setMode(next);
+    setAudioMode(next);
+  }
+}
+
+// ── Audio processing toggles ──────────────────────────────────────────────
+//
+// Three independent browser-native filters that shape the outgoing
+// mic before it hits the network. Defaults: all on. Each toggle
+// writes to voicePrefs, which voice.ts reads when constructing the
+// Room. Changes take effect on the next voice connect — LiveKit
+// doesn't expose a runtime path to renegotiate audio constraints
+// on an active publication, and trying to fake it via track stop +
+// re-publish causes a perceptible audio drop on the listener's end.
+//
+// On keyboard noise specifically: the browser's `noiseSuppression`
+// uses an RNN trained on diffuse environmental noise (HVAC, traffic,
+// fan hum). It's intentionally conservative about transients like
+// key clicks because aggressive suppression also clips speech
+// consonants. If keyboard noise is unacceptable with NS on, the
+// reliable answer is push-to-talk (mic only transmits while a key
+// is held) — that mode is configurable in the section below.
+
+function AudioProcessingToggles() {
+  const [, force] = useState(0);
+  // Re-render when prefs change elsewhere (e.g. another tab) so
+  // the toggle reflects current state.
+  useEffect(() => {
+    return subscribeVoicePrefs(() => force((n) => n + 1));
+  }, []);
+  const p = getVoicePrefs();
+
+  return (
+    <div className="pt-3 border-t border-line space-y-2">
+      <span className="text-xs text-ink-2 font-medium">Audio processing</span>
+      <p className="text-xs text-ink-3 leading-snug">
+        Browser-side filters that clean up your outgoing mic. Toggle off to
+        compare quality. Most changes take effect on your next voice
+        connection; gain mode and manual gain apply live in-call.
+      </p>
+      <ToggleRow
+        title="Noise suppression"
+        help="Trims background hum and steady noise via the browser's built-in suppressor plus a software compression chain. For aggressive filtering of intermittent noise (typing, breathing, fan kicks), drag the violet line on the meter below to set a noise gate."
+        checked={p.noiseSuppression}
+        onChange={setNoiseSuppression}
+      />
+      <ToggleRow
+        title="Echo cancellation"
+        help="Stops your own voice from looping back when you use speakers instead of headphones. Leave on unless you have an external echo canceller."
+        checked={p.echoCancellation}
+        onChange={setEchoCancellation}
+      />
+
+      {/* Input-level meter — sits above the mode selector so the
+          user can see what their current setting is doing before
+          they touch it. Opens its own getUserMedia stream so it
+          works even when not in a call. */}
+      <MicLevelMeter />
+
+      {/* Gain mode: 3-way segmented control. Replaces the older
+          binary "AGC on/off" toggle so the user can pick between
+          browser AGC, manual gain (with a slider), or raw input
+          (no processing at all — for hardware audio chains). */}
+      <fieldset className="px-3 py-2 rounded-md bg-bg-1 border border-line">
+        <legend className="text-xs text-ink-1 font-medium px-1">Gain mode</legend>
+        <div role="radiogroup" className="mt-1 flex gap-1">
+          <GainModeOption
+            value="agc"
+            current={p.gainMode}
+            label="Auto"
+            sub="Browser AGC"
+          />
+          <GainModeOption
+            value="manual"
+            current={p.gainMode}
+            label="Manual"
+            sub="Slider below"
+          />
+          <GainModeOption
+            value="off"
+            current={p.gainMode}
+            label="Off"
+            sub="Raw input"
+          />
+        </div>
+        <p className="text-xs text-ink-3 mt-2 leading-snug">
+          {p.gainMode === 'agc' &&
+            'Browser AGC levels soft and loud voices automatically. Best for most setups; turn off if your mic sounds unnaturally compressed.'}
+          {p.gainMode === 'manual' &&
+            "AGC off, your gain slider applies a fixed multiplier before publishing. Set it once and the meter above shows what listeners will hear."}
+          {p.gainMode === 'off' &&
+            'No software gain processing at all. Use this if a hardware preamp or dynamics processor is shaping your mic before it reaches the browser.'}
+        </p>
+
+        {/* Manual gain slider. Always rendered so the slider thumb
+            doesn't jump when switching modes; disabled outside
+            manual mode to make the inert state visible. The on-the-
+            fly preview comes from the meter above — drag the
+            slider, the meter follows. */}
+        <div className={`mt-3 ${p.gainMode === 'manual' ? '' : 'opacity-50 pointer-events-none'}`}>
+          <div className="flex items-center justify-between text-xs text-ink-2 mb-1">
+            <span>Manual gain</span>
+            <span className="tabular-nums text-ink-3">{Math.round(p.micGain * 100)}%</span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={200}
+            step={5}
+            value={Math.round(p.micGain * 100)}
+            onChange={(e) => setMicGain(Number(e.target.value) / 100)}
+            className="w-full accent-accent"
+            aria-label="Manual mic gain"
+            disabled={p.gainMode !== 'manual'}
+          />
+          <div className="flex justify-between text-[0.65rem] text-ink-3 mt-0.5">
+            <span>0%</span>
+            <span>100%</span>
+            <span>200%</span>
+          </div>
+        </div>
+      </fieldset>
+    </div>
+  );
+}
+
+/** One option in the gain-mode segmented control. Visually
+    distinguishes the selected state with a filled background and
+    accent text; unselected options stay neutral. */
+function GainModeOption({
+  value,
+  current,
+  label,
+  sub,
+}: {
+  value: 'agc' | 'manual' | 'off';
+  current: 'agc' | 'manual' | 'off';
+  label: string;
+  sub: string;
+}) {
+  const active = value === current;
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={active}
+      onClick={() => setGainMode(value)}
+      className={`flex-1 px-2 py-1.5 rounded text-xs transition-colors ${
+        active
+          ? 'bg-accent/20 text-accent border border-accent/40'
+          : 'bg-bg-3 text-ink-2 border border-line hover:text-ink-1'
+      }`}
+    >
+      <div className="font-medium">{label}</div>
+      <div className="text-[0.65rem] mt-0.5 opacity-80">{sub}</div>
+    </button>
+  );
+}
+
+function ToggleRow({
+  title,
+  help,
+  checked,
+  onChange,
+}: {
+  title: string;
+  help: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <label className="flex items-start gap-3 px-3 py-2 rounded-md bg-bg-1 border border-line cursor-pointer hover:bg-bg-3/40 transition-colors">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-0.5 shrink-0 accent-accent"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm text-ink-1 font-medium">{title}</div>
+        <div className="text-xs text-ink-3 mt-0.5 leading-snug">{help}</div>
+      </div>
+    </label>
+  );
+}
+
+// ── Notification (Web Push) settings ──────────────────────────────────────
+//
+// Subscribe/unsubscribe to push notifications + show registered devices.
+// The browser issues an opaque endpoint per device; the server stores
+// it and pushes to it on @mentions and DMs. Permission flow:
+//
+// 1. User clicks "Enable" → check VAPID is configured server-side.
+// 2. Register the SW (idempotent — if already registered, the existing
+//    one is reused).
+// 3. Call `pushManager.subscribe()` — this prompts the browser
+//    permission UI on the FIRST call and silently returns the existing
+//    subscription on subsequent calls.
+// 4. POST the subscription to the server.
+//
+// Unsubscribe is symmetric: `pushManager.unsubscribe()` to remove the
+// browser-side registration, then DELETE on the server.
+
+function ParentalControlsToggle() {
+  const enabled = useParentalControlsEnabled();
+  return (
+    <div className="flex items-center justify-between gap-3 px-3 py-2.5 bg-bg-2 border border-line rounded-lg">
+      <div className="min-w-0">
+        <p className="text-sm text-ink-1">Show Family in the sidebar</p>
+        <p className="text-xs text-ink-3 leading-relaxed mt-0.5">
+          Adds a Family button to the rail so you can supervise a child
+          account, or manage who supervises yours. Off by default.
+        </p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        aria-label="Show Family in the sidebar"
+        onClick={() => setParentalControlsEnabled(!enabled)}
+        className={`relative shrink-0 w-10 h-6 rounded-full transition-colors ${
+          enabled ? 'bg-accent/70' : 'bg-bg-3'
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
+            enabled ? 'left-[1.125rem]' : 'left-0.5'
+          }`}
+        />
+      </button>
+    </div>
+  );
+}
+
+function NotificationSettings() {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const [enabled, setEnabled] = useState<boolean | null>(null); // null = loading
+  const [subscribed, setSubscribed] = useState<boolean | null>(null);
+  const [devices, setDevices] = useState<
+    Array<{ id: string; label: string | null; createdAt: string; lastUsedAt: string }>
+  >([]);
+  const [pending, setPending] = useState(false);
+
+  const supported =
+    typeof window !== 'undefined' &&
+    'serviceWorker' in navigator &&
+    'PushManager' in window &&
+    'Notification' in window;
+
+  // On mount: check server config + browser subscription state.
+  useEffect(() => {
+    if (!supported) {
+      setEnabled(false);
+      setSubscribed(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { enabled: serverEnabled } = await rest.getPushPublicKey();
+        if (cancelled) return;
+        setEnabled(serverEnabled);
+
+        // Is the browser already subscribed? Reading existing
+        // subscription doesn't trigger the permission prompt — only
+        // pushManager.subscribe() does.
+        const reg = await navigator.serviceWorker.getRegistration();
+        const existing = reg ? await reg.pushManager.getSubscription() : null;
+        if (!cancelled) setSubscribed(existing !== null);
+
+        // Server-side device list — for the "your devices" UI.
+        const { subscriptions } = await rest.listPushSubscriptions();
+        if (!cancelled) setDevices(subscriptions);
+      } catch {
+        if (!cancelled) {
+          setEnabled(false);
+          setSubscribed(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [rest, supported]);
+
+  async function handleEnable() {
+    setPending(true);
+    try {
+      // Permission. Browser flow: first call shows UI, subsequent
+      // calls return the cached answer.
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') {
+        toasts.push(
+          perm === 'denied'
+            ? 'Notification permission was denied. You can re-enable it in your browser settings.'
+            : 'Notification permission was dismissed.',
+          'error',
+        );
+        return;
+      }
+
+      // VAPID public key fetched fresh — subscribe() needs it as the
+      // applicationServerKey, which has to be the server's actual key.
+      const { key } = await rest.getPushPublicKey();
+      if (!key) {
+        toasts.push('Push notifications are not configured on this server', 'error');
+        return;
+      }
+
+      // Register the SW (idempotent), then subscribe via pushManager.
+      const reg = await navigator.serviceWorker.register('/sw.js');
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        // PushSubscriptionOptionsInit wants ArrayBuffer-backed BufferSource;
+        // our helper returns a generic Uint8Array. Cast through unknown
+        // to side-step the strict TS lib type narrowing on shared buffers.
+        applicationServerKey: urlBase64ToUint8Array(key) as unknown as BufferSource,
+      });
+
+      // Extract keys + endpoint and POST. The browser auto-base64-URL-
+      // encodes the keys via getKey(); we re-encode to standard base64
+      // (the format web-push expects).
+      const json = sub.toJSON();
+      await rest.subscribePush({
+        endpoint: json.endpoint!,
+        keys: {
+          p256dh: json.keys!.p256dh,
+          auth: json.keys!.auth,
+        },
+        label: detectDeviceLabel(),
+      });
+
+      setSubscribed(true);
+      const { subscriptions } = await rest.listPushSubscriptions();
+      setDevices(subscriptions);
+      toasts.push('Notifications enabled', 'success');
+    } catch (e) {
+      toasts.push(
+        e instanceof Error ? e.message : 'Failed to enable notifications',
+        'error',
+      );
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function handleDisable() {
+    setPending(true);
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      const sub = reg ? await reg.pushManager.getSubscription() : null;
+      if (sub) {
+        // Find the matching server-side row and delete it before the
+        // browser unsubscribes. Order matters: if we unsubscribe in the
+        // browser first and the DELETE fails, we have a phantom
+        // subscription on the server that gets pruned on the next 410.
+        const matching = devices.find(() => true); // best-effort match — only one per browser anyway
+        if (matching) {
+          await rest.deletePushSubscription(matching.id).catch(() => undefined);
+        }
+        await sub.unsubscribe();
+      }
+      setSubscribed(false);
+      const { subscriptions } = await rest.listPushSubscriptions();
+      setDevices(subscriptions);
+      toasts.push('Notifications disabled on this device', 'info');
+    } catch (e) {
+      toasts.push(
+        e instanceof Error ? e.message : 'Failed to disable notifications',
+        'error',
+      );
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function removeDevice(id: string) {
+    try {
+      await rest.deletePushSubscription(id);
+      const { subscriptions } = await rest.listPushSubscriptions();
+      setDevices(subscriptions);
+    } catch (e) {
+      toasts.push(
+        e instanceof Error ? e.message : 'Failed to remove device',
+        'error',
+      );
+    }
+  }
+
+  if (isNative()) {
+    return (
+      <div className="flex items-center justify-between gap-3 p-3 bg-bg-2 border border-line rounded-md">
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium">Push notifications</div>
+          <div className="text-xs text-ink-3 mt-0.5">
+            Delivered through Apple for @mentions, DMs, and calls. Zekktris asks
+            for permission when you sign in — you can manage it anytime in the
+            iOS Settings app under Zekktris → Notifications.
+          </div>
+        </div>
+        <button
+          type="button"
+          disabled={pending}
+          onClick={async () => {
+            setPending(true);
+            try {
+              const perm = await requestNotificationPermission();
+              if (perm === 'granted') {
+                setSubscribed(true);
+                toasts.push('Notifications enabled', 'success');
+              } else {
+                toasts.push(
+                  perm === 'denied'
+                    ? 'Notifications are turned off. Enable them in iOS Settings → Zekktris → Notifications.'
+                    : 'Notification permission was dismissed.',
+                  'error',
+                );
+              }
+            } finally {
+              setPending(false);
+            }
+          }}
+          className="px-3 py-1.5 text-sm rounded-md bg-accent hover:bg-accent/90 text-white disabled:opacity-50 shrink-0"
+        >
+          {pending ? 'Enabling…' : 'Enable'}
+        </button>
+      </div>
+    );
+  }
+
+  if (!supported) {
+    return (
+      <p className="text-sm text-ink-3">
+        Your browser doesn&apos;t support push notifications.
+      </p>
+    );
+  }
+
+  // iOS-Safari special-case. Safari on iOS shipped PushManager in
+  // the regular browser tab in 16.4, but subscribe() still only
+  // works when the page is running as an installed PWA (Add to
+  // Home Screen). The `supported` gate above passes for iOS Safari
+  // in a regular tab — so without this hint the user would tap
+  // Enable, get the permission prompt, then see a generic "Failed
+  // to enable notifications" toast and have no idea why.
+  //
+  // Detection: window.navigator.standalone is iOS-only and is true
+  // only when the page launched from Home Screen. The user agent
+  // sniff handles the iOS-browser case (iPadOS reports as Mac so
+  // we check maxTouchPoints too).
+  const isIOS =
+    typeof window !== 'undefined' &&
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const iosStandalone = (window.navigator as { standalone?: boolean }).standalone === true;
+  if (isIOS && !iosStandalone && subscribed === false) {
+    return (
+      <div className="text-sm text-ink-3 space-y-2">
+        <p>
+          On iPhone and iPad, push notifications only work when Zekktris is
+          installed as a Home Screen app.
+        </p>
+        <p className="text-xs text-ink-3">
+          In Safari: tap the Share button → <span className="text-ink-2">Add to Home Screen</span>,
+          then open Zekktris from your Home Screen and try again here.
+        </p>
+      </div>
+    );
+  }
+
+  if (enabled === null || subscribed === null) {
+    return <p className="text-sm text-ink-3">Loading…</p>;
+  }
+  if (!enabled) {
+    return (
+      <p className="text-sm text-ink-3">
+        Push notifications are not configured on this server. Ask your
+        server operator to set <code className="text-ink-2">VAPID_PUBLIC_KEY</code> and{' '}
+        <code className="text-ink-2">VAPID_PRIVATE_KEY</code>.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3 p-3 bg-bg-2 border border-line rounded-md">
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium">
+            {subscribed ? 'Notifications enabled on this device' : 'Notifications disabled'}
+          </div>
+          <div className="text-xs text-ink-3 mt-0.5">
+            {subscribed
+              ? 'You’ll receive notifications for @mentions and DMs.'
+              : 'Enable to get notified when someone mentions you or sends a DM.'}
+          </div>
+        </div>
+        {subscribed ? (
+          <button
+            type="button"
+            onClick={() => void handleDisable()}
+            disabled={pending}
+            className="px-3 py-1.5 text-sm rounded-md text-ink-2 hover:bg-bg-3 disabled:opacity-50"
+          >
+            Disable
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => void handleEnable()}
+            disabled={pending}
+            className="px-3 py-1.5 text-sm rounded-md bg-accent hover:bg-accent/90 text-white disabled:opacity-50"
+          >
+            {pending ? 'Enabling…' : 'Enable'}
+          </button>
+        )}
+      </div>
+
+      {devices.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="text-xs uppercase tracking-wider text-ink-3 px-1">
+            Your devices ({devices.length})
+          </div>
+          <ul className="space-y-1">
+            {devices.map((d) => (
+              <li
+                key={d.id}
+                className="flex items-center gap-2 px-3 py-2 bg-bg-2 border border-line rounded-md text-sm"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="truncate" title={d.label ?? '(unknown device)'}>
+                    {d.label ?? '(unknown device)'}
+                  </div>
+                  <div className="text-xs text-ink-3">
+                    Added {new Date(d.createdAt).toLocaleDateString()}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void removeDevice(d.id)}
+                  className="px-2 py-1 text-xs rounded text-red-400 hover:bg-red-950/40"
+                  title="Remove this device"
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * VAPID public keys come from the server as base64url strings; the Push
+ * API wants a Uint8Array. Standard utility — Mozilla's docs include this
+ * exact function.
+ */
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+/**
+ * Build a human-friendly device label from the user agent and platform
+ * hints. The raw UA string is dense and unreadable in a "your devices"
+ * list; this produces things like "MacBook · Chrome" or "iPhone · Safari".
+ *
+ * UA parsing is famously messy — we keep it simple and best-effort.
+ * Worst case we fall back to the truncated UA which still works.
+ */
+function detectDeviceLabel(): string {
+  const ua = navigator.userAgent;
+  // Browser
+  let browser = 'Browser';
+  if (/Edg\//.test(ua)) browser = 'Edge';
+  else if (/OPR\/|Opera/.test(ua)) browser = 'Opera';
+  else if (/Firefox\//.test(ua)) browser = 'Firefox';
+  else if (/Chrome\//.test(ua)) browser = 'Chrome';
+  else if (/Safari\//.test(ua)) browser = 'Safari';
+
+  // Device / OS
+  let device = 'Device';
+  if (/iPhone/.test(ua)) device = 'iPhone';
+  else if (/iPad/.test(ua)) device = 'iPad';
+  else if (/Android/.test(ua)) device = 'Android';
+  else if (/Mac OS X/.test(ua)) device = 'Mac';
+  else if (/Windows/.test(ua)) device = 'Windows';
+  else if (/Linux/.test(ua)) device = 'Linux';
+
+  return `${device} \u00b7 ${browser}`;
+}
+
+// ── Blocked users settings ──────────────────────────────────────────────────
+//
+// Lists every user the current account has blocked, with an unblock action
+// per row. Shares the relationships REST endpoint with the ProfileCard
+// flow (one fetch returns friends + requests + blocks; we filter locally).
+//
+// Empty state is friendly rather than apologetic — "no one blocked" is
+// the desired state, not a failure.
+
+/**
+ * Global privacy settings. Single toggle for now: who can open a new
+ * DM or 1:1-call this user. Friends-only by default; opt-in to also
+ * accepting from anyone sharing a guild with this user. Block list
+ * always wins regardless of this setting. Existing DMs are not
+ * affected by this toggle — it only gates NEW conversations.
+ */
+function TagSettings() {
+  const { rest, user, updateUser } = useAuth();
+  const toasts = useToasts();
+  const [emoji, setEmoji] = useState(user?.tagEmoji ?? '');
+  const [color, setColor] = useState(user?.tagColor ?? '#3dd7ec');
+  const [label, setLabel] = useState(user?.tagLabel ?? '');
+  const [pending, setPending] = useState(false);
+
+  const dirty =
+    emoji !== (user?.tagEmoji ?? '') ||
+    color !== (user?.tagColor ?? '#3dd7ec') ||
+    label !== (user?.tagLabel ?? '');
+
+  async function save() {
+    if (pending) return;
+    setPending(true);
+    try {
+      const res = await rest.patchMe({
+        tagLabel: label.trim() === '' ? null : label.trim(),
+        tagColor: color,
+        tagEmoji: emoji.trim() === '' ? null : emoji.trim(),
+      });
+      updateUser(res.user);
+      toasts.push('Tag saved', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Tag update failed', 'error');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function clearTag() {
+    if (pending) return;
+    setEmoji('');
+    setLabel('');
+    setPending(true);
+    try {
+      const res = await rest.patchMe({ tagLabel: null, tagEmoji: null });
+      updateUser(res.user);
+      toasts.push('Tag cleared', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Tag update failed', 'error');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const preview = {
+    tagLabel: label.trim() || null,
+    tagColor: color,
+    tagEmoji: emoji.trim() || null,
+  };
+  const hasTag = !!(user?.tagLabel || user?.tagEmoji);
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-ink-3">
+        A small tag shown to the right of your name everywhere — an emoji, a
+        color, and up to 6 characters. Leave it blank for no tag.
+      </p>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex flex-col gap-1">
+          <span className="text-[0.7rem] text-ink-3">Emoji</span>
+          <input
+            value={emoji}
+            onChange={(e) => setEmoji(e.target.value)}
+            maxLength={16}
+            placeholder="😎"
+            className="w-16 bg-bg-2 border border-line rounded-md px-2 py-1.5 text-sm text-center outline-none focus:border-accent transition-colors"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[0.7rem] text-ink-3">Color</span>
+          <input
+            type="color"
+            value={color}
+            onChange={(e) => setColor(e.target.value)}
+            className="w-12 h-9 bg-bg-2 border border-line rounded-md p-0.5 cursor-pointer"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[0.7rem] text-ink-3">Label</span>
+          <input
+            value={label}
+            onChange={(e) => setLabel(e.target.value.slice(0, 6))}
+            maxLength={6}
+            placeholder="CLAN"
+            className="w-28 bg-bg-2 border border-line rounded-md px-2 py-1.5 text-sm outline-none focus:border-accent transition-colors"
+          />
+        </label>
+        <div className="flex flex-col gap-1">
+          <span className="text-[0.7rem] text-ink-3">Preview</span>
+          <div className="h-9 flex items-center gap-1.5 px-2.5 rounded-md bg-bg-2 border border-line">
+            <span className="text-sm text-ink-1 font-medium truncate max-w-[10rem]">
+              {user?.displayName ?? 'You'}
+            </span>
+            <UserTag user={preview} />
+          </div>
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={pending || !dirty}
+          className="px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-bg-0 hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+        >
+          {pending ? 'Saving…' : 'Save tag'}
+        </button>
+        {hasTag && (
+          <button
+            type="button"
+            onClick={() => void clearTag()}
+            disabled={pending}
+            className="px-3 py-1.5 rounded-md text-sm text-ink-2 hover:text-ink-1 border border-line hover:bg-bg-3 disabled:opacity-50 transition-colors"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PrivacySettings() {
+  const { rest, user, updateUser } = useAuth();
+  const toasts = useToasts();
+
+  // Field is optional in the type for back-compat with sessions
+  // issued before the column existed; treat undefined as the default
+  // (false = friends-only).
+  const allow = user?.allowDmsFromServerMembers === true;
+  const [pending, setPending] = useState(false);
+
+  async function toggle(next: boolean) {
+    if (pending) return;
+    setPending(true);
+    // Optimistic update so the toggle feels instant. Revert in catch.
+    updateUser({ allowDmsFromServerMembers: next });
+    try {
+      const res = await rest.patchMe({ allowDmsFromServerMembers: next });
+      // Reconcile with server response in case of normalization.
+      if (res.user.allowDmsFromServerMembers !== undefined) {
+        updateUser({ allowDmsFromServerMembers: res.user.allowDmsFromServerMembers });
+      }
+    } catch (e) {
+      // Revert on failure.
+      updateUser({ allowDmsFromServerMembers: allow });
+      toasts.push(
+        e instanceof ApiError ? e.message : 'Privacy update failed',
+        'error',
+      );
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <ToggleRow
+      title="Allow DMs and calls from server members"
+      help={
+        'Off (default): only mutual friends can DM or call you. On: people who share a server with you can also reach you. Blocked users are always denied. Already-open DMs keep working regardless.'
+      }
+      checked={allow}
+      onChange={(next) => void toggle(next)}
+    />
+  );
+}
+
+function BlockedSettings() {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const [blocked, setBlocked] = useState<
+    Array<{ id: string; displayName: string; username: string; avatarUrl: string | null }>
+  > ([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    rest
+      .listRelationships()
+      .then((r) => {
+        if (cancelled) return;
+        const filtered = r.relationships
+          .filter((x) => x.type === 'blocked')
+          .map((x) => ({
+            id: x.user.id,
+            displayName: x.user.displayName,
+            username: x.user.username,
+            avatarUrl: x.user.avatarUrl,
+          }));
+        setBlocked(filtered);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        toasts.push(
+          e instanceof ApiError ? e.message : 'Failed to load blocked users',
+          'error',
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function unblock(id: string) {
+    setBusy(id);
+    try {
+      await rest.unblockUser(id);
+      setBlocked((prev) => prev.filter((u) => u.id !== id));
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Unblock failed', 'error');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (loading) {
+    return (
+      <p className="text-xs text-ink-3 italic">Loading…</p>
+    );
+  }
+
+  if (blocked.length === 0) {
+    return (
+      <p className="text-xs text-ink-3 italic">
+        You haven’t blocked anyone. Open someone’s profile to block them.
+      </p>
+    );
+  }
+
+  return (
+    <ul className="border border-line rounded-md divide-y divide-line bg-bg-1">
+      {blocked.map((u) => (
+        <li key={u.id} className="flex items-center gap-3 px-3 py-2">
+          <div className="relative w-8 h-8 rounded-full text-xs flex items-center justify-center font-semibold shrink-0 bg-bg-3 overflow-hidden">
+            <span aria-hidden="true">{u.displayName.slice(0, 2).toUpperCase()}</span>
+            <AvatarImage src={u.avatarUrl} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm text-ink-1 truncate">{u.displayName}</div>
+            <div className="text-xs text-ink-3 truncate">@{u.username}</div>
+          </div>
+          <button
+            type="button"
+            disabled={busy === u.id}
+            onClick={() => void unblock(u.id)}
+            className="text-xs px-2 py-1 rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3 disabled:opacity-60"
+          >
+            {busy === u.id ? 'Unblocking…' : 'Unblock'}
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * AvatarPicker
+ * ------------
+ * Local component (no separate file — kept here because it's only
+ * used by SettingsModal). Renders the current avatar at 80x80, with
+ * Change and Remove buttons beside it. The actual file input is hidden
+ * and clicked via a ref so the button styling stays consistent.
+ */
+function AvatarPicker({
+  user,
+  previewUrl,
+  uploading,
+  onPick,
+  onClear,
+}: {
+  user: { id: string; displayName: string; avatarUrl: string | null } | null;
+  previewUrl: string | null;
+  uploading: boolean;
+  onPick: (file: File) => void;
+  onClear: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  if (!user) return null;
+  // Display priority: in-flight preview > saved avatar > initials.
+  const displayUrl = previewUrl ?? user.avatarUrl;
+  const tone = avatarColor(user.id);
+  const initials = avatarInitials(user.displayName);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-4">
+        <div className="relative w-20 h-20 shrink-0">
+          <span
+            className={`absolute inset-0 rounded-full text-2xl font-semibold flex items-center justify-center border border-line ${tone}`}
+            aria-hidden="true"
+          >
+            {initials}
+          </span>
+          <AvatarImage
+            src={displayUrl}
+            className="absolute inset-0 w-full h-full rounded-full object-cover border border-line"
+          />
+          {uploading && (
+            <span className="absolute inset-0 rounded-full bg-black/50 flex items-center justify-center">
+              <span className="w-5 h-5 rounded-full border-2 border-white border-t-transparent animate-spin" />
+            </span>
+          )}
+        </div>
+
+        {/* Buttons-only column. Hint text lives BELOW the row so
+            its extra height doesn't pull the avatar off-center
+            against the buttons — items-center on the parent flex
+            then aligns the avatar against the buttons' midpoint. */}
+        <div className="flex flex-col gap-1.5">
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            disabled={uploading}
+            className="px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 text-white text-sm font-medium transition-colors disabled:opacity-60"
+          >
+            {uploading ? 'Uploading…' : displayUrl ? 'Change avatar' : 'Upload avatar'}
+          </button>
+          {user.avatarUrl && !uploading && (
+            <button
+              type="button"
+              onClick={onClear}
+              className="px-3 py-1.5 rounded-md bg-bg-1 border border-line hover:bg-bg-3 text-ink-2 hover:text-ink-1 text-sm transition-colors"
+            >
+              Remove avatar
+            </button>
+          )}
+        </div>
+      </div>
+
+      <p className="text-xs text-ink-3 leading-snug">
+        <span className="text-ink-2 font-medium">Recommended: square, 512×512.</span>{' '}
+        PNG, JPEG, GIF, or WebP. Max 8&nbsp;MB. Shown as a circle at every size.
+      </p>
+
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          // Reset value so picking the same file twice still fires.
+          e.target.value = '';
+          if (f) onPick(f);
+        }}
+      />
+    </div>
+  );
+}
+
+/**
+ * BannerPicker — wide hero strip uploader, sibling to AvatarPicker.
+ *
+ * The banner is shown above the user's bio on their profile card; it's
+ * decorative, optional, and unbounded by aspect ratio (we let the
+ * server-side image keep its native ratio and `object-cover` the
+ * container). The shape difference from AvatarPicker (a 16:6-ish
+ * strip vs a 1:1 disc) means duplicating the layout is cleaner than
+ * parameterising AvatarPicker — the buttons sit BELOW the preview
+ * here, since the preview is already the full content width and
+ * pushing buttons to the side wastes horizontal space.
+ */
+function BannerPicker({
+  user,
+  previewUrl,
+  uploading,
+  onPick,
+  onClear,
+}: {
+  user: { id: string; bannerUrl: string | null } | null;
+  previewUrl: string | null;
+  uploading: boolean;
+  onPick: (file: File) => void;
+  onClear: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  if (!user) return null;
+  const displayUrl = previewUrl ?? user.bannerUrl;
+  return (
+    <div className="space-y-2">
+      <span className="text-sm text-ink-2">Profile banner</span>
+      {/* Banner preview. 16:9 aspect to match the live render on
+          profile-card popouts and the guild banner shape on the
+          channel list. Capped at 500px wide and centered so it
+          doesn't stretch the settings column. */}
+      <div className="relative w-full max-w-[500px] mx-auto aspect-[16/9] rounded-md overflow-hidden bg-bg-3 border border-line">
+        {displayUrl ? (
+          <img
+            src={displayUrl}
+            alt=""
+            className="w-full h-full object-contain"
+            draggable={false}
+          />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center text-xs text-ink-3">
+            No banner
+          </div>
+        )}
+        {uploading && (
+          <span className="absolute inset-0 bg-black/50 flex items-center justify-center">
+            <span className="w-5 h-5 rounded-full border-2 border-white border-t-transparent animate-spin" />
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={uploading}
+          className="px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 text-white text-sm font-medium transition-colors disabled:opacity-60"
+        >
+          {uploading ? 'Uploading…' : displayUrl ? 'Change banner' : 'Upload banner'}
+        </button>
+        {user.bannerUrl && !uploading && (
+          <button
+            type="button"
+            onClick={onClear}
+            className="px-3 py-1.5 rounded-md bg-bg-1 border border-line hover:bg-bg-3 text-ink-2 hover:text-ink-1 text-sm transition-colors"
+          >
+            Remove banner
+          </button>
+        )}
+        <span className="text-xs text-ink-3 ml-auto text-right leading-snug max-w-[280px]">
+          <span className="text-ink-2 font-medium">Recommended: 1920×1080 (16:9 wide).</span>{' '}
+          PNG, JPEG, GIF, or WebP. Max 8&nbsp;MB. Other shapes show with bars.
+        </span>
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          e.target.value = '';
+          if (f) onPick(f);
+        }}
+      />
+    </div>
+  );
+}
+
+/**
+ * Password change section. Collapsed by default — clicking "Change
+ * password" expands the form. Validates client-side (min length 8,
+ * match between new+confirm) before firing the REST call; surfaces
+ * server errors via toast. On success, resets the form and collapses
+ * back, plus shows a toast about how many sessions were revoked if
+ * the user kept the "sign out other sessions" toggle on.
+ */
+function TwoFactorSection() {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const [status, setStatus] = useState<{ enabled: boolean; recoveryRemaining: number } | null>(null);
+  const [setup, setSetup] = useState<{
+    secret: string;
+    otpauthUri: string;
+    code: string;
+    submitting: boolean;
+  } | null>(null);
+  const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
+  const [disabling, setDisabling] = useState<{ code: string; submitting: boolean } | null>(null);
+
+  async function refresh() {
+    try {
+      const r = await rest.getTwoFactorStatus();
+      setStatus({ enabled: r.enabled, recoveryRemaining: r.recoveryRemaining });
+    } catch {
+      setStatus({ enabled: false, recoveryRemaining: 0 });
+    }
+  }
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function beginSetup() {
+    try {
+      const r = await rest.beginTwoFactor();
+      setSetup({ ...r, code: '', submitting: false });
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Failed to start enrollment', 'error');
+    }
+  }
+
+  async function confirmSetup() {
+    if (!setup || setup.submitting) return;
+    setSetup({ ...setup, submitting: true });
+    try {
+      const r = await rest.confirmTwoFactor(setup.code.trim());
+      setRecoveryCodes(r.recoveryCodes);
+      setSetup(null);
+      toasts.push('Two-factor authentication enabled', 'success');
+      refresh();
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Invalid code', 'error');
+      setSetup({ ...setup, submitting: false });
+    }
+  }
+
+  async function confirmDisable() {
+    if (!disabling || disabling.submitting) return;
+    setDisabling({ ...disabling, submitting: true });
+    try {
+      await rest.disableTwoFactor(disabling.code.trim());
+      toasts.push('Two-factor authentication disabled', 'success');
+      setDisabling(null);
+      refresh();
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Invalid code', 'error');
+      setDisabling({ ...disabling, submitting: false });
+    }
+  }
+
+  if (!status) return null;
+
+  return (
+    <section className="space-y-2">
+      <div className="text-xs uppercase tracking-wider text-ink-3">Two-factor authentication</div>
+
+      {/* Status + primary action row */}
+      <div className="flex items-start justify-between gap-3 p-3 rounded-md bg-bg-2 border border-line">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-ink-1">
+            {status.enabled ? 'Enabled' : 'Not enabled'}
+          </div>
+          <p className="text-xs text-ink-3 mt-0.5 leading-snug">
+            {status.enabled
+              ? `Account protected by an authenticator app. ${status.recoveryRemaining} recovery ${status.recoveryRemaining === 1 ? 'code' : 'codes'} remaining.`
+              : 'Add a second factor using an authenticator app like 1Password, Authy, or Google Authenticator.'}
+          </p>
+        </div>
+        {!status.enabled && !setup && (
+          <button
+            onClick={beginSetup}
+            className="shrink-0 px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 text-white text-sm font-medium"
+          >
+            Set up
+          </button>
+        )}
+        {status.enabled && !disabling && (
+          <button
+            onClick={() => setDisabling({ code: '', submitting: false })}
+            className="shrink-0 px-3 py-1.5 rounded-md border border-red-500/30 text-red-400 hover:bg-red-500/10 text-sm"
+          >
+            Disable
+          </button>
+        )}
+      </div>
+
+      {/* Enrollment flow */}
+      {setup && (
+        <div className="p-3 rounded-md bg-bg-2 border border-line space-y-3">
+          <div>
+            <div className="text-sm font-medium text-ink-1 mb-2">Scan with your authenticator</div>
+            {/* QR-rendered otpauth URI. The SVG is generated client-
+                side from our hand-rolled qr.ts encoder — no runtime
+                dep, no remote API. Centered on a white background
+                so it works in dark mode without inverting. */}
+            <div className="flex justify-center my-2">
+              <div
+                className="bg-white p-2 rounded"
+                dangerouslySetInnerHTML={{ __html: qrToSvg(qrEncode(setup.otpauthUri), 200) }}
+              />
+            </div>
+            <p className="text-xs text-ink-3 leading-snug mt-3">
+              Can't scan? Paste this secret manually into your authenticator:
+            </p>
+            <code className="block mt-1.5 px-2 py-1.5 rounded bg-bg-1 border border-line font-mono text-xs text-ink-2 break-all">
+              {setup.secret}
+            </code>
+          </div>
+          <label className="block">
+            <span className="block text-xs uppercase tracking-wider text-ink-3 font-semibold mb-1">
+              Enter the 6-digit code from your app
+            </span>
+            <input
+              value={setup.code}
+              onChange={(e) => setSetup({ ...setup, code: e.target.value })}
+              placeholder="123456"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              className="w-full px-3 py-2 bg-bg-1 border border-line rounded-md text-sm text-ink-1 font-mono tracking-widest text-center"
+            />
+          </label>
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => setSetup(null)}
+              className="px-3 py-1.5 rounded-md text-sm text-ink-2 hover:bg-bg-3"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={confirmSetup}
+              disabled={setup.submitting || setup.code.length !== 6}
+              className="px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 text-white text-sm font-medium disabled:opacity-50"
+            >
+              {setup.submitting ? 'Verifying…' : 'Verify & enable'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Recovery codes — shown ONCE after confirm */}
+      {recoveryCodes && (
+        <div className="p-3 rounded-md bg-amber-500/5 border border-amber-500/30 space-y-2">
+          <div className="flex items-start gap-2">
+            <AlertTriangle size={14} className="text-amber-400 shrink-0 mt-0.5" />
+            <div className="flex-1 text-xs text-ink-2 leading-snug">
+              <strong className="text-amber-300">Save these recovery codes now.</strong> Each works
+              once if you lose access to your authenticator. They won't be shown again.
+            </div>
+          </div>
+          <ul className="grid grid-cols-2 gap-1.5 font-mono text-xs">
+            {recoveryCodes.map((c) => (
+              <li key={c} className="px-2 py-1 bg-bg-1 border border-line rounded text-ink-1 text-center">
+                {c}
+              </li>
+            ))}
+          </ul>
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => {
+                copyText(recoveryCodes.join('\n')).catch(() => {});
+                toasts.push('Codes copied to clipboard', 'success');
+              }}
+              className="px-3 py-1 rounded-md text-xs text-ink-2 hover:bg-bg-3"
+            >
+              Copy all
+            </button>
+            <button
+              onClick={() => setRecoveryCodes(null)}
+              className="px-3 py-1 rounded-md text-xs bg-accent hover:bg-accent/90 text-white"
+            >
+              I've saved them
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Disable flow */}
+      {disabling && (
+        <div className="p-3 rounded-md bg-bg-2 border border-red-500/30 space-y-2">
+          <p className="text-xs text-ink-2">
+            Enter a current 6-digit code or one of your recovery codes to disable two-factor authentication.
+          </p>
+          <input
+            value={disabling.code}
+            onChange={(e) => setDisabling({ ...disabling, code: e.target.value })}
+            placeholder="123456 or recovery code"
+            autoComplete="one-time-code"
+            className="w-full px-3 py-2 bg-bg-1 border border-line rounded-md text-sm text-ink-1 font-mono"
+          />
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => setDisabling(null)}
+              className="px-3 py-1.5 rounded-md text-sm text-ink-2 hover:bg-bg-3"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={confirmDisable}
+              disabled={disabling.submitting || !disabling.code.trim()}
+              className="px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-700 text-white text-sm font-medium disabled:opacity-50"
+            >
+              {disabling.submitting ? 'Disabling…' : 'Disable 2FA'}
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PasswordSection() {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [revokeOthers, setRevokeOthers] = useState(true);
+  const [pending, setPending] = useState(false);
+
+  function reset() {
+    setCurrent('');
+    setNext('');
+    setConfirm('');
+    setRevokeOthers(true);
+    setOpen(false);
+  }
+
+  async function submit() {
+    if (pending) return;
+    if (current.length === 0) {
+      toasts.push('Enter your current password', 'error');
+      return;
+    }
+    if (next.length < 8) {
+      toasts.push('New password must be at least 8 characters', 'error');
+      return;
+    }
+    if (next !== confirm) {
+      toasts.push('New password and confirmation don’t match', 'error');
+      return;
+    }
+    if (next === current) {
+      toasts.push('New password must be different from current', 'error');
+      return;
+    }
+    setPending(true);
+    try {
+      const r = await rest.changePassword({
+        currentPassword: current,
+        newPassword: next,
+        revokeOtherSessions: revokeOthers,
+      });
+      reset();
+      const revoked = r.revokedSessions ?? 0;
+      toasts.push(
+        revoked > 0
+          ? `Password updated. Signed out ${revoked} other session${revoked === 1 ? '' : 's'}.`
+          : 'Password updated.',
+        'success',
+      );
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not change password', 'error');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <section>
+        <div className="text-xs uppercase tracking-wider text-ink-3 mb-2">Password</div>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="px-3 py-2 rounded-md bg-bg-3 hover:bg-bg-3/80 text-sm font-medium text-ink-1 transition-colors"
+        >
+          Change password
+        </button>
+      </section>
+    );
+  }
+
+  return (
+    <section className="space-y-2">
+      <div className="text-xs uppercase tracking-wider text-ink-3">Change password</div>
+      <div className="space-y-2 bg-bg-1 rounded-md border border-line p-3">
+        <label className="block">
+          <span className="text-xs text-ink-2">Current password</span>
+          <input
+            type="password"
+            value={current}
+            onChange={(e) => setCurrent(e.target.value)}
+            autoComplete="current-password"
+            className="mt-1 w-full bg-bg-2 border border-line rounded-md px-3 py-1.5 text-sm outline-none focus:border-accent transition-colors"
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs text-ink-2">New password</span>
+          <input
+            type="password"
+            value={next}
+            onChange={(e) => setNext(e.target.value)}
+            autoComplete="new-password"
+            minLength={8}
+            maxLength={200}
+            className="mt-1 w-full bg-bg-2 border border-line rounded-md px-3 py-1.5 text-sm outline-none focus:border-accent transition-colors"
+          />
+          {/* Real-time length feedback. Shown when the field has
+              content but is still too short — silent on empty
+              (initial state). Switches to a green confirmation
+              when the threshold is met so users see positive
+              progress, not just a list of red errors. */}
+          <span
+            className={`text-xs mt-0.5 block ${
+              next.length === 0
+                ? 'text-ink-3'
+                : next.length < 8
+                  ? 'text-amber-300/80'
+                  : 'text-emerald-300/80'
+            }`}
+          >
+            {next.length === 0
+              ? 'At least 8 characters; up to 200.'
+              : next.length < 8
+                ? `${next.length}/8 characters minimum`
+                : `Looks good (${next.length} characters)`}
+          </span>
+        </label>
+        <label className="block">
+          <span className="text-xs text-ink-2">Confirm new password</span>
+          <input
+            type="password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            autoComplete="new-password"
+            className="mt-1 w-full bg-bg-2 border border-line rounded-md px-3 py-1.5 text-sm outline-none focus:border-accent transition-colors"
+          />
+          {/* Live match indicator. Silent until the user has
+              actually typed something into both fields, then
+              shows red on mismatch / green on match. Avoids
+              flashing "doesn't match" the moment they start
+              typing the confirmation. */}
+          {next.length > 0 && confirm.length > 0 && (
+            <span
+              className={`text-xs mt-0.5 block ${
+                next === confirm ? 'text-emerald-300/80' : 'text-amber-300/80'
+              }`}
+            >
+              {next === confirm ? 'Passwords match' : "Passwords don't match yet"}
+            </span>
+          )}
+        </label>
+        <label className="flex items-start gap-2 mt-2 text-xs text-ink-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={revokeOthers}
+            onChange={(e) => setRevokeOthers(e.target.checked)}
+            className="mt-0.5 accent-accent"
+          />
+          <span>
+            Sign out my other sessions.
+            <span className="text-ink-3 block">
+              Recommended — closes any sessions on devices you don't have right now.
+            </span>
+          </span>
+        </label>
+        <div className="flex gap-2 pt-1">
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => void submit()}
+            className="flex-1 px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 text-white text-sm font-medium transition-colors disabled:opacity-60"
+          >
+            {pending ? 'Updating…' : 'Update password'}
+          </button>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={reset}
+            className="px-3 py-1.5 rounded-md bg-bg-3 hover:bg-bg-3/80 text-ink-2 text-sm transition-colors disabled:opacity-60"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Video quality settings — separate from VoiceDeviceSettings because
+ * device pickers and quality presets answer different questions:
+ * "WHICH camera/mic do I use" vs "HOW do I publish video tracks".
+ *
+ * Presets persist via localStorage; the next call to setCameraEnabled
+ * or setScreenShareEnabled reads them and applies the resolution +
+ * frame-rate constraints to the published track. Changing quality
+ * during an active call doesn't re-publish on the fly — the user must
+ * toggle the camera/screen off and back on for the new preset to
+ * apply. We surface this trade-off below the controls so it's not
+ * a surprise.
+ */
+function VideoQualitySettings() {
+  const [cameraQ, setCameraQ] = useState<CameraQuality>(getSavedCameraQuality());
+  const [screenQ, setScreenQ] = useState<ScreenQuality>(getSavedScreenQuality());
+
+  function pickCamera(q: CameraQuality) {
+    setCameraQ(q);
+    setSavedCameraQuality(q);
+  }
+  function pickScreen(q: ScreenQuality) {
+    setScreenQ(q);
+    setSavedScreenQuality(q);
+  }
+
+  const cameraOptions: Array<{ value: CameraQuality; label: string; description: string }> = [
+    { value: 'auto', label: 'Auto', description: 'Let the network decide. Recommended for most users.' },
+    {
+      value: 'low',
+      label: CAMERA_QUALITY_PRESETS.low!.label,
+      description: CAMERA_QUALITY_PRESETS.low!.description,
+    },
+    {
+      value: 'medium',
+      label: CAMERA_QUALITY_PRESETS.medium!.label,
+      description: CAMERA_QUALITY_PRESETS.medium!.description,
+    },
+    {
+      value: 'high',
+      label: CAMERA_QUALITY_PRESETS.high!.label,
+      description: CAMERA_QUALITY_PRESETS.high!.description,
+    },
+  ];
+
+  const screenOptions: Array<{ value: ScreenQuality; label: string; description: string }> = [
+    {
+      value: 'low',
+      label: SCREEN_QUALITY_PRESETS.low.label,
+      description: SCREEN_QUALITY_PRESETS.low.description,
+    },
+    {
+      value: 'standard',
+      label: SCREEN_QUALITY_PRESETS.standard.label,
+      description: SCREEN_QUALITY_PRESETS.standard.description,
+    },
+    {
+      value: 'high_motion',
+      label: SCREEN_QUALITY_PRESETS.high_motion.label,
+      description: SCREEN_QUALITY_PRESETS.high_motion.description,
+    },
+    {
+      value: 'k2',
+      label: SCREEN_QUALITY_PRESETS.k2.label,
+      description: SCREEN_QUALITY_PRESETS.k2.description,
+    },
+  ];
+
+  return (
+    <div className="space-y-3 pt-1">
+      <div>
+        <div className="text-xs text-ink-2 mb-1.5">Camera quality</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+          {cameraOptions.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => pickCamera(opt.value)}
+              className={`text-left px-3 py-2 rounded-md border transition-colors ${
+                cameraQ === opt.value
+                  ? 'border-accent bg-accent/10 text-ink-1'
+                  : 'border-line bg-bg-1 hover:border-ink-3/40 text-ink-2'
+              }`}
+            >
+              <div className="text-sm font-medium">{opt.label}</div>
+              <div className="text-xs text-ink-3 mt-0.5">{opt.description}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-xs text-ink-2 mb-1.5">Screen share quality</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+          {screenOptions.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => pickScreen(opt.value)}
+              className={`text-left px-3 py-2 rounded-md border transition-colors ${
+                screenQ === opt.value
+                  ? 'border-accent bg-accent/10 text-ink-1'
+                  : 'border-line bg-bg-1 hover:border-ink-3/40 text-ink-2'
+              }`}
+            >
+              <div className="text-sm font-medium">{opt.label}</div>
+              <div className="text-xs text-ink-3 mt-0.5">{opt.description}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <p className="text-[0.7rem] text-ink-3 leading-relaxed">
+        Quality changes apply the next time you start the camera or screen share.
+        If a track is already running, toggle it off and back on for the new
+        setting to take effect.
+      </p>
+    </div>
+  );
+}
+
+// ── InstallSection — PWA install affordance ────────────────────────────────
+// Three render modes:
+//   - already installed: render nothing (we don't pester users)
+//   - browser fired beforeinstallprompt (Chrome/Edge): show "Install" button
+//   - iOS not yet installed: show manual instructions ("Tap Share, then
+//     Add to Home Screen") since iOS doesn't expose a programmatic prompt
+function InstallSection() {
+  const { mode, promptInstall } = usePwaInstall();
+
+  if (mode === 'installed' || mode === 'unavailable') return null;
+
+  return (
+    <section className="space-y-2">
+      <div className="text-xs uppercase tracking-wider text-ink-3">App</div>
+      {mode === 'available' && (
+        <div className="bg-bg-2 border border-line rounded-md p-3 flex items-start gap-3">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm text-ink-1 font-medium">Install Zekktris</p>
+            <p className="text-xs text-ink-3 mt-1 leading-relaxed">
+              Add Zekktris to your home screen for an app-like experience —
+              full-screen, faster launch, and notifications work even when the
+              browser is closed.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void promptInstall()}
+            className="shrink-0 px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 text-white text-sm font-medium"
+          >
+            Install
+          </button>
+        </div>
+      )}
+      {mode === 'ios-pending' && (
+        <div className="bg-bg-2 border border-line rounded-md p-3">
+          <p className="text-sm text-ink-1 font-medium">Add to Home Screen</p>
+          <p className="text-xs text-ink-3 mt-1 leading-relaxed">
+            On iPhone or iPad, tap the <strong>Share</strong> button in your
+            browser, then choose <strong>Add to Home Screen</strong>. The app
+            will launch full-screen with its own icon and remember your login.
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+
+/**
+ * Inline row showing the user's current custom status with a
+ * tap-to-edit affordance. Pulled out as its own component so the
+ * Profile section in SettingsView reads cleanly.
+ */
+function CustomStatusRow() {
+  const { user } = useAuth();
+  const [open, setOpen] = useState(false);
+  if (!user) return null;
+  const { emoji, text } = formatCustomStatus(user);
+  const isSet = !!(emoji || text);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="w-full text-left bg-bg-1 border border-line rounded-md px-3 py-2 hover:border-accent transition-colors group"
+      >
+        <span className="block text-sm text-ink-2 mb-0.5">Custom status</span>
+        {isSet ? (
+          <span className="flex items-center gap-1.5 text-ink-1 text-sm">
+            {emoji && <span className="text-base">{emoji}</span>}
+            {text && <span className="truncate">{text}</span>}
+            {user.customStatusExpiresAt && (
+              <span className="ml-auto text-xs text-ink-3 shrink-0">
+                until{" "}
+                {new Date(user.customStatusExpiresAt).toLocaleString(undefined, {
+                  hour: "numeric",
+                  minute: "2-digit",
+                  month: "short",
+                  day: "numeric",
+                })}
+              </span>
+            )}
+          </span>
+        ) : (
+          <span className="text-ink-3 text-sm italic">Set a status…</span>
+        )}
+      </button>
+      {open && <CustomStatusModal onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+// ── UsernameSection ────────────────────────────────────────────────────
+//
+// Inline editor for the username. Shows current value with a Change
+// button; on click, expands an inline form with new-username + current-
+// password + Save/Cancel. Server enforces a 90-day cooldown — when
+// active, the Change button is disabled with explanatory text.
+
+function UserIdSection() {
+  const { user } = useAuth();
+  const toasts = useToasts();
+  if (!user) return null;
+  const copy = (value: string, label: string) => {
+    void copyText(value).then(
+      () => toasts.push(`${label} copied`, 'success'),
+      () => toasts.push('Couldn’t copy — clipboard access was blocked', 'error'),
+    );
+  };
+  // Just the User ID here — the username (with its Change button) lives in
+  // UsernameSection below, so we don't duplicate it in this tile.
+  return (
+    <div className="bg-bg-1 rounded-md border border-line px-3 py-2 text-sm">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-ink-2 text-xs">User ID</div>
+          <div className="font-mono truncate">{user.id}</div>
+        </div>
+        <button
+          type="button"
+          onClick={() => copy(user.id, 'User ID')}
+          title="Copy User ID"
+          aria-label="Copy User ID"
+          className="shrink-0 p-1.5 rounded-md bg-bg-3 hover:bg-bg-3/80 text-ink-2"
+        >
+          <Copy className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function UsernameSection() {
+  const { user, rest, updateUser } = useAuth();
+  const toasts = useToasts();
+  const [open, setOpen] = useState(false);
+  const [newUsername, setNewUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [pending, setPending] = useState(false);
+  // Cooldown state — fetched on mount + after a successful change.
+  const [eligibility, setEligibility] = useState<{
+    eligible: boolean;
+    nextEligibleAt: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void rest
+      .getUsernameChangeEligibility()
+      .then((r) => {
+        if (!cancelled) setEligibility({ eligible: r.eligible, nextEligibleAt: r.nextEligibleAt });
+      })
+      .catch(() => {
+        // Best-effort. If we can't determine eligibility, optimistically
+        // let the user try — the server will reject if they're on
+        // cooldown.
+        if (!cancelled) setEligibility({ eligible: true, nextEligibleAt: null });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rest]);
+
+  async function submit() {
+    if (pending) return;
+    const trimmed = newUsername.trim().toLowerCase();
+    if (!/^[a-z0-9_.]{3,32}$/.test(trimmed)) {
+      toasts.push('Username must be 3-32 chars, a-z 0-9 _ . only.', 'error');
+      return;
+    }
+    if (!password) {
+      toasts.push('Enter your current password.', 'error');
+      return;
+    }
+    setPending(true);
+    try {
+      const r = await rest.changeUsername({
+        username: trimmed,
+        currentPassword: password,
+      });
+      updateUser(r.user);
+      toasts.push('Username changed.', 'success');
+      setOpen(false);
+      setNewUsername('');
+      setPassword('');
+      // Re-fetch eligibility so the UI now reflects the cooldown.
+      void rest
+        .getUsernameChangeEligibility()
+        .then((er) => setEligibility({ eligible: er.eligible, nextEligibleAt: er.nextEligibleAt }))
+        .catch(() => undefined);
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not change username', 'error');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const cooldownLabel = eligibility?.nextEligibleAt
+    ? new Date(eligibility.nextEligibleAt).toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      })
+    : null;
+
+  return (
+    <div className="bg-bg-1 rounded-md border border-line px-3 py-2 space-y-2 text-sm">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-ink-2 text-xs">Username</div>
+          <div className="font-mono truncate">@{user?.username}</div>
+        </div>
+        {!open && (
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            disabled={eligibility ? !eligibility.eligible : false}
+            className="shrink-0 px-3 py-1.5 rounded-md bg-bg-3 hover:bg-bg-3/80 text-xs text-ink-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            title={
+              eligibility && !eligibility.eligible && cooldownLabel
+                ? `You can change your username again on ${cooldownLabel}`
+                : undefined
+            }
+          >
+            Change
+          </button>
+        )}
+      </div>
+      {!open && eligibility && !eligibility.eligible && cooldownLabel && (
+        <p className="text-xs text-ink-3">
+          Username changes are limited to once every 90 days. Next available on {cooldownLabel}.
+        </p>
+      )}
+      {open && (
+        <div className="space-y-2 pt-1">
+          <input
+            type="text"
+            value={newUsername}
+            onChange={(e) => setNewUsername(e.target.value.toLowerCase())}
+            placeholder="new_username"
+            maxLength={32}
+            className="w-full px-3 py-2 bg-bg-2 border border-line rounded-md text-sm outline-none focus:border-accent font-mono"
+            aria-label="New username"
+            autoComplete="off"
+          />
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Current password"
+            className="w-full px-3 py-2 bg-bg-2 border border-line rounded-md text-sm outline-none focus:border-accent"
+            aria-label="Current password"
+            autoComplete="current-password"
+          />
+          <p className="text-xs text-ink-3">
+            You can only change your username once every 90 days. Choose carefully.
+          </p>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                setNewUsername('');
+                setPassword('');
+              }}
+              disabled={pending}
+              className="px-3 py-1.5 rounded-md hover:bg-bg-3 text-xs text-ink-2 disabled:opacity-60"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void submit()}
+              disabled={pending}
+              className="px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 disabled:opacity-60 text-white text-xs font-medium"
+            >
+              {pending ? 'Saving…' : 'Change username'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── EmailSection ────────────────────────────────────────────────────────
+//
+// Inline editor for the email address. Two-phase:
+//   - User submits new email + password → POST /@me/email/change-request
+//     → server sends verification link to new address.
+//   - User clicks the link → /confirm-email?token=... → web client
+//     calls confirmEmailChange → server updates the email.
+//
+// After submit, show a "verification sent" state with the target
+// address and a note about checking spam.
+
+function EmailSection() {
+  const { user, rest } = useAuth();
+  const toasts = useToasts();
+  const [open, setOpen] = useState(false);
+  const [newEmail, setNewEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [pending, setPending] = useState(false);
+  const [sentTo, setSentTo] = useState<string | null>(null);
+  const [expiresInMinutes, setExpiresInMinutes] = useState<number | null>(null);
+
+  async function submit() {
+    if (pending) return;
+    const trimmed = newEmail.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      toasts.push('Enter a valid email address.', 'error');
+      return;
+    }
+    if (!password) {
+      toasts.push('Enter your current password.', 'error');
+      return;
+    }
+    setPending(true);
+    try {
+      const r = await rest.requestEmailChange({
+        newEmail: trimmed,
+        currentPassword: password,
+      });
+      setSentTo(trimmed);
+      setExpiresInMinutes(r.expiresInMinutes);
+      setNewEmail('');
+      setPassword('');
+      toasts.push(`Verification email sent to ${trimmed}.`, 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not request email change', 'error');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="bg-bg-1 rounded-md border border-line px-3 py-2 space-y-2 text-sm">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-ink-2 text-xs">Email</div>
+          <div className="font-mono truncate">{user?.email}</div>
+        </div>
+        {!open && !sentTo && (
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="shrink-0 px-3 py-1.5 rounded-md bg-bg-3 hover:bg-bg-3/80 text-xs text-ink-2"
+          >
+            Change
+          </button>
+        )}
+      </div>
+      {sentTo && (
+        <div className="px-2 py-2 rounded bg-emerald-950/30 border border-emerald-900/40 text-xs text-emerald-200 leading-snug">
+          A verification link was sent to <strong className="font-mono">{sentTo}</strong>.
+          {expiresInMinutes
+            ? ` Open it within ${expiresInMinutes} minutes to complete the change.`
+            : ' Open it to complete the change.'}{' '}
+          Check your spam folder if you don't see it. Your email won't change until you click the link.
+          <div className="mt-1">
+            <button
+              type="button"
+              onClick={() => {
+                setSentTo(null);
+                setExpiresInMinutes(null);
+                setOpen(true);
+              }}
+              className="text-emerald-200 underline hover:text-emerald-100"
+            >
+              Send to a different address
+            </button>
+          </div>
+        </div>
+      )}
+      {open && (
+        <div className="space-y-2 pt-1">
+          <input
+            type="email"
+            value={newEmail}
+            onChange={(e) => setNewEmail(e.target.value)}
+            placeholder="new@example.com"
+            className="w-full px-3 py-2 bg-bg-2 border border-line rounded-md text-sm outline-none focus:border-accent"
+            aria-label="New email"
+            autoComplete="email"
+            autoFocus
+          />
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Current password"
+            className="w-full px-3 py-2 bg-bg-2 border border-line rounded-md text-sm outline-none focus:border-accent"
+            aria-label="Current password"
+            autoComplete="current-password"
+          />
+          <p className="text-xs text-ink-3">
+            We'll email a verification link to your new address. Your email won't change until you confirm via that link.
+          </p>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                setNewEmail('');
+                setPassword('');
+              }}
+              disabled={pending}
+              className="px-3 py-1.5 rounded-md hover:bg-bg-3 text-xs text-ink-2 disabled:opacity-60"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void submit()}
+              disabled={pending}
+              className="px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 disabled:opacity-60 text-white text-xs font-medium"
+            >
+              {pending ? 'Sending…' : 'Send verification email'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * BotsSection
+ * -----------
+ * Bot account management. Lets a user:
+ *   - Create a bot (username + display name)
+ *   - See the bot token ONCE on create/regenerate (copy-to-clipboard)
+ *   - List bots they own
+ *   - Regenerate a bot's token (invalidates the old one)
+ *   - Add a bot to one of their servers (requires MANAGE_GUILD there)
+ *   - Delete a bot
+ *
+ * The token is shown exactly once; we surface it in a dismissible
+ * callout with a copy button and a clear "you won't see this again"
+ * warning, mirroring how GitHub / Discord present freshly-minted
+ * tokens.
+ */
+function BotsSection() {
+  const { rest, user } = useAuth();
+  const { state } = useAppState();
+  const toasts = useToasts();
+
+  const [bots, setBots] = useState<import('@zekktris/client').Bot[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  // The just-issued token to show once. { botId, token } or null.
+  const [freshToken, setFreshToken] = useState<{ botId: string; token: string } | null>(null);
+
+  // Create-form state.
+  const [creating, setCreating] = useState(false);
+  const [newUsername, setNewUsername] = useState('');
+  const [newDisplayName, setNewDisplayName] = useState('');
+  const [createBusy, setCreateBusy] = useState(false);
+
+  // Which bot's "add to server" picker is open (bot id) or null.
+  const [addToServerFor, setAddToServerFor] = useState<string | null>(null);
+
+  // Event-config editor: which bot is being edited, the URL draft, and
+  // a freshly-issued signing secret to show once.
+  const [eventEditFor, setEventEditFor] = useState<string | null>(null);
+  const [eventUrlDraft, setEventUrlDraft] = useState('');
+  const [freshSecret, setFreshSecret] = useState<{ botId: string; secret: string } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const r = await rest.listBots();
+        if (alive) setBots(r.bots);
+      } catch {
+        if (alive) setBots([]);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [rest]);
+
+  async function handleCreate() {
+    const username = newUsername.trim().toLowerCase();
+    const displayName = newDisplayName.trim();
+    if (!username || !displayName) {
+      toasts.push('Username and display name are required', 'error');
+      return;
+    }
+    setCreateBusy(true);
+    try {
+      const { bot, token } = await rest.createBot({ username, displayName });
+      setBots((prev) => [...(prev ?? []), bot]);
+      setFreshToken({ botId: bot.id, token });
+      setNewUsername('');
+      setNewDisplayName('');
+      setCreating(false);
+      toasts.push('Bot created', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not create bot', 'error');
+    } finally {
+      setCreateBusy(false);
+    }
+  }
+
+  async function handleRegen(botId: string) {
+    if (!confirm('Regenerate this bot token? The current token will stop working immediately.')) {
+      return;
+    }
+    try {
+      const { token } = await rest.regenerateBotToken(botId);
+      setFreshToken({ botId, token });
+      toasts.push('Token regenerated', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not regenerate token', 'error');
+    }
+  }
+
+  async function handleDelete(botId: string, name: string) {
+    if (!confirm(`Delete bot "${name}"? This cannot be undone.`)) return;
+    try {
+      await rest.deleteBot(botId);
+      setBots((prev) => (prev ?? []).filter((b) => b.id !== botId));
+      if (freshToken?.botId === botId) setFreshToken(null);
+      toasts.push('Bot deleted', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not delete bot', 'error');
+    }
+  }
+
+  async function handleAddToGuild(botId: string, guildId: string) {
+    try {
+      await rest.addBotToGuild(guildId, botId);
+      setAddToServerFor(null);
+      toasts.push('Bot added to server', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not add bot', 'error');
+    }
+  }
+
+  async function handleSaveEventUrl(botId: string) {
+    const url = eventUrlDraft.trim();
+    try {
+      const r = await rest.setBotEventConfig(botId, url === '' ? null : url);
+      setBots((prev) =>
+        (prev ?? []).map((b) =>
+          b.id === botId ? { ...b, botEventUrl: r.eventUrl } : b,
+        ),
+      );
+      if (r.secret) setFreshSecret({ botId, secret: r.secret });
+      setEventEditFor(null);
+      toasts.push(r.eventUrl ? 'Event URL saved' : 'Event delivery disabled', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not save event URL', 'error');
+    }
+  }
+
+  function copyToken(token: string) {
+    void copyText(token).then(
+      () => toasts.push('Token copied', 'success'),
+      () => toasts.push('Copy failed — select and copy manually', 'error'),
+    );
+  }
+
+  // Servers the user owns — the only ones we can reliably assume they
+  // have MANAGE_GUILD in. (Server still enforces the precise check; this
+  // just keeps the picker from listing servers the add will bounce on.)
+  const myGuilds = Object.values(state.guildsById).filter(
+    (g) => g.ownerId === user?.id,
+  );
+
+  return (
+    <section className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-xs uppercase tracking-wider text-ink-3">Bots</div>
+          <p className="text-sm text-ink-3 mt-1 max-w-md">
+            Bot accounts authenticate with a token and act through the API.
+            Create one, copy its token, and add it to your servers.
+          </p>
+        </div>
+        {!creating && (
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            className="shrink-0 px-3 py-1.5 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent/90"
+          >
+            New bot
+          </button>
+        )}
+      </div>
+
+      {/* Fresh-token callout — shown once after create/regenerate. */}
+      {freshToken && (
+        <div className="rounded-lg border border-violet-500/40 bg-violet-500/10 p-3 space-y-2">
+          <div className="text-sm font-medium text-violet-200">
+            Copy your bot token now
+          </div>
+          <p className="text-xs text-ink-3">
+            This is the only time the token is shown. Store it somewhere safe —
+            if you lose it you'll need to regenerate.
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 min-w-0 truncate text-xs bg-bg-1 border border-line rounded px-2 py-1.5 font-mono text-ink-1">
+              {freshToken.token}
+            </code>
+            <button
+              type="button"
+              onClick={() => copyToken(freshToken.token)}
+              className="shrink-0 px-2.5 py-1.5 rounded-md bg-bg-2 border border-line text-xs text-ink-1 hover:bg-bg-3"
+            >
+              Copy
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFreshToken(null)}
+            className="text-xs text-ink-3 hover:text-ink-1"
+          >
+            I've saved it — dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Create form. */}
+      {creating && (
+        <div className="rounded-lg border border-line bg-bg-2 p-3 space-y-3">
+          <div className="space-y-1">
+            <label className="text-xs text-ink-3">Username (handle)</label>
+            <input
+              value={newUsername}
+              onChange={(e) => setNewUsername(e.target.value)}
+              placeholder="my-cool-bot"
+              className="w-full bg-bg-1 border border-line rounded-md px-2.5 py-1.5 text-sm text-ink-1 focus:outline-none focus:ring-1 focus:ring-accent"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-ink-3">Display name</label>
+            <input
+              value={newDisplayName}
+              onChange={(e) => setNewDisplayName(e.target.value)}
+              placeholder="My Cool Bot"
+              className="w-full bg-bg-1 border border-line rounded-md px-2.5 py-1.5 text-sm text-ink-1 focus:outline-none focus:ring-1 focus:ring-accent"
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setCreating(false);
+                setNewUsername('');
+                setNewDisplayName('');
+              }}
+              className="px-3 py-1.5 rounded-md text-sm text-ink-2 hover:text-ink-1"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleCreate()}
+              disabled={createBusy}
+              className="px-3 py-1.5 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent/90 disabled:opacity-50"
+            >
+              {createBusy ? 'Creating…' : 'Create bot'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Bot list. */}
+      {loading ? (
+        <div className="text-sm text-ink-3">Loading bots…</div>
+      ) : (bots ?? []).length === 0 ? (
+        <div className="text-sm text-ink-3">You haven't created any bots yet.</div>
+      ) : (
+        <ul className="space-y-2">
+          {(bots ?? []).map((bot) => (
+            <li
+              key={bot.id}
+              className="rounded-lg border border-line bg-bg-2 p-3 space-y-2"
+            >
+              <div className="flex items-center gap-2">
+                <span
+                  className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold overflow-hidden ${avatarColor(bot.id)}`}
+                >
+                  {avatarInitials(bot.displayName)}
+                  <AvatarImage src={bot.avatarUrl} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm text-ink-1 truncate">{bot.displayName}</span>
+                    <span className="shrink-0 inline-flex items-center px-1.5 rounded bg-violet-500/20 text-violet-300 text-[0.5rem] font-bold uppercase tracking-wider leading-4">
+                      Bot
+                    </span>
+                  </div>
+                  <div className="text-xs text-ink-3 truncate">@{bot.username}</div>
+                </div>
+              </div>
+
+              {/* Add-to-server picker (inline). */}
+              {addToServerFor === bot.id ? (
+                <div className="rounded-md border border-line bg-bg-1 p-2 space-y-1">
+                  <div className="text-xs text-ink-3 px-1 pb-1">
+                    Add to which server?
+                  </div>
+                  {myGuilds.length === 0 ? (
+                    <div className="text-xs text-ink-3 px-1 py-1">
+                      You don't own any servers.
+                    </div>
+                  ) : (
+                    myGuilds.map((g) => (
+                      <button
+                        key={g.id}
+                        type="button"
+                        onClick={() => void handleAddToGuild(bot.id, g.id)}
+                        className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm text-ink-2 hover:bg-bg-3 hover:text-ink-1 text-left"
+                      >
+                        <span className="truncate">{g.name}</span>
+                      </button>
+                    ))
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setAddToServerFor(null)}
+                    className="w-full text-xs text-ink-3 hover:text-ink-1 px-1 py-1 text-left"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : eventEditFor === bot.id ? (
+                <div className="rounded-md border border-line bg-bg-1 p-2 space-y-2">
+                  <div className="text-xs text-ink-3">
+                    Event callback URL (HTTPS). The server POSTs a signed{' '}
+                    <code className="text-ink-2">message.create</code> event here
+                    for channels this bot can see. Leave blank to disable.
+                  </div>
+                  <input
+                    value={eventUrlDraft}
+                    onChange={(e) => setEventUrlDraft(e.target.value)}
+                    placeholder="https://my-bot.example.com/events"
+                    className="w-full bg-bg-2 border border-line rounded-md px-2.5 py-1.5 text-sm text-ink-1 focus:outline-none focus:ring-1 focus:ring-accent"
+                  />
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEventEditFor(null)}
+                      className="px-2.5 py-1 rounded-md text-xs text-ink-2 hover:text-ink-1"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveEventUrl(bot.id)}
+                      className="px-2.5 py-1 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent/90"
+                    >
+                      Save
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAddToServerFor(bot.id)}
+                    className="px-2.5 py-1 rounded-md bg-bg-1 border border-line text-xs text-ink-1 hover:bg-bg-3"
+                  >
+                    Add to server
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEventUrlDraft(bot.botEventUrl ?? '');
+                      setEventEditFor(bot.id);
+                    }}
+                    className="px-2.5 py-1 rounded-md bg-bg-1 border border-line text-xs text-ink-1 hover:bg-bg-3"
+                  >
+                    {bot.botEventUrl ? 'Events: on' : 'Events'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleRegen(bot.id)}
+                    className="px-2.5 py-1 rounded-md bg-bg-1 border border-line text-xs text-ink-1 hover:bg-bg-3"
+                  >
+                    Regenerate token
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleDelete(bot.id, bot.displayName)}
+                    className="px-2.5 py-1 rounded-md text-xs text-danger hover:bg-bg-1"
+                  >
+                    Delete
+                  </button>
+                </div>
+              )}
+
+              {/* Fresh signing secret — shown once after setting an
+                  event URL. */}
+              {freshSecret?.botId === bot.id && (
+                <div className="rounded-md border border-violet-500/40 bg-violet-500/10 p-2 space-y-1.5">
+                  <div className="text-xs font-medium text-violet-200">
+                    Signing secret (shown once)
+                  </div>
+                  <p className="text-[0.7rem] text-ink-3">
+                    Verify the <code>X-Zekktris-Signature</code> header:
+                    it's <code>sha256(secret + "." + rawBody)</code> as hex.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 min-w-0 truncate text-xs bg-bg-1 border border-line rounded px-2 py-1 font-mono text-ink-1">
+                      {freshSecret.secret}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={() => copyToken(freshSecret.secret)}
+                      className="shrink-0 px-2 py-1 rounded-md bg-bg-2 border border-line text-xs text-ink-1 hover:bg-bg-3"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFreshSecret(null)}
+                    className="text-[0.7rem] text-ink-3 hover:text-ink-1"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}

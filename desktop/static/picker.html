@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+    <title>Choose what to share</title>
+    <style>
+      /* These sizes MUST stay in sync with the window-height math in
+         main.ts (showSourcePicker): COLS=3, TILE_H≈152, GAP=10,
+         HEADER=40, FOOTER=56, body padding=16. */
+      :root {
+        --navy: #0a0f1c; --panel: #131a2a; --line: #1e2a44;
+        --ink-1: #e6ecf7; --ink-3: #7f8db0; --cyan: #3dd7ec;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: var(--navy); color: var(--ink-1);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        overflow: hidden; }
+      .wrap { height: 100%; display: flex; flex-direction: column; padding: 16px; }
+      h1 { font-size: 14px; margin: 0 0 10px; height: 24px; line-height: 24px; }
+      .grid {
+        flex: 1;
+        display: grid;
+        grid-template-columns: repeat(3, 168px);
+        gap: 10px;
+        justify-content: center;
+        align-content: start;
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding-right: 4px;
+      }
+      .grid::-webkit-scrollbar { width: 10px; }
+      .grid::-webkit-scrollbar-thumb {
+        background: #1e2a44; border-radius: 6px;
+        border: 2px solid #0a0f1c;
+      }
+      .grid::-webkit-scrollbar-thumb:hover { background: #2a3a5c; }
+      .tile {
+        width: 168px;
+        border: 1px solid var(--line); border-radius: 9px; background: var(--panel);
+        padding: 6px; cursor: pointer; text-align: left;
+        transition: border-color .12s, transform .06s;
+      }
+      .tile:hover { border-color: var(--cyan); }
+      .tile:active { transform: scale(.98); }
+      .tile img {
+        width: 100%; height: 96px; object-fit: cover;
+        border-radius: 5px; background: #02060f; display: block;
+      }
+      .tile .name { font-size: 11px; margin-top: 6px; color: var(--ink-1);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .tile .kind { font-size: 9px; color: var(--ink-3); text-transform: uppercase;
+        letter-spacing: .04em; margin-top: 1px; }
+      .bar { display: flex; justify-content: flex-end; gap: 8px; padding-top: 12px; height: 56px; align-items: center; }
+      button { padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line);
+        background: var(--panel); color: var(--ink-1); font-size: 13px; cursor: pointer; }
+      button:hover { background: #16203a; }
+      .empty { color: var(--ink-3); font-size: 13px; padding: 24px; text-align: center; grid-column: 1 / -1; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Choose what to share</h1>
+      <div class="grid" id="grid"><div class="empty">Loading sources…</div></div>
+      <div class="bar">
+        <button id="cancel">Cancel</button>
+      </div>
+    </div>
+    <script>
+      const grid = document.getElementById('grid');
+      function pick(id) { window.zekktris.pickScreenSource(id); }
+      document.getElementById('cancel').addEventListener('click', () => pick(null));
+
+      window.zekktris.getScreenSources().then((sources) => {
+        if (!sources || sources.length === 0) {
+          grid.innerHTML = '<div class="empty">No screens or windows available to share.</div>';
+          return;
+        }
+        grid.innerHTML = '';
+        for (const s of sources) {
+          const tile = document.createElement('div');
+          tile.className = 'tile';
+          const img = document.createElement('img');
+          img.src = s.thumbnail;
+          const name = document.createElement('div');
+          name.className = 'name';
+          name.textContent = s.name;
+          const kind = document.createElement('div');
+          kind.className = 'kind';
+          kind.textContent = s.isScreen ? 'Screen' : 'Window';
+          tile.appendChild(img);
+          tile.appendChild(name);
+          tile.appendChild(kind);
+          tile.addEventListener('click', () => pick(s.id));
+          grid.appendChild(tile);
+        }
+      });
+    </script>
+  </body>
+</html>
