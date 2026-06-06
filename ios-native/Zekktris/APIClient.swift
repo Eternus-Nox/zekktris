@@ -845,7 +845,10 @@ extension APIClient {
 
     // ── Admin (instance) ──────────────────────────────────────────────────────
     func adminListUsers(q: String?, bannedOnly: Bool) async throws -> [AdminUser] {
-        var path = "/admin/users?limit=100"
+        // The server's query validator caps limit at 50 (zod max(50)) and
+        // REJECTS requests above it — limit=100 made the whole admin user
+        // list 400 and fail to load.
+        var path = "/admin/users?limit=50"
         if let q = q, !q.isEmpty {
             let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
             path += "&q=\(enc)"
