@@ -25,15 +25,61 @@ final class APIClient {
     /// Current access token. Set by `Session` after login / on launch.
     var token: String?
 
+    /// Invoked after /auth/refresh rotates the access token, so the owner
+    /// (Session) can persist it. The gateway listens for the notification
+    /// below to re-IDENTIFY with the fresh token after a reconnect.
+    var onTokenRefresh: ((String) -> Void)?
+    static let tokenRefreshedNotification = Notification.Name("zk.accessTokenRefreshed")
+
     private let session = URLSession(configuration: .default)
     private let decoder = JSONDecoder()
+
+    /// In-flight refresh, shared so concurrent 401s trigger ONE /auth/refresh
+    /// (the server rotates the cookie per call — parallel refreshes with the
+    /// same cookie would 401 each other).
+    private var refreshTask: Task<Bool, Never>?
+
+    /// Exchange the refresh cookie (stored by URLSession from login's
+    /// Set-Cookie) for a fresh access token. Returns false when the cookie
+    /// is missing/expired/revoked — i.e. the user genuinely must sign in.
+    func refreshAccessToken() async -> Bool {
+        if let inFlight = refreshTask { return await inFlight.value }
+        let work = Task<Bool, Never> { [session, decoder] in
+            struct RefreshResponse: Decodable { let accessToken: String }
+            guard let url = URL(string: Config.apiBaseURL + "/auth/refresh") else { return false }
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Accept")
+            guard let (data, resp) = try? await session.data(for: req),
+                  let http = resp as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode),
+                  let decoded = try? decoder.decode(RefreshResponse.self, from: data)
+            else { return false }
+            self.token = decoded.accessToken
+            self.onTokenRefresh?(decoded.accessToken)
+            NotificationCenter.default.post(
+                name: APIClient.tokenRefreshedNotification, object: decoded.accessToken)
+            return true
+        }
+        refreshTask = work
+        let ok = await work.value
+        refreshTask = nil
+        return ok
+    }
+
+    /// Whether an expired-token failure on this path is eligible for a
+    /// refresh-and-retry (auth endpoints themselves are not).
+    private func canRetryAfterRefresh(_ path: String, authorized: Bool, isRetry: Bool) -> Bool {
+        authorized && !isRetry && token != nil && !path.hasPrefix("/auth/")
+    }
 
     // ── Core request ────────────────────────────────────────────────────────
     private func send<T: Decodable>(
         _ method: String,
         _ path: String,
         bodyData: Data? = nil,
-        authorized: Bool = true
+        authorized: Bool = true,
+        isRetry: Bool = false
     ) async throws -> T {
         guard let url = URL(string: Config.apiBaseURL + path) else {
             throw APIError(status: 0, message: "Bad URL: \(path)")
@@ -53,6 +99,12 @@ final class APIClient {
         guard let http = resp as? HTTPURLResponse else {
             throw APIError(status: 0, message: "No HTTP response")
         }
+        // Access tokens are short-lived (15 min): a 401 usually just means
+        // "expired" — refresh via the cookie and replay the request once.
+        if http.statusCode == 401, canRetryAfterRefresh(path, authorized: authorized, isRetry: isRetry),
+           await refreshAccessToken() {
+            return try await send(method, path, bodyData: bodyData, authorized: authorized, isRetry: true)
+        }
         guard (200..<300).contains(http.statusCode) else {
             throw APIError(
                 status: http.statusCode,
@@ -68,7 +120,7 @@ final class APIClient {
 
     /// Fire-and-mostly-forget for endpoints whose body we don't decode.
     @discardableResult
-    private func sendNoDecode(_ method: String, _ path: String, authorized: Bool = true) async -> Bool {
+    private func sendNoDecode(_ method: String, _ path: String, authorized: Bool = true, isRetry: Bool = false) async -> Bool {
         guard let url = URL(string: Config.apiBaseURL + path) else { return false }
         var req = URLRequest(url: url)
         req.httpMethod = method
@@ -76,12 +128,16 @@ final class APIClient {
         if authorized, let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         guard let (_, resp) = try? await session.data(for: req),
               let http = resp as? HTTPURLResponse else { return false }
+        if http.statusCode == 401, canRetryAfterRefresh(path, authorized: authorized, isRetry: isRetry),
+           await refreshAccessToken() {
+            return await sendNoDecode(method, path, authorized: authorized, isRetry: true)
+        }
         return (200..<300).contains(http.statusCode)
     }
 
     /// Like `send` but ignores the (often empty) response body. Throws on
     /// non-2xx so callers can surface the server's error message.
-    private func sendVoid(_ method: String, _ path: String, bodyData: Data? = nil, authorized: Bool = true) async throws {
+    private func sendVoid(_ method: String, _ path: String, bodyData: Data? = nil, authorized: Bool = true, isRetry: Bool = false) async throws {
         guard let url = URL(string: Config.apiBaseURL + path) else {
             throw APIError(status: 0, message: "Bad URL: \(path)")
         }
@@ -95,6 +151,10 @@ final class APIClient {
         if authorized, let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw APIError(status: 0, message: "No HTTP response") }
+        if http.statusCode == 401, canRetryAfterRefresh(path, authorized: authorized, isRetry: isRetry),
+           await refreshAccessToken() {
+            return try await sendVoid(method, path, bodyData: bodyData, authorized: authorized, isRetry: true)
+        }
         guard (200..<300).contains(http.statusCode) else {
             throw APIError(status: http.statusCode, message: Self.extractError(data) ?? "Request failed (\(http.statusCode))")
         }
@@ -236,7 +296,8 @@ final class APIClient {
     // ── Generic multipart upload (name/description + single file) ──────────────
     private func uploadMultipart<T: Decodable>(
         _ path: String, fields: [String: String], fileField: String,
-        filename: String, contentType: String, fileData: Data, _ type: T.Type
+        filename: String, contentType: String, fileData: Data, _ type: T.Type,
+        isRetry: Bool = false
     ) async throws -> T {
         guard let url = URL(string: Config.apiBaseURL + path) else { throw APIError(status: 0, message: "Bad URL") }
         let boundary = "ZkBoundary-\(UUID().uuidString)"
@@ -264,6 +325,12 @@ final class APIClient {
 
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw APIError(status: 0, message: "No HTTP response") }
+        if http.statusCode == 401, canRetryAfterRefresh(path, authorized: true, isRetry: isRetry),
+           await refreshAccessToken() {
+            return try await uploadMultipart(path, fields: fields, fileField: fileField,
+                                             filename: filename, contentType: contentType,
+                                             fileData: fileData, type, isRetry: true)
+        }
         guard (200..<300).contains(http.statusCode) else {
             throw APIError(status: http.statusCode, message: Self.extractError(data) ?? "Upload failed (\(http.statusCode))")
         }
@@ -555,6 +622,17 @@ final class APIClient {
 
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw APIError(status: 0, message: "No HTTP response") }
+        if http.statusCode == 401, await refreshAccessToken(), let fresh = token {
+            // One replay with the rotated token (mirrors send()'s retry).
+            req.setValue("Bearer \(fresh)", forHTTPHeaderField: "Authorization")
+            let (data2, resp2) = try await session.data(for: req)
+            guard let http2 = resp2 as? HTTPURLResponse, (200..<300).contains(http2.statusCode) else {
+                let code = (resp2 as? HTTPURLResponse)?.statusCode ?? 0
+                throw APIError(status: code, message: Self.extractError(data2) ?? "Upload failed (\(code))")
+            }
+            let wrap2: MessageWrap = try decoder.decode(MessageWrap.self, from: data2)
+            return wrap2.message
+        }
         guard (200..<300).contains(http.statusCode) else {
             throw APIError(status: http.statusCode, message: Self.extractError(data) ?? "Upload failed (\(http.statusCode))")
         }

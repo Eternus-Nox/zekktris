@@ -43,20 +43,15 @@
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
-	<!-- Full-screen NOT required: enables iPad Split View / Slide Over
-	     multitasking and free window resizing on Mac (Designed for iPad).
-	     The shell adapts via size classes (three-pane when regular). -->
 	<key>UIRequiresFullScreen</key>
-	<false/>
+	<true/>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
-	<!-- iPad multitasking requires all four orientations. -->
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>

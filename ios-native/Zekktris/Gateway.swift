@@ -35,6 +35,7 @@ final class Gateway: ObservableObject {
     private var ackWatchdogTask: Task<Void, Never>?
     private var lastSeq: Int?
     private var token: String?
+    private var tokenObserver: NSObjectProtocol?
     private var intentionallyClosed = false
     /// Dedups reconnect scheduling so the zombie-watchdog and a real close
     /// event racing each other can't double-advance the backoff. Reset when a
@@ -54,6 +55,17 @@ final class Gateway: ObservableObject {
         self.token = token
         intentionallyClosed = false
         reconnectTask?.cancel(); reconnectTask = nil
+        // Track access-token rotations (15-min expiry + cookie refresh) so
+        // the next IDENTIFY — e.g. after a reconnect — uses a live token
+        // instead of the one we connected with.
+        if tokenObserver == nil {
+            tokenObserver = NotificationCenter.default.addObserver(
+                forName: APIClient.tokenRefreshedNotification, object: nil, queue: .main
+            ) { [weak self] note in
+                guard let fresh = note.object as? String else { return }
+                Task { @MainActor in self?.token = fresh }
+            }
+        }
         openSocket()
     }
 

@@ -188,8 +188,23 @@ struct MessageListView: View {
                     name: channel.dmTitle,
                     size: 28,
                     status: store.status(for: channel.dmAvatarUser?.id, fallback: channel.dmAvatarUser?.status),
-                    ringColor: Theme.bg2
+                    ringColor: Theme.bg2,
+                    toneId: channel.dmAvatarUser?.id
                 )
+                // E2EE badge: a small themed lock pinned to the top-right of
+                // the profile picture (the only E2EE indicator in the header).
+                .overlay(alignment: .topTrailing) {
+                    if channel.isE2EE {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 7, weight: .bold))
+                            .foregroundColor(Theme.accent)
+                            .frame(width: 13, height: 13)
+                            .background(Theme.bg2)
+                            .clipShape(Circle())
+                            .overlay(Circle().strokeBorder(Theme.accent.opacity(0.45), lineWidth: 1))
+                            .offset(x: 4, y: -4)
+                    }
+                }
                 Text(channel.dmTitle)
                     .font(.zkSans(16, weight: .semibold))
                     .foregroundColor(Theme.ink1)
@@ -206,13 +221,6 @@ struct MessageListView: View {
             }
 
             Spacer()
-
-            if channel.isE2EE {
-                Image(systemName: "lock.shield.fill")
-                    .font(.system(size: 15))
-                    .foregroundColor(Theme.online)
-                    .padding(.trailing, 2)
-            }
 
             if !channel.isE2EE {
                 Button { showSearch = true } label: {
@@ -251,26 +259,13 @@ struct MessageListView: View {
                 }
                 .padding(.trailing, 2)
                 Button { showDmSettings = true } label: {
-                    Image(systemName: "timer")
+                    Image(systemName: "gearshape")
                         .font(.system(size: 15))
                         .foregroundColor(Theme.ink3)
                 }
                 .padding(.trailing, 2)
             }
 
-            if channel.isDM {
-                if channel.isE2EE {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 13))
-                        .foregroundColor(Theme.accent)
-                } else {
-                    Button { showEnableSheet = true } label: {
-                        Image(systemName: "lock.open")
-                            .font(.system(size: 15))
-                            .foregroundColor(Theme.ink3)
-                    }
-                }
-            }
         }
         .padding(.horizontal, 14)
         .frame(height: 48)
@@ -2955,15 +2950,62 @@ struct DmSettingsSheet: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
     let channel: Channel
+    @State private var showEnableE2EE = false
+    @State private var confirmDisableE2EE = false
 
     private let options: [(String, Int?)] = [
         ("Off", nil), ("30 seconds", 30), ("1 minute", 60), ("2 minutes", 120)
     ]
 
+    /// Live channel state (E2EE flips arrive via CHANNEL_UPDATE).
+    private var liveChannel: Channel {
+        store.dms.first(where: { $0.id == channel.id }) ?? channel
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    Text("END-TO-END ENCRYPTION")
+                        .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                    if liveChannel.isE2EE {
+                        HStack(spacing: 8) {
+                            Image(systemName: "lock.fill")
+                                .font(.system(size: 13))
+                                .foregroundColor(Theme.accent)
+                            Text("Enabled")
+                                .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
+                            Spacer()
+                            Button("Turn Off…", role: .destructive) { confirmDisableE2EE = true }
+                                .font(.zkSans(13, weight: .semibold))
+                                .foregroundColor(Theme.dangerSoft)
+                        }
+                        .padding(12)
+                        .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
+                        Text("Messages are encrypted with your shared password. Turning this off permanently deletes the encrypted history for both of you.")
+                            .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                    } else {
+                        Button { showEnableE2EE = true } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "lock.open")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(Theme.accent)
+                                Text("Turn On End-to-End Encryption")
+                                    .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.ink3)
+                            }
+                            .padding(12)
+                            .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
+                        .buttonStyle(.plain)
+                        Text("Encrypts this conversation with a password you both share. Only devices that know it can read messages.")
+                            .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                    }
+
+                    Divider().overlay(Theme.line)
+
                     Text("AUTO-DELETE MESSAGES")
                         .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
                     if store.loadingDmSettings {
@@ -2997,6 +3039,21 @@ struct DmSettingsSheet: View {
             .navigationTitle(channel.dmTitle).navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
             .task { await store.loadDmSettings(channel.id) }
+            .sheet(isPresented: $showEnableE2EE) {
+                EnableE2EESheet(channel: liveChannel)
+            }
+            .confirmationDialog(
+                "Turn off encryption?",
+                isPresented: $confirmDisableE2EE,
+                titleVisibility: .visible
+            ) {
+                Button("Turn Off & Delete History", role: .destructive) {
+                    Task { await store.disableE2EE(liveChannel) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("All encrypted messages in this conversation are permanently deleted for both of you.")
+            }
         }
     }
 

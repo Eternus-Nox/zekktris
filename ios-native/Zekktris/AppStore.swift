@@ -2529,6 +2529,18 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// Turn E2EE off for a DM. The server purges the encrypted history and
+    /// broadcasts CHANNEL_UPDATE; we drop the local key and clear decrypted
+    /// plaintext immediately so nothing lingers in memory.
+    func disableE2EE(_ channel: Channel) async {
+        await api.disableDmE2EE(channelId: channel.id)
+        relockE2EE(channel.id)
+        applyE2EEState(channelId: channel.id, enabled: false, salt: nil, verifier: nil)
+        if selectedChannel?.id == channel.id {
+            await loadMessages(channel)
+        }
+    }
+
     /// Forget the local key (re-locks this device).
     func relockE2EE(_ channelId: String) {
         e2eeKeyCache.removeValue(forKey: channelId)

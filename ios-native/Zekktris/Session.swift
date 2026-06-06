@@ -46,6 +46,12 @@ final class Session: ObservableObject {
     /// Called once at launch. Restores a persisted token and validates it by
     /// fetching the current user; falls back to the sign-in screen on failure.
     func bootstrap() async {
+        // Persist rotated access tokens (the APIClient auto-refreshes expired
+        // ones via the /auth/refresh cookie) so the NEXT cold launch starts
+        // from the newest token instead of an already-expired one.
+        api.onTokenRefresh = { [keychain, tokenKey] newToken in
+            keychain.set(newToken, for: tokenKey)
+        }
         guard let saved = keychain.get(tokenKey), !saved.isEmpty else {
             phase = .signedOut
             return
@@ -57,8 +63,10 @@ final class Session: ObservableObject {
         currentUser = cachedUser()
         locked = faceIDEnabled && Biometrics.available
         phase = .signedIn
-        // Refresh the user in the background. Only sign out if the token is
-        // genuinely invalid (401); transient/offline failures keep the session.
+        // Refresh the user in the background. getMe auto-refreshes an expired
+        // access token via the refresh cookie, so a 401 here means the
+        // refresh token itself is dead (revoked / >30 days) — only then sign
+        // out. Transient/offline failures keep the session.
         do {
             currentUser = try await api.getMe()
         } catch {
@@ -100,6 +108,13 @@ final class Session: ObservableObject {
         Task { [api] in
             await api.logout()
             api.token = nil
+            // The server clears the refresh cookie on logout; mirror it
+            // locally in case the request didn't land.
+            if let url = URL(string: Config.apiBaseURL) {
+                for cookie in HTTPCookieStorage.shared.cookies(for: url) ?? [] {
+                    HTTPCookieStorage.shared.deleteCookie(cookie)
+                }
+            }
         }
     }
 
