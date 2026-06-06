@@ -2243,9 +2243,13 @@ final class AppStore: ObservableObject {
             }
         case "PRESENCE_UPDATE":
             // Server payload is snake_case: { user_id, guild_id, status }.
+            // Skip the write when nothing changed — every @Published mutation
+            // re-renders all observing views, and presence echoes are the
+            // single most frequent event on a busy instance.
             if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let uid = obj["user_id"] as? String,
-               let status = obj["status"] as? String {
+               let status = obj["status"] as? String,
+               presence[uid] != status {
                 presence[uid] = status
             }
         case "TYPING_START":

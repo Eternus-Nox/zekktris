@@ -915,19 +915,32 @@ struct MessageRow: View {
         }
     }
 
+    /// Webhook persona (web parity): when set, the override name/avatar
+    /// replace the author's user record everywhere in the row.
+    private var isWebhook: Bool { message.webhookId != nil }
+    private var displayName: String {
+        if isWebhook { return message.authorOverrideName ?? message.author?.name ?? "Webhook" }
+        return message.author?.name ?? "Unknown"
+    }
+    private var displayAvatarUrl: String? {
+        if isWebhook { return message.authorOverrideAvatar ?? message.author?.avatarUrl }
+        return message.author?.avatarUrl
+    }
+
     private var rowContent: some View {
         HStack(alignment: .top, spacing: 0) {
             if showHeader {
                 Avatar(
-                    url: message.author?.avatarUrl,
-                    name: message.author?.name ?? "?",
+                    url: displayAvatarUrl,
+                    name: displayName,
                     size: 40,
-                    status: store.status(for: message.authorId, fallback: message.author?.status),
+                    status: isWebhook ? nil : store.status(for: message.authorId, fallback: message.author?.status),
                     ringColor: Theme.bg1,
-                    decoration: message.author?.avatarDecoration
+                    decoration: isWebhook ? nil : message.author?.avatarDecoration,
+                    toneId: isWebhook ? message.webhookId : (message.authorId ?? message.author?.id)
                 )
                 .frame(width: gutter, alignment: .leading)
-                .onTapGesture { if let a = message.author { store.openProfile(a) } }
+                .onTapGesture { if !isWebhook, let a = message.author { store.openProfile(a) } }
             } else {
                 Color.clear.frame(width: gutter)
             }
@@ -938,10 +951,20 @@ struct MessageRow: View {
                 }
                 if showHeader {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(message.author?.name ?? "Unknown")
+                        Text(displayName)
                             .font(.zkSans(15, weight: .medium))
-                            .foregroundColor(store.memberColor(message.authorId ?? message.author?.id ?? "") ?? Theme.ink1)
-                            .onTapGesture { if let a = message.author { store.openProfile(a) } }
+                            .foregroundColor(isWebhook ? Theme.ink1 : (store.memberColor(message.authorId ?? message.author?.id ?? "") ?? Theme.ink1))
+                            .onTapGesture { if !isWebhook, let a = message.author { store.openProfile(a) } }
+                        if isWebhook {
+                            Text("WEBHOOK")
+                                .font(.zkSans(8.5, weight: .bold))
+                                .tracking(0.5)
+                                .foregroundColor(Theme.accent2)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(Theme.accent2.opacity(0.2))
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                        }
                         if message.author?.isBot == true {
                             Text("BOT")
                                 .font(.zkSans(8.5, weight: .bold))

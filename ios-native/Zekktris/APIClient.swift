@@ -511,6 +511,24 @@ final class APIClient {
         let _: OkWrap = try await send("PUT", "/users/@me/channels/\(channelId)/e2ee-enable", bodyData: body)
     }
 
+    /// Change the account username (90-day cooldown server-side).
+    func changeUsername(_ username: String, currentPassword: String) async throws -> SelfUser {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "username": username, "currentPassword": currentPassword,
+        ])
+        let wrap: UserWrap = try await send("PATCH", "/users/@me/username", bodyData: body)
+        return wrap.user
+    }
+
+    /// Request an email change; the server mails a verification link to the
+    /// NEW address and the switch happens on confirm.
+    func requestEmailChange(newEmail: String, currentPassword: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "newEmail": newEmail, "currentPassword": currentPassword,
+        ])
+        try await sendVoid("POST", "/users/@me/email/change-request", bodyData: body)
+    }
+
     /// Disable E2EE on a DM (server purges encrypted history).
     func disableDmE2EE(channelId: String) async {
         await sendNoDecode("DELETE", "/users/@me/channels/\(channelId)/e2ee-disable")

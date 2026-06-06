@@ -127,6 +127,11 @@ struct Message: Codable, Identifiable, Hashable {
     var stickerId: String?
     var sticker: Sticker?
     var embeds: [MessageEmbed]?
+    /// Webhook-posted messages: the webhook's id plus the persona the
+    /// renderer should show IN PLACE of the author's user record.
+    var webhookId: String?
+    var authorOverrideName: String?
+    var authorOverrideAvatar: String?
     /// 1:1 DM read receipts: set when a recipient's device received /
     /// viewed the message (drives the Sent → Delivered → Read label).
     var deliveredAt: String?
@@ -152,6 +157,7 @@ extension Message {
             reactions: nil, attachments: nil, poll: nil,
             replyToId: replyToId, pinned: nil, forwardedFromMessageId: nil,
             forwardedFrom: nil, stickerId: nil, sticker: nil, embeds: nil,
+            webhookId: nil, authorOverrideName: nil, authorOverrideAvatar: nil,
             deliveredAt: nil, viewedAt: nil,
             sendState: "sending"
         )

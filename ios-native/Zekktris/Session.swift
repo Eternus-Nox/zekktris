@@ -191,6 +191,24 @@ final class Session: ObservableObject {
         catch { authError = message(for: error) }
     }
 
+    /// Change the username (requires current password; 90-day cooldown).
+    /// Returns an error string on failure, nil on success.
+    func changeUsername(_ username: String, currentPassword: String) async -> String? {
+        do {
+            currentUser = try await api.changeUsername(username, currentPassword: currentPassword)
+            return nil
+        } catch { return message(for: error) }
+    }
+
+    /// Request an email change (verification link goes to the new address).
+    /// Returns an error string on failure, nil on success.
+    func requestEmailChange(_ newEmail: String, currentPassword: String) async -> String? {
+        do {
+            try await api.requestEmailChange(newEmail: newEmail, currentPassword: currentPassword)
+            return nil
+        } catch { return message(for: error) }
+    }
+
     /// Change the account password. Returns an error string on failure, nil on success.
     func changePassword(current: String, new: String) async -> String? {
         do { try await api.changePassword(currentPassword: current, newPassword: new); return nil }

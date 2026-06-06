@@ -230,6 +230,25 @@ struct VoiceChannelView: View {
     let channel: Channel
 
     @State private var ringSpin = false
+    /// Drives the slow orbit of the whole participant constellation around
+    /// the black hole (web .zk-orbit: 90s/revolution; seats counter-rotate
+    /// so avatars stay upright).
+    @State private var orbit = false
+
+    /// Participants currently being "swallowed" by the black hole — a leave
+    /// animation that drags the tile into the center while it shrinks and
+    /// winds up (web .zk-blackhole-swallow).
+    private struct SwallowedSeat: Identifiable {
+        let id = UUID()
+        let name: String
+        let avatarUrl: String?
+        let userId: String
+        let index: Int
+        let total: Int
+    }
+    @State private var swallowed: [SwallowedSeat] = []
+    @State private var swallowProgress: Set<UUID> = []
+    @State private var previousStates: [VoiceState] = []
 
     private let columns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
 
@@ -262,6 +281,45 @@ struct VoiceChannelView: View {
         .background(Color.black)
         .onAppear {
             withAnimation(.linear(duration: 60).repeatForever(autoreverses: false)) { ringSpin = true }
+            withAnimation(.linear(duration: 90).repeatForever(autoreverses: false)) { orbit = true }
+            previousStates = store.voiceStates
+        }
+        .onChange(of: store.voiceStates) { newStates in
+            let old = previousStates
+            previousStates = newStates
+            let remaining = Set(newStates.map { $0.userId })
+            for (idx, vs) in old.enumerated() where !remaining.contains(vs.userId) {
+                // Don't swallow ourselves — leaving pops the whole screen.
+                if vs.userId == session.currentUser?.id { continue }
+                spawnSwallow(for: vs, index: idx, total: old.count)
+            }
+        }
+    }
+
+    /// Insert a leave tile at the seat's last orbital slot, then animate it
+    /// into the singularity (1.2s ease-in: position -> center, scale -> 5%,
+    /// two full turns of spaghettification, fade out) and clean it up.
+    private func spawnSwallow(for vs: VoiceState, index: Int, total: Int) {
+        let name: String = {
+            if channel.isDM, let u = channel.recipients?.first(where: { $0.id == vs.userId }) { return u.name }
+            return store.memberName(vs.userId) ?? "Member"
+        }()
+        let avatar: String? = {
+            if channel.isDM { return channel.recipients?.first(where: { $0.id == vs.userId })?.avatarUrl }
+            return store.memberUser(vs.userId)?.avatarUrl
+        }()
+        let seat = SwallowedSeat(name: name, avatarUrl: avatar, userId: vs.userId, index: index, total: total)
+        swallowed.append(seat)
+        // Two-phase: let the tile commit at its seat first, then animate.
+        DispatchQueue.main.async {
+            withAnimation(.easeIn(duration: 1.2)) {
+                _ = swallowProgress.insert(seat.id)
+            }
+        }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_350_000_000)
+            swallowed.removeAll { $0.id == seat.id }
+            swallowProgress.remove(seat.id)
         }
     }
 
@@ -292,13 +350,40 @@ struct VoiceChannelView: View {
                 .frame(width: 32, height: 32)
                 .position(x: cx, y: cy)
 
-            ForEach(Array(store.voiceStates.enumerated()), id: \.element.id) { idx, vs in
-                participantSeat(vs)
-                    .position(seatPosition(index: idx, total: store.voiceStates.count,
-                                           side: side, cx: cx, cy: cy))
+            // The constellation slowly orbits the black hole as one rigid
+            // body; each seat counter-rotates so faces and names stay
+            // upright (web .zk-orbit / .zk-orbit-counter).
+            ZStack {
+                ForEach(Array(store.voiceStates.enumerated()), id: \.element.id) { idx, vs in
+                    participantSeat(vs)
+                        .rotationEffect(.degrees(orbit ? -360 : 0))
+                        .position(seatPosition(index: idx, total: store.voiceStates.count,
+                                               side: side, cx: cx, cy: cy))
+                }
+
+                // Leavers spiral into the singularity.
+                ForEach(swallowed) { seat in
+                    let consumed = swallowProgress.contains(seat.id)
+                    swallowTile(seat)
+                        .rotationEffect(.degrees(consumed ? 720 : 0))
+                        .scaleEffect(consumed ? 0.05 : 1)
+                        .opacity(consumed ? 0 : 1)
+                        .position(consumed
+                                  ? CGPoint(x: cx, y: cy)
+                                  : seatPosition(index: seat.index, total: seat.total,
+                                                 side: side, cx: cx, cy: cy))
+                }
             }
+            .rotationEffect(.degrees(orbit ? 360 : 0))
         }
         .frame(width: size.width, height: size.height)
+    }
+
+    /// Simplified avatar-only tile used for the swallow animation.
+    private func swallowTile(_ seat: SwallowedSeat) -> some View {
+        Avatar(url: seat.avatarUrl, name: seat.name, size: 54,
+               ringColor: Color.white.opacity(0.12), toneId: seat.userId)
+            .shadow(color: Theme.accentGlow, radius: 10)
     }
 
     /// Concentric orbits (two solid, one dashed) that slowly counter-rotate.

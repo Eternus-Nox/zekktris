@@ -535,18 +535,18 @@ struct ChannelListView: View {
 
             // Header (web: px-3 py-1.5, soft bottom border, name wraps,
             // chevron — the whole strip opens the server menu).
-            HStack(alignment: .top, spacing: 4) {
+            HStack(alignment: .center, spacing: 4) {
                 Button { showGuildInfo = true } label: {
-                    HStack(alignment: .top, spacing: 6) {
+                    HStack(alignment: .center, spacing: 6) {
                         Text(store.selectedGuild?.name ?? "Zekktris")
                             .font(.zkSans(14, weight: .semibold))
                             .foregroundColor(Theme.ink1)
-                            .multilineTextAlignment(.leading)
-                        Spacer(minLength: 0)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                         Image(systemName: "chevron.down")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundColor(Theme.ink2)
-                            .padding(.top, 2)
+                        Spacer(minLength: 0)
                     }
                     .contentShape(Rectangle())
                 }
@@ -1335,6 +1335,8 @@ struct SettingsView: View {
     @State private var customStatusEmoji = ""
     @State private var nameStatus: String?
     @State private var showChangePassword = false
+    @State private var showChangeUsername = false
+    @State private var showChangeEmail = false
     @State private var faceIDOn = false
 
     private let statuses: [(String, String, Color)] = [
@@ -1499,17 +1501,24 @@ struct SettingsView: View {
     private var appearanceSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("APPEARANCE")
-            ForEach(ZKThemes) { opt in
-                themeRow(opt)
+            // Two condensed rows (scrolls horizontally when the width can't
+            // fit all six columns).
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHGrid(rows: [GridItem(.fixed(86), spacing: 8), GridItem(.fixed(86), spacing: 8)], spacing: 8) {
+                    ForEach(ZKThemes) { opt in
+                        themeCard(opt)
+                    }
+                }
+                .padding(.vertical, 2)
             }
         }
     }
 
-    private func themeRow(_ opt: ThemeOption) -> some View {
+    private func themeCard(_ opt: ThemeOption) -> some View {
         let pal = ThemePalette.palette(for: opt.id)
         let selected = store.themeId == opt.id
         return Button { store.setTheme(opt.id) } label: {
-            HStack(spacing: 11) {
+            VStack(spacing: 6) {
                 ZStack {
                     Circle().fill(pal.bg0).frame(width: 30, height: 30)
                         .overlay(Circle().stroke(Theme.line, lineWidth: 1))
@@ -1517,18 +1526,20 @@ struct SettingsView: View {
                         Circle().fill(pal.accent).frame(width: 13, height: 13)
                         Circle().fill(pal.accent2).frame(width: 13, height: 13)
                     }
+                    if selected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 13))
+                            .foregroundColor(Theme.accent)
+                            .background(Circle().fill(Theme.bg1))
+                            .offset(x: 11, y: -11)
+                    }
                 }
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(opt.label).font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
-                    Text(opt.group).font(.zkSans(11)).foregroundColor(Theme.ink4)
-                }
-                Spacer()
-                if selected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 18)).foregroundColor(Theme.accent)
-                }
+                Text(opt.label)
+                    .font(.zkSans(10, weight: .medium))
+                    .foregroundColor(selected ? Theme.ink1 : Theme.ink3)
+                    .lineLimit(1)
             }
-            .padding(.horizontal, 12).padding(.vertical, 9)
+            .frame(width: 84, height: 78)
             .background(selected ? Theme.bg3 : Theme.bg2)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(
@@ -1542,22 +1553,21 @@ struct SettingsView: View {
     private var decorationSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("AVATAR DECORATION")
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    ForEach(Avatar.decorations, id: \.id) { d in
-                        Button { Task { await session.setAvatarDecoration(d.id) } } label: {
-                            VStack(spacing: 5) {
-                                Avatar(url: session.currentUser?.avatarUrl, name: session.currentUser?.name ?? "?", size: 46, decoration: d.id)
-                                Text(d.label).font(.zkSans(10)).foregroundColor(Theme.ink3).lineLimit(1)
-                            }
-                            .padding(8)
-                            .background((session.currentUser?.avatarDecoration ?? "none") == d.id ? Theme.bg3 : Color.clear)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
+            // Wrapping grid — never runs off the trailing edge.
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 72), spacing: 8)], spacing: 8) {
+                ForEach(Avatar.decorations, id: \.id) { d in
+                    Button { Task { await session.setAvatarDecoration(d.id) } } label: {
+                        VStack(spacing: 5) {
+                            Avatar(url: session.currentUser?.avatarUrl, name: session.currentUser?.name ?? "?", size: 46, decoration: d.id)
+                            Text(d.label).font(.zkSans(10)).foregroundColor(Theme.ink3).lineLimit(1)
                         }
-                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background((session.currentUser?.avatarDecoration ?? "none") == d.id ? Theme.bg3 : Theme.bg2.opacity(0.5))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
+                    .buttonStyle(.plain)
                 }
-                .padding(.vertical, 2)
             }
         }
     }
@@ -1598,8 +1608,10 @@ struct SettingsView: View {
     private var accountSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("ACCOUNT")
-            accountRow(label: "Username", value: session.currentUser?.username.map { "@\($0)" } ?? "—")
-            accountRow(label: "Email", value: session.currentUser?.email ?? "—")
+            accountRow(label: "Username", value: session.currentUser?.username.map { "@\($0)" } ?? "—",
+                       changeAction: { showChangeUsername = true })
+            accountRow(label: "Email", value: session.currentUser?.email ?? "—",
+                       changeAction: { showChangeEmail = true })
             accountRow(label: "User ID", value: session.currentUser?.id ?? "—", copyable: true, mono: true)
 
             Button { showChangePassword = true } label: {
@@ -1625,9 +1637,12 @@ struct SettingsView: View {
             .padding(.top, 4)
         }
         .sheet(isPresented: $showChangePassword) { ChangePasswordSheet() }
+        .sheet(isPresented: $showChangeUsername) { ChangeUsernameSheet() }
+        .sheet(isPresented: $showChangeEmail) { ChangeEmailSheet() }
     }
 
-    private func accountRow(label: String, value: String, copyable: Bool = false, mono: Bool = false) -> some View {
+    private func accountRow(label: String, value: String, copyable: Bool = false, mono: Bool = false,
+                            changeAction: (() -> Void)? = nil) -> some View {
         HStack(spacing: 8) {
             Text(label).font(.zkSans(13)).foregroundColor(Theme.ink4)
             Spacer()
@@ -1640,6 +1655,18 @@ struct SettingsView: View {
                     Image(systemName: "doc.on.doc").font(.system(size: 12)).foregroundColor(Theme.ink3)
                 }
             }
+            if let changeAction {
+                Button(action: changeAction) {
+                    Text("Change")
+                        .font(.zkSans(12, weight: .semibold))
+                        .foregroundColor(Theme.accent)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Theme.accent.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
         .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
@@ -1647,6 +1674,145 @@ struct SettingsView: View {
 
     private func sectionTitle(_ t: String) -> some View {
         Text(t).font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+    }
+}
+
+/// Change the account username (server: 90-day cooldown, requires the
+/// current password).
+struct ChangeUsernameSheet: View {
+    @EnvironmentObject private var session: Session
+    @Environment(\.dismiss) private var dismiss
+    @State private var username = ""
+    @State private var password = ""
+    @State private var error: String?
+    @State private var busy = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("NEW USERNAME").font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                        HStack(spacing: 6) {
+                            Text("@").foregroundColor(Theme.ink3)
+                            TextField("username", text: $username)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .foregroundColor(Theme.ink1)
+                        }
+                        .padding(12).background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("CURRENT PASSWORD").font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                        SecureField("Password", text: $password)
+                            .foregroundColor(Theme.ink1)
+                            .padding(12).background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    Text("Usernames can be changed once every 90 days.")
+                        .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                    if let error {
+                        Text(error).font(.zkSans(13)).foregroundColor(Theme.dangerSoft)
+                    }
+                }
+                .padding(16)
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Change Username").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { submit() }
+                        .disabled(busy || username.trimmingCharacters(in: .whitespaces).isEmpty || password.isEmpty)
+                }
+            }
+        }
+    }
+
+    private func submit() {
+        busy = true; error = nil
+        Task {
+            let result = await session.changeUsername(
+                username.trimmingCharacters(in: .whitespaces), currentPassword: password)
+            busy = false
+            if let result { error = result } else { dismiss() }
+        }
+    }
+}
+
+/// Request an email change (server mails a verification link to the NEW
+/// address; the address switches only after it's confirmed).
+struct ChangeEmailSheet: View {
+    @EnvironmentObject private var session: Session
+    @Environment(\.dismiss) private var dismiss
+    @State private var email = ""
+    @State private var password = ""
+    @State private var error: String?
+    @State private var sent = false
+    @State private var busy = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if sent {
+                        VStack(spacing: 10) {
+                            Image(systemName: "envelope.badge")
+                                .font(.system(size: 34)).foregroundColor(Theme.accent)
+                            Text("Check your inbox")
+                                .font(.zkSans(17, weight: .semibold)).foregroundColor(Theme.ink1)
+                            Text("We sent a verification link to \(email). Your email updates once you confirm it there.")
+                                .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 28)
+                    } else {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("NEW EMAIL").font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                            TextField("new@email.com", text: $email)
+                                .keyboardType(.emailAddress)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .foregroundColor(Theme.ink1)
+                                .padding(12).background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+                        }
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("CURRENT PASSWORD").font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                            SecureField("Password", text: $password)
+                                .foregroundColor(Theme.ink1)
+                                .padding(12).background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+                        }
+                        Text("We'll email a verification link to the new address — it only takes effect once confirmed.")
+                            .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                        if let error {
+                            Text(error).font(.zkSans(13)).foregroundColor(Theme.dangerSoft)
+                        }
+                    }
+                }
+                .padding(16)
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Change Email").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button(sent ? "Done" : "Cancel") { dismiss() } }
+                if !sent {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Send Link") { submit() }
+                            .disabled(busy || email.trimmingCharacters(in: .whitespaces).isEmpty || password.isEmpty)
+                    }
+                }
+            }
+        }
+    }
+
+    private func submit() {
+        busy = true; error = nil
+        Task {
+            let result = await session.requestEmailChange(
+                email.trimmingCharacters(in: .whitespaces), currentPassword: password)
+            busy = false
+            if let result { error = result } else { sent = true }
+        }
     }
 }
 
