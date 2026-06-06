@@ -64,6 +64,12 @@ final class AppStore: ObservableObject {
     /// Hosted inline on iPad/Mac (rail stays visible), full-screen on iPhone.
     @Published var railPage: RailPage?
 
+    /// Open a rail page; tapping its icon again closes it (the wide
+    /// layout's exit affordance — the back chevron is phone-only).
+    func toggleRailPage(_ page: RailPage) {
+        railPage = (railPage == page) ? nil : page
+    }
+
     /// Locally-collapsed channel-list categories (per-device, like the web).
     @Published var collapsedCategories: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "zk.collapsedCategories") ?? [])
     func toggleCategoryCollapsed(_ id: String) {
@@ -416,6 +422,7 @@ final class AppStore: ObservableObject {
     // MARK: Selection
 
     func selectGuild(_ guild: Guild) {
+        railPage = nil
         railContent = .normal
         inDMs = false
         resetStack()
@@ -439,6 +446,7 @@ final class AppStore: ObservableObject {
     }
 
     func showDMs() {
+        railPage = nil
         railContent = .normal
         inDMs = true
         resetStack()
@@ -446,8 +454,8 @@ final class AppStore: ObservableObject {
         if dms.isEmpty { Task { await loadDMs() } }
     }
 
-    func showMentions() { railContent = .mentions; resetStack() }
-    func showSaved() { railContent = .saved; resetStack() }
+    func showMentions() { railPage = nil; railContent = .mentions; resetStack() }
+    func showSaved() { railPage = nil; railContent = .saved; resetStack() }
 
     // MARK: Navigation stack
 

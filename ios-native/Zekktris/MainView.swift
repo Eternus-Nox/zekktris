@@ -279,19 +279,25 @@ extension EnvironmentValues {
     }
 }
 
-/// `<` back affordance shared by every rail page.
+/// `<` back affordance shared by every rail page — phone only. On iPad/Mac
+/// the page sits inline beside the always-visible server rail, so the rail
+/// (tap any destination, or the same icon again) is the way out.
 struct PageBackButton: View {
     @Environment(\.zkDismissPage) private var closePage
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var hSizeClass
+
     var body: some View {
-        Button {
-            if let closePage { closePage() } else { dismiss() }
-        } label: {
-            Image(systemName: "chevron.left")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(Theme.ink2)
+        if hSizeClass != .regular {
+            Button {
+                if let closePage { closePage() } else { dismiss() }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(Theme.ink2)
+            }
+            .accessibilityLabel("Back")
         }
-        .accessibilityLabel("Back")
     }
 }
 
@@ -361,9 +367,9 @@ struct ServerRailView: View {
                         .fill(Theme.line)
                         .frame(width: 32, height: 1)
 
-                    RailIconButton(symbol: "safari") { store.railPage = .discover }
-                    RailIconButton(symbol: "plus") { store.railPage = .createServer }
-                    RailIconButton(symbol: "link") { store.railPage = .joinInvite }
+                    RailIconButton(symbol: "safari") { store.toggleRailPage(.discover) }
+                    RailIconButton(symbol: "plus") { store.toggleRailPage(.createServer) }
+                    RailIconButton(symbol: "link") { store.toggleRailPage(.joinInvite) }
                 }
                 .padding(.vertical, 12)
             }
@@ -372,13 +378,13 @@ struct ServerRailView: View {
 
             VStack(spacing: 10) {
                 if session.currentUser?.isAdmin == true {
-                    RailIconButton(symbol: "lock.shield") { store.railPage = .admin }
+                    RailIconButton(symbol: "lock.shield") { store.toggleRailPage(.admin) }
                 }
-                RailIconButton(symbol: "person.2.fill") { store.railPage = .family }
+                RailIconButton(symbol: "person.2.fill") { store.toggleRailPage(.family) }
 
                 Menu {
                     Section(session.currentUser?.name ?? "Account") {
-                        Button { store.railPage = .settings } label: {
+                        Button { store.toggleRailPage(.settings) } label: {
                             Label("Settings", systemImage: "gearshape")
                         }
                         Button(role: .destructive) {

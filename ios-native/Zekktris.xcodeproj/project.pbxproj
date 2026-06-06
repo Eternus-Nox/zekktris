@@ -14,6 +14,7 @@
 		3512C4E47D6EE2F62135C154 /* LICENSE-JetBrainsMono-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = 7FEDAB3BA09017209BA445AF /* LICENSE-JetBrainsMono-OFL.txt */; };
 		384A537D59460C34162951DE /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2232CBA6A56F9DFE142335BF /* Theme.swift */; };
 		40F515E3FE190F65007139CA /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0503A3312574F4248568EACD /* Keychain.swift */; };
+		4D498E1525844A5D4C185BC1 /* CallManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D62C793B7AAB9778AA116F /* CallManager.swift */; };
 		55F6CBB55B4D73852E4C6094 /* Session.swift in Sources */ = {isa = PBXBuildFile; fileRef = D29D733AAD46444723023905 /* Session.swift */; };
 		583583622BA465A94561DE6B /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 83FB276D06CBDD1F5974ABD0 /* LiveKit */; };
 		5F41FABD554532C5B318DDCB /* MessageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F5AACAE9FF771E91106E82E /* MessageViews.swift */; };
@@ -36,7 +37,6 @@
 		E4AB58F4FB01793924E57D89 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9F3789F4ADB83F7BDF66983 /* APIClient.swift */; };
 		E64B9F7A95C88E6C6B25CC72 /* VoiceMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32957B535EA27A17B00EEBCF /* VoiceMessage.swift */; };
 		EB8ECC29D87BB4388F1A8AB0 /* E2EE.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */; };
-		E94BE10CC7BC2B42C87100A1 /* CallManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61D8C8B48383CE9AD98834B5 /* CallManager.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -47,6 +47,7 @@
 		1E9D6FF0387EF512329B39D5 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		2232CBA6A56F9DFE142335BF /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		288DB70E168617B9512AA1B4 /* SpaceGrotesk-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SpaceGrotesk-Medium.ttf"; sourceTree = "<group>"; };
+		28D62C793B7AAB9778AA116F /* CallManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallManager.swift; sourceTree = "<group>"; };
 		2F5AACAE9FF771E91106E82E /* MessageViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageViews.swift; sourceTree = "<group>"; };
 		2FE126AEC7DC839E13F12E94 /* Zekktris.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Zekktris.entitlements; sourceTree = "<group>"; };
 		32957B535EA27A17B00EEBCF /* VoiceMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceMessage.swift; sourceTree = "<group>"; };
@@ -71,7 +72,6 @@
 		E3049E4EB8347C9C4E63FA39 /* Push.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Push.swift; sourceTree = "<group>"; };
 		F6D2DCE87AACD4BDB1B2308C /* SpaceGrotesk-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SpaceGrotesk-Bold.ttf"; sourceTree = "<group>"; };
 		F8BBAD9D14CEB87EDC845C3A /* Zekktris.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Zekktris.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		61D8C8B48383CE9AD98834B5 /* CallManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -101,8 +101,8 @@
 				B4B0548FCFD7075D00943D03 /* AppStore.swift */,
 				B00D99F1C7CCFC6FE3B52D73 /* Assets.xcassets */,
 				17409CC125FA64E8BD4AB3AA /* AuthViews.swift */,
+				28D62C793B7AAB9778AA116F /* CallManager.swift */,
 				DAE4782BEFCECFF65F8EAD34 /* Components.swift */,
-				61D8C8B48383CE9AD98834B5 /* CallManager.swift */,
 				42797CA878D26DB332BEF804 /* Config.swift */,
 				6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */,
 				B2136069A842EF82A1167EBC /* Gateway.swift */,
@@ -235,8 +235,8 @@
 				E4AB58F4FB01793924E57D89 /* APIClient.swift in Sources */,
 				C11C9FD38A8F9B33DF12D3B2 /* AppStore.swift in Sources */,
 				8FB40EE668DAB651B1A36DC6 /* AuthViews.swift in Sources */,
+				4D498E1525844A5D4C185BC1 /* CallManager.swift in Sources */,
 				906E635F36708A5EBEBB8442 /* Components.swift in Sources */,
-				E94BE10CC7BC2B42C87100A1 /* CallManager.swift in Sources */,
 				61FF74D009D65D2054199944 /* Config.swift in Sources */,
 				EB8ECC29D87BB4388F1A8AB0 /* E2EE.swift in Sources */,
 				927EF8923215A96F66A136F6 /* Gateway.swift in Sources */,
