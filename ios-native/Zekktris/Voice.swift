@@ -334,10 +334,12 @@ struct VoiceChannelView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Button(action: goBack) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(Theme.ink2)
+            if !store.isWideLayout || store.stack.count > 1 {
+                Button(action: goBack) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(Theme.ink2)
+                }
             }
             Image(systemName: "speaker.wave.2.fill")
                 .font(.system(size: 14))

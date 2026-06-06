@@ -54,10 +54,12 @@ struct ThreadListView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Button { store.clearChannel() } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(Theme.ink2)
+            if !store.isWideLayout || store.stack.count > 1 {
+                Button { store.clearChannel() } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(Theme.ink2)
+                }
             }
             Image(systemName: isForum ? "list.bullet.rectangle" : "text.bubble")
                 .font(.system(size: 15))

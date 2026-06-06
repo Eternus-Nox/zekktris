@@ -8,8 +8,127 @@ import CoreImage
 /// or drills into a channel's messages.
 struct MainView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.horizontalSizeClass) private var hSizeClass
+
+    private var isWide: Bool { hSizeClass == .regular }
 
     var body: some View {
+        layout
+            .sheet(item: $store.profileUser) { ProfileCardView(user: $0) }
+            .fullScreenCover(item: $store.lightbox) { ImageLightboxView(url: $0.url) }
+            .onAppear { store.isWideLayout = isWide }
+            .onChange(of: hSizeClass) { newValue in
+                store.isWideLayout = (newValue == .regular)
+                // Collapsing iPhone -> keep the stack as-is (drill-down works
+                // from whatever was selected). Expanding to wide with a deep
+                // stack: trim to the top route so detail shows one pane.
+                if newValue == .regular && store.stack.count > 1,
+                   let top = store.stack.last {
+                    store.stack = [top]
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var layout: some View {
+        if isWide { wideBody } else { compactBody }
+    }
+
+    /// iPad / Mac (regular width): persistent three-pane master-detail —
+    /// server rail | channel/DM sidebar | content — mirroring the web's
+    /// desktop shell. Selections replace the detail pane (no push-stack).
+    private var wideBody: some View {
+        HStack(spacing: 0) {
+            ServerRailView()
+                .frame(width: 72)
+                .background(Theme.bg0.opacity(0.85))
+
+            Rectangle().fill(Theme.line).frame(width: 1)
+
+            // Sidebar column (web xl:w-60 = 15rem = 225pt at the 15px root).
+            Group {
+                if store.inDMs {
+                    DMListView()
+                } else {
+                    ChannelListView()
+                }
+            }
+            .frame(width: 225)
+
+            Rectangle().fill(Theme.line).frame(width: 1)
+
+            VStack(spacing: 0) {
+                if store.activeVoiceOrStageId != nil && !store.isViewingActiveCall
+                    && store.outgoingCall == nil && store.incomingCall == nil {
+                    MinimizedCallBar()
+                }
+                ZStack {
+                    wideDetail
+                        .id(routeKey)
+                        .transition(.opacity)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .animation(.easeInOut(duration: 0.2), value: routeKey)
+            }
+        }
+        .background {
+            ZStack {
+                Theme.bg1
+                AbyssBackground()
+            }
+            .ignoresSafeArea()
+        }
+        .overlay {
+            if let call = store.incomingCall {
+                IncomingCallView(call: call)
+                    .transition(.opacity)
+            } else if let out = store.outgoingCall {
+                OutgoingCallView(channel: out.channel, callee: out.callee)
+                    .transition(.opacity)
+            }
+        }
+        .overlay {
+            if store.amPendingOnboarding, let g = store.selectedGuild {
+                OnboardingView(guild: g)
+                    .transition(.opacity)
+            }
+        }
+        .overlay(alignment: .top) {
+            if let err = store.errorText {
+                ErrorToast(message: err) { store.errorText = nil }
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: store.errorText)
+    }
+
+    /// Detail pane for the wide layout. Routed content wins (matching the
+    /// compact `content` priority — a mention jump must show the message);
+    /// Mentions/Saved render here when no route is active; placeholder
+    /// otherwise.
+    @ViewBuilder
+    private var wideDetail: some View {
+        if let route = store.stack.last {
+            switch route {
+            case .messages(let channel):
+                MessageListView(channel: channel)
+            case .threadList(let parent):
+                ThreadListView(parent: parent)
+            case .voice(let channel):
+                if channel.isStage { StageChannelView(channel: channel) }
+                else { VoiceChannelView(channel: channel) }
+            }
+        } else {
+            switch store.railContent {
+            case .mentions: MentionsView()
+            case .saved: SavedView()
+            case .normal: WideEmptyDetail()
+            }
+        }
+    }
+
+    /// iPhone (compact width): rail + single column with drill-down routes.
+    private var compactBody: some View {
         HStack(spacing: 0) {
             // Web parity: rail = bg-0/85 over the abyss, with a border-line
             // divider on its trailing edge.
@@ -115,6 +234,24 @@ struct MainView: View {
             case .normal: return store.inDMs ? "root-dms" : "root-guild-\(store.selectedGuild?.id ?? "none")"
             }
         }()
+    }
+}
+
+/// Placeholder for the wide layout's detail pane before any channel is
+/// selected (web shows the first channel automatically; this covers empty
+/// guilds and the brief load gap).
+private struct WideEmptyDetail: View {
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "bubble.left.and.bubble.right")
+                .font(.system(size: 36, weight: .light))
+                .foregroundColor(Theme.ink4)
+            Text("Select a channel")
+                .font(.zkSans(15, weight: .medium))
+                .foregroundColor(Theme.ink3)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.bg1.opacity(0.9))
     }
 }
 
@@ -854,8 +991,6 @@ struct DMListView: View {
         .sheet(isPresented: $showScheduled) {
             ScheduledMessagesSheet()
         }
-        .sheet(item: $store.profileUser) { ProfileCardView(user: $0) }
-        .fullScreenCover(item: $store.lightbox) { ImageLightboxView(url: $0.url) }
     }
 
     /// Web quick-switcher row: icon 16 ink-3 + 14pt ink-2 label.

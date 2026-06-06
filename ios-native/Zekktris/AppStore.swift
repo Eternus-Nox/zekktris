@@ -336,6 +336,14 @@ final class AppStore: ObservableObject {
         inDMs = false
         resetStack()
         selectedChannel = nil
+        // Wide layout: re-tapping the current guild shouldn't blank the
+        // detail pane — land back on its first text channel.
+        if guild.id == selectedGuild?.id {
+            if isWideLayout, let first = channels.first(where: { $0.isText && !$0.isThread }) {
+                selectChannel(first)
+            }
+            return
+        }
         guard guild.id != selectedGuild?.id else { return }
         selectedGuild = guild
         channels = []
@@ -359,11 +367,41 @@ final class AppStore: ObservableObject {
 
     // MARK: Navigation stack
 
+    /// True when MainView is presenting the persistent three-pane layout
+    /// (iPad / Mac, regular width). Changes route semantics from push
+    /// (drill-down) to replace (master-detail) and hides back buttons.
+    @Published var isWideLayout = false
+
     func selectChannel(_ channel: Channel) { push(.messages(channel)) }
     func openThreads(_ parent: Channel) { push(.threadList(parent)) }
     func clearChannel() { pop() }
 
-    func push(_ route: Route) { stack.append(route) }
+    func push(_ route: Route) {
+        // Wide layout: sidebar selections REPLACE the detail pane instead of
+        // stacking. Drill-downs within the detail (forum post -> its thread)
+        // still stack so "back to posts" works: we only replace when the
+        // current top is a leaf the sidebar owns (messages/voice) or empty.
+        if isWideLayout {
+            // Navigating to content always exits the mentions/saved inbox in
+            // the wide layout (there's no back affordance to return through;
+            // the rail highlight should track the visible pane).
+            railContent = .normal
+            switch stack.last {
+            case nil, .messages?, .voice?:
+                stack = [route]
+            case .threadList?:
+                // From a forum's post list, opening a post stacks; switching
+                // channels from the sidebar replaces.
+                if case .messages(let c) = route, c.isThread {
+                    stack.append(route)
+                } else {
+                    stack = [route]
+                }
+            }
+            return
+        }
+        stack.append(route)
+    }
     func pop() { if !stack.isEmpty { stack.removeLast() } }
     private func resetStack() { stack = []; threadList = [] }
 
@@ -471,6 +509,12 @@ final class AppStore: ObservableObject {
             let all = try await api.channels(guildId: guild.id)
             // Only this guild, sorted by the server-provided position.
             channels = all.sorted { ($0.position ?? 0) < ($1.position ?? 0) }
+            // Wide layout (iPad/Mac): land on the first text channel like the
+            // web's "/" route, so the detail pane isn't an empty placeholder.
+            if isWideLayout, stack.isEmpty, guild.id == selectedGuild?.id,
+               let first = channels.first(where: { $0.isText && !$0.isThread }) {
+                selectChannel(first)
+            }
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
         }

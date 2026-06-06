@@ -170,12 +170,16 @@ struct MessageListView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Button {
-                store.clearChannel()
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(Theme.ink2)
+            // Wide layout keeps the sidebar visible; back only makes sense
+            // for stacked drill-downs (e.g. a thread under a forum).
+            if !store.isWideLayout || store.stack.count > 1 {
+                Button {
+                    store.clearChannel()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(Theme.ink2)
+                }
             }
 
             if channel.isDM {
