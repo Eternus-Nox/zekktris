@@ -39,7 +39,23 @@ const CACHE_MS = 15_000;
 
 export async function getConfig(): Promise<SecurityConfig> {
   if (configCache && Date.now() - configCacheAt < CACHE_MS) return configCache;
-  const [row] = await db.select().from(schema.securityConfig).limit(1);
+  let row: SecurityConfig | undefined;
+  try {
+    [row] = await db.select().from(schema.securityConfig).limit(1);
+  } catch {
+    // Table missing (migration 0073 not applied yet): run with defaults
+    // but DISABLE the detectors — a half-deployed security system must
+    // never block messaging.
+    configCache = {
+      spamEnabled: false,
+      spamMaxMessages: 8,
+      spamWindowSeconds: 10,
+      spamCooldownSeconds: 600,
+      wordFilterEnabled: false,
+    };
+    configCacheAt = Date.now();
+    return configCache;
+  }
   configCache = row ?? {
     spamEnabled: true,
     spamMaxMessages: 8,
@@ -63,7 +79,15 @@ export async function updateConfig(patch: Partial<SecurityConfig>): Promise<Secu
 /** Compiled whole-word matcher over the banned list, or null when empty. */
 async function bannedWordsRegex(): Promise<RegExp | null> {
   if (Date.now() - wordsCacheAt < CACHE_MS) return wordsCache;
-  const rows = await db.select().from(schema.securityBannedWords);
+  let rows: Array<{ word: string }> = [];
+  try {
+    rows = await db.select().from(schema.securityBannedWords);
+  } catch {
+    // Table missing — treat as an empty list; never block sends.
+    wordsCacheAt = Date.now();
+    wordsCache = null;
+    return null;
+  }
   wordsCacheAt = Date.now();
   if (rows.length === 0) {
     wordsCache = null;

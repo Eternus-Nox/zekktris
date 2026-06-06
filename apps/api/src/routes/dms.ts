@@ -70,9 +70,16 @@ dmsRouter.get('/', async (c) => {
     for (const r of recips) involved.push(r.id);
   }
   const e2eeAllowed = await supervision.buildE2eePolicy(involved);
-  // Live messaging streaks (1:1 only; 0/absent while broken).
-  const { streaksForChannels } = await import('../services/streaks');
-  const streaks = await streaksForChannels(channelIds);
+  // Live messaging streaks (1:1 only; 0/absent while broken). Decorative:
+  // any failure (e.g. migration 0073 not applied yet) degrades to "no
+  // streaks" instead of failing the whole DM list.
+  let streaks = new Map<string, number>();
+  try {
+    const { streaksForChannels } = await import('../services/streaks');
+    streaks = await streaksForChannels(channelIds);
+  } catch {
+    // table missing / transient DB error — DMs must still load.
+  }
   return c.json({
     channels: list.map((ch) => {
       const recips = recipientsByChannel.get(ch.id.toString()) ?? [];

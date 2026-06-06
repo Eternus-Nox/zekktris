@@ -449,8 +449,10 @@ struct VoiceChannelView: View {
             let cols = items.count <= 2 ? 1 : 2
             let rows = Int(ceil(Double(items.count) / Double(cols)))
             let spacing: CGFloat = 8
-            let cellW = (geo.size.width - CGFloat(cols - 1) * spacing) / CGFloat(cols)
-            let cellH = (geo.size.height - CGFloat(rows - 1) * spacing) / CGFloat(rows)
+            // Clamp ≥ 1pt: tiny/transitional geometry must never produce a
+            // negative frame (SwiftUI traps on invalid dimensions).
+            let cellW = max(1, (geo.size.width - CGFloat(cols - 1) * spacing) / CGFloat(cols))
+            let cellH = max(1, (geo.size.height - CGFloat(rows - 1) * spacing) / CGFloat(rows))
             VStack(spacing: spacing) {
                 ForEach(0..<rows, id: \.self) { r in
                     HStack(spacing: spacing) {

@@ -73,16 +73,21 @@ usersRouter.get('/@me', requireAuth, async (c) => {
 
 usersRouter.get('/@me/achievements', requireAuth, async (c) => {
   const userId = requireUserId(c);
-  const { achievementsForUser } = await import('../services/achievements');
-  const [me] = await db
-    .select({ pub: schema.users.achievementsPublic })
-    .from(schema.users)
-    .where(eq(schema.users.id, userId))
-    .limit(1);
-  return c.json({
-    achievements: await achievementsForUser(userId),
-    public: me?.pub ?? false,
-  });
+  try {
+    const { achievementsForUser } = await import('../services/achievements');
+    const [me] = await db
+      .select({ pub: schema.users.achievementsPublic })
+      .from(schema.users)
+      .where(eq(schema.users.id, userId))
+      .limit(1);
+    return c.json({
+      achievements: await achievementsForUser(userId),
+      public: me?.pub ?? false,
+    });
+  } catch {
+    // Migration 0073 not applied yet — degrade to an empty shelf.
+    return c.json({ achievements: [], public: false });
+  }
 });
 
 usersRouter.get(
