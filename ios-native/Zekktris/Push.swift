@@ -20,13 +20,34 @@ final class PushManager: ObservableObject {
 
     private(set) var apnsTokenHex: String?
 
+    /// System notification permission, surfaced for the Settings panel.
+    @Published private(set) var authStatus: UNAuthorizationStatus = .notDetermined
+    /// Whether the device token was accepted by the server this session.
+    @Published private(set) var registeredWithServer = false
+
+    /// Re-read the system permission (call on appear/foreground).
+    func refreshStatus() {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            Task { @MainActor in self.authStatus = settings.authorizationStatus }
+        }
+    }
+
+    /// Jump to this app's page in the system Settings (for re-enabling a
+    /// denied permission — apps can't re-prompt once denied).
+    func openSystemSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
+        }
+    }
+
     /// Ask for notification permission and, if granted, register for remote
     /// notifications. Safe to call repeatedly (the system prompt shows once).
     func requestAuthorizationAndRegister() {
         registerCategories()
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
-            guard granted else { return }
-            DispatchQueue.main.async {
+            Task { @MainActor in
+                self.refreshStatus()
+                guard granted else { return }
                 UIApplication.shared.registerForRemoteNotifications()
             }
         }
@@ -54,7 +75,10 @@ final class PushManager: ObservableObject {
     /// POST the token to the server if we have one and we're signed in.
     func registerWithServerIfPossible() {
         guard let token = apnsTokenHex, APIClient.shared.token != nil else { return }
-        Task { await APIClient.shared.registerDeviceToken(token: token) }
+        Task {
+            let ok = await APIClient.shared.registerDeviceToken(token: token)
+            await MainActor.run { self.registeredWithServer = ok }
+        }
     }
 
     /// Best-effort unregister on logout.
@@ -82,9 +106,17 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     ) {
         let info = notification.request.content.userInfo
         let kind = info["kind"] as? String
+        let defaults = UserDefaults.standard
         if kind == "call" {
             // The gateway + CallKit handle ringing while the app runs; a
-            // banner on top would double-ring.
+            // banner on top would double-ring. (The toggle below governs
+            // the banner path used when CallKit declined to ring.)
+            completionHandler([])
+            return
+        }
+        // Settings → Notifications: in-app banner toggle for messages.
+        if defaults.object(forKey: "zk.notifyMessages") != nil,
+           !defaults.bool(forKey: "zk.notifyMessages") {
             completionHandler([])
             return
         }

@@ -742,12 +742,15 @@ final class APIClient {
     }
 
     // ── Push (APNs device tokens) ─────────────────────────────────────────
-    /// Register this device's APNs token. Best-effort — swallows errors,
-    /// including the 503 the server returns when it has no APNs config.
-    func registerDeviceToken(token: String) async {
+    /// Register this device's APNs token. Returns whether the server
+    /// accepted it (false also covers the 503 the server returns when it
+    /// has no APNs config — surfaced in Settings → Notifications).
+    @discardableResult
+    func registerDeviceToken(token: String) async -> Bool {
         let body: [String: Any] = ["token": token, "platform": "ios"]
-        guard let data = try? JSONSerialization.data(withJSONObject: body) else { return }
-        try? await sendVoid("POST", "/users/@me/device-tokens", bodyData: data)
+        guard let data = try? JSONSerialization.data(withJSONObject: body) else { return false }
+        do { try await sendVoid("POST", "/users/@me/device-tokens", bodyData: data); return true }
+        catch { return false }
     }
 
     /// Unregister an APNs device token (e.g. on logout). Best-effort.

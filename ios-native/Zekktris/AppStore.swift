@@ -1046,14 +1046,40 @@ final class AppStore: ObservableObject {
         }
         guard vs.userId != currentUserId,
               voiceChannelId != channelId,
-              incomingCall?.channelId != channelId,
-              let dm = dms.first(where: { $0.id == channelId }) else { return }
-        let callerName = dm.recipients?.first(where: { $0.id == vs.userId })?.name ?? dm.dmTitle
-        // Ring like a real phone call (lock-screen UI, system answer).
-        CallManager.shared.reportIncoming(channelId: channelId, callerName: callerName)
+              incomingCall?.channelId != channelId else { return }
+        // The DM may not be cached yet (first-ever call from this person,
+        // or the ring raced the initial loadDMs). Fetch and retry ONCE
+        // instead of silently dropping the ring — this was the main
+        // "some calls don't come through" failure.
+        guard let dm = dms.first(where: { $0.id == channelId }) else {
+            Task { [weak self] in
+                await self?.loadDMs()
+                guard let self,
+                      self.voiceChannelId != channelId,
+                      self.incomingCall?.channelId != channelId,
+                      let dm = self.dms.first(where: { $0.id == channelId })
+                else { return }
+                self.presentIncomingCall(dm: dm, callerId: vs.userId)
+            }
+            return
+        }
+        presentIncomingCall(dm: dm, callerId: vs.userId)
+    }
+
+    private func presentIncomingCall(dm: Channel, callerId: String) {
+        let channelId = dm.id
+        let callerName = dm.recipients?.first(where: { $0.id == callerId })?.name ?? dm.dmTitle
+        // Ring like a real phone call (lock-screen UI, system answer) —
+        // unless the user turned call ringing off in Settings →
+        // Notifications (the silent in-app overlay still appears).
+        let ringEnabled = UserDefaults.standard.object(forKey: "zk.notifyCalls") == nil
+            || UserDefaults.standard.bool(forKey: "zk.notifyCalls")
+        if ringEnabled {
+            CallManager.shared.reportIncoming(channelId: channelId, callerName: callerName)
+        }
         incomingCall = IncomingCall(
             channelId: channelId,
-            callerId: vs.userId,
+            callerId: callerId,
             callerName: callerName,
             channel: dm
         )

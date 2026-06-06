@@ -320,6 +320,9 @@ struct ServerRailView: View {
     @State private var keyboardVisible = false
     /// Parental controls entry is opt-in (Settings → Features).
     @AppStorage("zk.showFamily") private var showFamilyButton = false
+    @AppStorage("zk.notifyMessages") private var notifyMessages = true
+    @AppStorage("zk.notifyCalls") private var notifyCalls = true
+    @ObservedObject private var push = PushManager.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1448,6 +1451,7 @@ struct SettingsView: View {
                     customStatusSection
                     decorationSection
                     appearanceSection
+                    notificationsSection
                     featuresSection
                     securitySection
                     accountSection
@@ -1734,6 +1738,94 @@ struct SettingsView: View {
                     .buttonStyle(.plain)
                 }
             }
+        }
+    }
+
+    private var notificationsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("NOTIFICATIONS")
+
+            // Permission status + the action that actually fixes it.
+            HStack(spacing: 10) {
+                Image(systemName: permissionIcon)
+                    .font(.system(size: 15))
+                    .foregroundColor(permissionColor)
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(permissionLabel)
+                        .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
+                    Text(push.registeredWithServer
+                         ? "This device is registered for pushes."
+                         : "Device not registered with the server yet.")
+                        .font(.zkSans(11)).foregroundColor(Theme.ink4)
+                }
+                Spacer()
+                switch push.authStatus {
+                case .notDetermined:
+                    Button("Enable") { push.requestAuthorizationAndRegister() }
+                        .font(.zkSans(13, weight: .semibold)).foregroundColor(Theme.accent)
+                case .denied:
+                    Button("Open Settings") { push.openSystemSettings() }
+                        .font(.zkSans(13, weight: .semibold)).foregroundColor(Theme.accent)
+                default:
+                    if !push.registeredWithServer {
+                        Button("Retry") { push.registerWithServerIfPossible() }
+                            .font(.zkSans(13, weight: .semibold)).foregroundColor(Theme.accent)
+                    }
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+
+            Toggle(isOn: $notifyMessages) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Messages & mentions")
+                        .font(.zkSans(15)).foregroundColor(Theme.ink1)
+                    Text("Direct messages and @mentions.")
+                        .font(.zkSans(11)).foregroundColor(Theme.ink4)
+                }
+            }
+            .tint(Theme.accent)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+
+            Toggle(isOn: $notifyCalls) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Incoming calls")
+                        .font(.zkSans(15)).foregroundColor(Theme.ink1)
+                    Text("Ring for 1-on-1 calls.")
+                        .font(.zkSans(11)).foregroundColor(Theme.ink4)
+                }
+            }
+            .tint(Theme.accent)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+
+            Text("Sound, lock-screen style, and badges are controlled in iOS Settings → Notifications → Zekktris.")
+                .font(.zkSans(11)).foregroundColor(Theme.ink4)
+        }
+        .onAppear { push.refreshStatus() }
+    }
+
+    private var permissionLabel: String {
+        switch push.authStatus {
+        case .authorized, .provisional, .ephemeral: return "Notifications enabled"
+        case .denied: return "Notifications are off in iOS Settings"
+        default: return "Notifications not set up"
+        }
+    }
+    private var permissionIcon: String {
+        switch push.authStatus {
+        case .authorized, .provisional, .ephemeral: return "bell.badge.fill"
+        case .denied: return "bell.slash.fill"
+        default: return "bell"
+        }
+    }
+    private var permissionColor: Color {
+        switch push.authStatus {
+        case .authorized, .provisional, .ephemeral: return Theme.success
+        case .denied: return Theme.dangerSoft
+        default: return Theme.ink3
         }
     }
 

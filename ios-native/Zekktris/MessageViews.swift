@@ -799,6 +799,9 @@ struct MessageRow: View {
     @State private var editText = ""
 
     var body: some View {
+        if message.isSystem {
+            systemRow
+        } else {
         rowContent
             .contextMenu { menuItems }
             .sheet(isPresented: $showEdit) {
@@ -819,6 +822,56 @@ struct MessageRow: View {
                 }
                 Button("Cancel", role: .cancel) {}
             }
+        }
+    }
+
+    /// Web parity: system_call renders "Missed call from X" (red) or
+    /// "Call ended · 5m 23s"; other system messages show their content
+    /// as a quiet line.
+    @ViewBuilder
+    private var systemRow: some View {
+        HStack(spacing: 7) {
+            if message.type == "system_call" {
+                let missed = message.metadata?.missed ?? false
+                Image(systemName: missed ? "phone.arrow.down.left" : "phone")
+                    .font(.system(size: 11))
+                    .foregroundColor(missed ? Theme.dangerSoft.opacity(0.85) : Theme.ink3)
+                Text(callSummary)
+                    .font(.zkSans(12))
+                    .foregroundColor(missed ? Theme.dangerSoft.opacity(0.9) : Theme.ink2)
+            } else {
+                Image(systemName: "arrow.forward.circle")
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.ink3)
+                Text(message.text)
+                    .font(.zkSans(12))
+                    .foregroundColor(Theme.ink3)
+            }
+            Text("·").foregroundColor(Theme.ink4)
+            Text(shortTime(message.createdAt))
+                .font(.zkSans(11))
+                .foregroundColor(Theme.ink4)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 4)
+        .padding(.leading, gutter)
+    }
+
+    private var callSummary: String {
+        let missed = message.metadata?.missed ?? false
+        let caller = message.author?.name ?? "Someone"
+        if missed { return "Missed call from \(caller)" }
+        let ms = message.metadata?.durationMs ?? 0
+        let total = ms / 1000
+        let label: String
+        if total >= 3600 {
+            label = "\(total / 3600)h \((total % 3600) / 60)m"
+        } else if total >= 60 {
+            label = "\(total / 60)m \(total % 60)s"
+        } else {
+            label = "\(total)s"
+        }
+        return "Call ended · \(label)"
     }
 
     static let quickEmoji = ["👍", "❤️", "😂", "🎉", "😮", "😢", "🙏", "🔥"]

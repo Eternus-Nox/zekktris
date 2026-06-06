@@ -133,6 +133,9 @@ struct Message: Codable, Identifiable, Hashable {
     var webhookId: String?
     var authorOverrideName: String?
     var authorOverrideAvatar: String?
+    /// Structured payload for system messages (system_call carries
+    /// { kind: "call", missed, durationMs, initiatorId }).
+    var metadata: MessageMetadata?
     /// 1:1 DM read receipts: set when a recipient's device received /
     /// viewed the message (drives the Sent → Delivered → Read label).
     var deliveredAt: String?
@@ -143,6 +146,14 @@ struct Message: Codable, Identifiable, Hashable {
     var sendState: String?
 
     var text: String { content ?? "" }
+    var isSystem: Bool { type?.hasPrefix("system_") == true }
+}
+
+struct MessageMetadata: Codable, Hashable {
+    var kind: String?
+    var missed: Bool?
+    var durationMs: Int?
+    var initiatorId: String?
 }
 
 extension Message {
@@ -159,6 +170,7 @@ extension Message {
             replyToId: replyToId, pinned: nil, forwardedFromMessageId: nil,
             forwardedFrom: nil, stickerId: nil, sticker: nil, embeds: nil,
             webhookId: nil, authorOverrideName: nil, authorOverrideAvatar: nil,
+            metadata: nil,
             deliveredAt: nil, viewedAt: nil,
             sendState: "sending"
         )
