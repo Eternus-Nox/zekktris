@@ -127,6 +127,86 @@ final class AppStore: ObservableObject {
         // Apply the saved theme before the first render so there's no flash
         // of the default palette on launch.
         Theme.current = ThemePalette.palette(for: themeId)
+        wireCallKit()
+        wirePushRouting()
+    }
+
+    /// CallKit → store: the system call screen's Answer/End/Mute drive the
+    /// same paths as the in-app buttons.
+    private func wireCallKit() {
+        CallManager.shared.onAnswer = { [weak self] channelId in
+            guard let self else { return }
+            if let call = self.incomingCall, call.channelId == channelId {
+                self.incomingCall = nil
+                self.openVoice(call.channel)
+            } else if let dm = self.dms.first(where: { $0.id == channelId }) {
+                // Answered from a notification before the gateway ring
+                // arrived — join directly.
+                self.openVoice(dm)
+            }
+        }
+        CallManager.shared.onEnd = { [weak self] channelId in
+            guard let self else { return }
+            if let call = self.incomingCall, call.channelId == channelId {
+                self.incomingCall = nil
+                Task { await self.api.declineCall(channelId: channelId) }
+            } else if self.voiceChannelId == channelId {
+                Task { await self.leaveCurrentVoice() }
+            }
+        }
+        CallManager.shared.onSetMuted = { [weak self] muted in
+            guard let self else { return }
+            Task {
+                if self.voice.isMuted != muted { await self.toggleVoiceMute() }
+            }
+        }
+        NotificationDelegate.shared.visibleChannelId = { [weak self] in
+            self?.selectedChannel?.id
+        }
+    }
+
+    /// Notification taps / call actions → store navigation.
+    private func wirePushRouting() {
+        NotificationCenter.default.addObserver(
+            forName: .zkOpenChannel, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let dict = note.object as? [String: Any],
+                  let channelId = dict["channelId"] as? String else { return }
+            let autojoin = (dict["autojoin"] as? Bool) ?? false
+            Task { @MainActor in self?.openFromPush(channelId: channelId, autojoin: autojoin) }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .zkCallAction, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let dict = note.object as? [String: Any],
+                  let channelId = dict["channelId"] as? String,
+                  let action = dict["action"] as? String else { return }
+            Task { @MainActor in
+                guard let self else { return }
+                if action == "accept" {
+                    CallManager.shared.answerFromApp(channelId: channelId)
+                } else {
+                    self.incomingCall = nil
+                    CallManager.shared.callEnded(channelId: channelId, remoteEnded: false)
+                    await self.api.declineCall(channelId: channelId)
+                }
+            }
+        }
+    }
+
+    /// Navigate to a channel from a notification tap; loads DMs first when
+    /// the target isn't in memory yet (cold launch).
+    func openFromPush(channelId: String, autojoin: Bool) {
+        func open(_ ch: Channel) {
+            if ch.isDM { showDMs() }
+            if autojoin { openVoice(ch) } else { selectChannel(ch) }
+        }
+        if let dm = dms.first(where: { $0.id == channelId }) { open(dm); return }
+        if let ch = channels.first(where: { $0.id == channelId }) { open(ch); return }
+        Task {
+            await loadDMs()
+            if let dm = dms.first(where: { $0.id == channelId }) { open(dm) }
+        }
     }
 
     func setTheme(_ id: String) {
@@ -694,6 +774,14 @@ final class AppStore: ObservableObject {
             voiceStates = res.channelVoiceStates
             // Merge the authoritative snapshot into the sidebar presence map.
             for vs in res.channelVoiceStates { voiceStatesByUser[vs.userId] = vs }
+            // Outgoing 1:1 ring: surface it as a system call. If the callee
+            // is already in (we're answering), report it connected at once.
+            if channel.type == "dm", let callee = channel.recipients?.first {
+                CallManager.shared.startOutgoing(channelId: channel.id, calleeName: callee.name)
+                if res.channelVoiceStates.contains(where: { $0.userId == callee.id }) {
+                    CallManager.shared.outgoingConnected(channelId: channel.id)
+                }
+            }
             if let token = res.token, let url = res.wsUrl, !token.isEmpty, !url.isEmpty {
                 let key: Data? = channel.isE2EE ? e2eeKey(for: channel) : nil
                 await voice.connect(url: url, token: token, e2eeKey: key)
@@ -712,6 +800,7 @@ final class AppStore: ObservableObject {
         voiceStates = []
         voiceTokenMissing = false
         popVoiceRoutes()
+        if let id { CallManager.shared.callEnded(channelId: id, remoteEnded: false) }
         await voice.disconnect()
         if let id { await api.leaveVoice(channelId: id) }
     }
@@ -853,6 +942,12 @@ final class AppStore: ObservableObject {
         voiceStates.removeAll { $0.userId == vs.userId }
         if vs.channelId == active { voiceStates.append(vs) }
 
+        // Callee picked up our outgoing 1:1 — flip the system call state.
+        if !wasInCall, vs.channelId == active, vs.userId != currentUserId,
+           let dm = dms.first(where: { $0.id == active }), dm.type == "dm" {
+            CallManager.shared.outgoingConnected(channelId: active)
+        }
+
         // 1:1 DM auto-end (web parity): the peer who WAS in this call just
         // left it — hang up our side too instead of stranding a solo call.
         if wasInCall, vs.channelId != active, vs.userId != currentUserId,
@@ -908,7 +1003,10 @@ final class AppStore: ObservableObject {
     private func handleIncomingCall(_ vs: VoiceState) {
         guard let channelId = vs.channelId else {
             // They hung up / declined before we answered — drop the ring.
-            if vs.userId == incomingCall?.callerId { incomingCall = nil }
+            if vs.userId == incomingCall?.callerId, let call = incomingCall {
+                CallManager.shared.remoteCancelled(channelId: call.channelId)
+                incomingCall = nil
+            }
             return
         }
         guard vs.userId != currentUserId,
@@ -916,6 +1014,8 @@ final class AppStore: ObservableObject {
               incomingCall?.channelId != channelId,
               let dm = dms.first(where: { $0.id == channelId }) else { return }
         let callerName = dm.recipients?.first(where: { $0.id == vs.userId })?.name ?? dm.dmTitle
+        // Ring like a real phone call (lock-screen UI, system answer).
+        CallManager.shared.reportIncoming(channelId: channelId, callerName: callerName)
         incomingCall = IncomingCall(
             channelId: channelId,
             callerId: vs.userId,
@@ -926,14 +1026,14 @@ final class AppStore: ObservableObject {
 
     func acceptCall() {
         guard let call = incomingCall else { return }
-        incomingCall = nil
-        openVoice(call.channel)
+        // Route through CallKit (falls back to direct answer): onAnswer
+        // clears incomingCall and joins.
+        CallManager.shared.answerFromApp(channelId: call.channelId)
     }
 
     func declineCall() {
         guard let call = incomingCall else { return }
-        incomingCall = nil
-        Task { await api.declineCall(channelId: call.channelId) }
+        CallManager.shared.endFromApp(channelId: call.channelId)
     }
 
     // MARK: Channel updates

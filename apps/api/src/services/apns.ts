@@ -180,6 +180,9 @@ function buildApnsPayload(payload: PushPayload): string {
   };
   // Collapse rapid repeats (e.g. one channel) into a thread on the lock screen.
   if (payload.tag) aps['thread-id'] = payload.tag;
+  // Call rings get the "call" category so the native client renders its
+  // inline Answer / Decline actions (registered as a UNNotificationCategory).
+  if (payload.kind === 'call') aps.category = 'call';
   // Carry routing data at the top level so the app's tap handler can read it
   // (Capacitor surfaces non-`aps` keys as notification.data).
   const data: Record<string, unknown> = { ...(payload.data ?? {}) };
