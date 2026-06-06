@@ -752,6 +752,7 @@ struct VoicePanel: View {
                     .background(Theme.danger)
                     .clipShape(Circle())
             }
+            .accessibilityLabel("Leave call")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

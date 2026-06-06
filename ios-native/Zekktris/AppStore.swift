@@ -711,8 +711,18 @@ final class AppStore: ObservableObject {
         voiceChannelId = nil
         voiceStates = []
         voiceTokenMissing = false
+        popVoiceRoutes()
         await voice.disconnect()
         if let id { await api.leaveVoice(channelId: id) }
+    }
+
+    /// Remove any voice screens from the navigation stack — hanging up
+    /// should never leave the user stranded on a dead call UI.
+    private func popVoiceRoutes() {
+        stack.removeAll { route in
+            if case .voice = route { return true }
+            return false
+        }
     }
 
     // MARK: Stage channels
@@ -761,6 +771,7 @@ final class AppStore: ObservableObject {
         stageParticipants = []
         stageTokenMissing = false
         myStageSpeaker = false
+        popVoiceRoutes()
         await voice.disconnect()
         if let id { await api.leaveStage(channelId: id) }
     }
@@ -838,8 +849,24 @@ final class AppStore: ObservableObject {
             voiceStatesByUser[vs.userId] = vs
         }
         guard let active = voiceChannelId else { return }
+        let wasInCall = voiceStates.contains { $0.userId == vs.userId }
         voiceStates.removeAll { $0.userId == vs.userId }
         if vs.channelId == active { voiceStates.append(vs) }
+
+        // 1:1 DM auto-end (web parity): the peer who WAS in this call just
+        // left it — hang up our side too instead of stranding a solo call.
+        if wasInCall, vs.channelId != active, vs.userId != currentUserId,
+           let dm = dms.first(where: { $0.id == active }), dm.type == "dm" {
+            Task { await leaveCurrentVoice() }
+        }
+
+        // Server evicted US (callee declined the call, a kick, or a
+        // moderator disconnect): our own state going nil while we still
+        // think we're connected means hang up locally — otherwise the
+        // SFU connection and the call UI linger.
+        if vs.userId == currentUserId, vs.channelId == nil {
+            Task { await leaveCurrentVoice() }
+        }
     }
 
     /// Participants currently in a given voice/stage channel (sidebar rows).
