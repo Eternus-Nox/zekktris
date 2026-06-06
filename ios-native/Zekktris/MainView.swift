@@ -1505,24 +1505,15 @@ struct SettingsView: View {
 
             let user = session.currentUser
             HStack(spacing: 12) {
-                PhotosPicker(selection: $avatarPickerItem, matching: .images) {
-                    Avatar(
-                        url: user?.avatarUrl,
-                        name: user?.name ?? "?",
-                        size: 56,
-                        status: user?.status,
-                        toneId: user?.id
-                    )
-                    .overlay(alignment: .bottomTrailing) {
-                        Image(systemName: "camera.fill")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(Theme.ink1)
-                            .frame(width: 17, height: 17)
-                            .background(Color.black.opacity(0.65))
-                            .clipShape(Circle())
-                    }
-                }
-                .buttonStyle(.plain)
+                // Plain avatar — the status dot keeps its corner; uploads go
+                // through the labeled button instead of an overlay chip.
+                Avatar(
+                    url: user?.avatarUrl,
+                    name: user?.name ?? "?",
+                    size: 56,
+                    status: user?.status,
+                    toneId: user?.id
+                )
                 VStack(alignment: .leading, spacing: 2) {
                     Text(session.currentUser?.name ?? "You")
                         .font(.zkSans(18, weight: .semibold))
@@ -1532,6 +1523,21 @@ struct SettingsView: View {
                             .font(.zkSans(13))
                             .foregroundColor(Theme.ink3)
                     }
+                    PhotosPicker(selection: $avatarPickerItem, matching: .images) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "photo.badge.plus")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("Upload Picture")
+                                .font(.zkSans(12, weight: .semibold))
+                        }
+                        .foregroundColor(Theme.accent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Theme.accent.opacity(0.12))
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 4)
                 }
                 Spacer()
                 if imageUploading { ProgressView().tint(Theme.accent) }
