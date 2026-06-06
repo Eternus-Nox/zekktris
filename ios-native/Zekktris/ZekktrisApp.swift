@@ -14,6 +14,10 @@ struct ZekktrisApp: App {
                 .environmentObject(store.voice)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
+                // Web parity: body text defaults to Space Grotesk at the
+                // 15px base the web sets via `html { font-size: 15px }`.
+                // Explicit .font modifiers still override per-view.
+                .environment(\.font, .zkSans(15))
         }
     }
 }
@@ -94,13 +98,13 @@ struct LockView: View {
                     .font(.system(size: 44))
                     .foregroundColor(Theme.accent)
                 Text("Zekktris is locked")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.zkSans(18, weight: .semibold))
                     .foregroundColor(Theme.ink1)
                 Button { Task { await session.unlock() } } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "faceid")
                         Text("Unlock with \(Biometrics.typeLabel)")
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.zkSans(15, weight: .semibold))
                     }
                     .foregroundColor(.white)
                     .padding(.horizontal, 20).padding(.vertical, 12)

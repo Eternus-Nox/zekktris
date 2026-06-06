@@ -101,7 +101,7 @@ struct Avatar: View {
         return ZStack {
             tone.bg
             Text(avatarInitials(name))
-                .font(.system(size: size * 0.36, weight: .semibold))
+                .font(.zkSans(size * 0.36, weight: .semibold))
                 .foregroundColor(tone.fg)
         }
     }
@@ -214,7 +214,7 @@ struct GuildIcon: View {
 
     private func initials(color: Color) -> some View {
         Text(guildInitials(guild.name))
-            .font(.system(size: size * 0.34, weight: .semibold))
+            .font(.zkSans(size * 0.34, weight: .semibold))
             .foregroundColor(color)
     }
 }

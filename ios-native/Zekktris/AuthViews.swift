@@ -15,7 +15,7 @@ struct AuthField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title.uppercased())
-                .font(.system(size: 11, weight: .semibold))
+                .font(.zkSans(11, weight: .semibold))
                 .foregroundColor(Theme.ink3)
             Group {
                 if isSecure {
@@ -63,10 +63,10 @@ private struct AuthHeader: View {
                     .frame(width: 42, height: 42)
             }
             Text("Zekktris")
-                .font(.system(size: 26, weight: .bold))
+                .font(.zkSans(26, weight: .bold))
                 .foregroundColor(Theme.ink1)
             Text(subtitle)
-                .font(.system(size: 14))
+                .font(.zkSans(14))
                 .foregroundColor(Theme.ink3)
         }
     }
@@ -103,7 +103,7 @@ private struct PrimaryButton: View {
                 if busy {
                     ProgressView().tint(.white)
                 } else {
-                    Text(title).font(.system(size: 15, weight: .semibold))
+                    Text(title).font(.zkSans(15, weight: .semibold))
                 }
             }
             .frame(maxWidth: .infinity)
@@ -153,13 +153,13 @@ struct LoginView: View {
                 HStack {
                     Spacer()
                     Button("Forgot password?") { showForgot = true }
-                        .font(.system(size: 13))
+                        .font(.zkSans(13))
                         .foregroundColor(Theme.accent)
                 }
 
                 if let error = session.authError {
                     Text(error)
-                        .font(.system(size: 13))
+                        .font(.zkSans(13))
                         .foregroundColor(Theme.danger)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -171,7 +171,7 @@ struct LoginView: View {
                         .foregroundColor(Theme.ink3)
                     + Text("Register").foregroundColor(Theme.accent)
                 }
-                .font(.system(size: 14))
+                .font(.zkSans(14))
                 .padding(.top, 4)
 
                 Spacer(minLength: 0)
@@ -213,29 +213,29 @@ struct ForgotPasswordView: View {
                 VStack(spacing: 16) {
                     if stage == .request {
                         Text("Enter your account email and we'll send a password reset link.")
-                            .font(.system(size: 14)).foregroundColor(Theme.ink3)
+                            .font(.zkSans(14)).foregroundColor(Theme.ink3)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         AuthField(title: "Email", text: $email, keyboard: .emailAddress, textContentType: .username, submitLabel: .go, onSubmit: sendRequest)
                         PrimaryButton(title: "Send reset link", busy: busy, enabled: !email.isEmpty, action: sendRequest)
                         Button("I already have a code") { stage = .reset; error = nil }
-                            .font(.system(size: 13)).foregroundColor(Theme.accent)
+                            .font(.zkSans(13)).foregroundColor(Theme.accent)
                     } else {
                         Text("Enter the reset code from your email and choose a new password.")
-                            .font(.system(size: 14)).foregroundColor(Theme.ink3)
+                            .font(.zkSans(14)).foregroundColor(Theme.ink3)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         AuthField(title: "Reset code", text: $code, submitLabel: .next)
                         AuthField(title: "New password", text: $newPassword, isSecure: true, textContentType: .newPassword, submitLabel: .go, onSubmit: doReset)
                         PrimaryButton(title: "Reset password", busy: busy, enabled: !code.isEmpty && newPassword.count >= 8, action: doReset)
                         Button("Back") { stage = .request; error = nil }
-                            .font(.system(size: 13)).foregroundColor(Theme.ink3)
+                            .font(.zkSans(13)).foregroundColor(Theme.ink3)
                     }
 
                     if let error {
-                        Text(error).font(.system(size: 13)).foregroundColor(Theme.danger)
+                        Text(error).font(.zkSans(13)).foregroundColor(Theme.danger)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     if let info {
-                        Text(info).font(.system(size: 13)).foregroundColor(Theme.online)
+                        Text(info).font(.zkSans(13)).foregroundColor(Theme.online)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     Spacer(minLength: 0)
@@ -342,7 +342,7 @@ struct RegisterView: View {
 
                     if mismatch {
                         Text("Passwords don't match")
-                            .font(.system(size: 12))
+                            .font(.zkSans(12))
                             .foregroundColor(Theme.danger)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -350,7 +350,7 @@ struct RegisterView: View {
 
                 if let error = session.authError {
                     Text(error)
-                        .font(.system(size: 13))
+                        .font(.zkSans(13))
                         .foregroundColor(Theme.danger)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -362,7 +362,7 @@ struct RegisterView: View {
                         .foregroundColor(Theme.ink3)
                     + Text("Sign in").foregroundColor(Theme.accent)
                 }
-                .font(.system(size: 14))
+                .font(.zkSans(14))
                 .padding(.top, 4)
 
                 Spacer(minLength: 0)
@@ -396,7 +396,7 @@ private struct StrengthMeter: View {
                     .frame(height: 4)
             }
             Text(passwordStrengthLabel(score))
-                .font(.system(size: 11, weight: .medium))
+                .font(.zkSans(11, weight: .medium))
                 .foregroundColor(passwordStrengthColor(score))
                 .frame(width: 48, alignment: .trailing)
         }

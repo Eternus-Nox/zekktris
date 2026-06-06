@@ -247,7 +247,7 @@ struct VoiceChannelView: View {
                     if store.voiceStates.isEmpty {
                         Spacer()
                         Text("No one else here yet")
-                            .font(.system(size: 13))
+                            .font(.zkSans(13))
                             .foregroundColor(.white.opacity(0.5))
                         Spacer()
                     } else {
@@ -343,7 +343,7 @@ struct VoiceChannelView: View {
                 .font(.system(size: 14))
                 .foregroundColor(Theme.ink3)
             Text(channel.isDM ? channel.dmTitle : (channel.name ?? "Voice"))
-                .font(.system(size: 16, weight: .semibold))
+                .font(.zkSans(16, weight: .semibold))
                 .foregroundColor(Theme.ink1)
                 .lineLimit(1)
             Spacer()
@@ -373,7 +373,7 @@ struct VoiceChannelView: View {
 
     private func label(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(.system(size: 13, weight: .medium))
+            .font(.zkSans(13, weight: .medium))
             .foregroundColor(color)
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity)
@@ -427,7 +427,7 @@ struct VoiceChannelView: View {
                         .foregroundColor(Theme.ink3)
                 }
                 Text(displayName)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.zkSans(11, weight: .medium))
                     .foregroundColor(.white)
                     .lineLimit(1)
             }
@@ -535,10 +535,10 @@ struct IncomingCallView: View {
                 )
                 VStack(spacing: 4) {
                     Text(call.callerName)
-                        .font(.system(size: 22, weight: .semibold))
+                        .font(.zkSans(22, weight: .semibold))
                         .foregroundColor(Theme.ink1)
                     Text("Incoming call…")
-                        .font(.system(size: 14))
+                        .font(.zkSans(14))
                         .foregroundColor(Theme.ink3)
                 }
                 Spacer()
@@ -552,7 +552,7 @@ struct IncomingCallView: View {
                                 .background(Theme.danger)
                                 .clipShape(Circle())
                         }
-                        Text("Decline").font(.system(size: 12)).foregroundColor(Theme.ink3)
+                        Text("Decline").font(.zkSans(12)).foregroundColor(Theme.ink3)
                     }
                     VStack(spacing: 8) {
                         Button { store.acceptCall() } label: {
@@ -563,7 +563,7 @@ struct IncomingCallView: View {
                                 .background(Theme.online)
                                 .clipShape(Circle())
                         }
-                        Text("Accept").font(.system(size: 12)).foregroundColor(Theme.ink3)
+                        Text("Accept").font(.zkSans(12)).foregroundColor(Theme.ink3)
                     }
                 }
                 .padding(.bottom, 64)
@@ -625,10 +625,10 @@ struct VoicePanel: View {
                         .foregroundColor(Theme.online)
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Voice Connected")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.zkSans(11, weight: .semibold))
                             .foregroundColor(Theme.online)
                         Text(title)
-                            .font(.system(size: 12))
+                            .font(.zkSans(12))
                             .foregroundColor(Theme.ink2)
                             .lineLimit(1)
                     }
@@ -703,11 +703,11 @@ struct StageChannelView: View {
                     }
                     if store.stageTokenMissing {
                         Text("Voice isn't available for this stage right now.")
-                            .font(.system(size: 13)).foregroundColor(Theme.ink3)
+                            .font(.zkSans(13)).foregroundColor(Theme.ink3)
                     }
                     sectionLabel("SPEAKERS · \(speakers.count)")
                     if speakers.isEmpty {
-                        Text("No speakers yet.").font(.system(size: 13)).foregroundColor(Theme.ink4)
+                        Text("No speakers yet.").font(.zkSans(13)).foregroundColor(Theme.ink4)
                     } else {
                         LazyVGrid(columns: columns, spacing: 14) {
                             ForEach(speakers) { p in participantTile(p, speaker: true) }
@@ -719,7 +719,7 @@ struct StageChannelView: View {
                     }
                     sectionLabel("AUDIENCE · \(audience.count)")
                     if audience.isEmpty {
-                        Text("No one in the audience.").font(.system(size: 13)).foregroundColor(Theme.ink4)
+                        Text("No one in the audience.").font(.zkSans(13)).foregroundColor(Theme.ink4)
                     } else {
                         LazyVGrid(columns: columns, spacing: 14) {
                             ForEach(audience) { p in participantTile(p, speaker: false) }
@@ -748,8 +748,8 @@ struct StageChannelView: View {
             }
             Image(systemName: "person.wave.2.fill").font(.system(size: 15)).foregroundColor(Theme.accent)
             VStack(alignment: .leading, spacing: 1) {
-                Text(channel.name ?? "stage").font(.system(size: 16, weight: .semibold)).foregroundColor(Theme.ink1).lineLimit(1)
-                Text("Stage").font(.system(size: 11)).foregroundColor(Theme.ink3)
+                Text(channel.name ?? "stage").font(.zkSans(16, weight: .semibold)).foregroundColor(Theme.ink1).lineLimit(1)
+                Text("Stage").font(.zkSans(11)).foregroundColor(Theme.ink3)
             }
             Spacer()
         }
@@ -758,7 +758,7 @@ struct StageChannelView: View {
     }
 
     private func sectionLabel(_ t: String) -> some View {
-        Text(t).font(.system(size: 11, weight: .bold)).foregroundColor(Theme.ink3)
+        Text(t).font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
     }
 
     private func participantTile(_ p: StageParticipant, speaker: Bool) -> some View {
@@ -775,10 +775,10 @@ struct StageChannelView: View {
                     Image(systemName: "mic.fill").font(.system(size: 10)).foregroundColor(.white)
                         .padding(4).background(Theme.accent).clipShape(Circle())
                 } else if p.handRaised {
-                    Text("✋").font(.system(size: 12)).padding(3).background(Theme.bg3).clipShape(Circle())
+                    Text("✋").font(.zkSans(12)).padding(3).background(Theme.bg3).clipShape(Circle())
                 }
             }
-            Text(name).font(.system(size: 12)).foregroundColor(Theme.ink2).lineLimit(1)
+            Text(name).font(.zkSans(12)).foregroundColor(Theme.ink2).lineLimit(1)
         }
         .frame(maxWidth: .infinity)
         .contextMenu { stageContext(p, speaker: speaker) }
@@ -806,10 +806,10 @@ struct StageChannelView: View {
         let user = store.memberUser(p.userId)
         return HStack(spacing: 10) {
             Avatar(url: user?.avatarUrl, name: user?.name ?? "User", size: 30, ringColor: Theme.bg2)
-            Text(user?.name ?? "User").font(.system(size: 14)).foregroundColor(Theme.ink1)
+            Text(user?.name ?? "User").font(.zkSans(14)).foregroundColor(Theme.ink1)
             Spacer()
             Button { Task { await store.setStageSpeaker(p.userId, isSpeaker: true) } } label: {
-                Text("Invite").font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                Text("Invite").font(.zkSans(13, weight: .semibold)).foregroundColor(.white)
                     .padding(.horizontal, 12).padding(.vertical, 6).background(Theme.accent).clipShape(Capsule())
             }
             .buttonStyle(.plain)
@@ -836,7 +836,7 @@ struct StageChannelView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Text("✋")
-                        Text(store.myStageHandRaised ? "Lower hand" : "Raise hand").font(.system(size: 14, weight: .semibold))
+                        Text(store.myStageHandRaised ? "Lower hand" : "Raise hand").font(.zkSans(14, weight: .semibold))
                     }
                     .foregroundColor(store.myStageHandRaised ? .white : Theme.ink1)
                     .padding(.horizontal, 16).padding(.vertical, 12)
@@ -877,9 +877,9 @@ struct OutgoingCallView: View {
                 Avatar(url: callee.avatarUrl, name: callee.name, size: 96)
                 VStack(spacing: 4) {
                     Text(callee.name)
-                        .font(.system(size: 22, weight: .semibold)).foregroundColor(Theme.ink1)
+                        .font(.zkSans(22, weight: .semibold)).foregroundColor(Theme.ink1)
                     Text("Calling…")
-                        .font(.system(size: 14)).foregroundColor(Theme.ink3)
+                        .font(.zkSans(14)).foregroundColor(Theme.ink3)
                 }
                 Spacer()
                 VStack(spacing: 8) {
@@ -888,7 +888,7 @@ struct OutgoingCallView: View {
                             .font(.system(size: 26)).foregroundColor(.white)
                             .frame(width: 66, height: 66).background(Theme.danger).clipShape(Circle())
                     }
-                    Text("Cancel").font(.system(size: 12)).foregroundColor(Theme.ink3)
+                    Text("Cancel").font(.zkSans(12)).foregroundColor(Theme.ink3)
                 }
                 .padding(.bottom, 64)
             }
@@ -920,8 +920,8 @@ struct MinimizedCallBar: View {
                         .font(.system(size: 13)).foregroundColor(Theme.online)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(isStage ? "On Stage" : "Voice Connected")
-                            .font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.online)
-                        Text(title).font(.system(size: 12)).foregroundColor(Theme.ink1).lineLimit(1)
+                            .font(.zkSans(11, weight: .semibold)).foregroundColor(Theme.online)
+                        Text(title).font(.zkSans(12)).foregroundColor(Theme.ink1).lineLimit(1)
                     }
                     Spacer(minLength: 0)
                 }

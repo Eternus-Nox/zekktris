@@ -230,7 +230,7 @@ struct VoiceMessageView: View {
             WaveformBars(levels: bars, progress: player.progress)
                 .frame(height: 28)
             Text(durationText)
-                .font(.system(size: 12, design: .monospaced)).foregroundColor(Theme.ink3)
+                .font(.zkMono(12)).foregroundColor(Theme.ink3)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .frame(maxWidth: 260)
@@ -260,7 +260,7 @@ struct VoiceRecorderBar: View {
             .buttonStyle(.plain)
             Circle().fill(Theme.danger).frame(width: 8, height: 8)
                 .opacity(recorder.recording ? 1 : 0.3)
-            Text(elapsedText).font(.system(size: 13, design: .monospaced)).foregroundColor(Theme.ink2)
+            Text(elapsedText).font(.zkMono(13)).foregroundColor(Theme.ink2)
             WaveformBars(
                 levels: recorder.levels.isEmpty ? [0.2] : recorder.levels,
                 progress: 0, activeColor: Theme.accent2, inactiveColor: Theme.accent2

@@ -161,7 +161,7 @@ struct MessageListView: View {
                     ringColor: Theme.bg2
                 )
                 Text(channel.dmTitle)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.zkSans(16, weight: .semibold))
                     .foregroundColor(Theme.ink1)
                     .lineLimit(1)
             } else {
@@ -170,7 +170,7 @@ struct MessageListView: View {
                     .foregroundColor(Theme.ink3)
 
                 Text(channel.name ?? "channel")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.zkSans(16, weight: .semibold))
                     .foregroundColor(Theme.ink1)
                     .lineLimit(1)
             }
@@ -265,7 +265,7 @@ struct MessageListView: View {
             Text(channel.isDM
                  ? "This is the start of your conversation with \(channel.dmTitle)"
                  : "This is the start of #\(channel.name ?? "channel")")
-                .font(.system(size: 14))
+                .font(.zkSans(14))
                 .foregroundColor(Theme.ink3)
                 .multilineTextAlignment(.center)
         }
@@ -283,10 +283,10 @@ struct MessageListView: View {
                         .font(.system(size: 12))
                         .foregroundColor(Theme.accent)
                     Text("Replying to")
-                        .font(.system(size: 13))
+                        .font(.zkSans(13))
                         .foregroundColor(Theme.ink3)
                     Text(replying.author?.name ?? "Unknown")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.zkSans(13, weight: .semibold))
                         .foregroundColor(Theme.ink2)
                         .lineLimit(1)
                     Spacer()
@@ -304,7 +304,7 @@ struct MessageListView: View {
             if let typingText {
                 HStack {
                     Text(typingText)
-                        .font(.system(size: 11))
+                        .font(.zkSans(11))
                         .italic()
                         .foregroundColor(Theme.ink3)
                     Spacer()
@@ -319,7 +319,7 @@ struct MessageListView: View {
                         .frame(width: 52, height: 52)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                     Text(pending.filename)
-                        .font(.system(size: 12))
+                        .font(.zkSans(12))
                         .foregroundColor(Theme.ink2)
                         .lineLimit(1)
                     Spacer()
@@ -537,9 +537,9 @@ struct MessageListView: View {
             HStack(spacing: 8) {
                 Avatar(url: m.user.avatarUrl, name: m.nickname ?? m.user.name, size: 24)
                 Text(m.nickname ?? m.user.name)
-                    .font(.system(size: 14, weight: .medium)).foregroundColor(Theme.ink1)
+                    .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
                 if let u = m.user.username {
-                    Text("@\(u)").font(.system(size: 12)).foregroundColor(Theme.ink4)
+                    Text("@\(u)").font(.zkSans(12)).foregroundColor(Theme.ink4)
                 }
                 Spacer(minLength: 0)
             }
@@ -556,7 +556,7 @@ struct MessageListView: View {
                 } else {
                     Image(systemName: "face.smiling").font(.system(size: 16)).foregroundColor(Theme.ink3).frame(width: 22, height: 22)
                 }
-                Text(":\(e.name):").font(.system(size: 14, weight: .medium)).foregroundColor(Theme.ink1)
+                Text(":\(e.name):").font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
                 Spacer(minLength: 0)
             }
             .contentShape(Rectangle()).padding(.horizontal, 12).padding(.vertical, 8)
@@ -600,8 +600,8 @@ struct MessageListView: View {
     private func slashRow(_ c: SlashCommand) -> some View {
         Button { draft = "/\(c.name) " } label: {
             HStack(spacing: 8) {
-                Text(c.usage).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundColor(Theme.ink1)
-                Text(c.description).font(.system(size: 12)).foregroundColor(Theme.ink4).lineLimit(1)
+                Text(c.usage).font(.zkMono(13, weight: .semibold)).foregroundColor(Theme.ink1)
+                Text(c.description).font(.zkSans(12)).foregroundColor(Theme.ink4).lineLimit(1)
                 Spacer(minLength: 0)
             }
             .contentShape(Rectangle()).padding(.horizontal, 12).padding(.vertical, 8)
@@ -706,7 +706,7 @@ struct DateDividerView: View {
         HStack(spacing: 10) {
             Rectangle().fill(Theme.line).frame(height: 1)
             Text(label)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.zkSans(11, weight: .semibold))
                 .foregroundColor(Theme.ink3)
                 .fixedSize()
             Rectangle().fill(Theme.line).frame(height: 1)
@@ -721,7 +721,7 @@ struct UnreadDividerView: View {
         HStack(spacing: 8) {
             Rectangle().fill(Theme.danger).frame(height: 1)
             Text("New messages")
-                .font(.system(size: 10, weight: .bold))
+                .font(.zkSans(10, weight: .bold))
                 .foregroundColor(Theme.danger)
                 .fixedSize()
         }
@@ -823,15 +823,15 @@ struct MessageRow: View {
                 Avatar(url: replied.author?.avatarUrl, name: replied.author?.name ?? "?",
                        size: 16, ringColor: Theme.bg1)
                 Text(replied.author?.name ?? "Unknown")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.zkSans(12, weight: .semibold))
                     .foregroundColor(Theme.ink2)
                 Text(replyPreviewText(replied))
-                    .font(.system(size: 12))
+                    .font(.zkSans(12))
                     .foregroundColor(Theme.ink3)
                     .lineLimit(1)
             } else {
                 Text("Replying to a message")
-                    .font(.system(size: 12))
+                    .font(.zkSans(12))
                     .foregroundColor(Theme.ink3)
                     .italic()
             }
@@ -877,12 +877,12 @@ struct MessageRow: View {
                 if showHeader {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(message.author?.name ?? "Unknown")
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(.zkSans(14, weight: .semibold))
                             .foregroundColor(store.memberColor(message.authorId ?? message.author?.id ?? "") ?? Theme.ink1)
                             .onTapGesture { if let a = message.author { store.openProfile(a) } }
                         if message.author?.isBot == true {
                             Text("BOT")
-                                .font(.system(size: 9, weight: .bold))
+                                .font(.zkSans(9, weight: .bold))
                                 .foregroundColor(.white)
                                 .padding(.horizontal, 4)
                                 .padding(.vertical, 1)
@@ -890,11 +890,11 @@ struct MessageRow: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 3))
                         }
                         Text(shortTime(message.createdAt))
-                            .font(.system(size: 11))
+                            .font(.zkSans(11))
                             .foregroundColor(Theme.ink3)
                         if message.editedAt != nil {
                             Text("(edited)")
-                                .font(.system(size: 10))
+                                .font(.zkSans(10))
                                 .foregroundColor(Theme.ink4)
                         }
                     }
@@ -920,7 +920,7 @@ struct MessageRow: View {
             HStack(spacing: 5) {
                 ProgressView().scaleEffect(0.6)
                 Text("Sending…")
-                    .font(.system(size: 11))
+                    .font(.zkSans(11))
                     .foregroundColor(Theme.ink3)
             }
             .padding(.top, 2)
@@ -929,14 +929,14 @@ struct MessageRow: View {
                 HStack(spacing: 4) {
                     Image(systemName: "exclamationmark.circle.fill")
                         .font(.system(size: 11))
-                    Text("Failed to send").font(.system(size: 11))
+                    Text("Failed to send").font(.zkSans(11))
                 }
                 .foregroundColor(Theme.danger)
                 Button("Retry") { Task { await store.retrySend(message.id) } }
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.zkSans(11, weight: .semibold))
                     .foregroundColor(Theme.accent)
                 Button("Delete") { store.discardFailed(message.id) }
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.zkSans(11, weight: .semibold))
                     .foregroundColor(Theme.ink3)
             }
             .padding(.top, 2)
@@ -965,11 +965,11 @@ struct MessageRow: View {
             }
         case .locked:
             Label("Locked", systemImage: "lock.fill")
-                .font(.system(size: 14))
+                .font(.zkSans(14))
                 .foregroundColor(Theme.ink3)
         case .undecryptable:
             Label("Couldn't decrypt", systemImage: "lock.slash")
-                .font(.system(size: 14))
+                .font(.zkSans(14))
                 .foregroundColor(Theme.ink3)
         }
     }
@@ -1015,7 +1015,7 @@ struct MessageRow: View {
         switch block {
         case .text(let tt):
             inlineText(tt)
-                .font(.system(size: 15))
+                .font(.zkSans(15))
                 .foregroundColor(Theme.ink1)
                 .tint(Theme.accent)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1028,7 +1028,7 @@ struct MessageRow: View {
     private func codeBlockView(_ code: String) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             Text(code)
-                .font(.system(size: 13, design: .monospaced))
+                .font(.zkMono(13))
                 .foregroundColor(Theme.ink1)
                 .textSelection(.enabled)
                 .padding(10)
@@ -1099,7 +1099,7 @@ struct MessageRow: View {
             }
             var chip = AttributedString(mentionLabel(ns.substring(with: m.range)))
             chip.foregroundColor = Theme.accent
-            chip.font = .system(size: 15, weight: .semibold)
+            chip.font = .zkSans(15, weight: .semibold)
             result.append(chip)
             last = m.range.location + m.range.length
         }
@@ -1141,7 +1141,7 @@ struct MessageRow: View {
         AsyncImage(url: assetURL(e.url)) { phase in
             switch phase {
             case .success(let image): image.resizable().scaledToFit()
-            default: Text(":\(e.name):").font(.system(size: 14)).foregroundColor(Theme.ink3)
+            default: Text(":\(e.name):").font(.zkSans(14)).foregroundColor(Theme.ink3)
             }
         }
         .frame(width: 40, height: 40)
@@ -1166,7 +1166,7 @@ struct MessageRow: View {
                 case .empty:
                     ProgressView().frame(width: 120, height: 120)
                 default:
-                    Text(":\(sticker.name):").font(.system(size: 13)).foregroundColor(Theme.ink3)
+                    Text(":\(sticker.name):").font(.zkSans(13)).foregroundColor(Theme.ink3)
                 }
             }
             .frame(width: 140, height: 140, alignment: .leading)
@@ -1208,19 +1208,19 @@ struct MessageRow: View {
                                 AsyncImage(url: fav) { img in img.resizable() } placeholder: { Color.clear }
                                     .frame(width: 14, height: 14).clipShape(RoundedRectangle(cornerRadius: 3))
                             }
-                            Text(site).font(.system(size: 11)).foregroundColor(Theme.ink3).lineLimit(1)
+                            Text(site).font(.zkSans(11)).foregroundColor(Theme.ink3).lineLimit(1)
                         }
                     }
                     if let title = e.title, !title.isEmpty {
-                        Text(title).font(.system(size: 14, weight: .semibold))
+                        Text(title).font(.zkSans(14, weight: .semibold))
                             .foregroundColor(Theme.accent).lineLimit(2)
                     }
                     if let desc = e.description, !desc.isEmpty {
-                        Text(desc).font(.system(size: 13)).foregroundColor(Theme.ink2)
+                        Text(desc).font(.zkSans(13)).foregroundColor(Theme.ink2)
                             .lineLimit(4).fixedSize(horizontal: false, vertical: true)
                     }
                     if (e.title?.isEmpty ?? true) && (e.description?.isEmpty ?? true) {
-                        Text(e.url).font(.system(size: 13)).foregroundColor(Theme.accent).lineLimit(1)
+                        Text(e.url).font(.zkSans(13)).foregroundColor(Theme.accent).lineLimit(1)
                     }
                     if let img = assetURL(e.imageUrl) {
                         AsyncImage(url: img) { phase in
@@ -1255,17 +1255,17 @@ struct MessageRow: View {
                     Image(systemName: "arrowshape.turn.up.right.fill")
                         .font(.system(size: 9)).foregroundColor(Theme.ink3)
                     Text("Forwarded from \(who) in \(where_)")
-                        .font(.system(size: 11))
+                        .font(.zkSans(11))
                         .foregroundColor(Theme.ink3)
                         .lineLimit(1)
                 }
                 if fwd.content.isEmpty {
                     Text("[unavailable]")
-                        .font(.system(size: 14)).italic()
+                        .font(.zkSans(14)).italic()
                         .foregroundColor(Theme.ink4)
                 } else {
                     Text(fwd.content)
-                        .font(.system(size: 14))
+                        .font(.zkSans(14))
                         .foregroundColor(Theme.ink2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -1309,12 +1309,12 @@ struct MessageRow: View {
             Image(systemName: "doc.fill").foregroundColor(Theme.ink3)
             VStack(alignment: .leading, spacing: 1) {
                 Text(att.filename ?? "file")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.zkSans(13, weight: .medium))
                     .foregroundColor(Theme.ink1)
                     .lineLimit(1)
                 if let size = att.size {
                     Text(byteString(size))
-                        .font(.system(size: 11))
+                        .font(.zkSans(11))
                         .foregroundColor(Theme.ink3)
                 }
             }
@@ -1355,9 +1355,9 @@ struct ReactionPill: View {
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 4) {
-                Text(reaction.emoji).font(.system(size: 13))
+                Text(reaction.emoji).font(.zkSans(13))
                 Text("\(reaction.count)")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.zkSans(12, weight: .medium))
                     .foregroundColor(reaction.me ? Theme.accent : Theme.ink2)
             }
             .padding(.horizontal, 8)
@@ -1388,10 +1388,10 @@ private struct UnlockPanel: View {
                 .font(.system(size: 40))
                 .foregroundColor(Theme.accent)
             Text("End-to-end encrypted")
-                .font(.system(size: 18, weight: .semibold))
+                .font(.zkSans(18, weight: .semibold))
                 .foregroundColor(Theme.ink1)
             Text("Enter the shared password to read and send messages here.")
-                .font(.system(size: 14))
+                .font(.zkSans(14))
                 .foregroundColor(Theme.ink3)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
@@ -1411,13 +1411,13 @@ private struct UnlockPanel: View {
 
             if let err = store.e2eeError {
                 Text(err)
-                    .font(.system(size: 13))
+                    .font(.zkSans(13))
                     .foregroundColor(Theme.danger)
             }
 
             Button(action: unlock) {
                 Text("Unlock")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.zkSans(15, weight: .semibold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 13)
                     .foregroundColor(.white)
@@ -1458,7 +1458,7 @@ private struct EnableE2EESheet: View {
                 Theme.bg1.ignoresSafeArea()
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Pick a shared password and share it with the other person out-of-band. The server never sees it — they enter the same password to read these messages.")
-                        .font(.system(size: 14))
+                        .font(.zkSans(14))
                         .foregroundColor(Theme.ink2)
 
                     secureField("Password", text: $password)
@@ -1466,19 +1466,19 @@ private struct EnableE2EESheet: View {
 
                     if !confirm.isEmpty && confirm != password {
                         Text("Passwords don't match")
-                            .font(.system(size: 12))
+                            .font(.zkSans(12))
                             .foregroundColor(Theme.danger)
                     }
                     if let err = store.e2eeError {
                         Text(err)
-                            .font(.system(size: 13))
+                            .font(.zkSans(13))
                             .foregroundColor(Theme.danger)
                     }
 
                     Button(action: enable) {
                         ZStack {
                             if busy { ProgressView().tint(.white) }
-                            else { Text("Enable encryption").font(.system(size: 15, weight: .semibold)) }
+                            else { Text("Enable encryption").font(.zkSans(15, weight: .semibold)) }
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 13)
@@ -1489,7 +1489,7 @@ private struct EnableE2EESheet: View {
                     .disabled(!canEnable || busy)
 
                     Text("Note: enabling encryption is permanent until disabled, and existing plaintext history stays readable. New messages from both sides are encrypted.")
-                        .font(.system(size: 12))
+                        .font(.zkSans(12))
                         .foregroundColor(Theme.ink3)
 
                     Spacer()
@@ -1587,7 +1587,7 @@ struct PollCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(poll.question)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.zkSans(15, weight: .semibold))
                 .foregroundColor(Theme.ink1)
             ForEach(poll.options.sorted { $0.position < $1.position }) { option in
                 PollOptionRow(option: option, poll: poll) { onVote(option) }
@@ -1597,7 +1597,7 @@ struct PollCard: View {
                 if poll.multipleChoice { Text("· Multiple choice") }
                 if !poll.isOpen { Text("· Closed") }
             }
-            .font(.system(size: 11))
+            .font(.zkSans(11))
             .foregroundColor(Theme.ink3)
         }
         .padding(12)
@@ -1634,12 +1634,12 @@ private struct PollOptionRow: View {
                             .foregroundColor(Theme.accent)
                     }
                     Text(option.text)
-                        .font(.system(size: 14))
+                        .font(.zkSans(14))
                         .foregroundColor(Theme.ink1)
                         .lineLimit(2)
                     Spacer()
                     Text("\(option.voteCount)")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.zkSans(12, weight: .medium))
                         .foregroundColor(Theme.ink2)
                 }
                 .padding(.horizontal, 10)
@@ -1708,7 +1708,7 @@ struct CreatePollSheet: View {
                             if options.count < 10 {
                                 Button { options.append("") } label: {
                                     Label("Add option", systemImage: "plus.circle")
-                                        .font(.system(size: 14))
+                                        .font(.zkSans(14))
                                         .foregroundColor(Theme.accent)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1717,7 +1717,7 @@ struct CreatePollSheet: View {
                     }
 
                     Toggle("Allow multiple answers", isOn: $multipleChoice)
-                        .font(.system(size: 15))
+                        .font(.zkSans(15))
                         .foregroundColor(Theme.ink1)
                         .tint(Theme.accent)
 
@@ -1758,7 +1758,7 @@ struct CreatePollSheet: View {
     private func section(_ title: String, @ViewBuilder _ content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(.system(size: 11, weight: .bold))
+                .font(.zkSans(11, weight: .bold))
                 .foregroundColor(Theme.ink3)
             content()
         }
@@ -1798,7 +1798,7 @@ struct SearchSheet: View {
                 } else if store.searchResults.isEmpty {
                     Spacer()
                     Text(query.isEmpty ? "Type to search messages" : "No matches")
-                        .font(.system(size: 14))
+                        .font(.zkSans(14))
                         .foregroundColor(Theme.ink3)
                     Spacer()
                 } else {
@@ -1832,14 +1832,14 @@ private struct SearchResultRow: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Text(message.author?.name ?? "Unknown")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.zkSans(13, weight: .semibold))
                     .foregroundColor(Theme.ink2)
                 Text(shortTime(message.createdAt))
-                    .font(.system(size: 11))
+                    .font(.zkSans(11))
                     .foregroundColor(Theme.ink3)
             }
             Text(previewText)
-                .font(.system(size: 14))
+                .font(.zkSans(14))
                 .foregroundColor(Theme.ink1)
                 .lineLimit(3)
         }
@@ -1919,11 +1919,11 @@ struct ProfileCardView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
                         Text(user.displayName ?? user.username ?? "Unknown")
-                            .font(.system(size: 21, weight: .bold))
+                            .font(.zkSans(21, weight: .bold))
                             .foregroundColor(store.memberColor(user.id) ?? Theme.ink1)
                         if user.isBot == true {
                             Text("BOT")
-                                .font(.system(size: 10, weight: .bold))
+                                .font(.zkSans(10, weight: .bold))
                                 .padding(.horizontal, 5).padding(.vertical, 1)
                                 .background(Theme.accent.opacity(0.2))
                                 .foregroundColor(Theme.accent)
@@ -1932,7 +1932,7 @@ struct ProfileCardView: View {
                     }
                     if let uname = user.username {
                         Text("@\(uname)")
-                            .font(.system(size: 14))
+                            .font(.zkSans(14))
                             .foregroundColor(Theme.ink3)
                     }
                 }
@@ -1940,17 +1940,17 @@ struct ProfileCardView: View {
                 HStack(spacing: 6) {
                     Circle().fill(Self.statusColor(liveStatus)).frame(width: 8, height: 8)
                     Text(Self.statusLabel(liveStatus))
-                        .font(.system(size: 13))
+                        .font(.zkSans(13))
                         .foregroundColor(Theme.ink2)
                 }
 
                 if (user.customStatus?.isEmpty == false) || (user.customStatusEmoji?.isEmpty == false) {
                     HStack(spacing: 6) {
                         if let e = user.customStatusEmoji, !e.isEmpty {
-                            Text(e).font(.system(size: 15))
+                            Text(e).font(.zkSans(15))
                         }
                         if let cs = user.customStatus, !cs.isEmpty {
-                            Text(cs).font(.system(size: 14)).foregroundColor(Theme.ink2)
+                            Text(cs).font(.zkSans(14)).foregroundColor(Theme.ink2)
                         }
                     }
                 }
@@ -1959,7 +1959,7 @@ struct ProfileCardView: View {
 
                 if isSelf {
                     Text("This is you.")
-                        .font(.system(size: 13))
+                        .font(.zkSans(13))
                         .foregroundColor(Theme.ink3)
                 } else {
                     actions
@@ -1984,7 +1984,7 @@ struct ProfileCardView: View {
             HStack(spacing: 10) {
                 Button { message() } label: {
                     Label("Message", systemImage: "bubble.left.fill")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.zkSans(15, weight: .semibold))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 11)
                         .background(Theme.accent)
@@ -1994,7 +1994,7 @@ struct ProfileCardView: View {
 
                 Button { call() } label: {
                     Label("Call", systemImage: "phone.fill")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.zkSans(15, weight: .semibold))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 11)
                         .background(Theme.bg3)
@@ -2008,7 +2008,7 @@ struct ProfileCardView: View {
             Button { toggleBlock() } label: {
                 Label(relType == "blocked" ? "Unblock" : "Block",
                       systemImage: relType == "blocked" ? "hand.raised.slash" : "nosign")
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.zkSans(15, weight: .medium))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 11)
                     .background(Theme.bg3)
@@ -2045,7 +2045,7 @@ struct ProfileCardView: View {
                                  _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Label(title, systemImage: icon)
-                .font(.system(size: 15, weight: .medium))
+                .font(.zkSans(15, weight: .medium))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 11)
                 .background(Theme.bg3)
@@ -2082,14 +2082,14 @@ struct ProfileCardView: View {
     @ViewBuilder
     private var rolesSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("ROLES").font(.system(size: 11, weight: .bold)).foregroundColor(Theme.ink3)
+            Text("ROLES").font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
             ForEach(assignableRoles) { role in
                 Button {
                     Task { await store.toggleMemberRole(user.id, role: role) }
                 } label: {
                     HStack(spacing: 8) {
                         Circle().fill(store.roleColor(role) ?? Theme.ink4).frame(width: 12, height: 12)
-                        Text(role.name).font(.system(size: 14)).foregroundColor(Theme.ink1)
+                        Text(role.name).font(.zkSans(14)).foregroundColor(Theme.ink1)
                         Spacer()
                         Image(systemName: store.memberHasRole(user.id, role.id) ? "checkmark.circle.fill" : "circle")
                             .foregroundColor(store.memberHasRole(user.id, role.id) ? Theme.accent : Theme.ink4)
@@ -2189,7 +2189,7 @@ struct MemberListView: View {
                     VStack(spacing: 10) {
                         ProgressView().tint(Theme.accent)
                         Text("Loading members…")
-                            .font(.system(size: 13))
+                            .font(.zkSans(13))
                             .foregroundColor(Theme.ink3)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2225,7 +2225,7 @@ struct MemberListView: View {
 
     private func sectionHeader(_ s: MemberSection) -> some View {
         Text("\(s.label.uppercased()) — \(s.members.count)")
-            .font(.system(size: 11, weight: .semibold))
+            .font(.zkSans(11, weight: .semibold))
             .foregroundColor(s.color ?? Theme.ink3)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
@@ -2240,12 +2240,12 @@ struct MemberListView: View {
                    ringColor: Theme.bg1, decoration: m.user.avatarDecoration)
             VStack(alignment: .leading, spacing: 1) {
                 Text(m.nickname ?? m.user.name)
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.zkSans(15, weight: .medium))
                     .foregroundColor(store.memberColor(m.userId) ?? Theme.ink1)
                     .lineLimit(1)
                 if m.nickname != nil {
                     Text(m.user.name)
-                        .font(.system(size: 12))
+                        .font(.zkSans(12))
                         .foregroundColor(Theme.ink3)
                         .lineLimit(1)
                 }
@@ -2253,7 +2253,7 @@ struct MemberListView: View {
             Spacer()
             if m.user.isBot == true {
                 Text("BOT")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.zkSans(9, weight: .bold))
                     .padding(.horizontal, 4).padding(.vertical, 1)
                     .background(Theme.accent.opacity(0.2))
                     .foregroundColor(Theme.accent)
@@ -2309,7 +2309,7 @@ struct PinPanelView: View {
                     VStack(spacing: 10) {
                         ProgressView().tint(Theme.accent)
                         Text("Loading pins…")
-                            .font(.system(size: 13)).foregroundColor(Theme.ink3)
+                            .font(.zkSans(13)).foregroundColor(Theme.ink3)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if store.pins.isEmpty {
@@ -2318,7 +2318,7 @@ struct PinPanelView: View {
                             .font(.system(size: 30, weight: .light))
                             .foregroundColor(Theme.ink3)
                         Text("No pinned messages yet")
-                            .font(.system(size: 14)).foregroundColor(Theme.ink3)
+                            .font(.zkSans(14)).foregroundColor(Theme.ink3)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -2352,14 +2352,14 @@ struct PinPanelView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(m.author?.name ?? "Unknown")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.zkSans(14, weight: .semibold))
                         .foregroundColor(Theme.ink1)
                     Text(shortTime(m.createdAt))
-                        .font(.system(size: 11))
+                        .font(.zkSans(11))
                         .foregroundColor(Theme.ink3)
                 }
                 Text(pinText(m))
-                    .font(.system(size: 14))
+                    .font(.zkSans(14))
                     .foregroundColor(Theme.ink2)
                     .lineLimit(4)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2507,7 +2507,7 @@ struct ForwardSheet: View {
                     }
                     if textChannels.isEmpty && store.dms.isEmpty {
                         Text("No channels to forward to.")
-                            .font(.system(size: 14)).foregroundColor(Theme.ink3)
+                            .font(.zkSans(14)).foregroundColor(Theme.ink3)
                             .frame(maxWidth: .infinity).padding(.top, 40)
                     }
                 }
@@ -2522,7 +2522,7 @@ struct ForwardSheet: View {
 
     private func sectionLabel(_ t: String) -> some View {
         Text(t.uppercased())
-            .font(.system(size: 11, weight: .bold)).foregroundColor(Theme.ink3)
+            .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 4)
     }
@@ -2553,14 +2553,14 @@ struct SavedView: View {
                 if store.loadingSaved && store.saved.isEmpty {
                     VStack(spacing: 10) {
                         ProgressView().tint(Theme.accent)
-                        Text("Loading…").font(.system(size: 13)).foregroundColor(Theme.ink3)
+                        Text("Loading…").font(.zkSans(13)).foregroundColor(Theme.ink3)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if store.saved.isEmpty {
                     VStack(spacing: 8) {
                         Image(systemName: "bookmark")
                             .font(.system(size: 30, weight: .light)).foregroundColor(Theme.ink3)
-                        Text("No saved messages").font(.system(size: 14)).foregroundColor(Theme.ink3)
+                        Text("No saved messages").font(.zkSans(14)).foregroundColor(Theme.ink3)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -2590,14 +2590,14 @@ struct SavedView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(m.author?.name ?? "Unknown")
-                        .font(.system(size: 14, weight: .semibold)).foregroundColor(Theme.ink1)
+                        .font(.zkSans(14, weight: .semibold)).foregroundColor(Theme.ink1)
                     if let cn = item.channel?.name {
-                        Text("#\(cn)").font(.system(size: 11)).foregroundColor(Theme.ink3).lineLimit(1)
+                        Text("#\(cn)").font(.zkSans(11)).foregroundColor(Theme.ink3).lineLimit(1)
                     }
-                    Text(shortTime(m.createdAt)).font(.system(size: 11)).foregroundColor(Theme.ink4)
+                    Text(shortTime(m.createdAt)).font(.zkSans(11)).foregroundColor(Theme.ink4)
                 }
                 Text(savedText(m))
-                    .font(.system(size: 14)).foregroundColor(Theme.ink2)
+                    .font(.zkSans(14)).foregroundColor(Theme.ink2)
                     .lineLimit(5).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 6)
@@ -2704,7 +2704,7 @@ struct EmojiStickerPicker: View {
                                     }
                                 }
                                 .frame(width: 72, height: 72)
-                                Text(s.name).font(.system(size: 10)).foregroundColor(Theme.ink3).lineLimit(1)
+                                Text(s.name).font(.zkSans(10)).foregroundColor(Theme.ink3).lineLimit(1)
                             }
                             .frame(width: 84, height: 96)
                             .background(Theme.bg2)
@@ -2748,34 +2748,34 @@ struct ScheduleSheet: View {
                 VStack(alignment: .leading, spacing: 16) {
                     if trimmedDraft.isEmpty {
                         Text("Type a message in the composer first, then schedule it for later.")
-                            .font(.system(size: 13)).foregroundColor(Theme.ink3)
+                            .font(.zkSans(13)).foregroundColor(Theme.ink3)
                     } else {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("SCHEDULE MESSAGE").font(.system(size: 11, weight: .bold)).foregroundColor(Theme.ink3)
+                            Text("SCHEDULE MESSAGE").font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
                             Text(draft)
-                                .font(.system(size: 14)).foregroundColor(Theme.ink1)
+                                .font(.zkSans(14)).foregroundColor(Theme.ink1)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(10).background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
                             DatePicker("Send at", selection: $date, in: Date()..., displayedComponents: [.date, .hourAndMinute])
                                 .foregroundColor(Theme.ink1).tint(Theme.accent)
                             Button { schedule() } label: {
                                 Text(busy ? "Scheduling…" : "Schedule")
-                                    .font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
+                                    .font(.zkSans(15, weight: .semibold)).foregroundColor(.white)
                                     .frame(maxWidth: .infinity).padding(.vertical, 11)
                                     .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 10))
                             }
                             .disabled(busy)
-                            if let error { Text(error).font(.system(size: 13)).foregroundColor(Theme.danger) }
+                            if let error { Text(error).font(.zkSans(13)).foregroundColor(Theme.danger) }
                         }
                     }
 
                     Divider().overlay(Theme.line)
 
-                    Text("PENDING").font(.system(size: 11, weight: .bold)).foregroundColor(Theme.ink3)
+                    Text("PENDING").font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
                     if store.loadingScheduled && store.scheduledMessages.isEmpty {
                         ProgressView().tint(Theme.accent).frame(maxWidth: .infinity).padding(.top, 8)
                     } else if store.scheduledMessages.isEmpty {
-                        Text("No scheduled messages.").font(.system(size: 13)).foregroundColor(Theme.ink4)
+                        Text("No scheduled messages.").font(.zkSans(13)).foregroundColor(Theme.ink4)
                     } else {
                         ForEach(store.scheduledMessages) { sm in scheduledRow(sm) }
                     }
@@ -2792,10 +2792,10 @@ struct ScheduleSheet: View {
     private func scheduledRow(_ sm: ScheduledMessage) -> some View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(sm.content ?? "").font(.system(size: 14)).foregroundColor(Theme.ink1).lineLimit(3)
-                Text(Self.whenText(sm.scheduledFor)).font(.system(size: 11)).foregroundColor(Theme.accent)
+                Text(sm.content ?? "").font(.zkSans(14)).foregroundColor(Theme.ink1).lineLimit(3)
+                Text(Self.whenText(sm.scheduledFor)).font(.zkSans(11)).foregroundColor(Theme.accent)
                 if let err = sm.lastError, !err.isEmpty {
-                    Text("Failed: \(err)").font(.system(size: 11)).foregroundColor(Theme.danger).lineLimit(1)
+                    Text("Failed: \(err)").font(.zkSans(11)).foregroundColor(Theme.danger).lineLimit(1)
                 }
             }
             Spacer()
@@ -2851,7 +2851,7 @@ struct DmSettingsSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("AUTO-DELETE MESSAGES")
-                        .font(.system(size: 11, weight: .bold)).foregroundColor(Theme.ink3)
+                        .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
                     if store.loadingDmSettings {
                         ProgressView().tint(Theme.accent).frame(maxWidth: .infinity).padding(.vertical, 12)
                     } else {
@@ -2864,7 +2864,7 @@ struct DmSettingsSheet: View {
                         .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
                     }
                     Text("When on, each message disappears this long after the other person reads it. This applies to both of you.")
-                        .font(.system(size: 12)).foregroundColor(Theme.ink3)
+                        .font(.zkSans(12)).foregroundColor(Theme.ink3)
 
                     Divider().overlay(Theme.line)
 
@@ -2872,10 +2872,10 @@ struct DmSettingsSheet: View {
                         Task { await store.closeDM(channel); dismiss() }
                     } label: {
                         Label("Close DM", systemImage: "xmark.circle")
-                            .font(.system(size: 15)).foregroundColor(Theme.danger)
+                            .font(.zkSans(15)).foregroundColor(Theme.danger)
                     }
                     Text("Removes this conversation from your list. The other person keeps their copy.")
-                        .font(.system(size: 11)).foregroundColor(Theme.ink4)
+                        .font(.zkSans(11)).foregroundColor(Theme.ink4)
                 }
                 .padding(16)
             }
@@ -2889,7 +2889,7 @@ struct DmSettingsSheet: View {
     private func ttlRow(_ opt: (String, Int?)) -> some View {
         Button { Task { await store.setDmTtl(channel.id, opt.1) } } label: {
             HStack {
-                Text(opt.0).font(.system(size: 15)).foregroundColor(Theme.ink1)
+                Text(opt.0).font(.zkSans(15)).foregroundColor(Theme.ink1)
                 Spacer()
                 if store.dmTtl == opt.1 {
                     Image(systemName: "checkmark").font(.system(size: 14, weight: .semibold)).foregroundColor(Theme.accent)

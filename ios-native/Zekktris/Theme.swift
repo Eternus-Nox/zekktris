@@ -235,22 +235,69 @@ extension View {
 // ── Typography (web: Space Grotesk UI / JetBrains Mono chrome) ──────────────
 // The web rebases rem to 15px, so Tailwind's text-sm (0.875rem) = 13.1px,
 // text-xs = 11.25px, text-base = 15px. The helpers below mirror those
-// rendered sizes. Font.custom falls back to the system font when the face
-// isn't bundled, so these are safe to adopt before the font files land.
-extension Font {
-    /// Space Grotesk — the web's UI face. `relativeTo` keeps Dynamic Type.
-    static func zkSans(_ size: CGFloat, weight: Font.Weight = .regular, relativeTo style: Font.TextStyle = .body) -> Font {
-        if UIFont(name: "SpaceGrotesk-Regular", size: size) != nil {
-            return .custom("SpaceGrotesk-Regular", size: size, relativeTo: style).weight(weight)
+// rendered sizes, mapping SwiftUI weights onto the four bundled static
+// faces (400/500/600/700 — exactly the weights the web loads from Google
+// Fonts). If the bundle is missing the fonts for any reason, everything
+// falls back to the system face so the app never renders blank text.
+private enum ZKFontBook {
+    static let sansAvailable: Bool = UIFont(name: "SpaceGrotesk-Regular", size: 12) != nil
+    static let monoAvailable: Bool = UIFont(name: "JetBrainsMono-Regular", size: 12) != nil
+
+    static func sansName(for weight: Font.Weight) -> String {
+        switch weight {
+        case .black, .heavy, .bold: return "SpaceGrotesk-Bold"
+        case .semibold: return "SpaceGrotesk-SemiBold"
+        case .medium: return "SpaceGrotesk-Medium"
+        default: return "SpaceGrotesk-Regular"
         }
-        return .system(size: size, weight: weight)
+    }
+
+    static func monoName(for weight: Font.Weight) -> String {
+        switch weight {
+        case .black, .heavy, .bold, .semibold: return "JetBrainsMono-SemiBold"
+        case .medium: return "JetBrainsMono-Medium"
+        default: return "JetBrainsMono-Regular"
+        }
+    }
+
+    /// Space Grotesk with the web's OpenType features enabled
+    /// (font-feature-settings: 'ss01', 'cv11' — single-story 'a' and the
+    /// disambiguated lowercase 'l'). Built via CTFont feature attributes;
+    /// falls back to the plain face if descriptor creation fails.
+    static func sansUIFont(size: CGFloat, weight: Font.Weight) -> UIFont? {
+        guard let base = UIFont(name: sansName(for: weight), size: size) else { return nil }
+        let features: [[UIFontDescriptor.FeatureKey: Any]] = [
+            [.type: kStylisticAlternativesType, .selector: kStylisticAltOneOnSelector], // ss01
+        ]
+        let descriptor = base.fontDescriptor.addingAttributes([.featureSettings: features])
+        return UIFont(descriptor: descriptor, size: size)
+    }
+}
+
+extension Font {
+    /// Space Grotesk — the web's UI face (with ss01 enabled, matching the
+    /// web's font-feature-settings).
+    static func zkSans(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        guard ZKFontBook.sansAvailable, let ui = ZKFontBook.sansUIFont(size: size, weight: weight) else {
+            return .system(size: size, weight: weight)
+        }
+        return Font(ui)
     }
 
     /// JetBrains Mono — timestamps, code, channel-id chips ("machine voice").
+    /// Web pairs it with +0.01em letter-spacing (apply `.tracking` at the
+    /// call site via `Theme.monoTracking(size)` when it matters).
     static func zkMono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        if UIFont(name: "JetBrainsMono-Regular", size: size) != nil {
-            return .custom("JetBrainsMono-Regular", size: size).weight(weight)
+        guard ZKFontBook.monoAvailable else {
+            return .system(size: size, weight: weight, design: .monospaced)
         }
-        return .system(size: size, weight: weight, design: .monospaced)
+        return .custom(ZKFontBook.monoName(for: weight), fixedSize: size)
     }
+}
+
+extension Theme {
+    /// Web `.zk-mono` letter-spacing: 0.01em at the given font size.
+    static func monoTracking(_ size: CGFloat) -> CGFloat { size * 0.01 }
+    /// Web `.zk-cap` letter-spacing: 0.14em (uppercase mono labels).
+    static func capTracking(_ size: CGFloat) -> CGFloat { size * 0.14 }
 }

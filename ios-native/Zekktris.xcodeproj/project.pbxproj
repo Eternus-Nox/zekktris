@@ -27,6 +27,13 @@
 		E4AB58F4FB01793924E57D89 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9F3789F4ADB83F7BDF66983 /* APIClient.swift */; };
 		E64B9F7A95C88E6C6B25CC72 /* VoiceMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32957B535EA27A17B00EEBCF /* VoiceMessage.swift */; };
 		EB8ECC29D87BB4388F1A8AB0 /* E2EE.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */; };
+		CD14505CA8152D753D3DA3B3 /* SpaceGrotesk-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = FE209C0D9EE475F2567A8602 /* SpaceGrotesk-Regular.ttf */; };
+		BCC5A3BAD71BDE9FEBD173C8 /* SpaceGrotesk-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 7E0906E2CD7885DA1FD27666 /* SpaceGrotesk-Medium.ttf */; };
+		435405FB5F617BA8571EFE18 /* SpaceGrotesk-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 2F5FECBEB77DEEB1BA810F30 /* SpaceGrotesk-SemiBold.ttf */; };
+		8568E2C2BE318C18EF2A9E5F /* SpaceGrotesk-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 1AFE63326642530B5E6F2B0A /* SpaceGrotesk-Bold.ttf */; };
+		0555324A37CE2A86AFEA0333 /* JetBrainsMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 94C2E67879EE9088BC707FD9 /* JetBrainsMono-Regular.ttf */; };
+		F14086BEEF9E434D7EAF20B0 /* JetBrainsMono-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 7EE3F23434305295B0EB23DD /* JetBrainsMono-Medium.ttf */; };
+		BA036BC208BB2EB5123ECA88 /* JetBrainsMono-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 64EDA54DF93F02A1AB255449 /* JetBrainsMono-SemiBold.ttf */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -52,6 +59,13 @@
 		DAE4782BEFCECFF65F8EAD34 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
 		E3049E4EB8347C9C4E63FA39 /* Push.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Push.swift; sourceTree = "<group>"; };
 		F8BBAD9D14CEB87EDC845C3A /* Zekktris.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Zekktris.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FE209C0D9EE475F2567A8602 /* SpaceGrotesk-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SpaceGrotesk-Regular.ttf"; sourceTree = "<group>"; };
+		7E0906E2CD7885DA1FD27666 /* SpaceGrotesk-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SpaceGrotesk-Medium.ttf"; sourceTree = "<group>"; };
+		2F5FECBEB77DEEB1BA810F30 /* SpaceGrotesk-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SpaceGrotesk-SemiBold.ttf"; sourceTree = "<group>"; };
+		1AFE63326642530B5E6F2B0A /* SpaceGrotesk-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SpaceGrotesk-Bold.ttf"; sourceTree = "<group>"; };
+		94C2E67879EE9088BC707FD9 /* JetBrainsMono-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "JetBrainsMono-Regular.ttf"; sourceTree = "<group>"; };
+		7EE3F23434305295B0EB23DD /* JetBrainsMono-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "JetBrainsMono-Medium.ttf"; sourceTree = "<group>"; };
+		64EDA54DF93F02A1AB255449 /* JetBrainsMono-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "JetBrainsMono-SemiBold.ttf"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -84,6 +98,7 @@
 				DAE4782BEFCECFF65F8EAD34 /* Components.swift */,
 				42797CA878D26DB332BEF804 /* Config.swift */,
 				6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */,
+				FA01B2C3D4E5F60718293A4B /* Fonts */,
 				B2136069A842EF82A1167EBC /* Gateway.swift */,
 				928A96BF32CD0722F5B2AD6B /* Info.plist */,
 				0503A3312574F4248568EACD /* Keychain.swift */,
@@ -108,6 +123,20 @@
 				F8BBAD9D14CEB87EDC845C3A /* Zekktris.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		FA01B2C3D4E5F60718293A4B /* Fonts */ = {
+			isa = PBXGroup;
+			children = (
+				FE209C0D9EE475F2567A8602 /* SpaceGrotesk-Regular.ttf */,
+				7E0906E2CD7885DA1FD27666 /* SpaceGrotesk-Medium.ttf */,
+				2F5FECBEB77DEEB1BA810F30 /* SpaceGrotesk-SemiBold.ttf */,
+				1AFE63326642530B5E6F2B0A /* SpaceGrotesk-Bold.ttf */,
+				94C2E67879EE9088BC707FD9 /* JetBrainsMono-Regular.ttf */,
+				7EE3F23434305295B0EB23DD /* JetBrainsMono-Medium.ttf */,
+				64EDA54DF93F02A1AB255449 /* JetBrainsMono-SemiBold.ttf */,
+			);
+			path = Fonts;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -175,6 +204,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				A8063E459DE41FBCAAC5EC8D /* Assets.xcassets in Resources */,
+				CD14505CA8152D753D3DA3B3 /* SpaceGrotesk-Regular.ttf in Resources */,
+				BCC5A3BAD71BDE9FEBD173C8 /* SpaceGrotesk-Medium.ttf in Resources */,
+				435405FB5F617BA8571EFE18 /* SpaceGrotesk-SemiBold.ttf in Resources */,
+				8568E2C2BE318C18EF2A9E5F /* SpaceGrotesk-Bold.ttf in Resources */,
+				0555324A37CE2A86AFEA0333 /* JetBrainsMono-Regular.ttf in Resources */,
+				F14086BEEF9E434D7EAF20B0 /* JetBrainsMono-Medium.ttf in Resources */,
+				BA036BC208BB2EB5123ECA88 /* JetBrainsMono-SemiBold.ttf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

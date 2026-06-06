@@ -20,12 +20,12 @@ struct ThreadListView: View {
                 Spacer()
                 VStack(spacing: 14) {
                     Text(isForum ? "No threads yet" : "No threads yet")
-                        .font(.system(size: 14))
+                        .font(.zkSans(14))
                         .foregroundColor(Theme.ink3)
                     if isForum {
                         Button { showNewPost = true } label: {
                             Label("New Thread", systemImage: "plus")
-                                .font(.system(size: 14, weight: .semibold))
+                                .font(.zkSans(14, weight: .semibold))
                                 .foregroundColor(.white)
                                 .padding(.horizontal, 16).padding(.vertical, 10)
                                 .background(Theme.accent)
@@ -63,7 +63,7 @@ struct ThreadListView: View {
                 .font(.system(size: 15))
                 .foregroundColor(Theme.ink3)
             Text(parent.name ?? (isForum ? "forum" : "threads"))
-                .font(.system(size: 16, weight: .semibold))
+                .font(.zkSans(16, weight: .semibold))
                 .foregroundColor(Theme.ink1)
                 .lineLimit(1)
 
@@ -98,19 +98,19 @@ private struct ThreadRow: View {
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
                 Text(thread.name ?? "thread")
-                    .font(.system(size: 15, weight: unread ? .semibold : .medium))
+                    .font(.zkSans(15, weight: unread ? .semibold : .medium))
                     .foregroundColor(Theme.ink1)
                     .lineLimit(1)
                 if thread.isArchived {
                     Text("Archived")
-                        .font(.system(size: 11))
+                        .font(.zkSans(11))
                         .foregroundColor(Theme.ink4)
                 }
             }
             Spacer(minLength: 0)
             if mentions > 0 {
                 Text("\(min(mentions, 99))")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(.zkSans(11, weight: .bold))
                     .foregroundColor(.white)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1)
@@ -163,13 +163,13 @@ private struct NewForumPostSheet: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10))
 
                     if let err = store.errorText {
-                        Text(err).font(.system(size: 13)).foregroundColor(Theme.danger)
+                        Text(err).font(.zkSans(13)).foregroundColor(Theme.danger)
                     }
 
                     Button(action: post) {
                         ZStack {
                             if busy { ProgressView().tint(.white) }
-                            else { Text("Post").font(.system(size: 15, weight: .semibold)) }
+                            else { Text("Post").font(.zkSans(15, weight: .semibold)) }
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 13)
