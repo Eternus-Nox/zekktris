@@ -740,7 +740,7 @@ private struct SidebarVoiceParticipant: View {
 /// at the rail's left edge.
 struct RailTile<Content: View>: View {
     let active: Bool
-    @ViewBuilder var content: Content
+    let content: Content
     var size: CGFloat = 48
 
     init(active: Bool, size: CGFloat = 48, @ViewBuilder content: () -> Content) {
