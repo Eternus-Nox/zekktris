@@ -2335,7 +2335,7 @@ final class AppStore: ObservableObject {
                let ids = d["message_ids"] as? [String] {
                 let idSet = Set(ids)
                 for i in messages.indices where idSet.contains(messages[i].id) {
-                    if event == "MESSAGE_VIEWED" {
+                    if name == "MESSAGE_VIEWED" {
                         messages[i].viewedAt = d["viewed_at"] as? String
                         if messages[i].deliveredAt == nil {
                             messages[i].deliveredAt = messages[i].viewedAt
