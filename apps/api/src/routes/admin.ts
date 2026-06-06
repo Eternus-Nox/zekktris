@@ -998,6 +998,16 @@ adminRouter.post(
   },
 );
 
+// Bulk-load the common moderation wordlist. Insert-only: existing words
+// are kept, duplicates skipped. Returns the refreshed full list plus how
+// many entries were new.
+adminRouter.post('/security/words/preset', async (c) => {
+  const userId = requireUserId(c);
+  const security = await import('../services/security');
+  const added = await security.addPresetWords(userId);
+  return c.json({ added, words: await security.listBannedWords() }, 201);
+});
+
 adminRouter.delete('/security/words/:word', async (c) => {
   const word = decodeURIComponent(c.req.param('word'));
   const security = await import('../services/security');

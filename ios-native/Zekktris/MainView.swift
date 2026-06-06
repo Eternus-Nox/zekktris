@@ -6361,6 +6361,7 @@ struct AdminSecurityTab: View {
     @State private var newWord = ""
     @State private var kindFilter: String?
     @State private var loading = true
+    @State private var loadingPreset = false
     @State private var error: String?
 
     var body: some View {
@@ -6421,6 +6422,24 @@ struct AdminSecurityTab: View {
                     }
                     .disabled(newWord.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
+                Button {
+                    loadPreset()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "text.badge.plus")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("Load common wordlist")
+                            .font(.zkSans(13, weight: .semibold))
+                    }
+                    .foregroundColor(Theme.accent)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Theme.accent.opacity(0.12))
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(loadingPreset)
+                Text("Adds a standard profanity + slur list. Existing words are kept; remove any you don't want filtered.")
+                    .font(.zkSans(11)).foregroundColor(Theme.ink4)
                 if words.isEmpty {
                     Text("No banned words yet. Messages containing a banned word are rejected and reported here.")
                         .font(.zkSans(11)).foregroundColor(Theme.ink4)
@@ -6564,6 +6583,17 @@ struct AdminSecurityTab: View {
     private func removeWord(_ word: String) {
         Task {
             if let updated = try? await APIClient.shared.adminRemoveSecurityWord(word) { words = updated }
+        }
+    }
+    private func loadPreset() {
+        loadingPreset = true
+        Task {
+            defer { loadingPreset = false }
+            do {
+                words = try await APIClient.shared.adminLoadSecurityWordPreset()
+            } catch {
+                self.error = (error as? APIError)?.message ?? error.localizedDescription
+            }
         }
     }
 }

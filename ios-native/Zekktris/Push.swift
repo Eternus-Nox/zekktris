@@ -70,10 +70,12 @@ final class PushManager: ObservableObject {
         UNUserNotificationCenter.current().setNotificationCategories([call])
     }
 
-    /// Called by the app delegate when APNs hands us a token.
+    /// Called by the app delegate when APNs hands us a token. Forces the
+    /// server POST even if a 503 was latched earlier — a fresh token is
+    /// exactly when the server may have gained its APNs config.
     func didRegister(tokenData: Data) {
         apnsTokenHex = tokenData.map { String(format: "%02x", $0) }.joined()
-        registerWithServerIfPossible()
+        registerWithServerIfPossible(force: true)
     }
 
     /// POST the token to the server if we have one and we're signed in.

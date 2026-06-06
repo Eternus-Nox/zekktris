@@ -124,6 +124,26 @@ export async function removeBannedWord(word: string): Promise<void> {
   wordsCacheAt = 0;
 }
 
+/**
+ * Bulk-load the common preset list (insert-only; existing entries are
+ * kept, duplicates skipped). Returns how many new words were added.
+ */
+export async function addPresetWords(addedBy: bigint): Promise<number> {
+  const { BANNED_WORDS_PRESET } = await import('../data/bannedWordsPreset');
+  const values = BANNED_WORDS_PRESET
+    .map((w) => w.trim().toLowerCase())
+    .filter((w) => w.length > 0 && w.length <= 64)
+    .map((word) => ({ word, addedBy }));
+  if (values.length === 0) return 0;
+  const inserted = await db
+    .insert(schema.securityBannedWords)
+    .values(values)
+    .onConflictDoNothing()
+    .returning({ word: schema.securityBannedWords.word });
+  wordsCacheAt = 0;
+  return inserted.length;
+}
+
 // ── Event log ───────────────────────────────────────────────────────────────
 
 export async function logEvent(input: {

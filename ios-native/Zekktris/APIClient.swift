@@ -1080,6 +1080,11 @@ extension APIClient {
         let wrap: SecurityWordsWrap = try await send("DELETE", "/admin/security/words/\(enc)")
         return wrap.words
     }
+    /// Bulk-load the server's common moderation wordlist (insert-only).
+    func adminLoadSecurityWordPreset() async throws -> [String] {
+        let wrap: SecurityWordsWrap = try await send("POST", "/admin/security/words/preset")
+        return wrap.words
+    }
     func adminSecurityConfig() async throws -> SecurityConfig {
         let wrap: SecurityConfigWrap = try await send("GET", "/admin/security/config")
         return wrap.config
