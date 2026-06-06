@@ -324,11 +324,6 @@ struct ServerRailView: View {
     @State private var keyboardVisible = false
     /// Parental controls entry is opt-in (Settings → Features).
     @AppStorage("zk.showFamily") private var showFamilyButton = false
-    @AppStorage("zk.notifyMessages") private var notifyMessages = true
-    @AppStorage("zk.notifyCalls") private var notifyCalls = true
-    @ObservedObject private var push = PushManager.shared
-    @Environment(\.zkDismissPage) private var zkDismissPage
-    @State private var achievementsPublic = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1433,6 +1428,11 @@ struct SettingsView: View {
     @State private var bannerPickerItem: PhotosPickerItem?
     @State private var imageUploading = false
     @AppStorage("zk.showFamily") private var showFamilyButton = false
+    @AppStorage("zk.notifyMessages") private var notifyMessages = true
+    @AppStorage("zk.notifyCalls") private var notifyCalls = true
+    @ObservedObject private var push = PushManager.shared
+    @Environment(\.zkDismissPage) private var zkDismissPage
+    @State private var achievementsPublic = false
 
     private let statuses: [(String, String, Color)] = [
         ("Online", "online", Theme.online),
