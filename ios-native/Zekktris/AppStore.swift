@@ -59,6 +59,13 @@ final class AppStore: ObservableObject {
         if collapsedFolders.contains(id) { collapsedFolders.remove(id) } else { collapsedFolders.insert(id) }
         UserDefaults.standard.set(Array(collapsedFolders), forKey: "zk.collapsedFolders")
     }
+
+    /// Locally-collapsed channel-list categories (per-device, like the web).
+    @Published var collapsedCategories: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "zk.collapsedCategories") ?? [])
+    func toggleCategoryCollapsed(_ id: String) {
+        if collapsedCategories.contains(id) { collapsedCategories.remove(id) } else { collapsedCategories.insert(id) }
+        UserDefaults.standard.set(Array(collapsedCategories), forKey: "zk.collapsedCategories")
+    }
     @Published var channels: [Channel] = []
     @Published var messages: [Message] = []
 
@@ -188,6 +195,10 @@ final class AppStore: ObservableObject {
     /// Voice: connected channel id, the roster of voice states, and flags.
     @Published var voiceChannelId: String?
     @Published var voiceStates: [VoiceState] = []
+    /// Global per-user voice presence (every channel, not just the active
+    /// call) — powers the participant lists under voice rows in the channel
+    /// sidebar, mirroring the web's voiceStatesByUser map.
+    @Published var voiceStatesByUser: [String: VoiceState] = [:]
     @Published var voiceConnecting = false
     @Published var voiceTokenMissing = false
     @Published var stageParticipants: [StageParticipant] = []
@@ -302,6 +313,7 @@ final class AppStore: ObservableObject {
         threadList = []
         voiceChannelId = nil
         voiceStates = []
+        voiceStatesByUser = [:]
         voiceTokenMissing = false
         incomingCall = nil
         Task { await voice.disconnect() }
@@ -602,6 +614,8 @@ final class AppStore: ObservableObject {
             let res = try await api.joinVoice(channelId: channel.id)
             voiceChannelId = channel.id
             voiceStates = res.channelVoiceStates
+            // Merge the authoritative snapshot into the sidebar presence map.
+            for vs in res.channelVoiceStates { voiceStatesByUser[vs.userId] = vs }
             if let token = res.token, let url = res.wsUrl, !token.isEmpty, !url.isEmpty {
                 let key: Data? = channel.isE2EE ? e2eeKey(for: channel) : nil
                 await voice.connect(url: url, token: token, e2eeKey: key)
@@ -736,9 +750,27 @@ final class AppStore: ObservableObject {
     }
 
     private func applyVoiceState(_ vs: VoiceState) {
+        // Global sidebar presence map: channelId == nil means "left voice".
+        if vs.channelId == nil {
+            voiceStatesByUser.removeValue(forKey: vs.userId)
+        } else {
+            voiceStatesByUser[vs.userId] = vs
+        }
         guard let active = voiceChannelId else { return }
         voiceStates.removeAll { $0.userId == vs.userId }
         if vs.channelId == active { voiceStates.append(vs) }
+    }
+
+    /// Participants currently in a given voice/stage channel (sidebar rows).
+    func voiceParticipants(in channelId: String) -> [VoiceState] {
+        voiceStatesByUser.values
+            .filter { $0.channelId == channelId }
+            .sorted { $0.userId < $1.userId }
+    }
+
+    /// Total unread mention count across all channels (rail badge).
+    var totalMentionCount: Int {
+        readStates.values.reduce(0) { $0 + ($1.mentionCount ?? 0) }
     }
 
     /// If the gateway reports OUR voice state moved to a channel different from

@@ -11,9 +11,11 @@ struct MainView: View {
 
     var body: some View {
         HStack(spacing: 0) {
+            // Web parity: rail = bg-0/85 over the abyss, with a border-line
+            // divider on its trailing edge.
             ServerRailView()
                 .frame(width: 72)
-                .background(Theme.bg0)
+                .background(Theme.bg0.opacity(0.85))
 
             Rectangle()
                 .fill(Theme.line)
@@ -33,7 +35,16 @@ struct MainView: View {
                 .animation(.easeInOut(duration: 0.2), value: routeKey)
             }
         }
-        .background(Theme.bg1)
+        // The abyss nebula canvas sits behind every column (web mounts
+        // `.abyss` once at the Shell root); columns above use translucent
+        // fills so the auroras glow through.
+        .background {
+            ZStack {
+                Theme.bg1
+                AbyssBackground()
+            }
+            .ignoresSafeArea()
+        }
         .overlay {
             if let call = store.incomingCall {
                 IncomingCallView(call: call)
@@ -128,34 +139,26 @@ struct ServerRailView: View {
                     Button {
                         store.showDMs()
                     } label: {
-                        DMRailButton(isSelected: store.inDMs && store.railContent == .normal)
-                            .frame(maxWidth: .infinity)
+                        RailTile(active: store.inDMs && store.railContent == .normal) {
+                            Image(systemName: "bubble.left.and.bubble.right.fill")
+                                .font(.system(size: 19))
+                        }
                     }
                     .buttonStyle(.plain)
 
                     Button { store.showMentions() } label: {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .fill(store.railContent == .mentions ? Theme.accent : Theme.bg3)
-                                .frame(width: 48, height: 48)
+                        RailTile(active: store.railContent == .mentions) {
                             Image(systemName: "at")
-                                .font(.system(size: 20, weight: .semibold))
-                                .foregroundColor(store.railContent == .mentions ? Theme.bg0 : Theme.ink2)
+                                .font(.system(size: 19, weight: .semibold))
                         }
-                        .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.plain)
 
                     Button { store.showSaved() } label: {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .fill(store.railContent == .saved ? Theme.accent : Theme.bg3)
-                                .frame(width: 48, height: 48)
+                        RailTile(active: store.railContent == .saved) {
                             Image(systemName: "bookmark.fill")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundColor(store.railContent == .saved ? Theme.bg0 : Theme.ink2)
+                                .font(.system(size: 17, weight: .semibold))
                         }
-                        .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.plain)
 
@@ -286,11 +289,13 @@ struct ServerRailView: View {
 
     @ViewBuilder
     private func guildButton(_ guild: Guild, inFolder: Bool) -> some View {
+        let isSelected = !store.inDMs && store.railContent == .normal && guild.id == store.selectedGuild?.id
         Button {
             store.selectGuild(guild)
         } label: {
-            GuildIcon(guild: guild, isSelected: !store.inDMs && store.railContent == .normal && guild.id == store.selectedGuild?.id)
+            GuildIcon(guild: guild, isSelected: isSelected)
                 .frame(maxWidth: .infinity)
+                .overlay(alignment: .leading) { RailPip(active: isSelected) }
         }
         .buttonStyle(.plain)
         .contextMenu {
@@ -322,7 +327,7 @@ struct ServerRailView: View {
         VStack(spacing: 8) {
             Button { store.toggleFolderCollapsed(f.id) } label: {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    RoundedRectangle(cornerRadius: 48 * Theme.squircleFraction, style: .continuous)
                         .fill(folderColor(f).opacity(0.22))
                         .frame(width: 48, height: 48)
                     if collapsed {
@@ -370,24 +375,45 @@ struct ChannelListView: View {
     @State private var showReorderChannels = false
     @State private var editingChannel: Channel?
     @State private var deletingChannel: Channel?
+    /// Category pre-selected for channel creation (per-category "+").
+    @State private var createInCategory: Channel?
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                Button { showGuildInfo = true } label: {
-                    HStack(spacing: 5) {
-                        Text(store.selectedGuild?.name ?? "Zekktris")
-                            .font(.zkSans(16, weight: .semibold))
-                            .foregroundColor(Theme.ink1)
-                            .lineLimit(1)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(Theme.ink3)
+            // Guild banner (web: aspect 16:9, object-cover, border-b line).
+            if let banner = assetURL(store.selectedGuild?.bannerUrl) {
+                Color.clear
+                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                    .background(Theme.bg3)
+                    .overlay {
+                        AsyncImage(url: banner) { phase in
+                            if case .success(let image) = phase {
+                                image.resizable().scaledToFill()
+                            }
+                        }
                     }
+                    .clipped()
+                    .overlay(Rectangle().fill(Theme.line).frame(height: 1), alignment: .bottom)
+            }
+
+            // Header (web: px-3 py-1.5, soft bottom border, name wraps,
+            // chevron — the whole strip opens the server menu).
+            HStack(alignment: .top, spacing: 4) {
+                Button { showGuildInfo = true } label: {
+                    HStack(alignment: .top, spacing: 6) {
+                        Text(store.selectedGuild?.name ?? "Zekktris")
+                            .font(.zkSans(14, weight: .semibold))
+                            .foregroundColor(Theme.ink1)
+                            .multilineTextAlignment(.leading)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(Theme.ink2)
+                            .padding(.top, 2)
+                    }
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                Spacer()
                 if store.canManageChannels {
                     Menu {
                         Button { showCreateChannel = true } label: {
@@ -398,15 +424,15 @@ struct ChannelListView: View {
                         }
                     } label: {
                         Image(systemName: "plus")
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(.system(size: 15, weight: .semibold))
                             .foregroundColor(Theme.ink2)
+                            .frame(width: 24, height: 24)
                     }
                 }
             }
-            .padding(.horizontal, 16)
-            .frame(height: 48)
-            .background(Theme.bg2)
-            .overlay(Rectangle().fill(Theme.line).frame(height: 1), alignment: .bottom)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .overlay(Rectangle().fill(Theme.lineSoft).frame(height: 1), alignment: .bottom)
 
             if store.loadingChannels && store.channels.isEmpty {
                 Spacer()
@@ -424,7 +450,9 @@ struct ChannelListView: View {
                         ForEach(uncategorizedChannels) { channelRow($0) }
                         ForEach(sortedCategories) { category in
                             categoryHeader(category)
-                            ForEach(channels(in: category)) { channelRow($0) }
+                            if !store.collapsedCategories.contains(category.id) {
+                                ForEach(channels(in: category)) { channelRow($0) }
+                            }
                         }
                     }
                     .padding(.horizontal, 8)
@@ -432,9 +460,10 @@ struct ChannelListView: View {
                 }
             }
         }
-        .background(Theme.bg2)
-        .sheet(isPresented: $showCreateChannel) {
-            CreateChannelSheet(categories: sortedCategories)
+        // Web: channel column = bg-2/85 over the abyss.
+        .background(Theme.bg2.opacity(0.85))
+        .sheet(isPresented: $showCreateChannel, onDismiss: { createInCategory = nil }) {
+            CreateChannelSheet(categories: sortedCategories, initialParentId: createInCategory?.id)
         }
         .sheet(isPresented: $showGuildSettings) {
             GuildSettingsView()
@@ -485,24 +514,60 @@ struct ChannelListView: View {
     }
 
     private func categoryHeader(_ category: Channel) -> some View {
-        Text((category.name ?? "").uppercased())
-            .font(.zkSans(11, weight: .semibold))
-            .foregroundColor(Theme.ink3)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 8)
-            .padding(.top, 12)
-            .padding(.bottom, 2)
-            .contentShape(Rectangle())
-            .contextMenu {
-                if store.canManageChannels {
-                    Button { editingChannel = category } label: {
-                        Label("Edit Category", systemImage: "pencil")
-                    }
-                    Button(role: .destructive) { deletingChannel = category } label: {
-                        Label("Delete Category", systemImage: "trash")
-                    }
+        // Web `.zk-cap` header: JetBrains Mono 10.5, uppercase, 0.14em
+        // tracking, ink-3, with a collapse chevron; managers get gear/plus
+        // affordances (always visible on touch, like the web's
+        // [@media(hover:none)] rule).
+        let collapsed = store.collapsedCategories.contains(category.id)
+        return HStack(spacing: 4) {
+            Button { store.toggleCategoryCollapsed(category.id) } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                    Text((category.name ?? "(unnamed)").uppercased())
+                        .font(.zkMono(10.5))
+                        .tracking(Theme.capTracking(10.5))
+                        .lineLimit(1)
+                }
+                .foregroundColor(Theme.ink3)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Spacer(minLength: 0)
+            if store.canManageChannels {
+                Button { editingChannel = category } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.ink3)
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.plain)
+                Button {
+                    createInCategory = category
+                    showCreateChannel = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.ink3)
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 4)
+        .padding(.top, 12)
+        .padding(.bottom, 2)
+        .contextMenu {
+            if store.canManageChannels {
+                Button { editingChannel = category } label: {
+                    Label("Edit Category", systemImage: "pencil")
+                }
+                Button(role: .destructive) { deletingChannel = category } label: {
+                    Label("Delete Category", systemImage: "trash")
                 }
             }
+        }
     }
 
     @ViewBuilder
@@ -510,23 +575,64 @@ struct ChannelListView: View {
         Group {
             if channel.isText {
                 Button { store.selectChannel(channel) } label: {
-                    ChannelRowLabel(symbol: "number", name: channel.name ?? "channel", muted: false,
+                    ChannelRowLabel(symbol: "number", iconTint: .accent,
+                                    name: channel.name ?? "channel",
+                                    restricted: channel.restricted == true,
                                     unread: store.isChannelUnread(channel),
                                     mentions: store.mentionCount(for: channel.id))
                 }
                 .buttonStyle(.plain)
             } else if channel.isForum {
                 Button { store.openThreads(channel) } label: {
-                    ChannelRowLabel(symbol: "list.bullet.rectangle", name: channel.name ?? "forum", muted: false,
+                    ChannelRowLabel(symbol: "list.bullet.rectangle", iconTint: .accent,
+                                    name: channel.name ?? "forum",
+                                    restricted: channel.restricted == true,
                                     unread: store.isChannelUnread(channel),
                                     mentions: store.mentionCount(for: channel.id))
                 }
                 .buttonStyle(.plain)
-            } else if channel.isVoice {
-                Button { store.openVoice(channel) } label: {
-                    ChannelRowLabel(symbol: "speaker.wave.2.fill", name: channel.name ?? "voice", muted: false)
+            } else if channel.isLink {
+                Button {
+                    if let url = channel.linkUrl.flatMap(URL.init(string:)) {
+                        UIApplication.shared.open(url)
+                    }
+                } label: {
+                    ChannelRowLabel(symbol: "arrow.up.right.square", iconTint: .accent,
+                                    name: channel.name ?? "link",
+                                    restricted: channel.restricted == true)
                 }
                 .buttonStyle(.plain)
+            } else if channel.isStage {
+                Button { store.openVoice(channel) } label: {
+                    ChannelRowLabel(symbol: "dot.radiowaves.left.and.right", iconTint: .tertiary,
+                                    name: channel.name ?? "stage",
+                                    restricted: channel.restricted == true,
+                                    trailingCount: store.voiceParticipants(in: channel.id).count)
+                }
+                .buttonStyle(.plain)
+            } else if channel.isVoice {
+                let participants = store.voiceParticipants(in: channel.id)
+                VStack(alignment: .leading, spacing: 2) {
+                    Button { store.openVoice(channel) } label: {
+                        ChannelRowLabel(symbol: "speaker.wave.2.fill", iconTint: .accent,
+                                        name: channel.name ?? "voice",
+                                        restricted: channel.restricted == true,
+                                        active: store.activeVoiceOrStageId == channel.id,
+                                        trailingCount: participants.count)
+                    }
+                    .buttonStyle(.plain)
+                    // Web parity: tiny live participant list nested under
+                    // the row (ml-6, mt-0.5, space-y-0.5).
+                    if !participants.isEmpty {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(participants) { vs in
+                                SidebarVoiceParticipant(state: vs)
+                            }
+                        }
+                        .padding(.leading, 24)
+                        .padding(.bottom, 4)
+                    }
+                }
             }
         }
         .contextMenu {
@@ -542,58 +648,142 @@ struct ChannelListView: View {
     }
 }
 
+/// One channel row, matching the web's ChannelRow exactly: 14pt label,
+/// accent-tinted type icon with an optional corner padlock, ink-2 text
+/// (ink-1 + medium when unread), trailing red-500 mention pill or a 6pt
+/// ink-1 unread dot, and the `.row-active` treatment when active.
 private struct ChannelRowLabel: View {
+    enum IconTint { case accent, tertiary }
     let symbol: String
+    var iconTint: IconTint = .accent
     let name: String
-    let muted: Bool
+    var restricted: Bool = false
     var unread: Bool = false
+    var active: Bool = false
     var mentions: Int = 0
+    /// Voice/stage rows: participant count shown at the trailing edge.
+    var trailingCount: Int = 0
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: symbol)
-                .font(.system(size: 14))
-                .foregroundColor(unread && !muted ? Theme.ink1 : Theme.ink3)
-                .frame(width: 18)
+                .font(.system(size: 13))
+                .foregroundColor(iconTint == .accent ? Theme.accent : Theme.ink3)
+                .frame(width: 16)
+                .overlay(alignment: .topTrailing) {
+                    if restricted {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 7, weight: .bold))
+                            .foregroundColor(Theme.ink3)
+                            .offset(x: 5, y: -4)
+                    }
+                }
             Text(name)
-                .font(.zkSans(15, weight: unread && !muted ? .semibold : .regular))
-                .foregroundColor(muted ? Theme.ink3 : (unread ? Theme.ink1 : Theme.ink2))
+                .font(.zkSans(14, weight: unread ? .medium : .regular))
+                .foregroundColor(unread || active ? Theme.ink1 : Theme.ink2)
                 .lineLimit(1)
             Spacer(minLength: 0)
             if mentions > 0 {
-                Text("\(min(mentions, 99))")
-                    .font(.zkSans(11, weight: .bold))
+                Text(mentions > 99 ? "99+" : "\(mentions)")
+                    .font(.zkSans(10, weight: .bold))
                     .foregroundColor(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 1)
+                    .padding(.horizontal, 4)
+                    .frame(minWidth: 17, minHeight: 17)
                     .background(Theme.danger)
                     .clipShape(Capsule())
+            } else if unread {
+                Circle().fill(Theme.ink1).frame(width: 6, height: 6)
+            } else if trailingCount > 0 {
+                Text("\(trailingCount)")
+                    .font(.zkSans(10))
+                    .foregroundColor(Theme.ink3)
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 7)
+        .padding(.vertical, 5)
         .contentShape(Rectangle())
+        .rowActive(active)
     }
 }
 
-/// Squircle "Direct Messages" button shown at the top of the rail.
-private struct DMRailButton: View {
-    let isSelected: Bool
-    var size: CGFloat = 48
+/// Tiny presence row nested under a voice channel in the sidebar (web's
+/// VoiceParticipant): 18pt avatar, 13pt name, mute/deafen glyphs.
+private struct SidebarVoiceParticipant: View {
+    @EnvironmentObject private var store: AppStore
+    let state: VoiceState
 
     var body: some View {
+        let member = store.members[state.userId]
+        let label = member?.nickname ?? member?.user.name ?? String(state.userId.suffix(5))
+        HStack(spacing: 6) {
+            Avatar(url: member?.user.avatarUrl, name: label, size: 18, toneId: state.userId)
+            Text(label)
+                .font(.zkSans(13))
+                .foregroundColor(Theme.ink3)
+                .lineLimit(1)
+            if state.selfDeaf == true {
+                Image(systemName: "speaker.slash.fill")
+                    .font(.system(size: 9)).foregroundColor(Theme.ink4)
+            } else if state.selfMute == true {
+                Image(systemName: "mic.slash.fill")
+                    .font(.system(size: 9)).foregroundColor(Theme.ink4)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 1)
+    }
+}
+
+/// Web rail-tile treatment (HomeTile/MentionsTile/DiscoverTile): a 48pt
+/// squircle that is bg-2 + ink-2 at rest, and an accent→accent-2 gradient
+/// with bg-0 glyph + double glow when active. The active rail-pin renders
+/// at the rail's left edge.
+struct RailTile<Content: View>: View {
+    let active: Bool
+    @ViewBuilder var content: Content
+    var size: CGFloat = 48
+
+    init(active: Bool, size: CGFloat = 48, @ViewBuilder content: () -> Content) {
+        self.active = active
+        self.size = size
+        self.content = content()
+    }
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: size * Theme.squircleFraction, style: .continuous)
         ZStack {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(isSelected ? Theme.accent.opacity(0.20) : Theme.bg3)
-            Image(systemName: "bubble.left.and.bubble.right.fill")
-                .font(.system(size: size * 0.40))
-                .foregroundColor(isSelected ? Theme.accent : Theme.ink2)
+            if active {
+                LinearGradient(colors: [Theme.accent, Theme.accent2],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+            } else {
+                Theme.bg2
+            }
+            content
+                .foregroundColor(active ? Theme.bg0 : Theme.ink2)
         }
         .frame(width: size, height: size)
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Theme.accent, lineWidth: isSelected ? 1 : 0)
-        )
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(active ? Theme.accentGlow : Color.clear, lineWidth: 1))
+        .shadow(color: active ? Theme.accentGlow : .clear, radius: 14, x: 0, y: 8)
+        .frame(maxWidth: .infinity)
+        .overlay(alignment: .leading) { RailPip(active: active) }
+        .animation(.easeOut(duration: 0.15), value: active)
+    }
+}
+
+/// The accent rail-pin that marks the active rail entry (web: 6×32pt,
+/// rounded right edge, accent glow). Sits flush against the rail's left
+/// edge — hidden entirely when inactive (hover nub is a no-op on touch).
+struct RailPip: View {
+    let active: Bool
+    var body: some View {
+        if active {
+            UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0,
+                                   bottomTrailingRadius: 3, topTrailingRadius: 3)
+                .fill(Theme.accent)
+                .frame(width: 6, height: 32)
+                .shadow(color: Theme.accentGlow, radius: 12)
+        }
     }
 }
 
@@ -617,8 +807,7 @@ struct DMListView: View {
             }
             .padding(.horizontal, 16)
             .frame(height: 48)
-            .background(Theme.bg2)
-            .overlay(Rectangle().fill(Theme.line).frame(height: 1), alignment: .bottom)
+            .overlay(Rectangle().fill(Theme.lineSoft).frame(height: 1), alignment: .bottom)
 
             if store.loadingDMs && store.dms.isEmpty {
                 Spacer(); ProgressView().tint(Theme.accent); Spacer()
@@ -641,7 +830,7 @@ struct DMListView: View {
                 }
             }
         }
-        .background(Theme.bg2)
+        .background(Theme.bg2.opacity(0.85))
         .sheet(isPresented: $showFriends) {
             FriendsView()
         }
@@ -1298,15 +1487,10 @@ private struct RailIconButton: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Theme.bg3)
-                    .frame(width: 48, height: 48)
+            RailTile(active: false) {
                 Image(systemName: symbol)
                     .font(.system(size: 19, weight: .semibold))
-                    .foregroundColor(Theme.ink2)
             }
-            .frame(maxWidth: .infinity)
         }
         .buttonStyle(.plain)
     }
@@ -1979,6 +2163,9 @@ struct ChildControlsView: View {
 /// and a link URL for guild_link channels.
 struct CreateChannelSheet: View {
     let categories: [Channel]
+    /// When set, pre-scopes the new channel to this category (web's
+    /// per-category "+" affordance).
+    var initialParentId: String? = nil
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
 
@@ -2096,6 +2283,7 @@ struct CreateChannelSheet: View {
                     Button("Create") { create() }.disabled(!canCreate || busy)
                 }
             }
+            .onAppear { if parentId == nil { parentId = initialParentId } }
         }
     }
 

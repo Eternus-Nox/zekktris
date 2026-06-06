@@ -148,6 +148,60 @@ func avatarInitials(_ name: String?) -> String {
     return letters.isEmpty ? "?" : letters
 }
 
+/// Ambient deep-space backdrop, porting the web's `.abyss` canvas: four
+/// blurred plasma auroras anchored near the corners plus a sparse starfield.
+/// Mount once behind the shell; every column above it uses a translucent
+/// fill (bg-0/85, bg-2/85, bg-1/90) so the nebula glows through exactly
+/// like the web's backdrop-blur columns.
+struct AbyssBackground: View {
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width, h = geo.size.height
+            ZStack {
+                aurora(Theme.auroraViolet, rx: 0.60, ry: 0.50, at: CGPoint(x: 0.12, y: 0.08), in: geo.size)
+                aurora(Theme.auroraCyan, rx: 0.50, ry: 0.40, at: CGPoint(x: 0.92, y: 0.14), in: geo.size)
+                aurora(Theme.auroraMagenta, rx: 0.40, ry: 0.30, at: CGPoint(x: 0.78, y: 0.92), in: geo.size)
+                aurora(Theme.auroraTeal, rx: 0.35, ry: 0.28, at: CGPoint(x: 0.18, y: 0.86), in: geo.size)
+
+                // Starfield (positions + alphas from the web's ::after dots).
+                ForEach(Array(Self.stars.enumerated()), id: \.offset) { _, star in
+                    Circle()
+                        .fill(Theme.starlight.opacity(star.alpha))
+                        .frame(width: 2, height: 2)
+                        .position(x: star.x * w, y: star.y * h)
+                }
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+
+    private static let stars: [(x: CGFloat, y: CGFloat, alpha: Double)] = [
+        (0.24, 0.30, 0.6), (0.80, 0.12, 0.5), (0.62, 0.78, 0.4),
+        (0.14, 0.70, 0.5), (0.92, 0.56, 0.4), (0.46, 0.22, 0.3),
+    ]
+
+    /// One blurred aurora blob. CSS radial-gradient radii are % of the box
+    /// dimensions; we model the ellipse as a scaled circle so the radial
+    /// gradient stays smooth, then blur generously like the web (40px).
+    private func aurora(_ color: Color, rx: CGFloat, ry: CGFloat, at unit: CGPoint, in size: CGSize) -> some View {
+        let rW = size.width * rx
+        let rH = size.height * ry
+        return Ellipse()
+            .fill(
+                EllipticalGradient(
+                    colors: [color, .clear],
+                    center: .center,
+                    startRadiusFraction: 0,
+                    endRadiusFraction: 0.5
+                )
+            )
+            .frame(width: rW * 2, height: rH * 2)
+            .position(x: unit.x * size.width, y: unit.y * size.height)
+            .blur(radius: 40)
+    }
+}
+
 /// Small status indicator dot with a ring that blends into its background.
 struct PresenceDot: View {
     let status: String

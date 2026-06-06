@@ -43,6 +43,7 @@ struct Guild: Codable, Identifiable, Hashable {
     let id: String
     var name: String
     var iconUrl: String?
+    var bannerUrl: String?
     var ownerId: String?
     var description: String?
     var rulesContent: String?
@@ -76,12 +77,18 @@ struct Channel: Codable, Identifiable, Hashable {
     var e2eeEnabled: Bool?
     var e2eeSalt: String?
     var e2eeVerifier: String?
+    /// Link channels (type == guild_link): the external URL they open.
+    var linkUrl: String?
+    /// True when permission overrides hide this channel from @everyone —
+    /// drives the corner padlock badge on the sidebar row (web parity).
+    var restricted: Bool?
 
     var isText: Bool { type == "guild_text" }
     var isCategory: Bool { type == "guild_category" }
     var isVoice: Bool { type == "guild_voice" || type == "guild_stage" }
     var isStage: Bool { type == "guild_stage" }
     var isForum: Bool { type == "guild_forum" }
+    var isLink: Bool { type == "guild_link" }
     var isThread: Bool { type == "public_thread" }
     var isArchived: Bool { threadArchivedAt != nil }
     var isDM: Bool { type == "dm" || type == "group_dm" }
