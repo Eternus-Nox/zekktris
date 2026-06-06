@@ -1503,14 +1503,15 @@ struct SettingsView: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
+            let user = session.currentUser
             HStack(spacing: 12) {
                 PhotosPicker(selection: $avatarPickerItem, matching: .images) {
                     Avatar(
-                        url: session.currentUser?.avatarUrl,
-                        name: session.currentUser?.name ?? "?",
+                        url: user?.avatarUrl,
+                        name: user?.name ?? "?",
                         size: 56,
-                        status: session.currentUser?.status,
-                        toneId: session.currentUser?.id
+                        status: user?.status,
+                        toneId: user?.id
                     )
                     .overlay(alignment: .bottomTrailing) {
                         Image(systemName: "camera.fill")
@@ -3410,12 +3411,13 @@ struct GuildSettingsView: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
+            let guild = store.selectedGuild
             HStack(spacing: 12) {
                 Group {
                     if isAdmin {
                         PhotosPicker(selection: $guildIconItem, matching: .images) {
-                            Avatar(url: store.selectedGuild?.iconUrl, name: name.isEmpty ? "S" : name,
-                                   size: 56, ringColor: Theme.bg1, toneId: store.selectedGuild?.id)
+                            Avatar(url: guild?.iconUrl, name: name.isEmpty ? "S" : name,
+                                   size: 56, ringColor: Theme.bg1, toneId: guild?.id)
                                 .overlay(alignment: .bottomTrailing) {
                                     Image(systemName: "camera.fill")
                                         .font(.system(size: 8, weight: .bold))

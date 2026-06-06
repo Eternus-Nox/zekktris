@@ -66,8 +66,8 @@ final class VoiceManager: ObservableObject {
                 isSharedKey: true,
                 sharedKey: e2eeKey.base64EncodedString()
             )
-            let e2ee = E2EEOptions(keyProvider: keyProvider, encryptionType: .gcm)
-            r = Room(delegate: self, roomOptions: RoomOptions(e2eeOptions: e2ee))
+            let encryption = EncryptionOptions(keyProvider: keyProvider, encryptionType: .gcm)
+            r = Room(delegate: self, roomOptions: RoomOptions(encryptionOptions: encryption))
         } else {
             r = Room(delegate: self)
         }
@@ -102,12 +102,12 @@ final class VoiceManager: ObservableObject {
         if next {
             wasMutedBeforeDeafen = isMuted
             for pub in audioPubs.values { try? await pub.set(enabled: false) }
-            try? await room?.localParticipant.setMicrophone(enabled: false)
+            _ = try? await room?.localParticipant.setMicrophone(enabled: false)
             isMuted = true
         } else {
             for (uid, pub) in audioPubs { try? await pub.set(enabled: !mutedForMe.contains(uid)) }
             if !wasMutedBeforeDeafen {
-                try? await room?.localParticipant.setMicrophone(enabled: true)
+                _ = try? await room?.localParticipant.setMicrophone(enabled: true)
                 isMuted = false
             }
         }

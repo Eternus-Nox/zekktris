@@ -188,7 +188,7 @@ extension CallManager: CXProviderDelegate {
         // LiveKit owns the session during the call; nudge it into a
         // voice-chat-appropriate configuration on CallKit activation.
         try? audioSession.setCategory(.playAndRecord, mode: .voiceChat,
-                                      options: [.allowBluetooth, .allowBluetoothA2DP])
+                                      options: [.allowBluetoothHFP, .allowBluetoothA2DP])
     }
 
     nonisolated func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {}
