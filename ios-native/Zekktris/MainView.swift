@@ -31,6 +31,9 @@ struct MainView: View {
                 ImageLightboxView(url: img.url)
                     .environmentObject(store)
             }
+            .fullScreenCover(item: compactRailPageBinding) { page in
+                railPageHost(page)
+            }
             .onAppear { store.isWideLayout = isWide }
             .onChange(of: hSizeClass) { newValue in
                 store.isWideLayout = (newValue == .regular)
@@ -56,8 +59,13 @@ struct MainView: View {
 
             Rectangle().fill(Theme.line).frame(width: 1)
 
+            if isWide, let page = store.railPage {
+                // Full-page rail destination: takes the sidebar + detail
+                // area while the server rail stays visible.
+                railPageHost(page)
+            } else {
             if isWide {
-                // Sidebar column (web xl:w-60 = 15rem = 225pt at 15px root).
+                // Sidebar column (web xl:w-60; roomier on Mac).
                 Group {
                     if store.inDMs {
                         DMListView()
@@ -65,7 +73,7 @@ struct MainView: View {
                         ChannelListView()
                     }
                 }
-                .frame(width: 225)
+                .frame(width: Self.sidebarWidth)
 
                 Rectangle().fill(Theme.line).frame(width: 1)
             }
@@ -84,6 +92,7 @@ struct MainView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .animation(.easeInOut(duration: 0.2), value: routeKey)
+            }
             }
         }
         // The abyss nebula canvas sits behind every column (web mounts
@@ -118,6 +127,43 @@ struct MainView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: store.errorText)
+    }
+
+    /// Sidebar width: the web's 15rem (225pt), with extra room on Mac
+    /// where windows are wide and information density is expected.
+    static var sidebarWidth: CGFloat {
+        ProcessInfo.processInfo.isiOSAppOnMac ? 264 : 225
+    }
+
+    /// Compact only: drive the full-screen cover from store.railPage, but
+    /// never while the wide layout hosts the page inline.
+    private var compactRailPageBinding: Binding<RailPage?> {
+        Binding(
+            get: { isWide ? nil : store.railPage },
+            set: { store.railPage = $0 }
+        )
+    }
+
+    /// Hosts a rail page with the `<` back behavior wired (sets
+    /// store.railPage = nil) and environment objects re-injected.
+    @ViewBuilder
+    private func railPageHost(_ page: RailPage) -> some View {
+        Group {
+            switch page {
+            case .settings: SettingsView()
+            case .discover: DiscoveryView()
+            case .createServer: CreateServerSheet()
+            case .joinInvite: JoinByInviteSheet()
+            case .admin: AdminView()
+            case .family: FamilyView()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.bg1.opacity(0.9))
+        .environment(\.zkDismissPage, { store.railPage = nil })
+        .environmentObject(store)
+        .environmentObject(session)
+        .environmentObject(store.voice)
     }
 
     /// Detail pane for the wide layout. Routed content wins (matching the
@@ -212,8 +258,46 @@ private struct WideEmptyDetail: View {
     }
 }
 
+/// Full-page rail destinations (Discover / Create / Join / Admin / Family /
+/// Settings). Hosted inline next to the rail on iPad/Mac, full screen on
+/// iPhone — NOT sheets.
+enum RailPage: String, Identifiable, CaseIterable {
+    case settings, discover, createServer, joinInvite, admin, family
+    var id: String { rawValue }
+}
+
+/// Closes the containing rail page (set by the page host). Pages' back
+/// buttons call this when hosted inline; falls back to dismiss() when the
+/// view is presented traditionally (e.g. iPhone full-screen cover).
+private struct ZKDismissPageKey: EnvironmentKey {
+    static let defaultValue: (() -> Void)? = nil
+}
+extension EnvironmentValues {
+    var zkDismissPage: (() -> Void)? {
+        get { self[ZKDismissPageKey.self] }
+        set { self[ZKDismissPageKey.self] = newValue }
+    }
+}
+
+/// `<` back affordance shared by every rail page.
+struct PageBackButton: View {
+    @Environment(\.zkDismissPage) private var closePage
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        Button {
+            if let closePage { closePage() } else { dismiss() }
+        } label: {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(Theme.ink2)
+        }
+        .accessibilityLabel("Back")
+    }
+}
+
+/// Remaining quick utility sheets on the rail (not full pages).
 private enum RailSheet: Identifiable {
-    case settings, discover, createServer, joinInvite, admin, family, quickSwitch, reorderServers
+    case quickSwitch, reorderServers
     var id: Int { hashValue }
 }
 
@@ -277,9 +361,9 @@ struct ServerRailView: View {
                         .fill(Theme.line)
                         .frame(width: 32, height: 1)
 
-                    RailIconButton(symbol: "safari") { railSheet = .discover }
-                    RailIconButton(symbol: "plus") { railSheet = .createServer }
-                    RailIconButton(symbol: "link") { railSheet = .joinInvite }
+                    RailIconButton(symbol: "safari") { store.railPage = .discover }
+                    RailIconButton(symbol: "plus") { store.railPage = .createServer }
+                    RailIconButton(symbol: "link") { store.railPage = .joinInvite }
                 }
                 .padding(.vertical, 12)
             }
@@ -288,13 +372,13 @@ struct ServerRailView: View {
 
             VStack(spacing: 10) {
                 if session.currentUser?.isAdmin == true {
-                    RailIconButton(symbol: "lock.shield") { railSheet = .admin }
+                    RailIconButton(symbol: "lock.shield") { store.railPage = .admin }
                 }
-                RailIconButton(symbol: "person.2.fill") { railSheet = .family }
+                RailIconButton(symbol: "person.2.fill") { store.railPage = .family }
 
                 Menu {
                     Section(session.currentUser?.name ?? "Account") {
-                        Button { railSheet = .settings } label: {
+                        Button { store.railPage = .settings } label: {
                             Label("Settings", systemImage: "gearshape")
                         }
                         Button(role: .destructive) {
@@ -321,12 +405,6 @@ struct ServerRailView: View {
         .sheet(item: $railSheet) { which in
             Group {
                 switch which {
-                case .settings: SettingsView()
-                case .discover: DiscoveryView()
-                case .createServer: CreateServerSheet()
-                case .joinInvite: JoinByInviteSheet()
-                case .admin: AdminView()
-                case .family: FamilyView()
                 case .quickSwitch: QuickSwitcherView()
                 case .reorderServers: ReorderServersView()
                 }
@@ -507,6 +585,7 @@ struct ChannelListView: View {
                             .font(.zkSans(14, weight: .semibold))
                             .foregroundColor(Theme.ink1)
                             .lineLimit(1)
+                            .minimumScaleFactor(0.65)
                             .truncationMode(.tail)
                         Image(systemName: "chevron.down")
                             .font(.system(size: 13, weight: .semibold))
@@ -1115,9 +1194,7 @@ struct FriendsView: View {
             .navigationTitle("Friends")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
-                }
+                ToolbarItem(placement: .navigationBarLeading) { PageBackButton() }
             }
             .task { await store.loadRelationships() }
         }
@@ -1915,7 +1992,7 @@ struct CreateServerSheet: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Create a Server").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .navigationBarLeading) { PageBackButton() } }
         }
     }
 
@@ -1970,7 +2047,7 @@ struct JoinByInviteSheet: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Join a Server").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .navigationBarLeading) { PageBackButton() } }
         }
     }
 }
@@ -2003,7 +2080,7 @@ struct DiscoveryView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Discover").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .navigationBarLeading) { PageBackButton() } }
             .task { await store.loadDiscoverable() }
         }
     }
@@ -2088,7 +2165,7 @@ struct AdminView: View {
                 }
             }
             .navigationTitle("Admin Instance").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .navigationBarLeading) { PageBackButton() } }
             .sheet(isPresented: $showStorageItems) { StorageItemsView() }
             .sheet(item: $observingGuild) { g in AdminObserveView(guild: g) }
             .task { await store.loadAdminStats() }
@@ -2377,7 +2454,7 @@ struct FamilyView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Parental Controls").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .navigationBarLeading) { PageBackButton() } }
             .task { await store.loadFamily() }
             .sheet(item: $managingChild) { ChildControlsView(child: $0) }
         }
@@ -2505,6 +2582,9 @@ struct ChildControlsView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
 
                             ChildGuildsSection(child: child)
+                                .padding(.top, 10)
+
+                            ChildFriendsSection(child: child)
                                 .padding(.top, 10)
 
                             ChildDMsSection(child: child)
@@ -5249,11 +5329,25 @@ struct PeekMessageList: View {
                 }
                 if let atts = m.attachments, !atts.isEmpty {
                     ForEach(atts) { at in
-                        HStack(spacing: 5) {
-                            Image(systemName: "paperclip").font(.system(size: 10))
-                            Text(at.filename ?? "attachment").font(.zkSans(12)).lineLimit(1)
+                        if at.contentType?.hasPrefix("image/") == true, let url = assetURL(at.url) {
+                            // Inline image preview, like the real chat view.
+                            AsyncImage(url: url) { phase in
+                                if case .success(let image) = phase {
+                                    image.resizable().scaledToFit()
+                                } else {
+                                    Rectangle().fill(Theme.bg2)
+                                        .overlay(ProgressView().tint(Theme.accent))
+                                }
+                            }
+                            .frame(maxWidth: 220, maxHeight: 220, alignment: .leading)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        } else {
+                            HStack(spacing: 5) {
+                                Image(systemName: "paperclip").font(.system(size: 10))
+                                Text(at.filename ?? "attachment").font(.zkSans(12)).lineLimit(1)
+                            }
+                            .foregroundColor(Theme.accent)
                         }
-                        .foregroundColor(Theme.accent)
                     }
                 }
                 if let reacts = m.reactions, !reacts.isEmpty {
@@ -5442,6 +5536,186 @@ struct ChildDMMessagesView: View {
                     catch { self.error = (error as? APIError)?.message ?? error.localizedDescription }
                     loading = false
                 }
+        }
+    }
+}
+
+/// The supervised child's friends and blocked users: observe profiles and
+/// block/unblock on the child's behalf.
+struct ChildFriendsSection: View {
+    let child: FamilyUser
+    @State private var relationships: [ChildRelationship] = []
+    @State private var loading = true
+    @State private var error: String?
+    @State private var viewing: ChildRelationship?
+
+    private var friends: [ChildRelationship] { relationships.filter { $0.type == "friend" } }
+    private var blocked: [ChildRelationship] { relationships.filter { $0.type == "blocked" } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(child.name.uppercased())'S FRIENDS")
+                .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+            if loading {
+                ProgressView().tint(Theme.accent).frame(maxWidth: .infinity).padding(.vertical, 10)
+            } else if friends.isEmpty && blocked.isEmpty {
+                Text("No friends yet.")
+                    .font(.zkSans(13)).foregroundColor(Theme.ink3)
+            } else {
+                if !friends.isEmpty {
+                    card(friends)
+                }
+                if !blocked.isEmpty {
+                    Text("BLOCKED")
+                        .font(.zkSans(10, weight: .bold)).foregroundColor(Theme.ink4)
+                        .padding(.top, 4)
+                    card(blocked)
+                }
+                Text("Tap a person to view their profile, or block them on \(child.name)'s behalf.")
+                    .font(.zkSans(12)).foregroundColor(Theme.ink4)
+            }
+            if let error {
+                Text(error).font(.zkSans(12)).foregroundColor(Theme.dangerSoft)
+            }
+        }
+        .task { await load() }
+        .sheet(item: $viewing) { rel in
+            ChildFriendProfileSheet(child: child, relationship: rel) {
+                Task { await load() }
+            }
+        }
+    }
+
+    private func load() async {
+        do { relationships = try await APIClient.shared.familyChildFriends(childId: child.id) }
+        catch { self.error = (error as? APIError)?.message ?? error.localizedDescription }
+        loading = false
+    }
+
+    private func card(_ rows: [ChildRelationship]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(rows.enumerated()), id: \.element.id) { i, rel in
+                Button { viewing = rel } label: {
+                    HStack(spacing: 10) {
+                        Avatar(url: rel.user.avatarUrl, name: rel.user.name, size: 32,
+                               ringColor: Theme.bg2, toneId: rel.user.id)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(rel.user.name)
+                                .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1).lineLimit(1)
+                            if let u = rel.user.username {
+                                Text("@\(u)").font(.zkSans(11)).foregroundColor(Theme.ink3)
+                            }
+                        }
+                        Spacer()
+                        if rel.type == "blocked" {
+                            Text("Blocked").font(.zkSans(11)).foregroundColor(Theme.dangerSoft)
+                        }
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.ink4)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if i < rows.count - 1 { Divider().overlay(Theme.line) }
+            }
+        }
+        .background(Theme.bg2)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+/// Read-only profile of one of the child's contacts, with the parent-side
+/// block/unblock action.
+struct ChildFriendProfileSheet: View {
+    let child: FamilyUser
+    let relationship: ChildRelationship
+    var onChange: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var busy = false
+    @State private var error: String?
+
+    private var isBlocked: Bool { relationship.type == "blocked" }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 14) {
+                    Avatar(url: relationship.user.avatarUrl, name: relationship.user.name,
+                           size: 84, ringColor: Theme.bg1, toneId: relationship.user.id)
+                        .padding(.top, 18)
+                    VStack(spacing: 3) {
+                        Text(relationship.user.name)
+                            .font(.zkSans(20, weight: .semibold)).foregroundColor(Theme.ink1)
+                        if let u = relationship.user.username {
+                            Text("@\(u)").font(.zkSans(13)).foregroundColor(Theme.ink3)
+                        }
+                        if let status = relationship.user.customStatus, !status.isEmpty {
+                            Text(status).font(.zkSans(13)).foregroundColor(Theme.ink2)
+                                .padding(.top, 4)
+                        }
+                    }
+                    HStack(spacing: 6) {
+                        Image(systemName: isBlocked ? "hand.raised.fill" : "person.2.fill")
+                            .font(.system(size: 11))
+                        Text(isBlocked
+                             ? "Blocked for \(child.name)"
+                             : "Friends with \(child.name)")
+                            .font(.zkSans(12, weight: .medium))
+                    }
+                    .foregroundColor(isBlocked ? Theme.dangerSoft : Theme.ink2)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(Theme.bg2).clipShape(Capsule())
+
+                    Button {
+                        toggleBlock()
+                    } label: {
+                        Group {
+                            if busy {
+                                ProgressView().tint(.white)
+                            } else {
+                                Text(isBlocked ? "Unblock for \(child.name)" : "Block for \(child.name)")
+                                    .font(.zkSans(14, weight: .semibold))
+                            }
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(isBlocked ? Theme.bg3 : Theme.danger)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                    .disabled(busy)
+                    .padding(.top, 8)
+
+                    if !isBlocked {
+                        Text("Blocking removes the friendship and prevents messages and calls between them.")
+                            .font(.zkSans(12)).foregroundColor(Theme.ink4)
+                            .multilineTextAlignment(.center)
+                    }
+                    if let error {
+                        Text(error).font(.zkSans(13)).foregroundColor(Theme.dangerSoft)
+                    }
+                }
+                .padding(20)
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Profile").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+        }
+    }
+
+    private func toggleBlock() {
+        busy = true; error = nil
+        Task {
+            do {
+                try await APIClient.shared.familySetUserBlocked(
+                    childId: child.id, userId: relationship.user.id, blocked: !isBlocked)
+                onChange()
+                dismiss()
+            } catch {
+                self.error = (error as? APIError)?.message ?? error.localizedDescription
+            }
+            busy = false
         }
     }
 }

@@ -60,6 +60,10 @@ final class AppStore: ObservableObject {
         UserDefaults.standard.set(Array(collapsedFolders), forKey: "zk.collapsedFolders")
     }
 
+    /// Active full-page rail destination (Discover / Admin / Settings…).
+    /// Hosted inline on iPad/Mac (rail stays visible), full-screen on iPhone.
+    @Published var railPage: RailPage?
+
     /// Locally-collapsed channel-list categories (per-device, like the web).
     @Published var collapsedCategories: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "zk.collapsedCategories") ?? [])
     func toggleCategoryCollapsed(_ id: String) {
@@ -799,6 +803,7 @@ final class AppStore: ObservableObject {
         voiceChannelId = nil
         voiceStates = []
         voiceTokenMissing = false
+        if let uid = currentUserId { voiceStatesByUser.removeValue(forKey: uid) }
         popVoiceRoutes()
         if let id { CallManager.shared.callEnded(channelId: id, remoteEnded: false) }
         await voice.disconnect()
@@ -860,6 +865,7 @@ final class AppStore: ObservableObject {
         stageParticipants = []
         stageTokenMissing = false
         myStageSpeaker = false
+        if let uid = currentUserId { voiceStatesByUser.removeValue(forKey: uid) }
         popVoiceRoutes()
         await voice.disconnect()
         if let id { await api.leaveStage(channelId: id) }

@@ -966,6 +966,22 @@ extension APIClient {
             try await sendVoid("DELETE", "/family/children/\(childId)/blocked-guilds/\(guildId)")
         }
     }
+    /// The child's relationships (friends, requests, blocks).
+    func familyChildFriends(childId: String) async throws -> [ChildRelationship] {
+        let wrap: ChildRelationshipsWrap = try await send("GET", "/family/children/\(childId)/friends")
+        return wrap.relationships
+    }
+    /// Block / unblock a user on the child's behalf (severs friendship,
+    /// prevents DMs and calls both ways).
+    func familySetUserBlocked(childId: String, userId: String, blocked: Bool) async throws {
+        if blocked {
+            let body = try JSONSerialization.data(withJSONObject: ["userId": userId])
+            try await sendVoid("POST", "/family/children/\(childId)/blocked-users", bodyData: body)
+        } else {
+            try await sendVoid("DELETE", "/family/children/\(childId)/blocked-users/\(userId)")
+        }
+    }
+
     /// The child's 1:1 DM conversations.
     func familyChildDMs(childId: String) async throws -> [ChildDM] {
         let wrap: ChildDMsWrap = try await send("GET", "/family/children/\(childId)/channels")

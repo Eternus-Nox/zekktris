@@ -230,10 +230,6 @@ struct VoiceChannelView: View {
     let channel: Channel
 
     @State private var ringSpin = false
-    /// Drives the slow orbit of the whole participant constellation around
-    /// the black hole (web .zk-orbit: 90s/revolution; seats counter-rotate
-    /// so avatars stay upright).
-    @State private var orbit = false
 
     /// Participants currently being "swallowed" by the black hole — a leave
     /// animation that drags the tile into the center while it shrinks and
@@ -281,7 +277,6 @@ struct VoiceChannelView: View {
         .background(Color.black)
         .onAppear {
             withAnimation(.linear(duration: 60).repeatForever(autoreverses: false)) { ringSpin = true }
-            withAnimation(.linear(duration: 90).repeatForever(autoreverses: false)) { orbit = true }
             previousStates = store.voiceStates
         }
         .onChange(of: store.voiceStates) { newStates in
@@ -351,32 +346,45 @@ struct VoiceChannelView: View {
                 .position(x: cx, y: cy)
 
             // The constellation slowly orbits the black hole as one rigid
-            // body; each seat counter-rotates so faces and names stay
-            // upright (web .zk-orbit / .zk-orbit-counter).
-            ZStack {
-                ForEach(Array(store.voiceStates.enumerated()), id: \.element.id) { idx, vs in
-                    participantSeat(vs)
-                        .rotationEffect(.degrees(orbit ? -360 : 0))
-                        .position(seatPosition(index: idx, total: store.voiceStates.count,
-                                               side: side, cx: cx, cy: cy))
-                }
+            // body (web .zk-orbit: 90s/rev). The angle derives from the
+            // wall clock each frame, and every seat counter-rotates by the
+            // exact negation — so avatars stay upright, and a seat that
+            // mounts mid-orbit is in perfect phase (no spin drift).
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+                let angle = Self.orbitAngle(at: timeline.date)
+                ZStack {
+                    ForEach(Array(store.voiceStates.enumerated()), id: \.element.id) { idx, vs in
+                        participantSeat(vs)
+                            .rotationEffect(.degrees(-angle))
+                            .position(seatPosition(index: idx, total: store.voiceStates.count,
+                                                   side: side, cx: cx, cy: cy))
+                    }
 
-                // Leavers spiral into the singularity.
-                ForEach(swallowed) { seat in
-                    let consumed = swallowProgress.contains(seat.id)
-                    swallowTile(seat)
-                        .rotationEffect(.degrees(consumed ? 720 : 0))
-                        .scaleEffect(consumed ? 0.05 : 1)
-                        .opacity(consumed ? 0 : 1)
-                        .position(consumed
-                                  ? CGPoint(x: cx, y: cy)
-                                  : seatPosition(index: seat.index, total: seat.total,
-                                                 side: side, cx: cx, cy: cy))
+                    // Leavers spiral into the singularity (their own 720°
+                    // wind-up replaces the upright counter-rotation).
+                    ForEach(swallowed) { seat in
+                        let consumed = swallowProgress.contains(seat.id)
+                        swallowTile(seat)
+                            .rotationEffect(.degrees(consumed ? 720 : -angle))
+                            .scaleEffect(consumed ? 0.05 : 1)
+                            .opacity(consumed ? 0 : 1)
+                            .position(consumed
+                                      ? CGPoint(x: cx, y: cy)
+                                      : seatPosition(index: seat.index, total: seat.total,
+                                                     side: side, cx: cx, cy: cy))
+                    }
                 }
+                .rotationEffect(.degrees(angle))
             }
-            .rotationEffect(.degrees(orbit ? 360 : 0))
         }
         .frame(width: size.width, height: size.height)
+    }
+
+    /// Shared orbit phase: 360° per 90s, derived from the wall clock so
+    /// every view computes the identical angle.
+    static func orbitAngle(at date: Date) -> Double {
+        let t = date.timeIntervalSinceReferenceDate
+        return (t.truncatingRemainder(dividingBy: 90) / 90) * 360
     }
 
     /// Simplified avatar-only tile used for the swallow animation.

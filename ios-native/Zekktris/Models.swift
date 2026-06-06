@@ -771,3 +771,13 @@ struct ChildDM: Codable, Identifiable, Hashable {
     var recipient: ChildDMRecipient?
 }
 struct ChildDMsWrap: Codable { let channels: [ChildDM] }
+
+/// One of the supervised child's relationships (friend / blocked / pending),
+/// as returned by /family/children/:id/friends.
+struct ChildRelationship: Codable, Identifiable, Hashable {
+    let type: String          // friend | incoming_request | outgoing_request | blocked
+    var createdAt: String?
+    var user: PublicUser
+    var id: String { user.id }
+}
+struct ChildRelationshipsWrap: Codable { let relationships: [ChildRelationship] }

@@ -318,6 +318,42 @@ familyRouter.delete(
   },
 );
 
+// ── Blocked users (parent, on the child's behalf) ────────────────────────
+//
+// Mirrors the child doing it themselves via /users/@me/relationships/blocks:
+// blocking severs any friendship and prevents DMs/calls both ways. Exposed
+// to the supervising parent so they can act directly from the oversight
+// panel (same trust model as blocked-guilds above).
+
+familyRouter.post(
+  '/family/children/:childId/blocked-users',
+  requireAuth,
+  validate('param', childParam),
+  validate('json', z.object({ userId: snowflakeSchema })),
+  async (c) => {
+    const parentId = requireUserId(c);
+    const childId = BigInt(c.req.valid('param').childId);
+    await supervision.assertParentOf(parentId, childId);
+    const { blockUser } = await import('../services/relationships');
+    await blockUser(childId, BigInt(c.req.valid('json').userId));
+    return c.json({ ok: true });
+  },
+);
+
+familyRouter.delete(
+  '/family/children/:childId/blocked-users/:userId',
+  requireAuth,
+  validate('param', z.object({ childId: snowflakeSchema, userId: snowflakeSchema })),
+  async (c) => {
+    const parentId = requireUserId(c);
+    const { childId, userId } = c.req.valid('param');
+    await supervision.assertParentOf(parentId, BigInt(childId));
+    const { unblockUser } = await import('../services/relationships');
+    await unblockUser(BigInt(childId), BigInt(userId));
+    return c.json({ ok: true });
+  },
+);
+
 // ── Approval requests ────────────────────────────────────────────────────
 
 /** Parent: pending requests across all supervised children. */
