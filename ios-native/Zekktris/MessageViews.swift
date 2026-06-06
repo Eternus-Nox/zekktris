@@ -497,6 +497,8 @@ struct MessageListView: View {
     }
 
     private func send() {
+        // Sending dismisses the keyboard (mirrors iMessage/Discord).
+        composerFocused = false
         if let pending = pendingImage {
             let caption = draft
             draft = ""

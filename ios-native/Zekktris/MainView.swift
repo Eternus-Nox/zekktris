@@ -315,6 +315,11 @@ struct ServerRailView: View {
     @State private var railSheet: RailSheet?
     @State private var renamingFolder: GuildFolder?
     @State private var renameText = ""
+    /// Web parity (body.zk-keyboard-open hides .zk-rail-actions): the
+    /// bottom action cluster ducks out while the keyboard is up.
+    @State private var keyboardVisible = false
+    /// Parental controls entry is opt-in (Settings → Features).
+    @AppStorage("zk.showFamily") private var showFamilyButton = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -382,14 +387,17 @@ struct ServerRailView: View {
 
             Divider().overlay(Theme.line)
 
+            if !keyboardVisible {
             VStack(spacing: 10) {
                 if session.currentUser?.isAdmin == true {
                     RailIconButton(symbol: "lock.shield", active: store.railPage == .admin) {
                         store.toggleRailPage(.admin)
                     }
                 }
-                RailIconButton(symbol: "person.2.fill", active: store.railPage == .family) {
-                    store.toggleRailPage(.family)
+                if showFamilyButton {
+                    RailIconButton(symbol: "person.2.fill", active: store.railPage == .family) {
+                        store.toggleRailPage(.family)
+                    }
                 }
 
                 Menu {
@@ -417,6 +425,13 @@ struct ServerRailView: View {
                 }
             }
             .padding(.vertical, 12)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            withAnimation(.easeOut(duration: 0.18)) { keyboardVisible = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            withAnimation(.easeOut(duration: 0.18)) { keyboardVisible = false }
         }
         .sheet(item: $railSheet) { which in
             Group {
@@ -1156,8 +1171,23 @@ private struct DMRow: View {
                 name: dm.dmTitle,
                 size: 36,
                 status: store.status(for: dm.dmAvatarUser?.id, fallback: dm.dmAvatarUser?.status),
-                ringColor: Theme.bg2
+                ringColor: Theme.bg2,
+                toneId: dm.dmAvatarUser?.id
             )
+            // Encrypted conversation: themed lock pinned to the avatar's
+            // top-right, matching the message-view header.
+            .overlay(alignment: .topTrailing) {
+                if dm.isE2EE {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundColor(Theme.accent)
+                        .frame(width: 13, height: 13)
+                        .background(Theme.bg2)
+                        .clipShape(Circle())
+                        .overlay(Circle().strokeBorder(Theme.accent.opacity(0.45), lineWidth: 1))
+                        .offset(x: 3, y: -3)
+                }
+            }
             Text(dm.dmTitle)
                 .font(.zkSans(15, weight: unread ? .semibold : .regular))
                 .foregroundColor(unread ? Theme.ink1 : Theme.ink2)
@@ -1396,6 +1426,10 @@ struct SettingsView: View {
     @State private var showChangeUsername = false
     @State private var showChangeEmail = false
     @State private var faceIDOn = false
+    @State private var avatarPickerItem: PhotosPickerItem?
+    @State private var bannerPickerItem: PhotosPickerItem?
+    @State private var imageUploading = false
+    @AppStorage("zk.showFamily") private var showFamilyButton = false
 
     private let statuses: [(String, String, Color)] = [
         ("Online", "online", Theme.online),
@@ -1414,6 +1448,7 @@ struct SettingsView: View {
                     customStatusSection
                     decorationSection
                     appearanceSection
+                    featuresSection
                     securitySection
                     accountSection
                 }
@@ -1437,24 +1472,89 @@ struct SettingsView: View {
     }
 
     private var profileHeader: some View {
-        HStack(spacing: 12) {
-            Avatar(
-                url: session.currentUser?.avatarUrl,
-                name: session.currentUser?.name ?? "?",
-                size: 56,
-                status: session.currentUser?.status
-            )
-            VStack(alignment: .leading, spacing: 2) {
-                Text(session.currentUser?.name ?? "You")
-                    .font(.zkSans(18, weight: .semibold))
-                    .foregroundColor(Theme.ink1)
-                if let username = session.currentUser?.username {
-                    Text("@\(username)")
-                        .font(.zkSans(13))
-                        .foregroundColor(Theme.ink3)
+        VStack(alignment: .leading, spacing: 0) {
+            // Profile banner — tap (or the camera chip) to change.
+            ZStack(alignment: .bottomTrailing) {
+                Group {
+                    if let banner = assetURL(session.currentUser?.bannerUrl) {
+                        AsyncImage(url: banner) { phase in
+                            if case .success(let image) = phase {
+                                image.resizable().scaledToFill()
+                            } else { Theme.bg3 }
+                        }
+                    } else {
+                        LinearGradient(colors: [Theme.accent.opacity(0.35), Theme.accent2.opacity(0.25)],
+                                       startPoint: .topLeading, endPoint: .bottomTrailing)
+                    }
                 }
+                .frame(height: 92)
+                .frame(maxWidth: .infinity)
+                .clipped()
+
+                PhotosPicker(selection: $bannerPickerItem, matching: .images) {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(Theme.ink1)
+                        .frame(width: 26, height: 26)
+                        .background(Color.black.opacity(0.55))
+                        .clipShape(Circle())
+                }
+                .padding(8)
             }
-            Spacer()
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            HStack(spacing: 12) {
+                PhotosPicker(selection: $avatarPickerItem, matching: .images) {
+                    Avatar(
+                        url: session.currentUser?.avatarUrl,
+                        name: session.currentUser?.name ?? "?",
+                        size: 56,
+                        status: session.currentUser?.status,
+                        toneId: session.currentUser?.id
+                    )
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "camera.fill")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(Theme.ink1)
+                            .frame(width: 17, height: 17)
+                            .background(Color.black.opacity(0.65))
+                            .clipShape(Circle())
+                    }
+                }
+                .buttonStyle(.plain)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.currentUser?.name ?? "You")
+                        .font(.zkSans(18, weight: .semibold))
+                        .foregroundColor(Theme.ink1)
+                    if let username = session.currentUser?.username {
+                        Text("@\(username)")
+                            .font(.zkSans(13))
+                            .foregroundColor(Theme.ink3)
+                    }
+                }
+                Spacer()
+                if imageUploading { ProgressView().tint(Theme.accent) }
+            }
+            .padding(.top, 10)
+        }
+        .onChange(of: avatarPickerItem) { item in uploadProfileImage(item, kind: "avatar") }
+        .onChange(of: bannerPickerItem) { item in uploadProfileImage(item, kind: "banner") }
+    }
+
+    /// Load the picked photo and push it to the matching profile endpoint.
+    private func uploadProfileImage(_ item: PhotosPickerItem?, kind: String) {
+        guard let item else { return }
+        imageUploading = true
+        Task {
+            defer { imageUploading = false; avatarPickerItem = nil; bannerPickerItem = nil }
+            guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+            let type = item.supportedContentTypes.first
+            let ext = type?.preferredFilenameExtension ?? "jpg"
+            let mime = type?.preferredMIMEType ?? "image/jpeg"
+            let err = kind == "banner"
+                ? await session.uploadBanner(filename: "banner.\(ext)", contentType: mime, data: data)
+                : await session.uploadAvatar(filename: "avatar.\(ext)", contentType: mime, data: data)
+            if let err { store.errorText = err }
         }
     }
 
@@ -1630,6 +1730,23 @@ struct SettingsView: View {
         }
     }
 
+    private var featuresSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("FEATURES")
+            Toggle(isOn: $showFamilyButton) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Parental controls")
+                        .font(.zkSans(15)).foregroundColor(Theme.ink1)
+                    Text("Show the Family button on the server rail.")
+                        .font(.zkSans(11)).foregroundColor(Theme.ink4)
+                }
+            }
+            .tint(Theme.accent)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
     private var securitySection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("SECURITY")
@@ -1684,15 +1801,6 @@ struct SettingsView: View {
             }
             .buttonStyle(.plain)
 
-            Button(role: .destructive) {
-                dismiss()
-                session.logout()
-            } label: {
-                Label("Log out", systemImage: "rectangle.portrait.and.arrow.right")
-                    .font(.zkSans(15, weight: .medium))
-                    .foregroundColor(Theme.danger)
-            }
-            .padding(.top, 4)
         }
         .sheet(isPresented: $showChangePassword) { ChangePasswordSheet() }
         .sheet(isPresented: $showChangeUsername) { ChangeUsernameSheet() }
@@ -2473,7 +2581,7 @@ struct FamilyView: View {
             .navigationTitle("Parental Controls").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .navigationBarLeading) { PageBackButton() } }
             .task { await store.loadFamily() }
-            .sheet(item: $managingChild) { ChildControlsView(child: $0) }
+            .fullScreenCover(item: $managingChild) { ChildControlsView(child: $0) }
         }
     }
 
@@ -2614,7 +2722,15 @@ struct ChildControlsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle(child.name).navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button { dismiss() } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(Theme.ink2)
+                    }
+                }
+            }
             .task { await store.loadChildRestrictions(child.id) }
         }
     }
@@ -3189,6 +3305,9 @@ struct GuildSettingsView: View {
     @State private var showStickerMgr = false
     @State private var confirmDelete = false
     @State private var confirmLeave = false
+    @State private var guildIconItem: PhotosPickerItem?
+    @State private var guildBannerItem: PhotosPickerItem?
+    @State private var guildImageUploading = false
 
     private var isOwner: Bool { store.isGuildOwner }
     private var isAdmin: Bool { store.canManageGuild }
@@ -3240,11 +3359,78 @@ struct GuildSettingsView: View {
         Text(t).font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
     }
 
+    /// Load the picked photo and push it as the guild icon or banner.
+    private func uploadGuildImage(_ item: PhotosPickerItem?, kind: String) {
+        guard let item else { return }
+        guildImageUploading = true
+        Task {
+            defer { guildImageUploading = false; guildIconItem = nil; guildBannerItem = nil }
+            guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+            let type = item.supportedContentTypes.first
+            let ext = type?.preferredFilenameExtension ?? "jpg"
+            let mime = type?.preferredMIMEType ?? "image/jpeg"
+            if let err = await store.uploadGuildImage(
+                kind: kind, filename: "\(kind).\(ext)", contentType: mime, data: data) {
+                saveError = err
+            }
+        }
+    }
+
     private var overviewSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             sectionHeader("OVERVIEW")
+            if isAdmin {
+                // Server banner — shown in the channel sidebar; tap to change.
+                ZStack(alignment: .bottomTrailing) {
+                    Group {
+                        if let banner = assetURL(store.selectedGuild?.bannerUrl) {
+                            AsyncImage(url: banner) { phase in
+                                if case .success(let image) = phase {
+                                    image.resizable().scaledToFill()
+                                } else { Theme.bg3 }
+                            }
+                        } else {
+                            LinearGradient(colors: [Theme.accent.opacity(0.3), Theme.accent2.opacity(0.2)],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing)
+                        }
+                    }
+                    .frame(height: 84)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+
+                    PhotosPicker(selection: $guildBannerItem, matching: .images) {
+                        Image(systemName: "camera.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(Theme.ink1)
+                            .frame(width: 26, height: 26)
+                            .background(Color.black.opacity(0.55))
+                            .clipShape(Circle())
+                    }
+                    .padding(8)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
             HStack(spacing: 12) {
-                Avatar(url: store.selectedGuild?.iconUrl, name: name.isEmpty ? "S" : name, size: 56, ringColor: Theme.bg1)
+                Group {
+                    if isAdmin {
+                        PhotosPicker(selection: $guildIconItem, matching: .images) {
+                            Avatar(url: store.selectedGuild?.iconUrl, name: name.isEmpty ? "S" : name,
+                                   size: 56, ringColor: Theme.bg1, toneId: store.selectedGuild?.id)
+                                .overlay(alignment: .bottomTrailing) {
+                                    Image(systemName: "camera.fill")
+                                        .font(.system(size: 8, weight: .bold))
+                                        .foregroundColor(Theme.ink1)
+                                        .frame(width: 17, height: 17)
+                                        .background(Color.black.opacity(0.65))
+                                        .clipShape(Circle())
+                                }
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Avatar(url: store.selectedGuild?.iconUrl, name: name.isEmpty ? "S" : name,
+                               size: 56, ringColor: Theme.bg1, toneId: store.selectedGuild?.id)
+                    }
+                }
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Server Name").font(.zkSans(11, weight: .semibold)).foregroundColor(Theme.ink4)
                     TextField("Server name", text: $name)
@@ -3252,7 +3438,10 @@ struct GuildSettingsView: View {
                         .disabled(!isAdmin)
                         .padding(10).background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
                 }
+                if guildImageUploading { ProgressView().tint(Theme.accent) }
             }
+            .onChange(of: guildIconItem) { item in uploadGuildImage(item, kind: "icon") }
+            .onChange(of: guildBannerItem) { item in uploadGuildImage(item, kind: "banner") }
             VStack(alignment: .leading, spacing: 4) {
                 Text("Description").font(.zkSans(11, weight: .semibold)).foregroundColor(Theme.ink4)
                 TextField("What's this server about?", text: $guildDescription, axis: .vertical)
@@ -4827,6 +5016,7 @@ struct OnboardingView: View {
 struct StorageItemsView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
+    @State private var previewing: StorageItem?
 
     var body: some View {
         NavigationStack {
@@ -4849,7 +5039,8 @@ struct StorageItemsView: View {
                             Text("No files.").font(.zkSans(14)).foregroundColor(Theme.ink3).padding(.top, 40)
                         } else {
                             ForEach(store.storageItems) { item in
-                                storageRow(item)
+                                Button { previewing = item } label: { storageRow(item) }
+                                    .buttonStyle(.plain)
                             }
                             if store.storageHasMore {
                                 Button { Task { await store.loadStorageItems(reset: false) } } label: {
@@ -4868,6 +5059,7 @@ struct StorageItemsView: View {
             .navigationTitle("Files").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
             .task { if store.storageItems.isEmpty { await store.loadStorageItems(reset: true) } }
+            .sheet(item: $previewing) { StorageItemPreview(item: $0) }
         }
     }
 
@@ -5735,4 +5927,109 @@ struct ChildFriendProfileSheet: View {
             busy = false
         }
     }
+}
+
+/// Preview for one stored file (admin Files browser): images render
+/// inline (served from /cdn/<id>/<filename>); other formats show a
+/// metadata card.
+struct StorageItemPreview: View {
+    let item: StorageItem
+    @Environment(\.dismiss) private var dismiss
+
+    private var fileURL: URL? {
+        guard let name = item.filename,
+              let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+        else { return nil }
+        return assetURL("/cdn/\(item.id)/\(encoded)")
+    }
+    private var isImage: Bool {
+        let f = (item.format ?? (item.filename as NSString?)?.pathExtension ?? "").lowercased()
+        return ["png", "jpg", "jpeg", "gif", "webp", "heic", "bmp"].contains(f)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 14) {
+                    if isImage, let url = fileURL {
+                        AsyncImage(url: url) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image.resizable().scaledToFit()
+                            case .failure:
+                                VStack(spacing: 6) {
+                                    Image(systemName: "eye.slash")
+                                        .font(.system(size: 26)).foregroundColor(Theme.ink4)
+                                    Text("Couldn't load preview")
+                                        .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                                }
+                                .frame(height: 180)
+                            default:
+                                ProgressView().tint(Theme.accent).frame(height: 180)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .background(Theme.bg0)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    } else {
+                        VStack(spacing: 8) {
+                            Image(systemName: "doc")
+                                .font(.system(size: 40, weight: .light)).foregroundColor(Theme.ink3)
+                            Text("No inline preview for this format")
+                                .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 36)
+                        .background(Theme.bg2)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+
+                    VStack(spacing: 0) {
+                        metaRow("Filename", item.filename ?? "(unnamed)")
+                        Divider().overlay(Theme.line)
+                        metaRow("Category", item.category.capitalized)
+                        Divider().overlay(Theme.line)
+                        metaRow("Size", storageByteString(item.sizeBytes))
+                        if let f = item.format {
+                            Divider().overlay(Theme.line)
+                            metaRow("Format", f.uppercased())
+                        }
+                        Divider().overlay(Theme.line)
+                        metaRow("Referenced", item.referenced ? "Yes" : "No (orphaned)")
+                        if item.compressed == true {
+                            Divider().overlay(Theme.line)
+                            metaRow("Compressed", "Yes")
+                        }
+                    }
+                    .background(Theme.bg2)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .padding(14)
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Preview").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+        }
+    }
+
+    private func metaRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label).font(.zkSans(13)).foregroundColor(Theme.ink4)
+            Spacer()
+            Text(value).font(.zkSans(13, weight: .medium)).foregroundColor(Theme.ink1)
+                .lineLimit(1).truncationMode(.middle)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+    }
+}
+
+
+/// Shared byte formatter for the storage browser.
+func storageByteString(_ bytes: Int) -> String {
+    let kb = 1024.0, mb = kb * 1024, gb = mb * 1024
+    let b = Double(bytes)
+    if b >= gb { return String(format: "%.2f GB", b / gb) }
+    if b >= mb { return String(format: "%.1f MB", b / mb) }
+    if b >= kb { return String(format: "%.0f KB", b / kb) }
+    return "\(bytes) B"
 }

@@ -827,6 +827,19 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// Upload a new icon/banner for the selected guild (MANAGE_GUILD).
+    func uploadGuildImage(kind: String, filename: String, contentType: String, data: Data) async -> String? {
+        guard let guild = selectedGuild else { return "No server selected." }
+        do {
+            let updated: Guild = kind == "banner"
+                ? try await api.uploadGuildBanner(guildId: guild.id, filename: filename, contentType: contentType, data: data)
+                : try await api.uploadGuildIcon(guildId: guild.id, filename: filename, contentType: contentType, data: data)
+            if let i = guilds.firstIndex(where: { $0.id == updated.id }) { guilds[i] = updated }
+            selectedGuild = updated
+            return nil
+        } catch { return (error as? APIError)?.message ?? error.localizedDescription }
+    }
+
     // MARK: Stage channels
 
     func joinStage(_ channel: Channel) async {
@@ -953,8 +966,16 @@ final class AppStore: ObservableObject {
         }
         guard let active = voiceChannelId else { return }
         let wasInCall = voiceStates.contains { $0.userId == vs.userId }
-        voiceStates.removeAll { $0.userId == vs.userId }
-        if vs.channelId == active { voiceStates.append(vs) }
+        // Stable join order: update IN PLACE (planetary seating — first-in
+        // stays closest; remove+append used to shuffle a user to the
+        // outermost orbit on every mute toggle). Removals compact the
+        // order so the next joiner inherits the freed orbit.
+        if let i = voiceStates.firstIndex(where: { $0.userId == vs.userId }) {
+            if vs.channelId == active { voiceStates[i] = vs }
+            else { voiceStates.remove(at: i) }
+        } else if vs.channelId == active {
+            voiceStates.append(vs)
+        }
 
         // Callee picked up our outgoing 1:1 — flip the system call state.
         if !wasInCall, vs.channelId == active, vs.userId != currentUserId,

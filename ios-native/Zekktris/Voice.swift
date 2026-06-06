@@ -23,6 +23,12 @@ final class VoiceManager: ObservableObject {
     private var wasMutedBeforeDeafen = false
     /// Whether the local camera is publishing.
     @Published private(set) var isCameraOn = false
+    /// Whether the local screen-share track is publishing (in-app capture).
+    @Published private(set) var isScreenSharing = false
+    /// Remote screen-share tracks keyed by user id (kept separate from
+    /// camera tracks so one doesn't clobber the other).
+    @Published private(set) var screenTracks: [String: VideoTrack] = [:]
+    @Published private(set) var localScreenTrack: VideoTrack?
     /// The local camera track (captured on publish) and remote video tracks
     /// keyed by user id, so the arena can render video tiles.
     @Published private(set) var localVideoTrack: VideoTrack?
@@ -108,6 +114,30 @@ final class VoiceManager: ObservableObject {
         isDeafened = next
     }
 
+    /// Toggle in-app screen sharing. Captures THIS app's screen via
+    /// ReplayKit; sharing the whole device (other apps / home screen)
+    /// requires a Broadcast Upload Extension target, which has to be
+    /// added in Xcode (separate follow-up).
+    func toggleScreenShare() async {
+        let next = !isScreenSharing
+        do {
+            try await room?.localParticipant.setScreenShare(enabled: next)
+            isScreenSharing = next
+            if !next { localScreenTrack = nil }
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Switch the publishing camera between front and back.
+    func flipCamera() async {
+        guard isCameraOn,
+              let track = localVideoTrack as? LocalVideoTrack,
+              let capturer = track.capturer as? CameraCapturer else { return }
+        do { try await capturer.switchCameraPosition() }
+        catch { lastError = error.localizedDescription }
+    }
+
     /// Publish/unpublish the local camera (front camera, default options).
     func toggleCamera() async {
         let next = !isCameraOn
@@ -144,8 +174,11 @@ final class VoiceManager: ObservableObject {
         isMuted = false
         isDeafened = false
         isCameraOn = false
+        isScreenSharing = false
         localVideoTrack = nil
+        localScreenTrack = nil
         remoteVideoTracks.removeAll()
+        screenTracks.removeAll()
         speakingUserIds = []
         audioPubs.removeAll()
     }
@@ -192,7 +225,11 @@ extension VoiceManager: RoomDelegate {
                     try? await publication.set(enabled: false)
                 }
             } else if let vt = publication.track as? VideoTrack {
-                self.remoteVideoTracks[uid] = vt
+                if publication.source == .screenShareVideo {
+                    self.screenTracks[uid] = vt
+                } else {
+                    self.remoteVideoTracks[uid] = vt
+                }
             }
         }
     }
@@ -203,6 +240,8 @@ extension VoiceManager: RoomDelegate {
             guard let uid else { return }
             if publication.track is AudioTrack {
                 self.audioPubs.removeValue(forKey: uid)
+            } else if publication.source == .screenShareVideo {
+                self.screenTracks.removeValue(forKey: uid)
             } else {
                 self.remoteVideoTracks.removeValue(forKey: uid)
             }
@@ -211,13 +250,25 @@ extension VoiceManager: RoomDelegate {
 
     nonisolated func room(_ room: Room, participant: LocalParticipant, didPublishTrack publication: LocalTrackPublication) {
         Task { @MainActor in
-            if let vt = publication.track as? VideoTrack { self.localVideoTrack = vt }
+            if let vt = publication.track as? VideoTrack {
+                if publication.source == .screenShareVideo {
+                    self.localScreenTrack = vt
+                } else {
+                    self.localVideoTrack = vt
+                }
+            }
         }
     }
 
     nonisolated func room(_ room: Room, participant: LocalParticipant, didUnpublishTrack publication: LocalTrackPublication) {
         Task { @MainActor in
-            if publication.track is VideoTrack { self.localVideoTrack = nil }
+            if publication.track is VideoTrack {
+                if publication.source == .screenShareVideo {
+                    self.localScreenTrack = nil
+                } else {
+                    self.localVideoTrack = nil
+                }
+            }
         }
     }
 }
@@ -254,7 +305,14 @@ struct VoiceChannelView: View {
             ZStack {
                 Color.black
                 StarfieldView()
-                arena
+                VStack(spacing: 0) {
+                    if !videoParticipants.isEmpty || !screenSharers.isEmpty {
+                        videoStrip
+                            .padding(.horizontal, 14)
+                            .padding(.top, 12)
+                    }
+                    arena
+                }
                 VStack {
                     statusBanner
                         .padding(.horizontal, 16)
@@ -318,6 +376,102 @@ struct VoiceChannelView: View {
         }
     }
 
+    /// Participants whose camera is publishing right now (self included).
+    private var videoParticipants: [VoiceState] {
+        store.voiceStates.filter { vs in
+            voice.videoTrack(for: vs.userId, isSelf: vs.userId == session.currentUser?.id) != nil
+        }
+    }
+
+    /// Participants sharing their screen (self included).
+    private var screenSharers: [VoiceState] {
+        store.voiceStates.filter { vs in
+            let isSelf = vs.userId == session.currentUser?.id
+            return (isSelf ? voice.localScreenTrack : voice.screenTracks[vs.userId]) != nil
+        }
+    }
+
+    /// Large SQUARE video tiles — always 1:1, scaling from ~220pt up to
+    /// 512pt with the window, side by side when several cameras are on.
+    /// A tile disappears the moment its camera stops publishing (the
+    /// track unpublish empties videoParticipants).
+    private var videoStrip: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 220, maximum: 512), spacing: 10)], spacing: 10) {
+            ForEach(screenSharers) { vs in
+                screenTile(vs)
+            }
+            ForEach(videoParticipants) { vs in
+                videoTile(vs)
+            }
+        }
+    }
+
+    /// Screen-share tile: same square cell, but the content letterboxes
+    /// (screens are landscape; cropping would cut content off).
+    @ViewBuilder
+    private func screenTile(_ vs: VoiceState) -> some View {
+        let isSelf = vs.userId == session.currentUser?.id
+        let name = isSelf ? "Your screen" : "\(store.memberName(vs.userId) ?? "Member")'s screen"
+        ZStack(alignment: .bottomLeading) {
+            if let track = isSelf ? voice.localScreenTrack : voice.screenTracks[vs.userId] {
+                SwiftUIVideoView(track, layoutMode: .fit)
+            }
+            HStack(spacing: 4) {
+                Image(systemName: "rectangle.on.rectangle")
+                    .font(.system(size: 9, weight: .semibold))
+                Text(name)
+                    .font(.zkSans(12, weight: .medium))
+            }
+            .foregroundColor(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Color.black.opacity(0.55))
+            .clipShape(Capsule())
+            .padding(8)
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .frame(maxWidth: 512, maxHeight: 512)
+        .background(Theme.bg0)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Theme.accent2.opacity(0.6), lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func videoTile(_ vs: VoiceState) -> some View {
+        let isSelf = vs.userId == session.currentUser?.id
+        let name: String = {
+            if isSelf { return session.currentUser?.name ?? "You" }
+            if channel.isDM, let u = channel.recipients?.first(where: { $0.id == vs.userId }) { return u.name }
+            return store.memberName(vs.userId) ?? "Member"
+        }()
+        let speaking = voice.speakingUserIds.contains(vs.userId)
+        ZStack(alignment: .bottomLeading) {
+            if let vt = voice.videoTrack(for: vs.userId, isSelf: isSelf) {
+                SwiftUIVideoView(vt)
+            }
+            Text(name)
+                .font(.zkSans(12, weight: .medium))
+                .foregroundColor(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.black.opacity(0.55))
+                .clipShape(Capsule())
+                .padding(8)
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .frame(maxWidth: 512, maxHeight: 512)
+        .background(Theme.bg0)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(speaking ? Theme.accent.opacity(0.8) : Theme.line,
+                              lineWidth: speaking ? 2 : 1)
+        )
+    }
+
     /// The galaxy arena: rotating rings, a central glow, the black hole, and
     /// participants laid out on a golden-angle spiral. Mirrors the web VoiceView.
     private var arena: some View {
@@ -342,7 +496,7 @@ struct VoiceChannelView: View {
                 .position(x: cx, y: cy)
 
             BlackHoleView()
-                .frame(width: 32, height: 32)
+                .frame(width: 22, height: 22)
                 .position(x: cx, y: cy)
 
             // The constellation slowly orbits the black hole as one rigid
@@ -413,8 +567,11 @@ struct VoiceChannelView: View {
     /// Galaxy/spiral placement using the golden angle, with a uniform shrink
     /// when the outermost tier would clip the arena (matches arenaScale).
     private func seatPosition(index: Int, total: Int, side: CGFloat, cx: CGFloat, cy: CGFloat) -> CGPoint {
-        let innerR: CGFloat = 12
-        let tierStep: CGFloat = 8
+        // Planetary spacing: each joiner sits on a clearly separated orbit —
+        // first-in closest to the black hole (index = join order; the store
+        // keeps voiceStates in stable join order and compacts on leave).
+        let innerR: CGFloat = 16
+        let tierStep: CGFloat = 13
         let goldenDeg: CGFloat = 137.5
         let maxR: CGFloat = 46
         let outerR = innerR + CGFloat(max(total - 1, 0)) * tierStep
@@ -495,41 +652,38 @@ struct VoiceChannelView: View {
         }()
         return VStack(spacing: 5) {
             ZStack {
-                if let vt = voice.videoTrack(for: vs.userId, isSelf: isSelf) {
-                    SwiftUIVideoView(vt)
-                        .frame(width: 54, height: 54)
-                        .clipShape(Circle())
-                } else {
-                    Avatar(url: avatarURL, name: displayName, size: 54,
-                           ringColor: Color.white.opacity(0.12), toneId: vs.userId)
-                }
+                Avatar(url: avatarURL, name: displayName, size: 54,
+                       ringColor: Color.white.opacity(0.12), toneId: vs.userId)
             }
             // Web .zk-alien-pulse: plasma sonar ripple while speaking.
             .alienPulse(isSpeaking)
             .shadow(color: Color.black.opacity(0.4), radius: 6)
-
-            HStack(spacing: 3) {
-                if vs.isMuted {
-                    Image(systemName: "mic.slash.fill")
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundColor(Theme.danger)
+            // Mute/deafen status as corner badges — the name pill keeps its
+            // full width so names never get shortened by the icons.
+            .overlay(alignment: .bottomTrailing) {
+                if vs.isMuted || voice.mutedForMe.contains(vs.userId) {
+                    Image(systemName: voice.mutedForMe.contains(vs.userId)
+                          ? "speaker.slash.fill" : "mic.slash.fill")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(vs.isMuted ? Theme.danger : Theme.ink2)
+                        .frame(width: 16, height: 16)
+                        .background(Color.black.opacity(0.75))
+                        .clipShape(Circle())
+                        .offset(x: 3, y: 3)
                 }
-                if voice.mutedForMe.contains(vs.userId) {
-                    Image(systemName: "speaker.slash.fill")
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundColor(Theme.ink3)
-                }
-                Text(displayName)
-                    .font(.zkSans(11, weight: .medium))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
             }
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(Color.black.opacity(0.55))
-            .clipShape(Capsule())
+
+            Text(displayName)
+                .font(.zkSans(11, weight: .medium))
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(Color.black.opacity(0.55))
+                .clipShape(Capsule())
         }
-        .frame(width: 86)
+        .frame(width: 92)
         .contentShape(Rectangle())
         .onTapGesture { if let u = tapUser { store.openProfile(u) } }
         .contextMenu {
@@ -577,6 +731,28 @@ struct VoiceChannelView: View {
                 Image(systemName: voice.isCameraOn ? "video.fill" : "video.slash.fill")
                     .font(.system(size: 19))
                     .foregroundColor(voice.isCameraOn ? Theme.accent : Theme.ink1)
+                    .frame(width: 54, height: 54)
+                    .background(Theme.bg3)
+                    .clipShape(Circle())
+            }
+            .disabled(!voice.isConnected)
+            .opacity(voice.isConnected ? 1 : 0.5)
+
+            if voice.isCameraOn {
+                Button { Task { await voice.flipCamera() } } label: {
+                    Image(systemName: "arrow.triangle.2.circlepath.camera")
+                        .font(.system(size: 18))
+                        .foregroundColor(Theme.ink1)
+                        .frame(width: 54, height: 54)
+                        .background(Theme.bg3)
+                        .clipShape(Circle())
+                }
+            }
+
+            Button { Task { await voice.toggleScreenShare() } } label: {
+                Image(systemName: voice.isScreenSharing ? "rectangle.on.rectangle.slash" : "rectangle.on.rectangle")
+                    .font(.system(size: 18))
+                    .foregroundColor(voice.isScreenSharing ? Theme.accent : Theme.ink1)
                     .frame(width: 54, height: 54)
                     .background(Theme.bg3)
                     .clipShape(Circle())

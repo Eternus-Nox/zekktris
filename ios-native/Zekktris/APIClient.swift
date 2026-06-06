@@ -511,6 +511,35 @@ final class APIClient {
         let _: OkWrap = try await send("PUT", "/users/@me/channels/\(channelId)/e2ee-enable", bodyData: body)
     }
 
+    /// Upload a new profile avatar (multipart 'file'); returns the updated user.
+    func uploadMyAvatar(filename: String, contentType: String, data: Data) async throws -> SelfUser {
+        let wrap: UserWrap = try await uploadMultipart(
+            "/users/@me/avatar", fields: [:], fileField: "file",
+            filename: filename, contentType: contentType, fileData: data, UserWrap.self)
+        return wrap.user
+    }
+    /// Upload a new profile banner (multipart 'file'); returns the updated user.
+    func uploadMyBanner(filename: String, contentType: String, data: Data) async throws -> SelfUser {
+        let wrap: UserWrap = try await uploadMultipart(
+            "/users/@me/banner", fields: [:], fileField: "file",
+            filename: filename, contentType: contentType, fileData: data, UserWrap.self)
+        return wrap.user
+    }
+    /// Upload a guild icon (MANAGE_GUILD); returns the updated guild.
+    func uploadGuildIcon(guildId: String, filename: String, contentType: String, data: Data) async throws -> Guild {
+        let wrap: GuildWrap = try await uploadMultipart(
+            "/guilds/\(guildId)/icon", fields: [:], fileField: "file",
+            filename: filename, contentType: contentType, fileData: data, GuildWrap.self)
+        return wrap.guild
+    }
+    /// Upload a guild banner (MANAGE_GUILD); returns the updated guild.
+    func uploadGuildBanner(guildId: String, filename: String, contentType: String, data: Data) async throws -> Guild {
+        let wrap: GuildWrap = try await uploadMultipart(
+            "/guilds/\(guildId)/banner", fields: [:], fileField: "file",
+            filename: filename, contentType: contentType, fileData: data, GuildWrap.self)
+        return wrap.guild
+    }
+
     /// Change the account username (90-day cooldown server-side).
     func changeUsername(_ username: String, currentPassword: String) async throws -> SelfUser {
         let body = try JSONSerialization.data(withJSONObject: [

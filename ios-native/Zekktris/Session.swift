@@ -209,6 +209,22 @@ final class Session: ObservableObject {
         } catch { return message(for: error) }
     }
 
+    /// Upload a new avatar image. Returns an error string on failure.
+    func uploadAvatar(filename: String, contentType: String, data: Data) async -> String? {
+        do {
+            currentUser = try await api.uploadMyAvatar(filename: filename, contentType: contentType, data: data)
+            return nil
+        } catch { return message(for: error) }
+    }
+
+    /// Upload a new profile banner. Returns an error string on failure.
+    func uploadBanner(filename: String, contentType: String, data: Data) async -> String? {
+        do {
+            currentUser = try await api.uploadMyBanner(filename: filename, contentType: contentType, data: data)
+            return nil
+        } catch { return message(for: error) }
+    }
+
     /// Change the account password. Returns an error string on failure, nil on success.
     func changePassword(current: String, new: String) async -> String? {
         do { try await api.changePassword(currentPassword: current, newPassword: new); return nil }
