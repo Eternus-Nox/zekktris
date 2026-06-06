@@ -742,15 +742,24 @@ final class APIClient {
     }
 
     // ── Push (APNs device tokens) ─────────────────────────────────────────
-    /// Register this device's APNs token. Returns whether the server
-    /// accepted it (false also covers the 503 the server returns when it
-    /// has no APNs config — surfaced in Settings → Notifications).
+    enum DeviceTokenResult {
+        case ok
+        /// Server answered 503: APNs keys aren't configured there. Don't
+        /// retry — it can't start working until the operator adds them.
+        case serverUnconfigured
+        case failed
+    }
+
+    /// Register this device's APNs token.
     @discardableResult
-    func registerDeviceToken(token: String) async -> Bool {
+    func registerDeviceToken(token: String) async -> DeviceTokenResult {
         let body: [String: Any] = ["token": token, "platform": "ios"]
-        guard let data = try? JSONSerialization.data(withJSONObject: body) else { return false }
-        do { try await sendVoid("POST", "/users/@me/device-tokens", bodyData: data); return true }
-        catch { return false }
+        guard let data = try? JSONSerialization.data(withJSONObject: body) else { return .failed }
+        do { try await sendVoid("POST", "/users/@me/device-tokens", bodyData: data); return .ok }
+        catch {
+            if (error as? APIError)?.status == 503 { return .serverUnconfigured }
+            return .failed
+        }
     }
 
     /// Unregister an APNs device token (e.g. on logout). Best-effort.

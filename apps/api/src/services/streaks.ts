@@ -8,7 +8,7 @@
  */
 
 import { eq } from 'drizzle-orm';
-import { db, schema } from '@zekktris/db';
+import { db, schema } from '../db';
 
 const CAP = 10_000;
 

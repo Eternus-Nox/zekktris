@@ -24,6 +24,10 @@ final class PushManager: ObservableObject {
     @Published private(set) var authStatus: UNAuthorizationStatus = .notDetermined
     /// Whether the device token was accepted by the server this session.
     @Published private(set) var registeredWithServer = false
+    /// Server said 503 — APNs keys missing there. Latched for the session so
+    /// we stop re-POSTing a token the server can't use, and Settings can say
+    /// why pushes are off.
+    @Published private(set) var serverPushUnavailable = false
 
     /// Re-read the system permission (call on appear/foreground).
     func refreshStatus() {
@@ -73,11 +77,17 @@ final class PushManager: ObservableObject {
     }
 
     /// POST the token to the server if we have one and we're signed in.
-    func registerWithServerIfPossible() {
+    /// No-op after the server has said "APNs not configured" (503) — that
+    /// can't change without a server restart, so retrying just spams logs.
+    func registerWithServerIfPossible(force: Bool = false) {
         guard let token = apnsTokenHex, APIClient.shared.token != nil else { return }
+        guard force || (!serverPushUnavailable && !registeredWithServer) else { return }
         Task {
-            let ok = await APIClient.shared.registerDeviceToken(token: token)
-            await MainActor.run { self.registeredWithServer = ok }
+            let result = await APIClient.shared.registerDeviceToken(token: token)
+            await MainActor.run {
+                self.registeredWithServer = result == .ok
+                self.serverPushUnavailable = result == .serverUnconfigured
+            }
         }
     }
 

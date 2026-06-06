@@ -876,7 +876,15 @@ messagesRouter.post(
       })();
     }
 
-    return c.json({ message: messageDTO }, 201);
+    // Echo the nonce on the REST response too (not just the gateway
+    // broadcast) so the sender's client can replace its optimistic
+    // placeholder from EITHER path. Relying on the gateway echo alone
+    // left the bubble stuck on "Sending" whenever the socket was
+    // mid-reconnect, even though the 201 landed in ~100ms.
+    return c.json(
+      { message: payload.nonce ? { ...messageDTO, nonce: payload.nonce } : messageDTO },
+      201,
+    );
   },
 );
 

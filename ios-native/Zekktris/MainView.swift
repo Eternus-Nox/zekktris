@@ -1492,7 +1492,7 @@ struct SettingsView: View {
                                        startPoint: .topLeading, endPoint: .bottomTrailing)
                     }
                 }
-                .frame(height: 92)
+                .frame(height: 240)
                 .frame(maxWidth: .infinity)
                 .clipped()
 
@@ -1509,16 +1509,17 @@ struct SettingsView: View {
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
             let user = session.currentUser
-            HStack(spacing: 12) {
-                // Plain avatar — the status dot keeps its corner; uploads go
-                // through the labeled button instead of an overlay chip.
+            // Mirrors the profile card: avatar halfway over the banner's
+            // bottom edge, name + username to its right.
+            HStack(alignment: .top, spacing: 12) {
                 Avatar(
                     url: user?.avatarUrl,
                     name: user?.name ?? "?",
-                    size: 56,
+                    size: 76,
                     status: user?.status,
                     toneId: user?.id
                 )
+                .padding(.top, -38)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(session.currentUser?.name ?? "You")
                         .font(.zkSans(18, weight: .semibold))
@@ -1544,10 +1545,11 @@ struct SettingsView: View {
                     .buttonStyle(.plain)
                     .padding(.top, 4)
                 }
+                .padding(.top, 6)
                 Spacer()
                 if imageUploading { ProgressView().tint(Theme.accent) }
             }
-            .padding(.top, 10)
+            .padding(.leading, 6)
         }
         .onChange(of: avatarPickerItem) { item in uploadProfileImage(item, kind: "avatar") }
         .onChange(of: bannerPickerItem) { item in uploadProfileImage(item, kind: "banner") }
@@ -1775,7 +1777,9 @@ struct SettingsView: View {
                         .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
                     Text(push.registeredWithServer
                          ? "This device is registered for pushes."
-                         : "Device not registered with the server yet.")
+                         : push.serverPushUnavailable
+                           ? "The server doesn't have push notifications set up."
+                           : "Device not registered with the server yet.")
                         .font(.zkSans(11)).foregroundColor(Theme.ink4)
                 }
                 Spacer()
@@ -1788,7 +1792,7 @@ struct SettingsView: View {
                         .font(.zkSans(13, weight: .semibold)).foregroundColor(Theme.accent)
                 default:
                     if !push.registeredWithServer {
-                        Button("Retry") { push.registerWithServerIfPossible() }
+                        Button("Retry") { push.registerWithServerIfPossible(force: true) }
                             .font(.zkSans(13, weight: .semibold)).foregroundColor(Theme.accent)
                     }
                 }

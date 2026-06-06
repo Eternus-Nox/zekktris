@@ -17,7 +17,7 @@
  */
 
 import { and, desc, eq, lt } from 'drizzle-orm';
-import { db, schema } from '@zekktris/db';
+import { db, schema } from '../db';
 import { nextSnowflake } from '../snowflake';
 import { errors } from '../errors';
 

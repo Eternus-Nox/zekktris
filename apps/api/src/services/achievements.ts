@@ -19,7 +19,7 @@
  */
 
 import { and, count, eq, isNull, sql } from 'drizzle-orm';
-import { db, schema } from '@zekktris/db';
+import { db, schema } from '../db';
 
 export interface Achievement {
   id: string;

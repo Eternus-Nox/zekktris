@@ -2116,15 +2116,17 @@ struct ProfileCardView: View {
                     )
                 }
             }
-            .frame(height: 210)
+            .frame(height: 240)
             .frame(maxWidth: .infinity)
             .clipped()
 
-            ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            // Avatar straddles the banner's bottom edge — half over the
+            // banner, half below — with name + username to its right.
+            // Outside the ScrollView so the overhang isn't clipped.
+            HStack(alignment: .top, spacing: 12) {
                 Avatar(url: user.avatarUrl, name: user.name, size: 76,
                        status: liveStatus, ringColor: Theme.bg1, decoration: user.avatarDecoration)
-                    .padding(.top, 12)
+                    .padding(.top, -38)
 
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
@@ -2146,7 +2148,14 @@ struct ProfileCardView: View {
                             .foregroundColor(Theme.ink3)
                     }
                 }
+                .padding(.top, 6)
 
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 18)
+
+            ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 6) {
                     Circle().fill(Self.statusColor(liveStatus)).frame(width: 8, height: 8)
                     Text(Self.statusLabel(liveStatus))
