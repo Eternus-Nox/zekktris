@@ -8,20 +8,34 @@ import CoreImage
 /// or drills into a channel's messages.
 struct MainView: View {
     @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var session: Session
     @Environment(\.horizontalSizeClass) private var hSizeClass
 
     private var isWide: Bool { hSizeClass == .regular }
 
     var body: some View {
-        layout
-            .sheet(item: $store.profileUser) { ProfileCardView(user: $0) }
-            .fullScreenCover(item: $store.lightbox) { ImageLightboxView(url: $0.url) }
+        shell
+            // Root presenters. Environment objects are re-injected
+            // explicitly: sheet/fullScreenCover content hosts have been
+            // observed to lose inherited environment objects on Mac
+            // (Designed for iPad) when the window resizes across size
+            // classes — the source of the "No ObservableObject of type
+            // AppStore found" crash.
+            .sheet(item: $store.profileUser) { u in
+                ProfileCardView(user: u)
+                    .environmentObject(store)
+                    .environmentObject(session)
+                    .environmentObject(store.voice)
+            }
+            .fullScreenCover(item: $store.lightbox) { img in
+                ImageLightboxView(url: img.url)
+                    .environmentObject(store)
+            }
             .onAppear { store.isWideLayout = isWide }
             .onChange(of: hSizeClass) { newValue in
                 store.isWideLayout = (newValue == .regular)
-                // Collapsing iPhone -> keep the stack as-is (drill-down works
-                // from whatever was selected). Expanding to wide with a deep
-                // stack: trim to the top route so detail shows one pane.
+                // Expanding to wide with a deep stack: trim to the top route
+                // so the detail pane shows a single screen.
                 if newValue == .regular && store.stack.count > 1,
                    let top = store.stack.last {
                     store.stack = [top]
@@ -29,15 +43,12 @@ struct MainView: View {
             }
     }
 
-    @ViewBuilder
-    private var layout: some View {
-        if isWide { wideBody } else { compactBody }
-    }
-
-    /// iPad / Mac (regular width): persistent three-pane master-detail —
-    /// server rail | channel/DM sidebar | content — mirroring the web's
-    /// desktop shell. Selections replace the detail pane (no push-stack).
-    private var wideBody: some View {
+    /// One shell for every width. The rail is shared between the compact
+    /// and wide arrangements — switching layouts must NOT recreate it,
+    /// because it hosts the rail sheets (Settings/Discover/Admin/Family…)
+    /// and a branch swap mid-presentation detaches the sheet from the
+    /// environment.
+    private var shell: some View {
         HStack(spacing: 0) {
             ServerRailView()
                 .frame(width: 72)
@@ -45,17 +56,19 @@ struct MainView: View {
 
             Rectangle().fill(Theme.line).frame(width: 1)
 
-            // Sidebar column (web xl:w-60 = 15rem = 225pt at the 15px root).
-            Group {
-                if store.inDMs {
-                    DMListView()
-                } else {
-                    ChannelListView()
+            if isWide {
+                // Sidebar column (web xl:w-60 = 15rem = 225pt at 15px root).
+                Group {
+                    if store.inDMs {
+                        DMListView()
+                    } else {
+                        ChannelListView()
+                    }
                 }
-            }
-            .frame(width: 225)
+                .frame(width: 225)
 
-            Rectangle().fill(Theme.line).frame(width: 1)
+                Rectangle().fill(Theme.line).frame(width: 1)
+            }
 
             VStack(spacing: 0) {
                 if store.activeVoiceOrStageId != nil && !store.isViewingActiveCall
@@ -63,14 +76,19 @@ struct MainView: View {
                     MinimizedCallBar()
                 }
                 ZStack {
-                    wideDetail
-                        .id(routeKey)
-                        .transition(.opacity)
+                    Group {
+                        if isWide { wideDetail } else { content }
+                    }
+                    .id(routeKey)
+                    .transition(.opacity)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .animation(.easeInOut(duration: 0.2), value: routeKey)
             }
         }
+        // The abyss nebula canvas sits behind every column (web mounts
+        // `.abyss` once at the Shell root); columns above use translucent
+        // fills so the auroras glow through.
         .background {
             ZStack {
                 Theme.bg1
@@ -125,67 +143,6 @@ struct MainView: View {
             case .normal: WideEmptyDetail()
             }
         }
-    }
-
-    /// iPhone (compact width): rail + single column with drill-down routes.
-    private var compactBody: some View {
-        HStack(spacing: 0) {
-            // Web parity: rail = bg-0/85 over the abyss, with a border-line
-            // divider on its trailing edge.
-            ServerRailView()
-                .frame(width: 72)
-                .background(Theme.bg0.opacity(0.85))
-
-            Rectangle()
-                .fill(Theme.line)
-                .frame(width: 1)
-
-            VStack(spacing: 0) {
-                if store.activeVoiceOrStageId != nil && !store.isViewingActiveCall
-                    && store.outgoingCall == nil && store.incomingCall == nil {
-                    MinimizedCallBar()
-                }
-                ZStack {
-                    content
-                        .id(routeKey)
-                        .transition(.opacity)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .animation(.easeInOut(duration: 0.2), value: routeKey)
-            }
-        }
-        // The abyss nebula canvas sits behind every column (web mounts
-        // `.abyss` once at the Shell root); columns above use translucent
-        // fills so the auroras glow through.
-        .background {
-            ZStack {
-                Theme.bg1
-                AbyssBackground()
-            }
-            .ignoresSafeArea()
-        }
-        .overlay {
-            if let call = store.incomingCall {
-                IncomingCallView(call: call)
-                    .transition(.opacity)
-            } else if let out = store.outgoingCall {
-                OutgoingCallView(channel: out.channel, callee: out.callee)
-                    .transition(.opacity)
-            }
-        }
-        .overlay {
-            if store.amPendingOnboarding, let g = store.selectedGuild {
-                OnboardingView(guild: g)
-                    .transition(.opacity)
-            }
-        }
-        .overlay(alignment: .top) {
-            if let err = store.errorText {
-                ErrorToast(message: err) { store.errorText = nil }
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
-        }
-        .animation(.easeInOut(duration: 0.2), value: store.errorText)
     }
 
     /// The view for the top of the navigation stack, or the root list.
@@ -362,16 +319,24 @@ struct ServerRailView: View {
             .padding(.vertical, 12)
         }
         .sheet(item: $railSheet) { which in
-            switch which {
-            case .settings: SettingsView()
-            case .discover: DiscoveryView()
-            case .createServer: CreateServerSheet()
-            case .joinInvite: JoinByInviteSheet()
-            case .admin: AdminView()
-            case .family: FamilyView()
-            case .quickSwitch: QuickSwitcherView()
-            case .reorderServers: ReorderServersView()
+            Group {
+                switch which {
+                case .settings: SettingsView()
+                case .discover: DiscoveryView()
+                case .createServer: CreateServerSheet()
+                case .joinInvite: JoinByInviteSheet()
+                case .admin: AdminView()
+                case .family: FamilyView()
+                case .quickSwitch: QuickSwitcherView()
+                case .reorderServers: ReorderServersView()
+                }
             }
+            // Re-inject explicitly: sheet hosts can lose inherited
+            // environment objects on Mac when the window crosses size
+            // classes (the AppStore-not-found crash).
+            .environmentObject(store)
+            .environmentObject(session)
+            .environmentObject(store.voice)
         }
         .alert("Rename Folder", isPresented: Binding(get: { renamingFolder != nil }, set: { if !$0 { renamingFolder = nil } })) {
             TextField("Folder name", text: $renameText)
@@ -2094,6 +2059,7 @@ struct AdminView: View {
     @State private var guildSearch = ""
     @State private var showStorageItems = false
     @State private var deletingGuild: AdminGuild?
+    @State private var observingGuild: AdminGuild?
 
     var body: some View {
         NavigationStack {
@@ -2124,6 +2090,7 @@ struct AdminView: View {
             .navigationTitle("Admin Instance").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
             .sheet(isPresented: $showStorageItems) { StorageItemsView() }
+            .sheet(item: $observingGuild) { g in AdminObserveView(guild: g) }
             .task { await store.loadAdminStats() }
         }
     }
@@ -2282,7 +2249,7 @@ struct AdminView: View {
 
     private func guildRow(_ g: AdminGuild) -> some View {
         HStack(spacing: 10) {
-            Avatar(url: g.iconUrl, name: g.name, size: 36, ringColor: Theme.bg1)
+            Avatar(url: g.iconUrl, name: g.name, size: 36, ringColor: Theme.bg1, toneId: g.id)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
                     Text(g.name).font(.zkSans(15, weight: .medium)).foregroundColor(Theme.ink1).lineLimit(1)
@@ -2291,6 +2258,11 @@ struct AdminView: View {
                 Text("\(g.memberCount ?? 0) members").font(.zkSans(12)).foregroundColor(Theme.ink3)
             }
             Spacer()
+            // Ghost-mode review without joining (web Observe parity).
+            Button { observingGuild = g } label: {
+                Image(systemName: "eye").font(.system(size: 14)).foregroundColor(Theme.accent).frame(width: 32, height: 32)
+            }
+            .buttonStyle(.plain)
             Button(role: .destructive) { deletingGuild = g } label: {
                 Image(systemName: "trash").font(.system(size: 14)).foregroundColor(Theme.danger).frame(width: 32, height: 32)
             }
@@ -2531,6 +2503,12 @@ struct ChildControlsView: View {
                             Text("Changes apply to \(child.name)'s account immediately.")
                                 .font(.zkSans(12)).foregroundColor(Theme.ink3)
                                 .frame(maxWidth: .infinity, alignment: .leading)
+
+                            ChildGuildsSection(child: child)
+                                .padding(.top, 10)
+
+                            ChildDMsSection(child: child)
+                                .padding(.top, 10)
                         }
                         .padding(16)
                     }
@@ -5081,4 +5059,389 @@ func qrCodeImage(_ string: String) -> UIImage? {
     let context = CIContext()
     guard let cg = context.createCGImage(scaled, from: scaled.extent) else { return nil }
     return UIImage(cgImage: cg)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Admin observe ("ghost mode") — read-only review of any guild on the
+// instance WITHOUT joining it, mirroring the web AdminPanel's Observe view.
+// Deliberately self-contained: local state + APIClient.shared, no
+// environment objects.
+// ═══════════════════════════════════════════════════════════════════════════
+
+struct AdminObserveView: View {
+    let guild: AdminGuild
+    @Environment(\.dismiss) private var dismiss
+    @State private var peek: PeekGuildResult?
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let error {
+                    VStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 28)).foregroundColor(Theme.dangerSoft)
+                        Text(error).font(.zkSans(13)).foregroundColor(Theme.ink3)
+                            .multilineTextAlignment(.center).padding(.horizontal, 24)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let peek {
+                    channelList(peek)
+                } else {
+                    ProgressView().tint(Theme.accent)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Observing: \(guild.name)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .navigationDestination(for: Channel.self) { ch in
+                ObservedChannelView(channel: ch)
+            }
+            .task {
+                do { peek = try await APIClient.shared.adminPeekGuild(guildId: guild.id) }
+                catch { self.error = (error as? APIError)?.message ?? error.localizedDescription }
+            }
+        }
+    }
+
+    private func channelList(_ peek: PeekGuildResult) -> some View {
+        let sorted = peek.channels.sorted { ($0.position ?? 0) < ($1.position ?? 0) }
+        let categories = sorted.filter { $0.isCategory }
+        let root = sorted.filter { !$0.isCategory && $0.parentId == nil }
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Image(systemName: "eye")
+                        .font(.system(size: 12)).foregroundColor(Theme.accent)
+                    Text("Read-only ghost mode — you are not a member and nothing is marked read.")
+                        .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.accent.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .padding(.bottom, 8)
+
+                ForEach(root) { observedRow($0) }
+                ForEach(categories) { cat in
+                    Text((cat.name ?? "").uppercased())
+                        .font(.zkMono(10.5))
+                        .tracking(Theme.capTracking(10.5))
+                        .foregroundColor(Theme.ink3)
+                        .padding(.top, 12).padding(.bottom, 2).padding(.leading, 4)
+                    ForEach(sorted.filter { $0.parentId == cat.id && !$0.isCategory }) { observedRow($0) }
+                }
+            }
+            .padding(12)
+        }
+    }
+
+    @ViewBuilder
+    private func observedRow(_ ch: Channel) -> some View {
+        let label = HStack(spacing: 8) {
+            Image(systemName: ch.isVoice ? "speaker.wave.2.fill" : (ch.isForum ? "list.bullet.rectangle" : "number"))
+                .font(.system(size: 13))
+                .foregroundColor(Theme.accent)
+                .frame(width: 16)
+            Text(ch.name ?? "channel")
+                .font(.zkSans(14)).foregroundColor(Theme.ink2)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            if ch.isText || ch.isForum {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold)).foregroundColor(Theme.ink4)
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .contentShape(Rectangle())
+
+        if ch.isText || ch.isForum {
+            NavigationLink(value: ch) { label }.buttonStyle(.plain)
+        } else {
+            label
+        }
+    }
+}
+
+/// Read-only message timeline for one observed channel.
+struct ObservedChannelView: View {
+    let channel: Channel
+    @State private var messages: [PeekMessage] = []
+    @State private var loading = true
+    @State private var error: String?
+
+    var body: some View {
+        PeekMessageList(messages: messages, loading: loading, error: error,
+                        emptyText: "No messages in #\(channel.name ?? "channel").")
+            .navigationTitle("#\(channel.name ?? "channel")")
+            .navigationBarTitleDisplayMode(.inline)
+            .background(Theme.bg1.ignoresSafeArea())
+            .task {
+                do { messages = try await APIClient.shared.adminPeekMessages(channelId: channel.id) }
+                catch { self.error = (error as? APIError)?.message ?? error.localizedDescription }
+                loading = false
+            }
+    }
+}
+
+/// Shared slim read-only message list used by admin observe and parental
+/// DM oversight (renders PeekMessage DTOs: author, time, content,
+/// attachments as names, deleted label).
+struct PeekMessageList: View {
+    let messages: [PeekMessage]
+    let loading: Bool
+    let error: String?
+    var emptyText: String = "No messages."
+
+    var body: some View {
+        Group {
+            if loading {
+                ProgressView().tint(Theme.accent)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let error {
+                Text(error).font(.zkSans(13)).foregroundColor(Theme.dangerSoft)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .multilineTextAlignment(.center).padding(24)
+            } else if messages.isEmpty {
+                Text(emptyText).font(.zkSans(13)).foregroundColor(Theme.ink3)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        // API returns newest-first; show oldest-first.
+                        ForEach(messages.reversed()) { m in
+                            peekRow(m)
+                        }
+                    }
+                    .padding(14)
+                }
+            }
+        }
+    }
+
+    private func peekRow(_ m: PeekMessage) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Avatar(url: m.authorAvatarUrl, name: m.authorName, size: 34, toneId: m.authorId)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(m.authorName)
+                        .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
+                    Text(shortTime(m.createdAt))
+                        .font(.zkSans(11)).foregroundColor(Theme.ink3)
+                    if m.deleted == true {
+                        Text("DELETED")
+                            .font(.zkSans(8.5, weight: .bold)).tracking(0.5)
+                            .foregroundColor(Theme.dangerSoft)
+                            .padding(.horizontal, 5).padding(.vertical, 1.5)
+                            .background(Theme.danger.opacity(0.15))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                }
+                if let content = m.content, !content.isEmpty {
+                    Text(content)
+                        .font(.zkSans(14))
+                        .foregroundColor(m.deleted == true ? Theme.ink3 : Theme.ink1)
+                        .strikethrough(m.deleted == true, color: Theme.ink4)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let atts = m.attachments, !atts.isEmpty {
+                    ForEach(atts) { at in
+                        HStack(spacing: 5) {
+                            Image(systemName: "paperclip").font(.system(size: 10))
+                            Text(at.filename ?? "attachment").font(.zkSans(12)).lineLimit(1)
+                        }
+                        .foregroundColor(Theme.accent)
+                    }
+                }
+                if let reacts = m.reactions, !reacts.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(reacts, id: \.emoji) { r in
+                            Text("\(r.emoji) \(r.count)")
+                                .font(.zkSans(11)).foregroundColor(Theme.ink2)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Theme.bg2)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Parental oversight — the child's servers (with block/unblock) and their
+// 1:1 DM conversations (read-only; child-deleted messages stay visible,
+// labelled). Self-contained like the observe views.
+// ═══════════════════════════════════════════════════════════════════════════
+
+struct ChildGuildsSection: View {
+    let child: FamilyUser
+    @State private var guilds: [ChildGuild] = []
+    @State private var loading = true
+    @State private var busyGuildId: String?
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(child.name.uppercased())'S SERVERS")
+                .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+            if loading {
+                ProgressView().tint(Theme.accent).frame(maxWidth: .infinity).padding(.vertical, 10)
+            } else if guilds.isEmpty {
+                Text("Not a member of any servers.")
+                    .font(.zkSans(13)).foregroundColor(Theme.ink3)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(guilds.enumerated()), id: \.element.id) { i, g in
+                        guildRow(g)
+                        if i < guilds.count - 1 { Divider().overlay(Theme.line) }
+                    }
+                }
+                .background(Theme.bg2)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                Text("Blocking hides the server and prevents rejoining until unblocked.")
+                    .font(.zkSans(12)).foregroundColor(Theme.ink4)
+            }
+            if let error {
+                Text(error).font(.zkSans(12)).foregroundColor(Theme.dangerSoft)
+            }
+        }
+        .task { await load() }
+    }
+
+    private func load() async {
+        do { guilds = try await APIClient.shared.familyChildGuilds(childId: child.id) }
+        catch { self.error = (error as? APIError)?.message ?? error.localizedDescription }
+        loading = false
+    }
+
+    private func guildRow(_ g: ChildGuild) -> some View {
+        HStack(spacing: 10) {
+            Avatar(url: g.iconUrl, name: g.name, size: 32, ringColor: Theme.bg2, toneId: g.id)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(g.name).font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1).lineLimit(1)
+                if g.blocked {
+                    Text("Blocked").font(.zkSans(11)).foregroundColor(Theme.dangerSoft)
+                }
+            }
+            Spacer()
+            Button {
+                toggle(g)
+            } label: {
+                if busyGuildId == g.id {
+                    ProgressView().scaleEffect(0.7).frame(width: 64)
+                } else {
+                    Text(g.blocked ? "Unblock" : "Block")
+                        .font(.zkSans(12, weight: .semibold))
+                        .foregroundColor(g.blocked ? Theme.ink2 : Theme.dangerSoft)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(g.blocked ? Theme.bg3 : Theme.danger.opacity(0.15))
+                        .clipShape(Capsule())
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(busyGuildId != nil)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+    }
+
+    private func toggle(_ g: ChildGuild) {
+        busyGuildId = g.id
+        Task {
+            do {
+                try await APIClient.shared.familySetGuildBlocked(childId: child.id, guildId: g.id, blocked: !g.blocked)
+                if let i = guilds.firstIndex(where: { $0.id == g.id }) { guilds[i].blocked.toggle() }
+            } catch {
+                self.error = (error as? APIError)?.message ?? error.localizedDescription
+            }
+            busyGuildId = nil
+        }
+    }
+}
+
+struct ChildDMsSection: View {
+    let child: FamilyUser
+    @State private var dms: [ChildDM] = []
+    @State private var loading = true
+    @State private var error: String?
+    @State private var selected: ChildDM?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(child.name.uppercased())'S DIRECT MESSAGES")
+                .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+            if loading {
+                ProgressView().tint(Theme.accent).frame(maxWidth: .infinity).padding(.vertical, 10)
+            } else if dms.isEmpty {
+                Text("No direct messages.")
+                    .font(.zkSans(13)).foregroundColor(Theme.ink3)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(dms.enumerated()), id: \.element.id) { i, dm in
+                        Button { selected = dm } label: {
+                            HStack(spacing: 10) {
+                                Avatar(url: dm.recipient?.avatarUrl, name: dm.recipient?.name ?? "?",
+                                       size: 32, ringColor: Theme.bg2, toneId: dm.recipient?.id)
+                                Text(dm.recipient?.name ?? "Unknown")
+                                    .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1).lineLimit(1)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.ink4)
+                            }
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        if i < dms.count - 1 { Divider().overlay(Theme.line) }
+                    }
+                }
+                .background(Theme.bg2)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                Text("Conversations are read-only. Messages \(child.name) deleted stay visible here, labelled.")
+                    .font(.zkSans(12)).foregroundColor(Theme.ink4)
+            }
+            if let error {
+                Text(error).font(.zkSans(12)).foregroundColor(Theme.dangerSoft)
+            }
+        }
+        .task {
+            do { dms = try await APIClient.shared.familyChildDMs(childId: child.id) }
+            catch { self.error = (error as? APIError)?.message ?? error.localizedDescription }
+            loading = false
+        }
+        .sheet(item: $selected) { dm in
+            ChildDMMessagesView(child: child, dm: dm)
+        }
+    }
+}
+
+/// Read-only view of one supervised DM conversation.
+struct ChildDMMessagesView: View {
+    let child: FamilyUser
+    let dm: ChildDM
+    @Environment(\.dismiss) private var dismiss
+    @State private var messages: [PeekMessage] = []
+    @State private var loading = true
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            PeekMessageList(messages: messages, loading: loading, error: error,
+                            emptyText: "No messages in this conversation.")
+                .background(Theme.bg1.ignoresSafeArea())
+                .navigationTitle("\(child.name) & \(dm.recipient?.name ?? "Unknown")")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+                .task {
+                    do { messages = try await APIClient.shared.familyChildDMMessages(childId: child.id, channelId: dm.id) }
+                    catch { self.error = (error as? APIError)?.message ?? error.localizedDescription }
+                    loading = false
+                }
+        }
+    }
 }

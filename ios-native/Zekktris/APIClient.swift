@@ -939,6 +939,46 @@ extension APIClient {
         try await sendVoid("POST", "/users/@me/password", bodyData: data)
     }
 
+    // ── Admin observe + parental oversight ───────────────────────────────────
+    /// Ghost-mode guild snapshot: the guild row + EVERY channel (no
+    /// permission filtering) so an operator can review without joining.
+    func adminPeekGuild(guildId: String) async throws -> PeekGuildResult {
+        return try await send("GET", "/admin/guilds/\(guildId)/peek")
+    }
+    /// Read-only message page for an observed channel.
+    func adminPeekMessages(channelId: String, before: String? = nil) async throws -> [PeekMessage] {
+        var path = "/admin/channels/\(channelId)/peek/messages?limit=50"
+        if let before { path += "&before=\(before)" }
+        let wrap: PeekMessagesWrap = try await send("GET", path)
+        return wrap.messages
+    }
+
+    /// The supervised child's servers, with per-guild block state.
+    func familyChildGuilds(childId: String) async throws -> [ChildGuild] {
+        let wrap: ChildGuildsWrap = try await send("GET", "/family/children/\(childId)/guilds")
+        return wrap.guilds
+    }
+    func familySetGuildBlocked(childId: String, guildId: String, blocked: Bool) async throws {
+        if blocked {
+            let body = try JSONSerialization.data(withJSONObject: ["guildId": guildId])
+            try await sendVoid("POST", "/family/children/\(childId)/blocked-guilds", bodyData: body)
+        } else {
+            try await sendVoid("DELETE", "/family/children/\(childId)/blocked-guilds/\(guildId)")
+        }
+    }
+    /// The child's 1:1 DM conversations.
+    func familyChildDMs(childId: String) async throws -> [ChildDM] {
+        let wrap: ChildDMsWrap = try await send("GET", "/family/children/\(childId)/channels")
+        return wrap.channels
+    }
+    /// A supervised DM's messages (includes child-deleted ones, labelled).
+    func familyChildDMMessages(childId: String, channelId: String, before: String? = nil) async throws -> [PeekMessage] {
+        var path = "/family/children/\(childId)/channels/\(channelId)/messages?limit=50"
+        if let before { path += "&before=\(before)" }
+        let wrap: PeekMessagesWrap = try await send("GET", path)
+        return wrap.messages
+    }
+
     // ── Admin (instance) ──────────────────────────────────────────────────────
     func adminListUsers(q: String?, bannedOnly: Bool) async throws -> [AdminUser] {
         // The server's query validator caps limit at 50 (zod max(50)) and

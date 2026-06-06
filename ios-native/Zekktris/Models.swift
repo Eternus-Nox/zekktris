@@ -700,3 +700,74 @@ enum Permissions {
     static func serialize(_ bits: UInt64) -> String { String(bits) }
     static func has(_ bits: UInt64, _ b: Int) -> Bool { (bits & mask(b)) != 0 }
 }
+
+// ── Admin observe ("ghost mode") + parental oversight DTOs ──────────────────
+// Slim shapes returned by /admin/.../peek and /family/children/... — these
+// are moderation views, not full chat hydration.
+
+struct PeekGuild: Codable {
+    let id: String
+    var name: String
+    var iconUrl: String?
+    var ownerId: String?
+    var createdAt: String?
+    var memberCount: Int?
+}
+struct PeekGuildResult: Codable {
+    let guild: PeekGuild
+    let channels: [Channel]
+}
+
+struct PeekReaction: Codable, Hashable { let emoji: String; let count: Int }
+struct PeekAttachment: Codable, Identifiable, Hashable {
+    let id: String
+    var filename: String?
+    var url: String?
+    var contentType: String?
+    var size: Int?
+}
+
+/// One message in an observed channel / supervised DM.
+struct PeekMessage: Codable, Identifiable, Hashable {
+    let id: String
+    var channelId: String?
+    var authorId: String?
+    var authorUsername: String?
+    var authorDisplayName: String?
+    var authorAvatarUrl: String?
+    var content: String?
+    var createdAt: String
+    var editedAt: String?
+    /// Supervision only: the child deleted this message, but parents
+    /// still see it (labelled).
+    var deleted: Bool?
+    var attachments: [PeekAttachment]?
+    var reactions: [PeekReaction]?
+
+    var authorName: String { authorDisplayName ?? authorUsername ?? "Unknown" }
+}
+struct PeekMessagesWrap: Codable { let messages: [PeekMessage] }
+
+/// A guild the supervised child belongs to, with its block state.
+struct ChildGuild: Codable, Identifiable, Hashable {
+    let id: String
+    var name: String
+    var iconUrl: String?
+    var blocked: Bool
+}
+struct ChildGuildsWrap: Codable { let guilds: [ChildGuild] }
+
+/// One of the child's 1:1 DM conversations.
+struct ChildDMRecipient: Codable, Hashable {
+    let id: String
+    var username: String?
+    var displayName: String?
+    var avatarUrl: String?
+    var name: String { displayName ?? username ?? "Unknown" }
+}
+struct ChildDM: Codable, Identifiable, Hashable {
+    let id: String
+    var lastMessageId: String?
+    var recipient: ChildDMRecipient?
+}
+struct ChildDMsWrap: Codable { let channels: [ChildDM] }
