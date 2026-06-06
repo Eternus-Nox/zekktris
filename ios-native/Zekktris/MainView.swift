@@ -1424,6 +1424,7 @@ struct SettingsView: View {
     @State private var showChangeUsername = false
     @State private var showChangeEmail = false
     @State private var faceIDOn = false
+    @State private var bioProbe: Biometrics.Probe?
     @State private var avatarPickerItem: PhotosPickerItem?
     @State private var bannerPickerItem: PhotosPickerItem?
     @State private var imageUploading = false
@@ -1890,34 +1891,48 @@ struct SettingsView: View {
     private var securitySection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("SECURITY")
-            if Biometrics.available {
-                Toggle(isOn: Binding(
-                    get: { faceIDOn },
-                    set: { newValue in
-                        Task {
-                            _ = await session.setFaceID(newValue)
-                            faceIDOn = session.faceIDEnabled
+            // bioProbe resolves off-main in .task — probing LocalAuthentication
+            // inline here blocked the main thread and froze Settings open.
+            if let probe = bioProbe {
+                if probe.available {
+                    Toggle(isOn: Binding(
+                        get: { faceIDOn },
+                        set: { newValue in
+                            Task {
+                                _ = await session.setFaceID(newValue)
+                                faceIDOn = session.faceIDEnabled
+                            }
+                        }
+                    )) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Unlock with \(probe.label)")
+                                .font(.zkSans(15)).foregroundColor(Theme.ink1)
+                            Text("Require \(probe.label) when opening Zekktris")
+                                .font(.zkSans(12)).foregroundColor(Theme.ink3)
                         }
                     }
-                )) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Unlock with \(Biometrics.typeLabel)")
-                            .font(.zkSans(15)).foregroundColor(Theme.ink1)
-                        Text("Require \(Biometrics.typeLabel) when opening Zekktris")
-                            .font(.zkSans(12)).foregroundColor(Theme.ink3)
-                    }
-                }
-                .tint(Theme.accent)
-                .padding(.horizontal, 12).padding(.vertical, 10)
-                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
-            } else {
-                Text("Biometric unlock isn't available on this device.")
-                    .font(.zkSans(13)).foregroundColor(Theme.ink4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .tint(Theme.accent)
                     .padding(.horizontal, 12).padding(.vertical, 10)
                     .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+                } else {
+                    Text("Biometric unlock isn't available on this device.")
+                        .font(.zkSans(13)).foregroundColor(Theme.ink4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12).padding(.vertical, 10)
+                        .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView().scaleEffect(0.8)
+                    Text("Checking biometric availability…")
+                        .font(.zkSans(13)).foregroundColor(Theme.ink4)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
             }
         }
+        .task { bioProbe = await Biometrics.resolve() }
     }
 
     private var accountSection: some View {

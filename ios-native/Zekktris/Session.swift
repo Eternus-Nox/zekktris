@@ -61,7 +61,11 @@ final class Session: ObservableObject {
         // a cold launch goes straight to the Face ID gate — never back to the
         // login form — even if we're offline or the refresh hiccups.
         currentUser = cachedUser()
-        locked = faceIDEnabled && Biometrics.available
+        // Gate on the saved setting alone — probing biometric availability
+        // can block (XPC to the biometric daemon), so it must never run
+        // inline here. unlock() resolves availability async and waves the
+        // user through if biometrics have since become unavailable.
+        locked = faceIDEnabled
         phase = .signedIn
         // Refresh the user in the background. getMe auto-refreshes an expired
         // access token via the refresh cookie, so a 401 here means the
@@ -255,6 +259,13 @@ final class Session: ObservableObject {
 
     /// Attempt to unlock a locked session via Face ID / Touch ID.
     func unlock() async {
+        // Escape hatch: if biometrics are gone (disabled in system settings,
+        // new device), don't trap the user at the gate.
+        let probe = await Biometrics.resolve()
+        guard probe.available else {
+            locked = false
+            return
+        }
         let ok = await Biometrics.authenticate(reason: "Unlock Zekktris")
         if ok { locked = false }
     }
@@ -267,8 +278,9 @@ final class Session: ObservableObject {
     /// string on failure, nil on success.
     func setFaceID(_ on: Bool) async -> String? {
         if on {
-            guard Biometrics.available else { return "\(Biometrics.typeLabel) isn't set up on this device." }
-            let ok = await Biometrics.authenticate(reason: "Enable \(Biometrics.typeLabel) unlock")
+            let probe = await Biometrics.resolve()
+            guard probe.available else { return "\(probe.label) isn't set up on this device." }
+            let ok = await Biometrics.authenticate(reason: "Enable \(probe.label) unlock")
             guard ok else { return nil }   // user canceled; leave toggle off
             faceIDEnabled = true
         } else {
@@ -285,28 +297,49 @@ final class Session: ObservableObject {
 }
 
 /// Thin wrapper over LocalAuthentication for Face ID / Touch ID.
+///
+/// `canEvaluatePolicy` XPCs to the biometric daemon and can stall for seconds
+/// — or hang outright — so it must NEVER run synchronously on the main
+/// thread (it froze Settings when securitySection probed it during view
+/// construction). The probe runs once, off-main, via `resolve()`, and the
+/// result is cached for the life of the process.
 enum Biometrics {
-    static var available: Bool {
-        var error: NSError?
-        return LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
+    struct Probe {
+        let available: Bool
+        let label: String
     }
-    static var typeLabel: String {
-        let ctx = LAContext()
-        _ = ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
-        switch ctx.biometryType {
-        case .faceID: return "Face ID"
-        case .touchID: return "Touch ID"
-        default: return "Biometrics"
-        }
-    }
-    static func authenticate(reason: String) async -> Bool {
-        let ctx = LAContext()
-        var error: NSError?
-        guard ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else { return false }
-        return await withCheckedContinuation { cont in
-            ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { success, _ in
-                cont.resume(returning: success)
+
+    @MainActor private static var cached: Probe?
+
+    /// One-shot, off-main availability probe. Instant after the first call.
+    @MainActor
+    static func resolve() async -> Probe {
+        if let cached { return cached }
+        let probe = await Task.detached(priority: .userInitiated) { () -> Probe in
+            let ctx = LAContext()
+            let ok = ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
+            let label: String
+            switch ctx.biometryType {
+            case .faceID: label = "Face ID"
+            case .touchID: label = "Touch ID"
+            default: label = "Biometrics"
             }
-        }
+            return Probe(available: ok, label: label)
+        }.value
+        cached = probe
+        return probe
+    }
+
+    static func authenticate(reason: String) async -> Bool {
+        await Task.detached(priority: .userInitiated) { () -> Bool in
+            let ctx = LAContext()
+            var error: NSError?
+            guard ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else { return false }
+            return await withCheckedContinuation { cont in
+                ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { success, _ in
+                    cont.resume(returning: success)
+                }
+            }
+        }.value
     }
 }

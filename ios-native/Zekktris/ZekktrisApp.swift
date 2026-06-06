@@ -89,6 +89,7 @@ struct AuthFlowView: View {
 /// Touch ID unlock is enabled. Prompts automatically on appear.
 struct LockView: View {
     @EnvironmentObject private var session: Session
+    @State private var bioLabel = "Face ID"
 
     var body: some View {
         ZStack {
@@ -103,7 +104,7 @@ struct LockView: View {
                 Button { Task { await session.unlock() } } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "faceid")
-                        Text("Unlock with \(Biometrics.typeLabel)")
+                        Text("Unlock with \(bioLabel)")
                             .font(.zkSans(15, weight: .semibold))
                     }
                     .foregroundColor(.white)
@@ -112,6 +113,9 @@ struct LockView: View {
                 }
             }
         }
-        .task { await session.unlock() }
+        .task {
+            bioLabel = (await Biometrics.resolve()).label
+            await session.unlock()
+        }
     }
 }
