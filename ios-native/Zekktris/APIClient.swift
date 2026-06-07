@@ -752,8 +752,8 @@ final class APIClient {
 
     /// Register this device's APNs token.
     @discardableResult
-    func registerDeviceToken(token: String) async -> DeviceTokenResult {
-        let body: [String: Any] = ["token": token, "platform": "ios"]
+    func registerDeviceToken(token: String, platform: String = "ios") async -> DeviceTokenResult {
+        let body: [String: Any] = ["token": token, "platform": platform]
         guard let data = try? JSONSerialization.data(withJSONObject: body) else { return .failed }
         do { try await sendVoid("POST", "/users/@me/device-tokens", bodyData: data); return .ok }
         catch {

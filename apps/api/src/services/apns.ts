@@ -26,7 +26,7 @@
 
 import http2 from 'node:http2';
 import { importPKCS8, SignJWT } from 'jose';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { env } from '../env';
 import { errors } from '../errors';
@@ -161,7 +161,12 @@ interface ApnsResult {
 }
 
 /** Send one notification to one device token over the shared session. */
-function sendOne(deviceToken: string, payloadJson: string, jwt: string): Promise<ApnsResult> {
+function sendOne(
+  deviceToken: string,
+  payloadJson: string,
+  jwt: string,
+  opts?: { topic?: string; pushType?: 'alert' | 'voip'; expiration?: number },
+): Promise<ApnsResult> {
   return new Promise((resolve) => {
     let s: http2.ClientHttp2Session;
     try {
@@ -170,15 +175,19 @@ function sendOne(deviceToken: string, payloadJson: string, jwt: string): Promise
       resolve({ ok: false, status: 0 });
       return;
     }
-    const req = s.request({
+    const headers: Record<string, string> = {
       ':method': 'POST',
       ':path': `/3/device/${deviceToken}`,
       authorization: `bearer ${jwt}`,
-      'apns-topic': env.APNS_BUNDLE_ID as string,
-      'apns-push-type': 'alert',
+      'apns-topic': opts?.topic ?? (env.APNS_BUNDLE_ID as string),
+      'apns-push-type': opts?.pushType ?? 'alert',
       'apns-priority': '10',
       'content-type': 'application/json',
-    });
+    };
+    if (opts?.expiration !== undefined) {
+      headers['apns-expiration'] = String(opts.expiration);
+    }
+    const req = s.request(headers);
     let status = 0;
     let body = '';
     req.setEncoding('utf8');
@@ -227,6 +236,54 @@ function buildApnsPayload(payload: PushPayload): string {
   if (payload.url) data.url = payload.url;
   if (payload.kind) data.kind = payload.kind;
   return JSON.stringify({ aps, ...data });
+}
+
+/**
+ * VoIP push (PushKit) — rings the native iOS app even when it's closed
+ * or force-quit. The app MUST report a CallKit call on receipt (Apple
+ * requirement), which is exactly what our handler does. Sent only to
+ * tokens registered with platform 'ios_voip'; topic is the bundle id
+ * with the `.voip` suffix. Expires after 40s — a stale ring delivered
+ * minutes later would be worse than none.
+ */
+export async function sendVoipToUser(
+  userId: bigint,
+  data: { channelId: string; callerName: string },
+): Promise<void> {
+  if (!(await initApns())) return;
+  const rows = await db
+    .select({ token: schema.deviceTokens.token })
+    .from(schema.deviceTokens)
+    .where(
+      and(eq(schema.deviceTokens.userId, userId), eq(schema.deviceTokens.platform, 'ios_voip')),
+    );
+  if (rows.length === 0) return;
+  const jwt = await providerToken();
+  const payload = JSON.stringify({ kind: 'call', ...data });
+  const expiration = Math.floor(Date.now() / 1000) + 40;
+  await Promise.all(
+    rows.map(async (r) => {
+      const res = await sendOne(r.token, payload, jwt, {
+        topic: `${env.APNS_BUNDLE_ID as string}.voip`,
+        pushType: 'voip',
+        expiration,
+      });
+      if (!res.ok) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `APNs: voip send failed (status ${res.status}${res.reason ? `, ${res.reason}` : ''})`,
+        );
+        if (
+          res.status === 410 ||
+          res.reason === 'BadDeviceToken' ||
+          res.reason === 'Unregistered' ||
+          res.reason === 'DeviceTokenNotForTopic'
+        ) {
+          await db.delete(schema.deviceTokens).where(eq(schema.deviceTokens.token, r.token));
+        }
+      }
+    }),
+  );
 }
 
 // ── CRUD ───────────────────────────────────────────────────────────────────

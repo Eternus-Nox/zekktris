@@ -1190,7 +1190,7 @@ usersRouter.delete(
 const deviceTokenSchema = z.object({
   /** Hex APNs device token from the iOS registration event. */
   token: z.string().min(1).max(256),
-  platform: z.enum(['ios']).default('ios'),
+  platform: z.enum(['ios', 'ios_voip']).default('ios'),
   /** Optional device label for the manage-devices list. */
   label: z.string().max(120).optional(),
 });

@@ -1,6 +1,7 @@
 import Foundation
 import UIKit
 import UserNotifications
+import PushKit
 
 /// Cross-component notification routing (Push → AppStore). The store
 /// subscribes; the notification delegate posts.
@@ -100,6 +101,66 @@ final class PushManager: ObservableObject {
     }
 }
 
+/// PushKit VoIP handler — receives call pushes even when the app is closed
+/// or force-quit (iOS relaunches us in the background). Apple REQUIRES
+/// reporting a CallKit incoming call before the completion handler runs;
+/// failing to do so gets the app killed and future voip pushes dropped.
+/// The CallKit answer/decline then flow through CallManager's existing
+/// onAnswer/onEnd wiring, which the booting AppStore installs.
+final class VoipPushHandler: NSObject, PKPushRegistryDelegate {
+    static let shared = VoipPushHandler()
+    private var registry: PKPushRegistry?
+    private(set) var voipTokenHex: String?
+
+    /// Call once at launch (idempotent).
+    func start() {
+        guard registry == nil else { return }
+        let r = PKPushRegistry(queue: .main)
+        r.delegate = self
+        r.desiredPushTypes = [.voIP]
+        registry = r
+    }
+
+    /// Re-POST the voip token after sign-in (token may have arrived first).
+    func registerWithServerIfPossible() {
+        guard let token = voipTokenHex, APIClient.shared.token != nil else { return }
+        Task { _ = await APIClient.shared.registerDeviceToken(token: token, platform: "ios_voip") }
+    }
+
+    func pushRegistry(_ registry: PKPushRegistry, didUpdate pushCredentials: PKPushCredentials, for type: PKPushType) {
+        guard type == .voIP else { return }
+        voipTokenHex = pushCredentials.token.map { String(format: "%02x", $0) }.joined()
+        registerWithServerIfPossible()
+    }
+
+    func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {
+        voipTokenHex = nil
+    }
+
+    func pushRegistry(
+        _ registry: PKPushRegistry,
+        didReceiveIncomingPushWith payload: PKPushPayload,
+        for type: PKPushType,
+        completion: @escaping () -> Void
+    ) {
+        guard type == .voIP else { completion(); return }
+        let dict = payload.dictionaryPayload
+        let channelId = (dict["channelId"] as? String) ?? ""
+        let callerName = (dict["callerName"] as? String) ?? "Incoming call"
+        Task { @MainActor in
+            // Mandatory: surface CallKit immediately. The store (booting
+            // in parallel on a cold launch) handles answer/decline once
+            // its CallKit wiring lands — reportIncoming is idempotent
+            // per channel, so a duplicate in-app ring can't double-ring.
+            CallManager.shared.reportIncoming(
+                channelId: channelId.isEmpty ? UUID().uuidString : channelId,
+                callerName: callerName
+            )
+            completion()
+        }
+    }
+}
+
 /// Handles delivered notifications: foreground presentation policy, taps
 /// (deep-link to the channel), and the call category's Answer/Decline
 /// actions. Talks to the store via NotificationCenter so it stays free of
@@ -192,6 +253,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
+        // VoIP (PushKit) — full CallKit ringing with the app closed.
+        VoipPushHandler.shared.start()
         // AsyncImage (avatars, banners, attachments, emoji) loads through
         // URLSession.shared, whose default URLCache is tiny. A bigger cache
         // means scrollback and the member list stop re-fetching the same

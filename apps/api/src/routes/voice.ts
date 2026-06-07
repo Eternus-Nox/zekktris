@@ -155,6 +155,21 @@ voiceRouter.post(
         const callerName =
           caller?.displayName ?? caller?.username ?? 'Someone';
 
+        // PushKit VoIP ring: full native CallKit screen even when the
+        // app is closed/force-quit. Fire-and-forget; the alert push
+        // below remains the fallback for devices without a voip token.
+        void (async () => {
+          try {
+            const apns = await import('../services/apns');
+            await apns.sendVoipToUser(otherUserId, {
+              channelId: channelId.toString(),
+              callerName,
+            });
+          } catch {
+            // best-effort
+          }
+        })();
+
         await sendToUser(otherUserId, {
           title: callerName,
           body: '📞 Calling…',

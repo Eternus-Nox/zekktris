@@ -62,6 +62,7 @@ struct RootView: View {
                 if let token = session.token { store.start(token: token, user: session.currentUser) }
                 PushManager.shared.requestAuthorizationAndRegister()
                 PushManager.shared.registerWithServerIfPossible()
+                VoipPushHandler.shared.registerWithServerIfPossible()
             case .signedOut:
                 PushManager.shared.unregister()
                 store.stop()
