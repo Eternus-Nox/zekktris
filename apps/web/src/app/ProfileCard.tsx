@@ -23,6 +23,7 @@ import { useEffect, useState } from 'react';
 import { UserTag } from '../lib/UserTag';
 import { useNavigate } from 'react-router-dom';
 import { ApiError, type PublicUser, type Role } from '@zekktris/client';
+import { AchievementsShelf } from './AchievementsShelf';
 import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
@@ -721,6 +722,8 @@ export function ProfileCard({
               <div className="text-xs text-ink-3 truncate">@{user.username}</div>
             </div>
           </div>
+
+          <AchievementsShelf userId={isSelf ? undefined : user.id} />
 
           {(() => {
             // Composite status display: emoji on the left, text

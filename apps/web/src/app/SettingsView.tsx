@@ -787,6 +787,10 @@ export function SettingsView() {
               <ParentalControlsToggle />
             </div>
             <div className="pt-3 border-t border-line">
+              <div className="text-sm text-ink-2 font-medium mb-1">Achievements</div>
+              <AchievementsVisibilityToggle />
+            </div>
+            <div className="pt-3 border-t border-line">
               <div className="text-sm text-ink-2 font-medium mb-2">Blocked users</div>
               <BlockedSettings />
             </div>
@@ -1383,6 +1387,71 @@ function ParentalControlsToggle() {
         <span
           className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
             enabled ? 'left-[1.125rem]' : 'left-0.5'
+          }`}
+        />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Public-achievements toggle. Mirrors the iOS Settings switch: when off,
+ * the achievements shelf is visible only on your own profile — the server
+ * answers other users' /users/:id/achievements with an empty list.
+ */
+function AchievementsVisibilityToggle() {
+  const { rest } = useAuth();
+  const [publicShelf, setPublicShelf] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    rest
+      .myAchievements()
+      .then((r) => {
+        if (!cancelled) setPublicShelf(r.public ?? false);
+      })
+      .catch(() => {
+        if (!cancelled) setPublicShelf(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rest]);
+
+  const flip = async () => {
+    if (publicShelf === null) return;
+    const next = !publicShelf;
+    setPublicShelf(next);
+    try {
+      await rest.patchMe({ achievementsPublic: next });
+    } catch {
+      setPublicShelf(!next); // revert on failure
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-between gap-3 px-3 py-2.5 bg-bg-2 border border-line rounded-lg">
+      <div className="min-w-0">
+        <p className="text-sm text-ink-1">Public achievements</p>
+        <p className="text-xs text-ink-3 leading-relaxed mt-0.5">
+          Let others see your achievements on your profile. Off keeps them
+          private to you.
+        </p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={publicShelf === true}
+        aria-label="Public achievements"
+        disabled={publicShelf === null}
+        onClick={() => void flip()}
+        className={`relative shrink-0 w-10 h-6 rounded-full transition-colors ${
+          publicShelf ? 'bg-accent/70' : 'bg-bg-3'
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
+            publicShelf ? 'left-[1.125rem]' : 'left-0.5'
           }`}
         />
       </button>

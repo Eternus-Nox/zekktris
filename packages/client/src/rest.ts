@@ -11,6 +11,7 @@
  */
 
 import type {
+  AchievementsResponse,
   AuthSession,
   AuditLogEntry,
   AutomodRule,
@@ -34,6 +35,8 @@ import type {
   Sticker,
   StageParticipant,
   DiscoverableGuild,
+  SecurityConfig,
+  SecurityEvent,
   SelfUser,
   VoiceState,
   Webhook,
@@ -272,6 +275,7 @@ export class RestClient {
         | 'tagLabel'
         | 'tagColor'
         | 'tagEmoji'
+        | 'achievementsPublic'
       >
     >,
   ): Promise<{ user: SelfUser }> {
@@ -2338,6 +2342,57 @@ export class RestClient {
 
   adminStats(): Promise<{ stats: AdminStats }> {
     return this.request('GET', '/admin/stats');
+  }
+
+  // ── Admin: instance security ──────────────────────────────────────────────
+
+  adminSecurityConfig(): Promise<{ config: SecurityConfig }> {
+    return this.request('GET', '/admin/security/config');
+  }
+
+  adminPatchSecurityConfig(patch: Partial<SecurityConfig>): Promise<{ config: SecurityConfig }> {
+    return this.request('PATCH', '/admin/security/config', patch);
+  }
+
+  adminSecurityEvents(opts: { kind?: 'spam_limited' | 'banned_word'; before?: string; limit?: number } = {}): Promise<{ events: SecurityEvent[] }> {
+    const q = new URLSearchParams();
+    if (opts.kind) q.set('kind', opts.kind);
+    if (opts.before) q.set('before', opts.before);
+    if (opts.limit) q.set('limit', String(opts.limit));
+    const qs = q.toString();
+    return this.request('GET', `/admin/security/events${qs ? `?${qs}` : ''}`);
+  }
+
+  adminSecurityWords(): Promise<{ words: string[] }> {
+    return this.request('GET', '/admin/security/words');
+  }
+
+  adminAddSecurityWord(word: string): Promise<{ words: string[] }> {
+    return this.request('POST', '/admin/security/words', { word });
+  }
+
+  adminRemoveSecurityWord(word: string): Promise<{ words: string[] }> {
+    return this.request('DELETE', `/admin/security/words/${encodeURIComponent(word)}`);
+  }
+
+  /** The common moderation wordlist (read-only; nothing added). */
+  adminSecurityWordPreset(): Promise<{ words: string[] }> {
+    return this.request('GET', '/admin/security/words/preset');
+  }
+
+  /** Bulk-load the common wordlist (insert-only, duplicates skipped). */
+  adminLoadSecurityWordPreset(): Promise<{ added: number; words: string[] }> {
+    return this.request('POST', '/admin/security/words/preset');
+  }
+
+  // ── Achievements ──────────────────────────────────────────────────────────
+
+  myAchievements(): Promise<AchievementsResponse> {
+    return this.request('GET', '/users/@me/achievements');
+  }
+
+  userAchievements(userId: string): Promise<AchievementsResponse> {
+    return this.request('GET', `/users/${userId}/achievements`);
   }
 
   adminListUsers(opts: {

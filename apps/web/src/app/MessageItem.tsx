@@ -735,7 +735,9 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
           </div>
         )}
 
-        {message.attachments.length > 0 && <Attachments attachments={message.attachments} />}
+        {message.attachments.length > 0 && (
+          <Attachments attachments={message.attachments} channelId={message.channelId} />
+        )}
         {/* Sticker — standalone body at ~160px. The DTO carries a
             `stickerId` even when the sticker has been deleted (we
             preserve historical messages); render a tombstone if so.

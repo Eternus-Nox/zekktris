@@ -1150,7 +1150,13 @@ function reducer(state: State, action: Action): State {
       // fell through and allocated a fresh-but-identical member list,
       // spuriously invalidating every consumer of membersByGuild.
       if (memberIdx === -1) {
-        return usersById === state.usersById ? state : { ...state, usersById };
+        // Still patch DM recipients — the DM list's status dots read
+        // channel.recipients[*].status, which nothing else updates.
+        // Without this, a DM partner's dot froze at whatever the list
+        // fetch returned (the web-side twin of the iOS stale-pin bug).
+        const dmChannels = patchDmRecipientStatus(state.dmChannels, action.userId, action.status);
+        if (usersById === state.usersById && dmChannels === state.dmChannels) return state;
+        return { ...state, usersById, dmChannels };
       }
 
       // Splice in place — O(1) work instead of .map's O(n) callback
@@ -1164,6 +1170,7 @@ function reducer(state: State, action: Action): State {
         ...state,
         membersByGuild: { ...state.membersByGuild, [action.guildId]: nextList },
         usersById,
+        dmChannels: patchDmRecipientStatus(state.dmChannels, action.userId, action.status),
       };
     }
 
@@ -3308,4 +3315,29 @@ export function isUserBlocked(
   userId: string,
 ): boolean {
   return relationships.some((r) => r.type === 'blocked' && r.user.id === userId);
+}
+
+
+/**
+ * Return dmChannels with `userId`'s recipient status updated, or the SAME
+ * array reference when nothing changed (so memoized consumers skip work).
+ * Presence events are the hottest gateway traffic; the identity-preserving
+ * fast path matters.
+ */
+function patchDmRecipientStatus(
+  dmChannels: Channel[],
+  userId: string,
+  status: PublicUser['status'],
+): Channel[] {
+  let next: Channel[] | null = null;
+  for (let i = 0; i < dmChannels.length; i++) {
+    const c = dmChannels[i]!;
+    const rIdx = c.recipients ? c.recipients.findIndex((r) => r.id === userId) : -1;
+    if (rIdx === -1 || c.recipients![rIdx]!.status === status) continue;
+    const recipients = c.recipients!.slice();
+    recipients[rIdx] = { ...recipients[rIdx]!, status };
+    if (!next) next = dmChannels.slice();
+    next[i] = { ...c, recipients };
+  }
+  return next ?? dmChannels;
 }

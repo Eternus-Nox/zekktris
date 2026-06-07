@@ -34,12 +34,13 @@ import {
   type AdminUser,
 } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
+import { AdminSecurityTab } from './AdminSecurityTab';
 import { useToasts } from '../state/Toasts';
 import { AvatarImage } from '../lib/AvatarImage';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { Hash, Lock, Search as SearchIcon, Shield, Volume2, X as CloseIcon, Users, Archive, BarChart, ChevronLeft } from '../lib/icons';
 
-type Tab = 'overview' | 'users' | 'guilds' | 'storage';
+type Tab = 'overview' | 'users' | 'guilds' | 'storage' | 'security';
 
 export function AdminPanel() {
   const navigate = useNavigate();
@@ -110,6 +111,7 @@ export function AdminPanel() {
                 { id: 'users', label: 'Users' },
                 { id: 'guilds', label: 'Servers' },
                 { id: 'storage', label: 'Storage' },
+                { id: 'security', label: 'Security' },
               ] as { id: Tab; label: string }[]
             ).map((t) => {
               const active = tab === t.id;
@@ -151,6 +153,7 @@ export function AdminPanel() {
               />
             )}
             {tab === 'storage' && <StorageTab />}
+            {tab === 'security' && <AdminSecurityTab />}
           </div>
         )}
       </main>

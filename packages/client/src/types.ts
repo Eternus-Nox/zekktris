@@ -83,6 +83,8 @@ export interface SelfUser extends PublicUser {
       "access denied" message because the API will reject the
       requests anyway. */
   isAdmin?: boolean;
+  /** Whether the user's achievements shelf is visible to others. */
+  achievementsPublic?: boolean;
   /** Per-user guild rail ordering. Null = no preference; client falls
       back to the natural order returned by `listGuilds`. Authoritative
       across devices — written by `setGuildOrder`. Optional in the
@@ -221,6 +223,9 @@ export interface Channel {
       one can talk (participants join muted at the SFU). Optional for
       back-compat with older API responses; treat undefined as false. */
   voiceDisabled?: boolean;
+  /** 1:1 DMs only: current messaging-streak day count (both parties
+      messaged on consecutive UTC days). Present only when > 0. */
+  streak?: number;
   lastMessageId: string | null;
   /** For threads: id of the parent-channel message that started this thread. */
   parentMessageId?: string | null;
@@ -837,3 +842,45 @@ export interface AuditLogEntry {
  * treats them as no-ops at check time; future ships will wire the
  * matching algorithms.
  */
+
+
+// ── Achievements ─────────────────────────────────────────────────────────────
+
+export interface Achievement {
+  id: string;
+  name: string;
+  description: string;
+  /** Marker shown in the badge (year number, tier threshold…). */
+  marker: string;
+  /** Current raw progress value behind the badge. */
+  value: number;
+}
+
+export interface AchievementsResponse {
+  achievements: Achievement[];
+  /** Present on the @me variant: current visibility toggle. */
+  public?: boolean;
+}
+
+// ── Instance security (Admin → Security) ────────────────────────────────────
+
+export interface SecurityConfig {
+  spamEnabled: boolean;
+  spamMaxMessages: number;
+  spamWindowSeconds: number;
+  spamCooldownSeconds: number;
+  wordFilterEnabled: boolean;
+}
+
+export interface SecurityEvent {
+  id: string;
+  kind: 'spam_limited' | 'banned_word';
+  userId: string | null;
+  username: string | null;
+  displayName: string | null;
+  guildId: string | null;
+  channelId: string | null;
+  detail: string;
+  contentSnapshot: string | null;
+  createdAt: string;
+}

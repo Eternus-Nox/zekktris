@@ -326,6 +326,59 @@ export async function decryptForDm(
  * (XSalsa20) and v1 prefixes are still recognized so those old messages
  * render as "couldn't decrypt" tombstones rather than raw ciphertext.
  */
+/**
+ * Encrypt raw bytes with the channel's shared key. Output layout matches
+ * the iOS native app exactly — iv(12) || ciphertext || tag(16) — so an
+ * attachment encrypted on either platform decrypts on the other. Callers
+ * append the `.zke` suffix to the filename to mark the payload.
+ */
+export async function encryptBytesForDm(
+  data: Uint8Array,
+  channelId: string,
+): Promise<Uint8Array | null> {
+  const key = getLocalKey(channelId);
+  if (!key) return null;
+  try {
+    const cryptoKey = await importAesKey(key);
+    const iv = crypto.getRandomValues(new Uint8Array(GCM_IV_BYTES));
+    const ct = new Uint8Array(
+      await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv: iv as BufferSource },
+        cryptoKey,
+        data as BufferSource,
+      ),
+    );
+    const combined = new Uint8Array(iv.length + ct.length);
+    combined.set(iv, 0);
+    combined.set(ct, iv.length);
+    return combined;
+  } catch {
+    return null;
+  }
+}
+
+/** Decrypt `.zke` attachment bytes (iv(12) || ciphertext || tag(16)). */
+export async function decryptBytesForDm(
+  data: Uint8Array,
+  channelId: string,
+): Promise<Uint8Array | null> {
+  const key = getLocalKey(channelId);
+  if (!key || data.length <= GCM_IV_BYTES + 16) return null;
+  try {
+    const cryptoKey = await importAesKey(key);
+    const iv = data.slice(0, GCM_IV_BYTES);
+    const body = data.slice(GCM_IV_BYTES);
+    const pt = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: iv as BufferSource },
+      cryptoKey,
+      body as BufferSource,
+    );
+    return new Uint8Array(pt);
+  } catch {
+    return null;
+  }
+}
+
 export function isEncryptedWireFormat(s: string): boolean {
   return (
     s.startsWith(WIRE_PREFIX_V3) ||
