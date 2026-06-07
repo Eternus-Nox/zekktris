@@ -347,13 +347,9 @@ struct ServerRailView: View {
                     }
                     .buttonStyle(.plain)
 
-                    Button { store.showSaved() } label: {
-                        RailTile(active: store.railContent == .saved) {
-                            Image(systemName: "bookmark.fill")
-                                .font(.system(size: 17, weight: .semibold))
-                        }
-                    }
-                    .buttonStyle(.plain)
+                    // Saved messages intentionally has no rail tile — it
+                    // lives in the home quick-switcher (Friends / Your
+                    // events / Saved / Scheduled), like the web app.
 
                     Rectangle()
                         .fill(Theme.line)
