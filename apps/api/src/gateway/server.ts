@@ -98,6 +98,11 @@ export function attachGateway(httpServer: HttpServer): void {
       log.warn('gateway: boot presence reset failed', { err: (err as Error).message });
     }
   })();
+  // Pending voice-eviction timers keyed by userId (see grace period in
+  // onUserFullyDisconnected below).
+  const VOICE_EVICT_GRACE_MS = 45_000;
+  const pendingVoiceEvictions = new Map<string, ReturnType<typeof setTimeout>>();
+
   // When a user's final gateway connection drops we have two pieces of
   // stale state to clean up:
   //   1. Voice: any joined room becomes ghost-attendee; clear it and
@@ -109,6 +114,30 @@ export function attachGateway(httpServer: HttpServer): void {
   // Fire-and-forget — the hook signature is sync to keep registry.ts
   // free of async machinery.
   registry.onUserFullyDisconnected = (userId: bigint) => {
+    // GRACE PERIOD before evicting from voice. A gateway WebSocket blip
+    // (WiFi->LTE handoff, brief network loss — likelier under the load
+    // of video/screen share) is NOT the same as leaving the call: the
+    // LiveKit media connection usually survives or reconnects on its
+    // own. Evicting instantly told the peer "they left", which made the
+    // 1:1 auto-hangup kill perfectly good calls. We wait, and cancel if
+    // the user re-identifies in time. Presence offline-flip waits with
+    // it (harmless either way).
+    const pending = setTimeout(() => {
+      pendingVoiceEvictions.delete(userId.toString());
+      runDisconnectCleanup(userId);
+    }, VOICE_EVICT_GRACE_MS);
+    pendingVoiceEvictions.set(userId.toString(), pending);
+  };
+  registry.onUserConnected = (userId: bigint) => {
+    const key = userId.toString();
+    const pending = pendingVoiceEvictions.get(key);
+    if (pending) {
+      clearTimeout(pending);
+      pendingVoiceEvictions.delete(key);
+    }
+  };
+
+  function runDisconnectCleanup(userId: bigint): void {
     void (async () => {
       try {
         const result = await voice.leaveVoice(userId);

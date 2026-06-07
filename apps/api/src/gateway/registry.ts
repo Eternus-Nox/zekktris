@@ -100,6 +100,13 @@ class Registry {
 
   /** Called once a connection becomes authenticated. */
   index(conn: Connection): void {
+    if (conn.userId !== null && this.onUserConnected) {
+      try {
+        this.onUserConnected(conn.userId);
+      } catch {
+        // Hook errors mustn't break indexing.
+      }
+    }
     if (!conn.userId) return;
     let set = this.byUser.get(conn.userId);
     if (!set) {
@@ -182,6 +189,9 @@ class Registry {
    * value (or thrown error) is ignored. Install once at startup.
    */
   onUserFullyDisconnected: ((userId: bigint) => void) | null = null;
+  /** Fired when a user gains a connection — cancels pending grace-period
+      voice evictions scheduled by onUserFullyDisconnected. */
+  onUserConnected: ((userId: bigint) => void) | null = null;
 
   // ── Membership snapshot mutations ────────────────────────────────────────
   //
