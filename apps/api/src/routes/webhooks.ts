@@ -200,6 +200,22 @@ const executeSchema = z.object({
       flatten to a text content string when no top-level content is
       provided. Cap to 10 — Discord's limit, more than enough. */
   embeds: z.array(embedSchema).max(10).nullish(),
+  /** Uptime Kuma's generic "Webhook" notification posts
+      { heartbeat, monitor, msg } — no content/embeds at all. `msg`
+      carries the human-readable line ("[My site] ✅ Up" etc.), so we
+      accept it as a content source. */
+  msg: z.string().max(4000).nullish(),
+  /** Slack-compatible senders post `text`. */
+  text: z.string().max(4000).nullish(),
+  /** Some generic senders pair `title` with a body field. */
+  title: z.string().max(300).nullish(),
+  /** Kuma metadata — used as a last-resort content synthesizer when
+      msg is absent (and tolerated otherwise). */
+  monitor: z.object({ name: z.string().nullish() }).passthrough().nullish(),
+  heartbeat: z
+    .object({ status: z.number().nullish(), msg: z.string().nullish() })
+    .passthrough()
+    .nullish(),
 });
 
 webhooksExecuteRouter.post(
@@ -249,8 +265,28 @@ webhooksExecuteRouter.post(
       }
       content = parts.join('\n\n').slice(0, 2000);
     }
+    // Uptime Kuma ("Webhook" type) / Slack-style fallbacks: msg or text,
+    // optionally prefixed by a title.
     if (!content) {
-      throw errors.badRequest('Webhook payload must include `content` or non-empty `embeds`');
+      const bodyText = body.msg?.trim() || body.text?.trim() || '';
+      const title = body.title?.trim();
+      if (bodyText) {
+        content = (title ? `**${title}**\n${bodyText}` : bodyText).slice(0, 2000);
+      }
+    }
+    // Last resort: synthesize from Kuma's monitor/heartbeat metadata so a
+    // bare status ping still lands as something readable.
+    if (!content && (body.monitor || body.heartbeat)) {
+      const name = body.monitor?.name ?? 'Monitor';
+      const hb = body.heartbeat;
+      const status =
+        hb?.status === 1 ? '✅ Up' : hb?.status === 0 ? '❌ Down' : 'status update';
+      content = `**${name}** ${status}${hb?.msg ? ` — ${hb.msg}` : ''}`.slice(0, 2000);
+    }
+    if (!content) {
+      throw errors.badRequest(
+        'Webhook payload must include `content`, `embeds`, `msg`, or `text`',
+      );
     }
     try {
       await webhooks.executeWebhook({
