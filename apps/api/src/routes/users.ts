@@ -107,7 +107,15 @@ usersRouter.get(
       return c.json({ achievements: [], public: false });
     }
     const { achievementsForUser } = await import('../services/achievements');
-    return c.json({ achievements: await achievementsForUser(targetId), public: target.pub });
+    // Other people only ever see EARNED badges — locked entries carry
+    // live progress counters (message totals, friend counts) that the
+    // public shelf shouldn't leak. The owner sees the full catalog.
+    const all = await achievementsForUser(targetId);
+    const isOwner = targetId === requireUserId(c);
+    return c.json({
+      achievements: isOwner ? all : all.filter((a) => a.earned),
+      public: target.pub,
+    });
   },
 );
 

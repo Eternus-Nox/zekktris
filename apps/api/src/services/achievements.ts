@@ -29,6 +29,10 @@ export interface Achievement {
   marker: string;
   /** Current raw progress value behind the badge. */
   value: number;
+  /** Whether the user has unlocked it. Locked entries carry progress. */
+  earned: boolean;
+  /** Threshold to unlock (absent for the open-ended veteran years). */
+  goal?: number;
 }
 
 const CHATTERBOX_TIERS = [100, 1_000, 10_000, 100_000];
@@ -61,8 +65,21 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
         description: `Member for ${y} year${y > 1 ? 's' : ''}.`,
         marker: `${y}`,
         value: y,
+        earned: true,
+        goal: y,
       });
     }
+    // The next year is always visible as the upcoming locked badge.
+    const nextY = years + 1;
+    out.push({
+      id: `veteran_${nextY}`,
+      name: nextY === 1 ? 'One Year Strong' : `${nextY} Years Strong`,
+      description: `Member for ${nextY} year${nextY > 1 ? 's' : ''}.`,
+      marker: `${nextY}`,
+      value: years,
+      earned: false,
+      goal: nextY,
+    });
   }
 
   // ── Messages sent (chatterbox tiers + night owl + first responder) ─────
@@ -76,25 +93,25 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
   const totalMsgs = num(msgCounts?.total);
   const nightMsgs = num(msgCounts?.nightOwl);
   for (const tier of CHATTERBOX_TIERS) {
-    if (totalMsgs >= tier) {
-      out.push({
-        id: `chatterbox_${tier}`,
-        name: 'Chatterbox',
-        description: `Sent ${tier.toLocaleString('en-US')} messages.`,
-        marker: tier >= 1000 ? `${tier / 1000}k` : `${tier}`,
-        value: totalMsgs,
-      });
-    }
-  }
-  if (nightMsgs >= 500) {
     out.push({
-      id: 'night_owl',
-      name: 'Night Owl',
-      description: 'Sent 500 messages between 1–5 AM.',
-      marker: '🌙',
-      value: nightMsgs,
+      id: `chatterbox_${tier}`,
+      name: 'Chatterbox',
+      description: `Sent ${tier.toLocaleString('en-US')} messages.`,
+      marker: tier >= 1000 ? `${tier / 1000}k` : `${tier}`,
+      value: totalMsgs,
+      earned: totalMsgs >= tier,
+      goal: tier,
     });
   }
+  out.push({
+    id: 'night_owl',
+    name: 'Night Owl',
+    description: 'Sent 500 messages between 1–5 AM.',
+    marker: '🌙',
+    value: nightMsgs,
+    earned: nightMsgs >= 500,
+    goal: 500,
+  });
 
   // First responder: replies within 10s of the message they answer.
   const [fr] = await db
@@ -114,15 +131,15 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
       ),
     );
   const fastReplies = num(fr?.n);
-  if (fastReplies >= 100) {
-    out.push({
-      id: 'first_responder',
-      name: 'First Responder',
-      description: 'Replied within 10 seconds, 100 times.',
-      marker: '⚡',
-      value: fastReplies,
-    });
-  }
+  out.push({
+    id: 'first_responder',
+    name: 'First Responder',
+    description: 'Replied within 10 seconds, 100 times.',
+    marker: '⚡',
+    value: fastReplies,
+    earned: fastReplies >= 100,
+    goal: 100,
+  });
 
   // ── Friends (social circle tiers) ──────────────────────────────────────
   const [fc] = await db
@@ -136,29 +153,29 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
     );
   const friends = num(fc?.n);
   for (const tier of SOCIAL_TIERS) {
-    if (friends >= tier) {
-      out.push({
-        id: `social_${tier}`,
-        name: 'Social Circle',
-        description: `Made ${tier} friends.`,
-        marker: `${tier}`,
-        value: friends,
-      });
-    }
+    out.push({
+      id: `social_${tier}`,
+      name: 'Social Circle',
+      description: `Made ${tier} friends.`,
+      marker: `${tier}`,
+      value: friends,
+      earned: friends >= tier,
+      goal: tier,
+    });
   }
 
   // ── Marathon (365-day streak, live or historical best) ─────────────────
   const { bestStreakForUser } = await import('./streaks');
   const best = await bestStreakForUser(userId);
-  if (best >= 365) {
-    out.push({
-      id: 'marathon',
-      name: 'Marathon',
-      description: 'Kept a 365-day messaging streak.',
-      marker: '🔥',
-      value: best,
-    });
-  }
+  out.push({
+    id: 'marathon',
+    name: 'Marathon',
+    description: 'Kept a 365-day messaging streak.',
+    marker: '🔥',
+    value: best,
+    earned: best >= 365,
+    goal: 365,
+  });
 
   // ── Founder (owns a guild that reached 25 members) ─────────────────────
   const [biggest] = await db
@@ -173,15 +190,15 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
     .orderBy(sql`1 DESC`)
     .limit(1);
   const biggestGuild = num(biggest?.members);
-  if (biggestGuild >= 25) {
-    out.push({
-      id: 'founder',
-      name: 'Founder',
-      description: 'Created a server that reached 25 members.',
-      marker: '🏛️',
-      value: biggestGuild,
-    });
-  }
+  out.push({
+    id: 'founder',
+    name: 'Founder',
+    description: 'Created a server that reached 25 members.',
+    marker: '🏛️',
+    value: biggestGuild,
+    earned: biggestGuild >= 25,
+    goal: 25,
+  });
 
   // ── Voice of the People (100h in 1:1 calls) ────────────────────────────
   // Summed from system_call summaries in DMs the user participates in.
@@ -202,15 +219,24 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
       ),
     );
   const callHours = Math.floor(num(vh?.ms) / 3_600_000);
-  if (callHours >= 100) {
-    out.push({
-      id: 'voice_of_people',
-      name: 'Voice of the People',
-      description: 'Spent 100 hours in calls.',
-      marker: '🎙️',
-      value: callHours,
-    });
-  }
+  out.push({
+    id: 'voice_of_people',
+    name: 'Voice of the People',
+    description: 'Spent 100 hours in calls.',
+    marker: '🎙️',
+    value: callHours,
+    earned: callHours >= 100,
+    goal: 100,
+  });
 
+  // Earned first (newest families intermixed is fine), then locked by
+  // how close they are to unlocking.
+  out.sort((a, b) => {
+    if (a.earned !== b.earned) return a.earned ? -1 : 1;
+    if (a.earned) return 0;
+    const pa = a.goal ? a.value / a.goal : 0;
+    const pb = b.goal ? b.value / b.goal : 0;
+    return pb - pa;
+  });
   return out;
 }

@@ -57,13 +57,19 @@ export function AchievementsShelf({ userId }: { userId?: string }) {
 
   if (!achievements || achievements.length === 0) return null;
 
+  // Server orders earned-first. Locked entries only arrive for the
+  // viewer's own shelf and render dimmed with a value/goal progress
+  // counter, so there's always a visible "what can I still get".
+  const earned = achievements.filter((a) => a.earned !== false);
+  const locked = achievements.filter((a) => a.earned === false);
+
   return (
     <div className="mt-3">
       <div className="text-[11px] font-semibold tracking-wide text-ink-3 mb-1.5">
         ACHIEVEMENTS
       </div>
       <div className="flex flex-wrap gap-1.5">
-        {achievements.map((a) => {
+        {earned.map((a) => {
           const Icon = badgeIcon(a.id);
           return (
             <span
@@ -82,6 +88,33 @@ export function AchievementsShelf({ userId }: { userId?: string }) {
           );
         })}
       </div>
+      {locked.length > 0 && (
+        <>
+          <div className="text-[11px] font-semibold tracking-wide text-ink-3 mt-3 mb-1.5">
+            IN PROGRESS
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {locked.map((a) => {
+              const Icon = badgeIcon(a.id);
+              return (
+                <span
+                  key={a.id}
+                  title={a.description}
+                  className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-bg-2/50 border border-line/60 text-ink-3 opacity-80"
+                >
+                  <Icon size={13} className="shrink-0" />
+                  <span className="text-xs">{a.name}</span>
+                  {typeof a.goal === 'number' && (
+                    <span className="px-1 py-px rounded bg-bg-3 font-mono text-[10px] leading-none">
+                      {Math.min(a.value, a.goal).toLocaleString()}/{a.goal.toLocaleString()}
+                    </span>
+                  )}
+                </span>
+              );
+            })}
+          </div>
+        </>
+      )}
     </div>
   );
 }

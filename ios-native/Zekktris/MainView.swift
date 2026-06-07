@@ -6739,12 +6739,29 @@ struct AchievementsSection: View {
     var body: some View {
         Group {
             if !achievements.isEmpty {
+                let earned = achievements.filter { $0.isEarned }
+                let locked = achievements.filter { !$0.isEarned }
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("ACHIEVEMENTS")
-                        .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
-                        ForEach(achievements) { a in
-                            AchievementBadge(achievement: a)
+                    if !earned.isEmpty {
+                        Text("ACHIEVEMENTS")
+                            .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
+                            ForEach(earned) { a in
+                                AchievementBadge(achievement: a)
+                            }
+                        }
+                    }
+                    // Locked badges arrive only for the viewer's own
+                    // shelf (the server strips them for other users) and
+                    // render dimmed with a value/goal progress capsule.
+                    if !locked.isEmpty {
+                        Text("IN PROGRESS")
+                            .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                            .padding(.top, earned.isEmpty ? 0 : 4)
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
+                            ForEach(locked) { a in
+                                AchievementBadge(achievement: a)
+                            }
                         }
                     }
                 }
@@ -6781,32 +6798,46 @@ struct AchievementBadge: View {
     }
 
     var body: some View {
+        let earned = achievement.isEarned
         VStack(spacing: 5) {
             ZStack {
                 Circle()
-                    .fill(LinearGradient(colors: [Theme.accent.opacity(0.35), Theme.accent2.opacity(0.25)],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .fill(earned
+                          ? LinearGradient(colors: [Theme.accent.opacity(0.35), Theme.accent2.opacity(0.25)],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing)
+                          : LinearGradient(colors: [Theme.bg3, Theme.bg3],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing))
                     .frame(width: 40, height: 40)
-                Image(systemName: symbol)
+                Image(systemName: earned ? symbol : "lock.fill")
                     .font(.system(size: 16))
-                    .foregroundColor(Theme.accent)
-                Text(achievement.marker)
-                    .font(.zkMono(8, weight: .bold))
-                    .foregroundColor(Theme.bg0)
-                    .padding(.horizontal, 4).padding(.vertical, 1)
-                    .background(Theme.accent)
-                    .clipShape(Capsule())
-                    .offset(x: 13, y: 14)
+                    .foregroundColor(earned ? Theme.accent : Theme.ink4)
+                if earned {
+                    Text(achievement.marker)
+                        .font(.zkMono(8, weight: .bold))
+                        .foregroundColor(Theme.bg0)
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(Theme.accent)
+                        .clipShape(Capsule())
+                        .offset(x: 13, y: 14)
+                }
             }
             Text(achievement.name)
                 .font(.zkSans(10, weight: .medium))
-                .foregroundColor(Theme.ink2)
+                .foregroundColor(earned ? Theme.ink2 : Theme.ink4)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
+            if !earned, let goal = achievement.goal {
+                Text("\(min(achievement.value, goal))/\(goal)")
+                    .font(.zkMono(8, weight: .semibold))
+                    .foregroundColor(Theme.ink4)
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(Theme.bg3)
+                    .clipShape(Capsule())
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
-        .background(Theme.bg2)
+        .background(Theme.bg2.opacity(earned ? 1 : 0.55))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .help("\(achievement.description)")
     }

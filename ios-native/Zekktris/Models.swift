@@ -843,6 +843,12 @@ struct Achievement: Codable, Identifiable, Hashable {
     var description: String
     var marker: String
     var value: Int
+    /// Locked entries (earned == false) carry progress toward `goal`.
+    /// Optional for back-compat with older servers (absent = earned).
+    var earned: Bool?
+    var goal: Int?
+
+    var isEarned: Bool { earned ?? true }
 }
 struct AchievementsWrap: Codable {
     let achievements: [Achievement]

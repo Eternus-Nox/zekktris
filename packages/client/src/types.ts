@@ -854,6 +854,11 @@ export interface Achievement {
   marker: string;
   /** Current raw progress value behind the badge. */
   value: number;
+  /** Whether the user has unlocked it. Locked entries carry progress
+      (own shelf only — other users' shelves are earned-only). */
+  earned?: boolean;
+  /** Threshold to unlock, when the badge has a fixed goal. */
+  goal?: number;
 }
 
 export interface AchievementsResponse {
