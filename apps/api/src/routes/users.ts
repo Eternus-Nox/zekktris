@@ -225,6 +225,9 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   }
   if (body.avatarUrl !== undefined) update.avatarUrl = body.avatarUrl;
   if (body.bannerUrl !== undefined) update.bannerUrl = body.bannerUrl;
+  if (body.achievementsPublic !== undefined) {
+    update.achievementsPublic = body.achievementsPublic;
+  }
   if (body.dmReadReceiptsEnabled !== undefined) {
     update.dmReadReceiptsEnabled = body.dmReadReceiptsEnabled;
   }

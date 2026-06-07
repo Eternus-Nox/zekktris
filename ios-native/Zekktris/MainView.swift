@@ -1419,6 +1419,7 @@ struct SettingsView: View {
     @State private var displayName = ""
     @State private var customStatus = ""
     @State private var customStatusEmoji = ""
+    @State private var showStatusEmojiPicker = false
     @State private var nameStatus: String?
     @State private var showChangePassword = false
     @State private var showChangeUsername = false
@@ -1630,13 +1631,27 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("CUSTOM STATUS")
             HStack(spacing: 8) {
-                TextField("🙂", text: $customStatusEmoji)
-                    .multilineTextAlignment(.center)
-                    .frame(width: 48)
-                    .padding(12)
-                    .background(Theme.bg2)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .foregroundColor(Theme.ink1)
+                // Opens the same emoji picker used for reactions instead
+                // of a free-text field (typing an emoji by hand was the
+                // only way before).
+                Button {
+                    showStatusEmojiPicker = true
+                } label: {
+                    Text(customStatusEmoji.isEmpty ? "🙂" : customStatusEmoji)
+                        .font(.system(size: 20))
+                        .opacity(customStatusEmoji.isEmpty ? 0.45 : 1)
+                        .frame(width: 48)
+                        .padding(.vertical, 10)
+                        .background(Theme.bg2)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+                .sheet(isPresented: $showStatusEmojiPicker) {
+                    EmojiPickerSheet { emoji in
+                        customStatusEmoji = emoji
+                        showStatusEmojiPicker = false
+                    }
+                }
                 TextField("What's happening?", text: $customStatus)
                     .padding(12)
                     .background(Theme.bg2)
