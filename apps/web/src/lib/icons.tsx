@@ -866,10 +866,10 @@ export function ShieldE2ee({ size = 16, className }: IconProps) {
           <stop offset="100%" stopColor="var(--accent-2)" />
         </linearGradient>
       </defs>
-      <path
-        d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"
-        fillOpacity="0.18"
-      />
+      {/* Padlock — matches the iOS lock badge (accent-tinted) so the
+          E2EE indicator reads identically on both platforms. */}
+      <rect x="4" y="10.5" width="16" height="10.5" rx="2.5" fillOpacity="0.18" />
+      <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5" fill="none" />
     </svg>
   );
 }
