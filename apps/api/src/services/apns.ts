@@ -35,6 +35,8 @@ import type { PushPayload } from './push';
 
 let configured = false;
 let signingKey: Awaited<ReturnType<typeof importPKCS8>> | null = null;
+/** Key ID actually in use: env override, or derived from AuthKey_<ID>.p8. */
+let resolvedKeyId: string | null = null;
 let jwtCache: { token: string; mintedAt: number } | null = null;
 let session: http2.ClientHttp2Session | null = null;
 
@@ -68,20 +70,40 @@ function normalizeP8(raw: string): string {
  */
 export async function initApns(): Promise<boolean> {
   if (configured) return true;
-  // Key material: inline env value, or a bind-mounted file via
-  // APNS_KEY_P8_FILE (the file form avoids multiline-env headaches).
+  // Key material, in priority order:
+  //   1. APNS_KEY_P8       — inline PEM/base64 env value.
+  //   2. APNS_KEY_P8_FILE  — a file path, OR a directory to scan. The
+  //      directory form is the drag-and-drop path: mount ./secrets at
+  //      /keys and drop AuthKey_<KEYID>.p8 in it. The Key ID is read
+  //      from the filename when APNS_KEY_ID isn't set.
   let keyMaterial = env.APNS_KEY_P8 ?? null;
+  let keyIdFromFilename: string | null = null;
   if (!keyMaterial && env.APNS_KEY_P8_FILE) {
     try {
-      const { readFile } = await import('node:fs/promises');
-      keyMaterial = await readFile(env.APNS_KEY_P8_FILE, 'utf8');
+      const fs = await import('node:fs/promises');
+      const path = await import('node:path');
+      let filePath = env.APNS_KEY_P8_FILE;
+      const stat = await fs.stat(filePath);
+      if (stat.isDirectory()) {
+        const entries = (await fs.readdir(filePath)).filter((f) => /\.p8$/i.test(f)).sort();
+        if (entries.length === 0) {
+          // No key dropped in yet — not an error, just unconfigured.
+          return false;
+        }
+        filePath = path.join(filePath, entries[0]!);
+      }
+      const base = filePath.split('/').pop() ?? '';
+      const m = /^AuthKey_([A-Z0-9]{10})\.p8$/i.exec(base);
+      if (m) keyIdFromFilename = m[1]!.toUpperCase();
+      keyMaterial = await fs.readFile(filePath, 'utf8');
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('APNs: cannot read APNS_KEY_P8_FILE:', (err as Error).message);
       return false;
     }
   }
-  if (!keyMaterial || !env.APNS_KEY_ID || !env.APNS_TEAM_ID || !env.APNS_BUNDLE_ID) {
+  const keyId = env.APNS_KEY_ID ?? keyIdFromFilename;
+  if (!keyMaterial || !keyId || !env.APNS_TEAM_ID || !env.APNS_BUNDLE_ID) {
     return false;
   }
   try {
@@ -91,7 +113,10 @@ export async function initApns(): Promise<boolean> {
     console.warn('APNs: failed to load .p8 signing key:', (err as Error).message);
     return false;
   }
+  resolvedKeyId = keyId;
   configured = true;
+  // eslint-disable-next-line no-console
+  console.log(`APNs: configured (key ${keyId}, topic ${env.APNS_BUNDLE_ID}, ${env.APNS_PRODUCTION ? 'production' : 'sandbox'})`);
   return true;
 }
 
@@ -105,7 +130,7 @@ async function providerToken(): Promise<string> {
   if (jwtCache && now - jwtCache.mintedAt < JWT_TTL_MS) return jwtCache.token;
   if (!signingKey) throw new Error('APNs signing key not loaded');
   const token = await new SignJWT({})
-    .setProtectedHeader({ alg: 'ES256', kid: env.APNS_KEY_ID as string })
+    .setProtectedHeader({ alg: 'ES256', kid: (resolvedKeyId ?? env.APNS_KEY_ID) as string })
     .setIssuer(env.APNS_TEAM_ID as string)
     .setIssuedAt()
     .sign(signingKey);

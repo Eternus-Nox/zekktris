@@ -122,17 +122,6 @@ services:
       WORKER_ID: ${WORKER_ID:-0}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       TRUST_PROXY: "true"   # we're behind Caddy; X-Forwarded-* are trusted
-      # ── Federation (backbone role) ─────────────────────────────────────
-      # Off by default. To act as a federation backbone (let others host
-      # guild nodes against you), set both in .env: the switch AND a base64url
-      # Ed25519 PKCS8 signing key. Federation stays INERT with the switch on
-      # but the key missing/invalid — the API logs a ready-to-paste sample
-      # key on boot. KEY_ID + BACKBONE_ID are optional (sane defaults).
-      FEDERATION_ENABLED: ${FEDERATION_ENABLED:-false}
-      FEDERATION_SIGNING_KEY: ${FEDERATION_SIGNING_KEY:-}
-      FEDERATION_KEY_ID: ${FEDERATION_KEY_ID:-fed-1}
-      FEDERATION_AUTO_APPROVE: ${FEDERATION_AUTO_APPROVE:-false}
-      BACKBONE_ID: ${BACKBONE_ID:-}
       # LiveKit (voice/video). The stack ships a self-hosted LiveKit SFU
       # (the `livekit` service below) that runs by default, so voice works
       # out of the box. setup.sh generates a unique key/secret on first run;
@@ -178,10 +167,25 @@ services:
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_CONTACT_EMAIL: ${VAPID_CONTACT_EMAIL:-}
+      # APNs (native iOS push) — drag-and-drop setup:
+      #   1. Drop your AuthKey_<KEYID>.p8 into ./secrets/ (mounted at
+      #      /keys below). The api finds it automatically and reads the
+      #      Key ID straight from the filename.
+      #   2. Set APNS_TEAM_ID + APNS_BUNDLE_ID in .env (and
+      #      APNS_PRODUCTION=false while testing Xcode-run builds;
+      #      "true" for TestFlight/App Store).
+      # APNS_KEY_ID is only needed if the key file was renamed.
+      APNS_KEY_P8_FILE: ${APNS_KEY_P8_FILE:-/keys}
+      APNS_KEY_ID: ${APNS_KEY_ID:-}
+      APNS_TEAM_ID: ${APNS_TEAM_ID:-}
+      APNS_BUNDLE_ID: ${APNS_BUNDLE_ID:-}
+      APNS_PRODUCTION: ${APNS_PRODUCTION:-true}
       # Defaults baked into the Dockerfile: NODE_ENV, HOST, PORT, UPLOAD_DIR
     volumes:
       # Attachments. The CDN endpoint streams from this same directory.
       - ${APPDATA_PATH:-/mnt/user/appdata/zekktris}/uploads:/data/uploads
+      # APNs key drop-zone (see APNS_* above). Safe to leave empty.
+      - ./secrets:/keys:ro
     depends_on:
       db:
         condition: service_healthy
