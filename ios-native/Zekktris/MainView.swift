@@ -997,6 +997,7 @@ struct DMListView: View {
     @EnvironmentObject private var store: AppStore
     @State private var showFriends = false
     @State private var showMyEvents = false
+    @State private var showSavedSheet = false
     @State private var showScheduled = false
 
     var body: some View {
@@ -1005,7 +1006,7 @@ struct DMListView: View {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     quickRow("person.2.fill", "Friends") { showFriends = true }
                     quickRow("calendar", "Your events") { showMyEvents = true }
-                    quickRow("bookmark", "Saved messages") { store.showSaved() }
+                    quickRow("bookmark", "Saved messages") { showSavedSheet = true }
                     quickRow("clock", "Scheduled messages") { showScheduled = true }
 
                     HStack {
@@ -1053,6 +1054,9 @@ struct DMListView: View {
         }
         .sheet(isPresented: $showMyEvents) {
             MyEventsView()
+        }
+        .sheet(isPresented: $showSavedSheet) {
+            SavedView()
         }
         .sheet(isPresented: $showScheduled) {
             ScheduledMessagesSheet()

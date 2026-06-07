@@ -2803,6 +2803,9 @@ struct SavedView: View {
             }
             .navigationTitle("Saved Messages")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) { PageBackButton() }
+            }
         }
         .task { await store.loadSaved() }
     }
