@@ -156,19 +156,25 @@ voiceRouter.post(
           caller?.displayName ?? caller?.username ?? 'Someone';
 
         // PushKit VoIP ring: full native CallKit screen even when the
-        // app is closed/force-quit. Fire-and-forget; the alert push
-        // below remains the fallback for devices without a voip token.
-        void (async () => {
-          try {
-            const apns = await import('../services/apns');
-            await apns.sendVoipToUser(otherUserId, {
-              channelId: channelId.toString(),
-              callerName,
-            });
-          } catch {
-            // best-effort
+        // app is closed/force-quit. When the callee has a voip token,
+        // the APNs alert leg below is SKIPPED — CallKit already rings,
+        // and a stacked banner would double-notify. Web Push always
+        // sends (it's the web client's ring).
+        let calleeHasVoip = false;
+        try {
+          const apns = await import('../services/apns');
+          calleeHasVoip = await apns.hasVoipTokens(otherUserId);
+          if (calleeHasVoip) {
+            void apns
+              .sendVoipToUser(otherUserId, {
+                channelId: channelId.toString(),
+                callerName,
+              })
+              .catch(() => undefined);
           }
-        })();
+        } catch {
+          // best-effort
+        }
 
         await sendToUser(otherUserId, {
           title: callerName,
@@ -200,7 +206,7 @@ voiceRouter.post(
           // a DM channel and triggers an automatic joinVoice call.
           url: `/channels/@me/${channelId.toString()}?autojoin=1`,
           icon: '/icon-192.png',
-        });
+        }, { skipApns: calleeHasVoip });
       } catch (err) {
         // Push is best-effort; never let a notification failure
         // affect the call itself.

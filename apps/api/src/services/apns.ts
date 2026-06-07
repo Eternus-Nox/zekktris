@@ -246,6 +246,18 @@ function buildApnsPayload(payload: PushPayload): string {
  * with the `.voip` suffix. Expires after 40s — a stale ring delivered
  * minutes later would be worse than none.
  */
+/** Whether the user has any PushKit VoIP tokens registered. */
+export async function hasVoipTokens(userId: bigint): Promise<boolean> {
+  const rows = await db
+    .select({ token: schema.deviceTokens.token })
+    .from(schema.deviceTokens)
+    .where(
+      and(eq(schema.deviceTokens.userId, userId), eq(schema.deviceTokens.platform, 'ios_voip')),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
 export async function sendVoipToUser(
   userId: bigint,
   data: { channelId: string; callerName: string },

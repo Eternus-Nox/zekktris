@@ -195,6 +195,12 @@ export interface PushPayload {
 export async function sendToUser(
   userId: bigint,
   payload: PushPayload,
+  opts?: {
+    /** Skip the APNs alert leg (Web Push still delivers). Used for call
+        rings when the callee has a PushKit VoIP token — CallKit rings
+        natively and a stacked alert banner would double-notify. */
+    skipApns?: boolean;
+  },
 ): Promise<number> {
   if (!configured && env.APNS_KEY_P8 === undefined) {
     // Neither transport is configured at all — nothing to do.
@@ -249,11 +255,13 @@ export async function sendToUser(
 
   // Native iOS (APNs) — independent of Web Push config/subscriptions, so a
   // server with no VAPID keys still delivers to iOS devices, and vice versa.
-  try {
-    const { sendToUserApns } = await import('./apns');
-    delivered += await sendToUserApns(userId, payload);
-  } catch {
-    // APNs module/init failure is non-fatal; Web Push (if any) already ran.
+  if (!opts?.skipApns) {
+    try {
+      const { sendToUserApns } = await import('./apns');
+      delivered += await sendToUserApns(userId, payload);
+    } catch {
+      // APNs module/init failure is non-fatal; Web Push (if any) already ran.
+    }
   }
 
   return delivered;
