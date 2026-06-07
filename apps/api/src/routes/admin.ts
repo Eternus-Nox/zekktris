@@ -998,6 +998,13 @@ adminRouter.post(
   },
 );
 
+// The common moderation wordlist itself (read-only — nothing is added).
+// The client renders this so the admin can pick words individually.
+adminRouter.get('/security/words/preset', async (c) => {
+  const { BANNED_WORDS_PRESET } = await import('../data/bannedWordsPreset');
+  return c.json({ words: BANNED_WORDS_PRESET });
+});
+
 // Bulk-load the common moderation wordlist. Insert-only: existing words
 // are kept, duplicates skipped. Returns the refreshed full list plus how
 // many entries were new.

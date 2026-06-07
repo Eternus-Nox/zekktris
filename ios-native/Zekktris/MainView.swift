@@ -6357,7 +6357,7 @@ struct AdminSecurityTab: View {
     @State private var newWord = ""
     @State private var kindFilter: String?
     @State private var loading = true
-    @State private var loadingPreset = false
+    @State private var showPreset = false
     @State private var error: String?
 
     var body: some View {
@@ -6419,12 +6419,12 @@ struct AdminSecurityTab: View {
                     .disabled(newWord.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
                 Button {
-                    loadPreset()
+                    showPreset = true
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "text.badge.plus")
                             .font(.system(size: 12, weight: .semibold))
-                        Text("Load common wordlist")
+                        Text("Common wordlist…")
                             .font(.zkSans(13, weight: .semibold))
                     }
                     .foregroundColor(Theme.accent)
@@ -6433,8 +6433,7 @@ struct AdminSecurityTab: View {
                     .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
-                .disabled(loadingPreset)
-                Text("Adds a standard profanity + slur list. Existing words are kept; remove any you don't want filtered.")
+                Text("Browse a standard profanity + slur list and add words individually, or add all at once.")
                     .font(.zkSans(11)).foregroundColor(Theme.ink4)
                 if words.isEmpty {
                     Text("No banned words yet. Messages containing a banned word are rejected and reported here.")
@@ -6466,6 +6465,9 @@ struct AdminSecurityTab: View {
             .padding(.bottom, 16)
         }
         .task { await reload() }
+        .sheet(isPresented: $showPreset) {
+            PresetWordsSheet(words: $words)
+        }
     }
 
     private func sectionLabel(_ t: String) -> some View {
@@ -6581,15 +6583,108 @@ struct AdminSecurityTab: View {
             if let updated = try? await APIClient.shared.adminRemoveSecurityWord(word) { words = updated }
         }
     }
-    private func loadPreset() {
-        loadingPreset = true
-        Task {
-            defer { loadingPreset = false }
-            do {
-                words = try await APIClient.shared.adminLoadSecurityWordPreset()
-            } catch {
-                self.error = (error as? APIError)?.message ?? error.localizedDescription
+}
+
+/// Browser for the server's common moderation wordlist: tap a word to ban
+/// it on this instance, or "Add all". Already-banned words show a check.
+private struct PresetWordsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var words: [String]
+    @State private var preset: [String] = []
+    @State private var loading = true
+    @State private var addingAll = false
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Tap a word to ban it on this instance. Checked words are already banned.")
+                        .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                    if let error {
+                        Text(error).font(.zkSans(12)).foregroundColor(Theme.dangerSoft)
+                    }
+                    if loading {
+                        ProgressView().tint(Theme.accent)
+                            .frame(maxWidth: .infinity).padding(.top, 40)
+                    } else {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 116), spacing: 6)], spacing: 6) {
+                            ForEach(preset, id: \.self) { w in
+                                presetPill(w)
+                            }
+                        }
+                    }
+                }
+                .padding(16)
             }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Common wordlist")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Done") { dismiss() }
+                        .font(.zkSans(15)).foregroundColor(Theme.accent)
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button { addAll() } label: {
+                        if addingAll {
+                            ProgressView().tint(Theme.accent)
+                        } else {
+                            Text("Add all")
+                                .font(.zkSans(15, weight: .semibold))
+                                .foregroundColor(Theme.accent)
+                        }
+                    }
+                    .disabled(addingAll || loading || preset.allSatisfy { words.contains($0) })
+                }
+            }
+            .task {
+                do { preset = try await APIClient.shared.adminSecurityWordPreset() }
+                catch { self.error = (error as? APIError)?.message ?? error.localizedDescription }
+                loading = false
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func presetPill(_ w: String) -> some View {
+        let added = words.contains(w)
+        Button {
+            guard !added else { return }
+            add(w)
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: added ? "checkmark" : "plus")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(added ? Theme.success : Theme.accent)
+                Text(w)
+                    .font(.zkMono(12))
+                    .foregroundColor(added ? Theme.ink4 : Theme.ink1)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 9).padding(.vertical, 7)
+            .background(Theme.bg2.opacity(added ? 0.55 : 1))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(added ? Theme.line : Theme.accent.opacity(0.35), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(added)
+    }
+
+    private func add(_ w: String) {
+        Task {
+            if let updated = try? await APIClient.shared.adminAddSecurityWord(w) { words = updated }
+        }
+    }
+    private func addAll() {
+        addingAll = true
+        Task {
+            defer { addingAll = false }
+            if let updated = try? await APIClient.shared.adminLoadSecurityWordPreset() { words = updated }
         }
     }
 }
