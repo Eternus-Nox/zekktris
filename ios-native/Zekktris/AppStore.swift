@@ -563,11 +563,15 @@ final class AppStore: ObservableObject {
             dms = fetched.sorted {
                 snowflakeGreater($0.lastMessageId ?? $0.id, than: $1.lastMessageId ?? $1.id)
             }
-            // Seed presence from recipients so dots render before any live
-            // PRESENCE_UPDATE arrives (live events override these).
+            // Seed presence from recipients. REST status is point-in-time
+            // truth (presence is DB-backed server-side), so it OVERWRITES
+            // the map. The old only-when-missing guard let a single missed
+            // PRESENCE_UPDATE (phone locked → socket dead) pin a user
+            // offline forever: every later refetch was discarded as
+            // "already seeded". Live events still apply on top.
             for dm in dms {
-                for r in dm.recipients ?? [] where presence[r.id] == nil {
-                    if let s = r.status { presence[r.id] = s }
+                for r in dm.recipients ?? [] {
+                    if let s = r.status, presence[r.id] != s { presence[r.id] = s }
                 }
             }
         } catch {
@@ -1915,6 +1919,12 @@ final class AppStore: ObservableObject {
             var map: [String: GuildMember] = [:]
             for m in list { map[m.userId] = m }
             members = map
+            // Point-in-time presence seeding, same rule as loadDMs: the
+            // fresh REST status overwrites the map so member dots converge
+            // on every (re)load even when live deltas were missed.
+            for m in list {
+                if let s = m.user.status, presence[m.userId] != s { presence[m.userId] = s }
+            }
         } catch {
             // Non-fatal — names just fall back to a generic label.
         }
@@ -2443,6 +2453,10 @@ final class AppStore: ObservableObject {
                 Task { await loadDMs() }
                 Task { await loadReadStates() }
                 if let c = selectedChannel { Task { await loadMessages(c) } }
+                // Presence deltas missed while suspended are unrecoverable
+                // (no resume/replay) — refetch members so guild status dots
+                // converge from the REST snapshot.
+                if let g = selectedGuild { Task { await loadMembers(g) } }
             }
             didInitialReady = true
         case "MESSAGE_CREATE":

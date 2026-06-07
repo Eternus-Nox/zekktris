@@ -1,8 +1,55 @@
 import SwiftUI
+import UIKit
 import Foundation
 
 /// Circular user avatar that loads a remote image and falls back to the
 /// initial letter on a tinted disc. Optionally shows a presence dot.
+/// Image loader that actually retries. SwiftUI's AsyncImage parks in its
+/// failure phase forever after one transient network error — which reads
+/// as "assets randomly don't load" until the view happens to be rebuilt.
+/// This loads through URLSession.shared (hitting the enlarged URLCache
+/// from AppDelegate), retries with backoff, and re-attempts whenever the
+/// view reappears or the URL changes.
+struct RetryingImage: View {
+    let url: URL
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else {
+                Color.clear
+            }
+        }
+        .task(id: url) {
+            if image == nil { image = await Self.load(url) }
+        }
+    }
+
+    /// Fetch with up to 3 attempts (0.6s / 1.2s backoff between them).
+    static func load(_ url: URL, attempts: Int = 3) async -> UIImage? {
+        var request = URLRequest(url: url)
+        request.cachePolicy = .returnCacheDataElseLoad
+        for attempt in 1...attempts {
+            if Task.isCancelled { return nil }
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                if let http = response as? HTTPURLResponse,
+                   !(200...299).contains(http.statusCode) {
+                    throw URLError(.badServerResponse)
+                }
+                if let img = UIImage(data: data) { return img }
+                throw URLError(.cannotDecodeContentData)
+            } catch {
+                guard attempt < attempts else { return nil }
+                try? await Task.sleep(nanoseconds: UInt64(attempt) * 600_000_000)
+            }
+        }
+        return nil
+    }
+}
+
 struct Avatar: View {
     let url: String?
     let name: String
@@ -23,14 +70,11 @@ struct Avatar: View {
     var body: some View {
         Group {
             if let resolved = assetURL(url) {
-                AsyncImage(url: resolved) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    default:
-                        placeholder
-                    }
-                }
+                // Placeholder underneath; the retrying loader fades the
+                // real image in over it (AsyncImage parked forever in its
+                // failure phase after one transient blip — "assets
+                // randomly don't load").
+                placeholder.overlay { RetryingImage(url: resolved) }
             } else {
                 placeholder
             }
