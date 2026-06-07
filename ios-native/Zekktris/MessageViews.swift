@@ -868,7 +868,10 @@ struct MessageRow: View {
                 Image(systemName: "arrow.forward.circle")
                     .font(.system(size: 11))
                     .foregroundColor(Theme.ink3)
-                Text(message.text)
+                // richContent resolves <@id> mention tokens — welcome
+                // messages are "Welcome to the server, <@123>! 👋" and
+                // rendered the raw token before this.
+                Text(richContent(message.text))
                     .font(.zkSans(12))
                     .foregroundColor(Theme.ink3)
             }

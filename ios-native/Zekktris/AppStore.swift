@@ -2460,7 +2460,28 @@ final class AppStore: ObservableObject {
             }
             didInitialReady = true
         case "MESSAGE_CREATE":
-            guard let message = try? JSONDecoder().decode(Message.self, from: data) else { return }
+            let message: Message
+            do {
+                message = try JSONDecoder().decode(Message.self, from: data)
+            } catch {
+                // A decode failure must be LOUD in development (it
+                // silently swallowed webhook/system messages before) and
+                // self-healing in production: refetch the visible channel
+                // so the missed message still appears.
+                #if DEBUG
+                print("[zk] MESSAGE_CREATE decode failed: \(error)\n\(String(data: data.prefix(600), encoding: .utf8) ?? "<binary>")")
+                #endif
+                if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let cid = obj["channelId"] as? String {
+                    if let mid = obj["id"] as? String, !mid.isEmpty {
+                        bumpChannelLastMessage(cid, mid)
+                    }
+                    if cid == selectedChannel?.id, let c = selectedChannel {
+                        Task { await loadMessages(c) }
+                    }
+                }
+                return
+            }
             bumpChannelLastMessage(message.channelId, message.id)
             // A user's message supersedes their typing indicator (web parity).
             if let author = message.authorId ?? message.author?.id {
