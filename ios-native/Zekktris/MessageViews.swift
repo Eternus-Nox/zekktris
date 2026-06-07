@@ -824,7 +824,11 @@ struct MessageRow: View {
     @State private var editText = ""
 
     var body: some View {
-        if message.isSystem {
+        // Web parity: ONLY system_call renders as a quiet notice line.
+        // Other system messages (system_join welcomes, pins, …) render
+        // as a regular row — the joiner's avatar on the left, name, and
+        // the welcome text, as if they sent it.
+        if message.type == "system_call" {
             systemRow
         } else {
         rowContent
@@ -851,30 +855,17 @@ struct MessageRow: View {
     }
 
     /// Web parity: system_call renders "Missed call from X" (red) or
-    /// "Call ended · 5m 23s"; other system messages show their content
-    /// as a quiet line.
+    /// "Call ended · 5m 23s" as a quiet notice line.
     @ViewBuilder
     private var systemRow: some View {
         HStack(spacing: 7) {
-            if message.type == "system_call" {
-                let missed = message.metadata?.missed ?? false
-                Image(systemName: missed ? "phone.arrow.down.left" : "phone")
-                    .font(.system(size: 11))
-                    .foregroundColor(missed ? Theme.dangerSoft.opacity(0.85) : Theme.ink3)
-                Text(callSummary)
-                    .font(.zkSans(12))
-                    .foregroundColor(missed ? Theme.dangerSoft.opacity(0.9) : Theme.ink2)
-            } else {
-                Image(systemName: "arrow.forward.circle")
-                    .font(.system(size: 11))
-                    .foregroundColor(Theme.ink3)
-                // richContent resolves <@id> mention tokens — welcome
-                // messages are "Welcome to the server, <@123>! 👋" and
-                // rendered the raw token before this.
-                Text(richContent(message.text))
-                    .font(.zkSans(12))
-                    .foregroundColor(Theme.ink3)
-            }
+            let missed = message.metadata?.missed ?? false
+            Image(systemName: missed ? "phone.arrow.down.left" : "phone")
+                .font(.system(size: 11))
+                .foregroundColor(missed ? Theme.dangerSoft.opacity(0.85) : Theme.ink3)
+            Text(callSummary)
+                .font(.zkSans(12))
+                .foregroundColor(missed ? Theme.dangerSoft.opacity(0.9) : Theme.ink2)
             Text("·").foregroundColor(Theme.ink4)
             Text(shortTime(message.createdAt))
                 .font(.zkSans(11))
