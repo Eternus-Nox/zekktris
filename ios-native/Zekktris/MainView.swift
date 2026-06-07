@@ -1517,7 +1517,10 @@ struct SettingsView: View {
                     url: user?.avatarUrl,
                     name: user?.name ?? "?",
                     size: 76,
-                    status: user?.status,
+                    // Live presence — currentUser.status is a snapshot from
+                    // launch (often 'offline' because getMe ran before the
+                    // gateway identified). The presence map has the truth.
+                    status: store.status(for: user?.id, fallback: user?.status),
                     toneId: user?.id
                 )
                 .padding(.top, -38)
