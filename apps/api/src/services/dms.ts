@@ -11,7 +11,7 @@
  * up via a JOIN that requires both rows to be present.
  */
 
-import { and, desc, eq, exists, inArray, isNull, like, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, exists, inArray, isNull, like, ne, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors } from '../errors';
 import { nextSnowflake } from '../snowflake';
@@ -66,6 +66,13 @@ async function findExistingDM(userA: bigint, userB: bigint): Promise<bigint | nu
         ),
       ),
     )
+    // Deterministic winner: oldest channel (smallest snowflake) first.
+    // Without an ORDER BY, two concurrent getOrCreateDM calls that each
+    // created a duplicate could re-run this find, each see the OTHER's
+    // channel as the winner, and mutually delete both. A stable sort
+    // makes every caller agree on the same surviving channel (this is
+    // also what the duplicate-cleanup comment below already assumes).
+    .orderBy(asc(schema.channels.id))
     .limit(1);
   return existing?.id ?? null;
 }

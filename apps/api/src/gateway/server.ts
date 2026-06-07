@@ -227,7 +227,18 @@ export function attachGateway(httpServer: HttpServer): void {
     log.debug('gateway: new connection', { sessionId: conn.id, ip: req.socket.remoteAddress });
 
     ws.on('message', (raw) => {
-      void handleClientFrame(conn, raw.toString());
+      // A rejection here (e.g. a transient DB error inside the IDENTIFY
+      // handler's queries) would otherwise surface as an unhandled
+      // rejection, which the process-level handler in index.ts treats
+      // as fatal (process.exit). One bad frame must never take down
+      // the whole server — log, close this connection, move on.
+      void handleClientFrame(conn, raw.toString()).catch((err) => {
+        log.warn('gateway: client frame handling failed', {
+          sessionId: conn.id,
+          err: (err as Error).message,
+        });
+        conn.close(CloseCode.PROTOCOL_ERROR, 'internal error');
+      });
     });
 
     ws.on('close', () => {
@@ -387,6 +398,13 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
     channelIds.map((channelId) => ({ channelId, guildId })),
   );
 
+  // The peer may have disconnected while the snapshot queries above were
+  // in flight. Its close hook (registry.remove) has already run, so
+  // indexing it now would leak the connection into byUser/byGuild/byDM
+  // forever — keeping the user permanently "connected" (their presence
+  // never flips offline because the byUser set never empties again).
+  if (conn.isClosed()) return;
+
   conn.markAuthenticated(
     userId,
     guildIds,
@@ -480,6 +498,12 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
       // will catch any pending row that didn't make it through.
     }
   })();
+
+  // If the peer dropped between READY and here, skip the online flip —
+  // the disconnect hook owns presence cleanup at this point, and writing
+  // 'online' for a connection that's already gone would leave the user
+  // stuck appearing online with zero live connections.
+  if (conn.isClosed()) return;
 
   // Mark user online if they were offline. Critically, we DON'T blow
   // away an explicit status pick (idle / dnd / invisible) — that's

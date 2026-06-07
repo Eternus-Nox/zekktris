@@ -145,6 +145,16 @@ export class Connection {
     return this.authenticated;
   }
 
+  /**
+   * True once this connection is closing/closed (either side initiated).
+   * The IDENTIFY handler checks this after its async snapshot loads —
+   * registering a connection whose close hook already ran would leak it
+   * into the registry indexes with no cleanup path.
+   */
+  isClosed(): boolean {
+    return this.closed;
+  }
+
   noteHeartbeat(): void {
     this.lastHeartbeatAt = Date.now();
   }

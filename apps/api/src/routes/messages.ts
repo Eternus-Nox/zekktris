@@ -685,6 +685,9 @@ messagesRouter.post(
     // the service). Mirrors the embed pipeline's fire-and-forget shape.
     {
       const botsSvc = await import('../services/bots');
+      // .catch: the service swallows per-bot delivery errors but its
+      // initial DB query can still reject; an unhandled rejection here
+      // is fatal (see the process-level handler in index.ts).
       void botsSvc.deliverMessageEventToBots({
         guildId: ctx.channel.guildId ?? null,
         channelId,
@@ -694,6 +697,11 @@ messagesRouter.post(
           type: 'message.create',
           message: messageDTO,
         },
+      }).catch((err) => {
+        log.warn?.('bot event delivery failed', {
+          channelId: channelId.toString(),
+          err: (err as Error).message,
+        });
       });
     }
 
@@ -1755,7 +1763,13 @@ messagesRouter.get(
 // We dispatch MESSAGE_ACK to the user's audience so other tabs / devices
 // of the same user reconcile their unread badges in real time.
 
-messagesRouter.post('/:channelId/messages/:messageId/ack', async (c) => {
+messagesRouter.post(
+  '/:channelId/messages/:messageId/ack',
+  // Param validation — without it, a malformed id makes the raw
+  // BigInt() below throw and the request 500s instead of 400ing
+  // like every sibling route.
+  validate('param', z.object({ channelId: snowflakeSchema, messageId: snowflakeSchema })),
+  async (c) => {
   const userId = requireUserId(c);
   const channelId = BigInt(c.req.param('channelId'));
   const messageId = BigInt(c.req.param('messageId'));
@@ -2356,7 +2370,15 @@ messagesRouter.post(
     const body = c.req.valid('json');
 
     // Same permission preflight as a regular send. throws on no-access.
-    await loadChannelContext(channelId, userId);
+    const ctx = await loadChannelContext(channelId, userId);
+    // loadChannelContext only verifies VIEW_CHANNEL — gate SEND_MESSAGES
+    // explicitly. Without this, a member who can read but not post could
+    // queue a message that fires later, bypassing the send permission.
+    if (!ctx.isDM && ctx.channelPerms !== null) {
+      if (!hasPermission(ctx.channelPerms, Permissions.SEND_MESSAGES)) {
+        throw errors.missingPermissions(['SEND_MESSAGES']);
+      }
+    }
 
     const scheduledSvc = await import('../services/scheduledMessages');
     const row = await scheduledSvc.createScheduled({

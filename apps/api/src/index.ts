@@ -347,6 +347,23 @@ async function main(): Promise<void> {
             if (!channel) {
               throw new Error('Channel no longer exists');
             }
+            // Re-verify the author can still post here at fire time —
+            // they may have been kicked/banned, lost SEND_MESSAGES, or
+            // (for DMs) stopped being a recipient since scheduling.
+            // computeMemberChannelPermissions fails closed (0n) for
+            // non-members and non-recipients, so one check covers both
+            // guild channels and DMs. A failure here lands in the
+            // catch below: attempts bump + lastError surfaces to the
+            // user's scheduled-messages list.
+            const { computeMemberChannelPermissions, hasPermission, Permissions } =
+              await import('./services/permissions');
+            const perms = await computeMemberChannelPermissions(
+              row.channelId,
+              row.authorId,
+            );
+            if (!hasPermission(perms, Permissions.SEND_MESSAGES)) {
+              throw new Error('No permission to send in this channel');
+            }
             // Scheduled messages can NEVER @everyone — even if the
             // user has the permission. A message firing at 3am to
             // ping the whole guild is a footgun; require it to be

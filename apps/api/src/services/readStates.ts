@@ -87,7 +87,12 @@ export async function ack(
         // Only reset the count when the marker actually moves
         // forward. An older ack keeps the count intact because the
         // mentions it would clear are still genuinely unread.
-        mentionCount: sql`CASE WHEN EXCLUDED.last_message_id > ${schema.readStates.lastMessageId} THEN 0 ELSE ${schema.readStates.mentionCount} END`,
+        // NULL guard: rows created by the mention-increment path
+        // (createMessage) start with last_message_id = NULL, and
+        // `EXCLUDED.last_message_id > NULL` is NULL — without the
+        // IS NULL arm the first ack would advance the marker but
+        // leave the stale mention badge stuck forever.
+        mentionCount: sql`CASE WHEN ${schema.readStates.lastMessageId} IS NULL OR EXCLUDED.last_message_id > ${schema.readStates.lastMessageId} THEN 0 ELSE ${schema.readStates.mentionCount} END`,
         updatedAt: new Date(),
       },
     })
