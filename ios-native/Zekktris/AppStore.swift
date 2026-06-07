@@ -569,11 +569,15 @@ final class AppStore: ObservableObject {
             // PRESENCE_UPDATE (phone locked → socket dead) pin a user
             // offline forever: every later refetch was discarded as
             // "already seeded". Live events still apply on top.
+            var seeded = presence
             for dm in dms {
                 for r in dm.recipients ?? [] {
-                    if let s = r.status, presence[r.id] != s { presence[r.id] = s }
+                    if let s = r.status { seeded[r.id] = s }
                 }
             }
+            // Single assignment — per-entry writes published N times and
+            // re-rendered every observer once per recipient.
+            if seeded != presence { presence = seeded }
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
         }
@@ -1922,9 +1926,11 @@ final class AppStore: ObservableObject {
             // Point-in-time presence seeding, same rule as loadDMs: the
             // fresh REST status overwrites the map so member dots converge
             // on every (re)load even when live deltas were missed.
+            var seeded = presence
             for m in list {
-                if let s = m.user.status, presence[m.userId] != s { presence[m.userId] = s }
+                if let s = m.user.status { seeded[m.userId] = s }
             }
+            if seeded != presence { presence = seeded }
         } catch {
             // Non-fatal — names just fall back to a generic label.
         }

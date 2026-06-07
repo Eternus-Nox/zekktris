@@ -220,6 +220,25 @@ interface SpamState {
 
 const spamByUser = new Map<string, SpamState>();
 
+// Eviction sweep: the map gains one entry per user who ever sends a guild
+// message and nothing removed them — unbounded growth over a long uptime.
+// Entries idle for an hour (no recent sends, cooldown expired) are dropped;
+// the limiter rebuilds them on the next send. unref() keeps the timer from
+// holding the process open in tests.
+const SPAM_IDLE_EVICT_MS = 60 * 60 * 1000;
+const spamSweep = setInterval(() => {
+  const cutoff = Date.now() - SPAM_IDLE_EVICT_MS;
+  for (const [key, st] of spamByUser) {
+    const lastActivity = Math.max(
+      st.cooldownUntil,
+      st.lastDuringCooldown,
+      st.recent.length > 0 ? st.recent[st.recent.length - 1]! : 0,
+    );
+    if (lastActivity < cutoff) spamByUser.delete(key);
+  }
+}, 10 * 60 * 1000);
+spamSweep.unref?.();
+
 /**
  * Gatekeeper for guild messages. Throws 429 when the author is throttled;
  * silently records the send otherwise. Call AFTER permission checks and
