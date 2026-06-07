@@ -304,6 +304,17 @@ export async function sendToUserApns(userId: bigint, payload: PushPayload): Prom
   await Promise.all(
     tokens.map(async (row) => {
       const res = await sendOne(row.token, body, jwt);
+      if (!res.ok) {
+        // Make delivery failures visible in `docker logs` — silent
+        // BadDeviceToken/TopicDisallowed made "notifications don't
+        // arrive" undiagnosable. Common causes: APNS_PRODUCTION
+        // mismatched with the build (Xcode runs need sandbox=false),
+        // or APNS_BUNDLE_ID not matching the app's bundle id.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `APNs: send failed (status ${res.status}${res.reason ? `, ${res.reason}` : ''})`,
+        );
+      }
       if (res.ok) {
         delivered++;
         void db
