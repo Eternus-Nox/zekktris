@@ -387,26 +387,72 @@ export async function loadE2eeKeys(
   return map.get(channelId.toString()) ?? {};
 }
 
+export type EnableE2eeResult =
+  /** This caller flipped the DM OFF -> ON; their salt/verifier are stored. */
+  | { status: 'enabled' }
+  /** Already ON with the IDENTICAL salt+verifier — idempotent retry, no-op. */
+  | { status: 'unchanged' }
+  /** Already ON with DIFFERENT values — refused (would clobber the first
+      party's key and break their handshake). Caller should unlock with the
+      existing password instead of enabling. */
+  | { status: 'already_enabled' };
+
 /**
- * Enable shared-key E2EE on a DM. Stores the PBKDF2 salt + the
- * key verifier; flips e2eeEnabled to true. Idempotent — calling
- * twice with the same values is a no-op. Calling with NEW values
- * effectively rotates the password (the old verifier is overwritten;
- * the old password becomes uncheckable).
+ * Enable shared-key E2EE on a DM with first-writer-wins semantics.
+ *
+ * Why not a plain UPDATE: two participants who both toggle encryption on
+ * while it's OFF would otherwise each write their OWN salt/verifier, and the
+ * last write would win — leaving the two clients with keys derived from
+ * different passphrases, so neither can decrypt the other (broken handshake).
+ *
+ * The OFF -> ON transition is claimed by a conditional UPDATE
+ * (`WHERE e2ee_enabled = false`). Under concurrency Postgres serializes the
+ * row updates and re-checks the predicate after the first commits, so exactly
+ * one racing caller matches a row and wins; the rest match zero.
+ *
+ * Outcomes for a caller that did NOT win the claim:
+ *   - identical salt+verifier already stored  -> `unchanged` (idempotent retry)
+ *   - different values stored                 -> `already_enabled` (refused;
+ *     we never overwrite a live key — the loser unlocks instead)
+ *   - row flipped back to OFF (a concurrent DISABLE landed in between) -> we
+ *     retry the claim once, so a legitimate fresh enable still succeeds.
+ *
+ * Intentional password ROTATION is deliberately NOT done by re-calling enable
+ * (that's indistinguishable from a racing duplicate and would silently clobber
+ * the peer). Rotation goes through the gated disable (which requires the
+ * current verifier — see disableE2eeAndPurge) + a fresh enable.
  */
 export async function enableE2ee(
   channelId: bigint,
   salt: string,
   verifier: string,
-): Promise<void> {
-  await db
-    .update(schema.channels)
-    .set({
-      e2eeEnabled: true,
-      e2eeSalt: salt,
-      e2eeVerifier: verifier,
+): Promise<EnableE2eeResult> {
+  const claim = () =>
+    db
+      .update(schema.channels)
+      .set({ e2eeEnabled: true, e2eeSalt: salt, e2eeVerifier: verifier })
+      .where(and(eq(schema.channels.id, channelId), eq(schema.channels.e2eeEnabled, false)))
+      .returning({ id: schema.channels.id });
+
+  if ((await claim()).length > 0) return { status: 'enabled' };
+
+  // Didn't win the OFF -> ON claim. Inspect current state to classify.
+  const [ch] = await db
+    .select({
+      enabled: schema.channels.e2eeEnabled,
+      salt: schema.channels.e2eeSalt,
+      verifier: schema.channels.e2eeVerifier,
     })
-    .where(eq(schema.channels.id, channelId));
+    .from(schema.channels)
+    .where(eq(schema.channels.id, channelId))
+    .limit(1);
+
+  // Flipped back to OFF in the gap (a concurrent disable) — retry the claim.
+  if (!ch || !ch.enabled) {
+    return (await claim()).length > 0 ? { status: 'enabled' } : { status: 'already_enabled' };
+  }
+  if (ch.salt === salt && ch.verifier === verifier) return { status: 'unchanged' };
+  return { status: 'already_enabled' };
 }
 
 /** Timing-safe equality for two base64 verifier strings. False on any

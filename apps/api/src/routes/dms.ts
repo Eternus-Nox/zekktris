@@ -286,19 +286,30 @@ dmsRouter.put(
     const channelId = BigInt(c.req.valid('param').channelId);
     await dms.ensureRecipient(channelId, userId);
     const { salt, verifier } = c.req.valid('json');
-    await dms.enableE2ee(channelId, salt, verifier);
-    // Push a fresh CHANNEL_UPDATE so the other recipient's client
-    // sees E2EE was enabled and prompts them for the password.
-    const channel = await channelsSvc.getChannel(channelId);
-    if (channel) {
-      const recipientUsers = await dms.loadOtherRecipients(channelId, userId);
-      // A supervised pair can't actually go E2EE — report it suppressed.
-      const suppressed =
-        channel.type === 'dm' && recipientUsers[0]
-          ? !(await supervision.isE2eeAllowedBetween(userId, recipientUsers[0].id))
-          : false;
-      const channelDTO = toChannel(channel, null, recipientUsers, suppressed);
-      dispatch.dmChannelUpdated({ channelId, channelDTO });
+    // First-writer-wins: a racing second enable can't clobber the first
+    // party's salt/verifier (which would break their handshake).
+    const result = await dms.enableE2ee(channelId, salt, verifier);
+    if (result.status === 'already_enabled') {
+      throw errors.conflict(
+        'This conversation is already encrypted (the other participant just turned it on). Enter their password to unlock it instead.',
+      );
+    }
+    // Only broadcast when WE actually flipped it on. An idempotent retry
+    // ('unchanged') means the other recipient already got the update.
+    if (result.status === 'enabled') {
+      // Push a fresh CHANNEL_UPDATE so the other recipient's client
+      // sees E2EE was enabled and prompts them for the password.
+      const channel = await channelsSvc.getChannel(channelId);
+      if (channel) {
+        const recipientUsers = await dms.loadOtherRecipients(channelId, userId);
+        // A supervised pair can't actually go E2EE — report it suppressed.
+        const suppressed =
+          channel.type === 'dm' && recipientUsers[0]
+            ? !(await supervision.isE2eeAllowedBetween(userId, recipientUsers[0].id))
+            : false;
+        const channelDTO = toChannel(channel, null, recipientUsers, suppressed);
+        dispatch.dmChannelUpdated({ channelId, channelDTO });
+      }
     }
     return c.json({ ok: true });
   },
