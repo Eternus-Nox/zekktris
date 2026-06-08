@@ -37,6 +37,7 @@ import { connectToVoice, VoiceError, prepareVoiceAudio } from '../lib/voice';
 import { clearCallNotification } from '../lib/clearCallNotification';
 import { startRingtone, stopRingtone } from '../lib/sounds';
 import { showDesktopNotification } from '../lib/desktopNotify';
+import { getNotifyPrefs } from '../lib/notifyPrefs';
 import { Phone, X } from '../lib/icons';
 import { AvatarImage } from '../lib/AvatarImage';
 import { avatarColor } from '../lib/avatar';
@@ -75,7 +76,12 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
   // flip, and always stop on unmount. On native (Capacitor/CallKit)
   // the system provides the ringer, so we skip the web ringtone there
   // to avoid double-ringing.
-  const ringing = !!other && !myInThis && !declinedRef.current;
+  // Device-local "Incoming calls" toggle (Settings) gates the audible ring
+  // and the call notification, mirroring the native app's notifyCalls switch.
+  // Read at render: the decision is made when a call arrives (the normal
+  // case); the modal still renders so an attentive user can answer.
+  const ringing =
+    getNotifyPrefs().notifyCalls && !!other && !myInThis && !declinedRef.current;
   useEffect(() => {
     if (!ringing) return;
     let cancelled = false;
