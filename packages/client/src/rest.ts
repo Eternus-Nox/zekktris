@@ -2081,13 +2081,20 @@ export class RestClient {
    * to historic encrypted messages — they're hard-deleted server-
    * side. Re-enabling later generates a fresh salt; the old
    * password is permanently dead.
+   *
+   * Requires `verifier` — the SHA-256 verifier derived from the
+   * caller's LOCAL key (proof they know the passphrase). The server
+   * rejects a missing/wrong verifier, so the conversation must be
+   * unlocked on this device before it can be turned off.
    */
   disableDmE2ee(
     channelId: string,
+    verifier: string,
   ): Promise<{ ok: true; purgedCount: number }> {
     return this.request(
       'DELETE',
       `/users/@me/channels/${channelId}/e2ee-disable`,
+      { verifier },
     );
   }
 

@@ -384,8 +384,20 @@ function E2eeToggle({ channel, selfId }: { channel: Channel; selfId: string }) {
     if (pending) return;
     setPending(true);
     try {
-      await rest.disableDmE2ee(channel.id);
-      const { clearLocalKey } = await import('../lib/e2ee');
+      // Prove we know the passphrase: derive the verifier from the local
+      // key and send it. The disable button is only shown when unlocked
+      // (haveLocalKey), so the key should be present; bail defensively if
+      // it isn't rather than firing a request the server will reject.
+      const { getLocalKey, computeVerifier, clearLocalKey } = await import('../lib/e2ee');
+      const keyBytes = getLocalKey(channel.id);
+      if (!keyBytes) {
+        toasts.push('Unlock this conversation first to turn off encryption.', 'error');
+        setDisableModalOpen(false);
+        return;
+      }
+      const { encodeBase64 } = await import('tweetnacl-util');
+      const verifier = await computeVerifier(encodeBase64(keyBytes));
+      await rest.disableDmE2ee(channel.id, verifier);
       clearLocalKey(channel.id);
       setHaveLocalKey(false);
       setDisableModalOpen(false);
@@ -491,7 +503,18 @@ function E2eeToggle({ channel, selfId }: { channel: Channel; selfId: string }) {
           onClick={() => {
             if (pending) return;
             if (enabled) {
-              setDisableModalOpen(true);
+              // Turning E2EE off purges encrypted history, so it requires
+              // the passphrase. If this device is locked (no local key),
+              // send the user to the unlock prompt below instead of the
+              // disable confirm — they must prove the password first.
+              if (haveLocalKey) {
+                setDisableModalOpen(true);
+              } else {
+                toasts.push(
+                  'Unlock this conversation first to turn off encryption.',
+                  'error',
+                );
+              }
             } else {
               setPickModalOpen(true);
             }

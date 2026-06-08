@@ -558,9 +558,13 @@ final class APIClient {
         try await sendVoid("POST", "/users/@me/email/change-request", bodyData: body)
     }
 
-    /// Disable E2EE on a DM (server purges encrypted history).
-    func disableDmE2EE(channelId: String) async {
-        await sendNoDecode("DELETE", "/users/@me/channels/\(channelId)/e2ee-disable")
+    /// Disable E2EE on a DM (server purges encrypted history). The server
+    /// requires the `verifier` derived from the local key as proof we know
+    /// the passphrase — without it (or with a wrong one) it returns 403 and
+    /// does NOT purge. Throws on failure so the caller can surface it.
+    func disableDmE2EE(channelId: String, verifier: String) async throws {
+        let body = try JSONEncoder().encode(E2EEDisableBody(verifier: verifier))
+        try await sendVoid("DELETE", "/users/@me/channels/\(channelId)/e2ee-disable", bodyData: body)
     }
 
     // ── Threads / forums ──────────────────────────────────────────────────

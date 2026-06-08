@@ -2812,8 +2812,23 @@ final class AppStore: ObservableObject {
     /// Turn E2EE off for a DM. The server purges the encrypted history and
     /// broadcasts CHANNEL_UPDATE; we drop the local key and clear decrypted
     /// plaintext immediately so nothing lingers in memory.
+    ///
+    /// The server now requires proof we know the passphrase: we send the
+    /// verifier derived from the cached key. If this device is locked (no
+    /// key), we can't prove it — abort and surface an error so the user
+    /// unlocks first rather than silently failing.
     func disableE2EE(_ channel: Channel) async {
-        await api.disableDmE2EE(channelId: channel.id)
+        guard let key = e2eeKey(for: channel.id) else {
+            e2eeError = "Unlock this conversation first to turn off encryption."
+            return
+        }
+        e2eeError = nil
+        do {
+            try await api.disableDmE2EE(channelId: channel.id, verifier: E2EE.verifier(forKey: key))
+        } catch {
+            e2eeError = (error as? APIError)?.message ?? "Could not disable encryption."
+            return
+        }
         relockE2EE(channel.id)
         applyE2EEState(channelId: channel.id, enabled: false, salt: nil, verifier: nil)
         if selectedChannel?.id == channel.id {
