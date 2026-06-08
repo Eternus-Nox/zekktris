@@ -21,7 +21,8 @@ import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
 import { copyText } from '../lib/clipboard';
-import { Info, UserPlus, Users, AlertTriangle, X, Copy, Trash, Shield, Search, Ban as BanIcon, Smile, Upload, StickerSquare, Compass, Hand, Clock, Plus, Activity, FilePen, Archive, Download } from '../lib/icons';
+import { Info, UserPlus, Users, AlertTriangle, X, Copy, Trash, Shield, Search, Ban as BanIcon, Smile, Upload, StickerSquare, Compass, Hand, Clock, Plus, Activity, FilePen, Archive, Download, QrCode } from '../lib/icons';
+import { qrEncode, qrToSvg } from '../lib/qr';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
 import { Portal } from '../lib/Portal';
@@ -808,6 +809,9 @@ function InvitesTab({ guild }: { guild: Guild }) {
   const toasts = useToasts();
   const [invites, setInvites] = useState<Invite[] | null>(null);
   const [creating, setCreating] = useState(false);
+  // Which invite's QR is expanded (code), or null. One at a time to keep
+  // the list compact — mirrors the native invite sheet's single QR.
+  const [qrFor, setQrFor] = useState<string | null>(null);
   // Configurable invite parameters. Defaults match the previous
   // hardcoded values (1 day / unlimited) so admins who don't touch
   // these controls get the same behavior as before.
@@ -942,29 +946,60 @@ function InvitesTab({ guild }: { guild: Guild }) {
       ) : (
         <ul className="divide-y divide-line border border-line rounded-md bg-bg-2 overflow-hidden">
           {invites.map((inv) => (
-            <li key={inv.code} className="flex items-center gap-3 px-3 py-2.5">
-              <code className="text-sm text-ink-1 font-mono flex-1 truncate">{inv.code}</code>
-              <span className="text-xs text-ink-3 shrink-0">
-                {inv.uses} use{inv.uses === 1 ? '' : 's'}
-                {inv.maxUses != null ? ` / ${inv.maxUses}` : ''}
-                {inv.expiresAt ? ` · ${formatExpiry(inv.expiresAt)}` : ''}
-              </span>
-              <button
-                onClick={() => copyLink(inv.code)}
-                className="w-8 h-8 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3"
-                aria-label="Copy invite link"
-                title="Copy link"
-              >
-                <Copy size={14} />
-              </button>
-              <button
-                onClick={() => revoke(inv.code)}
-                className="w-8 h-8 flex items-center justify-center rounded text-ink-2 hover:text-red-400 hover:bg-bg-3"
-                aria-label="Revoke invite"
-                title="Revoke"
-              >
-                <Trash size={14} />
-              </button>
+            <li key={inv.code} className="px-3 py-2.5">
+              <div className="flex items-center gap-3">
+                <code className="text-sm text-ink-1 font-mono flex-1 truncate">{inv.code}</code>
+                <span className="text-xs text-ink-3 shrink-0">
+                  {inv.uses} use{inv.uses === 1 ? '' : 's'}
+                  {inv.maxUses != null ? ` / ${inv.maxUses}` : ''}
+                  {inv.expiresAt ? ` · ${formatExpiry(inv.expiresAt)}` : ''}
+                </span>
+                <button
+                  onClick={() => setQrFor((cur) => (cur === inv.code ? null : inv.code))}
+                  className={`w-8 h-8 flex items-center justify-center rounded hover:bg-bg-3 ${
+                    qrFor === inv.code ? 'text-accent' : 'text-ink-2 hover:text-ink-1'
+                  }`}
+                  aria-label="Show invite QR code"
+                  aria-pressed={qrFor === inv.code}
+                  title="Show QR code"
+                >
+                  <QrCode size={14} />
+                </button>
+                <button
+                  onClick={() => copyLink(inv.code)}
+                  className="w-8 h-8 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3"
+                  aria-label="Copy invite link"
+                  title="Copy link"
+                >
+                  <Copy size={14} />
+                </button>
+                <button
+                  onClick={() => revoke(inv.code)}
+                  className="w-8 h-8 flex items-center justify-center rounded text-ink-2 hover:text-red-400 hover:bg-bg-3"
+                  aria-label="Revoke invite"
+                  title="Revoke"
+                >
+                  <Trash size={14} />
+                </button>
+              </div>
+              {qrFor === inv.code && (
+                <div className="flex flex-col items-center gap-1.5 pt-3 pb-1">
+                  {/* Scannable QR of the full invite URL. White padded
+                      background + crisp edges, sized to match the native
+                      invite sheet (180px). */}
+                  <div
+                    className="bg-white rounded-xl p-2.5"
+                    aria-label={`QR code for invite ${inv.code}`}
+                    dangerouslySetInnerHTML={{
+                      __html: qrToSvg(
+                        qrEncode(`${window.location.origin}/invite/${inv.code}`),
+                        180,
+                      ),
+                    }}
+                  />
+                  <span className="text-xs text-ink-4">Scan to join</span>
+                </div>
+              )}
             </li>
           ))}
         </ul>
