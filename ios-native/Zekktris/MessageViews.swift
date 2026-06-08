@@ -2060,6 +2060,112 @@ private struct SearchResultRow: View {
     }
 }
 
+/// Cross-DM search — searches every direct-message conversation at once,
+/// mirroring the web "Search all DMs" panel. Reuses the same server full-text
+/// search as the per-channel SearchSheet, via /users/@me/dms/search. Styled to
+/// match SearchSheet (same field, states, and result rows); the only
+/// difference is results span conversations and tapping one opens its DM.
+struct DMSearchSheet: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundColor(Theme.ink3)
+                    TextField("Search all DMs", text: $query)
+                        .foregroundColor(Theme.ink1)
+                        .submitLabel(.search)
+                        .autocorrectionDisabled()
+                        .onSubmit { Task { await store.searchDMs(query) } }
+                    if !query.isEmpty {
+                        Button { query = ""; store.clearDMSearch() } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundColor(Theme.ink3)
+                        }
+                    }
+                }
+                .padding(12)
+                .background(Theme.bg3)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .padding(16)
+
+                if store.dmSearching {
+                    Spacer(); ProgressView().tint(Theme.accent); Spacer()
+                } else if store.dmSearchResults.isEmpty {
+                    Spacer()
+                    Text(query.isEmpty ? "Search across every direct message" : "No matches")
+                        .font(.zkSans(14))
+                        .foregroundColor(Theme.ink3)
+                    Spacer()
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(store.dmSearchResults) { msg in
+                                DMSearchResultRow(message: msg) { dismiss() }
+                                Divider().overlay(Theme.line)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                    }
+                }
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Search DMs")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { store.clearDMSearch(); dismiss() }
+                }
+            }
+            .onDisappear { store.clearDMSearch() }
+        }
+    }
+}
+
+/// A cross-DM search result row. Like the per-channel SearchResultRow but
+/// tappable: opens the DM the matched message belongs to.
+private struct DMSearchResultRow: View {
+    let message: Message
+    let onOpen: () -> Void
+    @EnvironmentObject private var store: AppStore
+
+    var body: some View {
+        Button {
+            if let dm = store.dms.first(where: { $0.id == message.channelId }) {
+                store.selectChannel(dm)
+                onOpen()
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(message.author?.name ?? "Unknown")
+                        .font(.zkSans(13, weight: .semibold))
+                        .foregroundColor(Theme.ink2)
+                    Text(shortTime(message.createdAt))
+                        .font(.zkSans(11))
+                        .foregroundColor(Theme.ink3)
+                }
+                Text(previewText)
+                    .font(.zkSans(14))
+                    .foregroundColor(Theme.ink1)
+                    .lineLimit(3)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 10)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var previewText: String {
+        if !message.text.isEmpty { return message.text }
+        if message.poll != nil { return "📊 Poll" }
+        if message.attachments?.isEmpty == false { return "📎 Attachment" }
+        return "(no text)"
+    }
+}
+
 /// Render a chat message body as inline markdown — bold, italic, `code`,
 /// ~~strikethrough~~, and [links](url) — while preserving newlines and runs of
 /// whitespace. Falls back to the raw string if it can't be parsed as markdown.
