@@ -555,6 +555,12 @@ final class AppStore: ObservableObject {
     func loadDMs() async {
         loadingDMs = true
         defer { loadingDMs = false }
+        // Snapshot presence BEFORE the network call suspends. Any gateway
+        // PRESENCE_UPDATE applied while we're awaiting mutates `presence`
+        // (same MainActor, so it's serialized, not a data race) — diffing
+        // against this snapshot tells us which users got a fresher live
+        // status mid-fetch. See the merge note below.
+        let presenceBefore = presence
         do {
             let fetched = try await api.listDMs()
             // Most-recently-active first. Numeric snowflake comparison — plain
@@ -563,20 +569,34 @@ final class AppStore: ObservableObject {
             dms = fetched.sorted {
                 snowflakeGreater($0.lastMessageId ?? $0.id, than: $1.lastMessageId ?? $1.id)
             }
-            // Seed presence from recipients. REST status is point-in-time
-            // truth (presence is DB-backed server-side), so it OVERWRITES
-            // the map. The old only-when-missing guard let a single missed
-            // PRESENCE_UPDATE (phone locked → socket dead) pin a user
-            // offline forever: every later refetch was discarded as
-            // "already seeded". Live events still apply on top.
+            // Merge presence — DON'T blindly overwrite with REST.
+            //
+            // REST status is the point-in-time DB baseline, but a live
+            // PRESENCE_UPDATE that lands WHILE this fetch is in flight is
+            // fresher and must win. Otherwise locking the phone mid-load
+            // downgrades a just-online friend back to the stale snapshot, so
+            // they show offline until the next event (the bug). We also can't
+            // just keep the live map (the old "only-when-missing" guard let a
+            // single MISSED update pin a user offline forever).
+            //
+            // No timestamps exist on the map or the REST status, so we infer
+            // freshness by diffing across the await: `presenceBefore` is the
+            // pre-suspend snapshot; `presence` now includes any events applied
+            // during the network call. Per recipient:
+            //   • status changed during the fetch  → a live event won; keep it
+            //   • status unchanged during the fetch → apply the REST baseline
+            //     (this still repairs a stale/missed-event entry — the whole
+            //     reason REST seeding exists).
             var seeded = presence
             for dm in dms {
                 for r in dm.recipients ?? [] {
-                    if let s = r.status { seeded[r.id] = s }
+                    guard let s = r.status else { continue }
+                    let changedDuringFetch = presence[r.id] != presenceBefore[r.id]
+                    if !changedDuringFetch { seeded[r.id] = s }
                 }
             }
-            // Single assignment — per-entry writes published N times and
-            // re-rendered every observer once per recipient.
+            // Single assignment — per-entry writes publish N times and
+            // re-render every observer once per recipient.
             if seeded != presence { presence = seeded }
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
