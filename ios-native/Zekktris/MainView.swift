@@ -2584,6 +2584,7 @@ struct AdminView: View {
     @State private var showStorageItems = false
     @State private var deletingGuild: AdminGuild?
     @State private var observingGuild: AdminGuild?
+    @State private var deleteCandidate: AdminUser?
 
     var body: some View {
         NavigationStack {
@@ -2688,6 +2689,22 @@ struct AdminView: View {
             }
         }
         .task { if store.adminUsers.isEmpty { await store.loadAdminUsers(q: "", bannedOnly: false) } }
+        .confirmationDialog(
+            "Delete account?",
+            isPresented: Binding(
+                get: { deleteCandidate != nil },
+                set: { if !$0 { deleteCandidate = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: deleteCandidate
+        ) { u in
+            Button("Delete @\(u.username)", role: .destructive) {
+                Task { await store.adminDeleteUser(u) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { u in
+            Text("Permanently deletes @\(u.username)'s account and data. This can't be undone.")
+        }
     }
 
     private func userRow(_ u: AdminUser) -> some View {
@@ -2713,6 +2730,9 @@ struct AdminView: View {
                 }
                 Button { Task { await store.adminLogout(u) } } label: {
                     Label("Force Logout", systemImage: "rectangle.portrait.and.arrow.right")
+                }
+                Button(role: .destructive) { deleteCandidate = u } label: {
+                    Label("Delete Account", systemImage: "trash")
                 }
             } label: {
                 Image(systemName: "ellipsis").font(.system(size: 16)).foregroundColor(Theme.ink3).frame(width: 32, height: 32)

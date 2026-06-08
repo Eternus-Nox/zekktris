@@ -1134,6 +1134,9 @@ extension APIClient {
         try await sendVoid("POST", "/admin/users/\(userId)/admin", bodyData: data)
     }
     func adminLogoutUser(userId: String) async throws { try await sendVoid("POST", "/admin/users/\(userId)/logout") }
+    /// Permanently delete a user account (hard delete). Throws on non-2xx —
+    /// e.g. the server refuses when the user still owns active guilds.
+    func adminDeleteUser(userId: String) async throws { try await sendVoid("DELETE", "/admin/users/\(userId)") }
 
     func adminListGuilds(q: String?) async throws -> [AdminGuild] {
         var path = "/admin/guilds?limit=100"
