@@ -14,13 +14,19 @@
  * disables the save button; toasts surface success/failure.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { UserTag } from '../lib/UserTag';
 import { ApiError } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
 import { useParentalControlsEnabled, setParentalControlsEnabled } from '../lib/familyPrefs';
 import { isNative, requestNotificationPermission } from '../lib/native';
+import {
+  getNotifyPrefs,
+  setNotifyMessages,
+  setNotifyCalls,
+  subscribeNotifyPrefs,
+} from '../lib/notifyPrefs';
 import { useToasts } from '../state/Toasts';
 import { compressImage } from '../lib/compressImage';
 import { AlertTriangle, Copy, Settings as SettingsIcon, Shield, ChevronLeft } from '../lib/icons';
@@ -651,6 +657,7 @@ export function SettingsView() {
             <section className="space-y-2">
               <div className="text-xs uppercase tracking-wider text-ink-3">Notifications</div>
               <NotificationSettings />
+              <NotificationTypeToggles />
             </section>
           )}
 
@@ -1343,6 +1350,35 @@ function ToggleRow({
         <div className="text-xs text-ink-3 mt-0.5 leading-snug">{help}</div>
       </div>
     </label>
+  );
+}
+
+/**
+ * Per-device "what to notify me about" toggles — messages vs calls.
+ * Mirrors the native app's Settings → Notifications switches (labels and
+ * subtitles copied from the iOS UI, which is the visual source of truth):
+ * "Messages & mentions" / "Direct messages and @mentions." and
+ * "Incoming calls" / "Ring for 1-on-1 calls." Device-local (localStorage),
+ * default ON — see lib/notifyPrefs. Rendered alongside the web-push
+ * subscription UI so it shows regardless of push-subscription state.
+ */
+function NotificationTypeToggles() {
+  const prefs = useSyncExternalStore(subscribeNotifyPrefs, getNotifyPrefs, getNotifyPrefs);
+  return (
+    <>
+      <ToggleRow
+        title="Messages & mentions"
+        help="Direct messages and @mentions."
+        checked={prefs.notifyMessages}
+        onChange={setNotifyMessages}
+      />
+      <ToggleRow
+        title="Incoming calls"
+        help="Ring for 1-on-1 calls."
+        checked={prefs.notifyCalls}
+        onChange={setNotifyCalls}
+      />
+    </>
   );
 }
 

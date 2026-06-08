@@ -66,6 +66,7 @@ import { useToasts } from './Toasts';
 import { hydrateVoicePrefs, setVoicePrefsSyncer, getVoicePrefs } from '../lib/voicePrefs';
 import { playMessagePing } from '../lib/sounds';
 import { showDesktopNotification } from '../lib/desktopNotify';
+import { getNotifyPrefs } from '../lib/notifyPrefs';
 
 // ── Shape ──────────────────────────────────────────────────────────────────
 
@@ -2560,7 +2561,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           document.hasFocus() &&
           typeof window !== 'undefined' &&
           window.location.pathname.includes(`/${m.channelId}`);
-        if (!muted && !looking && (isMention || isDM)) {
+        // Device-local "Messages & mentions" toggle (Settings) gates BOTH
+        // the audible ping and the desktop notification, mirroring the
+        // native app's notifyMessages switch.
+        if (getNotifyPrefs().notifyMessages && !muted && !looking && (isMention || isDM)) {
           playMentionPing();
 
           // Native desktop notification (Electron app only — browsers
