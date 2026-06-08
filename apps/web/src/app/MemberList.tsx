@@ -20,7 +20,7 @@
 
 import { memo, useEffect, useMemo } from 'react';
 import { UserTag } from '../lib/UserTag';
-import { useAppState } from '../state/AppState';
+import { useAppStateSelector } from '../state/AppState';
 import { useAuth } from '../auth/AuthContext';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
@@ -40,7 +40,15 @@ export function MemberList({
       docked, so onClose stays undefined and no button shows. */
   onClose?: () => void;
 }) {
-  const { state, loadMembers, loadRoles } = useAppState();
+  // Granular subscriptions (was `useAppState()`, which re-rendered this
+  // member list on EVERY dispatch). Select only the slices read below; the
+  // local `state` object just keeps the existing `state.X` reads unchanged.
+  const membersByGuild = useAppStateSelector((v) => v.state.membersByGuild);
+  const rolesByGuild = useAppStateSelector((v) => v.state.rolesByGuild);
+  const loadedMembers = useAppStateSelector((v) => v.state.loadedMembers);
+  const loadMembers = useAppStateSelector((v) => v.loadMembers);
+  const loadRoles = useAppStateSelector((v) => v.loadRoles);
+  const state = { membersByGuild, rolesByGuild, loadedMembers };
   const { user } = useAuth();
   const { onAvatarClick, cardElement } = useProfileCard({ guildId });
   const members = guildId ? state.membersByGuild[guildId] : undefined;
