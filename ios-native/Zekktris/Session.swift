@@ -185,12 +185,24 @@ final class Session: ObservableObject {
         }
     }
 
-    func setCustomStatus(_ text: String?, emoji: String? = nil) async {
+    /// How to treat the custom-status auto-clear time on save:
+    ///   - keep:     leave the server's existing expiry untouched (omit the field)
+    ///   - clear:    no auto-clear (send null)
+    ///   - at(date): auto-clear at the given instant (send ISO-8601)
+    enum CustomStatusExpiry { case keep, clear, at(Date) }
+
+    func setCustomStatus(_ text: String?, emoji: String? = nil, expiry: CustomStatusExpiry = .keep) async {
         let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedEmoji = emoji?.trimmingCharacters(in: .whitespacesAndNewlines)
         var patch: [String: Any] = [:]
         patch["customStatus"] = (trimmed?.isEmpty == false) ? trimmed! : NSNull()
         patch["customStatusEmoji"] = (trimmedEmoji?.isEmpty == false) ? trimmedEmoji! : NSNull()
+        switch expiry {
+        case .keep: break // omit the field → server keeps its current value
+        case .clear: patch["customStatusExpiresAt"] = NSNull()
+        case .at(let date):
+            patch["customStatusExpiresAt"] = ISO8601DateFormatter().string(from: date)
+        }
         do { currentUser = try await api.updateProfile(patch) }
         catch { authError = message(for: error) }
     }

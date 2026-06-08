@@ -33,6 +33,8 @@ struct SelfUser: Codable, Identifiable, Hashable {
     var status: String?
     var customStatus: String?
     var customStatusEmoji: String?
+    /** ISO-8601 instant the custom status auto-clears, or nil for no expiry. */
+    var customStatusExpiresAt: String?
     var isAdmin: Bool?
     var avatarDecoration: String?
     var guildFolders: [GuildFolder]?
