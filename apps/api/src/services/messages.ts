@@ -15,7 +15,7 @@
  * in the route layer; this service trusts its caller.
  */
 
-import { and, asc, desc, eq, gt, inArray, isNull, lt, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, exists, gt, inArray, isNull, lt, lte, sql, type SQL } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors } from '../errors';
 import { nextSnowflake } from '../snowflake';
@@ -819,52 +819,34 @@ export async function searchMessages(
   // when supplied. We use sql tag fragments so the parameters stay
   // properly bound — concatenating into a string would defeat the
   // injection guarantees Postgres gives us via parameterised queries.
-  const conds: ReturnType<typeof sql>[] = [
-    sql`channel_id = ${channelId}`,
-    sql`deleted_at IS NULL`,
+  //
+  // Built with the drizzle query builder rather than a hand-composed
+  // `db.execute(sql`…`)`: the old raw-SQL path tripped postgres-js with
+  // "UNDEFINED_VALUE" when the nested WHERE fragment was embedded, and it
+  // returned snake_case rows that hydrateMessages (which reads camelCase)
+  // couldn't decorate. The builder binds params correctly and returns typed
+  // camelCase rows. The FTS predicate stays raw `sql` so it matches the GIN
+  // expression index from migration 0002 (`to_tsvector('english', content)`).
+  const conds: SQL[] = [
+    eq(schema.messages.channelId, channelId),
+    isNull(schema.messages.deletedAt),
   ];
   if (trimmed.length > 0) {
-    // Uses the GIN expression index from migration 0002
-    // (`messages_content_fts_idx` on `to_tsvector('english', content)`).
-    // The dictionary and the index expression must match exactly for
-    // the planner to pick the index — keep them in sync.
     conds.push(
-      sql`to_tsvector('english', content) @@ websearch_to_tsquery('english', ${trimmed})`,
+      sql`to_tsvector('english', ${schema.messages.content}) @@ websearch_to_tsquery('english', ${trimmed})`,
     );
   }
-  if (filters.authorId !== undefined) {
-    conds.push(sql`author_id = ${filters.authorId}`);
-  }
-  if (filters.before !== undefined) {
-    // Snowflake comparison: smaller id = older. `before` filters to
-    // messages strictly older than the given snowflake.
-    conds.push(sql`id < ${filters.before}`);
-  }
-  if (filters.after !== undefined) {
-    conds.push(sql`id > ${filters.after}`);
-  }
+  if (filters.authorId !== undefined) conds.push(eq(schema.messages.authorId, filters.authorId));
+  // Snowflake comparison: smaller id = older.
+  if (filters.before !== undefined) conds.push(lt(schema.messages.id, filters.before));
+  if (filters.after !== undefined) conds.push(gt(schema.messages.id, filters.after));
 
-  // Stitch the conds together with explicit AND. drizzle's `sql.join`
-  // would also work, but a plain reduce keeps it readable.
-  let whereClause = conds[0]!;
-  for (let i = 1; i < conds.length; i++) {
-    whereClause = sql`${whereClause} AND ${conds[i]!}`;
-  }
-
-  const rows = await db.execute(sql`
-    SELECT *
-    FROM messages
-    WHERE ${whereClause}
-    ORDER BY id DESC
-    LIMIT ${limit}
-  `);
-  // Adapter normalization — see services/dms.ts:494. postgres-js
-  // returns an array-like directly; node-postgres returns
-  // { rows: [...] }. Both are supported.
-  type Row = typeof schema.messages.$inferSelect;
-  return Array.isArray(rows)
-    ? (rows as unknown as Row[])
-    : ((rows as unknown as { rows?: Row[] }).rows ?? []);
+  return db
+    .select()
+    .from(schema.messages)
+    .where(and(...conds))
+    .orderBy(desc(schema.messages.id))
+    .limit(limit);
 }
 
 /**
@@ -902,47 +884,41 @@ export async function searchDirectMessages(
     filters.after !== undefined;
   if (trimmed.length === 0 && !hasFilters) return [];
 
-  // Build WHERE clause same way as searchMessages — sql tag
-  // fragments keep params bound. The base predicate is "this
-  // message is in a channel where I'm a recipient AND it's not
-  // soft-deleted." The exists() subquery is index-friendly via
-  // dm_recipients_user_idx.
-  const conds: ReturnType<typeof sql>[] = [
-    sql`m.deleted_at IS NULL`,
-    sql`EXISTS (SELECT 1 FROM dm_recipients dr WHERE dr.channel_id = m.channel_id AND dr.user_id = ${userId})`,
+  // Query builder (same rationale as searchMessages above — the old raw
+  // db.execute path 500'd with UNDEFINED_VALUE and returned snake_case rows
+  // hydrateMessages couldn't read). Base predicate: not soft-deleted AND the
+  // caller is a recipient of the message's DM channel (correlated EXISTS,
+  // index-friendly via dm_recipients_user_idx). FTS stays raw `sql` to match
+  // the migration-0002 GIN index.
+  const conds: SQL[] = [
+    isNull(schema.messages.deletedAt),
+    exists(
+      db
+        .select({ one: sql`1` })
+        .from(schema.dmRecipients)
+        .where(
+          and(
+            eq(schema.dmRecipients.channelId, schema.messages.channelId),
+            eq(schema.dmRecipients.userId, userId),
+          ),
+        ),
+    ),
   ];
   if (trimmed.length > 0) {
     conds.push(
-      sql`to_tsvector('english', m.content) @@ websearch_to_tsquery('english', ${trimmed})`,
+      sql`to_tsvector('english', ${schema.messages.content}) @@ websearch_to_tsquery('english', ${trimmed})`,
     );
   }
-  if (filters.authorId !== undefined) {
-    conds.push(sql`m.author_id = ${filters.authorId}`);
-  }
-  if (filters.before !== undefined) {
-    conds.push(sql`m.id < ${filters.before}`);
-  }
-  if (filters.after !== undefined) {
-    conds.push(sql`m.id > ${filters.after}`);
-  }
+  if (filters.authorId !== undefined) conds.push(eq(schema.messages.authorId, filters.authorId));
+  if (filters.before !== undefined) conds.push(lt(schema.messages.id, filters.before));
+  if (filters.after !== undefined) conds.push(gt(schema.messages.id, filters.after));
 
-  let whereClause = conds[0]!;
-  for (let i = 1; i < conds.length; i++) {
-    whereClause = sql`${whereClause} AND ${conds[i]!}`;
-  }
-
-  const rows = await db.execute(sql`
-    SELECT m.*
-    FROM messages m
-    WHERE ${whereClause}
-    ORDER BY m.id DESC
-    LIMIT ${limit}
-  `);
-  // Adapter normalization — see services/dms.ts:494.
-  type Row = typeof schema.messages.$inferSelect;
-  return Array.isArray(rows)
-    ? (rows as unknown as Row[])
-    : ((rows as unknown as { rows?: Row[] }).rows ?? []);
+  return db
+    .select()
+    .from(schema.messages)
+    .where(and(...conds))
+    .orderBy(desc(schema.messages.id))
+    .limit(limit);
 }
 
 // ── Hydration helper (shared between list / pins / search routes) ─────────
