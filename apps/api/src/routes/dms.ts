@@ -244,6 +244,15 @@ dmsRouter.patch(
 // is gone, so the old password can't be checked anymore even if
 // someone still has it on disk).
 
+/** SHA-256 of the derived key, base64-encoded → ~44 chars. Lets a
+    client prove their typed password produces the same key without
+    exposing the key itself. */
+const verifierSchema = z
+  .string()
+  .min(40)
+  .max(48)
+  .regex(/^[A-Za-z0-9+/=]+$/);
+
 const enableE2eeSchema = z.object({
   /** PBKDF2 salt, 16 random bytes base64-encoded → ~24 chars. */
   salt: z
@@ -251,14 +260,16 @@ const enableE2eeSchema = z.object({
     .min(20)
     .max(28)
     .regex(/^[A-Za-z0-9+/=]+$/),
-  /** SHA-256 of the derived key, base64-encoded → ~44 chars. Lets
-      the joining client verify their typed password produces the
-      same key without exposing the key itself. */
-  verifier: z
-    .string()
-    .min(40)
-    .max(48)
-    .regex(/^[A-Za-z0-9+/=]+$/),
+  verifier: verifierSchema,
+});
+
+/** Disabling E2EE purges all encrypted history, so we require proof the
+    caller knows the conversation passphrase: they send the verifier they
+    derive from their LOCAL key, and the service checks it against the stored
+    one. Without this, any DM recipient could disable + purge without ever
+    knowing the password. */
+const disableE2eeSchema = z.object({
+  verifier: verifierSchema,
 });
 
 /** PUT — enable E2EE on this DM. The caller has already derived the
@@ -294,35 +305,50 @@ dmsRouter.put(
 );
 
 /** DELETE — disable E2EE on this DM AND purge all encrypted messages
-    in the conversation. Either recipient can disable. */
+    in the conversation. Either recipient can disable, but ONLY if they
+    prove they know the passphrase: the body must carry a `verifier`
+    matching the one stored at enable time. This stops a recipient who
+    never knew the password from wiping the encrypted history. */
 dmsRouter.delete(
   '/:channelId/e2ee-disable',
   validate('param', z.object({ channelId: snowflakeSchema })),
+  validate('json', disableE2eeSchema),
   async (c) => {
     const userId = requireUserId(c);
     const channelId = BigInt(c.req.valid('param').channelId);
     await dms.ensureRecipient(channelId, userId);
-    // Run disable + purge in service. Returns the list of purged
-    // message ids so we can dispatch MESSAGE_DELETE events for each.
-    const { purgedMessageIds } = await dms.disableE2eeAndPurge(channelId);
-    // Dispatch CHANNEL_UPDATE so both clients see e2eeEnabled=false
-    // and clear their local cached key.
-    const channel = await channelsSvc.getChannel(channelId);
-    if (channel) {
+    const { verifier } = c.req.valid('json');
+
+    // Service verifies the submitted verifier against the stored one (proof
+    // the caller knows the passphrase) and only then purges — all in one tx.
+    const result = await dms.disableE2eeAndPurge(channelId, verifier);
+    if (result.status === 'verifier_mismatch') {
+      throw errors.forbidden(
+        'Unlock this conversation (enter the password) before turning off encryption.',
+      );
+    }
+    if (result.status === 'not_enabled') {
+      // Already off — idempotent success, nothing to broadcast.
+      return c.json({ ok: true, purgedCount: 0 });
+    }
+    // Disabled. Dispatch CHANNEL_UPDATE so both clients see e2eeEnabled=false
+    // and clear their local cached key. Re-fetch the post-disable row.
+    const updated = await channelsSvc.getChannel(channelId);
+    if (updated) {
       const recipientUsers = await dms.loadOtherRecipients(channelId, userId);
-      const channelDTO = toChannel(channel, null, recipientUsers);
+      const channelDTO = toChannel(updated, null, recipientUsers);
       dispatch.dmChannelUpdated({ channelId, channelDTO });
     }
     // Fan out delete events for each purged message so both clients
     // remove them from their local state immediately. Without this,
     // the messages would stay on screen until a hard refresh.
-    for (const msgId of purgedMessageIds) {
+    for (const msgId of result.purgedMessageIds) {
       dispatch.messageDelete({
         messageId: msgId,
         channelId,
         guildId: null,
       });
     }
-    return c.json({ ok: true, purgedCount: purgedMessageIds.length });
+    return c.json({ ok: true, purgedCount: result.purgedMessageIds.length });
   },
 );

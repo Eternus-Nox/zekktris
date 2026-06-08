@@ -531,6 +531,7 @@ struct SendBody: Codable {
 }
 struct OpenDMBody: Codable { let recipientId: String }
 struct E2EEEnableBody: Codable { let salt: String; let verifier: String }
+struct E2EEDisableBody: Codable { let verifier: String }
 struct ForumPostBody: Codable { let title: String; let content: String }
 
 // MARK: Server discovery / creation / invites

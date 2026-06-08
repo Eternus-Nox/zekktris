@@ -11,6 +11,7 @@
  * up via a JOIN that requires both rows to be present.
  */
 
+import { timingSafeEqual } from 'node:crypto';
 import { and, asc, desc, eq, exists, inArray, isNull, like, ne, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors } from '../errors';
@@ -408,27 +409,63 @@ export async function enableE2ee(
     .where(eq(schema.channels.id, channelId));
 }
 
+/** Timing-safe equality for two base64 verifier strings. False on any
+    length mismatch (timingSafeEqual throws on unequal-length buffers).
+    Constant-time is belt-and-suspenders — the verifier is a 256-bit hash —
+    but it's the right hygiene for a security comparison. */
+function verifiersMatch(a: string, b: string): boolean {
+  const ab = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
+export type DisableE2eeResult =
+  /** E2EE was already off (or never on) — nothing to verify or purge. */
+  | { status: 'not_enabled'; purgedMessageIds: bigint[] }
+  /** The submitted verifier didn't match the stored one — refused, no purge. */
+  | { status: 'verifier_mismatch'; purgedMessageIds: bigint[] }
+  /** Disabled + purged. */
+  | { status: 'disabled'; purgedMessageIds: bigint[] };
+
 /**
  * Disable E2EE on a DM and purge all encrypted messages in the
- * conversation. Returns the list of deleted message ids so the
- * caller can fan out MESSAGE_DELETE events on the gateway.
+ * conversation — BUT only after verifying the caller knows the passphrase.
  *
- * "Purge" here means hard delete of messages whose content begins
- * with the `zkE2EE/` wire-format prefix. Plaintext messages from
- * before E2EE was enabled (or from any window when it was off) are
- * preserved. This matches the user's stated intent: turning E2EE
- * off wipes the encrypted history that nobody can decrypt anymore
- * anyway, while sparing the plaintext history that has nothing to
- * do with the encrypted key being thrown away.
+ * Because disabling hard-deletes the encrypted history, we require proof:
+ * `submittedVerifier` (derived from the caller's local key) must match the
+ * channel's stored verifier. A missing/wrong verifier returns
+ * `verifier_mismatch` and purges nothing. Without this, any DM recipient —
+ * including one who never knew the password — could wipe the conversation.
  *
- * The clear-fields and the delete run in a single transaction so a
- * crash mid-way can't leave the channel in a "disabled but still
- * has ciphertext messages" state.
+ * "Purge" means hard delete of messages whose content begins with the
+ * `zkE2EE/` wire-format prefix. Plaintext messages from before E2EE was
+ * enabled (or any window when it was off) are preserved — turning E2EE off
+ * wipes the now-undecryptable ciphertext while sparing plaintext history.
+ *
+ * The verifier read, the message delete, and the state clear all run in one
+ * transaction: the check can't race the purge, and a crash mid-way can't
+ * leave the channel "disabled but still holding ciphertext."
  */
 export async function disableE2eeAndPurge(
   channelId: bigint,
-): Promise<{ purgedMessageIds: bigint[] }> {
+  submittedVerifier: string,
+): Promise<DisableE2eeResult> {
   return db.transaction(async (tx) => {
+    const [ch] = await tx
+      .select({
+        e2eeEnabled: schema.channels.e2eeEnabled,
+        e2eeVerifier: schema.channels.e2eeVerifier,
+      })
+      .from(schema.channels)
+      .where(eq(schema.channels.id, channelId))
+      .limit(1);
+    if (!ch || !ch.e2eeEnabled || !ch.e2eeVerifier) {
+      return { status: 'not_enabled', purgedMessageIds: [] };
+    }
+    if (!verifiersMatch(submittedVerifier, ch.e2eeVerifier)) {
+      return { status: 'verifier_mismatch', purgedMessageIds: [] };
+    }
     // Find every encrypted message in the channel. We match on the
     // content prefix `zkE2EE/` so future wire-format bumps (zkE2EE/2:,
     // zkE2EE/3:) automatically participate without code change.
@@ -456,7 +493,7 @@ export async function disableE2eeAndPurge(
         e2eeVerifier: null,
       })
       .where(eq(schema.channels.id, channelId));
-    return { purgedMessageIds };
+    return { status: 'disabled', purgedMessageIds };
   });
 }
 
