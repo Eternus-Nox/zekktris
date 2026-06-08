@@ -324,7 +324,7 @@ export async function checkBannedWords(args: {
     userId: args.userId,
     guildId: args.guildId,
     channelId: args.channelId,
-    detail: `Blocked message containing banned word: "${match[1].toLowerCase()}"`,
+    detail: `Blocked message containing banned word: "${(match[1] ?? match[0]).toLowerCase()}"`,
     contentSnapshot: content.slice(0, 500),
   }).catch(() => {});
   throw errors.badRequest('Your message contains a word that is not allowed on this server.');

@@ -84,7 +84,7 @@ dmsRouter.get('/', async (c) => {
     channels: list.map((ch) => {
       const recips = recipientsByChannel.get(ch.id.toString()) ?? [];
       const suppressed = ch.type === 'dm' && recips[0] ? !e2eeAllowed(userId, recips[0].id) : false;
-      const dto = toChannel(ch, null, recips, suppressed) as Record<string, unknown>;
+      const dto = toChannel(ch, null, recips, suppressed) as unknown as Record<string, unknown>;
       const streak = streaks.get(ch.id.toString()) ?? 0;
       if (streak > 0) dto.streak = streak;
       return dto;
