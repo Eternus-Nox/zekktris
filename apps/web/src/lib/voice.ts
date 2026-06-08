@@ -187,7 +187,7 @@ export function getConnectedChannelId(): string | null {
 import { getCurrentPreset } from './voiceQuality';
 import * as voicePrefs from './voicePrefs';
 import { enterCallBackgroundMode, exitCallBackgroundMode } from './callBackground';
-import { getCallKeyMaterial } from './e2ee';
+import { getCallKeyString } from './e2ee';
 import { isMediaCaptureAvailable, mediaUnavailableMessage } from './mediaSupport';
 
 function loadLivekit(): Promise<typeof import('livekit-client')> {
@@ -644,15 +644,18 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
   let e2eeRoomOpt:
     | { keyProvider: InstanceType<typeof ExternalE2EEKeyProvider>; worker: Worker }
     | undefined;
-  let e2eeKeyBuffer: ArrayBuffer | null = null;
+  // The LiveKit shared-key passphrase (base64 of the DM key). A STRING on
+  // purpose — it selects setKey's PBKDF2 path, which is what the native
+  // client uses, so native↔web calls share a media key. See getCallKeyString.
+  let e2eeKeyString: string | null = null;
   // Any worker from a previous call is dead the moment we start a new
   // connect — the old Room is already torn down above. Clear it now so an
   // unencrypted call doesn't leave a stale encrypted-call worker running,
   // and so the encrypted branch below starts from a clean slate.
   terminateE2eeWorker();
   if (args.e2ee) {
-    e2eeKeyBuffer = await getCallKeyMaterial(args.e2ee.channelId, args.e2ee.verifier);
-    if (!e2eeKeyBuffer) {
+    e2eeKeyString = await getCallKeyString(args.e2ee.channelId, args.e2ee.verifier);
+    if (!e2eeKeyString) {
       throw new VoiceError(
         'e2ee_locked',
         'This conversation is end-to-end encrypted. Unlock it (re-enter the password) on this device before starting a call.',
@@ -760,13 +763,15 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
   // With the E2EE manager configured via Room options, hand it the
   // shared key and turn encryption on for all local tracks BEFORE
   // connecting (LiveKit's documented order: setKey → setE2EEEnabled →
-  // connect). setKey runs HKDF over the 32-byte derived key inside the
-  // worker; both participants feed the identical bytes, so they land on
-  // the same media key. The mic/camera/screen tracks we publish after
-  // connect inherit this encryption automatically.
-  if (e2eeRoomOpt && e2eeKeyBuffer) {
+  // connect). We pass the base64 key STRING (not raw bytes): setKey then
+  // derives the media key with PBKDF2 — the cross-SDK-compatible path the
+  // native Swift client also uses (see getCallKeyString). Both participants
+  // feed the identical string, so they land on the same media key. The
+  // mic/camera/screen tracks we publish after connect inherit this
+  // encryption automatically.
+  if (e2eeRoomOpt && e2eeKeyString) {
     try {
-      await e2eeRoomOpt.keyProvider.setKey(e2eeKeyBuffer);
+      await e2eeRoomOpt.keyProvider.setKey(e2eeKeyString);
       await r.setE2EEEnabled(true);
     } catch (err) {
       // Couldn't arm encryption — tear the worker down and refuse the

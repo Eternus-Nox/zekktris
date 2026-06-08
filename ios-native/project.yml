@@ -65,3 +65,33 @@ targets:
         # Set your Apple Developer Team in Xcode (Signing & Capabilities)
         # or uncomment and fill in here:
         # DEVELOPMENT_TEAM: XXXXXXXXXX
+
+  # Host-less logic-test target. Compiles E2EE.swift directly (no app host,
+  # no LiveKit) so the crypto / call-key interop contract can be tested fast.
+  # Run with:  xcodegen generate && xcodebuild test -scheme Zekktris \
+  #              -destination 'platform=iOS Simulator,name=iPhone 16'
+  ZekktrisTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: ZekktrisTests
+      - path: Zekktris/E2EE.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+
+schemes:
+  Zekktris:
+    build:
+      targets:
+        Zekktris: all
+        ZekktrisTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - ZekktrisTests

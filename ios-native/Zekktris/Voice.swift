@@ -55,13 +55,16 @@ final class VoiceManager: ObservableObject {
         let r: Room
         if let e2eeKey {
             // Encrypted 1:1 call: key LiveKit's media E2EE with the DM key.
-            // The Swift SDK's shared-key API only accepts a *String*, which it
-            // UTF-8-encodes into the frame-crypto key — there's no public path
-            // to inject raw key bytes. So we pass the base64 of the raw DM key:
-            // two native clients derive identical key material from it, so
-            // native↔native calls interoperate. (Cross-client calls with the
-            // web — which keys from raw bytes — are a known limitation; see the
-            // README E2EE-call caveat.)
+            // The Swift SDK's shared-key API takes a *String*, which it
+            // UTF-8-encodes and runs through libwebrtc's PBKDF2 (salt
+            // "LKFrameEncryptionKey") to derive the media key — LiveKit's
+            // documented cross-SDK-compatible path. We pass the base64 of the
+            // 32-byte DM key as that string. The web client feeds the IDENTICAL
+            // base64 string to `ExternalE2EEKeyProvider.setKey(<string>)` (also
+            // PBKDF2), so ALL directions converge on the same media key:
+            // native↔native, web↔web, native↔web, web↔native. (Both platforms
+            // derive the same DM key from the same password+salt, and the
+            // unlock verifier guarantees the keys match before a call starts.)
             let keyProvider = BaseKeyProvider(
                 isSharedKey: true,
                 sharedKey: e2eeKey.base64EncodedString()

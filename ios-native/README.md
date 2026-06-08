@@ -249,19 +249,24 @@ Gateway  ── URLSessionWebSocketTask; onEvent(name, data) → AppStore
 This native app has been written and is now being compiled; expect to keep
 clearing the occasional error as it goes through Xcode for the first time.
 
-The **E2EE call path** in `Voice.swift` carries a real, now-confirmed limitation.
-It configures LiveKit's media E2EE via `BaseKeyProvider(isSharedKey: true,
-sharedKey:)` + `E2EEOptions(keyProvider:, encryptionType: .gcm)` +
-`RoomOptions(e2eeOptions:)`. The catch is that the Swift SDK's shared-key API
-only accepts a **`String`**, which it UTF-8-encodes into the frame-crypto key —
-there is no public way to inject raw key bytes (the raw-`Data` setter on the
-underlying `rtcKeyProvider` is internal to the SDK). The web client, by
-contrast, keys its `ExternalE2EEKeyProvider` from the **raw 32 bytes** of the DM
-key. So we pass the base64 of the DM key as the string: two instances of this
-native app derive identical key material from it and **E2EE calls between native
-clients interoperate**, but a native↔web encrypted call will *not* decrypt,
-because the two sides feed different bytes to the frame cryptor. Making
-native↔web calls work would require either a custom key provider on the Swift
-side that accepts raw bytes, or aligning the web to key from the same string.
+The **E2EE call path** in `Voice.swift` now interoperates with the web client
+(previously native↔web encrypted calls were garbled). It configures LiveKit's
+media E2EE via `BaseKeyProvider(isSharedKey: true, sharedKey:)` +
+`EncryptionOptions(keyProvider:, encryptionType: .gcm)` +
+`RoomOptions(encryptionOptions:)`. The Swift SDK's shared-key API takes a
+**`String`**, which it UTF-8-encodes and runs through libwebrtc's PBKDF2 (salt
+`"LKFrameEncryptionKey"`) to derive the AES-GCM media key — LiveKit's documented
+*"recommended for maximum compatibility across SDKs"* path. We pass the **base64
+of the 32-byte DM key** as that string.
+
+The web client was aligned to feed the **identical base64 string** to
+`ExternalE2EEKeyProvider.setKey(<string>)` (which also runs PBKDF2) instead of
+the raw 32 bytes it used before (which selected web-only HKDF). Because both
+platforms derive the same DM key from the same password + salt and then key
+LiveKit from the same string, **all four directions decrypt**: native↔native,
+web↔web, native↔web, web↔native. The unlock verifier guarantees the two sides
+hold matching keys before a call starts. See `apps/web/src/lib/e2ee.ts`
+(`getCallKeyString`) for the web side.
+
 Plain (non-E2EE) calls and guild voice are unaffected. The mic is unreliable on
 the iOS simulator — test calls on a real device.
