@@ -249,10 +249,13 @@ function buildApnsPayload(payload: PushPayload): string {
 /** Whether the user has any PushKit VoIP tokens registered. */
 export async function hasVoipTokens(userId: bigint): Promise<boolean> {
   const rows = await db
-    .select({ token: schema.deviceTokens.token })
-    .from(schema.deviceTokens)
+    .select({ token: schema.apnsDeviceTokens.token })
+    .from(schema.apnsDeviceTokens)
     .where(
-      and(eq(schema.deviceTokens.userId, userId), eq(schema.deviceTokens.platform, 'ios_voip')),
+      and(
+        eq(schema.apnsDeviceTokens.userId, userId),
+        eq(schema.apnsDeviceTokens.platform, 'ios_voip'),
+      ),
     )
     .limit(1);
   return rows.length > 0;
@@ -264,10 +267,13 @@ export async function sendVoipToUser(
 ): Promise<void> {
   if (!(await initApns())) return;
   const rows = await db
-    .select({ token: schema.deviceTokens.token })
-    .from(schema.deviceTokens)
+    .select({ token: schema.apnsDeviceTokens.token })
+    .from(schema.apnsDeviceTokens)
     .where(
-      and(eq(schema.deviceTokens.userId, userId), eq(schema.deviceTokens.platform, 'ios_voip')),
+      and(
+        eq(schema.apnsDeviceTokens.userId, userId),
+        eq(schema.apnsDeviceTokens.platform, 'ios_voip'),
+      ),
     );
   if (rows.length === 0) return;
   const jwt = await providerToken();
@@ -291,7 +297,9 @@ export async function sendVoipToUser(
           res.reason === 'Unregistered' ||
           res.reason === 'DeviceTokenNotForTopic'
         ) {
-          await db.delete(schema.deviceTokens).where(eq(schema.deviceTokens.token, r.token));
+          await db
+            .delete(schema.apnsDeviceTokens)
+            .where(eq(schema.apnsDeviceTokens.token, r.token));
         }
       }
     }),
