@@ -390,19 +390,37 @@ export function isEncryptedWireFormat(s: string): boolean {
 // ── Voice/video call key material ─────────────────────────────────────────
 
 /**
- * Produce raw key material for a 1:1 DM call's LiveKit media E2EE,
- * derived from the SAME shared key this DM uses for message E2EE.
+ * Produce the LiveKit media-E2EE shared key for a 1:1 DM call as a
+ * base64 STRING, derived from the SAME shared key this DM uses for
+ * message E2EE. The returned value is the base64 of the 32-byte DM key
+ * — the exact string fed to LiveKit's key provider on EVERY platform.
  *
- * Returns a fresh standalone ArrayBuffer holding the 32-byte derived
- * key, suitable for LiveKit's ExternalE2EEKeyProvider.setKey() — which
- * runs HKDF over the bytes to obtain the media key. Because both
- * participants derive the identical key from the same password + salt
- * (the verifier gate at unlock guarantees this), they feed setKey the
- * same bytes and converge on the same media key, so each can decrypt
- * the other's audio/video. Mismatched passwords mean different (or
- * absent) keys, so the media is mutually undecryptable and the call
- * carries no audio/video — the intended "calls won't work unless the
- * passwords match" behavior.
+ * ── Why a base64 string, not raw bytes (cross-client interop) ──────────
+ * LiveKit's key providers expose two NON-interchangeable derivations:
+ *   • a STRING passphrase → `createKeyMaterialFromString` → PBKDF2-SHA-256
+ *     (salt "LKFrameEncryptionKey", 100 000 iters) → AES-128-GCM media key.
+ *     The native Swift SDK uses exactly this path: `BaseKeyProvider(
+ *     isSharedKey:true, sharedKey:)` UTF-8-encodes the string and runs it
+ *     through the same libwebrtc PBKDF2. livekit-client documents the
+ *     string path as "recommended for maximum compatibility across SDKs."
+ *   • an ArrayBuffer → `createKeyMaterialFromBuffer` → HKDF over the raw
+ *     bytes. Web-only; the docs warn "Not all client SDKs support HKDF,"
+ *     and the Swift SDK has no raw-bytes entry point at all.
+ *
+ * The native client feeds `key.base64EncodedString()` (the STRING/PBKDF2
+ * path). For native↔web calls to decrypt, the web client must feed the
+ * IDENTICAL string through the IDENTICAL PBKDF2 path — so this returns the
+ * base64 string and the caller passes it to `keyProvider.setKey(<string>)`,
+ * which selects PBKDF2. Passing raw bytes here would silently switch web
+ * to HKDF — that mismatch was the bug that left native↔web call audio
+ * garbled while native↔native and web↔web each worked in isolation.
+ *
+ * Both participants derive the identical DM key from the same password +
+ * salt (the unlock verifier guarantees this), so they feed setKey the
+ * identical string and converge on the same media key. Mismatched
+ * passwords mean different (or absent) keys, so the media is mutually
+ * undecryptable and the call carries no audio/video — the intended
+ * "calls won't work unless the passwords match" behavior.
  *
  * Returns null when there is nothing safe to key the call with:
  *   - no key is cached locally for this channel (the user hasn't
@@ -415,26 +433,27 @@ export function isEncryptedWireFormat(s: string): boolean {
  * the user to (re-)enter the conversation password, rather than placing
  * a call whose media the encrypted peer can't decode.
  */
-export async function getCallKeyMaterial(
+export async function getCallKeyString(
   channelId: string,
   expectedVerifier?: string | null,
-): Promise<ArrayBuffer | null> {
+): Promise<string | null> {
   const keyBytes = getLocalKey(channelId);
   if (!keyBytes || keyBytes.length !== KEY_BYTES) return null;
+  // Re-encode to the canonical base64 of exactly the 32 key bytes. This is
+  // the identical string the native client passes to its key provider
+  // (Swift's `Data.base64EncodedString()` and tweetnacl-util both emit
+  // RFC 4648 base64 with padding), so the two platforms key LiveKit's
+  // PBKDF2 from byte-for-byte the same input.
+  const keyBase64 = naclUtil.encodeBase64(keyBytes);
   if (expectedVerifier) {
     try {
-      const verifier = await computeVerifier(naclUtil.encodeBase64(keyBytes));
+      const verifier = await computeVerifier(keyBase64);
       if (verifier !== expectedVerifier) return null;
     } catch {
       return null;
     }
   }
-  // .slice() returns a copy backed by a fresh ArrayBuffer sized to
-  // exactly KEY_BYTES. getLocalKey may hand back a Uint8Array that is a
-  // view onto a larger buffer (e.g. a cached subarray); copying first
-  // guarantees setKey() receives precisely the 32 key bytes — not a
-  // window into a bigger buffer that would hash to a different key.
-  return keyBytes.slice().buffer;
+  return keyBase64;
 }
 
 // ── Backup / restore ─────────────────────────────────────────────────────
