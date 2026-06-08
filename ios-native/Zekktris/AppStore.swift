@@ -1833,6 +1833,10 @@ final class AppStore: ObservableObject {
         do { try await api.adminLogoutUser(userId: u.id) }
         catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
+    func adminDeleteUser(_ u: AdminUser) async {
+        do { try await api.adminDeleteUser(userId: u.id); adminUsers.removeAll { $0.id == u.id } }
+        catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
+    }
 
     func loadAdminGuilds(q: String) async {
         loadingAdminGuilds = true
