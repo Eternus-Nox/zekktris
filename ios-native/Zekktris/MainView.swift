@@ -1410,6 +1410,72 @@ struct FriendsView: View {
     }
 }
 
+/// Auto-clear choices for a custom status — mirrors the web "Clear after"
+/// dropdown. `.keep` is the initial selection when an expiry already exists
+/// (so a text/emoji-only edit doesn't silently wipe it) and is NOT offered as
+/// a pickable menu option.
+enum CustomStatusExpiryChoice: Hashable {
+    case keep, off, m30, h1, h4, today, week
+
+    /// Options shown in the menu (excludes `.keep`, which is only a start state).
+    static let menuCases: [CustomStatusExpiryChoice] = [.off, .m30, .h1, .h4, .today, .week]
+
+    var label: String {
+        switch self {
+        case .keep: return "Keep current"
+        case .off: return "Don't clear"
+        case .m30: return "30 minutes"
+        case .h1: return "1 hour"
+        case .h4: return "4 hours"
+        case .today: return "Today"
+        case .week: return "This week"
+        }
+    }
+
+    /// Map to the Session save semantics, computing a concrete instant for the
+    /// duration choices (matches web's computeExpiresAt).
+    func resolved(now: Date = Date()) -> Session.CustomStatusExpiry {
+        switch self {
+        case .keep: return .keep
+        case .off: return .clear
+        case .m30: return .at(now.addingTimeInterval(30 * 60))
+        case .h1: return .at(now.addingTimeInterval(60 * 60))
+        case .h4: return .at(now.addingTimeInterval(4 * 60 * 60))
+        case .today: return .at(customStatusNextLocalMidnight(after: now))
+        case .week: return .at(customStatusEndOfWeekMidnight(after: now))
+        }
+    }
+}
+
+/// Start of tomorrow in the local calendar (= local midnight tonight).
+func customStatusNextLocalMidnight(after now: Date) -> Date {
+    let cal = Calendar.current
+    return cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now))
+        ?? now.addingTimeInterval(86_400)
+}
+
+/// Next Sunday-midnight (start of the upcoming Monday) — mirrors the web
+/// "This week" computation (tomorrow-midnight + days-until-Sunday-midnight).
+func customStatusEndOfWeekMidnight(after now: Date) -> Date {
+    let cal = Calendar.current
+    let tomorrowMidnight = customStatusNextLocalMidnight(after: now)
+    let jsDay = (cal.component(.weekday, from: now) - 1) % 7 // 0=Sun..6=Sat
+    let daysUntilSundayMidnight = jsDay == 0 ? 7 : 7 - jsDay
+    return cal.date(byAdding: .day, value: daysUntilSundayMidnight, to: tomorrowMidnight)
+        ?? tomorrowMidnight
+}
+
+/// True if `iso` parses to an instant still in the future.
+func customStatusHasFutureExpiry(_ iso: String?, now: Date = Date()) -> Bool {
+    guard let iso, !iso.isEmpty else { return false }
+    let fmt = ISO8601DateFormatter()
+    fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let d = fmt.date(from: iso) { return d > now }
+    fmt.formatOptions = [.withInternetDateTime]
+    if let d = fmt.date(from: iso) { return d > now }
+    return false
+}
+
 /// Settings / profile sheet: status, display name, custom status, account.
 struct SettingsView: View {
     @EnvironmentObject private var session: Session
@@ -1419,6 +1485,7 @@ struct SettingsView: View {
     @State private var displayName = ""
     @State private var customStatus = ""
     @State private var customStatusEmoji = ""
+    @State private var customStatusExpiry: CustomStatusExpiryChoice = .keep
     @State private var showStatusEmojiPicker = false
     @State private var nameStatus: String?
     @State private var showChangePassword = false
@@ -1472,6 +1539,10 @@ struct SettingsView: View {
                 displayName = session.currentUser?.displayName ?? ""
                 customStatus = session.currentUser?.customStatus ?? ""
                 customStatusEmoji = session.currentUser?.customStatusEmoji ?? ""
+                // If a future auto-clear is already set, default to "keep" so a
+                // text/emoji edit doesn't silently wipe it (mirrors web).
+                customStatusExpiry =
+                    customStatusHasFutureExpiry(session.currentUser?.customStatusExpiresAt) ? .keep : .off
                 faceIDOn = session.faceIDEnabled
             }
         }
@@ -1663,7 +1734,8 @@ struct SettingsView: View {
                 Button {
                     let s = customStatus
                     let e = customStatusEmoji
-                    Task { await session.setCustomStatus(s, emoji: e) }
+                    let exp = customStatusExpiry.resolved()
+                    Task { await session.setCustomStatus(s, emoji: e, expiry: exp) }
                 } label: {
                     Text("Set")
                         .font(.zkSans(14, weight: .semibold))
@@ -1674,11 +1746,28 @@ struct SettingsView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
             }
+            // Auto-clear duration. Matches the web "Clear after" dropdown.
+            Text("CLEAR AFTER").font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+            Menu {
+                ForEach(CustomStatusExpiryChoice.menuCases, id: \.self) { choice in
+                    Button(choice.label) { customStatusExpiry = choice }
+                }
+            } label: {
+                HStack {
+                    Text(customStatusExpiry.label).foregroundColor(Theme.ink1)
+                    Spacer()
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 12)).foregroundColor(Theme.ink3)
+                }
+                .padding(12).background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+            }
             if !customStatus.isEmpty || !customStatusEmoji.isEmpty {
                 Button {
                     customStatus = ""
                     customStatusEmoji = ""
-                    Task { await session.setCustomStatus(nil, emoji: nil) }
+                    customStatusExpiry = .off
+                    // Clearing the status also clears any auto-clear timer.
+                    Task { await session.setCustomStatus(nil, emoji: nil, expiry: .clear) }
                 } label: {
                     Text("Clear status")
                         .font(.zkSans(13))
