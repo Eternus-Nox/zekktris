@@ -17,7 +17,7 @@
 import { lazy, Suspense, useMemo, useState, useSyncExternalStore } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError, type Channel, type Guild } from '@zekktris/client';
-import { useAppState, isChannelUnread, channelMentionCount, voiceStatesForChannel, isChannelMuted } from '../state/AppState';
+import { useAppStateSelector, isChannelUnread, channelMentionCount, isChannelMuted } from '../state/AppState';
 import { useAuth } from '../auth/AuthContext';
 import { useToasts } from '../state/Toasts';
 // Lazy-loaded: this modal (and its role/member/automod editors) is ~120 KB and
@@ -51,7 +51,14 @@ interface Props {
 
 export function ChannelList({ guild, channels, activeChannelId }: Props) {
   const { user, rest } = useAuth();
-  const { state: appState, loadRoles, applyChannelReorder } = useAppState();
+  // Granular subscriptions (was `useAppState()`). Only these slices drive
+  // the list container; the local `appState` keeps existing reads unchanged.
+  const membersByGuild = useAppStateSelector((v) => v.state.membersByGuild);
+  const rolesByGuild = useAppStateSelector((v) => v.state.rolesByGuild);
+  const notificationOverrides = useAppStateSelector((v) => v.state.notificationOverrides);
+  const loadRoles = useAppStateSelector((v) => v.loadRoles);
+  const applyChannelReorder = useAppStateSelector((v) => v.applyChannelReorder);
+  const appState = { membersByGuild, rolesByGuild, notificationOverrides };
   const toasts = useToasts();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [showSettings, setShowSettings] = useState(false);
@@ -112,7 +119,6 @@ export function ChannelList({ guild, channels, activeChannelId }: Props) {
         // optimistic patch. Cheap; the alternative (computing the
         // exact inverse changeset) compounds complexity for a rare
         // error path.
-        void appState; // silence unused if guard removed in future
         try {
           const r = await rest.listGuildChannels(guild.id);
           applyChannelReorder(
@@ -536,7 +542,13 @@ function ChannelRow({
     // distinguishes them from regular text rows in the sidebar.
     return <LinkChannelRow channel={channel} onEdit={onEdit} dragState={dragState} onDragStart={onDragStart} wasJustDragging={wasJustDragging} />;
   }
-  const { state, ackChannel, setNotificationOverride } = useAppState();
+  // Granular subscriptions (was `useAppState()`): a channel row should only
+  // re-render when its mute/read state changes, not on every dispatch.
+  const notificationOverrides = useAppStateSelector((v) => v.state.notificationOverrides);
+  const readStateByChannel = useAppStateSelector((v) => v.state.readStateByChannel);
+  const ackChannel = useAppStateSelector((v) => v.ackChannel);
+  const setNotificationOverride = useAppStateSelector((v) => v.setNotificationOverride);
+  const state = { notificationOverrides, readStateByChannel };
   const toasts = useToasts();
   const navigate = useNavigate();
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
@@ -842,7 +854,8 @@ function StageChannelRow({
   dragState: DragState;
   onDragStart?: (channelId: string, kind: 'channel' | 'category', label: string, e: React.PointerEvent) => void;
 }) {
-  const { state } = useAppState();
+  const stageParticipantsByChannel = useAppStateSelector((v) => v.state.stageParticipantsByChannel);
+  const state = { stageParticipantsByChannel };
   const navigate = useNavigate();
   // Live participant count from the stage slice. Absence = "not loaded
   // yet"; we show no count rather than a 0 to avoid the user thinking
@@ -1197,18 +1210,23 @@ function VoiceChannelRow({
   dragState: DragState;
   onDragStart?: (channelId: string, kind: 'channel' | 'category', label: string, e: React.PointerEvent) => void;
 }) {
-  const { state, mergeChannelVoiceStates, restForChannel } = useAppState();
+  // Granular subscriptions (was `useAppState()`).
+  const voiceStatesByUser = useAppStateSelector((v) => v.state.voiceStatesByUser);
+  const supervision = useAppStateSelector((v) => v.state.supervision);
+  const mergeChannelVoiceStates = useAppStateSelector((v) => v.mergeChannelVoiceStates);
+  const restForChannel = useAppStateSelector((v) => v.restForChannel);
+  const state = { voiceStatesByUser, supervision };
   const { user } = useAuth();
   const toasts = useToasts();
   const navigate = useNavigate();
-  // Memoized participant list. voiceStatesForChannel walks the entire
-  // voiceStatesByUser map and allocates a fresh array; without memo
-  // every channel's row repeats that walk on every render of the
-  // sidebar (e.g. when the user types in a different channel). Gating
-  // on the underlying map ref means we recompute only when a voice
-  // state actually changes.
+  // Memoized participant list. This walks the entire voiceStatesByUser map
+  // and allocates a fresh array; without memo every channel's row repeats
+  // that walk on every render of the sidebar (e.g. when the user types in a
+  // different channel). Gating on the underlying map ref means we recompute
+  // only when a voice state actually changes. (Inlined the former
+  // voiceStatesForChannel helper, which required the full State object.)
   const participants = useMemo(
-    () => voiceStatesForChannel(state, channel.id),
+    () => Object.values(state.voiceStatesByUser).filter((v) => v.channelId === channel.id),
     [state.voiceStatesByUser, channel.id],
   );
   const selfInThis = !!user && participants.some((v) => v.userId === user.id);
@@ -1413,7 +1431,15 @@ function VoiceChannelRow({
 }
 
 function VoiceParticipant({ userId, muted, deaf }: { userId: string; muted: boolean; deaf: boolean }) {
-  const { state, restForChannel } = useAppState();
+  // Granular subscriptions (was `useAppState()`).
+  const usersById = useAppStateSelector((v) => v.state.usersById);
+  const voiceStatesByUser = useAppStateSelector((v) => v.state.voiceStatesByUser);
+  const guildsById = useAppStateSelector((v) => v.state.guildsById);
+  const membersByGuild = useAppStateSelector((v) => v.state.membersByGuild);
+  const rolesByGuild = useAppStateSelector((v) => v.state.rolesByGuild);
+  const channelsByGuild = useAppStateSelector((v) => v.state.channelsByGuild);
+  const restForChannel = useAppStateSelector((v) => v.restForChannel);
+  const state = { usersById, voiceStatesByUser, guildsById, membersByGuild, rolesByGuild, channelsByGuild };
   const { user } = useAuth();
   const toasts = useToasts();
   const u = state.usersById[userId];

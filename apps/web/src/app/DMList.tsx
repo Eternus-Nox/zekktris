@@ -16,7 +16,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import type { Channel, Message, PublicUser } from '@zekktris/client';
-import { useAppState, isChannelUnread, channelMentionCount, isChannelMuted } from '../state/AppState';
+import { useAppStateSelector, isChannelUnread, channelMentionCount, isChannelMuted } from '../state/AppState';
 import { useAuth } from '../auth/AuthContext';
 import { useToasts } from '../state/Toasts';
 import { avatarColor, avatarInitials } from '../lib/avatar';
@@ -25,7 +25,11 @@ import { Search, X, Calendar, Users, Bookmark, ShieldE2ee } from '../lib/icons';
 import { ChannelMenu } from './ChannelMenu';
 
 export function DMList({ activeChannelId }: { activeChannelId: string | undefined }) {
-  const { state } = useAppState();
+  // Granular subscriptions (was `useAppState()`). Only the DM list + loaded
+  // flag drive this component; the local `state` keeps existing reads.
+  const dmChannels = useAppStateSelector((v) => v.state.dmChannels);
+  const loadedDMs = useAppStateSelector((v) => v.state.loadedDMs);
+  const state = { dmChannels, loadedDMs };
   // Most-recent conversation first. Recency = the channel's last message
   // (a time-ordered snowflake, kept current by the reducer), falling back
   // to the channel id (its creation snowflake) for brand-new empty DMs.
@@ -254,7 +258,8 @@ function DMSearch({ onClose }: { onClose: () => void }) {
 }
 
 function DMSearchResult({ message, onClick }: { message: Message; onClick: () => void }) {
-  const { state } = useAppState();
+  const usersById = useAppStateSelector((v) => v.state.usersById);
+  const state = { usersById };
   const authorId = message.authorId ?? '';
   const author = authorId ? state.usersById[authorId] : undefined;
   const label = author?.displayName ?? author?.username ?? (authorId ? 'Unknown' : 'System');
@@ -291,7 +296,12 @@ function DMSearchResult({ message, onClick }: { message: Message; onClick: () =>
 }
 
 function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
-  const { state, ackChannel, setNotificationOverride } = useAppState();
+  const notificationOverrides = useAppStateSelector((v) => v.state.notificationOverrides);
+  const readStateByChannel = useAppStateSelector((v) => v.state.readStateByChannel);
+  const messagesByChannel = useAppStateSelector((v) => v.state.messagesByChannel);
+  const ackChannel = useAppStateSelector((v) => v.ackChannel);
+  const setNotificationOverride = useAppStateSelector((v) => v.setNotificationOverride);
+  const state = { notificationOverrides, readStateByChannel, messagesByChannel };
   const { user, rest } = useAuth();
   const selfId = user?.id;
   const toasts = useToasts();
