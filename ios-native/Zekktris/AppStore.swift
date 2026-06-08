@@ -325,6 +325,10 @@ final class AppStore: ObservableObject {
     @Published var uploading = false
     @Published var searching = false
     @Published var searchResults: [Message] = []
+    // Cross-DM search (spans every DM conversation) — separate from the
+    // per-channel search state above so the two never bleed into each other.
+    @Published var dmSearching = false
+    @Published var dmSearchResults: [Message] = []
     @Published var errorText: String?
 
     // ── E2EE (DMs) ──────────────────────────────────────────────────────────
@@ -389,6 +393,7 @@ final class AppStore: ObservableObject {
         relationships = []
         typing = [:]
         searchResults = []
+        dmSearchResults = []
         mentions = []
         discoverable = []
         adminStats = nil
@@ -1615,6 +1620,23 @@ final class AppStore: ObservableObject {
     }
 
     func clearSearch() { searchResults = [] }
+
+    /// Cross-DM search — spans every DM conversation via /users/@me/dms/search
+    /// (same server FTS as the per-channel search).
+    func searchDMs(_ query: String) async {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { dmSearchResults = []; return }
+        dmSearching = true
+        defer { dmSearching = false }
+        do {
+            dmSearchResults = try await api.searchDirectMessages(query: q)
+        } catch {
+            errorText = (error as? APIError)?.message ?? error.localizedDescription
+            dmSearchResults = []
+        }
+    }
+
+    func clearDMSearch() { dmSearchResults = [] }
 
     // MARK: Typing
 

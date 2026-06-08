@@ -789,6 +789,17 @@ final class APIClient {
         let wrap: MessagesWrap = try await send("GET", "/channels/\(channelId)/messages/search?q=\(q)")
         return wrap.messages
     }
+
+    /// Search across ALL of the caller's DM conversations at once
+    /// (GET /users/@me/dms/search) — the same server full-text search as the
+    /// per-channel search, but spanning every DM the user is a recipient of.
+    func searchDirectMessages(query: String) async throws -> [Message] {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&+=?/")
+        let q = query.addingPercentEncoding(withAllowedCharacters: allowed) ?? query
+        let wrap: MessagesWrap = try await send("GET", "/users/@me/dms/search?q=\(q)")
+        return wrap.messages
+    }
 }
 
 extension APIClient {

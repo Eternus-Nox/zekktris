@@ -999,6 +999,7 @@ struct DMListView: View {
     @State private var showMyEvents = false
     @State private var showSavedSheet = false
     @State private var showScheduled = false
+    @State private var showDMSearch = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1008,6 +1009,7 @@ struct DMListView: View {
                     quickRow("calendar", "Your events") { showMyEvents = true }
                     quickRow("bookmark", "Saved messages") { showSavedSheet = true }
                     quickRow("clock", "Scheduled messages") { showScheduled = true }
+                    quickRow("magnifyingglass", "Search messages") { showDMSearch = true }
 
                     HStack {
                         Text("DIRECT MESSAGES")
@@ -1060,6 +1062,9 @@ struct DMListView: View {
         }
         .sheet(isPresented: $showScheduled) {
             ScheduledMessagesSheet()
+        }
+        .sheet(isPresented: $showDMSearch) {
+            DMSearchSheet()
         }
     }
 
