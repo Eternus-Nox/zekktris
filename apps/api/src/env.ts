@@ -21,7 +21,21 @@ export type LogLevel = z.infer<typeof LogLevel>;
 
 const NodeEnv = z.enum(['development', 'test', 'production']);
 
-const envSchema = z.object({
+/**
+ * Treat an empty-string env var as absent.
+ *
+ * docker-compose passes unset optionals as `${VAR:-}`, which reaches the
+ * process as `''` — NOT undefined. A bare `z.string().email().optional()`
+ * (or `.url()`, etc.) then runs its validator on `''` and fails, crash-looping
+ * the API on the default self-host path. Wrapping the field so `'' → undefined`
+ * lets `.optional()` and the validators behave as intended. This mirrors the
+ * inline `z.preprocess((v) => (v === '' ? undefined : v), …)` already used for
+ * the APNS, SMTP, FIELD_ENCRYPTION_KEY, and BOOTSTRAP_ADMIN_EMAIL fields.
+ */
+const emptyAsUndefined = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess((v) => (v === '' ? undefined : v), schema);
+
+export const envSchema = z.object({
   // ── Runtime ────────────────────────────────────────────────────────────
   NODE_ENV: NodeEnv.default('development'),
   HOST: z.string().default('0.0.0.0'),
@@ -46,7 +60,7 @@ const envSchema = z.object({
   DATABASE_URL: z.string().url(),
 
   // ── Cache / pubsub ─────────────────────────────────────────────────────
-  REDIS_URL: z.string().url().optional(),
+  REDIS_URL: emptyAsUndefined(z.string().url().optional()),
 
   // ── Auth ───────────────────────────────────────────────────────────────
   /** HS256 signing key for short-lived access tokens. Min 32 bytes. */
@@ -130,7 +144,7 @@ const envSchema = z.object({
 
   // ── Cookies ────────────────────────────────────────────────────────────
   /** Domain set on the refresh-token cookie. Leave empty to default to the request host. */
-  COOKIE_DOMAIN: z.string().optional(),
+  COOKIE_DOMAIN: emptyAsUndefined(z.string().optional()),
   /**
    * Whether to send `Secure` on cookies. Should be 'true' in production with TLS;
    * 'false' on plain-HTTP local dev so cookies aren't dropped by the browser.
@@ -145,16 +159,16 @@ const envSchema = z.object({
   // ALL of them to be set. Missing any one causes joinVoice to return
   // a null token and the client falls back to presence-only mode. The
   // api still boots in either configuration — no startup-check failure.
-  LIVEKIT_API_KEY: z.string().optional(),
-  LIVEKIT_API_SECRET: z.string().optional(),
-  LIVEKIT_WS_URL: z.string().optional(),
+  LIVEKIT_API_KEY: emptyAsUndefined(z.string().optional()),
+  LIVEKIT_API_SECRET: emptyAsUndefined(z.string().optional()),
+  LIVEKIT_WS_URL: emptyAsUndefined(z.string().optional()),
   // LiveKit's server-side admin APIs (RoomServiceClient — used to
   // forcibly evict banned/kicked users from voice rooms) speak HTTPS,
   // not WSS. Most LiveKit deployments serve both on the same host —
   // when this env var is unset, the eviction helper derives an
   // http(s) URL from LIVEKIT_WS_URL automatically. Override here only
   // if your deployment runs the admin API on a separate hostname.
-  LIVEKIT_HTTP_URL: z.string().optional(),
+  LIVEKIT_HTTP_URL: emptyAsUndefined(z.string().optional()),
 
   // ── Web Push (notifications) ───────────────────────────────────────────
   // VAPID keys identify the application server to push gateways. Both
@@ -163,9 +177,12 @@ const envSchema = z.object({
   // The contact email is included in the JWT VAPID claim — gateways
   // use it to reach the operator if their service abuses push.
   // Generate keys with: `npx web-push generate-vapid-keys`
-  VAPID_PUBLIC_KEY: z.string().optional(),
-  VAPID_PRIVATE_KEY: z.string().optional(),
-  VAPID_CONTACT_EMAIL: z.string().email().optional(),
+  VAPID_PUBLIC_KEY: emptyAsUndefined(z.string().optional()),
+  VAPID_PRIVATE_KEY: emptyAsUndefined(z.string().optional()),
+  // `''` (docker-compose's `${VAPID_CONTACT_EMAIL:-}` default) must become
+  // undefined BEFORE `.email()` runs, or the API crash-loops on boot for every
+  // self-host that hasn't configured Web Push.
+  VAPID_CONTACT_EMAIL: emptyAsUndefined(z.string().email().optional()),
 
   // ── APNs (native iOS push) ──────────────────────────────────────────────
   // Token-based Apple Push Notification service for the native iOS app
