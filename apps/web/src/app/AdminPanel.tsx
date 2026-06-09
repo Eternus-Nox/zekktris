@@ -28,6 +28,7 @@ import {
   type AdminPeekMessage,
   type AdminStats,
   type InstanceMetrics,
+  type LivekitDiagnostic,
   type AdminStorage,
   type StorageItem,
   type StorageListing,
@@ -170,6 +171,25 @@ function OverviewTab() {
   const [activity, setActivity] = useState<AdminActivity | null>(null);
   const [metrics, setMetrics] = useState<InstanceMetrics | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Voice/LiveKit diagnostic — run on demand (it probes the SFU over the
+  // network), not auto-loaded with the counts above.
+  const [diag, setDiag] = useState<LivekitDiagnostic | null>(null);
+  const [diagRunning, setDiagRunning] = useState(false);
+  const [diagError, setDiagError] = useState<string | null>(null);
+
+  async function runVoiceDiagnostic() {
+    if (diagRunning) return;
+    setDiagRunning(true);
+    setDiagError(null);
+    try {
+      const r = await rest.adminVoiceDiagnostic();
+      setDiag(r.diagnostic);
+    } catch (e) {
+      setDiagError(e instanceof ApiError ? e.message : 'Diagnostic failed');
+    } finally {
+      setDiagRunning(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -319,6 +339,70 @@ function OverviewTab() {
           />
         </section>
       )}
+
+      {/* Voice / LiveKit diagnostic — the #1 self-host gotcha. Run on demand. */}
+      <section className="space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-xs uppercase tracking-wider text-ink-3">Voice / LiveKit</h3>
+          <button
+            onClick={() => void runVoiceDiagnostic()}
+            disabled={diagRunning}
+            className="px-3 py-1.5 rounded-md text-xs font-medium bg-bg-2 text-ink-1 border border-line hover:border-accent transition-colors disabled:opacity-50"
+          >
+            {diagRunning ? 'Testing…' : diag ? 'Re-run test' : 'Test voice'}
+          </button>
+        </div>
+        {diagError && <p className="text-sm text-red-300">{diagError}</p>}
+        {diag && (
+          <div className="rounded-md border border-line bg-bg-2/40 p-3 space-y-2">
+            <div className="flex items-center gap-2 text-sm">
+              <span
+                className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
+                  diag.ok
+                    ? 'bg-green-500/20 text-green-300 border border-green-500/40'
+                    : diag.configured
+                      ? 'bg-red-500/20 text-red-300 border border-red-500/40'
+                      : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                }`}
+              >
+                {diag.ok ? 'Voice OK' : diag.configured ? 'Problem found' : 'Not configured'}
+              </span>
+              {diag.wsUrl && <span className="text-xs text-ink-3 font-mono truncate">{diag.wsUrl}</span>}
+            </div>
+            <ul className="space-y-1.5">
+              {diag.checks.map((ch) => (
+                <li key={ch.id} className="flex items-start gap-2 text-xs">
+                  <span
+                    className={`mt-0.5 w-3.5 h-3.5 shrink-0 rounded-full flex items-center justify-center text-[0.6rem] font-bold ${
+                      ch.status === 'pass'
+                        ? 'bg-green-500/25 text-green-300'
+                        : ch.status === 'fail'
+                          ? 'bg-red-500/25 text-red-300'
+                          : ch.status === 'warn'
+                            ? 'bg-amber-500/25 text-amber-300'
+                            : 'bg-bg-3 text-ink-3'
+                    }`}
+                    aria-label={ch.status}
+                  >
+                    {ch.status === 'pass' ? '✓' : ch.status === 'fail' ? '✕' : ch.status === 'warn' ? '!' : '–'}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="text-ink-1 font-medium">{ch.label}</span>
+                    <span className="text-ink-3"> — {ch.detail}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {!diag && !diagRunning && !diagError && (
+          <p className="text-xs text-ink-3">
+            Tests LiveKit end-to-end: keys, the URL clients connect to, token minting, and whether the
+            server can reach the SFU. The most common self-host failure is the API not being able to
+            reach LiveKit, or media (UDP 7882) not being open to clients.
+          </p>
+        )}
+      </section>
 
       <p className="text-xs text-ink-3 leading-relaxed">
         These counts are a snapshot at request time. Switch tabs and back to
