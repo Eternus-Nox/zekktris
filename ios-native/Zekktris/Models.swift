@@ -842,6 +842,26 @@ struct ChildRelationship: Codable, Identifiable, Hashable {
 }
 struct ChildRelationshipsWrap: Codable { let relationships: [ChildRelationship] }
 
+// MARK: Watch words + flagged messages (parental controls)
+struct WatchWordsWrap: Codable { let words: [String] }
+
+/// A message that matched one of the child's watch words. Mirrors web's
+/// FamilyFlag. `matchedWord` is comma-joined; `direction` is sent|received;
+/// `byChild` is true when the child authored it; `snippet` is up to ~280
+/// chars of content (supervised DMs are plaintext).
+struct FamilyFlag: Codable, Identifiable, Hashable {
+    let id: String
+    var messageId: String
+    var channelId: String
+    var matchedWord: String
+    var direction: String
+    var createdAt: String
+    var reviewed: Bool
+    var byChild: Bool
+    var snippet: String?
+}
+struct FamilyFlagsWrap: Codable { let flags: [FamilyFlag] }
+
 
 // ── Security (Admin → Security) ─────────────────────────────────────────────
 struct SecurityEvent: Codable, Identifiable, Hashable {
