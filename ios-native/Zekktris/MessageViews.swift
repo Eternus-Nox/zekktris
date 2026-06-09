@@ -3520,15 +3520,8 @@ struct EncryptedAttachmentView: View {
                     // bytes — E2EE is preserved end to end.
                     .onTapGesture { store.openLightbox(image: image) }
                     .imageActions { image }
-                    .overlay(alignment: .topTrailing) {
-                        Image(systemName: "lock.fill")
-                            .font(.system(size: 7, weight: .bold))
-                            .foregroundColor(Theme.accent)
-                            .frame(width: 14, height: 14)
-                            .background(Theme.bg0.opacity(0.8))
-                            .clipShape(Circle())
-                            .padding(5)
-                    }
+                    // Per-image E2EE lock badge removed — the lock by the DM
+                    // header already signals the whole conversation is encrypted.
             } else {
                 HStack(spacing: 8) {
                     Image(systemName: failed ? "lock.slash" : "lock.doc")
