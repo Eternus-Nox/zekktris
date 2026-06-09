@@ -353,6 +353,25 @@ final class AppStore: ObservableObject {
     var currentUserId: String?
     /// The signed-in user, used to author optimistic message placeholders.
     @Published var currentUser: SelfUser?
+
+    // MARK: Automatic presence (online ↔ idle)
+    //
+    // "Online" is an AUTOMATIC mode: while the chosen status is online/idle the
+    // app flips between online (foreground + recent UI interaction OR talking in
+    // voice) and idle (5+ min without UI interaction and not talking). dnd and
+    // invisible are manual and untouched. Offline is handled by the gateway
+    // disconnect (background/close). Pushes go through `autoStatusPush`
+    // (wired to Session.setStatus) so it reuses the normal status path; the
+    // chosen status is read via `currentChosenStatus`. AFK voice-channel
+    // relocation is a separate, already-built server sweep (guilds.afkChannelId).
+    static let autoIdleThresholdSeconds: TimeInterval = 300
+    /// Pushes an effective status to the server (set by the app to Session.setStatus).
+    var autoStatusPush: ((String) async -> Void)?
+    /// Reads the user's current chosen status (set by the app to Session.currentUser.status).
+    var currentChosenStatus: (() -> String)?
+    private var lastInteractionAt = Date()
+    private var appActive = true
+    private var autoPresenceTimer: Timer?
     /// Becomes true after the first gateway READY. A later READY means we
     /// reconnected after a drop, so we re-sync state (events were missed while
     /// disconnected) — mirroring the web client re-bootstrapping on reconnect.
@@ -372,6 +391,7 @@ final class AppStore: ObservableObject {
         Task { await loadGuilds() }
         Task { await loadDMs() }
         Task { await loadReadStates() }
+        startAutoPresence()
     }
 
     /// Called when the app returns to the foreground. iOS commonly kills the
@@ -382,7 +402,72 @@ final class AppStore: ObservableObject {
         gateway.forceReconnect()
     }
 
+    // MARK: Automatic presence state machine
+
+    /// Pure decision: the effective auto status, or nil when auto shouldn't act
+    /// (manual dnd/invisible, or backgrounded → offline handled by disconnect).
+    /// ONLINE when foreground and (recent UI interaction OR talking in voice);
+    /// otherwise IDLE.
+    static func desiredAutoStatus(
+        chosen: String,
+        appActive: Bool,
+        secondsSinceInteraction: TimeInterval,
+        talking: Bool
+    ) -> String? {
+        // Only the online/idle band is automatic; dnd & invisible are manual.
+        guard chosen == "online" || chosen == "idle" else { return nil }
+        // Backgrounded/closed → the gateway disconnect sets offline; don't fight it.
+        guard appActive else { return nil }
+        if talking || secondsSinceInteraction < autoIdleThresholdSeconds { return "online" }
+        return "idle"
+    }
+
+    /// Record a user interaction (resets the idle timer) and re-evaluate now.
+    func noteInteraction() {
+        lastInteractionAt = Date()
+        evaluateAutoPresence()
+    }
+
+    /// Foreground/background transitions feed the state machine.
+    func setAppActive(_ active: Bool) {
+        appActive = active
+        if active { lastInteractionAt = Date() }
+        evaluateAutoPresence()
+    }
+
+    private func startAutoPresence() {
+        appActive = true
+        lastInteractionAt = Date()
+        autoPresenceTimer?.invalidate()
+        // Re-check periodically so the idle transition fires without a UI event
+        // (and talking/idle changes are caught within the interval).
+        autoPresenceTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.evaluateAutoPresence() }
+        }
+        evaluateAutoPresence()
+    }
+
+    private func stopAutoPresence() {
+        autoPresenceTimer?.invalidate()
+        autoPresenceTimer = nil
+    }
+
+    /// Compute the desired auto status and push it if it differs from the
+    /// current chosen status. No-op when auto shouldn't act.
+    func evaluateAutoPresence() {
+        guard let uid = currentUserId else { return }
+        let chosen = currentChosenStatus?() ?? "online"
+        let talking = voice.speakingUserIds.contains(uid)
+        let secs = Date().timeIntervalSince(lastInteractionAt)
+        guard let desired = Self.desiredAutoStatus(
+            chosen: chosen, appActive: appActive, secondsSinceInteraction: secs, talking: talking
+        ) else { return }
+        guard desired != chosen else { return }
+        Task { await autoStatusPush?(desired) }
+    }
+
     func stop() {
+        stopAutoPresence()
         gateway.disconnect()
         currentUserId = nil
         currentUser = nil
@@ -478,7 +563,7 @@ final class AppStore: ObservableObject {
     /// (drill-down) to replace (master-detail) and hides back buttons.
     @Published var isWideLayout = false
 
-    func selectChannel(_ channel: Channel) { push(.messages(channel)) }
+    func selectChannel(_ channel: Channel) { noteInteraction(); push(.messages(channel)) }
     func openThreads(_ parent: Channel) { push(.threadList(parent)) }
     func clearChannel() { pop() }
 
@@ -1206,6 +1291,7 @@ final class AppStore: ObservableObject {
     func send(_ raw: String) async {
         let content = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty, let channel = selectedChannel else { return }
+        noteInteraction()
         let nonce = UUID().uuidString
 
         // For E2EE DMs, encrypt before sending; remember the plaintext so the
