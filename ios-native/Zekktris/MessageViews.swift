@@ -1470,6 +1470,9 @@ struct MessageRow: View {
                         }
                         .frame(maxWidth: 240, maxHeight: 240, alignment: .leading)
                         .clipShape(RoundedRectangle(cornerRadius: 10))
+                        // Long-press → Save to Photos / Copy / Share. Loads the
+                        // image bytes on demand via the native retrying loader.
+                        .imageActions { await RetryingImage.load(url) }
                     } else {
                         fileChip(att)
                     }
@@ -2732,7 +2735,7 @@ struct PinPanelView: View {
 /// Full-screen image viewer: pinch to zoom, drag to pan when zoomed,
 /// double-tap to toggle zoom, tap ✕ to close. Mirrors the web ImageLightbox.
 struct ImageLightboxView: View {
-    let url: URL
+    let item: LightboxImage
     @Environment(\.dismiss) private var dismiss
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
@@ -2743,50 +2746,22 @@ struct ImageLightboxView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image):
-                    image
-                        .resizable()
-                        .scaledToFit()
-                        .scaleEffect(scale)
-                        .offset(offset)
-                        .gesture(
-                            MagnificationGesture()
-                                .onChanged { value in scale = max(1, lastScale * value) }
-                                .onEnded { _ in
-                                    lastScale = scale
-                                    if scale <= 1 {
-                                        withAnimation { offset = .zero; lastOffset = .zero }
-                                    }
-                                }
-                        )
-                        .simultaneousGesture(
-                            DragGesture()
-                                .onChanged { value in
-                                    guard scale > 1 else { return }
-                                    offset = CGSize(
-                                        width: lastOffset.width + value.translation.width,
-                                        height: lastOffset.height + value.translation.height
-                                    )
-                                }
-                                .onEnded { _ in lastOffset = offset }
-                        )
-                        .onTapGesture(count: 2) {
-                            withAnimation {
-                                if scale > 1 {
-                                    scale = 1; lastScale = 1; offset = .zero; lastOffset = .zero
-                                } else {
-                                    scale = 2.5; lastScale = 2.5
-                                }
-                            }
-                        }
-                case .empty:
-                    ProgressView().tint(.white)
-                default:
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 28))
-                        .foregroundColor(.white)
+            // E2EE images arrive as an in-memory UIImage (no plaintext URL);
+            // plain attachments load by URL. Both get the same zoom/pan.
+            if let image = item.image {
+                zoomable(Image(uiImage: image).resizable().scaledToFit())
+            } else if let url = item.url {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        zoomable(image.resizable().scaledToFit())
+                    case .empty:
+                        ProgressView().tint(.white)
+                    default:
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 28))
+                            .foregroundColor(.white)
+                    }
                 }
             }
 
@@ -2806,6 +2781,45 @@ struct ImageLightboxView: View {
             }
             .padding(16)
         }
+    }
+
+    /// Apply pinch-zoom, drag-pan (when zoomed), and double-tap-to-toggle to
+    /// the supplied image view. Shared by the URL and in-memory paths.
+    @ViewBuilder
+    private func zoomable<V: View>(_ content: V) -> some View {
+        content
+            .scaleEffect(scale)
+            .offset(offset)
+            .gesture(
+                MagnificationGesture()
+                    .onChanged { value in scale = max(1, lastScale * value) }
+                    .onEnded { _ in
+                        lastScale = scale
+                        if scale <= 1 {
+                            withAnimation { offset = .zero; lastOffset = .zero }
+                        }
+                    }
+            )
+            .simultaneousGesture(
+                DragGesture()
+                    .onChanged { value in
+                        guard scale > 1 else { return }
+                        offset = CGSize(
+                            width: lastOffset.width + value.translation.width,
+                            height: lastOffset.height + value.translation.height
+                        )
+                    }
+                    .onEnded { _ in lastOffset = offset }
+            )
+            .onTapGesture(count: 2) {
+                withAnimation {
+                    if scale > 1 {
+                        scale = 1; lastScale = 1; offset = .zero; lastOffset = .zero
+                    } else {
+                        scale = 2.5; lastScale = 2.5
+                    }
+                }
+            }
     }
 }
 
@@ -3414,6 +3428,67 @@ private struct ActivityView: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 
+// MARK: - Image long-press actions (save / copy / share)
+
+/// Share-sheet host for an arbitrary set of activity items (e.g. a UIImage).
+private struct ActivityItemsView: UIViewControllerRepresentable {
+    let items: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
+/// Identifiable wrapper so a UIImage can drive `.sheet(item:)`.
+private struct ImageShareItem: Identifiable {
+    let id = UUID()
+    let image: UIImage
+}
+
+/// Long-press context menu (Save to Photos / Copy / Share) for an image. The
+/// `provider` yields the UIImage on demand — for plain attachments it loads
+/// from the URL; for E2EE images it returns the already-decrypted UIImage, so
+/// the saved/shared/copied bytes are the DECRYPTED image and E2EE is never
+/// bypassed (no plaintext URL is exposed). Save-to-Photos uses
+/// UIImageWriteToSavedPhotosAlbum (NSPhotoLibraryAddUsageDescription is set).
+private struct ImageActionsModifier: ViewModifier {
+    let provider: () async -> UIImage?
+    @State private var shareItem: ImageShareItem?
+
+    func body(content: Content) -> some View {
+        content
+            .contextMenu {
+                Button {
+                    withImage { UIImageWriteToSavedPhotosAlbum($0, nil, nil, nil) }
+                } label: { Label("Save to Photos", systemImage: "square.and.arrow.down") }
+                Button {
+                    withImage { UIPasteboard.general.image = $0 }
+                } label: { Label("Copy Image", systemImage: "doc.on.doc") }
+                Button {
+                    withImage { shareItem = ImageShareItem(image: $0) }
+                } label: { Label("Share…", systemImage: "square.and.arrow.up") }
+            }
+            .sheet(item: $shareItem) { ActivityItemsView(items: [$0.image]) }
+    }
+
+    /// Resolve the image (async) then run `action` on the main actor.
+    private func withImage(_ action: @escaping (UIImage) -> Void) {
+        Task {
+            if let img = await provider() {
+                await MainActor.run { action(img) }
+            }
+        }
+    }
+}
+
+extension View {
+    /// Attach the image long-press actions menu. `provider` supplies the
+    /// UIImage to act on (decrypted, for E2EE).
+    func imageActions(_ provider: @escaping () async -> UIImage?) -> some View {
+        modifier(ImageActionsModifier(provider: provider))
+    }
+}
+
 /// Downloads an encrypted (.zke) attachment, decrypts it with the DM's
 /// channel key, and renders the result — images inline (tap to zoom via a
 /// temporary file is skipped; encrypted images stay in-memory), anything
@@ -3440,6 +3515,11 @@ struct EncryptedAttachmentView: View {
                     .resizable().scaledToFit()
                     .frame(maxWidth: 240, maxHeight: 240, alignment: .leading)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
+                    // Tap → full-screen preview of the DECRYPTED image (no
+                    // plaintext URL). Long-press → Save/Copy/Share the decrypted
+                    // bytes — E2EE is preserved end to end.
+                    .onTapGesture { store.openLightbox(image: image) }
+                    .imageActions { image }
                     .overlay(alignment: .topTrailing) {
                         Image(systemName: "lock.fill")
                             .font(.system(size: 7, weight: .bold))
