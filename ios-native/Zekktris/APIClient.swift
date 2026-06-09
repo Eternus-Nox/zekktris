@@ -828,6 +828,33 @@ extension APIClient {
         try await send("POST", "/invites/\(code)")
     }
 
+    // ── Two-factor (TOTP) — same endpoints web's rest client uses ───────────
+
+    /// Current 2FA status (GET /users/@me/totp).
+    func twoFactorStatus() async throws -> TwoFactorStatus {
+        try await send("GET", "/users/@me/totp")
+    }
+
+    /// Begin enrollment — returns a fresh secret + otpauth:// URI for the QR
+    /// (POST /users/@me/totp/begin). Idempotent until confirmed.
+    func beginTwoFactor() async throws -> TwoFactorSecret {
+        try await send("POST", "/users/@me/totp/begin")
+    }
+
+    /// Confirm enrollment with a 6-digit code; returns one-time recovery codes
+    /// (POST /users/@me/totp/confirm).
+    func confirmTwoFactor(code: String) async throws -> TwoFactorRecovery {
+        let body = try JSONEncoder().encode(["code": code])
+        return try await send("POST", "/users/@me/totp/confirm", bodyData: body)
+    }
+
+    /// Disable 2FA with a current TOTP code OR a recovery code
+    /// (POST /users/@me/totp/disable).
+    func disableTwoFactor(code: String) async throws {
+        let body = try JSONEncoder().encode(["code": code])
+        try await sendVoid("POST", "/users/@me/totp/disable", bodyData: body)
+    }
+
     /// Restore an exported backup/template as a BRAND-NEW guild (clone — never
     /// mutates an existing server). `backup` is the raw JSON document bytes
     /// from the picked file; the server re-validates the full shape. When
