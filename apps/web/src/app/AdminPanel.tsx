@@ -17,7 +17,7 @@
  * right now" question) — refetch on tab switch is the right behavior.
  */
 
-import { useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import {
   ApiError,
@@ -29,6 +29,7 @@ import {
   type AdminStats,
   type InstanceMetrics,
   type LivekitDiagnostic,
+  type InstanceRestoreResult,
   type AdminStorage,
   type StorageItem,
   type StorageListing,
@@ -42,7 +43,7 @@ import { AvatarImage } from '../lib/AvatarImage';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { Hash, Lock, Search as SearchIcon, Shield, Volume2, X as CloseIcon, Users, Archive, BarChart, ChevronLeft } from '../lib/icons';
 
-type Tab = 'overview' | 'users' | 'guilds' | 'storage' | 'security';
+type Tab = 'overview' | 'users' | 'guilds' | 'storage' | 'security' | 'backup';
 
 export function AdminPanel() {
   const navigate = useNavigate();
@@ -114,6 +115,7 @@ export function AdminPanel() {
                 { id: 'guilds', label: 'Servers' },
                 { id: 'storage', label: 'Storage' },
                 { id: 'security', label: 'Security' },
+                { id: 'backup', label: 'Backup' },
               ] as { id: Tab; label: string }[]
             ).map((t) => {
               const active = tab === t.id;
@@ -156,6 +158,7 @@ export function AdminPanel() {
             )}
             {tab === 'storage' && <StorageTab />}
             {tab === 'security' && <AdminSecurityTab />}
+            {tab === 'backup' && <BackupAdminTab />}
           </div>
         )}
       </main>
@@ -1833,5 +1836,149 @@ function ObserveMessage({ message: m }: { message: AdminPeekMessage }) {
         )}
       </div>
     </li>
+  );
+}
+
+// ── Backup tab (instance-level config backup / restore) ─────────────────────
+//
+// Instance-admin tool: download a single JSON bundling every guild's config
+// backup (settings/roles/channels/overrides + optional branding), and restore
+// a bundle by rebuilding each guild as a NEW guild owned by the admin. This is
+// a CONFIGURATION backup, not a data dump — users/messages live in pg_dump.
+
+function BackupAdminTab() {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [includeImages, setIncludeImages] = useState(true);
+  const [exporting, setExporting] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [results, setResults] = useState<InstanceRestoreResult[] | null>(null);
+
+  async function download() {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const { backup } = await rest.adminExportBackup(includeImages);
+      const date = new Date().toISOString().slice(0, 10);
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `zekktris-instance-backup-${date}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toasts.push(
+        backup.truncated
+          ? `Downloaded ${backup.guildCount} guilds (capped — older guilds omitted)`
+          : `Downloaded backup of ${backup.guildCount} guild${backup.guildCount === 1 ? '' : 's'}`,
+        backup.truncated ? 'info' : 'success',
+      );
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Backup failed', 'error');
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || restoring) return;
+    setRestoring(true);
+    setResults(null);
+    try {
+      const text = await file.text();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        throw new Error('That file isn’t valid JSON');
+      }
+      const { created } = await rest.adminRestoreBackup(parsed);
+      setResults(created);
+      const okCount = created.filter((r) => r.ok).length;
+      toasts.push(
+        `Restored ${okCount}/${created.length} guild${created.length === 1 ? '' : 's'} as new servers`,
+        okCount === created.length ? 'success' : 'info',
+      );
+    } catch (err) {
+      toasts.push(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Restore failed', 'error');
+    } finally {
+      setRestoring(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6 max-w-3xl">
+      <AdminTabHeader
+        icon={Archive}
+        title="Backup & Restore"
+        subtitle="Download every server's configuration as one file, or rebuild servers from a backup."
+      />
+
+      <section className="border border-line rounded-md p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-ink-1">Download instance backup</h3>
+        <p className="text-xs text-ink-3 leading-relaxed">
+          Bundles each server's settings, roles, channel structure, and permission overrides into one
+          JSON file. This is a <strong>configuration</strong> backup — it does not include users,
+          memberships, or messages (back those up with a Postgres <code>pg_dump</code>).
+        </p>
+        <label className="flex items-center gap-2 text-xs text-ink-2">
+          <input
+            type="checkbox"
+            checked={includeImages}
+            onChange={(e) => setIncludeImages(e.target.checked)}
+          />
+          Include server icons &amp; banners (larger file)
+        </label>
+        <button
+          onClick={() => void download()}
+          disabled={exporting}
+          className="px-3 py-1.5 rounded-md text-sm font-medium bg-bg-2 text-ink-1 border border-line hover:border-accent transition-colors disabled:opacity-50"
+        >
+          {exporting ? 'Preparing…' : 'Download backup'}
+        </button>
+      </section>
+
+      <section className="border border-line rounded-md p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-ink-1">Restore from backup</h3>
+        <p className="text-xs text-ink-3 leading-relaxed">
+          Rebuilds every server in the file as a <strong>new</strong> server owned by you — existing
+          servers are never modified. Useful for migrating to a fresh instance or recovering deleted
+          server structures.
+        </p>
+        <input ref={fileRef} type="file" accept="application/json,.json" onChange={onFile} className="hidden" />
+        <button
+          onClick={() => fileRef.current?.click()}
+          disabled={restoring}
+          className="px-3 py-1.5 rounded-md text-sm font-medium bg-bg-2 text-ink-1 border border-line hover:border-accent transition-colors disabled:opacity-50"
+        >
+          {restoring ? 'Restoring…' : 'Choose backup file…'}
+        </button>
+
+        {results && (
+          <ul className="space-y-1 pt-1">
+            {results.map((r, i) => (
+              <li key={`${r.sourceGuildId}-${i}`} className="flex items-start gap-2 text-xs">
+                <span
+                  className={`mt-0.5 w-3.5 h-3.5 shrink-0 rounded-full flex items-center justify-center text-[0.6rem] font-bold ${
+                    r.ok ? 'bg-green-500/25 text-green-300' : 'bg-red-500/25 text-red-300'
+                  }`}
+                >
+                  {r.ok ? '✓' : '✕'}
+                </span>
+                <span className="min-w-0">
+                  <span className="text-ink-1 font-medium">{r.name}</span>
+                  <span className="text-ink-3"> — {r.ok ? 'restored' : r.error ?? 'failed'}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </div>
   );
 }

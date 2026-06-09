@@ -2422,6 +2422,20 @@ export class RestClient {
     return this.request('GET', '/admin/voice-diagnostic');
   }
 
+  /** Download an instance-wide configuration backup — every guild's config
+   *  backup bundled into one document. Instance-admin gated. `includeImages`
+   *  defaults to true; pass false for a smaller config-only bundle. */
+  adminExportBackup(includeImages = true): Promise<{ backup: InstanceBackup }> {
+    return this.request('GET', `/admin/backup?includeImages=${includeImages ? 'true' : 'false'}`);
+  }
+
+  /** Restore an instance backup — rebuilds each guild as a NEW guild owned by
+   *  the restoring admin (never mutates existing guilds). Per-guild
+   *  best-effort; the result lists each guild's outcome. Instance-admin gated. */
+  adminRestoreBackup(backup: unknown): Promise<{ created: InstanceRestoreResult[] }> {
+    return this.request('POST', '/admin/backup/restore', backup);
+  }
+
   // ── Admin: instance security ──────────────────────────────────────────────
 
   adminSecurityConfig(): Promise<{ config: SecurityConfig }> {
@@ -2879,6 +2893,27 @@ export interface LivekitDiagnostic {
   httpUrl: string | null;
   checks: LivekitCheck[];
   generatedAt: string;
+}
+
+/** Instance-wide configuration backup (GET /admin/backup). Bundles each
+ *  guild's config backup; `guilds` entries are opaque per-guild backup docs. */
+export interface InstanceBackup {
+  format: 'zekktris.instance-backup';
+  version: number;
+  exportedAt: string;
+  guildCount: number;
+  truncated: boolean;
+  includeImages: boolean;
+  guilds: unknown[];
+}
+
+/** Per-guild outcome from POST /admin/backup/restore. */
+export interface InstanceRestoreResult {
+  sourceGuildId: string;
+  name: string;
+  ok: boolean;
+  guildId?: string;
+  error?: string;
 }
 
 /** Operational/runtime metrics from GET /admin/metrics. Mirrors the
