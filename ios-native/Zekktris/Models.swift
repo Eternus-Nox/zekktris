@@ -740,6 +740,7 @@ enum Permissions {
     static let BAN_MEMBERS = 14
     static let MODERATE_MEMBERS = 17
     static let MANAGE_GUILD = 18
+    static let VIEW_AUDIT_LOG = 19
     static let MANAGE_WEBHOOKS = 20
     static let MANAGE_EMOJIS = 21
     static let MANAGE_EVENTS = 32
@@ -908,6 +909,81 @@ struct SecurityEvent: Codable, Identifiable, Hashable {
 }
 struct SecurityEventsWrap: Codable { let events: [SecurityEvent] }
 struct SecurityWordsWrap: Codable { let words: [String] }
+
+// ── Audit log ───────────────────────────────────────────────────────────────
+
+/// Opaque JSON value — captures an audit entry's free-form `changes` object
+/// without modeling every action's shape. Decodes any JSON; re-encodes for a
+/// pretty display string.
+indirect enum JSONValue: Codable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case null
+    case array([JSONValue])
+    case object([String: JSONValue])
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        // Order matters: Bool before Double (a JSON bool must not be read as a
+        // number), then the structured/string cases. Anything unexpected → null.
+        if c.decodeNil() {
+            self = .null
+        } else if let b = try? c.decode(Bool.self) {
+            self = .bool(b)
+        } else if let n = try? c.decode(Double.self) {
+            self = .number(n)
+        } else if let s = try? c.decode(String.self) {
+            self = .string(s)
+        } else if let a = try? c.decode([JSONValue].self) {
+            self = .array(a)
+        } else if let o = try? c.decode([String: JSONValue].self) {
+            self = .object(o)
+        } else {
+            self = .null
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .string(let s): try c.encode(s)
+        case .number(let n): try c.encode(n)
+        case .bool(let b): try c.encode(b)
+        case .null: try c.encodeNil()
+        case .array(let a): try c.encode(a)
+        case .object(let o): try c.encode(o)
+        }
+    }
+}
+
+/// One audit-log entry. Mirrors the server's AuditLogEntryDTO. `changes` is
+/// opaque (see JSONValue); `actor` is null when the moderator was deleted.
+struct AuditEntry: Codable, Identifiable {
+    let id: String
+    var guildId: String
+    var actor: PublicUser?
+    var action: String
+    var targetType: String
+    var targetId: String?
+    var changes: [String: JSONValue]?
+    var reason: String?
+    var createdAt: String
+
+    var actorName: String { actor?.name ?? "Unknown moderator" }
+
+    /// Pretty-printed `changes` for display, or nil when absent/empty.
+    var changesText: String? {
+        guard let changes, !changes.isEmpty else { return nil }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(changes),
+              let s = String(data: data, encoding: .utf8) else { return nil }
+        return s
+    }
+}
+
+struct AuditLogWrap: Codable { let entries: [AuditEntry] }
 struct SecurityConfig: Codable, Hashable {
     var spamEnabled: Bool
     var spamMaxMessages: Int

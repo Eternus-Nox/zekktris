@@ -1178,6 +1178,22 @@ extension APIClient {
         let wrap: SecurityWordsWrap = try await send("GET", "/admin/security/words")
         return wrap.words
     }
+
+    /// Guild audit log (read-only). Gated server-side on VIEW_AUDIT_LOG. Keyset
+    /// pagination via `before` (an entry id; newest-first). `actionPrefix`
+    /// filters by action-name prefix ("member", "role.update"); `actorId`
+    /// filters to a single moderator. The prefix + ids are lower/dot/digit
+    /// only, so they're query-safe without extra escaping.
+    func auditLog(guildId: String, before: String? = nil,
+                  actionPrefix: String? = nil, actorId: String? = nil) async throws -> [AuditEntry] {
+        var path = "/guilds/\(guildId)/audit-log?limit=50"
+        if let before { path += "&before=\(before)" }
+        if let actionPrefix, !actionPrefix.isEmpty { path += "&actionPrefix=\(actionPrefix)" }
+        if let actorId { path += "&actorId=\(actorId)" }
+        let wrap: AuditLogWrap = try await send("GET", path)
+        return wrap.entries
+    }
+
     func adminAddSecurityWord(_ word: String) async throws -> [String] {
         let body = try JSONSerialization.data(withJSONObject: ["word": word])
         let wrap: SecurityWordsWrap = try await send("POST", "/admin/security/words", bodyData: body)
