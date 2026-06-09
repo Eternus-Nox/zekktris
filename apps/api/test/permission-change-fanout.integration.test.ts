@@ -1,11 +1,14 @@
 import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
 import { Permissions as P } from '@zekktris/shared/permissions';
 import { db, schema } from '../src/db';
+import { nextSnowflake } from '../src/snowflake';
 import { eq } from 'drizzle-orm';
 import { createUser, createGuild, addMember, createChannel, addOverride, cleanupAll } from './seed';
 import { probeDb, closeDb } from './db-available';
 import { Connection } from '../src/gateway/connection';
 import { registry } from '../src/gateway/registry';
+import { eventBus } from '../src/gateway/bus';
+import type { PublishedEvent } from '../src/gateway/bus';
 import * as dispatch from '../src/gateway/dispatch';
 import * as voice from '../src/services/voice';
 
@@ -105,6 +108,74 @@ describe.runIf(dbReady)('applyGuildPermissionChange fan-out (integration)', () =
       .where(eq(schema.voiceStates.userId, m2));
     expect(vs1).toBeUndefined(); // evicted
     expect(vs2).toBeDefined(); // untouched
+  });
+
+  it('evicting a stage-roster member fans out STAGE_PARTICIPANTS_UPDATE without the evicted user', async () => {
+    const owner = await createUser();
+    const guildId = await createGuild(owner, P.VIEW_CHANNEL);
+    const evictee = await createUser();
+    const stayer = await createUser();
+    await addMember(guildId, evictee);
+    await addMember(guildId, stayer);
+
+    // A stage channel that's about to be hidden from @everyone.
+    const stageId = nextSnowflake();
+    await db.insert(schema.channels).values({
+      id: stageId,
+      type: 'guild_stage',
+      guildId,
+      position: 0,
+    });
+    await addOverride(stageId, 'role', guildId, 0n, P.VIEW_CHANNEL);
+
+    // evictee is in voice in the stage AND on the stage roster; stayer is
+    // only on the roster (not the one losing voice). Both rows must exist
+    // so we can prove the post-eviction roster keeps stayer and drops evictee.
+    await addVoiceState(evictee, guildId, stageId);
+    await db.insert(schema.stageParticipants).values([
+      { channelId: stageId, userId: evictee, isSpeaker: true },
+      { channelId: stageId, userId: stayer, isSpeaker: true },
+    ]);
+
+    // The evictee needs a connection with a stale snapshot that still lists
+    // the stage channel — that's what makes removed.length > 0 and triggers
+    // the per-connection eviction.
+    connect(evictee, guildId, [{ channelId: stageId, guildId }]);
+
+    // Capture the guild-wide broadcast at the bus (the registry→bus delivery
+    // is only wired in index.ts, which tests don't load — subscribing here
+    // verifies dispatch publishes the right event with the right payload).
+    const published: PublishedEvent[] = [];
+    const unsubscribe = eventBus().subscribe((e) => published.push(e));
+
+    await dispatch.applyGuildPermissionChange({ guildId });
+    unsubscribe();
+
+    // The evicted user's roster row is gone from the DB...
+    const rosterRows = await db
+      .select({ userId: schema.stageParticipants.userId })
+      .from(schema.stageParticipants)
+      .where(eq(schema.stageParticipants.channelId, stageId));
+    const rosterIds = rosterRows.map((r) => r.userId);
+    expect(rosterIds).not.toContain(evictee);
+    expect(rosterIds).toContain(stayer);
+
+    // ...and a STAGE_PARTICIPANTS_UPDATE was published for this channel,
+    // guild-scoped, whose participant list excludes the evictee but still
+    // includes stayer.
+    const updates = published.filter(
+      (e) =>
+        e.t === 'STAGE_PARTICIPANTS_UPDATE' &&
+        (e.d as { channel_id?: string }).channel_id === stageId.toString(),
+    );
+    expect(updates.length).toBeGreaterThan(0);
+    const last = updates[updates.length - 1];
+    expect((last.audience as { kind: string }).kind).toBe('guild');
+    const participantIds = (
+      (last.d as { participants: Array<{ userId: string }> }).participants
+    ).map((p) => p.userId);
+    expect(participantIds).not.toContain(evictee.toString());
+    expect(participantIds).toContain(stayer.toString());
   });
 
   it('scale: one batched voice_states read regardless of member count (no per-user query)', async () => {
