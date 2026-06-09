@@ -44,7 +44,8 @@ type WireAudience =
   | { kind: 'user'; userId: string }
   | { kind: 'guild'; guildId: string }
   | { kind: 'channel'; channelId: string; guildId: string | null }
-  | { kind: 'users'; userIds: string[] };
+  | { kind: 'users'; userIds: string[] }
+  | { kind: 'presence'; guildIds: string[]; dmChannelIds: string[] };
 
 export function encodeAudience(a: Audience): WireAudience {
   switch (a.kind) {
@@ -60,6 +61,12 @@ export function encodeAudience(a: Audience): WireAudience {
       };
     case 'users':
       return { kind: 'users', userIds: a.userIds.map((id) => id.toString()) };
+    case 'presence':
+      return {
+        kind: 'presence',
+        guildIds: a.guildIds.map((id) => id.toString()),
+        dmChannelIds: a.dmChannelIds.map((id) => id.toString()),
+      };
   }
 }
 
@@ -77,6 +84,12 @@ export function decodeAudience(a: WireAudience): Audience {
       };
     case 'users':
       return { kind: 'users', userIds: a.userIds.map((id) => BigInt(id)) };
+    case 'presence':
+      return {
+        kind: 'presence',
+        guildIds: a.guildIds.map((id) => BigInt(id)),
+        dmChannelIds: a.dmChannelIds.map((id) => BigInt(id)),
+      };
     default:
       throw new Error(`unknown audience kind: ${JSON.stringify(a)}`);
   }

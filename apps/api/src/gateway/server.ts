@@ -416,19 +416,23 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
     return;
   }
 
-  // Compute the user's viewable channels per guild. Each call is ~2 DB
-  // round trips and they parallelize cleanly. This is paid ONCE per
-  // connection, never on the hot dispatch path.
+  // Compute the user's viewable channels across ALL their guilds in a
+  // CONSTANT number of queries (six set-based reads), regardless of how
+  // many guilds they're in. Previously this ran one resolver call per
+  // guild (~3 round-trips each), so a 50-guild user paid ~150 round-trips
+  // on every reconnect — and iOS reconnects often (WS suspension on
+  // backgrounding). The batched resolver returns the identical viewable
+  // set; only the query shape changed. Paid ONCE per connection, never on
+  // the hot dispatch path.
   const guildIds = guildIdRows.map((r) => r.guildId);
-  const viewableByGuild = await Promise.all(
-    guildIds.map(async (gid) => ({
-      guildId: gid,
-      channelIds: await permissions.listViewableGuildChannelIds(gid, userId),
-    })),
+  const viewableByGuild = await permissions.listViewableGuildChannelIdsByGuild(
+    guildIds,
+    userId,
   );
-  const viewableChannels = viewableByGuild.flatMap(({ guildId, channelIds }) =>
-    channelIds.map((channelId) => ({ channelId, guildId })),
-  );
+  const viewableChannels: Array<{ channelId: bigint; guildId: bigint }> = [];
+  for (const [guildId, channelIds] of viewableByGuild) {
+    for (const channelId of channelIds) viewableChannels.push({ channelId, guildId });
+  }
 
   // The peer may have disconnected while the snapshot queries above were
   // in flight. Its close hook (registry.remove) has already run, so

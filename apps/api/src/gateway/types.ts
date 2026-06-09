@@ -36,7 +36,20 @@ export type Audience =
    */
   | { kind: 'channel'; channelId: bigint; guildId: bigint | null }
   /** Multiple specific users. Cheaper than emitting N user-audience events. */
-  | { kind: 'users'; userIds: bigint[] };
+  | { kind: 'users'; userIds: bigint[] }
+  /**
+   * A presence/status change for one user, destined for every guild they're
+   * in PLUS their DM peers. Replaces what used to be N separate publishes
+   * (one `guild` audience per guild + one `channel` audience per DM) with a
+   * SINGLE bus publish — important under the Redis bus, where each publish is
+   * a cross-replica round-trip. The registry expands this at delivery into
+   * the exact same per-guild frames (each carrying its own `guild_id`, which
+   * the web client uses to patch that guild's member list) plus one
+   * `guild_id: null` frame for DM peers. No DB queries — the caller supplies
+   * the membership lists. The payload `d` carries `{ user_id, status }`; the
+   * per-frame `guild_id` is injected at delivery time.
+   */
+  | { kind: 'presence'; guildIds: bigint[]; dmChannelIds: bigint[] };
 
 // ── Frame helpers ──────────────────────────────────────────────────────────
 
