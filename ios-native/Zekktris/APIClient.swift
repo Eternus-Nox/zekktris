@@ -828,6 +828,20 @@ extension APIClient {
         try await send("POST", "/invites/\(code)")
     }
 
+    /// Restore an exported backup/template as a BRAND-NEW guild (clone — never
+    /// mutates an existing server). `backup` is the raw JSON document bytes
+    /// from the picked file; the server re-validates the full shape. When
+    /// `nameOverride` is given (the name the user typed) it wins over the
+    /// file's stored name — same `?name=` query web's importGuild uses.
+    func importGuild(backup: Data, nameOverride: String?) async throws -> CreateGuildResult {
+        var path = "/guilds/import"
+        if let n = nameOverride?.trimmingCharacters(in: .whitespacesAndNewlines), !n.isEmpty {
+            let enc = n.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? n
+            path += "?name=\(enc)"
+        }
+        return try await send("POST", path, bodyData: backup)
+    }
+
     func listDiscoverable(q: String? = nil, category: String? = nil) async throws -> [DiscoverableGuild] {
         var path = "/discovery"
         var params: [String] = []

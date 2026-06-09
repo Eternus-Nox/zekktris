@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import PhotosUI
 import CoreImage
+import UniformTypeIdentifiers
 
 /// The signed-in shell. Mirrors the web mobile layout: a persistent 72pt
 /// server rail on the left, and a content column that shows the channel list
@@ -2515,8 +2516,13 @@ struct CreateServerSheet: View {
     @State private var name = ""
     @State private var serverDescription = ""
     @State private var busy = false
+    // Import-from-file flow (template or backup — same on-disk JSON format).
+    @State private var showImporter = false
+    @State private var importing = false
+    @State private var importError: String?
 
     private var canCreate: Bool { !name.trimmingCharacters(in: .whitespaces).isEmpty }
+    private var anyBusy: Bool { busy || importing }
 
     var body: some View {
         NavigationStack {
@@ -2542,13 +2548,98 @@ struct CreateServerSheet: View {
                             .background(canCreate ? Theme.accent : Theme.bg3)
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
-                    .disabled(!canCreate || busy)
+                    .disabled(!canCreate || anyBusy)
+
+                    importSection
                 }
                 .padding(20)
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Create a Server").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .navigationBarLeading) { PageBackButton() } }
+            .fileImporter(
+                isPresented: $showImporter,
+                allowedContentTypes: [.json],
+                allowsMultipleSelection: false
+            ) { result in onImportFile(result) }
+        }
+    }
+
+    // Import a template/backup file → POST /guilds/import. Mirrors web's
+    // create-server import: the name typed above (if any) overrides the file's
+    // stored name; both template and backup files share this one JSON format.
+    @ViewBuilder
+    private var importSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Rectangle().fill(Theme.bg3).frame(height: 1)
+                Text("OR").font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink4)
+                Rectangle().fill(Theme.bg3).frame(height: 1)
+            }
+            .padding(.vertical, 4)
+
+            Text("Import a template or backup file (.json). Uses the file's name unless you typed one above.")
+                .font(.zkSans(13)).foregroundColor(Theme.ink3)
+
+            Button {
+                importError = nil
+                showImporter = true
+            } label: {
+                HStack(spacing: 8) {
+                    if importing {
+                        ProgressView().scaleEffect(0.85)
+                    } else {
+                        Image(systemName: "square.and.arrow.down").font(.system(size: 15))
+                    }
+                    Text(importing ? "Importing…" : "Import from a file")
+                        .font(.zkSans(15, weight: .semibold))
+                }
+                .foregroundColor(Theme.ink1)
+                .frame(maxWidth: .infinity).padding(.vertical, 13)
+                .background(Theme.bg2)
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Theme.bg3, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .disabled(anyBusy)
+
+            if let importError {
+                Text(importError).font(.zkSans(13)).foregroundColor(Theme.danger)
+            }
+        }
+    }
+
+    private func onImportFile(_ result: Result<[URL], Error>) {
+        switch result {
+        case .failure(let error):
+            importError = error.localizedDescription
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            importing = true
+            importError = nil
+            Task {
+                defer { importing = false }
+                // Files picked from iCloud Drive / the Files app live outside
+                // the sandbox — must hold a security-scoped resource to read.
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                let data: Data
+                do {
+                    data = try Data(contentsOf: url)
+                } catch {
+                    importError = "Couldn't read that file"
+                    return
+                }
+                guard (try? JSONSerialization.jsonObject(with: data)) != nil else {
+                    importError = "That file isn't valid JSON"
+                    return
+                }
+                let typed = name.trimmingCharacters(in: .whitespaces)
+                if let err = await store.importServer(backup: data, name: typed.isEmpty ? nil : typed) {
+                    importError = err
+                } else {
+                    dismiss()
+                }
+            }
         }
     }
 
