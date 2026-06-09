@@ -321,7 +321,9 @@ async function main(): Promise<void> {
       try {
         const scheduledSvc = await import('./services/scheduledMessages');
         const messagesSvc = await import('./services/messages');
-        const due = await scheduledSvc.fetchDue();
+        // Atomically CLAIM due rows (FOR UPDATE SKIP LOCKED + claimed_at) so an
+        // overlapping tick or a second replica can't re-send the same rows.
+        const due = await scheduledSvc.claimDue();
         if (due.length === 0) return;
         let sent = 0;
         let failed = 0;
