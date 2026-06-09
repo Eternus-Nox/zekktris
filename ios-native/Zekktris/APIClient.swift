@@ -828,6 +828,14 @@ extension APIClient {
         try await send("POST", "/invites/\(code)")
     }
 
+    /// Public invite preview (GET /invites/:code) — shown before joining.
+    /// Public endpoint; the bearer is sent but not required.
+    func previewInvite(code: String) async throws -> InvitePreview {
+        let enc = code.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? code
+        let wrap: InvitePreviewWrap = try await send("GET", "/invites/\(enc)")
+        return wrap.invite
+    }
+
     // ── Two-factor (TOTP) — same endpoints web's rest client uses ───────────
 
     /// Current 2FA status (GET /users/@me/totp).

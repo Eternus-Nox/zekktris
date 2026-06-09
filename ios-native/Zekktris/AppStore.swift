@@ -1817,20 +1817,42 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func joinByInvite(code: String) async {
-        let cleaned = code
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Strip a pasted invite URL down to the bare code. Shared by preview + join
+    /// so both resolve the same code.
+    private func cleanInviteCode(_ code: String) -> String {
+        code.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "https://zekktris.com/invite/", with: "")
             .replacingOccurrences(of: "zekktris.com/invite/", with: "")
-        guard !cleaned.isEmpty else { return }
+    }
+
+    /// Public preview of an invite (GET /invites/:code) so the user sees the
+    /// server before joining. Returns nil (and sets errorText) on failure.
+    func previewInvite(_ code: String) async -> InvitePreview? {
+        let cleaned = cleanInviteCode(code)
+        guard !cleaned.isEmpty else { return nil }
+        do {
+            return try await api.previewInvite(code: cleaned)
+        } catch {
+            errorText = (error as? APIError)?.message ?? error.localizedDescription
+            return nil
+        }
+    }
+
+    /// Accept an invite. Returns true on success (guild loaded + selected).
+    @discardableResult
+    func joinByInvite(code: String) async -> Bool {
+        let cleaned = cleanInviteCode(code)
+        guard !cleaned.isEmpty else { return false }
         do {
             let result = try await api.acceptInvite(code: cleaned)
             await loadGuilds()
             if let guild = guilds.first(where: { $0.id == result.guildId }) {
                 selectGuild(guild)
             }
+            return true
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
+            return false
         }
     }
 

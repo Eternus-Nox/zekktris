@@ -581,6 +581,26 @@ struct AcceptInviteResult: Codable {
     let channelId: String?
 }
 
+// MARK: Invite preview (public GET /invites/:code) — mirrors web InvitePreview.
+struct InvitePreviewGuild: Codable {
+    let id: String
+    let name: String
+    var iconUrl: String?
+    var bannerUrl: String?
+    var description: String?
+    let memberCount: Int
+}
+struct InvitePreviewChannel: Codable { let id: String }
+struct InvitePreview: Codable {
+    let code: String
+    let guild: InvitePreviewGuild
+    let channel: InvitePreviewChannel
+    let uses: Int
+    var maxUses: Int?
+    var expiresAt: String?
+}
+struct InvitePreviewWrap: Codable { let invite: InvitePreview }
+
 // MARK: Two-factor (TOTP) — mirrors web's rest 2FA methods.
 struct TwoFactorStatus: Codable {
     let enabled: Bool
