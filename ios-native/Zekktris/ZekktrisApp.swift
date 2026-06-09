@@ -55,11 +55,18 @@ struct RootView: View {
             if newPhase == .active {
                 store.foregroundReconnect()
             }
+            // Feed foreground/background into the auto-presence state machine
+            // (foreground+activity → online; background → offline via disconnect).
+            store.setAppActive(newPhase == .active)
         }
         .onChange(of: session.phase) { phase in
             switch phase {
             case .signedIn:
                 if let token = session.token { store.start(token: token, user: session.currentUser) }
+                // Auto-presence: reuse Session.setStatus to push the effective
+                // status, and read the chosen status from the live user.
+                store.autoStatusPush = { [weak session] status in await session?.setStatus(status) }
+                store.currentChosenStatus = { [weak session] in session?.currentUser?.status ?? "online" }
                 PushManager.shared.requestAuthorizationAndRegister()
                 PushManager.shared.registerWithServerIfPossible()
                 VoipPushHandler.shared.registerWithServerIfPossible()
