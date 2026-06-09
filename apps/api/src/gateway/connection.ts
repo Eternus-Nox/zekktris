@@ -33,10 +33,34 @@ import {
   helloFrame,
   heartbeatAckFrame,
 } from './types';
+import { ResumeBuffer } from './resume';
 
 export class Connection {
   /** Stable id for this connection. Surfaced to the client as `session_id`. */
   readonly id: string = nanoid();
+
+  /**
+   * Logical session id — what the client stores and presents on RESUME.
+   * Defaults to this socket's `id`, but a RESUMEd connection adopts the
+   * PRIOR session's id so the resumable identity survives the new socket.
+   */
+  sessionId: string = this.id;
+
+  /**
+   * True once the socket has dropped but we're retaining this connection in
+   * the registry's fan-out indexes for the resume window — so events during
+   * the gap keep landing in `resumeBuffer` for replay. No live socket; sends
+   * buffer only. Set by the registry; cleared by adopting a fresh socket on
+   * RESUME.
+   */
+  detached = false;
+
+  /**
+   * Replay buffer of recent DISPATCH frames sent on this session. Created at
+   * IDENTIFY; carried across a RESUME. Null for unauthenticated connections
+   * (nothing to resume). See gateway/resume.ts.
+   */
+  resumeBuffer: ResumeBuffer | null = null;
 
   /** Set after IDENTIFY succeeds. */
   userId: bigint | null = null;
@@ -135,6 +159,36 @@ export class Connection {
       this.viewableGuildChannelIds.add(v.channelId);
       this.channelToGuild.set(v.channelId, v.guildId);
     }
+    // Fresh session → fresh replay buffer (RESUME adopts the prior one
+    // instead, via adoptResumedSession).
+    if (!this.resumeBuffer) this.resumeBuffer = new ResumeBuffer();
+    if (this.identifyTimer) {
+      clearTimeout(this.identifyTimer);
+      this.identifyTimer = undefined;
+    }
+  }
+
+  /** Current outbound sequence number (last seq sent). */
+  get currentSeq(): number {
+    return this.seq;
+  }
+
+  /**
+   * Take over a RESUMEd session: adopt the prior connection's identity,
+   * routing snapshot, sequence counter and replay buffer onto this fresh
+   * socket, so the stream continues seamlessly. The caller (RESUME handler)
+   * then replays the buffered suffix and re-indexes this connection live.
+   */
+  adoptResumedSession(prev: Connection): void {
+    this.authenticated = true;
+    this.userId = prev.userId;
+    this.sessionId = prev.sessionId;
+    this.guildIds = prev.guildIds;
+    this.dmChannelIds = prev.dmChannelIds;
+    this.viewableGuildChannelIds = prev.viewableGuildChannelIds;
+    this.channelToGuild = prev.channelToGuild;
+    this.seq = prev.currentSeq;
+    this.resumeBuffer = prev.resumeBuffer;
     if (this.identifyTimer) {
       clearTimeout(this.identifyTimer);
       this.identifyTimer = undefined;
@@ -212,21 +266,47 @@ export class Connection {
 
   // ── Sending ──────────────────────────────────────────────────────────────
 
-  /** Send a frame. DISPATCH frames get the next sequence number. */
+  /** Send a frame. DISPATCH frames get the next sequence number and are
+   *  recorded in the replay buffer (so they can be replayed on RESUME),
+   *  including while detached (no live socket — buffer only). */
   send(frame: GatewayFrame): void {
-    if (this.closed) return;
-    if (this.ws.readyState !== this.ws.OPEN) return;
-
-    let outgoing = frame;
     if (frame.op === GatewayOp.DISPATCH) {
       this.seq++;
-      outgoing = { ...frame, s: this.seq };
+      const outgoing = { ...frame, s: this.seq };
+      const json = JSON.stringify(outgoing, jsonReplacer);
+      this.resumeBuffer?.append(this.seq, json, Date.now());
+      if (this.detached) return; // no live socket; buffered for replay only
+      if (this.closed) return;
+      if (this.ws.readyState !== this.ws.OPEN) return;
+      try {
+        this.ws.send(json);
+      } catch {
+        this.close(CloseCode.PROTOCOL_ERROR, 'send failed');
+      }
+      return;
     }
-
+    // Non-DISPATCH control frame: no seq, not buffered, never to a dead socket.
+    if (this.closed) return;
+    if (this.ws.readyState !== this.ws.OPEN) return;
     try {
-      this.ws.send(JSON.stringify(outgoing, jsonReplacer));
+      this.ws.send(JSON.stringify(frame, jsonReplacer));
     } catch {
       // Send failures are unrecoverable for this connection; drop it.
+      this.close(CloseCode.PROTOCOL_ERROR, 'send failed');
+    }
+  }
+
+  /**
+   * Replay a previously-buffered frame VERBATIM — no seq bump, no re-buffer.
+   * Used by the RESUME handler to re-send the suffix the client missed,
+   * preserving the original sequence numbers and permission-filtered bytes.
+   */
+  sendRaw(json: string): void {
+    if (this.closed) return;
+    if (this.ws.readyState !== this.ws.OPEN) return;
+    try {
+      this.ws.send(json);
+    } catch {
       this.close(CloseCode.PROTOCOL_ERROR, 'send failed');
     }
   }
@@ -248,12 +328,17 @@ export class Connection {
    * that the body never gets re-walked per recipient.
    */
   sendPreparedDispatch(partialJson: string): void {
-    if (this.closed) return;
-    if (this.ws.readyState !== this.ws.OPEN) return;
+    // Always advance the seq + record in the replay buffer, even while
+    // detached — that's exactly how events occurring DURING a disconnect gap
+    // get captured for replay on RESUME.
     this.seq++;
     // partialJson is guaranteed to end with `}` (it's a JSON object).
     // Splice the seq just before the close brace.
     const final = partialJson.slice(0, -1) + ',"s":' + this.seq + '}';
+    this.resumeBuffer?.append(this.seq, final, Date.now());
+    if (this.detached) return; // no live socket; buffered for replay only
+    if (this.closed) return;
+    if (this.ws.readyState !== this.ws.OPEN) return;
     try {
       this.ws.send(final);
     } catch {

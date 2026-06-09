@@ -28,6 +28,7 @@ import { GatewayOp } from '@zekktris/shared/events';
 import type { Audience } from './types';
 import { eventBus, type PublishedEvent } from './bus';
 import type { Connection } from './connection';
+import { RESUME_WINDOW_MS, RESUME_MAX_DETACHED_SESSIONS } from './resume';
 
 class Registry {
   /** Authenticated only. Pre-IDENTIFY connections aren't here. */
@@ -63,6 +64,18 @@ class Registry {
    */
   private byDMChannel = new Map<bigint, Set<Connection>>();
 
+  /**
+   * Sessions whose socket has dropped but which we're retaining for a
+   * possible RESUME. The connection stays in byUser/byGuild/byDM so events
+   * during the gap keep buffering into its resumeBuffer (with no live socket
+   * write); a timer evicts it after RESUME_WINDOW_MS. Keyed by the logical
+   * sessionId the client presents on RESUME.
+   */
+  private detachedSessions = new Map<
+    string,
+    { conn: Connection; timer: ReturnType<typeof setTimeout> }
+  >();
+
   /** Whether the bus subscription is active. Set on first init(). */
   private busUnsubscribe: (() => void) | null = null;
 
@@ -81,6 +94,8 @@ class Registry {
       this.busUnsubscribe();
       this.busUnsubscribe = null;
     }
+    for (const { timer } of this.detachedSessions.values()) clearTimeout(timer);
+    this.detachedSessions.clear();
     for (const c of this.bySession.values()) {
       c.close(1001, 'server shutting down');
     }
@@ -94,8 +109,95 @@ class Registry {
 
   add(conn: Connection): void {
     this.bySession.set(conn.id, conn);
-    // Install cleanup so when the conn closes, we drop it from indexes.
-    conn.onCleanup = () => this.remove(conn);
+    // Install cleanup so when the conn's socket closes we either retain it
+    // for a possible RESUME (authenticated) or drop it (unauthenticated).
+    conn.onCleanup = () => this.handleClose(conn);
+  }
+
+  /**
+   * Socket-closed handler. An AUTHENTICATED connection is DETACHED — kept in
+   * the fan-out indexes (so gap events keep buffering) and retained for the
+   * resume window. An unauthenticated connection (never IDENTIFY'd) has
+   * nothing to resume, so it's removed immediately as before.
+   */
+  private handleClose(conn: Connection): void {
+    if (conn.isAuthenticated() && conn.userId !== null && !conn.detached) {
+      this.detach(conn);
+    } else {
+      this.remove(conn);
+    }
+  }
+
+  /**
+   * Count of a user's connections that still have a live socket (not
+   * detached). Drives the "user fully disconnected" hook so presence/voice
+   * cleanup fires at exactly the same moment as before: when the user's last
+   * LIVE socket goes away.
+   */
+  private userLiveCount(userId: bigint): number {
+    const set = this.byUser.get(userId);
+    if (!set) return 0;
+    let n = 0;
+    for (const c of set) if (!c.detached) n++;
+    return n;
+  }
+
+  /**
+   * Mark a connection detached: keep it in every index (so events during the
+   * gap keep buffering into resumeBuffer with no socket write), retain it for
+   * RESUME, and — if it was the user's last live socket — fire the
+   * full-disconnect hook now (same timing as a plain disconnect today).
+   */
+  private detach(conn: Connection): void {
+    if (conn.detached || conn.userId === null) {
+      this.remove(conn);
+      return;
+    }
+    conn.detached = true;
+    const timer = setTimeout(() => this.evictDetached(conn), RESUME_WINDOW_MS);
+    // Don't keep the event loop alive just to expire a buffer.
+    (timer as { unref?: () => void }).unref?.();
+    this.detachedSessions.set(conn.sessionId, { conn, timer });
+
+    // Global memory backstop: if too many sessions are retained (mass
+    // disconnect), evict the oldest (Map preserves insertion order).
+    if (this.detachedSessions.size > RESUME_MAX_DETACHED_SESSIONS) {
+      const oldest = this.detachedSessions.values().next().value;
+      if (oldest && oldest.conn !== conn) this.evictDetached(oldest.conn);
+    }
+
+    // The full-disconnect hook fires on the live-count 1→0 transition — i.e.
+    // when this detach removed the user's last live socket.
+    if (this.userLiveCount(conn.userId) === 0 && this.onUserFullyDisconnected) {
+      try {
+        this.onUserFullyDisconnected(conn.userId);
+      } catch {
+        // Hook errors mustn't break the lifecycle.
+      }
+    }
+  }
+
+  /** Resume-window expiry: fully remove a detached session. */
+  private evictDetached(conn: Connection): void {
+    const entry = this.detachedSessions.get(conn.sessionId);
+    if (!entry || entry.conn !== conn) return;
+    this.remove(conn);
+  }
+
+  /** Look up a retained session for RESUME. Null if unknown/expired. */
+  findResumable(sessionId: string): Connection | null {
+    return this.detachedSessions.get(sessionId)?.conn ?? null;
+  }
+
+  /**
+   * Complete a RESUME: index the fresh (live) connection and drop the prior
+   * detached one. The prior conn is detached, so its removal fires no
+   * full-disconnect hook; indexing the new one fires onUserConnected (which
+   * cancels any pending voice eviction), so the user is continuously present.
+   */
+  completeResume(prev: Connection, next: Connection): void {
+    this.index(next);
+    this.remove(prev);
   }
 
   /** Called once a connection becomes authenticated. */
@@ -124,23 +226,31 @@ class Registry {
 
   remove(conn: Connection): void {
     this.bySession.delete(conn.id);
+    // If this connection was being retained for RESUME, drop that retention.
+    const retained = this.detachedSessions.get(conn.sessionId);
+    if (retained && retained.conn === conn) {
+      clearTimeout(retained.timer);
+      this.detachedSessions.delete(conn.sessionId);
+    }
     if (conn.userId) {
+      // Whether removing this connection ends a LIVE socket. A detached conn
+      // already stopped counting as live at detach time (when the
+      // full-disconnect hook fired), so removing it must NOT fire again.
+      const wasLive = !conn.detached;
       const set = this.byUser.get(conn.userId);
       if (set) {
         set.delete(conn);
-        if (set.size === 0) {
-          this.byUser.delete(conn.userId);
-          // Fire the "last connection closed" hook, if installed. Used
-          // by the gateway server to clean up voice presence — keeping
-          // the actual cleanup logic out of this file so the registry
-          // stays free of service-layer imports.
-          if (this.onUserFullyDisconnected) {
-            try {
-              this.onUserFullyDisconnected(conn.userId);
-            } catch {
-              // Hook errors mustn't take down the connection lifecycle.
-              // The hook itself is responsible for logging.
-            }
+        if (set.size === 0) this.byUser.delete(conn.userId);
+        // Fire the "user fully disconnected" hook only on the live-count
+        // 1→0 transition caused by removing a LIVE connection — same moment
+        // as before. Cleanup logic lives in the gateway server (keeps the
+        // registry free of service-layer imports).
+        if (wasLive && this.userLiveCount(conn.userId) === 0 && this.onUserFullyDisconnected) {
+          try {
+            this.onUserFullyDisconnected(conn.userId);
+          } catch {
+            // Hook errors mustn't take down the connection lifecycle.
+            // The hook itself is responsible for logging.
           }
         }
       }

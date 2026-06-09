@@ -28,7 +28,12 @@ import type { IncomingMessage, Server as HttpServer } from 'node:http';
 import type { Socket } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { GatewayOp } from '@zekktris/shared/events';
-import type { GatewayFrame, IdentifyPayload, HeartbeatPayload } from '@zekktris/shared/events';
+import type {
+  GatewayFrame,
+  IdentifyPayload,
+  HeartbeatPayload,
+  ResumePayload,
+} from '@zekktris/shared/events';
 import { verifyAccessToken } from '../auth/tokens';
 import { db, schema } from '../db';
 import { and, eq, ne } from 'drizzle-orm';
@@ -314,9 +319,7 @@ async function handleClientFrame(conn: Connection, raw: string): Promise<void> {
       handleHeartbeat(conn, frame.d as HeartbeatPayload | undefined);
       return;
     case GatewayOp.RESUME:
-      // v1 doesn't keep a replay buffer. Tell the client to start fresh.
-      conn.send(invalidSessionFrame(false));
-      conn.close(CloseCode.SESSION_TIMEOUT, 'resume not supported in v1');
+      await handleResume(conn, frame.d as ResumePayload | undefined);
       return;
     case GatewayOp.PRESENCE_UPDATE:
       // Honor as a no-op for now. Online presence is set on IDENTIFY and
@@ -464,7 +467,7 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
   // from REST — enriching READY further is a v1.x perf optimization.
   conn.send(
     dispatchFrame('READY', {
-      session_id: conn.id,
+      session_id: conn.sessionId,
       user: toSelfUser(user[0]),
       guilds: guildIdRows.map((r) => ({ id: r.guildId.toString() })),
       private_channels: dmChannelIdRows.map((r) => ({ id: r.channelId.toString() })),
@@ -580,6 +583,142 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
   }
 
   log.info('gateway: identified', { sessionId: conn.id, userId: userId.toString() });
+}
+
+// ── RESUME ───────────────────────────────────────────────────────────────────
+
+/**
+ * RESUME {token, session_id, seq}: replay the events a reconnecting client
+ * missed instead of forcing a full re-IDENTIFY.
+ *
+ * Strictly additive + safe: any condition we can't satisfy (unknown/expired
+ * session, gap too large, a different node, an owner mismatch) is answered
+ * with INVALID_SESSION{resumable:false} on the SAME open socket, and the
+ * client falls back to IDENTIFY exactly as it does today. Only a bad/revoked
+ * token is fatal (mirrors IDENTIFY — closes the socket).
+ *
+ * Correctness:
+ *   - Ordering: replayed frames carry their ORIGINAL seqs, in order, and the
+ *     adopted connection continues the same seq counter, so the stream is
+ *     contiguous across the reconnect.
+ *   - Permission filtering: the buffer holds frames that were already
+ *     permission-filtered for this exact session at fan-out time, so replay
+ *     is visibility-correct by construction — we never re-filter, we re-send.
+ *   - Multi-node: buffers are per-node/in-memory, so a reconnect that lands
+ *     on a different node finds no session and falls back to IDENTIFY.
+ */
+async function handleResume(conn: Connection, payload: ResumePayload | undefined): Promise<void> {
+  if (conn.isAuthenticated()) {
+    conn.close(CloseCode.ALREADY_AUTHENTICATED, 'already authenticated');
+    return;
+  }
+  if (
+    !payload?.token ||
+    typeof payload.token !== 'string' ||
+    typeof payload.session_id !== 'string' ||
+    typeof payload.seq !== 'number'
+  ) {
+    // Malformed RESUME → IDENTIFY fresh (non-fatal; keep the socket open).
+    conn.send(invalidSessionFrame(false));
+    return;
+  }
+
+  // 1. Authenticate exactly like IDENTIFY (valid token + session not revoked
+  //    + user not banned/deleted). A bad token is fatal; closing matches
+  //    IDENTIFY so a holder of a revoked token can't resume past revocation.
+  let userId: bigint;
+  let sessionId: bigint;
+  try {
+    const claims = await verifyAccessToken(payload.token);
+    userId = claims.userId;
+    sessionId = claims.sessionId;
+  } catch {
+    conn.send(invalidSessionFrame(false));
+    conn.close(CloseCode.AUTHENTICATION_FAILED, 'invalid token');
+    return;
+  }
+  const sessionRows = await db
+    .select({ revokedAt: schema.sessions.revokedAt })
+    .from(schema.sessions)
+    .where(eq(schema.sessions.id, sessionId))
+    .limit(1);
+  if (!sessionRows[0] || sessionRows[0].revokedAt !== null) {
+    conn.send(invalidSessionFrame(false));
+    conn.close(CloseCode.AUTHENTICATION_FAILED, 'session revoked');
+    return;
+  }
+  const [userRow] = await db
+    .select({
+      status: schema.users.status,
+      bannedAt: schema.users.bannedAt,
+      deletedAt: schema.users.deletedAt,
+    })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .limit(1);
+  if (!userRow) {
+    conn.send(invalidSessionFrame(false));
+    conn.close(CloseCode.AUTHENTICATION_FAILED, 'user not found');
+    return;
+  }
+  if (userRow.bannedAt || userRow.deletedAt) {
+    conn.send(invalidSessionFrame(false));
+    conn.close(CloseCode.AUTHENTICATION_FAILED, 'account unavailable');
+    return;
+  }
+
+  // The new socket may have dropped while we were awaiting the DB.
+  if (conn.isClosed()) return;
+
+  // 2. Locate the retained session AFTER the await, so anything that landed
+  //    in the gap (and during this await) is already buffered. Unknown /
+  //    expired / different-node / not-ours / gap-too-large → IDENTIFY.
+  const prev = registry.findResumable(payload.session_id);
+  if (
+    !prev ||
+    prev.userId !== userId ||
+    !prev.resumeBuffer ||
+    !prev.resumeBuffer.canResume(payload.seq, prev.currentSeq)
+  ) {
+    conn.send(invalidSessionFrame(false));
+    return;
+  }
+
+  // 3. Adopt the prior session onto this socket, replay the missed suffix
+  //    verbatim (original seqs, already-filtered bytes), then RESUMED.
+  const missed = prev.resumeBuffer.framesAfter(payload.seq);
+  conn.adoptResumedSession(prev);
+  for (const json of missed) conn.sendRaw(json);
+  conn.send(dispatchFrame('RESUMED', { session_id: conn.sessionId }));
+
+  // 4. Go live: index the fresh connection, drop the prior detached one.
+  //    (index → onUserConnected cancels any pending voice eviction.)
+  registry.completeResume(prev, conn);
+
+  // 5. Presence: heal back to online + re-broadcast, mirroring IDENTIFY's
+  //    every-connect re-broadcast so a >grace-period gap (where presence had
+  //    already flipped offline) recovers, and shorter gaps just heal drift.
+  await db
+    .update(schema.users)
+    .set({ status: 'online' })
+    .where(and(eq(schema.users.id, userId), eq(schema.users.status, 'offline')));
+  const broadcastStatus =
+    userRow.status === 'offline'
+      ? 'online'
+      : userRow.status === 'invisible'
+        ? 'offline'
+        : userRow.status;
+  const guildIds = Array.from(conn.guildIds);
+  const dmChannelIds = Array.from(conn.dmChannelIds);
+  if (guildIds.length > 0 || dmChannelIds.length > 0) {
+    dispatch.presenceUpdate({ userId, status: broadcastStatus, guildIds, dmChannelIds });
+  }
+
+  log.info('gateway: resumed', {
+    sessionId: conn.sessionId,
+    userId: userId.toString(),
+    replayed: missed.length,
+  });
 }
 
 // ── HEARTBEAT ──────────────────────────────────────────────────────────────
