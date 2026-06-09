@@ -1194,6 +1194,30 @@ extension APIClient {
         return wrap.entries
     }
 
+    /// Moderation queue for a guild (gated server-side on the mod permissions).
+    /// Returns the reports plus the current open count. Filter by status
+    /// (default "open") and/or target type; keyset-paginate with `before`.
+    /// Status/type/ids are enum/digit values, so they're query-safe as-is.
+    func listReports(guildId: String, status: String = "open",
+                     targetType: String? = nil, before: String? = nil) async throws -> ReportsWrap {
+        var path = "/guilds/\(guildId)/reports?status=\(status)&limit=50"
+        if let targetType { path += "&targetType=\(targetType)" }
+        if let before { path += "&before=\(before)" }
+        return try await send("GET", path)
+    }
+
+    /// Resolve or dismiss a report, optionally taking a moderation action on the
+    /// reported entity in the same step: "ban" (needs BAN_MEMBERS) or
+    /// "delete_message" (needs MANAGE_MESSAGES). Returns the updated report.
+    func handleReport(guildId: String, reportId: String, action: String,
+                      note: String? = nil, moderation: String = "none") async throws -> Report {
+        var obj: [String: Any] = ["action": action, "moderation": moderation]
+        if let note { obj["note"] = note }
+        let body = try JSONSerialization.data(withJSONObject: obj)
+        let wrap: ReportWrap = try await send("PATCH", "/guilds/\(guildId)/reports/\(reportId)", bodyData: body)
+        return wrap.report
+    }
+
     func adminAddSecurityWord(_ word: String) async throws -> [String] {
         let body = try JSONSerialization.data(withJSONObject: ["word": word])
         let wrap: SecurityWordsWrap = try await send("POST", "/admin/security/words", bodyData: body)
