@@ -915,6 +915,21 @@ extension APIClient {
         return wrap.stats
     }
 
+    /// Operational/runtime metrics (gateway connections, uptime, voice,
+    /// scheduled backlog, DB/Redis health, counts). Instance-admin gated.
+    func adminMetrics() async throws -> InstanceMetrics {
+        let wrap: MetricsWrap = try await send("GET", "/admin/metrics")
+        return wrap.metrics
+    }
+
+    /// End-to-end LiveKit/voice diagnostic (keys, browser URL, token mint, SFU
+    /// reachability + auth). Instance-admin gated; hits the network, so run on
+    /// demand. No secrets are returned.
+    func adminVoiceDiagnostic() async throws -> LivekitDiagnostic {
+        let wrap: DiagnosticWrap = try await send("GET", "/admin/voice-diagnostic")
+        return wrap.diagnostic
+    }
+
     // MARK: Family / parental controls
 
     func familyMe() async throws -> FamilySummary {
