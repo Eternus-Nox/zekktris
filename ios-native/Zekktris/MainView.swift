@@ -2909,41 +2909,127 @@ struct JoinByInviteSheet: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
     @State private var code = ""
-    @State private var busy = false
+    @State private var preview: InvitePreview?
+    @State private var previewing = false
+    @State private var joining = false
+    @State private var error: String?
 
-    private var canJoin: Bool { !code.trimmingCharacters(in: .whitespaces).isEmpty }
+    private var canPreview: Bool { !code.trimmingCharacters(in: .whitespaces).isEmpty }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    Text("Enter an invite code or link to join an existing server.")
-                        .font(.zkSans(14)).foregroundColor(Theme.ink3)
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("INVITE CODE OR LINK")
-                            .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
-                        TextField("abc123", text: $code)
-                            .textFieldStyle(.plain).autocorrectionDisabled()
-                            .textInputAutocapitalization(.never).foregroundColor(Theme.ink1).padding(12)
-                            .background(Theme.bg3).clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    if let preview {
+                        previewCard(preview)
+                    } else {
+                        codeEntry
                     }
-                    Button {
-                        busy = true
-                        Task { await store.joinByInvite(code: code); busy = false; dismiss() }
-                    } label: {
-                        Text(busy ? "Joining…" : "Join Server")
-                            .font(.zkSans(15, weight: .semibold)).foregroundColor(.white)
-                            .frame(maxWidth: .infinity).padding(.vertical, 13)
-                            .background(canJoin ? Theme.accent : Theme.bg3)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    if let error {
+                        Text(error).font(.zkSans(13)).foregroundColor(Theme.danger)
                     }
-                    .disabled(!canJoin || busy)
                 }
                 .padding(20)
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Join a Server").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .navigationBarLeading) { PageBackButton() } }
+        }
+    }
+
+    // Step 1 — enter a code/link, then preview the server before committing.
+    private var codeEntry: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Enter an invite code or link to see the server before you join.")
+                .font(.zkSans(14)).foregroundColor(Theme.ink3)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("INVITE CODE OR LINK")
+                    .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                TextField("abc123", text: $code)
+                    .textFieldStyle(.plain).autocorrectionDisabled()
+                    .textInputAutocapitalization(.never).foregroundColor(Theme.ink1).padding(12)
+                    .background(Theme.bg3).clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .onSubmit { lookUp() }
+            }
+            Button { lookUp() } label: {
+                Text(previewing ? "Looking up…" : "Preview Invite")
+                    .font(.zkSans(15, weight: .semibold)).foregroundColor(.white)
+                    .frame(maxWidth: .infinity).padding(.vertical, 13)
+                    .background(canPreview ? Theme.accent : Theme.bg3)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .disabled(!canPreview || previewing)
+        }
+    }
+
+    // Step 2 — the server preview (banner, icon, name, description, member
+    // count) with the actual Join action. Mirrors web's InvitePage.
+    private func previewCard(_ p: InvitePreview) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let banner = p.guild.bannerUrl, let url = assetURL(banner) {
+                RetryingImage(url: url)
+                    .frame(maxWidth: .infinity).frame(height: 140)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            HStack(spacing: 12) {
+                Avatar(url: p.guild.iconUrl, name: p.guild.name, size: 56, squircle: true, toneId: p.guild.id)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("YOU'VE BEEN INVITED TO JOIN")
+                        .font(.zkSans(10, weight: .bold)).foregroundColor(Theme.ink3)
+                    Text(p.guild.name)
+                        .font(.zkSans(18, weight: .semibold)).foregroundColor(Theme.ink1)
+                        .lineLimit(2)
+                }
+            }
+            if let desc = p.guild.description, !desc.isEmpty {
+                Text(desc).font(.zkSans(14)).foregroundColor(Theme.ink2)
+                    .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 6) {
+                Circle().fill(Theme.online).frame(width: 8, height: 8)
+                Text("\(p.guild.memberCount.formatted()) \(p.guild.memberCount == 1 ? "member" : "members")")
+                    .font(.zkSans(12)).foregroundColor(Theme.ink3)
+            }
+
+            Button { join(p) } label: {
+                Text(joining ? "Joining…" : "Join \(p.guild.name)")
+                    .font(.zkSans(15, weight: .semibold)).foregroundColor(.white)
+                    .frame(maxWidth: .infinity).padding(.vertical, 13)
+                    .background(Theme.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .lineLimit(1)
+            }
+            .disabled(joining)
+
+            Button { preview = nil; error = nil } label: {
+                Text("Use a different code")
+                    .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                    .frame(maxWidth: .infinity)
+            }
+            .disabled(joining)
+        }
+    }
+
+    private func lookUp() {
+        guard canPreview, !previewing else { return }
+        previewing = true; error = nil
+        Task {
+            if let p = await store.previewInvite(code) {
+                preview = p
+            } else {
+                error = store.errorText ?? "Couldn't find that invite."
+            }
+            previewing = false
+        }
+    }
+
+    private func join(_ p: InvitePreview) {
+        guard !joining else { return }
+        joining = true; error = nil
+        Task {
+            let ok = await store.joinByInvite(code: p.code)
+            joining = false
+            if ok { dismiss() } else { error = store.errorText ?? "Couldn't join. The invite may have expired." }
         }
     }
 }
