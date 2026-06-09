@@ -422,10 +422,14 @@ final class AppStore: ObservableObject {
         return "idle"
     }
 
-    /// Record a user interaction (resets the idle timer) and re-evaluate now.
-    func noteInteraction() {
+    /// Record a user interaction (resets the idle clock). `evaluate: false` is
+    /// the cheap hot path for app-wide touch/scroll — it ONLY bumps the
+    /// timestamp (this fires constantly during scroll), letting the 60s tick
+    /// handle transitions. Discrete actions (send, open channel) use the
+    /// default `true` for a prompt re-evaluate (e.g. idle→online immediately).
+    func noteInteraction(evaluate: Bool = true) {
         lastInteractionAt = Date()
-        evaluateAutoPresence()
+        if evaluate { evaluateAutoPresence() }
     }
 
     /// Foreground/background transitions feed the state machine.

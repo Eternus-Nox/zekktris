@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 @main
 struct ZekktrisApp: App {
@@ -32,6 +33,15 @@ struct RootView: View {
     var body: some View {
         ZStack {
             Theme.bg1.ignoresSafeArea()
+
+            // App-wide, observe-only touch/scroll detection → keeps auto-
+            // presence "online" while actively reading/scrolling. Non-
+            // interactive itself; installs window-level recognizers.
+            WindowInteractionInstaller { [weak store] in
+                store?.noteInteraction(evaluate: false)
+            }
+            .allowsHitTesting(false)
+            .frame(width: 0, height: 0)
 
             switch session.phase {
             case .loading:
@@ -75,6 +85,82 @@ struct RootView: View {
                 store.stop()
             case .loading:
                 break
+            }
+        }
+    }
+}
+
+/// App-wide, observe-only interaction detector for auto-presence. Installs a
+/// tap + pan recognizer on the key window so ANY touch or scroll resets the
+/// idle clock — without ever consuming or blocking the app's own gestures.
+///
+/// Non-interference: both recognizers use `cancelsTouchesInView = false` and a
+/// delegate that returns `true` for `shouldRecognizeSimultaneouslyWith` (and
+/// receives every touch), so they recognize ALONGSIDE buttons / scroll views /
+/// text fields and never call `require(toFail:)` on anything. They only fire a
+/// callback; the underlying views still get every touch unchanged.
+///
+/// Performance: the callback is the cheap path (timestamp-only); pan fires many
+/// times per scroll, so we never re-evaluate/PATCH here.
+final class InteractionWatcher: NSObject, UIGestureRecognizerDelegate {
+    static let shared = InteractionWatcher()
+    private var installed = false
+    private var onInteraction: (@MainActor () -> Void)?
+
+    @MainActor
+    func install(in window: UIWindow, onInteraction: @escaping @MainActor () -> Void) {
+        guard !installed else { return }
+        installed = true
+        self.onInteraction = onInteraction
+        let tap = UITapGestureRecognizer(target: self, action: #selector(noted))
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(noted))
+        for recognizer in [tap, pan] as [UIGestureRecognizer] {
+            recognizer.cancelsTouchesInView = false
+            recognizer.delaysTouchesBegan = false
+            recognizer.delaysTouchesEnded = false
+            recognizer.delegate = self
+            window.addGestureRecognizer(recognizer)
+        }
+    }
+
+    @objc private func noted() {
+        // Gesture-recognizer actions are delivered on the main thread, so we're
+        // already on the main actor — call the @MainActor callback synchronously.
+        MainActor.assumeIsolated { onInteraction?() }
+    }
+
+    // Observe-only: never block (or be blocked by) the app's own recognizers,
+    // and receive touches everywhere (controls, scroll views, text fields).
+    func gestureRecognizer(
+        _ g: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool { true }
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool { true }
+}
+
+/// Zero-size, non-interactive bridge that locates the host UIWindow and installs
+/// the InteractionWatcher once. Lives in the SwiftUI tree; never intercepts.
+struct WindowInteractionInstaller: UIViewRepresentable {
+    let onInteraction: @MainActor () -> Void
+
+    func makeUIView(context: Context) -> ProbeView { ProbeView(onInteraction: onInteraction) }
+    func updateUIView(_ uiView: ProbeView, context: Context) {}
+
+    /// Non-interactive probe: installs the watcher the moment it gains a window
+    /// (`didMoveToWindow` is the reliable attach hook). install() is idempotent.
+    final class ProbeView: UIView {
+        private let onInteraction: @MainActor () -> Void
+        init(onInteraction: @escaping @MainActor () -> Void) {
+            self.onInteraction = onInteraction
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false // never participates in hit-testing
+            backgroundColor = .clear
+        }
+        @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if let window {
+                InteractionWatcher.shared.install(in: window, onInteraction: onInteraction)
             }
         }
     }
