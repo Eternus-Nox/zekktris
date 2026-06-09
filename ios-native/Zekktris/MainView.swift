@@ -4500,7 +4500,9 @@ struct GuildSettingsView: View {
                                            startPoint: .topLeading, endPoint: .bottomTrailing)
                         }
                     }
-                    .frame(height: 84)
+                    // Match the server profile-picture (Avatar size: 56) height
+                    // so the banner and icon controls share the same footprint.
+                    .frame(height: 56)
                     .frame(maxWidth: .infinity)
                     .clipped()
 
