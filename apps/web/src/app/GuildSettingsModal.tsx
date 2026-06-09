@@ -21,13 +21,14 @@ import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
 import { copyText } from '../lib/clipboard';
-import { Info, UserPlus, Users, AlertTriangle, X, Copy, Trash, Shield, Search, Ban as BanIcon, Smile, Upload, StickerSquare, Compass, Hand, Clock, Plus, Activity, FilePen, Archive, Download, QrCode } from '../lib/icons';
+import { Info, UserPlus, Users, AlertTriangle, X, Copy, Trash, Shield, Search, Ban as BanIcon, Smile, Upload, StickerSquare, Compass, Hand, Clock, Plus, Activity, FilePen, Archive, Download, QrCode, Inbox } from '../lib/icons';
+import type { Report } from '@zekktris/client';
 import { qrEncode, qrToSvg } from '../lib/qr';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
 import { Portal } from '../lib/Portal';
 import { ModalHeader } from '../lib/ModalHeader';
-import { memberIsAdmin } from '../lib/permissions';
+import { memberIsAdmin, computeMemberGuildPerms, hasBit } from '../lib/permissions';
 import { RolesTab } from './RolesTab';
 import { ReactionRolesTab } from './ReactionRolesTab';
 import { StickersTab } from './StickersTab';
@@ -42,6 +43,7 @@ type TabId =
   | 'invites'
   | 'members'
   | 'bans'
+  | 'reports'
   | 'automod'
   | 'auditLog'
   | 'emojis'
@@ -58,6 +60,9 @@ interface Tab {
   adminOnly?: boolean;
   /** Visible only to the guild owner — hidden for non-owner admins. */
   ownerOnly?: boolean;
+  /** Visible to moderators — anyone holding a moderation permission
+   *  (MANAGE_MESSAGES / KICK / BAN / MODERATE / MANAGE_GUILD) or admin. */
+  modOnly?: boolean;
 }
 
 const TABS: Tab[] = [
@@ -69,6 +74,9 @@ const TABS: Tab[] = [
   { id: 'invites', label: 'Invites', icon: UserPlus, adminOnly: true },
   { id: 'members', label: 'Members', icon: Users },
   { id: 'bans', label: 'Bans', icon: BanIcon, adminOnly: true },
+  // Reports queue — visible to moderators (not just admins) so a mod with
+  // BAN/KICK/MANAGE_MESSAGES can actually work the queue.
+  { id: 'reports', label: 'Reports', icon: Inbox, modOnly: true },
   { id: 'automod', label: 'AutoMod', icon: Clock, adminOnly: true },
   { id: 'auditLog', label: 'Audit Log', icon: Activity, adminOnly: true },
   { id: 'emojis', label: 'Emoji', icon: Smile, adminOnly: true },
@@ -125,8 +133,21 @@ export function GuildSettingsModal({
 
   const isAdmin = memberIsAdmin(allRoles, guild.id, myRoleIds, isOwner);
 
+  // Moderator = holds any moderation permission (admins/owners pass via the
+  // ADMINISTRATOR short-circuit inside computeMemberGuildPerms). Drives the
+  // Reports tab's visibility — the server enforces the same MOD_PERMS gate.
+  const isMod =
+    isAdmin ||
+    (() => {
+      if (!allRoles || !myRoleIds) return false;
+      const perms = computeMemberGuildPerms(allRoles, guild.id, myRoleIds, isOwner);
+      // MANAGE_MESSAGES(4), KICK(13), BAN(14), MODERATE(17), MANAGE_GUILD(18).
+      return [4, 13, 14, 17, 18].some((bit) => hasBit(perms, bit));
+    })();
+
   const visibleTabs = TABS.filter((t) => {
     if (t.ownerOnly) return isOwner;
+    if (t.modOnly) return isMod;
     if (t.adminOnly) return isAdmin;
     return true;
   });
@@ -194,6 +215,7 @@ export function GuildSettingsModal({
             {active === 'invites' && isAdmin && <InvitesTab guild={guild} />}
             {active === 'members' && <MembersTab guild={guild} />}
             {active === 'bans' && isAdmin && <BansTab guild={guild} />}
+            {active === 'reports' && isMod && <ReportsTab guild={guild} />}
             {active === 'automod' && isAdmin && <AutomodTab guild={guild} />}
             {active === 'auditLog' && isAdmin && <AuditLogTab guild={guild} />}
             {active === 'emojis' && isAdmin && <EmojisTab guild={guild} />}
@@ -1522,6 +1544,276 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 // (b) requiring a username typed by hand; both are worse UX than
 // surfacing Ban next to the existing Kick action where moderators
 // already are.
+
+// ── Reports tab (moderation triage queue) ───────────────────────────────────
+//
+// A moderator's working view of member reports. Lists reports filtered by
+// status (default open) and type, shows who reported whom and why (with the
+// reported message snapshot, preserved even if the message was deleted), and
+// lets a moderator dismiss, resolve, or resolve-with-action: ban the reported
+// user or delete the reported message in the same step. Each decision writes
+// an audit entry server-side. MOD_PERMS-gated (the modal only shows this tab to
+// moderators; the API re-checks, and ban/delete need their own bit).
+
+const REPORTS_PAGE_SIZE = 30;
+
+const REASON_LABELS: Record<string, string> = {
+  spam: 'Spam',
+  harassment: 'Harassment',
+  nsfw: 'NSFW',
+  violence: 'Violence',
+  other: 'Other',
+};
+
+function ReportsTab({ guild }: { guild: Guild }) {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const [reports, setReports] = useState<Report[]>([]);
+  const [openCount, setOpenCount] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+  const [status, setStatus] = useState<'open' | 'resolved' | 'dismissed' | 'all'>('open');
+  const [typeFilter, setTypeFilter] = useState<'all' | 'message' | 'user'>('all');
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  async function load(opts: { before?: string; replace?: boolean } = {}) {
+    const isInitial = opts.replace ?? false;
+    if (isInitial) setLoading(true);
+    else setLoadingMore(true);
+    setError(null);
+    try {
+      const r = await rest.listReports(guild.id, {
+        status,
+        targetType: typeFilter === 'all' ? undefined : typeFilter,
+        before: opts.before,
+        limit: REPORTS_PAGE_SIZE,
+      });
+      setOpenCount(r.openCount);
+      setReports((prev) => (isInitial ? r.reports : [...prev, ...r.reports]));
+      setDone(r.reports.length < REPORTS_PAGE_SIZE);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not load reports');
+    } finally {
+      setLoading(false);
+      setLoadingMore(false);
+    }
+  }
+
+  // Reload from scratch whenever a filter changes (different filter = a
+  // different pagination universe, so the cursor doesn't carry over).
+  useEffect(() => {
+    void load({ replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guild.id, status, typeFilter]);
+
+  async function act(
+    report: Report,
+    action: 'resolve' | 'dismiss',
+    moderation: 'none' | 'ban' | 'delete_message',
+  ) {
+    if (busyId) return;
+    setBusyId(report.id);
+    try {
+      await rest.handleReport(guild.id, report.id, { action, moderation });
+      const verb =
+        moderation === 'ban'
+          ? 'Resolved & banned'
+          : moderation === 'delete_message'
+            ? 'Resolved & deleted message'
+            : action === 'resolve'
+              ? 'Resolved'
+              : 'Dismissed';
+      toasts.push(verb, 'success');
+      // Drop it from the current view when we're filtered to a status it no
+      // longer matches (the common "open" case); otherwise patch in place.
+      if (status === 'open' || (status !== 'all' && status !== (action === 'resolve' ? 'resolved' : 'dismissed'))) {
+        setReports((prev) => prev.filter((r) => r.id !== report.id));
+      } else {
+        const newStatus = action === 'resolve' ? 'resolved' : 'dismissed';
+        setReports((prev) =>
+          prev.map((r) => (r.id === report.id ? { ...r, status: newStatus } : r)),
+        );
+      }
+      setOpenCount((c) => Math.max(0, c - 1));
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Action failed', 'error');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  function loadMore() {
+    if (loadingMore || done) return;
+    const last = reports[reports.length - 1];
+    if (last) void load({ before: last.id });
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-ink-3 leading-relaxed">
+          Member reports against messages or users. Resolve or dismiss each, optionally banning the
+          user or deleting the message in the same step. Every decision is recorded in the audit log.
+        </p>
+        {openCount > 0 && (
+          <span className="shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold bg-red-500/20 text-red-300 border border-red-500/40">
+            {openCount} open
+          </span>
+        )}
+      </div>
+
+      {/* Status + type filters */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {(['open', 'resolved', 'dismissed', 'all'] as const).map((s) => (
+          <button
+            key={s}
+            onClick={() => setStatus(s)}
+            className={`px-3 py-1 rounded-md text-xs font-medium capitalize transition-colors ${
+              status === s ? 'bg-accent text-bg-1' : 'bg-bg-2 text-ink-2 hover:bg-bg-3'
+            }`}
+          >
+            {s}
+          </button>
+        ))}
+        <span className="mx-1 h-4 w-px bg-line" />
+        {(['all', 'message', 'user'] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTypeFilter(t)}
+            className={`px-3 py-1 rounded-md text-xs font-medium capitalize transition-colors ${
+              typeFilter === t ? 'bg-bg-3 text-ink-1 ring-1 ring-accent/50' : 'bg-bg-2 text-ink-3 hover:bg-bg-3'
+            }`}
+          >
+            {t === 'all' ? 'All types' : t}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <p className="text-sm text-ink-3">Loading reports…</p>
+      ) : error ? (
+        <p className="text-sm text-red-300">{error}</p>
+      ) : reports.length === 0 ? (
+        <div className="rounded-md border border-line bg-bg-2/50 px-4 py-6 text-center">
+          <p className="text-sm text-ink-2">No {status === 'all' ? '' : status} reports{typeFilter !== 'all' ? ` of type ${typeFilter}` : ''}.</p>
+        </div>
+      ) : (
+        <ul className="space-y-2">
+          {reports.map((r) => (
+            <ReportRow key={r.id} report={r} busy={busyId === r.id} onAct={act} />
+          ))}
+        </ul>
+      )}
+
+      {reports.length > 0 && !done && (
+        <button
+          onClick={loadMore}
+          disabled={loadingMore}
+          className="w-full px-3 py-2 rounded-md border border-line border-dashed hover:bg-bg-2 text-sm text-ink-2 transition-colors disabled:opacity-60"
+        >
+          {loadingMore ? 'Loading…' : 'Load more'}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ReportRow({
+  report,
+  busy,
+  onAct,
+}: {
+  report: Report;
+  busy: boolean;
+  onAct: (r: Report, action: 'resolve' | 'dismiss', moderation: 'none' | 'ban' | 'delete_message') => void;
+}) {
+  const reporterName = report.reporter
+    ? report.reporter.displayName || report.reporter.username
+    : 'Unknown';
+  const targetName = report.targetUser
+    ? report.targetUser.displayName || report.targetUser.username
+    : report.targetType === 'user'
+      ? 'Unknown user'
+      : 'a message';
+  const isOpen = report.status === 'open';
+  const canBan = report.targetUser !== null;
+  const canDelete = report.targetType === 'message' && report.messageId !== null;
+
+  return (
+    <li className="rounded-md border border-line bg-bg-2/40 p-3 space-y-2">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-sm text-ink-1">
+            <span className="font-medium">{reporterName}</span>
+            <span className="text-ink-3"> reported </span>
+            <span className="font-medium">{targetName}</span>
+            <span className="text-ink-3"> · {report.targetType}</span>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-ink-3">
+            <span className="px-1.5 py-0.5 rounded bg-bg-3 text-ink-2">
+              {REASON_LABELS[report.reason] ?? report.reason}
+            </span>
+            <span title={new Date(report.createdAt).toLocaleString()}>
+              {new Date(report.createdAt).toLocaleString()}
+            </span>
+            {!isOpen && (
+              <span className={`px-1.5 py-0.5 rounded capitalize ${report.status === 'resolved' ? 'text-green-300' : 'text-ink-3'}`}>
+                {report.status}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {report.details && <p className="text-xs text-ink-2 whitespace-pre-wrap">{report.details}</p>}
+
+      {report.targetType === 'message' && report.messageContent && (
+        <blockquote className="text-xs text-ink-2 border-l-2 border-line pl-2 py-0.5 whitespace-pre-wrap break-words bg-bg-1/50 rounded-r">
+          {report.messageContent}
+        </blockquote>
+      )}
+
+      {isOpen && (
+        <div className="flex flex-wrap gap-1.5 pt-1">
+          <button
+            onClick={() => onAct(report, 'dismiss', 'none')}
+            disabled={busy}
+            className="px-2.5 py-1 rounded-md text-xs font-medium bg-bg-3 text-ink-2 hover:text-ink-1 disabled:opacity-50"
+          >
+            Dismiss
+          </button>
+          <button
+            onClick={() => onAct(report, 'resolve', 'none')}
+            disabled={busy}
+            className="px-2.5 py-1 rounded-md text-xs font-medium bg-bg-3 text-ink-1 hover:bg-bg-3/70 disabled:opacity-50"
+          >
+            Resolve
+          </button>
+          {canDelete && (
+            <button
+              onClick={() => onAct(report, 'resolve', 'delete_message')}
+              disabled={busy}
+              className="px-2.5 py-1 rounded-md text-xs font-medium bg-amber-500/15 text-amber-300 border border-amber-500/40 hover:bg-amber-500/25 disabled:opacity-50"
+            >
+              Resolve & delete
+            </button>
+          )}
+          {canBan && (
+            <button
+              onClick={() => onAct(report, 'resolve', 'ban')}
+              disabled={busy}
+              className="px-2.5 py-1 rounded-md text-xs font-medium bg-red-500/15 text-red-300 border border-red-500/40 hover:bg-red-500/25 disabled:opacity-50"
+            >
+              Resolve & ban
+            </button>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
 
 function BansTab({ guild }: { guild: Guild }) {
   const { rest } = useAuth();
