@@ -878,6 +878,15 @@ async function refreshUserViewableChannels(args: {
    * back to listViewableGuildChannelIds for single-user callers.
    */
   precomputedViewable?: Set<bigint>;
+  /**
+   * Pre-loaded map of userId → in-voice channelId for this guild, supplied by
+   * the bulk path (applyGuildPermissionChange) so the eviction check is an
+   * in-memory lookup instead of a per-user voice_states query — removing the
+   * last per-member DB hit on a bulk flip. Undefined → single-user callers do
+   * the one-row lookup themselves (identical result, since voice_states is
+   * keyed by userId).
+   */
+  voiceByUser?: Map<bigint, bigint>;
 }): Promise<void> {
   const conns = registry.byUserId(args.userId);
   if (conns.length === 0) return;
@@ -927,25 +936,19 @@ async function refreshUserViewableChannels(args: {
     // and listen in a channel they can no longer see in their UI —
     // effectively kicked from the sidebar but still in the audio room.
     //
-    // Cost: one indexed lookup per refresh call (voice_states is keyed
-    // by userId PK, so this is one row at most). If the user isn't in
+    // Cost: in the bulk path the in-voice channel comes from the pre-loaded
+    // voiceByUser map (one voice_states read for the whole guild); the
+    // single-user path does the one-row lookup itself. If the user isn't in
     // voice in this guild we do no further work. If they are AND the
     // channel they're in just got removed, run the full eviction:
     // voice_states delete + LiveKit removeParticipant + (for stage)
     // stage_participants cleanup + VOICE_STATE_UPDATE broadcast so
     // remaining guild members see the disconnect.
     if (removed.length > 0) {
-      const [vs] = await db
-        .select({ channelId: schema.voiceStates.channelId })
-        .from(schema.voiceStates)
-        .where(
-          and(
-            eq(schema.voiceStates.userId, args.userId),
-            eq(schema.voiceStates.guildId, args.guildId),
-          ),
-        )
-        .limit(1);
-      if (vs && removed.includes(vs.channelId)) {
+      const vsChannelId = args.voiceByUser
+        ? args.voiceByUser.get(args.userId)
+        : ((await voice.voiceChannelInGuild(args.userId, args.guildId)) ?? undefined);
+      if (vsChannelId !== undefined && removed.includes(vsChannelId)) {
         // Drop the SFU + DB rows in voice_states. The evict helper also
         // returns the row so we can fan out the leave broadcast.
         const evicted = await voice.evictFromVoiceInGuild(args.userId, args.guildId);
@@ -1049,10 +1052,17 @@ export async function applyGuildPermissionChange(args: {
     userIds,
   );
 
-  // Per-user refresh now consults the pre-computed set rather than
-  // re-running the permission resolver. Kept in parallel because the
-  // remaining per-user work (gateway sends, voice eviction) touches
-  // disjoint Connection objects.
+  // One voice_states read for the whole guild (userId → in-voice channelId),
+  // shared across the per-user refreshes. This removes the last per-member DB
+  // query: previously every connected user who lost a channel ran its own
+  // voice_states lookup, so a bulk flip fired ~N of them even though almost
+  // nobody is in voice. Now it's a single query + in-memory map lookups.
+  const voiceByUser = await voice.listGuildVoiceChannels(args.guildId);
+
+  // Per-user refresh now consults the pre-computed sets rather than
+  // re-running the permission resolver or re-querying voice_states. Kept in
+  // parallel because the remaining per-user work (gateway sends, the rare
+  // actual voice eviction) touches disjoint Connection objects.
   await Promise.all(
     userIds.map((userId) =>
       refreshUserViewableChannels({
@@ -1060,6 +1070,7 @@ export async function applyGuildPermissionChange(args: {
         guildId: args.guildId,
         dtoMap,
         precomputedViewable: viewableByUser.get(userId) ?? new Set(),
+        voiceByUser,
       }),
     ),
   );
