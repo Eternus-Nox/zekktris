@@ -2953,6 +2953,42 @@ final class AppStore: ObservableObject {
         "e2ee.\(currentUserId ?? "anon").\(channelId)"
     }
 
+    // MARK: E2EE key backup / restore (cross-client with web)
+
+    /// Bundle every stored DM key for this account into the web-compatible
+    /// backup format (E2EE.encodeKeyBackup). Returns nil when this device has
+    /// no keys. The Keychain is the source of truth — storeKey always writes
+    /// there — so this captures keys even for DMs not currently loaded.
+    func exportE2EEKeysJSON() -> Data? {
+        let prefix = "e2ee.\(currentUserId ?? "anon")."
+        var keys: [String: Data] = [:]
+        for (account, b64) in keychain.allValues(prefix: prefix) {
+            let channelId = String(account.dropFirst(prefix.count))
+            guard !channelId.isEmpty,
+                  let bytes = Data(base64Encoded: b64), bytes.count == E2EE.keyBytes else { continue }
+            keys[channelId] = bytes
+        }
+        guard !keys.isEmpty else { return nil }
+        let exportedAt = ISO8601DateFormatter().string(from: Date())
+        return E2EE.encodeKeyBackup(keys: keys, exportedAt: exportedAt)
+    }
+
+    /// Restore keys from a backup file. Returns the channel ids restored, or
+    /// nil when the file isn't a valid Zekktris keys backup. Each restored key
+    /// is written to both the cache and the Keychain (storeKey). Mirrors web's
+    /// importAllDmKeys.
+    @discardableResult
+    func importE2EEKeysJSON(_ data: Data) -> [String]? {
+        guard let keys = E2EE.decodeKeyBackup(data) else { return nil }
+        var restored: [String] = []
+        for (channelId, bytes) in keys {
+            storeKey(bytes, for: channelId)
+            restored.append(channelId)
+        }
+        if !restored.isEmpty { decryptVisible() }
+        return restored
+    }
+
     private func decryptVisible() {
         guard let ch = selectedChannel, let key = e2eeKey(for: ch) else { return }
         for m in messages where E2EE.isDecryptable(m.text) && decrypted[m.id] == nil {

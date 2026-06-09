@@ -156,4 +156,63 @@ enum E2EE {
         }
         return status == Int32(kCCSuccess) ? derived : nil
     }
+
+    // MARK: Key backup (cross-client format)
+    //
+    // CROSS-CLIENT CONTRACT — identical on-disk shape to web's
+    // `exportAllDmKeys` (apps/web/src/lib/e2ee.ts `SharedKeysBackup`), so a
+    // backup made on web restores on native and vice-versa:
+    //
+    //   { "type": "zekktris-e2ee-shared-keys",
+    //     "version": 2,
+    //     "exportedAt": "<ISO8601>",
+    //     "keys": { "<channelId>": { "keyBase64": "<base64(32-byte key)>" } } }
+    //
+    // The key bytes are the SAME shared-key bytes both clients already store
+    // (web in localStorage, native in the Keychain), base64'd — so the file is
+    // byte-interchangeable. Web does NOT passphrase-encrypt this file: it is
+    // the *no-passphrase* recovery path ("for users who'd rather not remember
+    // their passphrase"). Native MUST mirror that — wrapping it in a native-only
+    // passphrase would make the two clients' backups mutually unreadable and
+    // break the contract. The file itself is therefore sensitive; the UI warns
+    // the user and only writes it through a deliberate share action.
+    static let keyBackupType = "zekktris-e2ee-shared-keys"
+    static let keyBackupVersion = 2
+
+    /// Serialize a channelId → raw-32-byte-key map into the web backup format.
+    /// Returns nil when there are no valid keys to write.
+    static func encodeKeyBackup(keys: [String: Data], exportedAt: String) -> Data? {
+        var keyMap: [String: [String: String]] = [:]
+        for (channelId, bytes) in keys where bytes.count == keyBytes {
+            keyMap[channelId] = ["keyBase64": bytes.base64EncodedString()]
+        }
+        guard !keyMap.isEmpty else { return nil }
+        let obj: [String: Any] = [
+            "type": keyBackupType,
+            "version": keyBackupVersion,
+            "exportedAt": exportedAt,
+            "keys": keyMap,
+        ]
+        return try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
+    }
+
+    /// Parse a backup file into a channelId → raw-32-byte-key map. Returns nil
+    /// only on whole-file failure (bad JSON, wrong type/version, malformed
+    /// shape); individual bad entries are skipped (mirrors web's
+    /// `importAllDmKeys`, which returns the list of restored ids).
+    static func decodeKeyBackup(_ data: Data) -> [String: Data]? {
+        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        guard obj["type"] as? String == keyBackupType else { return nil }
+        let version = (obj["version"] as? Int) ?? (obj["version"] as? NSNumber)?.intValue
+        guard version == keyBackupVersion else { return nil }
+        guard let keyMap = obj["keys"] as? [String: Any] else { return nil }
+        var out: [String: Data] = [:]
+        for (channelId, entryAny) in keyMap {
+            guard let entry = entryAny as? [String: Any],
+                  let b64 = entry["keyBase64"] as? String,
+                  let bytes = Data(base64Encoded: b64), bytes.count == keyBytes else { continue }
+            out[channelId] = bytes
+        }
+        return out
+    }
 }

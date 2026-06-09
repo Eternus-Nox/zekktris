@@ -46,4 +46,27 @@ struct KeychainStore {
         ]
         SecItemDelete(query as CFDictionary)
     }
+
+    /// All (account, value) pairs in this service whose account starts with
+    /// `prefix`. Used to gather every stored E2EE key for a backup export.
+    func allValues(prefix: String) -> [(account: String, value: String)] {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecReturnAttributes as String: true,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        var items: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &items) == errSecSuccess,
+              let arr = items as? [[String: Any]] else { return [] }
+        var out: [(account: String, value: String)] = []
+        for d in arr {
+            guard let account = d[kSecAttrAccount as String] as? String, account.hasPrefix(prefix),
+                  let data = d[kSecValueData as String] as? Data,
+                  let value = String(data: data, encoding: .utf8) else { continue }
+            out.append((account, value))
+        }
+        return out
+    }
 }
