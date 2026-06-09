@@ -2352,6 +2352,12 @@ export class RestClient {
     return this.request('GET', '/admin/stats');
   }
 
+  /** Operational/runtime metrics (gateway connections, uptime, voice,
+   *  scheduled backlog, DB/Redis health). Instance-admin gated. */
+  adminMetrics(): Promise<{ metrics: InstanceMetrics }> {
+    return this.request('GET', '/admin/metrics');
+  }
+
   // ── Admin: instance security ──────────────────────────────────────────────
 
   adminSecurityConfig(): Promise<{ config: SecurityConfig }> {
@@ -2769,6 +2775,27 @@ export interface AdminStats {
   channels: number;
   messages: { total: number; last24h: number };
   activeSessions: number;
+  generatedAt: string;
+}
+
+/** Operational/runtime metrics from GET /admin/metrics. Mirrors the
+ *  server's InstanceMetrics shape. */
+export interface InstanceMetrics {
+  process: { uptimeSeconds: number; workerId: number; nodeEnv: string };
+  gateway: { connections: number; onlineUsers: number };
+  counts: {
+    users: number;
+    bannedUsers: number;
+    guilds: number;
+    channels: number;
+    messages: number;
+    messagesLast24h: number;
+    activeSessions: number;
+  };
+  voice: { rooms: number; participants: number };
+  scheduledMessages: { pending: number; due: number };
+  db: { ok: boolean; latencyMs: number };
+  redis: { configured: boolean; healthy: boolean | null };
   generatedAt: string;
 }
 

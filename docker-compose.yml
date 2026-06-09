@@ -121,6 +121,11 @@ services:
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
       WORKER_ID: ${WORKER_ID:-0}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Optional: set to enable the Prometheus scrape endpoint GET /metrics
+      # (>=16 chars). Unset → the endpoint is disabled (404). Scrapers send it
+      # as a Bearer token. Not proxied by Caddy — internal-network only unless
+      # you add a route. Admins always get JSON metrics at /api/v1/admin/metrics.
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
       TRUST_PROXY: "true"   # we're behind Caddy; X-Forwarded-* are trusted
       # LiveKit (voice/video). The stack ships a self-hosted LiveKit SFU
       # (the `livekit` service below) that runs by default, so voice works

@@ -62,6 +62,18 @@ export const envSchema = z.object({
   // ── Cache / pubsub ─────────────────────────────────────────────────────
   REDIS_URL: emptyAsUndefined(z.string().url().optional()),
 
+  // ── Observability ──────────────────────────────────────────────────────
+  /**
+   * Opt-in bearer token for the Prometheus scrape endpoint GET /metrics.
+   * When UNSET the endpoint is disabled entirely (responds 404) so operational
+   * data is never exposed by accident. When set, scrapers must send
+   * `Authorization: Bearer <token>`. The admin JSON metrics (/api/v1/admin/metrics)
+   * are always available to instance admins regardless of this. Note: the
+   * bundled Caddy does not proxy /metrics, so it's reachable only on the
+   * internal network unless an operator adds a route.
+   */
+  METRICS_TOKEN: emptyAsUndefined(z.string().min(16).optional()),
+
   // ── Auth ───────────────────────────────────────────────────────────────
   /** HS256 signing key for short-lived access tokens. Min 32 bytes. */
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),

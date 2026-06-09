@@ -115,6 +115,20 @@ adminRouter.get('/stats', async (c) => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────
+// GET /admin/metrics — operational/runtime observability (instance-admin only)
+// ───────────────────────────────────────────────────────────────────────────
+//
+// Distinct from /stats (DB count aggregates): this surfaces live runtime
+// signals an operator watches — gateway connections, uptime, voice occupancy,
+// scheduled-send backlog, and DB/Redis health — cheap enough to poll. JSON for
+// the admin dashboard; the same numbers are also exposed as Prometheus text at
+// GET /metrics (opt-in via METRICS_TOKEN). No secrets are included.
+adminRouter.get('/metrics', async (c) => {
+  const { gatherMetrics } = await import('../services/metrics');
+  return c.json({ metrics: await gatherMetrics() });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
 // GET /admin/users — paginated user list with optional search
 // ───────────────────────────────────────────────────────────────────────────
 //
