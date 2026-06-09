@@ -925,6 +925,23 @@ struct Achievement: Codable, Identifiable, Hashable {
     var goal: Int?
 
     var isEarned: Bool { earned ?? true }
+
+    /// SF Symbol for this achievement, keyed by id prefix. Mirrors web's
+    /// `badgeIcon` mapping (AchievementsShelf.tsx) with native equivalents,
+    /// so the same achievement reads the same on both clients.
+    var sfSymbol: String {
+        switch true {
+        case id.hasPrefix("veteran"): return "calendar.badge.checkmark"
+        case id.hasPrefix("chatterbox"): return "bubble.left.and.bubble.right.fill"
+        case id.hasPrefix("social"): return "person.2.fill"
+        case id == "night_owl": return "moon.stars.fill"
+        case id == "first_responder": return "bolt.fill"
+        case id == "marathon": return "flame.fill"
+        case id == "founder": return "building.columns.fill"
+        case id == "voice_of_people": return "mic.fill"
+        default: return "rosette"
+        }
+    }
 }
 struct AchievementsWrap: Codable {
     let achievements: [Achievement]

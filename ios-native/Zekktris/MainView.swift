@@ -1499,6 +1499,7 @@ struct SettingsView: View {
     @State private var showChangeEmail = false
     @State private var showSessions = false
     @State private var showTwoFactor = false
+    @State private var showAchievements = false
     // Mic input test (record-and-discard meter; never sent). Reuses the
     // voice-message recorder's live metering — no new audio infra.
     @StateObject private var micTest = VoiceRecorder()
@@ -1525,7 +1526,7 @@ struct SettingsView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
                     profileHeader
-                    AchievementsSection(userId: nil)
+                    achievementsSection
                     statusSection
                     displayNameSection
                     customStatusSection
@@ -1657,6 +1658,31 @@ struct SettingsView: View {
                 : await session.uploadAvatar(filename: "avatar.\(ext)", contentType: mime, data: data)
             if let err { store.errorText = err }
         }
+    }
+
+    // Entry point to the full achievements gallery (earned + locked). The
+    // gallery sheet loads the owner's complete catalog.
+    private var achievementsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("ACHIEVEMENTS")
+            Button { showAchievements = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "rosette").font(.system(size: 15)).foregroundColor(Theme.accent).frame(width: 22)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("View Achievements")
+                            .font(.zkSans(15)).foregroundColor(Theme.ink1)
+                        Text("See what you've collected and what's left to earn.")
+                            .font(.zkSans(11)).foregroundColor(Theme.ink4)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.system(size: 12)).foregroundColor(Theme.ink4)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+        }
+        .sheet(isPresented: $showAchievements) { AchievementsGallerySheet() }
     }
 
     private var statusSection: some View {
@@ -7785,19 +7811,7 @@ struct AchievementsSection: View {
 struct AchievementBadge: View {
     let achievement: Achievement
 
-    private var symbol: String {
-        switch true {
-        case achievement.id.hasPrefix("veteran"): return "calendar.badge.checkmark"
-        case achievement.id.hasPrefix("chatterbox"): return "bubble.left.and.bubble.right.fill"
-        case achievement.id.hasPrefix("social"): return "person.2.fill"
-        case achievement.id == "night_owl": return "moon.stars.fill"
-        case achievement.id == "first_responder": return "bolt.fill"
-        case achievement.id == "marathon": return "flame.fill"
-        case achievement.id == "founder": return "building.columns.fill"
-        case achievement.id == "voice_of_people": return "mic.fill"
-        default: return "rosette"
-        }
-    }
+    private var symbol: String { achievement.sfSymbol }
 
     var body: some View {
         let earned = achievement.isEarned
@@ -7842,5 +7856,130 @@ struct AchievementBadge: View {
         .background(Theme.bg2.opacity(earned ? 1 : 0.55))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .help("\(achievement.description)")
+    }
+}
+
+/// Full achievements gallery (Settings → Achievements). Shows the COMPLETE
+/// catalog — earned and not-yet-earned — with names, descriptions, and
+/// progress, so the user can see what's collected and what's left. Reads the
+/// owner's full shelf from GET /users/@me/achievements (locked entries carry
+/// live progress, which the server only returns to the owner).
+struct AchievementsGallerySheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var achievements: [Achievement] = []
+    @State private var loaded = false
+
+    private var earned: [Achievement] { achievements.filter { $0.isEarned } }
+    private var locked: [Achievement] { achievements.filter { !$0.isEarned } }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if !loaded && achievements.isEmpty {
+                    ProgressView().tint(Theme.accent)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if achievements.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "rosette").font(.system(size: 30, weight: .light)).foregroundColor(Theme.ink3)
+                        Text("No achievements yet").font(.zkSans(14)).foregroundColor(Theme.ink3)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text("\(earned.count) of \(achievements.count) earned")
+                                .font(.zkSans(12, weight: .medium)).foregroundColor(Theme.ink3)
+                            if !earned.isEmpty {
+                                group("EARNED", earned)
+                            }
+                            if !locked.isEmpty {
+                                group("IN PROGRESS", locked)
+                            }
+                        }
+                        .padding(16)
+                    }
+                }
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Achievements").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .task {
+                achievements = (try? await APIClient.shared.myAchievements())?.achievements ?? []
+                loaded = true
+            }
+        }
+    }
+
+    private func group(_ title: String, _ items: [Achievement]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+            VStack(spacing: 0) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { i, a in
+                    AchievementGalleryRow(achievement: a)
+                    if i < items.count - 1 { Divider().overlay(Theme.line).padding(.leading, 56) }
+                }
+            }
+            .background(Theme.bg2)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+    }
+}
+
+/// One row in the achievements gallery: icon, name, description, and either an
+/// earned check (with marker) or a value/goal progress bar for locked entries.
+struct AchievementGalleryRow: View {
+    let achievement: Achievement
+
+    var body: some View {
+        let earned = achievement.isEarned
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(earned
+                          ? AnyShapeStyle(LinearGradient(colors: [Theme.accent.opacity(0.35), Theme.accent2.opacity(0.25)],
+                                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                          : AnyShapeStyle(Theme.bg3))
+                    .frame(width: 40, height: 40)
+                Image(systemName: earned ? achievement.sfSymbol : "lock.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(earned ? Theme.accent : Theme.ink4)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(achievement.name)
+                        .font(.zkSans(14, weight: .semibold))
+                        .foregroundColor(earned ? Theme.ink1 : Theme.ink3)
+                    if earned, !achievement.marker.isEmpty {
+                        Text(achievement.marker)
+                            .font(.zkMono(9, weight: .bold)).foregroundColor(Theme.bg0)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Theme.accent).clipShape(Capsule())
+                    }
+                    Spacer(minLength: 4)
+                    if earned {
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.system(size: 14)).foregroundColor(Theme.accent)
+                    }
+                }
+                Text(achievement.description)
+                    .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !earned, let goal = achievement.goal, goal > 0 {
+                    let frac = min(1, Double(achievement.value) / Double(goal))
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Theme.bg3).frame(height: 5)
+                            Capsule().fill(Theme.accent.opacity(0.7))
+                                .frame(width: max(0, frac) * geo.size.width, height: 5)
+                        }
+                    }
+                    .frame(height: 5)
+                    Text("\(min(achievement.value, goal))/\(goal)")
+                        .font(.zkMono(10, weight: .semibold)).foregroundColor(Theme.ink4)
+                }
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
