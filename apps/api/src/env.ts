@@ -102,6 +102,34 @@ export const envSchema = z.object({
       .optional(),
   ),
 
+  /**
+   * Optional comma-separated list of PREVIOUS field-encryption keys (each the
+   * same 32-byte hex/base64 format as FIELD_ENCRYPTION_KEY). Used for safe key
+   * rotation: writes use the primary key above, but decryption falls back to
+   * these so already-stored 2FA/bot secrets keep working after the primary is
+   * rotated. After running the re-encrypt script (everything is now under the
+   * new primary) you can drop the old key from this list.
+   */
+  FIELD_ENCRYPTION_KEYS_OLD: z.preprocess(
+    (v) =>
+      typeof v === 'string' && v.trim() !== ''
+        ? v
+            .split(',')
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0)
+        : undefined,
+    z
+      .array(
+        z
+          .string()
+          .refine(
+            (s) => /^[0-9a-fA-F]{64}$/.test(s) || Buffer.from(s, 'base64').length === 32,
+            'each FIELD_ENCRYPTION_KEYS_OLD entry must be 32 bytes: 64 hex chars or base64 of 32 bytes',
+          ),
+      )
+      .optional(),
+  ),
+
   // ── Registration ───────────────────────────────────────────────────────
   ALLOW_REGISTRATION: RegistrationMode.default('open'),
 

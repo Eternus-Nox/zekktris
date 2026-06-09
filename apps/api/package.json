@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "echo 'lint not configured yet'",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "reencrypt-fields": "node --import tsx/esm scripts/reencrypt-fields.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
