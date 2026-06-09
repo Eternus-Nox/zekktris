@@ -23,6 +23,7 @@ import {
   findActiveSessionByRefreshToken,
   rotateSession,
   revokeSession,
+  revokeAllUserSessions,
 } from '../auth/sessions';
 import {
   setRefreshCookie,
@@ -720,12 +721,14 @@ authRouter.post(
       .set({ passwordHash: newHash, updatedAt: new Date() })
       .where(eq(schema.users.id, row.userId));
 
-    // Revoke all existing sessions. Real user immediately logs out
-    // of every other device; any attacker session is closed too.
-    await db
-      .update(schema.sessions)
-      .set({ revokedAt: new Date() })
-      .where(and(eq(schema.sessions.userId, row.userId), isNull(schema.sessions.revokedAt)));
+    // Revoke ALL existing sessions (no exception — a reset proves email
+    // control, not session control, and is often done precisely because an
+    // attacker has access, so we log out everywhere). revokeAllUserSessions
+    // also adds each revoked session to the blacklist, so their still-valid
+    // access tokens are rejected on REST immediately — not just up to the
+    // ~15min token TTL. (The previous raw UPDATE here revoked the DB rows but
+    // skipped the blacklist, leaving a stolen token usable on REST.)
+    await revokeAllUserSessions(row.userId);
 
     // Close any live gateway WebSockets for this user. Session
     // revocation alone leaves them readable up to the access-token
