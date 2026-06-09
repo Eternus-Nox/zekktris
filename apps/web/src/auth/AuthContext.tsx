@@ -173,8 +173,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // ── Gateway lifecycle: only run when authenticated ────────────────────
 
+  // The socket must open on login, close on logout, and reconnect on a
+  // genuine identity change — but NOT churn on profile/status/presence
+  // field updates. updateUser() replaces state.user with a NEW object on
+  // every such patch, so depending on state.user (or state.token, which
+  // rotates on every ~15-min access-token refresh) would tear down and
+  // reopen the WebSocket, dropping live events and forcing a full resync.
+  // Gate on a STABLE key — the user id — instead. The gateway reads its
+  // token fresh on each (re)connect via getToken(), so a token refresh
+  // needs no reconnect; identity changes (login/logout/account switch)
+  // flip the id and correctly recycle the connection.
+  const gatewaySessionKey = gatewayLifecycleKey(state.user);
+
   useEffect(() => {
-    if (!state.token || !state.user) return;
+    if (!tokenRef.current || !gatewaySessionKey) return;
     gateway.start();
 
     // Wake-from-background: when iOS Safari (or any mobile browser)
@@ -221,7 +233,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('pagehide', onPageHide);
       gateway.stop();
     };
-  }, [gateway, state.token, state.user]);
+  }, [gateway, gatewaySessionKey]);
 
   // ── Public methods ────────────────────────────────────────────────────
 
@@ -279,6 +291,23 @@ export function useAuth(): AuthContextValue {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
+
+/**
+ * The gateway socket's lifecycle key. The lifecycle effect re-runs — i.e.
+ * tears down and reopens the WebSocket — only when this value changes.
+ *
+ * Derived from the user's identity (id) alone, so it is STABLE across
+ * profile / status / presence field updates (which replace the user object
+ * but keep the same id) and across access-token rotation (which the gateway
+ * absorbs via getToken() without a reconnect). It changes only on a genuine
+ * identity transition: null→id (login), id→null (logout), id→id' (account
+ * switch) — exactly the cases that legitimately need a fresh connection.
+ *
+ * Exported for unit testing; not part of the public auth surface.
+ */
+export function gatewayLifecycleKey(user: Pick<SelfUser, 'id'> | null): string | null {
+  return user?.id ?? null;
+}
 
 function gatewayUrl(): string {
   // Same-origin WS URL. In dev Vite's proxy forwards /gateway to the API.
