@@ -19,7 +19,7 @@
  * letting them investigate.
  */
 
-import { and, asc, eq, lt, lte, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { nextSnowflake } from '../snowflake';
 import { errors } from '../errors';
@@ -128,23 +128,48 @@ export async function cancelScheduled(
 
 // ── Worker interface ────────────────────────────────────────────────────
 
+// A claim older than this is treated as abandoned (the worker that took it
+// died mid-send) and may be reclaimed. Comfortably longer than a normal send.
+const STALE_CLAIM_MS = 5 * 60 * 1000;
+
 /**
- * Fetch rows whose scheduled_for has passed AND that haven't
- * already failed too many times. Up to POLL_BATCH per call.
+ * Atomically CLAIM up to POLL_BATCH due rows for sending and return them.
+ *
+ * Exactly-once under concurrency: the candidate ids are locked with
+ * `FOR UPDATE SKIP LOCKED` (so two concurrent ticks / replicas never grab the
+ * same row), and each claimed row is stamped with `claimed_at` — so a
+ * *subsequent* tick skips it too (the row isn't deleted until the send
+ * succeeds, which can be after the next poll). A claim older than
+ * STALE_CLAIM_MS is reclaimable, so a worker that crashed mid-send doesn't
+ * strand the row. The caller must finish each returned row with
+ * completeScheduled (success → delete) or failScheduled (error → bump +
+ * release the claim).
  */
-export async function fetchDue(): Promise<schema.ScheduledMessage[]> {
+export async function claimDue(): Promise<schema.ScheduledMessage[]> {
   const now = new Date();
-  return db
-    .select()
+  const staleCutoff = new Date(now.getTime() - STALE_CLAIM_MS);
+  const candidates = db
+    .select({ id: schema.scheduledMessages.id })
     .from(schema.scheduledMessages)
     .where(
       and(
         lte(schema.scheduledMessages.scheduledFor, now),
         lt(schema.scheduledMessages.attempts, MAX_ATTEMPTS),
+        or(
+          isNull(schema.scheduledMessages.claimedAt),
+          lt(schema.scheduledMessages.claimedAt, staleCutoff),
+        ),
       ),
     )
     .orderBy(asc(schema.scheduledMessages.scheduledFor))
-    .limit(POLL_BATCH);
+    .limit(POLL_BATCH)
+    .for('update', { skipLocked: true });
+
+  return db
+    .update(schema.scheduledMessages)
+    .set({ claimedAt: now })
+    .where(inArray(schema.scheduledMessages.id, candidates))
+    .returning();
 }
 
 /**
@@ -158,9 +183,10 @@ export async function completeScheduled(scheduledId: bigint): Promise<void> {
 }
 
 /**
- * Worker calls this when a send attempt failed. Bumps the attempts
- * counter + records the error. After MAX_ATTEMPTS, the partial
- * index predicate excludes the row from future polls.
+ * Worker calls this when a send attempt failed. Bumps the attempts counter,
+ * records the error, and RELEASES the claim (claimed_at → null) so the next
+ * poll can retry — until attempts reaches MAX_ATTEMPTS, after which claimDue's
+ * `attempts < MAX_ATTEMPTS` predicate excludes the row from future polls.
  */
 export async function failScheduled(
   scheduledId: bigint,
@@ -171,6 +197,7 @@ export async function failScheduled(
     .set({
       attempts: sql`${schema.scheduledMessages.attempts} + 1`,
       lastError: error.slice(0, 500),
+      claimedAt: null,
     })
     .where(eq(schema.scheduledMessages.id, scheduledId));
 }

@@ -51,6 +51,11 @@ export const scheduledMessages = pgTable(
         the last_error and decide what to do. */
     attempts: integer('attempts').notNull().default(0),
     lastError: text('last_error'),
+    /** Worker claim marker. Set when a worker atomically claims this row for
+        sending (so concurrent ticks / replicas can't both grab it); cleared on
+        failure (to retry) and the row is deleted on success. A claim older than
+        the stale window is reclaimable, covering a worker that died mid-send. */
+    claimedAt: timestamp('claimed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
       .defaultNow(),

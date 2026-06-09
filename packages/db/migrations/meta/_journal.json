@@ -512,6 +512,13 @@
       "when": 1784600090000,
       "tag": "0073_security_streaks_achievements",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1784600100000,
+      "tag": "0074_scheduled_claimed_at",
+      "breakpoints": true
     }
   ]
 }
