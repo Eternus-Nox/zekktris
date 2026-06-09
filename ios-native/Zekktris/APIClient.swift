@@ -1126,6 +1126,38 @@ extension APIClient {
         return wrap.messages
     }
 
+    // ── Watch words + flagged messages (parent) — same endpoints as web ──────
+
+    /// The child's watch words (GET /family/children/:id/watch-words).
+    func familyWatchWords(childId: String) async throws -> [String] {
+        let wrap: WatchWordsWrap = try await send("GET", "/family/children/\(childId)/watch-words")
+        return wrap.words
+    }
+    /// Add a word (or a comma-separated list — the server splits/normalizes).
+    /// Returns the updated full list.
+    func familyAddWatchWord(childId: String, word: String) async throws -> [String] {
+        let body = try JSONEncoder().encode(["word": word])
+        let wrap: WatchWordsWrap = try await send("POST", "/family/children/\(childId)/watch-words", bodyData: body)
+        return wrap.words
+    }
+    /// Remove one word (DELETE …/watch-words?word=). Returns the updated list.
+    func familyRemoveWatchWord(childId: String, word: String) async throws -> [String] {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&+=?/")
+        let q = word.addingPercentEncoding(withAllowedCharacters: allowed) ?? word
+        let wrap: WatchWordsWrap = try await send("DELETE", "/family/children/\(childId)/watch-words?word=\(q)")
+        return wrap.words
+    }
+    /// Flagged messages for a child (GET /family/children/:id/flags).
+    func familyChildFlags(childId: String) async throws -> [FamilyFlag] {
+        let wrap: FamilyFlagsWrap = try await send("GET", "/family/children/\(childId)/flags")
+        return wrap.flags
+    }
+    /// Mark one flag reviewed (POST /family/flags/:id/reviewed).
+    func familyMarkFlagReviewed(id: String) async throws {
+        try await sendVoid("POST", "/family/flags/\(id)/reviewed")
+    }
+
     // ── Security (Admin → Security) ──────────────────────────────────────────
     func adminSecurityEvents(kind: String? = nil, before: String? = nil) async throws -> [SecurityEvent] {
         var path = "/admin/security/events?limit=50"

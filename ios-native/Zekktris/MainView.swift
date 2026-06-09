@@ -3563,6 +3563,12 @@ struct ChildControlsView: View {
 
                             ChildDMsSection(child: child)
                                 .padding(.top, 10)
+
+                            ChildWatchWordsSection(child: child)
+                                .padding(.top, 10)
+
+                            ChildFlagsSection(child: child)
+                                .padding(.top, 10)
                         }
                         .padding(16)
                     }
@@ -6638,6 +6644,213 @@ struct ChildDMsSection: View {
         .sheet(item: $selected) { dm in
             ChildDMMessagesView(child: child, dm: dm)
         }
+    }
+}
+
+/// Watch-words management for one child. Mirrors web's FamilySettings
+/// watch-words tab: add (single or comma-separated — server splits), remove
+/// via chip ×. Case-insensitive matching is handled server-side.
+struct ChildWatchWordsSection: View {
+    let child: FamilyUser
+    @State private var words: [String] = []
+    @State private var loading = true
+    @State private var newWord = ""
+    @State private var busy = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("WATCH WORDS")
+                .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+            Text("Messages \(child.name) sends or receives containing one of these words get flagged for you to review. Matching is case-insensitive. Add several at once separated by commas.")
+                .font(.zkSans(12)).foregroundColor(Theme.ink3)
+
+            HStack(spacing: 8) {
+                TextField("e.g. address, phone number", text: $newWord)
+                    .textFieldStyle(.plain).autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .foregroundColor(Theme.ink1).padding(.horizontal, 12).padding(.vertical, 9)
+                    .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+                    .onSubmit { add() }
+                Button { add() } label: {
+                    Text("Add").font(.zkSans(13, weight: .semibold)).foregroundColor(Theme.ink1)
+                        .padding(.horizontal, 14).padding(.vertical, 9)
+                        .background(canAdd ? Theme.accent.opacity(0.18) : Theme.bg3)
+                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(canAdd ? Theme.accent.opacity(0.4) : .clear, lineWidth: 1))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain).disabled(!canAdd || busy)
+            }
+
+            if loading {
+                ProgressView().tint(Theme.accent).frame(maxWidth: .infinity).padding(.vertical, 8)
+            } else if words.isEmpty {
+                Text("No watch words yet.").font(.zkSans(13)).foregroundColor(Theme.ink3)
+            } else {
+                FlowChips(words: words) { remove($0) }
+            }
+            if let error {
+                Text(error).font(.zkSans(12)).foregroundColor(Theme.dangerSoft)
+            }
+        }
+        .task { await load() }
+    }
+
+    private var canAdd: Bool { !newWord.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    private func load() async {
+        do { words = try await APIClient.shared.familyWatchWords(childId: child.id) }
+        catch { self.error = (error as? APIError)?.message ?? error.localizedDescription }
+        loading = false
+    }
+
+    private func add() {
+        let raw = newWord.trimmingCharacters(in: .whitespaces)
+        guard !raw.isEmpty, !busy else { return }
+        busy = true; error = nil
+        Task {
+            do { words = try await APIClient.shared.familyAddWatchWord(childId: child.id, word: raw); newWord = "" }
+            catch { self.error = (error as? APIError)?.message ?? error.localizedDescription }
+            busy = false
+        }
+    }
+
+    private func remove(_ word: String) {
+        busy = true; error = nil
+        Task {
+            do { words = try await APIClient.shared.familyRemoveWatchWord(childId: child.id, word: word) }
+            catch { self.error = (error as? APIError)?.message ?? error.localizedDescription }
+            busy = false
+        }
+    }
+}
+
+/// Wrapping chip layout for watch words (SwiftUI has no native flow layout
+/// pre-iOS-16 Layout; this greedily wraps rows by measured width).
+private struct FlowChips: View {
+    let words: [String]
+    let onRemove: (String) -> Void
+
+    var body: some View {
+        // Simple wrapping via a width-reading ZStack of rows.
+        FlowLayout(spacing: 6) {
+            ForEach(words, id: \.self) { w in
+                HStack(spacing: 4) {
+                    Text(w).font(.zkSans(13)).foregroundColor(Theme.ink1)
+                    Button { onRemove(w) } label: {
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundColor(Theme.ink3)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.leading, 10).padding(.trailing, 7).padding(.vertical, 6)
+                .background(Theme.bg2)
+                .overlay(Capsule().strokeBorder(Theme.line, lineWidth: 1))
+                .clipShape(Capsule())
+            }
+        }
+    }
+}
+
+/// Minimal flow layout (iOS 16 Layout) — wraps subviews to the next row when
+/// they overflow the available width.
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
+        for s in subviews {
+            let sz = s.sizeThatFits(.unspecified)
+            if x + sz.width > maxWidth, x > 0 { x = 0; y += rowHeight + spacing; rowHeight = 0 }
+            x += sz.width + spacing
+            rowHeight = max(rowHeight, sz.height)
+        }
+        return CGSize(width: maxWidth == .infinity ? x : maxWidth, height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let maxWidth = bounds.width
+        var x: CGFloat = bounds.minX, y: CGFloat = bounds.minY, rowHeight: CGFloat = 0
+        for s in subviews {
+            let sz = s.sizeThatFits(.unspecified)
+            if x + sz.width > bounds.minX + maxWidth, x > bounds.minX { x = bounds.minX; y += rowHeight + spacing; rowHeight = 0 }
+            s.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(sz))
+            x += sz.width + spacing
+            rowHeight = max(rowHeight, sz.height)
+        }
+    }
+}
+
+/// Flagged-messages feed for one child. Mirrors web's FamilySettings flags
+/// tab: matched-word chip, sent/received label, timestamp, snippet; unreviewed
+/// rows are amber, tapping marks the flag reviewed.
+struct ChildFlagsSection: View {
+    let child: FamilyUser
+    @State private var flags: [FamilyFlag] = []
+    @State private var loading = true
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("FLAGGED MESSAGES")
+                .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+            if loading {
+                ProgressView().tint(Theme.accent).frame(maxWidth: .infinity).padding(.vertical, 8)
+            } else if flags.isEmpty {
+                Text("No flagged messages.").font(.zkSans(13)).foregroundColor(Theme.ink3)
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(flags) { f in flagRow(f) }
+                }
+            }
+            if let error {
+                Text(error).font(.zkSans(12)).foregroundColor(Theme.dangerSoft)
+            }
+        }
+        .task { await load() }
+    }
+
+    private func flagRow(_ f: FamilyFlag) -> some View {
+        Button { markReviewed(f) } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(f.matchedWord)
+                        .font(.zkSans(11, weight: .semibold)).foregroundColor(Theme.idle)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Theme.idle.opacity(0.15)).clipShape(Capsule())
+                    Text(f.byChild ? "\(child.name) sent" : "received")
+                        .font(.zkSans(11)).foregroundColor(Theme.ink3)
+                    Spacer()
+                    Text(shortTime(f.createdAt)).font(.zkMono(10)).foregroundColor(Theme.ink4)
+                }
+                if let snippet = f.snippet, !snippet.isEmpty {
+                    Text(snippet).font(.zkSans(13)).foregroundColor(Theme.ink1)
+                        .lineLimit(2).multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(f.reviewed ? Theme.bg2 : Theme.idle.opacity(0.10))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(f.reviewed ? Theme.line : Theme.idle.opacity(0.30), lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func load() async {
+        do { flags = try await APIClient.shared.familyChildFlags(childId: child.id) }
+        catch { self.error = (error as? APIError)?.message ?? error.localizedDescription }
+        loading = false
+    }
+
+    private func markReviewed(_ f: FamilyFlag) {
+        guard !f.reviewed else { return }
+        // Match web: reviewing clears the flag from the alert list (the server
+        // marks it reviewed, so it won't return on refresh either).
+        flags.removeAll { $0.id == f.id }
+        Task { try? await APIClient.shared.familyMarkFlagReviewed(id: f.id) }
     }
 }
 
