@@ -302,6 +302,74 @@ export async function acceptInvite(
   });
 }
 
+/**
+ * Join a guild as the result of a parent APPROVING a child's earlier
+ * guild-join request.
+ *
+ * Keyed on the STABLE guild id (resolved + stored on the child_requests row
+ * at request time), NOT the invite code. The invite code is mutable — it can
+ * be revoked, expire, or be regenerated between the child's request and the
+ * parent's approval — so re-redeeming it at approval time would make a
+ * perfectly valid approval fail (invite gone) or land via the wrong invite.
+ * The parent's approval is itself the authorization, so we add the membership
+ * directly and don't consume an invite use. Raid-protection / supervision
+ * gates are skipped for the same reason acceptInvite skips them on the
+ * approval path: this join was already vetted by a parent.
+ *
+ * Idempotent (already-member → no-op). Mirrors acceptInvite's member insert:
+ * deleted-guild guard, ban check, rules→membershipState, member.join audit.
+ */
+export async function joinGuildByApproval(
+  guildId: bigint,
+  userId: bigint,
+): Promise<{ guildId: bigint; alreadyMember: boolean }> {
+  return db.transaction(async (tx) => {
+    const [guild] = await tx
+      .select({ rulesContent: schema.guilds.rulesContent })
+      .from(schema.guilds)
+      .where(and(eq(schema.guilds.id, guildId), isNull(schema.guilds.deletedAt)))
+      .limit(1);
+    if (!guild) throw errors.notFound('Guild');
+
+    const existing = await tx
+      .select({ userId: schema.guildMembers.userId })
+      .from(schema.guildMembers)
+      .where(
+        and(
+          eq(schema.guildMembers.guildId, guildId),
+          eq(schema.guildMembers.userId, userId),
+        ),
+      )
+      .limit(1);
+    if (existing[0]) return { guildId, alreadyMember: true };
+
+    const banned = await tx
+      .select({ userId: schema.bans.userId })
+      .from(schema.bans)
+      .where(and(eq(schema.bans.guildId, guildId), eq(schema.bans.userId, userId)))
+      .limit(1);
+    if (banned[0]) throw errors.forbidden('You are banned from this guild');
+
+    await tx.insert(schema.guildMembers).values({
+      guildId,
+      userId,
+      // Same onboarding gate as invite-accept: pending when the guild has
+      // rules configured, else active.
+      membershipState: guild.rulesContent ? 'pending' : 'active',
+    });
+    await writeAudit({
+      tx,
+      guildId,
+      actorId: userId,
+      action: 'member.join',
+      targetType: 'member',
+      targetId: userId,
+      changes: { via: 'parent_approval' },
+    });
+    return { guildId, alreadyMember: false };
+  });
+}
+
 function isUniqueViolation(err: unknown): boolean {
   return (
     typeof err === 'object' &&
