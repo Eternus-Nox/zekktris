@@ -1797,6 +1797,26 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// Import a guild backup/template file as a NEW server (clone). On success
+    /// the new guild is loaded + selected and this returns nil; on failure it
+    /// returns the error message so the import sheet can show it inline.
+    func importServer(backup: Data, name: String?) async -> String? {
+        do {
+            let result = try await api.importGuild(backup: backup, nameOverride: name)
+            await loadGuilds()
+            if let guild = guilds.first(where: { $0.id == result.guild.id }) {
+                selectGuild(guild)
+            } else {
+                selectGuild(result.guild)
+            }
+            return nil
+        } catch {
+            let msg = (error as? APIError)?.message ?? error.localizedDescription
+            errorText = msg
+            return msg
+        }
+    }
+
     func joinByInvite(code: String) async {
         let cleaned = code
             .trimmingCharacters(in: .whitespacesAndNewlines)
