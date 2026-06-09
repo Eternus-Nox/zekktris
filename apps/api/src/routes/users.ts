@@ -2159,3 +2159,80 @@ usersRouter.put(
     return c.json(result);
   },
 );
+
+// ── Bot slash-commands ──────────────────────────────────────────────────────
+//
+//   POST   /@me/bots/:id/commands              register a command
+//   GET    /@me/bots/:id/commands              list a bot's commands
+//   DELETE /@me/bots/:id/commands/:commandId   delete a command
+//
+// Commands are owner-managed (loadOwnedBot gates them inside the service). A
+// command is either global (guildId omitted) or scoped to one guild the bot is
+// in; a guild-scoped command of the same name wins over a global one at invoke
+// time. To actually receive invocations the bot must have an event callback
+// configured (see /event-config) — without it, invoking returns a clear error.
+
+function toBotCommandDTO(cmd: { id: bigint; botId: bigint; guildId: bigint | null; name: string; description: string; createdAt: Date }) {
+  return {
+    id: cmd.id.toString(),
+    botId: cmd.botId.toString(),
+    guildId: cmd.guildId?.toString() ?? null,
+    name: cmd.name,
+    description: cmd.description,
+    createdAt: cmd.createdAt.toISOString(),
+  };
+}
+
+const registerCommandBody = z.object({
+  name: z.string().trim().min(1).max(32),
+  description: z.string().trim().min(1).max(200),
+  /** Omit for a global command; set to scope it to one guild. */
+  guildId: z.string().regex(/^\d+$/).optional(),
+});
+
+usersRouter.post(
+  '/@me/bots/:id/commands',
+  requireAuth,
+  validate('param', z.object({ id: z.string().regex(/^\d+$/) })),
+  validate('json', registerCommandBody),
+  async (c) => {
+    const ownerId = requireUserId(c);
+    const { id } = c.req.valid('param');
+    const body = c.req.valid('json');
+    const bots = await import('../services/bots');
+    const cmd = await bots.registerBotCommand({
+      botId: BigInt(id),
+      ownerId,
+      guildId: body.guildId ? BigInt(body.guildId) : null,
+      name: body.name,
+      description: body.description,
+    });
+    return c.json({ command: toBotCommandDTO(cmd) }, 201);
+  },
+);
+
+usersRouter.get(
+  '/@me/bots/:id/commands',
+  requireAuth,
+  validate('param', z.object({ id: z.string().regex(/^\d+$/) })),
+  async (c) => {
+    const ownerId = requireUserId(c);
+    const { id } = c.req.valid('param');
+    const bots = await import('../services/bots');
+    const rows = await bots.listBotCommands(BigInt(id), ownerId);
+    return c.json({ commands: rows.map(toBotCommandDTO) });
+  },
+);
+
+usersRouter.delete(
+  '/@me/bots/:id/commands/:commandId',
+  requireAuth,
+  validate('param', z.object({ id: z.string().regex(/^\d+$/), commandId: z.string().regex(/^\d+$/) })),
+  async (c) => {
+    const ownerId = requireUserId(c);
+    const { commandId } = c.req.valid('param');
+    const bots = await import('../services/bots');
+    await bots.deleteBotCommand(BigInt(commandId), ownerId);
+    return c.json({ ok: true });
+  },
+);

@@ -68,6 +68,26 @@ export interface Bot extends PublicUser {
   botEventUrl?: string | null;
 }
 
+/** A slash-command registered on a bot (owner view). */
+export interface BotCommand {
+  id: string;
+  botId: string;
+  /** null = global; otherwise scoped to this guild. */
+  guildId: string | null;
+  name: string;
+  description: string;
+  createdAt: string;
+}
+
+/** A command available in a guild (composer slash-picker view). */
+export interface GuildCommand {
+  id: string;
+  botId: string;
+  botName: string;
+  name: string;
+  description: string;
+}
+
 export interface SelfUser extends PublicUser {
   email: string;
   /** Whether gender is shown on the public profile (owner-only field). */

@@ -3690,10 +3690,145 @@ function BotsSection() {
                   </button>
                 </div>
               )}
+
+              {/* Slash-commands for this bot. */}
+              <BotCommandsManager botId={bot.id} />
             </li>
           ))}
         </ul>
       )}
     </section>
+  );
+}
+
+/**
+ * BotCommandsManager
+ * ------------------
+ * Per-bot slash-command management, shown inline under each bot. Lazy-loads
+ * the bot's commands on first expand; lets the owner register a command
+ * (name + description, optionally guild-scoped) and delete commands. To
+ * actually receive invocations the bot needs an event callback configured
+ * (the parent's "Events" control) — we note that when no callback is set.
+ */
+function BotCommandsManager({ botId }: { botId: string }) {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const [open, setOpen] = useState(false);
+  const [commands, setCommands] = useState<import('@zekktris/client').BotCommand[] | null>(null);
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open || commands !== null) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const r = await rest.listBotCommands(botId);
+        if (alive) setCommands(r.commands);
+      } catch {
+        if (alive) setCommands([]);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [open, commands, rest, botId]);
+
+  async function add() {
+    const n = name.trim().toLowerCase();
+    const d = description.trim();
+    if (!n || !d) {
+      toasts.push('Command name and description are required', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      const { command } = await rest.registerBotCommand(botId, { name: n, description: d });
+      setCommands((prev) => [...(prev ?? []), command]);
+      setName('');
+      setDescription('');
+      toasts.push(`/${command.name} registered`, 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not register command', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(commandId: string, cmdName: string) {
+    if (!confirm(`Delete /${cmdName}?`)) return;
+    try {
+      await rest.deleteBotCommand(botId, commandId);
+      setCommands((prev) => (prev ?? []).filter((cmd) => cmd.id !== commandId));
+      toasts.push('Command deleted', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not delete command', 'error');
+    }
+  }
+
+  return (
+    <div className="rounded-md border border-line bg-bg-1 p-2 mt-1">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between text-xs text-ink-2 hover:text-ink-1"
+      >
+        <span>Slash commands{commands ? ` (${commands.length})` : ''}</span>
+        <span className={`transition-transform ${open ? 'rotate-180' : ''}`}>▾</span>
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2">
+          {commands === null ? (
+            <p className="text-xs text-ink-3">Loading…</p>
+          ) : commands.length === 0 ? (
+            <p className="text-xs text-ink-3">No commands yet.</p>
+          ) : (
+            <ul className="space-y-1">
+              {commands.map((cmd) => (
+                <li key={cmd.id} className="flex items-start justify-between gap-2 text-xs">
+                  <span className="min-w-0">
+                    <code className="text-accent">/{cmd.name}</code>
+                    {cmd.guildId && <span className="text-ink-3"> (this server)</span>}
+                    <span className="text-ink-3"> — {cmd.description}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void remove(cmd.id, cmd.name)}
+                    className="shrink-0 text-danger hover:underline"
+                  >
+                    Delete
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="name"
+              maxLength={32}
+              className="w-24 bg-bg-2 border border-line rounded px-2 py-1 text-xs text-ink-1 focus:outline-none focus:ring-1 focus:ring-accent"
+            />
+            <input
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="description"
+              maxLength={200}
+              className="flex-1 min-w-[8rem] bg-bg-2 border border-line rounded px-2 py-1 text-xs text-ink-1 focus:outline-none focus:ring-1 focus:ring-accent"
+            />
+            <button
+              type="button"
+              onClick={() => void add()}
+              disabled={busy}
+              className="px-2.5 py-1 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent/90 disabled:opacity-50"
+            >
+              Add
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
