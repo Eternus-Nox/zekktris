@@ -7,10 +7,15 @@
  *
  * Note we deliberately do NOT look up the session in the db on every
  * request — the JWT signature + expiry is enough. This keeps the hot path
- * one query lighter. Session revocation is therefore eventually-consistent:
- * a revoked session can still call the API for up to ACCESS_TOKEN_TTL_SECONDS
- * seconds (15 min by default). For tighter revocation we'll add a Redis
- * blacklist in v1.x.
+ * one query lighter.
+ *
+ * Revocation is made prompt (not just at token expiry) by a cheap session
+ * blacklist check: on revoke the session id is added to a short-lived
+ * blacklist (Redis when configured, else in-memory), and we reject here if
+ * the token's `sid` is listed. One blacklist lookup per authed request — no
+ * DB hit — and it fails open so a Redis blip degrades to the old
+ * expire-on-TTL behaviour rather than locking everyone out. See
+ * ./session-blacklist.ts.
  */
 
 import type { MiddlewareHandler } from 'hono';
@@ -18,6 +23,7 @@ import { eq } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors } from '../errors';
 import { verifyAccessToken } from './tokens';
+import { isSessionBlacklisted } from './session-blacklist';
 
 export const requireAuth: MiddlewareHandler = async (c, next) => {
   const header = c.req.header('authorization');
@@ -50,6 +56,13 @@ export const requireAuth: MiddlewareHandler = async (c, next) => {
   if (!token) throw errors.unauthenticated();
 
   const claims = await verifyAccessToken(token);
+
+  // Prompt revocation: reject if this session was revoked within the
+  // access-token window. Cheap (one blacklist lookup, no DB) and fails open.
+  if (await isSessionBlacklisted(claims.sessionId)) {
+    throw errors.tokenInvalid('Session revoked');
+  }
+
   c.set('userId', claims.userId);
   c.set('sessionId', claims.sessionId);
 

@@ -17,6 +17,7 @@ import { db, schema } from '../db';
 import { nextSnowflake } from '../snowflake';
 import { env } from '../env';
 import { generateRefreshToken, hashRefreshToken } from './tokens';
+import { blacklistSession } from './session-blacklist';
 import type { Session } from '@zekktris/db';
 
 interface CreateSessionInput {
@@ -132,6 +133,9 @@ export async function revokeSession(sessionId: bigint): Promise<void> {
     .update(schema.sessions)
     .set({ revokedAt: new Date() })
     .where(and(eq(schema.sessions.id, sessionId), isNull(schema.sessions.revokedAt)));
+  // Cut off the session's still-valid access tokens on REST immediately, not
+  // just at gateway re-check / token expiry. Idempotent if already revoked.
+  await blacklistSession(sessionId);
 }
 
 /**
@@ -146,7 +150,14 @@ export async function revokeAllUserSessions(
   if (exceptSessionId !== undefined) {
     conditions.push(ne(schema.sessions.id, exceptSessionId));
   }
-  await db.update(schema.sessions).set({ revokedAt: new Date() }).where(and(...conditions));
+  const revoked = await db
+    .update(schema.sessions)
+    .set({ revokedAt: new Date() })
+    .where(and(...conditions))
+    .returning({ id: schema.sessions.id });
+  // Blacklist exactly the sessions we just revoked so their live access tokens
+  // stop working on REST right away (mirrors revokeSession).
+  await Promise.all(revoked.map((r) => blacklistSession(r.id)));
 }
 
 /** List the user's currently-active sessions, newest activity first. */
