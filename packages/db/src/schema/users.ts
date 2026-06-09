@@ -10,7 +10,7 @@ import {
   index,
   jsonb,
 } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import { userStatusEnum, relationshipTypeEnum, notificationTargetEnum, notificationLevelEnum } from './enums';
 
 /** Stored shape of a single rail folder on the `users.guild_folders`
@@ -213,10 +213,20 @@ export const users = pgTable(
      * rollout is better than no rollout).
      */
     publicKey: text('public_key'),
+    /** OIDC subject (`sub`) of the linked SSO identity, namespaced by issuer
+     *  as `<issuer>|<sub>`. The STABLE binding between an external identity and
+     *  this account — subsequent SSO logins resolve by this, not by email (so
+     *  an email change at the IdP can't re-provision or hijack). Null for
+     *  password-only accounts. */
+    oidcSub: text('oidc_sub'),
   },
   (t) => ({
     emailIdx: uniqueIndex('users_email_idx').on(t.email),
     usernameIdx: uniqueIndex('users_username_idx').on(t.username),
+    // Partial unique: one account per external identity, but many nulls.
+    oidcSubIdx: uniqueIndex('users_oidc_sub_idx')
+      .on(t.oidcSub)
+      .where(sql`oidc_sub IS NOT NULL`),
   }),
 );
 

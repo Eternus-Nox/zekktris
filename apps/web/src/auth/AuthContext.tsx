@@ -46,6 +46,9 @@ interface AuthContextValue extends AuthState {
   login: (email: string, password: string, code?: string) => Promise<void>;
   register: (input: { email: string; username: string; displayName: string; password: string }) => Promise<void>;
   logout: () => Promise<void>;
+  /** Finish an SSO login: the server's callback set the refresh cookie, so we
+   *  exchange it for an access token + load the user. Throws if no session. */
+  completeSso: () => Promise<void>;
   /**
    * Patch the local SelfUser snapshot. Call after a settings save so the
    * UI reflects the new profile immediately, without waiting for the next
@@ -253,6 +256,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [rest, setToken],
   );
 
+  const completeSso = useCallback<AuthContextValue['completeSso']>(async () => {
+    // The SSO callback created the session + set the refresh cookie. Exchange
+    // it for an access token, then load the user — same end state as a login.
+    const accessToken = await rest.refreshSession();
+    if (!accessToken) throw new Error('No SSO session');
+    const me = await rest.getMe();
+    setToken(accessToken, me.user);
+  }, [rest, setToken]);
+
   const logout = useCallback<AuthContextValue['logout']>(async () => {
     try {
       await rest.logout();
@@ -277,8 +289,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo<AuthContextValue>(
-    () => ({ ...state, rest, gateway, login, register, logout, updateUser, emailVerificationRequired }),
-    [state, rest, gateway, login, register, logout, updateUser, emailVerificationRequired],
+    () => ({ ...state, rest, gateway, login, register, logout, completeSso, updateUser, emailVerificationRequired }),
+    [state, rest, gateway, login, register, logout, completeSso, updateUser, emailVerificationRequired],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

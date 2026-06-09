@@ -15,6 +15,7 @@ import { secureHeaders } from 'hono/secure-headers';
 import { timingSafeEqual } from 'node:crypto';
 import { healthRouter } from './routes/health';
 import { authRouter } from './routes/auth';
+import { ssoRouter } from './routes/sso';
 import { usersRouter } from './routes/users';
 import { guildsRouter } from './routes/guilds';
 import { channelsRouter, guildChannelsRouter } from './routes/channels';
@@ -89,6 +90,8 @@ export function createApp() {
   // Versioned API root. Auth, users, guilds, channels, messages, gateway-
   // bootstrap, etc. all hang off /api/v1. Future breaking changes get /api/v2.
   const v1 = new Hono();
+  // SSO before the auth router so the more-specific /auth/sso prefix wins.
+  v1.route('/auth/sso', ssoRouter);
   v1.route('/auth', authRouter);
   v1.route('/users', usersRouter);
   // DM channel management hangs off /users/@me/channels for symmetry with
