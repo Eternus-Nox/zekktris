@@ -60,6 +60,11 @@ export interface SelfUserDTO {
       flag itself is private; others observe its effect via the
       absence of timestamps. */
   dmReadReceiptsEnabled: boolean;
+  /** Achievements visibility. When true, others can view this user's
+      achievements on their profile. Self-state carried on the user object
+      so the client treats it as authoritative on login / refresh (the
+      separate /achievements endpoint computes the shelf list). */
+  achievementsPublic: boolean;
   /** Privacy: when true, anyone who shares a guild with this user can
       open a DM and ring them for a 1:1 call. When false (default),
       DMs/calls are friends-only. Blocks always override. Self-only
@@ -131,6 +136,7 @@ export function toSelfUser(user: User): SelfUserDTO {
     guildOrder: user.guildOrder ?? null,
     guildFolders: user.guildFolders ?? [],
     dmReadReceiptsEnabled: user.dmReadReceiptsEnabled,
+    achievementsPublic: user.achievementsPublic,
     allowDmsFromServerMembers: user.allowDmsFromServerMembers,
     publicKey: user.publicKey ?? null,
     createdAt: isoDate(user.createdAt),

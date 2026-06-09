@@ -140,6 +140,11 @@ final class Session: ObservableObject {
         catch { authError = message(for: error) }
     }
 
+    func setAchievementsPublic(_ value: Bool) async {
+        do { currentUser = try await api.updateProfile(["achievementsPublic": value]) }
+        catch { authError = message(for: error) }
+    }
+
     // MARK: Guild folders
 
     var guildFolders: [GuildFolder] { currentUser?.guildFolders ?? [] }
