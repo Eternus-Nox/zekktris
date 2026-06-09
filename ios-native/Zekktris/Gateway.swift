@@ -34,6 +34,15 @@ final class Gateway: ObservableObject {
     /// common on mobile network switches / backgrounding, with no close event).
     private var ackWatchdogTask: Task<Void, Never>?
     private var lastSeq: Int?
+    /// Logical session id from the last READY/RESUMED. Persisted across socket
+    /// drops so an AUTOMATIC reconnect can attempt RESUME; nil → IDENTIFY fresh.
+    /// Cleared on an intentional connect()/disconnect() and when the server
+    /// rejects a resume. Mirrors the web client (gateway.ts).
+    private var sessionId: String?
+    /// True between sending RESUME and receiving RESUMED/INVALID_SESSION — lets
+    /// the INVALID_SESSION handler tell "resume rejected → fall back to
+    /// IDENTIFY" from "IDENTIFY rejected → fatal".
+    private var resuming = false
     private var token: String?
     private var tokenObserver: NSObjectProtocol?
     private var intentionallyClosed = false
@@ -54,6 +63,12 @@ final class Gateway: ObservableObject {
     func connect(token: String) {
         self.token = token
         intentionallyClosed = false
+        // A fresh connect() is a NEW logical session — never resume into it.
+        // (Automatic reconnects go through openSocket() directly and DO keep
+        // sessionId/lastSeq so they can RESUME; connect() is login/app-start.)
+        sessionId = nil
+        lastSeq = nil
+        resuming = false
         reconnectTask?.cancel(); reconnectTask = nil
         // Track access-token rotations (15-min expiry + cookie refresh) so
         // the next IDENTIFY — e.g. after a reconnect — uses a live token
@@ -77,6 +92,11 @@ final class Gateway: ObservableObject {
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         backoffMs = 1_000
+        // Intentional disconnect ends the logical session; the next connect
+        // IDENTIFYs fresh rather than resuming a now-stale session.
+        sessionId = nil
+        lastSeq = nil
+        resuming = false
         status = .closed
     }
 
@@ -155,17 +175,54 @@ final class Gateway: ObservableObject {
         case 7: // HELLO
             let interval = (obj["d"] as? [String: Any])?["heartbeat_interval"] as? Int ?? 30_000
             startHeartbeat(intervalMs: interval)
-            sendIdentify()
+            // If we hold a retained session + last seq (an automatic reconnect),
+            // try RESUME to replay the events we missed; otherwise IDENTIFY
+            // fresh. A server that can't resume replies INVALID_SESSION and we
+            // transparently fall back. Mirrors the web client.
+            if canResume() { sendResume() } else { sendIdentify() }
         case 8: // HEARTBEAT_ACK — socket is alive; disarm the zombie watchdog.
             ackWatchdogTask?.cancel(); ackWatchdogTask = nil
         case 6: // INVALID_SESSION
+            if resuming {
+                // Our RESUME couldn't be satisfied (unknown/expired session, gap
+                // too large, a different node, or malformed). Fall back to a
+                // fresh IDENTIFY on this SAME open socket — fully transparent;
+                // the READY that follows runs the usual reconnect resync. NOT
+                // fatal. (A revoked/banned token instead gets a server-side
+                // close after this frame; the IDENTIFY send then no-ops and the
+                // close drives a normal reconnect → IDENTIFY → fatal, exactly as
+                // the web client behaves.)
+                resuming = false
+                sessionId = nil
+                lastSeq = nil
+                sendIdentify()
+                return
+            }
+            // IDENTIFY itself was rejected — token bad or session revoked. Fatal:
+            // don't auto-retry (today's behavior).
             intentionallyClosed = true
             status = .closed
             heartbeatTask?.cancel(); heartbeatTask = nil
             ackWatchdogTask?.cancel(); ackWatchdogTask = nil
         case 0: // DISPATCH
             guard let t = obj["t"] as? String else { return }
-            if t == "READY" { status = .ready; backoffMs = 1_000 }
+            // READY (fresh identify) or RESUMED (replay caught us up) both mean
+            // the connection is live; reset backoff, clear the resuming flag, and
+            // capture the session id so the NEXT reconnect can attempt a resume.
+            if t == "READY" || t == "RESUMED" {
+                status = .ready
+                backoffMs = 1_000
+                resuming = false
+                if let d = obj["d"] as? [String: Any], let sid = d["session_id"] as? String {
+                    sessionId = sid
+                }
+            }
+            // RESUMED only signals "you're caught up"; the missed events already
+            // arrived ahead of it as their own DISPATCH frames and were applied
+            // by the normal handlers. Do NOT forward RESUMED — that keeps the
+            // READY full-resync (loadGuilds/loadDMs/… in AppStore) from firing on
+            // a successful resume, which is the whole point of resuming.
+            if t == "RESUMED" { return }
             let payload = obj["d"]
             if let payload, JSONSerialization.isValidJSONObject(payload),
                let dData = try? JSONSerialization.data(withJSONObject: payload) {
@@ -182,6 +239,7 @@ final class Gateway: ObservableObject {
 
     private func sendIdentify() {
         guard let token else { return }
+        resuming = false
         status = .identifying
         let frame: [String: Any] = [
             "op": 2,
@@ -191,6 +249,23 @@ final class Gateway: ObservableObject {
             ],
         ]
         send(frame)
+    }
+
+    /// We can RESUME only when a prior connection handed us a session id and we
+    /// recorded at least one seq to replay from.
+    private func canResume() -> Bool {
+        sessionId != nil && lastSeq != nil
+    }
+
+    private func sendResume() {
+        guard let token, let sid = sessionId, let seq = lastSeq else {
+            // Missing any piece → nothing to resume from; IDENTIFY fresh.
+            sendIdentify()
+            return
+        }
+        resuming = true
+        status = .identifying
+        send(["op": 4, "d": ["token": token, "session_id": sid, "seq": seq]])
     }
 
     private func sendHeartbeat() {
