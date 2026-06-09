@@ -624,9 +624,18 @@ export async function approveRequest(parentId: bigint, requestId: bigint) {
   if (req.type === 'friend' && req.targetUserId) {
     const { sendFriendRequest } = await import('./relationships');
     await sendFriendRequest(req.childId, req.targetUserId);
-  } else if (req.type === 'guild' && req.inviteCode) {
-    const { acceptInvite } = await import('./invites');
-    await acceptInvite(req.inviteCode, req.childId, { skipSupervisionCheck: true });
+  } else if (req.type === 'guild') {
+    // Key the join on the STABLE guild id (resolved + stored when the child
+    // made the request), NOT the mutable invite code — which may have been
+    // revoked / expired / regenerated since, breaking or mis-associating an
+    // otherwise-valid approval. Fall back to the invite code only for legacy
+    // rows that never resolved a guild id at request time.
+    const { joinGuildByApproval, acceptInvite } = await import('./invites');
+    if (req.guildId) {
+      await joinGuildByApproval(req.guildId, req.childId);
+    } else if (req.inviteCode) {
+      await acceptInvite(req.inviteCode, req.childId, { skipSupervisionCheck: true });
+    }
   }
 
   await db

@@ -270,12 +270,19 @@ familyRouter.get(
   },
 );
 
-const restrictionsPatch = z.object({
+// Every column of child_restrictions must be representable here, or the
+// validator silently strips it before setRestrictions sees it. allowCreateGuild
+// was missing — the column existed, was enforced on guild creation, defaulted,
+// and surfaced by getRestrictions (and both the web + native family UIs already
+// send it), but a parent had no way to actually set it because this schema
+// dropped the field. Exported so the regression test can assert it parses.
+export const restrictionsPatch = z.object({
   canAddFriends: z.boolean().optional(),
   canRemoveFriends: z.boolean().optional(),
   allowVoice: z.boolean().optional(),
   allowVideo: z.boolean().optional(),
   allowStream: z.boolean().optional(),
+  allowCreateGuild: z.boolean().optional(),
 });
 
 familyRouter.patch(
