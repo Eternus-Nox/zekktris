@@ -2683,6 +2683,10 @@ function AuditLogTab({ guild }: { guild: Guild }) {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const [filterPrefix, setFilterPrefix] = useState<string>('');
+  // Optional filter to a single moderator. Set by clicking an actor in a
+  // row; `actorLabel` is kept only so the active-filter chip can name them
+  // without a lookup. Cleared via the chip's ✕.
+  const [actorFilter, setActorFilter] = useState<{ id: string; label: string } | null>(null);
   const [exporting, setExporting] = useState(false);
 
   function fileSlug(): string {
@@ -2775,6 +2779,7 @@ function AuditLogTab({ guild }: { guild: Guild }) {
         limit: AUDIT_PAGE_SIZE,
         before: opts.before,
         actionPrefix: filterPrefix || undefined,
+        actorId: actorFilter?.id,
       });
       if (isInitial) {
         setEntries(r.entries);
@@ -2796,7 +2801,7 @@ function AuditLogTab({ guild }: { guild: Guild }) {
   useEffect(() => {
     void load({ replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [guild.id, filterPrefix]);
+  }, [guild.id, filterPrefix, actorFilter]);
 
   function loadMore() {
     if (loadingMore || done) return;
@@ -2855,14 +2860,44 @@ function AuditLogTab({ guild }: { guild: Guild }) {
         ))}
       </div>
 
+      {/* Active actor filter — set by clicking a moderator in a row. */}
+      {actorFilter && (
+        <div className="flex items-center gap-1.5">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs bg-accent/15 text-accent border border-accent/40">
+            By {actorFilter.label}
+            <button
+              onClick={() => setActorFilter(null)}
+              className="hover:text-ink-1"
+              aria-label="Clear moderator filter"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </span>
+        </div>
+      )}
+
       {entries.length === 0 ? (
         <div className="rounded-md border border-line bg-bg-2/50 px-4 py-6 text-center">
-          <p className="text-sm text-ink-2">No audit-log entries{filterPrefix ? ' match this filter' : ' yet'}.</p>
+          <p className="text-sm text-ink-2">
+            No audit-log entries{filterPrefix || actorFilter ? ' match this filter' : ' yet'}.
+          </p>
         </div>
       ) : (
         <ul className="space-y-1">
           {entries.map((entry) => (
-            <AuditLogEntryRow key={entry.id} entry={entry} />
+            <AuditLogEntryRow
+              key={entry.id}
+              entry={entry}
+              onFilterActor={
+                entry.actor
+                  ? () =>
+                      setActorFilter({
+                        id: entry.actor!.id,
+                        label: entry.actor!.displayName || entry.actor!.username,
+                      })
+                  : undefined
+              }
+            />
           ))}
         </ul>
       )}
@@ -2884,7 +2919,14 @@ function AuditLogTab({ guild }: { guild: Guild }) {
   );
 }
 
-function AuditLogEntryRow({ entry }: { entry: AuditLogEntry }) {
+function AuditLogEntryRow({
+  entry,
+  onFilterActor,
+}: {
+  entry: AuditLogEntry;
+  /** Filter the log to this entry's actor. Omitted when the actor is unknown. */
+  onFilterActor?: () => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const hasDetails = entry.changes !== null || entry.reason !== null;
 
@@ -2912,7 +2954,29 @@ function AuditLogEntryRow({ entry }: { entry: AuditLogEntry }) {
         <div className="flex-1 min-w-0">
           <div className="text-sm text-ink-1 truncate">{summary}</div>
           <div className="text-xs text-ink-3 flex items-center gap-2 mt-0.5">
-            <span>{actorName}</span>
+            {onFilterActor ? (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onFilterActor();
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onFilterActor();
+                  }
+                }}
+                className="hover:text-accent hover:underline cursor-pointer"
+                title={`Show only ${actorName}'s actions`}
+              >
+                {actorName}
+              </span>
+            ) : (
+              <span>{actorName}</span>
+            )}
             <span>·</span>
             <span title={new Date(entry.createdAt).toLocaleString()}>{timestamp}</span>
             <span className="px-1.5 py-0.5 rounded-sm bg-bg-3 text-[0.6rem] font-mono">

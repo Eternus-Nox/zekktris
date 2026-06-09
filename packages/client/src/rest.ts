@@ -1230,12 +1230,13 @@ export class RestClient {
    */
   listAuditLog(
     guildId: string,
-    opts: { before?: string; limit?: number; actionPrefix?: string } = {},
+    opts: { before?: string; limit?: number; actionPrefix?: string; actorId?: string } = {},
   ): Promise<{ entries: AuditLogEntry[] }> {
     const qs = new URLSearchParams();
     if (opts.before !== undefined) qs.set('before', opts.before);
     if (opts.limit !== undefined) qs.set('limit', String(opts.limit));
     if (opts.actionPrefix !== undefined) qs.set('actionPrefix', opts.actionPrefix);
+    if (opts.actorId !== undefined) qs.set('actorId', opts.actorId);
     const q = qs.toString();
     return this.request(
       'GET',

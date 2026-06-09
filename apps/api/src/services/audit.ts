@@ -96,6 +96,8 @@ export interface ListAuditOptions {
   /** Optional action-prefix filter ("member.", "automod.", etc).
    *  Server-side filter using LIKE for index-friendliness. */
   actionPrefix?: string;
+  /** Optional filter to a single actor (moderator) by user id. */
+  actorId?: bigint;
 }
 
 export async function listAuditEntries(
@@ -118,6 +120,9 @@ export async function listAuditEntries(
     // back to the (guild_id, created_at) index and filters in-memory,
     // which is fine for the row counts an audit log accumulates.
     conds.push(like(schema.auditLogEntries.action, `${opts.actionPrefix}%`));
+  }
+  if (opts.actorId !== undefined) {
+    conds.push(eq(schema.auditLogEntries.actorId, opts.actorId));
   }
 
   const rows = await db
