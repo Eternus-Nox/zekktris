@@ -4341,6 +4341,7 @@ struct GuildSettingsView: View {
     @State private var showReactionRoles = false
     @State private var showEmojiMgr = false
     @State private var showStickerMgr = false
+    @State private var showAuditLog = false
     @State private var confirmDelete = false
     @State private var confirmLeave = false
     @State private var guildIconItem: PhotosPickerItem?
@@ -4361,6 +4362,10 @@ struct GuildSettingsView: View {
                     getRolesSection
                     if isAdmin { discoverySection }
                     if isAdmin { managementSection }
+                    // Audit log — gated on its own permission, so a moderator
+                    // with VIEW_AUDIT_LOG (but not full Manage Server) still
+                    // sees it. ADMINISTRATOR/owner holds the bit too.
+                    if store.iHavePermission(Permissions.VIEW_AUDIT_LOG) { auditLogSection }
                     dangerSection
                 }
                 .padding(16)
@@ -4384,6 +4389,9 @@ struct GuildSettingsView: View {
             .sheet(isPresented: $showReactionRoles) { ReactionRolesView() }
             .sheet(isPresented: $showEmojiMgr) { EmojiManagerView() }
             .sheet(isPresented: $showStickerMgr) { StickerManagerView() }
+            .sheet(isPresented: $showAuditLog) {
+                GuildAuditLogView(guildId: store.selectedGuild?.id ?? "")
+            }
             .confirmationDialog("Delete this server?", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("Delete Server", role: .destructive) {
                     Task { await store.deleteSelectedGuild(); dismiss() }
@@ -4600,6 +4608,13 @@ struct GuildSettingsView: View {
             sectionHeader("COMMUNITY")
             settingsRow("Events", icon: "calendar") { showEvents = true }
             settingsRow("Get Roles", icon: "checkmark.seal.fill") { showGetRoles = true }
+        }
+    }
+
+    private var auditLogSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("MODERATION")
+            settingsRow("Audit Log", icon: "list.bullet.rectangle") { showAuditLog = true }
         }
     }
 
@@ -7377,6 +7392,212 @@ struct StreakChip: View {
                 .strokeBorder(Theme.plasmaAmber.opacity(0.4), lineWidth: 1)
         )
         .accessibilityLabel("\(days) day messaging streak")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Guild Audit Log — read-only moderation trail (gated on VIEW_AUDIT_LOG).
+// Mirrors the web AuditLogTab: who did what, when, to whom; action + actor
+// filters; keyset pagination via `before`. Styled like the security event log.
+// ═══════════════════════════════════════════════════════════════════════════
+
+struct GuildAuditLogView: View {
+    let guildId: String
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var entries: [AuditEntry] = []
+    @State private var loading = true
+    @State private var loadingMore = false
+    @State private var reachedEnd = false
+    @State private var error: String?
+    /// Action-name prefix filter; nil = all.
+    @State private var actionFilter: String?
+    /// Filter to a single moderator (tapped from a row).
+    @State private var actorFilterId: String?
+    @State private var actorFilterName: String = ""
+
+    private struct ActionOption: Identifiable {
+        let id: String
+        let prefix: String?
+        let label: String
+    }
+    private let actionOptions: [ActionOption] = [
+        .init(id: "all", prefix: nil, label: "All"),
+        .init(id: "member", prefix: "member", label: "Members"),
+        .init(id: "role", prefix: "role", label: "Roles"),
+        .init(id: "channel", prefix: "channel", label: "Channels"),
+        .init(id: "ban", prefix: "ban", label: "Bans"),
+        .init(id: "automod", prefix: "automod", label: "AutoMod"),
+    ]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let error {
+                        Text(error).font(.zkSans(12)).foregroundColor(Theme.dangerSoft)
+                    }
+
+                    // Action-prefix filter chips.
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(actionOptions) { opt in
+                                actionChip(opt.prefix, opt.label)
+                            }
+                        }
+                    }
+
+                    // Active actor filter (set by tapping a moderator).
+                    if actorFilterId != nil {
+                        HStack(spacing: 6) {
+                            Text("By \(actorFilterName)")
+                                .font(.zkSans(11, weight: .semibold)).foregroundColor(Theme.accent)
+                            Button {
+                                actorFilterId = nil
+                                actorFilterName = ""
+                                Task { await reload() }
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 12)).foregroundColor(Theme.accent)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(Theme.accent.opacity(0.12))
+                        .clipShape(Capsule())
+                    }
+
+                    if loading && entries.isEmpty {
+                        ProgressView().tint(Theme.accent)
+                            .frame(maxWidth: .infinity).padding(.top, 24)
+                    } else if entries.isEmpty {
+                        VStack(spacing: 8) {
+                            Image(systemName: "list.bullet.rectangle")
+                                .font(.system(size: 28, weight: .light)).foregroundColor(Theme.ink3)
+                            Text(emptyMessage)
+                                .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                        }
+                        .frame(maxWidth: .infinity).padding(.vertical, 24)
+                    } else {
+                        VStack(spacing: 8) {
+                            ForEach(entries) { entryRow($0) }
+                        }
+                        if !reachedEnd {
+                            Button {
+                                Task { await loadMore() }
+                            } label: {
+                                Text(loadingMore ? "Loading…" : "Load older entries")
+                                    .font(.zkSans(13)).foregroundColor(Theme.ink2)
+                                    .frame(maxWidth: .infinity).padding(.vertical, 10)
+                                    .background(Theme.bg2)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(loadingMore)
+                        }
+                    }
+                }
+                .padding(12)
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Audit Log").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .task { await reload() }
+        }
+    }
+
+    private var emptyMessage: String {
+        (actionFilter != nil || actorFilterId != nil)
+            ? "No entries match this filter."
+            : "Nothing logged yet."
+    }
+
+    private func actionChip(_ prefix: String?, _ label: String) -> some View {
+        let selected = actionFilter == prefix
+        return Button {
+            actionFilter = prefix
+            Task { await reload() }
+        } label: {
+            Text(label)
+                .font(.zkSans(12, weight: selected ? .semibold : .regular))
+                .foregroundColor(selected ? Theme.bg0 : Theme.ink2)
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(selected ? Theme.accent : Theme.bg2)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func entryRow(_ ev: AuditEntry) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Avatar(url: ev.actor?.avatarUrl, name: ev.actorName, size: 24)
+                Button {
+                    if let actor = ev.actor {
+                        actorFilterId = actor.id
+                        actorFilterName = actor.name
+                        Task { await reload() }
+                    }
+                } label: {
+                    Text(ev.actorName)
+                        .font(.zkSans(13, weight: .semibold)).foregroundColor(Theme.ink1)
+                        .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .disabled(ev.actor == nil)
+                Spacer(minLength: 6)
+                Text(shortTime(ev.createdAt))
+                    .font(.zkSans(10)).foregroundColor(Theme.ink4)
+            }
+            HStack(spacing: 6) {
+                Text(ev.action).font(.zkMono(11)).foregroundColor(Theme.accent)
+                Text("· \(ev.targetType)").font(.zkSans(11)).foregroundColor(Theme.ink3)
+            }
+            if let reason = ev.reason, !reason.isEmpty {
+                Text(reason).font(.zkSans(12)).foregroundColor(Theme.ink2)
+            }
+            if let changes = ev.changesText {
+                Text(changes)
+                    .font(.zkMono(10)).foregroundColor(Theme.ink3)
+                    .lineLimit(6)
+                    .padding(6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.bg0.opacity(0.6))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+        }
+        .padding(10)
+        .background(Theme.bg2)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    // ── Data ──
+    private func reload() async {
+        loading = true
+        error = nil
+        do {
+            let r = try await APIClient.shared.auditLog(
+                guildId: guildId, before: nil, actionPrefix: actionFilter, actorId: actorFilterId)
+            entries = r
+            reachedEnd = r.count < 50
+        } catch {
+            self.error = (error as? APIError)?.message ?? error.localizedDescription
+        }
+        loading = false
+    }
+
+    private func loadMore() async {
+        guard !loadingMore, !reachedEnd, let last = entries.last else { return }
+        loadingMore = true
+        do {
+            let r = try await APIClient.shared.auditLog(
+                guildId: guildId, before: last.id, actionPrefix: actionFilter, actorId: actorFilterId)
+            entries.append(contentsOf: r)
+            reachedEnd = r.count < 50
+        } catch {
+            self.error = (error as? APIError)?.message ?? error.localizedDescription
+        }
+        loadingMore = false
     }
 }
 
