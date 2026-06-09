@@ -725,7 +725,9 @@ struct VoiceChannelView: View {
             label("Connecting…", color: Theme.ink3)
         } else {
             switch voice.state {
-            case .connected: label("Connected", color: Theme.online)
+            // Steady-state "Connected" removed — being in the channel is
+            // indication enough. Transient/diagnostic states stay.
+            case .connected: EmptyView()
             case .connecting: label("Connecting…", color: Theme.ink3)
             case .reconnecting: label("Reconnecting…", color: Theme.accent3)
             case .failed: label(voice.lastError ?? "Connection failed", color: Theme.danger)
