@@ -74,6 +74,16 @@ export class GatewayClient {
   /** Status change subscribers. */
   private statusHandlers = new Set<(s: ConnectionStatus) => void>();
   private lastSeq: number | null = null;
+  /**
+   * Logical session id from the last READY/RESUMED. Persisted across socket
+   * drops so a reconnect can attempt RESUME; cleared on intentional stop or
+   * when the server rejects a resume. Null → we IDENTIFY fresh.
+   */
+  private sessionId: string | null = null;
+  /** True between sending RESUME and getting RESUMED/INVALID_SESSION — lets us
+   *  distinguish "resume rejected (fall back to IDENTIFY)" from "IDENTIFY
+   *  failed (fatal)". */
+  private resuming = false;
   private intentionallyClosed = false;
 
   constructor(private opts: GatewayClientOptions) {}
@@ -104,6 +114,11 @@ export class GatewayClient {
       }
       this.ws = null;
     }
+    // Intentional stop ends the logical session — the next start() IDENTIFYs
+    // fresh rather than trying to resume a session we deliberately left.
+    this.sessionId = null;
+    this.lastSeq = null;
+    this.resuming = false;
     this.setStatus('closed');
   }
 
@@ -184,6 +199,8 @@ export class GatewayClient {
     }
 
     this.setStatus('connecting');
+    // A fresh socket; the resume decision is made when HELLO arrives.
+    this.resuming = false;
     let ws: WebSocket;
     try {
       ws = new Ctor(this.opts.url);
@@ -252,7 +269,11 @@ export class GatewayClient {
       case GatewayOp.HELLO: {
         const interval = (frame.d as { heartbeat_interval?: number } | undefined)?.heartbeat_interval ?? 30_000;
         this.startHeartbeat(interval);
-        this.sendIdentify();
+        // If we have a prior session + seq, try to RESUME (replay the events
+        // we missed) before falling back to a full IDENTIFY. Transparent: a
+        // server that can't resume sends INVALID_SESSION and we IDENTIFY.
+        if (this.canResume()) this.sendResume();
+        else this.sendIdentify();
         return;
       }
       case GatewayOp.HEARTBEAT_ACK:
@@ -264,7 +285,20 @@ export class GatewayClient {
         }
         return;
       case GatewayOp.INVALID_SESSION:
-        // Token was bad or session is gone. Don't auto-retry; tell the host.
+        if (this.resuming) {
+          // Our RESUME couldn't be satisfied (gap too large, unknown/expired
+          // session, or a different node). Fall back to a fresh IDENTIFY on
+          // this same open socket — fully transparent; the host's READY
+          // handler does its usual reconnect resync.
+          this.log('info', 'gateway: resume rejected, falling back to IDENTIFY');
+          this.resuming = false;
+          this.sessionId = null;
+          this.lastSeq = null;
+          this.sendIdentify();
+          return;
+        }
+        // IDENTIFY itself was rejected — token bad or session revoked. Fatal:
+        // don't auto-retry; tell the host.
         this.log('warn', 'gateway: INVALID_SESSION');
         this.intentionallyClosed = true;
         this.setStatus('closed');
@@ -272,9 +306,14 @@ export class GatewayClient {
         return;
       case GatewayOp.DISPATCH: {
         if (!frame.t) return;
-        // Once we see READY, the connection is live. Backoff resets here.
-        if (frame.t === 'READY') {
+        // READY (fresh identify) or RESUMED (replay caught us up) both mean
+        // the connection is live; reset backoff and capture the session id so
+        // the NEXT reconnect can attempt a resume.
+        if (frame.t === 'READY' || frame.t === 'RESUMED') {
           this.backoff = 1000;
+          this.resuming = false;
+          const sid = (frame.d as { session_id?: string } | undefined)?.session_id;
+          if (typeof sid === 'string') this.sessionId = sid;
           this.setStatus('ready');
         }
         this.emit(frame.t, frame.d);
@@ -285,6 +324,26 @@ export class GatewayClient {
     }
   }
 
+  /** Whether we hold enough state to attempt a RESUME on this connection. */
+  private canResume(): boolean {
+    return this.sessionId !== null && this.lastSeq !== null;
+  }
+
+  private sendResume(): void {
+    const token = this.opts.getToken();
+    if (!token || this.sessionId === null || this.lastSeq === null) {
+      // No token or nothing to resume from — IDENTIFY instead.
+      this.sendIdentify();
+      return;
+    }
+    this.resuming = true;
+    this.setStatus('identifying');
+    this.send({
+      op: GatewayOp.RESUME,
+      d: { token, session_id: this.sessionId, seq: this.lastSeq },
+    });
+  }
+
   private sendIdentify(): void {
     const token = this.opts.getToken();
     if (!token) {
@@ -292,6 +351,7 @@ export class GatewayClient {
       this.stop();
       return;
     }
+    this.resuming = false;
     this.setStatus('identifying');
     this.send({
       op: GatewayOp.IDENTIFY,
