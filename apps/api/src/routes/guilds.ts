@@ -60,8 +60,10 @@ import {
   assertCanManageRole,
   assertCanManageMember,
   computeMemberGuildPermissions,
+  computeMemberChannelPermissions,
   hasPermission,
 } from '../services/permissions';
+import * as botsSvc from '../services/bots';
 
 export const guildsRouter = new Hono();
 
@@ -1673,6 +1675,73 @@ guildsRouter.get(
       truncated: rows.length >= cap,
       entries: rows.map((r) => toAuditLogEntry(r.entry, r.actor)),
     });
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Bot slash-commands (per guild)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// GET  /:guildId/commands         → commands available in this guild (every
+//   command whose bot is a member, guild-scoped OR global). Members only — it
+//   feeds the composer's slash picker.
+// POST /:guildId/commands/invoke  → run `/<name> <args>`. Member-gated; the
+//   invoker must be able to VIEW_CHANNEL on the target channel. The service
+//   then delivers an interaction.create event to the bot's callback (the bot
+//   replies via REST). 404 if no such command resolves; 400 if the bot has no
+//   callback configured.
+
+guildsRouter.get(
+  '/:guildId/commands',
+  validate('param', z.object({ guildId: snowflakeSchema })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const guildId = BigInt(c.req.valid('param').guildId);
+    await ensureMember(guildId, userId);
+    const commands = await botsSvc.listCommandsForGuild(guildId);
+    return c.json({ commands });
+  },
+);
+
+guildsRouter.post(
+  '/:guildId/commands/invoke',
+  validate('param', z.object({ guildId: snowflakeSchema })),
+  validate(
+    'json',
+    z.object({
+      channelId: snowflakeSchema,
+      name: z.string().trim().min(1).max(32),
+      argText: z.string().max(2000).optional(),
+    }),
+  ),
+  async (c) => {
+    const userId = requireUserId(c);
+    const guildId = BigInt(c.req.valid('param').guildId);
+    const body = c.req.valid('json');
+    const channelId = BigInt(body.channelId);
+    await ensureMember(guildId, userId);
+
+    // The channel must belong to this guild, and the invoker must be able to
+    // see it — you can't fire a command into a channel you can't view.
+    const [ch] = await db
+      .select({ guildId: schema.channels.guildId })
+      .from(schema.channels)
+      .where(and(eq(schema.channels.id, channelId), isNull(schema.channels.deletedAt)))
+      .limit(1);
+    if (!ch || ch.guildId !== guildId) throw errors.notFound('Channel');
+    const perms = await computeMemberChannelPermissions(channelId, userId);
+    if (!hasPermission(perms, Permissions.VIEW_CHANNEL)) {
+      throw errors.missingPermissions(['VIEW_CHANNEL']);
+    }
+
+    const result = await botsSvc.invokeBotCommand({
+      invokerId: userId,
+      guildId,
+      channelId,
+      name: body.name,
+      argText: body.argText ?? '',
+    });
+    return c.json(result);
   },
 );
 

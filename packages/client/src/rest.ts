@@ -27,6 +27,8 @@ import type {
   PermissionOverride,
   PublicUser,
   Bot,
+  BotCommand,
+  GuildCommand,
   ReactionRoleMapping,
   ReadState,
   Role,
@@ -420,6 +422,42 @@ export class RestClient {
     url: string | null,
   ): Promise<{ eventUrl: string | null; secret: string | null }> {
     return this.request('PUT', `/users/@me/bots/${botId}/event-config`, { url });
+  }
+
+  // ── Bot slash-commands ────────────────────────────────────────────────────
+
+  /** Register a slash-command for a bot you own. Omit `guildId` for a global
+   *  command, or scope it to one guild the bot is in. */
+  registerBotCommand(
+    botId: string,
+    input: { name: string; description: string; guildId?: string },
+  ): Promise<{ command: BotCommand }> {
+    return this.request('POST', `/users/@me/bots/${botId}/commands`, input);
+  }
+
+  /** List the commands registered on a bot you own. */
+  listBotCommands(botId: string): Promise<{ commands: BotCommand[] }> {
+    return this.request('GET', `/users/@me/bots/${botId}/commands`);
+  }
+
+  /** Delete one of a bot's commands. */
+  deleteBotCommand(botId: string, commandId: string): Promise<{ ok: boolean }> {
+    return this.request('DELETE', `/users/@me/bots/${botId}/commands/${commandId}`);
+  }
+
+  /** Commands available in a guild (every command whose bot is a member,
+   *  guild-scoped or global) — for the composer's slash picker. */
+  listGuildCommands(guildId: string): Promise<{ commands: GuildCommand[] }> {
+    return this.request('GET', `/guilds/${guildId}/commands`);
+  }
+
+  /** Invoke `/<name> <args>` in a channel — delivers an interaction to the
+   *  bot's callback. Returns the resolved bot + command name. */
+  invokeCommand(
+    guildId: string,
+    input: { channelId: string; name: string; argText?: string },
+  ): Promise<{ botName: string; commandName: string }> {
+    return this.request('POST', `/guilds/${guildId}/commands/invoke`, input);
   }
 
 
