@@ -147,17 +147,22 @@ final class VoipPushHandler: NSObject, PKPushRegistryDelegate {
         let dict = payload.dictionaryPayload
         let channelId = (dict["channelId"] as? String) ?? ""
         let callerName = (dict["callerName"] as? String) ?? "Incoming call"
-        Task { @MainActor in
-            // Mandatory: surface CallKit immediately. The store (booting
-            // in parallel on a cold launch) handles answer/decline once
-            // its CallKit wiring lands — reportIncoming is idempotent
-            // per channel, so a duplicate in-app ring can't double-ring.
+        // Apple REQUIRES the incoming call be reported to CallKit BEFORE this
+        // method returns. Deferring it (the old `Task { @MainActor in … }`)
+        // runs reportNewIncomingCall a run-loop turn too late, so iOS kills
+        // the app and stops delivering future VoIP pushes. PKPushRegistry was
+        // created with `queue: .main` (see start()), so this delegate callback
+        // already runs on the main thread / main actor — assumeIsolated lets us
+        // call the @MainActor CallManager synchronously, with no Task hop.
+        // (reportIncoming is idempotent per channel, so a duplicate in-app
+        // ring from the booting store can't double-ring.)
+        MainActor.assumeIsolated {
             CallManager.shared.reportIncoming(
                 channelId: channelId.isEmpty ? UUID().uuidString : channelId,
                 callerName: callerName
             )
-            completion()
         }
+        completion()
     }
 }
 
