@@ -1157,8 +1157,7 @@ struct MessageRow: View {
 
     private func splitCodeBlocks(_ s: String) -> [ContentBlock] {
         guard s.contains("```") else { return [.text(s)] }
-        let pattern = "```[^\\n]*\\n?([\\s\\S]*?)```"
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return [.text(s)] }
+        let re = MessageRow.codeBlockRegex
         let ns = s as NSString
         let matches = re.matches(in: s, range: NSRange(location: 0, length: ns.length))
         if matches.isEmpty { return [.text(s)] }
@@ -1214,6 +1213,11 @@ struct MessageRow: View {
 
     // ── Custom emoji (`:name:`) inline rendering ────────────────────────────
     private static let emojiTokenRegex = try! NSRegularExpression(pattern: ":([a-z0-9_]{2,32}):")
+    // Compiled once (was rebuilt on every row render): the fenced-code-block
+    // splitter and the mention-token matcher. NSRegularExpression compilation
+    // is the expensive part — matching against a short message body is cheap.
+    private static let codeBlockRegex = try! NSRegularExpression(pattern: "```[^\\n]*\\n?([\\s\\S]*?)```")
+    private static let mentionRegex = try! NSRegularExpression(pattern: "<@!?\\d+>|<@&\\d+>|<#\\d+>")
 
     private func parseSegments(_ s: String) -> [ContentSeg] {
         let map = store.emojiByName
@@ -1258,8 +1262,7 @@ struct MessageRow: View {
     /// Mirrors the web markdown renderer's mention chips.
     private func richContent(_ s: String) -> AttributedString {
         guard s.contains("<@") || s.contains("<#") else { return markdownAttributed(s) }
-        let pattern = "<@!?\\d+>|<@&\\d+>|<#\\d+>"
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return markdownAttributed(s) }
+        let re = MessageRow.mentionRegex
         let ns = s as NSString
         let matches = re.matches(in: s, range: NSRange(location: 0, length: ns.length))
         if matches.isEmpty { return markdownAttributed(s) }
@@ -2207,19 +2210,52 @@ private struct DMSearchResultRow: View {
     }
 }
 
+/// Box so AttributedString (a value type) can live in NSCache, which needs
+/// class instances.
+private final class AttributedStringBox {
+    let value: AttributedString
+    init(_ value: AttributedString) { self.value = value }
+}
+
+/// Pure-function memo for `markdownAttributed`. The markdown parse below is the
+/// single most expensive step in a message row's body, and the row re-evaluates
+/// its body on every list republish — including reaction / read-receipt edits
+/// that don't touch the text. Because the output depends ONLY on the input
+/// string (no store / resolution state), caching by string is a strict
+/// memoization: identical input always yields the identical AttributedString,
+/// so a re-render that doesn't change the text reuses the parse instead of
+/// redoing it. NSCache is thread-safe and self-evicts under memory pressure;
+/// the count cap bounds it for the long-lived case.
+private let markdownCache: NSCache<NSString, AttributedStringBox> = {
+    let cache = NSCache<NSString, AttributedStringBox>()
+    cache.countLimit = 2000
+    return cache
+}()
+
 /// Render a chat message body as inline markdown — bold, italic, `code`,
 /// ~~strikethrough~~, and [links](url) — while preserving newlines and runs of
 /// whitespace. Falls back to the raw string if it can't be parsed as markdown.
+///
+/// Result is memoized by the input string (see `markdownCache`): a pure
+/// function of `string`, so the cache never changes the rendered output.
 func markdownAttributed(_ string: String) -> AttributedString {
+    let key = string as NSString
+    if let cached = markdownCache.object(forKey: key) {
+        return cached.value
+    }
     let options = AttributedString.MarkdownParsingOptions(
         allowsExtendedAttributes: true,
         interpretedSyntax: .inlineOnlyPreservingWhitespace,
         failurePolicy: .returnPartiallyParsedIfPossible
     )
+    let result: AttributedString
     if let attributed = try? AttributedString(markdown: string, options: options) {
-        return attributed
+        result = attributed
+    } else {
+        result = AttributedString(string)
     }
-    return AttributedString(string)
+    markdownCache.setObject(AttributedStringBox(result), forKey: key)
+    return result
 }
 
 // MARK: - Profile card
