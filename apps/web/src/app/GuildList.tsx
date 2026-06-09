@@ -12,7 +12,7 @@
 import { Link, useLocation } from 'react-router-dom';
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
-import { useAppState } from '../state/AppState';
+import { useAppStateSelector } from '../state/AppState';
 import type { Guild, GuildFolder } from '@zekktris/client';
 import { Plus, UserPlus, Settings, LogOut, MessageSquare, Compass, Folder, Trash, AtSign, Shield, Users } from '../lib/icons';
 import { useParentalControlsEnabled } from '../lib/familyPrefs';
@@ -37,7 +37,10 @@ import {
 import { useGuildDragReorder } from '../lib/useGuildDragReorder';
 
 export function GuildList({ activeGuildId }: { activeGuildId: string | undefined }) {
-  const { state } = useAppState();
+  // Granular subscriptions (was `useAppState()`): the guild rail re-renders
+  // only when the guild set or guild metadata changes, not on every dispatch.
+  const guildIds = useAppStateSelector((v) => v.state.guildIds);
+  const guildsById = useAppStateSelector((v) => v.state.guildsById);
   const { logout, user, rest } = useAuth();
   const location = useLocation();
   const isDiscoverActive = location.pathname.startsWith('/discover');
@@ -56,7 +59,7 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
   // Right-click on a guild tile opens GuildInfoCard anchored to the click.
   // We hoist the state here because the cards are owned by GuildList (one
   // can be open at a time across all tiles). The chosen guild is found
-  // via state.guildsById.
+  // via guildsById.
   const [guildInfo, setGuildInfo] = useState<{ guildId: string; x: number; y: number } | null>(null);
   const [guildSettings, setGuildSettings] = useState<{ guildId: string; tab: 'overview' | 'roles' | 'invites' | 'members' | 'danger' } | null>(null);
 
@@ -100,8 +103,8 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverOrder]);
   const orderedGuildIds = useMemo(
-    () => applyGuildOrder(state.guildIds, savedOrder),
-    [state.guildIds, savedOrder],
+    () => applyGuildOrder(guildIds, savedOrder),
+    [guildIds, savedOrder],
   );
 
   // Resolve guild ids → Guild objects in the same order, used to feed
@@ -109,9 +112,9 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
   const orderedGuilds = useMemo(
     () =>
       orderedGuildIds
-        .map((id) => state.guildsById[id])
+        .map((id) => guildsById[id])
         .filter((g): g is Guild => Boolean(g)),
-    [orderedGuildIds, state.guildsById],
+    [orderedGuildIds, guildsById],
   );
 
   // ── Rail folders ────────────────────────────────────────────────────
@@ -163,13 +166,13 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
   // current guild set.
   useEffect(() => {
     if (savedOrder.length === 0) return;
-    const present = new Set(state.guildIds);
+    const present = new Set(guildIds);
     const trimmed = savedOrder.filter((id) => present.has(id));
     if (trimmed.length !== savedOrder.length) {
       writeGuildOrder(trimmed);
       setSavedOrder(trimmed);
     }
-  }, [state.guildIds, savedOrder]);
+  }, [guildIds, savedOrder]);
 
   const { state: dragState, startDrag, wasJustDragging } = useGuildDragReorder({
     guildIds: orderedGuildIds,
@@ -382,9 +385,9 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
       )}
 
       {/* Right-click → GuildInfoCard popover. Mounts only while open. */}
-      {guildInfo && state.guildsById[guildInfo.guildId] && (
+      {guildInfo && guildsById[guildInfo.guildId] && (
         <GuildInfoCard
-          guild={state.guildsById[guildInfo.guildId]!}
+          guild={guildsById[guildInfo.guildId]!}
           anchor={{ x: guildInfo.x, y: guildInfo.y }}
           onClose={() => setGuildInfo(null)}
           onOpenSettings={() => {
@@ -437,10 +440,10 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
           for the right-click flow, where the active guild may not match
           the right-clicked one. The two never render simultaneously
           because settingsOpen ≠ guildSettings. */}
-      {guildSettings && state.guildsById[guildSettings.guildId] && (
+      {guildSettings && guildsById[guildSettings.guildId] && (
         <Suspense fallback={null}>
           <GuildSettingsModal
-            guild={state.guildsById[guildSettings.guildId]!}
+            guild={guildsById[guildSettings.guildId]!}
             initialTab={guildSettings.tab}
             onClose={() => setGuildSettings(null)}
           />

@@ -21,7 +21,6 @@ import type { Poll, PollOption } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useToasts } from '../state/Toasts';
-import { useAppState } from '../state/AppState';
 
 interface Props {
   channelId: string;
@@ -34,7 +33,6 @@ interface Props {
 export function PollMessage({ channelId, messageId, poll: initial, authorId }: Props) {
   const { rest, user } = useAuth();
   const toasts = useToasts();
-  const { state } = useAppState();
   // messageId is part of the prop contract for symmetry with future
   // operations (delete/edit poll attachments, audit attribution) but
   // isn't read directly today — the poll id alone is sufficient for
@@ -140,10 +138,6 @@ export function PollMessage({ channelId, messageId, poll: initial, authorId }: P
       toasts.push(e instanceof ApiError ? e.message : 'Could not end poll', 'error');
     }
   }
-
-  // Avoid lint about unused `state`. Imported for symmetry with other
-  // poll-aware components that may want to look up channel context.
-  void state;
 
   return (
     <div className="mt-2 max-w-md border border-line rounded-lg bg-bg-2 p-3 space-y-2">

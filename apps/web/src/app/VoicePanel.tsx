@@ -27,7 +27,7 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
   const { state, restForChannel } = useAppState();
   const { user } = useAuth();
   const toasts = useToasts();
-  const my = selfVoiceState(state, user?.id);
+  const my = selfVoiceState(state.voiceStatesByUser, user?.id);
   // Local-deafen mirror so toggling re-renders this component.
   const [deafened, setDeafenedState] = useState(isDeafened());
 

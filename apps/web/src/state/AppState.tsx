@@ -3198,25 +3198,29 @@ export function channelMentionCount(
   return readStates[channelId]?.mentionCount ?? 0;
 }
 
-/** Every voice state currently in the given channel. */
+/** Every voice state currently in the given channel. Takes the
+ *  `voiceStatesByUser` map directly (not the whole `State`) so callers on
+ *  the selector hook can pass just that slice without subscribing to all
+ *  of state. */
 export function voiceStatesForChannel(
-  state: State,
+  voiceStatesByUser: Record<string, VoiceState>,
   channelId: string,
 ): VoiceState[] {
   const out: VoiceState[] = [];
-  for (const v of Object.values(state.voiceStatesByUser)) {
+  for (const v of Object.values(voiceStatesByUser)) {
     if (v.channelId === channelId) out.push(v);
   }
   return out;
 }
 
-/** This user's current voice state, if any. */
+/** This user's current voice state, if any. Takes the `voiceStatesByUser`
+ *  map directly (see voiceStatesForChannel). */
 export function selfVoiceState(
-  state: State,
+  voiceStatesByUser: Record<string, VoiceState>,
   selfUserId: string | undefined,
 ): VoiceState | null {
   if (!selfUserId) return null;
-  return state.voiceStatesByUser[selfUserId] ?? null;
+  return voiceStatesByUser[selfUserId] ?? null;
 }
 
 // ── Notification ping ──────────────────────────────────────────────────────

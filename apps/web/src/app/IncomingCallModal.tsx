@@ -57,8 +57,8 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
   const [busy, setBusy] = useState(false);
 
   const selfId = user?.id;
-  const callStates = voiceStatesForChannel(state, channel.id);
-  const myVoice = selfVoiceState(state, selfId);
+  const callStates = voiceStatesForChannel(state.voiceStatesByUser, channel.id);
+  const myVoice = selfVoiceState(state.voiceStatesByUser, selfId);
   const myInThis = myVoice?.channelId === channel.id;
   const other = callStates.find((v) => v.userId !== selfId);
 

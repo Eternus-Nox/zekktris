@@ -21,7 +21,7 @@
 import { useMemo, useState } from 'react';
 import type { Message } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
-import { useAppState } from '../state/AppState';
+import { useAppStateSelector } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
 import { Plus } from '../lib/icons';
 import { EmojiPicker } from './EmojiPicker';
@@ -29,7 +29,12 @@ import { EmojiPicker } from './EmojiPicker';
 const EMOJI_NAME_RE = /^:([a-z0-9_]{2,32}):$/;
 
 export function Reactions({ message }: { message: Message }) {
-  const { state, restForChannel } = useAppState();
+  // Granular subscriptions (was `useAppState()`): a reaction row should not
+  // re-render on unrelated dispatches (typing, presence, other channels'
+  // messages). Only these two slices drive its output.
+  const channelsByGuild = useAppStateSelector((v) => v.state.channelsByGuild);
+  const emojisByGuild = useAppStateSelector((v) => v.state.emojisByGuild);
+  const restForChannel = useAppStateSelector((v) => v.restForChannel);
   const toasts = useToasts();
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -39,12 +44,12 @@ export function Reactions({ message }: { message: Message }) {
   // section. Iterates each guild's channel list once; we don't have a
   // global channel cache for v1.
   const guildId = useMemo(() => {
-    for (const [gid, list] of Object.entries(state.channelsByGuild)) {
+    for (const [gid, list] of Object.entries(channelsByGuild)) {
       if (list.some((c) => c.id === message.channelId)) return gid;
     }
     return undefined;
-  }, [state.channelsByGuild, message.channelId]);
-  const guildEmojis = guildId ? state.emojisByGuild[guildId] ?? [] : [];
+  }, [channelsByGuild, message.channelId]);
+  const guildEmojis = guildId ? emojisByGuild[guildId] ?? [] : [];
 
   async function toggle(emoji: string, currentlyMine: boolean) {
     try {

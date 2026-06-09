@@ -40,7 +40,7 @@ export function GlobalCallOverlay() {
   const { state } = useAppState();
   const { user } = useAuth();
   const selfId = user?.id;
-  const myVoice = selfVoiceState(state, selfId);
+  const myVoice = selfVoiceState(state.voiceStatesByUser, selfId);
 
   // Resolve incoming and outgoing channels in one pass. useMemo
   // gates the work on the inputs the scan actually reads — voice
@@ -60,7 +60,7 @@ export function GlobalCallOverlay() {
         (c) => c.id === myVoice.channelId && c.type === 'dm',
       );
       if (ch) {
-        const inThis = voiceStatesForChannel(state, ch.id);
+        const inThis = voiceStatesForChannel(state.voiceStatesByUser, ch.id);
         const otherInThis = inThis.some((v) => v.userId !== selfId);
         if (!otherInThis) {
           // Ring-out state. No incoming can fire simultaneously
@@ -79,7 +79,7 @@ export function GlobalCallOverlay() {
     // where someone else is. First match wins.
     for (const c of state.dmChannels) {
       if (c.type !== 'dm') continue;
-      const inThis = voiceStatesForChannel(state, c.id);
+      const inThis = voiceStatesForChannel(state.voiceStatesByUser, c.id);
       // We know !myVoice here, so no voice state in this channel can
       // be ours. Any presence at all = someone else ringing us.
       if (inThis.length > 0) {

@@ -173,11 +173,11 @@ export function VoiceView({
   // identity (the reducer only swaps that ref when a state actually
   // changes) confines recomputation to actual voice transitions.
   const participants = useMemo(
-    () => voiceStatesForChannel(state, channel.id),
+    () => voiceStatesForChannel(state.voiceStatesByUser, channel.id),
     [state.voiceStatesByUser, channel.id],
   );
   const myVoice = useMemo(
-    () => selfVoiceState(state, user?.id),
+    () => selfVoiceState(state.voiceStatesByUser, user?.id),
     [state.voiceStatesByUser, user?.id],
   );
   const inThis = !!myVoice && myVoice.channelId === channel.id;

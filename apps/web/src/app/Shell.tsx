@@ -38,7 +38,7 @@ const lazyFallback = (
 import { useAuth } from '../auth/AuthContext';
 import { useNativePush } from './useNativePush';
 import { useDesktopIdleStatus } from '../lib/useDesktopIdleStatus';
-import { useAppState, totalMentionCount, voiceStatesForChannel, selfVoiceState } from '../state/AppState';
+import { useAppStateSelector, totalMentionCount, voiceStatesForChannel, selfVoiceState } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
 import { disconnectVoice, getActiveVoiceSessionId } from '../lib/voice';
 import { GuildList } from './GuildList';
@@ -73,7 +73,18 @@ export function Shell() {
   // Desktop-only: auto-set Away/Online from system idle (no-op in browser).
   useDesktopIdleStatus();
   const params = useParams<{ guildId?: string; channelId?: string; messageId?: string }>();
-  const { state, loadChannels, restForChannel } = useAppState();
+  // Granular subscriptions (was `useAppState()`): the top-level shell no
+  // longer re-renders on every dispatch — only when one of the slices it
+  // actually reads changes. This is high-leverage: a Shell re-render
+  // cascades into all four columns.
+  const loadChannels = useAppStateSelector((v) => v.loadChannels);
+  const restForChannel = useAppStateSelector((v) => v.restForChannel);
+  const voiceStatesByUser = useAppStateSelector((v) => v.state.voiceStatesByUser);
+  const dmChannels = useAppStateSelector((v) => v.state.dmChannels);
+  const guildIds = useAppStateSelector((v) => v.state.guildIds);
+  const channelsByGuild = useAppStateSelector((v) => v.state.channelsByGuild);
+  const guildsById = useAppStateSelector((v) => v.state.guildsById);
+  const readStateByChannel = useAppStateSelector((v) => v.state.readStateByChannel);
   const nav = useNavigate();
   // Track on-screen keyboard height as a CSS variable so the layout
   // can stay above the keyboard even when iOS Safari fails to resize
@@ -109,7 +120,7 @@ export function Shell() {
   // connect, and clears it on local disconnect.
   const toasts = useToasts();
   const myVoiceSessionId =
-    state.voiceStatesByUser[user?.id ?? '']?.sessionId ?? null;
+    voiceStatesByUser[user?.id ?? '']?.sessionId ?? null;
   useEffect(() => {
     const local = getActiveVoiceSessionId();
     // We can only meaningfully detect takeover when this device
@@ -152,7 +163,7 @@ export function Shell() {
   // hang up our own ring-out. The ring-out IS supposed to leave us
   // alone in voice until the partner joins; that's the whole point.
   const myVoiceChannelId =
-    state.voiceStatesByUser[user?.id ?? '']?.channelId ?? null;
+    voiceStatesByUser[user?.id ?? '']?.channelId ?? null;
   // Ref tracks "has the partner ever appeared in voice with me for
   // THIS channel during this session." Keyed by channelId so a fresh
   // call to a different DM starts with a clean flag. Reset when we
@@ -186,10 +197,10 @@ export function Shell() {
       partnerWasHereRef.current = { channelId: myVoiceChannelId, seen: false };
     }
     // Is the channel I'm in a 1:1 DM? Look it up.
-    const ch = state.dmChannels.find((c) => c.id === myVoiceChannelId);
+    const ch = dmChannels.find((c) => c.id === myVoiceChannelId);
     if (!ch || ch.type !== 'dm') return; // not a 1:1 DM — group calls + guild voice don't auto-end on partner leave
     // Is any OTHER user currently in this channel's voice?
-    const othersInChannel = Object.values(state.voiceStatesByUser).some(
+    const othersInChannel = Object.values(voiceStatesByUser).some(
       (v) => v.channelId === myVoiceChannelId && v.userId !== selfId,
     );
     // If a partner is here right now, remember it. The flag stays
@@ -215,7 +226,7 @@ export function Shell() {
       void disconnectVoice();
       toasts.push('Call ended', 'info');
     })();
-  }, [myVoiceChannelId, state.voiceStatesByUser, state.dmChannels, user?.id, rest, toasts]);
+  }, [myVoiceChannelId, voiceStatesByUser, dmChannels, user?.id, rest, toasts]);
 
   // NOTE: All hooks must be declared BEFORE any early return below. Early
   // returns inside this component skip the hooks underneath them, and React
@@ -291,8 +302,8 @@ export function Shell() {
   // but skip the channel-list resolution below.
   const activeGuildId = isDmLayout || isContentMode
     ? undefined
-    : (params.guildId ?? state.guildIds[0]);
-  const activeGuildChannels = activeGuildId ? state.channelsByGuild[activeGuildId] : undefined;
+    : (params.guildId ?? guildIds[0]);
+  const activeGuildChannels = activeGuildId ? channelsByGuild[activeGuildId] : undefined;
 
   // Auto-select first text channel if guild is set but channel isn't.
   // Only fires on desktop — on mobile we want the user to land on the
@@ -343,16 +354,16 @@ export function Shell() {
 
   // ── Active-channel resolution ──────────────────────────────────────────
   const activeGuild = useMemo(
-    () => (activeGuildId ? state.guildsById[activeGuildId] : undefined),
-    [activeGuildId, state.guildsById],
+    () => (activeGuildId ? guildsById[activeGuildId] : undefined),
+    [activeGuildId, guildsById],
   );
   const activeChannel = useMemo(() => {
     if (!activeChannelId) return undefined;
     if (isDmMode) {
-      return state.dmChannels.find((c) => c.id === activeChannelId);
+      return dmChannels.find((c) => c.id === activeChannelId);
     }
     return activeGuildChannels?.find((c) => c.id === activeChannelId);
-  }, [isDmMode, activeChannelId, state.dmChannels, activeGuildChannels]);
+  }, [isDmMode, activeChannelId, dmChannels, activeGuildChannels]);
 
   // ── Mobile drawer state ───────────────────────────────────────────────
   // The guild rail is permanent now (always visible on every viewport),
@@ -395,8 +406,8 @@ export function Shell() {
   // underlying map ref so it only recomputes when an unread/mention
   // count actually changes.
   const mentionCount = useMemo(
-    () => totalMentionCount(state.readStateByChannel, activeChannelId),
-    [state.readStateByChannel, activeChannelId],
+    () => totalMentionCount(readStateByChannel, activeChannelId),
+    [readStateByChannel, activeChannelId],
   );
   useEffect(() => {
     const channelLabel = activeChannel?.name
@@ -657,8 +668,8 @@ export function Shell() {
               const isDm =
                 activeChannel.type === 'dm' || activeChannel.type === 'group_dm';
               if (isDm && user) {
-                const callStates = voiceStatesForChannel(state, activeChannel.id);
-                const myVoice = selfVoiceState(state, user.id);
+                const callStates = voiceStatesForChannel(voiceStatesByUser, activeChannel.id);
+                const myVoice = selfVoiceState(voiceStatesByUser, user.id);
                 const myInThis = myVoice?.channelId === activeChannel.id;
                 const otherInThis = callStates.some((v) => v.userId !== user.id);
                 if (myInThis && otherInThis) {

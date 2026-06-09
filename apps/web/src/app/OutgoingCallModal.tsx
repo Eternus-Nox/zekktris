@@ -41,9 +41,9 @@ export function OutgoingCallModal({ channel }: { channel: Channel }) {
   const [busy, setBusy] = useState(false);
 
   const selfId = user?.id;
-  const myVoice = selfVoiceState(state, selfId);
+  const myVoice = selfVoiceState(state.voiceStatesByUser, selfId);
   const myInThis = myVoice?.channelId === channel.id;
-  const callStates = voiceStatesForChannel(state, channel.id);
+  const callStates = voiceStatesForChannel(state.voiceStatesByUser, channel.id);
   const otherInThis = callStates.some((v) => v.userId !== selfId);
 
   // Gates: 1:1 DM only, we're in voice in THIS channel, and the
