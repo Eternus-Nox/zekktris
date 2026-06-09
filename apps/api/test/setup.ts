@@ -11,7 +11,13 @@
  * a URL (postgres-js connects lazily, and the units under test issue no query),
  * and the LiveKit creds are used purely to sign tokens locally.
  */
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 process.env.NODE_ENV ||= 'test';
+// Uploads default to /data/uploads (not writable in a test run); point them
+// at a throwaway temp dir so upload-path tests can write without root.
+process.env.UPLOAD_DIR ||= join(tmpdir(), 'zekktris-test-uploads');
 process.env.DATABASE_URL ||= 'postgres://test:test@127.0.0.1:5432/zekktris_test';
 process.env.JWT_SECRET ||= 'test-only-jwt-secret-minimum-32-characters-long';
 process.env.JWT_REFRESH_SECRET ||= 'test-only-refresh-secret-distinct-32-characters';

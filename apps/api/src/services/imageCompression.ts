@@ -47,6 +47,16 @@ import { env } from '../env';
 const COMPRESS_AFTER_DAYS = 7;
 
 /**
+ * Decompression-bomb cap for the periodic sweep's decode. The upload
+ * boundary rejects oversized images, but this sweep also decodes already-
+ * stored files (including any that predate the boundary check), so it caps
+ * sharp's input independently. 100 MP — see MAX_INPUT_PIXELS in
+ * services/uploads.ts for the full rationale; kept in sync here rather than
+ * cross-imported, mirroring this file's standalone loadSharp().
+ */
+const MAX_INPUT_PIXELS = 100_000_000;
+
+/**
  * Files smaller than this aren't worth compressing — re-encoding
  * incurs a fixed CPU cost and the savings on a 30KB icon would be
  * single-digit kilobytes. Files this small also tend to be avatars
@@ -73,7 +83,10 @@ const BATCH_LIMIT = 50;
 const LOSSY_QUALITY = Number(env.IMAGE_COMPRESS_QUALITY ?? 75);
 
 interface SharpModule {
-  default: (input: string | Buffer) => SharpInstance;
+  default: (
+    input: string | Buffer,
+    opts?: { limitInputPixels?: number },
+  ) => SharpInstance;
 }
 
 interface SharpInstance {
@@ -242,7 +255,7 @@ async function processOne(
 
     let pipeline: SharpInstance;
     try {
-      const img = sharpFn(diskPath);
+      const img = sharpFn(diskPath, { limitInputPixels: MAX_INPUT_PIXELS });
       if (row.contentType === 'image/jpeg') {
         // mozjpeg gives 5-10% better compression than libjpeg-turbo
         // at the same quality target. Enabled by default in modern
