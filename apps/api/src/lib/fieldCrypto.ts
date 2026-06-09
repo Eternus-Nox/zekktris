@@ -20,6 +20,16 @@
  *   setting the key. decryptField always reads both formats, so flipping
  *   the key on (or running the backfill script) is seamless.
  *
+ * Rotation
+ *   Writes always use the PRIMARY key (FIELD_ENCRYPTION_KEY). Decryption
+ *   tries the primary first, then each key in FIELD_ENCRYPTION_KEYS_OLD (a
+ *   comma-separated list). So a self-hoster rotates by: move the current key
+ *   into FIELD_ENCRYPTION_KEYS_OLD, set a fresh FIELD_ENCRYPTION_KEY, deploy
+ *   (everything still decrypts), run the re-encrypt script to rewrite all
+ *   field-encrypted columns under the new primary, then drop the old key.
+ *   AES-GCM's auth tag makes a wrong-key attempt fail cleanly, so trying keys
+ *   in order is unambiguous — only the correct key verifies.
+ *
  * Stored format (versioned so the scheme can rotate later):
  *   enc:v1:<base64url(iv)>:<base64url(authTag)>:<base64url(ciphertext)>
  *
@@ -39,6 +49,10 @@ const KEY_BYTES = 32; // AES-256
 
 // undefined = not yet resolved; null = no key configured; Buffer = active key.
 let keyCache: Buffer | null | undefined;
+// Old keys for decrypt-only (rotation). undefined = not yet resolved.
+let oldKeysCache: Buffer[] | undefined;
+// Resolved decrypt order ([primary?, ...old]). undefined = not yet resolved.
+let decryptKeysCache: Buffer[] | undefined;
 let warnedMissing = false;
 
 /** Decode a hex (64 chars) or base64 (44 chars) key string to 32 bytes. */
@@ -72,6 +86,60 @@ function getKey(): Buffer | null {
   }
   keyCache = decodeFieldKey(raw);
   return keyCache;
+}
+
+/** Old keys (FIELD_ENCRYPTION_KEYS_OLD) for decrypt during/after rotation. */
+function getOldKeys(): Buffer[] {
+  if (oldKeysCache !== undefined) return oldKeysCache;
+  oldKeysCache = (env.FIELD_ENCRYPTION_KEYS_OLD ?? []).map(decodeFieldKey);
+  return oldKeysCache;
+}
+
+/** Keys to try on decrypt, in order: primary first, then old keys. */
+function getDecryptKeys(): Buffer[] {
+  if (decryptKeysCache !== undefined) return decryptKeysCache;
+  const keys: Buffer[] = [];
+  const primary = getKey();
+  if (primary) keys.push(primary);
+  keys.push(...getOldKeys());
+  decryptKeysCache = keys;
+  return keys;
+}
+
+/** Attempt one AES-GCM open. Returns null when this key doesn't verify. */
+function tryDecrypt(key: Buffer, iv: Buffer, tag: Buffer, ciphertext: Buffer): string | null {
+  try {
+    const decipher = createDecipheriv(ALGO, key, iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+  } catch {
+    return null; // wrong key (tag mismatch) or corrupt envelope
+  }
+}
+
+/** Parse an enc:v1 envelope into its parts, or throw if malformed. */
+function parseEnvelope(stored: string): { iv: Buffer; tag: Buffer; ciphertext: Buffer } {
+  const parts = stored.slice(PREFIX.length).split(':');
+  if (parts.length !== 3) {
+    throw new Error('Malformed encrypted field (expected iv:tag:ciphertext)');
+  }
+  return {
+    iv: Buffer.from(parts[0]!, 'base64url'),
+    tag: Buffer.from(parts[1]!, 'base64url'),
+    ciphertext: Buffer.from(parts[2]!, 'base64url'),
+  };
+}
+
+/** True when `stored` is encrypted AND `key` verifies it. No throw. */
+function decryptableWith(stored: string, key: Buffer): boolean {
+  if (!isEncrypted(stored)) return false;
+  let env_: { iv: Buffer; tag: Buffer; ciphertext: Buffer };
+  try {
+    env_ = parseEnvelope(stored);
+  } catch {
+    return false;
+  }
+  return tryDecrypt(key, env_.iv, env_.tag, env_.ciphertext) !== null;
 }
 
 /** True when a valid encryption key is configured. */
@@ -116,23 +184,42 @@ export function encryptField(plaintext: string): string {
  */
 export function decryptField(stored: string): string {
   if (!isEncrypted(stored)) return stored;
-  const key = getKey();
-  if (!key) {
+  const keys = getDecryptKeys();
+  if (keys.length === 0) {
     throw new Error(
-      'Encountered an encrypted field but FIELD_ENCRYPTION_KEY is not set. ' +
+      'Encountered an encrypted field but no FIELD_ENCRYPTION_KEY is set. ' +
         'Restore the key the data was encrypted with.',
     );
   }
-  const parts = stored.slice(PREFIX.length).split(':');
-  if (parts.length !== 3) {
-    throw new Error('Malformed encrypted field (expected iv:tag:ciphertext)');
+  const { iv, tag, ciphertext } = parseEnvelope(stored);
+  for (const key of keys) {
+    const out = tryDecrypt(key, iv, tag, ciphertext);
+    if (out !== null) return out;
   }
-  const iv = Buffer.from(parts[0]!, 'base64url');
-  const tag = Buffer.from(parts[1]!, 'base64url');
-  const ciphertext = Buffer.from(parts[2]!, 'base64url');
-  const decipher = createDecipheriv(ALGO, key, iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+  // Every configured key failed the auth tag — the data was encrypted with a
+  // key not in FIELD_ENCRYPTION_KEY or FIELD_ENCRYPTION_KEYS_OLD. Loud, never
+  // a silent pass: this is the "rotation bricked the secret" footgun.
+  throw new Error(
+    'Could not decrypt field with any configured key (wrong or rotated ' +
+      'FIELD_ENCRYPTION_KEY?). Add the original key to FIELD_ENCRYPTION_KEYS_OLD.',
+  );
+}
+
+/**
+ * Re-encrypt a stored value under the PRIMARY key, returning the new envelope
+ * to write — or null when no rewrite is needed (already under the primary key,
+ * or encryption is disabled, so re-runs are no-ops). Throws if the value can't
+ * be decrypted with any configured key, so a bad rotation is loud, not silent.
+ *
+ * Also upgrades legacy plaintext (written before a key was set) to encrypted,
+ * so the same helper serves both first-time backfill and key rotation.
+ */
+export function reencryptToPrimary(stored: string): string | null {
+  const primary = getKey();
+  if (!primary) return null; // encryption disabled — nothing to migrate
+  if (isEncrypted(stored) && decryptableWith(stored, primary)) return null; // already current
+  const plaintext = decryptField(stored); // primary + old keys; throws if none verify
+  return encryptField(plaintext); // fresh IV under the primary key
 }
 
 /** Nullable convenience wrapper for nullable columns. */
@@ -143,4 +230,24 @@ export function encryptNullable(plaintext: string | null | undefined): string | 
 /** Nullable convenience wrapper for nullable columns. */
 export function decryptNullable(stored: string | null | undefined): string | null {
   return stored == null ? null : decryptField(stored);
+}
+
+// ── Test seams ───────────────────────────────────────────────────────────────
+// env is validated at import, so process.env changes can't re-drive the caches.
+// These let tests inject key material directly (Buffers via decodeFieldKey).
+
+/** Set the primary + old keys directly (tests). */
+export function __setKeysForTests(primary: Buffer | null, old: Buffer[] = []): void {
+  keyCache = primary;
+  oldKeysCache = old;
+  decryptKeysCache = undefined; // recompute from the above on next decrypt
+  warnedMissing = false;
+}
+
+/** Clear all key caches so they re-resolve from env (tests). */
+export function __resetKeysForTests(): void {
+  keyCache = undefined;
+  oldKeysCache = undefined;
+  decryptKeysCache = undefined;
+  warnedMissing = false;
 }
