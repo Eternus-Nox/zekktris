@@ -1512,7 +1512,6 @@ struct SettingsView: View {
     @AppStorage("zk.notifyCalls") private var notifyCalls = true
     @ObservedObject private var push = PushManager.shared
     @Environment(\.zkDismissPage) private var zkDismissPage
-    @State private var achievementsPublic = false
 
     private let statuses: [(String, String, Color)] = [
         ("Online", "online", Theme.online),
@@ -2056,12 +2055,15 @@ struct SettingsView: View {
             .padding(.horizontal, 12).padding(.vertical, 10)
             .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
 
+            // Persists through the same durable path as every other profile
+            // setting: PATCH /users/@me writes it back to currentUser, which is
+            // re-hydrated from GET /users/@me on every launch. (Previously this
+            // read its state from the /achievements endpoint, whose shelf
+            // computation could fail and report public:false even when the
+            // column was true — making the toggle appear not to persist.)
             Toggle(isOn: Binding(
-                get: { achievementsPublic },
-                set: { newValue in
-                    achievementsPublic = newValue
-                    Task { _ = try? await APIClient.shared.updateProfile(["achievementsPublic": newValue]) }
-                }
+                get: { session.currentUser?.achievementsPublic ?? false },
+                set: { newValue in Task { await session.setAchievementsPublic(newValue) } }
             )) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Public achievements")
@@ -2073,11 +2075,6 @@ struct SettingsView: View {
             .tint(Theme.accent)
             .padding(.horizontal, 12).padding(.vertical, 10)
             .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
-        }
-        .task {
-            if let wrap = try? await APIClient.shared.myAchievements() {
-                achievementsPublic = wrap.public ?? false
-            }
         }
     }
 

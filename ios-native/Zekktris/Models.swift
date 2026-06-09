@@ -38,6 +38,10 @@ struct SelfUser: Codable, Identifiable, Hashable {
     var isAdmin: Bool?
     var avatarDecoration: String?
     var guildFolders: [GuildFolder]?
+    /// Achievements-on-profile visibility. Carried on the self user so the
+    /// Settings toggle reads/writes it through the same durable, launch-
+    /// hydrated path as every other profile setting.
+    var achievementsPublic: Bool?
 
     var name: String { displayName ?? username ?? "You" }
 }

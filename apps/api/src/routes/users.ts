@@ -73,20 +73,27 @@ usersRouter.get('/@me', requireAuth, async (c) => {
 
 usersRouter.get('/@me/achievements', requireAuth, async (c) => {
   const userId = requireUserId(c);
+  // The visibility flag is a single, cheap column read — keep it OUTSIDE the
+  // try/catch so a failure to COMPUTE the achievement list (the heavier,
+  // multi-query path below) never silently reports `public: false` for a user
+  // who actually enabled it. Otherwise the Settings toggle appears to "not
+  // persist" on reload whenever the shelf computation hiccups.
+  const [me] = await db
+    .select({ pub: schema.users.achievementsPublic })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .limit(1);
+  const isPublic = me?.pub ?? false;
   try {
     const { achievementsForUser } = await import('../services/achievements');
-    const [me] = await db
-      .select({ pub: schema.users.achievementsPublic })
-      .from(schema.users)
-      .where(eq(schema.users.id, userId))
-      .limit(1);
     return c.json({
       achievements: await achievementsForUser(userId),
-      public: me?.pub ?? false,
+      public: isPublic,
     });
   } catch {
-    // Migration 0073 not applied yet — degrade to an empty shelf.
-    return c.json({ achievements: [], public: false });
+    // Shelf computation failed (e.g. migration 0073 not applied) — degrade to
+    // an empty list but still report the real visibility flag.
+    return c.json({ achievements: [], public: isPublic });
   }
 });
 
