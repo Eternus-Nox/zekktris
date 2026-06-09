@@ -678,6 +678,208 @@ export async function listViewableGuildChannelIdsForUsers(
   return result;
 }
 
+/**
+ * BATCHED across GUILDS for ONE user — the reconnect twin of
+ * listViewableGuildChannelIdsForUsers (which batches across users for one
+ * guild). Computes the viewable-channel set for every guild the user
+ * belongs to in a CONSTANT number of queries, regardless of guild count.
+ *
+ * Why this exists: gateway IDENTIFY/READY previously ran
+ * listViewableGuildChannelIds once per guild (Promise.all). Each call is
+ * ~3 queries (loadMember's guild+member+roles, channels, overrides), so a
+ * user in 50 guilds paid ~150 DB round-trips on every reconnect — and iOS
+ * reconnects often (WS suspension on backgrounding). This restructures the
+ * load into six set-based queries shared across all the user's guilds, then
+ * runs the identical per-guild permission math in memory.
+ *
+ * Returns a Map keyed by guildId → ordered viewable channel ids. Guilds the
+ * user isn't actually a member of are omitted (mirrors the per-guild helper
+ * returning [] for a non-member). The result is byte-for-byte equal to
+ * calling listViewableGuildChannelIds per guild — same algorithm, same
+ * category reconciliation — only the query shape differs.
+ */
+export async function listViewableGuildChannelIdsByGuild(
+  guildIds: bigint[],
+  userId: bigint,
+): Promise<Map<bigint, bigint[]>> {
+  const out = new Map<bigint, bigint[]>();
+  if (guildIds.length === 0) return out;
+
+  // Six set-based queries, shared across every guild. The first five are
+  // mutually independent; overrides (phase 2) needs the channel ids first.
+  const [guildRows, channelRows, roleRows, memberRows, memberRoleRows] =
+    await Promise.all([
+      db
+        .select({ id: schema.guilds.id, ownerId: schema.guilds.ownerId })
+        .from(schema.guilds)
+        .where(inArray(schema.guilds.id, guildIds)),
+      db
+        .select({
+          id: schema.channels.id,
+          guildId: schema.channels.guildId,
+          parentId: schema.channels.parentId,
+          type: schema.channels.type,
+        })
+        .from(schema.channels)
+        .where(
+          and(inArray(schema.channels.guildId, guildIds), isNull(schema.channels.deletedAt)),
+        ),
+      db
+        .select({
+          id: schema.roles.id,
+          guildId: schema.roles.guildId,
+          position: schema.roles.position,
+          permissions: schema.roles.permissions,
+        })
+        .from(schema.roles)
+        .where(inArray(schema.roles.guildId, guildIds)),
+      db
+        .select({ guildId: schema.guildMembers.guildId })
+        .from(schema.guildMembers)
+        .where(
+          and(
+            eq(schema.guildMembers.userId, userId),
+            inArray(schema.guildMembers.guildId, guildIds),
+          ),
+        ),
+      db
+        .select({ guildId: schema.memberRoles.guildId, roleId: schema.memberRoles.roleId })
+        .from(schema.memberRoles)
+        .where(
+          and(
+            eq(schema.memberRoles.userId, userId),
+            inArray(schema.memberRoles.guildId, guildIds),
+          ),
+        ),
+    ]);
+
+  const allChannelIds = channelRows.map((c) => c.id);
+  const overrides =
+    allChannelIds.length === 0
+      ? []
+      : await db
+          .select()
+          .from(schema.permissionOverrides)
+          .where(inArray(schema.permissionOverrides.channelId, allChannelIds));
+
+  // Pivot the shared result sets into per-guild buckets.
+  const guildOwner = new Map<bigint, bigint>();
+  for (const g of guildRows) guildOwner.set(g.id, g.ownerId);
+
+  const channelsByGuild = new Map<bigint, typeof channelRows>();
+  for (const c of channelRows) {
+    // guildId is non-null here (the query filters `guildId IN (...)`), but the
+    // column type is nullable (DM channels) — narrow for the map key.
+    if (c.guildId === null) continue;
+    const list = channelsByGuild.get(c.guildId);
+    if (list) list.push(c);
+    else channelsByGuild.set(c.guildId, [c]);
+  }
+
+  // Roles split into the @everyone row (id === guildId) and the rest, keyed
+  // by guild so the per-guild loop can look them up by role id.
+  const rolesByGuild = new Map<bigint, Map<bigint, (typeof roleRows)[number]>>();
+  for (const r of roleRows) {
+    let m = rolesByGuild.get(r.guildId);
+    if (!m) {
+      m = new Map();
+      rolesByGuild.set(r.guildId, m);
+    }
+    m.set(r.id, r);
+  }
+
+  const memberGuilds = new Set(memberRows.map((m) => m.guildId));
+
+  const memberRolesByGuild = new Map<bigint, bigint[]>();
+  for (const mr of memberRoleRows) {
+    const list = memberRolesByGuild.get(mr.guildId);
+    if (list) list.push(mr.roleId);
+    else memberRolesByGuild.set(mr.guildId, [mr.roleId]);
+  }
+
+  const ovByChannel = new Map<bigint, (typeof overrides)[number][]>();
+  for (const ov of overrides) {
+    const list = ovByChannel.get(ov.channelId);
+    if (list) list.push(ov);
+    else ovByChannel.set(ov.channelId, [ov]);
+  }
+
+  for (const guildId of guildIds) {
+    if (!memberGuilds.has(guildId)) continue; // not a member → omit (== [])
+    const channels = channelsByGuild.get(guildId) ?? [];
+    if (channels.length === 0) {
+      out.set(guildId, []);
+      continue;
+    }
+    const roleMap = rolesByGuild.get(guildId) ?? new Map();
+    const everyoneRow = roleMap.get(guildId) ?? { position: 0, permissions: 0n };
+    const everyoneRole = { position: everyoneRow.position, permissions: everyoneRow.permissions };
+    const memberRoleIds = memberRolesByGuild.get(guildId) ?? [];
+    const memberRoleIdSet = new Set(memberRoleIds);
+    const memberRoles = memberRoleIds
+      .map((rid) => roleMap.get(rid))
+      .filter((r): r is NonNullable<typeof r> => Boolean(r))
+      .map((r) => ({ position: r.position, permissions: r.permissions }));
+
+    const isOwner = guildOwner.get(guildId) === userId;
+    const guildPerms = computeBasePermissions({ isOwner, everyoneRole, memberRoles });
+
+    // Owner / ADMINISTRATOR see every channel — skip the override math.
+    if (isOwner || hasPermission(guildPerms, Permissions.ADMINISTRATOR)) {
+      out.set(guildId, channels.map((c) => c.id));
+      continue;
+    }
+
+    // Partition a channel's overrides into the resolver's buckets, picking
+    // only rows that apply to this user (the @everyone row, roles the user
+    // holds, or a member row targeting the user).
+    const buildBuckets = (channelId: bigint) => {
+      let everyoneOverride: ResolvableOverride | null = null;
+      let memberOverride: ResolvableOverride | null = null;
+      const roleOverrides: ResolvableOverride[] = [];
+      const ovs = ovByChannel.get(channelId);
+      if (ovs) {
+        for (const ov of ovs) {
+          if (ov.targetType === 'role') {
+            if (ov.targetId === guildId) everyoneOverride = { allow: ov.allow, deny: ov.deny };
+            else if (memberRoleIdSet.has(ov.targetId))
+              roleOverrides.push({ allow: ov.allow, deny: ov.deny });
+          } else if (ov.targetType === 'member' && ov.targetId === userId) {
+            memberOverride = { allow: ov.allow, deny: ov.deny };
+          }
+        }
+      }
+      return { everyoneOverride, memberOverride, roleOverrides };
+    };
+
+    const viewable: bigint[] = [];
+    for (const c of channels) {
+      const own = buildBuckets(c.id);
+      const parent = c.parentId ? buildBuckets(c.parentId) : null;
+      const perms = computeChannelPermissions({
+        isOwner: false,
+        everyoneRole,
+        memberRoles,
+        everyoneOverride: own.everyoneOverride,
+        roleOverrides: own.roleOverrides,
+        memberOverride: own.memberOverride,
+        categoryEveryoneOverride: parent?.everyoneOverride ?? null,
+        categoryRoleOverrides: parent?.roleOverrides ?? [],
+        categoryMemberOverride: parent?.memberOverride ?? null,
+      });
+      if (hasPermission(perms, Permissions.VIEW_CHANNEL)) viewable.push(c.id);
+    }
+    out.set(
+      guildId,
+      reconcileCategoryVisibility(viewable, channels, {
+        preserveEmptyCategories: hasPermission(guildPerms, Permissions.MANAGE_CHANNELS),
+      }),
+    );
+  }
+
+  return out;
+}
+
 // ── Assertion helpers (throw on failure) ───────────────────────────────────
 
 /** Throw NOT_FOUND if not a member of the guild. Returns the member-load on success. */

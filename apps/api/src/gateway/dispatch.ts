@@ -395,37 +395,30 @@ export function presenceUpdate(payload: {
    */
   dmChannelIds?: bigint[];
 }): void {
-  // Dispatch to every guild the user is in. Each guild's members get the
-  // update independently. (Discord does this; it sidesteps "do guilds know
-  // about each other.")
-  for (const guildId of payload.guildIds) {
-    publish(
-      GatewayEvent.PRESENCE_UPDATE,
-      {
-        user_id: payload.userId.toString(),
-        guild_id: guildId.toString(),
-        status: payload.status,
-      },
-      { kind: 'guild', guildId },
-    );
-  }
-  // DM fan-out: deliver the same presence update with guild_id=null
-  // (the client's reducer treats null guild_id as a no-op for the
-  // member-list patch but still updates usersById, which is what
-  // drives the DM list's status dot).
-  if (payload.dmChannelIds && payload.dmChannelIds.length > 0) {
-    for (const channelId of payload.dmChannelIds) {
-      publish(
-        GatewayEvent.PRESENCE_UPDATE,
-        {
-          user_id: payload.userId.toString(),
-          guild_id: null,
-          status: payload.status,
-        },
-        { kind: 'channel', channelId, guildId: null },
-      );
-    }
-  }
+  // ONE bus publish carrying the user's full membership footprint. The
+  // registry expands it at delivery into the exact frames the previous
+  // implementation sent: one PRESENCE_UPDATE per guild the recipient
+  // shares with the user (each stamped with that guild_id — the web client
+  // uses it to patch that guild's member list), plus a single guild_id=null
+  // frame for DM peers (the client's reducer treats null guild_id as a
+  // no-op for the member-list patch but still updates usersById, which
+  // drives the DM list's status dot). Collapsing the previous per-guild +
+  // per-DM publishes into one matters most under the Redis bus, where each
+  // publish was a cross-replica round-trip × O(guilds) per status flip.
+  //
+  // The top-level `d` carries only the guild-invariant fields; guild_id is
+  // injected per-frame by the registry so each guild still gets its own.
+  const guildIds = payload.guildIds;
+  const dmChannelIds = payload.dmChannelIds ?? [];
+  if (guildIds.length === 0 && dmChannelIds.length === 0) return;
+  publish(
+    GatewayEvent.PRESENCE_UPDATE,
+    {
+      user_id: payload.userId.toString(),
+      status: payload.status,
+    },
+    { kind: 'presence', guildIds, dmChannelIds },
+  );
 }
 
 /**

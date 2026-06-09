@@ -404,6 +404,16 @@ class Registry {
   // ── Bus delivery ─────────────────────────────────────────────────────────
 
   private onPublished(event: PublishedEvent): void {
+    // Presence is delivered through a dedicated path: a single published
+    // event expands into one frame per shared guild (each carrying its own
+    // guild_id) plus a guild_id=null frame for DM peers. The generic
+    // pre-serialize-once path below can't express the per-guild guild_id, so
+    // it's handled separately.
+    if (event.audience.kind === 'presence') {
+      this.deliverPresence(event, event.audience);
+      return;
+    }
+
     const candidates = this.candidateConnections(event.audience);
     if (candidates.length === 0) return;
 
@@ -424,6 +434,85 @@ class Registry {
     for (const conn of candidates) {
       if (this.shouldReceive(conn, event.audience)) {
         conn.sendPreparedDispatch(partialJson);
+      }
+    }
+  }
+
+  /**
+   * Deliver a presence/status change. Replaces the previous N publishes
+   * (one per guild + one per DM channel) with a single published event
+   * expanded here, so under the Redis bus a status flip is ONE cross-replica
+   * round-trip instead of O(guilds).
+   *
+   * The delivered frames are byte-identical to the old path:
+   *   - one PRESENCE_UPDATE per guild the recipient shares with the subject,
+   *     each stamped with that guild's guild_id (the web reducer keys the
+   *     per-guild member-list patch on it; native ignores guild_id entirely);
+   *   - a single guild_id=null frame for DM peers. The old path emitted one
+   *     null frame per shared DM channel, but the client's null-guild handler
+   *     is idempotent (it patches usersById + ALL DM recipients globally), so
+   *     collapsing to one frame leaves identical resulting state.
+   *
+   * Frames are memoized per guild_id within the call, so recipients sharing a
+   * guild reuse the same serialized string — same serialization cost as the
+   * old per-guild publish, minus the per-guild bus round-trips.
+   */
+  private deliverPresence(
+    event: PublishedEvent,
+    audience: Extract<Audience, { kind: 'presence' }>,
+  ): void {
+    // Deduped union of connections in any shared guild or DM channel. A
+    // connection in multiple shared guilds appears once here and receives
+    // one frame per shared guild in the loop below.
+    const candidates = new Set<Connection>();
+    for (const guildId of audience.guildIds) {
+      const set = this.byGuild.get(guildId);
+      if (set) for (const c of set) candidates.add(c);
+    }
+    for (const channelId of audience.dmChannelIds) {
+      const set = this.byDMChannel.get(channelId);
+      if (set) for (const c of set) candidates.add(c);
+    }
+    if (candidates.size === 0) return;
+
+    const base = event.d as Record<string, unknown>;
+    const guildFrameCache = new Map<bigint, string>();
+    let nullFrame: string | null = null;
+
+    for (const conn of candidates) {
+      if (!conn.isAuthenticated() || conn.userId === null) continue;
+      // One frame per guild this connection shares with the subject. The
+      // .has guard mirrors the old shouldReceive('guild') check.
+      for (const guildId of audience.guildIds) {
+        if (!conn.guildIds.has(guildId)) continue;
+        let frame = guildFrameCache.get(guildId);
+        if (frame === undefined) {
+          frame = JSON.stringify(
+            { op: GatewayOp.DISPATCH, t: event.t, d: { ...base, guild_id: guildId.toString() } },
+            jsonReplacer,
+          );
+          guildFrameCache.set(guildId, frame);
+        }
+        conn.sendPreparedDispatch(frame);
+      }
+      // One null-guild frame if this connection is a recipient of any of the
+      // subject's DM channels (mirrors the old shouldReceive('channel', null)
+      // check). Idempotent, so a single frame covers all shared DMs.
+      let isDmPeer = false;
+      for (const channelId of audience.dmChannelIds) {
+        if (conn.dmChannelIds.has(channelId)) {
+          isDmPeer = true;
+          break;
+        }
+      }
+      if (isDmPeer) {
+        if (nullFrame === null) {
+          nullFrame = JSON.stringify(
+            { op: GatewayOp.DISPATCH, t: event.t, d: { ...base, guild_id: null } },
+            jsonReplacer,
+          );
+        }
+        conn.sendPreparedDispatch(nullFrame);
       }
     }
   }
@@ -467,6 +556,10 @@ class Registry {
         const set = this.byGuild.get(audience.guildId);
         return set ? Array.from(set) : [];
       }
+      case 'presence':
+        // Handled by deliverPresence before this is reached. Listed for
+        // switch exhaustiveness only.
+        return [];
     }
   }
 
@@ -489,6 +582,10 @@ class Registry {
         // a member with VIEW_CHANNEL revoked on a single channel won't be
         // in the set and is correctly filtered out.
         return conn.viewableGuildChannelIds.has(audience.channelId);
+      case 'presence':
+        // Presence never flows through the generic path (see onPublished →
+        // deliverPresence). Listed for switch exhaustiveness only.
+        return false;
     }
   }
 }
