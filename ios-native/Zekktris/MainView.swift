@@ -3273,6 +3273,11 @@ struct AdminView: View {
     @State private var deletingGuild: AdminGuild?
     @State private var observingGuild: AdminGuild?
     @State private var deleteCandidate: AdminUser?
+    // Operational metrics + voice diagnostic (Overview tab).
+    @State private var metrics: InstanceMetrics?
+    @State private var voiceDiag: LivekitDiagnostic?
+    @State private var voiceTesting = false
+    @State private var voiceError: String?
 
     var body: some View {
         NavigationStack {
@@ -3321,6 +3326,20 @@ struct AdminView: View {
                     statRow("Channels", "\(s.channels)", detail: nil)
                     statRow("Messages", "\(s.messages.total)", detail: "\(s.messages.last24h) in last 24h")
                     statRow("Active sessions", "\(s.activeSessions)", detail: nil)
+
+                    // Operational / runtime metrics.
+                    if let m = metrics {
+                        adminSubheader("OPERATIONAL")
+                        statRow("Gateway connections", "\(m.gateway.connections)", detail: "\(m.gateway.onlineUsers) online")
+                        statRow("In voice", "\(m.voice.participants)", detail: "\(m.voice.rooms) " + (m.voice.rooms == 1 ? "room" : "rooms"))
+                        statRow("Scheduled", "\(m.scheduledMessages.pending)", detail: "\(m.scheduledMessages.due) due")
+                        statRow("Uptime", fmtUptime(m.process.uptimeSeconds), detail: "worker \(m.process.workerId)")
+                        statRow("Database", m.db.ok ? "Healthy" : "Down", detail: "\(m.db.latencyMs)ms")
+                        statRow("Redis", redisLabel(m.redis), detail: m.redis.configured ? "bus + blacklist" : "in-memory")
+                    }
+
+                    // Voice / LiveKit diagnostic (run on demand).
+                    voiceDiagnosticSection
                 }
                 .padding(16)
             } else {
@@ -3332,6 +3351,117 @@ struct AdminView: View {
                 .padding(.top, 40)
             }
         }
+        .task { await loadMetrics() }
+    }
+
+    private func adminSubheader(_ t: String) -> some View {
+        Text(t)
+            .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 6)
+    }
+
+    private func fmtUptime(_ s: Int) -> String {
+        if s < 60 { return "\(s)s" }
+        let d = s / 86400, h = (s % 86400) / 3600, m = (s % 3600) / 60
+        if d > 0 { return "\(d)d \(h)h" }
+        if h > 0 { return "\(h)h \(m)m" }
+        return "\(m)m"
+    }
+
+    private func redisLabel(_ r: InstanceMetrics.Redis) -> String {
+        if !r.configured { return "Not configured" }
+        return r.healthy == true ? "Healthy" : "Unreachable"
+    }
+
+    @ViewBuilder
+    private var voiceDiagnosticSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                adminSubheader("VOICE / LIVEKIT")
+                Spacer()
+                Button {
+                    Task { await runVoiceDiagnostic() }
+                } label: {
+                    Text(voiceTesting ? "Testing…" : (voiceDiag != nil ? "Re-run" : "Test voice"))
+                        .font(.zkSans(12, weight: .semibold)).foregroundColor(Theme.accent)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Theme.accent.opacity(0.12)).clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(voiceTesting)
+            }
+            if let e = voiceError {
+                Text(e).font(.zkSans(12)).foregroundColor(Theme.dangerSoft)
+            }
+            if let d = voiceDiag {
+                HStack(spacing: 8) {
+                    Text(diagLabel(d))
+                        .font(.zkSans(11, weight: .bold)).foregroundColor(diagTint(d))
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(diagTint(d).opacity(0.15)).clipShape(Capsule())
+                    if let ws = d.wsUrl {
+                        Text(ws).font(.zkMono(10)).foregroundColor(Theme.ink4).lineLimit(1)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(d.checks) { c in checkRow(c) }
+                }
+            } else if !voiceTesting {
+                Text("Tests LiveKit end-to-end: keys, the client URL, token minting, and whether the server can reach the SFU. The #1 self-host failure is the API not reaching LiveKit, or media (UDP 7882) not open to clients.")
+                    .font(.zkSans(11)).foregroundColor(Theme.ink4)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Theme.bg2)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func checkRow(_ c: LivekitCheck) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: checkIcon(c.status))
+                .font(.system(size: 12)).foregroundColor(checkColor(c.status)).frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(c.label).font(.zkSans(12, weight: .semibold)).foregroundColor(Theme.ink1)
+                Text(c.detail).font(.zkSans(11)).foregroundColor(Theme.ink3)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+    private func checkIcon(_ s: String) -> String {
+        switch s {
+        case "pass": return "checkmark.circle.fill"
+        case "fail": return "xmark.circle.fill"
+        case "warn": return "exclamationmark.triangle.fill"
+        default: return "circle"
+        }
+    }
+    private func checkColor(_ s: String) -> Color {
+        switch s {
+        case "pass": return Theme.success
+        case "fail": return Theme.danger
+        case "warn": return Theme.plasmaAmber
+        default: return Theme.ink3
+        }
+    }
+    private func diagTint(_ d: LivekitDiagnostic) -> Color {
+        d.ok ? Theme.success : (d.configured ? Theme.danger : Theme.plasmaAmber)
+    }
+    private func diagLabel(_ d: LivekitDiagnostic) -> String {
+        d.ok ? "Voice OK" : (d.configured ? "Problem found" : "Not configured")
+    }
+
+    private func loadMetrics() async {
+        metrics = try? await APIClient.shared.adminMetrics()
+    }
+    private func runVoiceDiagnostic() async {
+        guard !voiceTesting else { return }
+        voiceTesting = true
+        voiceError = nil
+        do { voiceDiag = try await APIClient.shared.adminVoiceDiagnostic() }
+        catch { voiceError = (error as? APIError)?.message ?? error.localizedDescription }
+        voiceTesting = false
     }
 
     private var users: some View {

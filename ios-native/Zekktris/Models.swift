@@ -634,6 +634,53 @@ struct AdminStats: Codable {
 }
 struct AdminStatsWrap: Codable { let stats: AdminStats }
 
+// ── Admin operational metrics + voice diagnostic ────────────────────────────
+
+/// Runtime/operational metrics from GET /admin/metrics. Mirrors the server's
+/// InstanceMetrics.
+struct InstanceMetrics: Codable {
+    struct Process: Codable { let uptimeSeconds: Int; let workerId: Int; let nodeEnv: String }
+    struct Gateway: Codable { let connections: Int; let onlineUsers: Int }
+    struct Counts: Codable {
+        let users: Int; let bannedUsers: Int; let guilds: Int; let channels: Int
+        let messages: Int; let messagesLast24h: Int; let activeSessions: Int
+    }
+    struct Voice: Codable { let rooms: Int; let participants: Int }
+    struct Scheduled: Codable { let pending: Int; let due: Int }
+    struct DB: Codable { let ok: Bool; let latencyMs: Int }
+    struct Redis: Codable { let configured: Bool; let healthy: Bool? }
+
+    let process: Process
+    let gateway: Gateway
+    let counts: Counts
+    let voice: Voice
+    let scheduledMessages: Scheduled
+    let db: DB
+    let redis: Redis
+    let generatedAt: String
+}
+struct MetricsWrap: Codable { let metrics: InstanceMetrics }
+
+/// One step of the LiveKit/voice diagnostic. `status` ∈ pass | fail | warn | skip.
+struct LivekitCheck: Codable, Identifiable {
+    let id: String
+    let label: String
+    let status: String
+    let detail: String
+}
+
+/// Result of GET /admin/voice-diagnostic. No secrets — only config URLs and
+/// classified guidance.
+struct LivekitDiagnostic: Codable {
+    let configured: Bool
+    let ok: Bool
+    let wsUrl: String?
+    let httpUrl: String?
+    let checks: [LivekitCheck]
+    let generatedAt: String
+}
+struct DiagnosticWrap: Codable { let diagnostic: LivekitDiagnostic }
+
 // MARK: Family / parental controls
 
 struct FamilyUser: Codable, Identifiable {
