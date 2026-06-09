@@ -2,29 +2,27 @@
 
 A **native** SwiftUI client for Zekktris that talks directly to the existing
 API + realtime gateway. No WebView, no web bundle — this is a from-scratch
-Swift rewrite of the client, built in stages.
+Swift implementation of the client.
 
-This is **Stage 1 (foundation + auth + messaging)**. It is a starting point,
-not the finished app — see *Status* below.
+The app is feature-complete across the core surface (auth, messaging, DMs,
+E2EE, threads/forums, voice & 1:1 calls, reactions, attachments, polls, push,
+search, mentions, settings) — see *What works* below. It builds with Xcode;
+the remaining gaps (background call ringing, video/screen-share, iPad
+multi-column) are listed under *Not built yet*.
 
-> ⚠️ **Heads up:** these Swift sources were written outside Xcode and have
-> **not been compiled**. Expect to fix a few compiler errors on first build;
-> that's normal for a scaffold of this size and we'll iterate from the errors
-> Xcode reports.
+> ⚠️ **Adding files:** if you regenerate the project, **re-run `xcodegen
+> generate`** so any newly-added Swift files are picked up (`project.yml` is
+> the source of truth for the target's file list). For a manually-created
+> Xcode project, drag new files into the target instead.
 >
-> If you generated the project for an earlier stage, **re-run `xcodegen
-> generate`** after each new stage so newly-added files are picked up (recent
-> stages added `E2EE.swift`, `ThreadViews.swift`, `Voice.swift`, and
-> `Push.swift`). For a manual Xcode project, drag new files in.
->
-> **Stage 13 adds Push Notifications.** `project.yml` now generates a
-> `Zekktris.entitlements` with `aps-environment: development`. You must enable
+> **Push Notifications.** `project.yml` generates a `Zekktris.entitlements`
+> with `aps-environment: development`. You must enable
 > the **Push Notifications** capability for the target in Xcode (Signing &
 > Capabilities) with a real Apple Developer team — and actually receiving
 > pushes needs a physical device plus the server's APNs config. The simulator
 > can't receive remote pushes; the registration code just no-ops there.
 >
-> **Stage 5 adds a Swift Package dependency: LiveKit**
+> **LiveKit Swift Package dependency**
 > (`https://github.com/livekit/client-sdk-swift`, 2.14.1+). `xcodegen generate`
 > wires the package reference; Xcode resolves it on first open (needs network).
 > For a manual project, add it via File ▸ Add Package Dependencies. Voice needs
@@ -33,7 +31,7 @@ not the finished app — see *Status* below.
 
 ---
 
-## What works (Stages 1–2)
+## What works
 
 - **Sign in & register** against `/auth/login` and `/auth/register`, with the
   access token stored in the Keychain and restored on next launch
@@ -94,9 +92,10 @@ not the finished app — see *Status* below.
 - **1:1 DM calls**: the phone button in a DM header starts a call (joins voice
   on the DM channel and connects LiveKit). When the conversation is E2EE and
   unlocked, the call media is end-to-end encrypted — LiveKit's media E2EE is
-  keyed from the DM's shared key, so calls between two instances of *this native
-  app* interoperate. (Calls with the **web** client are a known limitation — see
-  the E2EE-call caveat below.) Incoming calls show a full-screen Accept / Decline
+  keyed from the DM's shared key, and the web client was aligned to the same
+  key derivation, so encrypted calls interoperate in **all** directions
+  (native↔native, native↔web, web↔web — see the E2EE-call note below). Incoming
+  calls show a full-screen Accept / Decline
   prompt (in-app ringing) while the app is foregrounded; declining ends the
   caller's session. Mute and hang up from the call screen.
 - **Reactions**: long-press a message ▸ Add reaction to react; tap a reaction
@@ -127,9 +126,10 @@ entitlement and server-side VoIP pushes, so for now ringing only works while the
 app is open), video & screen share. Layout is phone-first; iPad gets the same
 single-column flow for now.
 
-Known first-cut call limitations: if the callee declines or the other side hangs
-up, your own call screen isn't auto-dismissed — you hang up manually. The E2EE
-call path is the least-certain code in the project (see caveat below).
+Known first-cut call limitation: if the callee declines or the other side hangs
+up, your own call screen isn't always auto-dismissed — you hang up manually. The
+E2EE call path now interoperates with the web client in all directions (see the
+E2EE-call note below).
 
 ---
 
@@ -204,6 +204,8 @@ ios-native/
     ├── MessageViews.swift  Message timeline, rows, composer, polls, search
     ├── ThreadViews.swift   Thread list + forum posts
     ├── Voice.swift         LiveKit voice + 1:1 call screens (incl. call E2EE)
+    ├── VoiceMessage.swift  Voice-message record/playback
+    ├── CallManager.swift   CallKit / PushKit call coordination
     ├── E2EE.swift          AES-256-GCM DM encryption (ports the web's e2ee.ts)
     ├── Push.swift          APNs registration + AppDelegate
     └── Components.swift    Avatar, guild icon, time + strength helpers
@@ -246,8 +248,9 @@ Gateway  ── URLSessionWebSocketTask; onEvent(name, data) → AppStore
 
 ## Status & caveats
 
-This native app has been written and is now being compiled; expect to keep
-clearing the occasional error as it goes through Xcode for the first time.
+The app builds and runs. Remaining gaps are product features, not scaffolding —
+see *Not built yet* (background call ringing, video/screen-share, iPad
+multi-column).
 
 The **E2EE call path** in `Voice.swift` now interoperates with the web client
 (previously native↔web encrypted calls were garbled). It configures LiveKit's
