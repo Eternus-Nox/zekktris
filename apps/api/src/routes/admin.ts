@@ -144,6 +144,41 @@ adminRouter.get('/voice-diagnostic', async (c) => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────
+// Instance backup / restore (instance-admin only)
+// ───────────────────────────────────────────────────────────────────────────
+//
+// GET  /admin/backup?includeImages=true|false  → bundle every guild's config
+//   backup into one downloadable JSON document. Reuses the per-guild backup
+//   format verbatim. CONFIGURATION only (settings/roles/channels/overrides/
+//   branding) — not a data dump (users/messages live in pg_dump).
+// POST /admin/backup/restore  → rebuild each guild in the bundle as a NEW guild
+//   owned by the restoring admin. Per-guild best-effort; returns the results.
+adminRouter.get(
+  '/backup',
+  validate('query', z.object({ includeImages: z.coerce.boolean().optional() })),
+  async (c) => {
+    const { exportInstance } = await import('../services/instanceBackup');
+    const includeImages = c.req.valid('query').includeImages ?? true;
+    return c.json({ backup: await exportInstance({ includeImages }) });
+  },
+);
+
+adminRouter.post('/backup/restore', async (c) => {
+  const userId = requireUserId(c);
+  // The bundle can be large (many guilds, embedded images); read it raw and
+  // let the service validate the envelope + each guild backup.
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    throw errors.badRequest('Request body must be a JSON instance backup');
+  }
+  const { importInstance } = await import('../services/instanceBackup');
+  const result = await importInstance(userId, body);
+  return c.json(result);
+});
+
+// ───────────────────────────────────────────────────────────────────────────
 // GET /admin/users — paginated user list with optional search
 // ───────────────────────────────────────────────────────────────────────────
 //

@@ -153,8 +153,16 @@ async function readImage(url: string | null): Promise<BackupImage | null> {
 }
 
 /** Build a full backup document for a guild. Caller must have already
- *  checked MANAGE_GUILD. Assumes the guild exists (throws notFound if not). */
-export async function exportGuild(guildId: bigint): Promise<GuildBackup> {
+ *  checked MANAGE_GUILD. Assumes the guild exists (throws notFound if not).
+ *
+ *  `includeImages` (default true) controls whether icon/banner bytes are
+ *  embedded. Instance-level backups pass false for a lean config-only bundle
+ *  (image bytes dominate size when bundling many guilds). */
+export async function exportGuild(
+  guildId: bigint,
+  opts: { includeImages?: boolean } = {},
+): Promise<GuildBackup> {
+  const includeImages = opts.includeImages ?? true;
   const [guild] = await db
     .select()
     .from(schema.guilds)
@@ -248,10 +256,12 @@ export async function exportGuild(guildId: bigint): Promise<GuildBackup> {
         allow: o.allow.toString(),
         deny: o.deny.toString(),
       })),
-    images: {
-      icon: await readImage(guild.iconUrl),
-      banner: await readImage(guild.bannerUrl),
-    },
+    images: includeImages
+      ? {
+          icon: await readImage(guild.iconUrl),
+          banner: await readImage(guild.bannerUrl),
+        }
+      : { icon: null, banner: null },
   };
 }
 
