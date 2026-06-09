@@ -74,6 +74,8 @@ export async function createReport(input: CreateReportInput) {
 
 export interface ListReportsOptions {
   status?: ReportStatus | 'all';
+  /** Filter to message-reports or user-reports. Omit for both. */
+  targetType?: 'message' | 'user';
   before?: bigint;
   limit?: number;
 }
@@ -92,6 +94,9 @@ export async function listReports(
   const conds = [eq(schema.reports.guildId, guildId)];
   if (opts.status && opts.status !== 'all') {
     conds.push(eq(schema.reports.status, opts.status));
+  }
+  if (opts.targetType !== undefined) {
+    conds.push(eq(schema.reports.targetType, opts.targetType));
   }
   if (opts.before !== undefined) {
     conds.push(lt(schema.reports.id, opts.before));

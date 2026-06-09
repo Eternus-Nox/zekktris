@@ -1137,6 +1137,63 @@ export class RestClient {
     return this.request('DELETE', `/guilds/${guildId}/bans/${userId}`);
   }
 
+  // ── Reports / moderation triage ───────────────────────────────────────────
+
+  /** File a report against a message or user. Open to any member. The
+   *  reporter only gets an acknowledgment ({ ok, reportId }). */
+  createReport(
+    guildId: string,
+    input: {
+      targetType: 'message' | 'user';
+      targetUserId?: string;
+      messageId?: string;
+      reason: 'spam' | 'harassment' | 'nsfw' | 'violence' | 'other';
+      details?: string;
+    },
+  ): Promise<{ ok: boolean; reportId: string }> {
+    return this.request('POST', `/guilds/${guildId}/reports`, input);
+  }
+
+  /** Moderation queue for a guild. Gated to moderators. Returns the
+   *  reports plus the current open count (for a badge). Filter by status
+   *  (default 'open') and/or report type; keyset-paginate with `before`. */
+  listReports(
+    guildId: string,
+    opts: {
+      status?: 'open' | 'resolved' | 'dismissed' | 'all';
+      targetType?: 'message' | 'user';
+      before?: string;
+      limit?: number;
+    } = {},
+  ): Promise<{ reports: Report[]; openCount: number }> {
+    const qs = new URLSearchParams();
+    if (opts.status) qs.set('status', opts.status);
+    if (opts.targetType) qs.set('targetType', opts.targetType);
+    if (opts.before) qs.set('before', opts.before);
+    if (opts.limit !== undefined) qs.set('limit', String(opts.limit));
+    const q = qs.toString();
+    return this.request('GET', `/guilds/${guildId}/reports${q ? `?${q}` : ''}`);
+  }
+
+  /**
+   * Resolve or dismiss a report. Optionally take a moderation action against
+   * the reported entity in the same step: `moderation: 'ban'` (needs
+   * BAN_MEMBERS) bans the reported user, `'delete_message'` (needs
+   * MANAGE_MESSAGES) deletes the reported message. Both also write their own
+   * audit entries; a report.<action> audit entry records the decision.
+   */
+  handleReport(
+    guildId: string,
+    reportId: string,
+    input: {
+      action: 'resolve' | 'dismiss';
+      note?: string;
+      moderation?: 'none' | 'ban' | 'delete_message';
+    },
+  ): Promise<{ report: Report }> {
+    return this.request('PATCH', `/guilds/${guildId}/reports/${reportId}`, input);
+  }
+
   // ── Automod rules ───────────────────────────────────────────────────────
   //
   // Per-guild moderation rules that fire on message send. All four
@@ -2768,6 +2825,26 @@ export interface FamilyChildMessage {
 }
 
 // ── Admin DTO shapes ──────────────────────────────────────────────────────
+
+/** A moderation report (queue item). Mirrors the server ReportDTO. */
+export interface Report {
+  id: string;
+  guildId: string;
+  reporter: PublicUser | null;
+  targetType: 'message' | 'user';
+  targetUser: PublicUser | null;
+  messageId: string | null;
+  channelId: string | null;
+  /** Snapshot of the reported message content at file time (survives delete). */
+  messageContent: string | null;
+  reason: 'spam' | 'harassment' | 'nsfw' | 'violence' | 'other' | string;
+  details: string | null;
+  status: 'open' | 'resolved' | 'dismissed';
+  handledById: string | null;
+  handledAt: string | null;
+  resolutionNote: string | null;
+  createdAt: string;
+}
 
 export interface AdminStats {
   users: { total: number; banned: number };

@@ -46,6 +46,7 @@ import * as reactionRolesSvc from '../services/reactionRoles';
 import * as guildBackup from '../services/guildBackup';
 import * as reports from '../services/reports';
 import * as messageSearch from '../services/messageSearch';
+import * as messages from '../services/messages';
 import * as permissions from '../services/permissions';
 import * as voice from '../services/voice';
 import { writeAudit } from '../services/audit';
@@ -1770,6 +1771,7 @@ guildsRouter.get(
     'query',
     z.object({
       status: z.enum(['open', 'resolved', 'dismissed', 'all']).optional(),
+      targetType: z.enum(['message', 'user']).optional(),
       before: snowflakeSchema.optional(),
       limit: z.coerce.number().int().min(1).max(100).optional(),
     }),
@@ -1781,6 +1783,7 @@ guildsRouter.get(
     const q = c.req.valid('query');
     const rows = await reports.listReports(guildId, {
       status: q.status ?? 'open',
+      targetType: q.targetType,
       before: q.before ? BigInt(q.before) : undefined,
       limit: q.limit,
     });
@@ -1792,20 +1795,100 @@ guildsRouter.get(
   },
 );
 
+// Resolve/dismiss a report, optionally taking a moderation action against the
+// reported entity in the same step ("resolve and ban", "resolve and delete").
+// The action reuses the existing ban / message-delete paths (same side effects
+// + their own audit entries); we additionally record a report.<action> audit
+// entry so the moderation trail shows the report that triggered it. Each
+// optional action requires its OWN specific permission on top of the base
+// MOD_PERMS gate (you can't ban via a report with only MANAGE_MESSAGES).
 guildsRouter.patch(
   '/:guildId/reports/:reportId',
   validate('param', z.object({ guildId: snowflakeSchema, reportId: snowflakeSchema })),
   validate(
     'json',
-    z.object({ action: z.enum(['resolve', 'dismiss']), note: z.string().max(1000).optional() }),
+    z.object({
+      action: z.enum(['resolve', 'dismiss']),
+      note: z.string().max(1000).optional(),
+      /** Optional moderation action applied to the reported entity. Only
+       *  honored on `resolve`. 'ban' needs BAN_MEMBERS + hierarchy;
+       *  'delete_message' needs MANAGE_MESSAGES and a message report. */
+      moderation: z.enum(['none', 'ban', 'delete_message']).optional(),
+    }),
   ),
   async (c) => {
     const userId = requireUserId(c);
     const { guildId: g, reportId: rid } = c.req.valid('param');
     const guildId = BigInt(g);
+    const reportId = BigInt(rid);
     await assertAnyGuildPermission(guildId, userId, ...MOD_PERMS);
     const body = c.req.valid('json');
-    const row = await reports.handleReport(guildId, BigInt(rid), userId, body.action, body.note ?? null);
+    const moderation = body.action === 'resolve' ? body.moderation ?? 'none' : 'none';
+
+    // Load the report first so the moderation action targets the right
+    // entity, and 404s cleanly for a wrong guild / missing report.
+    const [report] = await db
+      .select()
+      .from(schema.reports)
+      .where(and(eq(schema.reports.guildId, guildId), eq(schema.reports.id, reportId)))
+      .limit(1);
+    if (!report) throw errors.notFound('Report');
+
+    if (moderation === 'ban') {
+      const targetId = report.targetUserId;
+      if (targetId === null) throw errors.badRequest('This report has no user to ban');
+      if (targetId === userId) throw errors.badRequest('You cannot ban yourself');
+      await assertGuildPermission(guildId, userId, Permissions.BAN_MEMBERS);
+      await assertCanManageMember(guildId, userId, targetId);
+      await bans.banMember({
+        guildId,
+        userId: targetId,
+        actorId: userId,
+        reason: body.note ?? `Report ${reportId.toString()}`,
+      });
+      // Mirror the ban route's voice + membership side effects.
+      const priorVS = await voice.evictFromVoiceInGuild(targetId, guildId);
+      if (priorVS) {
+        dispatch.voiceStateUpdate({
+          guildId,
+          channelId: priorVS.channelId,
+          voiceState: leftVoiceStateDTO({ userId: targetId, guildId, channelId: priorVS.channelId }),
+        });
+      }
+      dispatch.userLeftGuild({ userId: targetId, guildId });
+    } else if (moderation === 'delete_message') {
+      if (report.targetType !== 'message' || report.messageId === null) {
+        throw errors.badRequest('This report is not about a message');
+      }
+      await assertGuildPermission(guildId, userId, Permissions.MANAGE_MESSAGES);
+      // The message may already be gone (reported-then-deleted) — deleteMessage
+      // is idempotent and the snapshot in the report preserves the content.
+      await messages.deleteMessage(report.messageId);
+      dispatch.messageDelete({
+        messageId: report.messageId,
+        channelId: report.channelId ?? 0n,
+        guildId,
+      });
+    }
+
+    const row = await reports.handleReport(guildId, reportId, userId, body.action, body.note ?? null);
+
+    // Audit trail for the report decision. Point the entry at the affected
+    // entity (member or message) so it threads with other moderation entries.
+    await writeAudit({
+      guildId,
+      actorId: userId,
+      action: `report.${body.action}`,
+      targetType: report.targetType === 'message' ? 'message' : 'member',
+      targetId: report.targetType === 'message' ? report.messageId : report.targetUserId,
+      changes: {
+        reportId: reportId.toString(),
+        reason: report.reason,
+        moderation,
+      },
+      reason: body.note ?? null,
+    });
+
     return c.json({ report: toReport(row, null, null) });
   },
 );
