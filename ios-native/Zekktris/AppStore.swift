@@ -329,6 +329,9 @@ final class AppStore: ObservableObject {
     // per-channel search state above so the two never bleed into each other.
     @Published var dmSearching = false
     @Published var dmSearchResults: [Message] = []
+    // Active auth sessions (Settings → Active Sessions).
+    @Published var sessions: [UserSession] = []
+    @Published var sessionsLoading = false
     @Published var errorText: String?
 
     // ── E2EE (DMs) ──────────────────────────────────────────────────────────
@@ -394,6 +397,7 @@ final class AppStore: ObservableObject {
         typing = [:]
         searchResults = []
         dmSearchResults = []
+        sessions = []
         mentions = []
         discoverable = []
         adminStats = nil
@@ -1637,6 +1641,30 @@ final class AppStore: ObservableObject {
     }
 
     func clearDMSearch() { dmSearchResults = [] }
+
+    // MARK: Active sessions
+
+    /// Load the current user's active auth sessions (GET /users/@me/sessions).
+    func loadSessions() async {
+        sessionsLoading = true
+        defer { sessionsLoading = false }
+        do {
+            sessions = try await api.listSessions()
+        } catch {
+            errorText = (error as? APIError)?.message ?? error.localizedDescription
+        }
+    }
+
+    /// Revoke one session (DELETE /users/@me/sessions/:id). On success drop it
+    /// from the list; on failure surface the message via errorText.
+    func revokeSession(_ s: UserSession) async {
+        do {
+            try await api.revokeSession(id: s.id)
+            sessions.removeAll { $0.id == s.id }
+        } catch {
+            errorText = (error as? APIError)?.message ?? error.localizedDescription
+        }
+    }
 
     // MARK: Typing
 

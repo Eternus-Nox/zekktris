@@ -1496,6 +1496,7 @@ struct SettingsView: View {
     @State private var showChangePassword = false
     @State private var showChangeUsername = false
     @State private var showChangeEmail = false
+    @State private var showSessions = false
     @State private var faceIDOn = false
     @State private var bioProbe: Biometrics.Probe?
     @State private var avatarPickerItem: PhotosPickerItem?
@@ -2072,10 +2073,23 @@ struct SettingsView: View {
             }
             .buttonStyle(.plain)
 
+            Button { showSessions = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "lock.shield").font(.system(size: 14)).foregroundColor(Theme.ink3).frame(width: 20)
+                    Text("Active Sessions").font(.system(size: 15)).foregroundColor(Theme.ink1)
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.system(size: 12)).foregroundColor(Theme.ink4)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 12)
+                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+
         }
         .sheet(isPresented: $showChangePassword) { ChangePasswordSheet() }
         .sheet(isPresented: $showChangeUsername) { ChangeUsernameSheet() }
         .sheet(isPresented: $showChangeEmail) { ChangeEmailSheet() }
+        .sheet(isPresented: $showSessions) { SessionsSheet() }
     }
 
     private func accountRow(label: String, value: String, copyable: Bool = false, mono: Bool = false,
@@ -2111,6 +2125,152 @@ struct SettingsView: View {
 
     private func sectionTitle(_ t: String) -> some View {
         Text(t).font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+    }
+}
+
+/// Lists the user's active auth sessions (GET /users/@me/sessions) with a
+/// per-session revoke action (DELETE /users/@me/sessions/:id). The current
+/// session is flagged and can't be revoked from here — matching the server,
+/// which keeps the caller's own session and only lets you drop others.
+struct SessionsSheet: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var revoking: Set<String> = []
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if store.sessionsLoading && store.sessions.isEmpty {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if store.sessions.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "lock.shield")
+                            .font(.system(size: 30, weight: .light))
+                            .foregroundColor(Theme.ink3)
+                        Text("No active sessions")
+                            .font(.zkSans(14)).foregroundColor(Theme.ink3)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            // Current session first, then most-recently-active.
+                            ForEach(sortedSessions) { s in
+                                sessionRow(s)
+                            }
+                        }
+                        .padding(12)
+                    }
+                }
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Active Sessions").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .task { await store.loadSessions() }
+            .refreshable { await store.loadSessions() }
+        }
+    }
+
+    private var sortedSessions: [UserSession] {
+        // Current session first, then most-recently-active. ISO-8601 strings
+        // sort chronologically as plain text, so a > b ⇒ a is more recent.
+        store.sessions.sorted { a, b in
+            if a.current != b.current { return a.current }
+            return a.lastUsedAt > b.lastUsedAt
+        }
+    }
+
+    private func sessionRow(_ s: UserSession) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: deviceIcon(s.userAgent))
+                .font(.system(size: 16)).foregroundColor(Theme.accent).frame(width: 22)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(deviceLabel(s.userAgent))
+                        .font(.zkSans(14, weight: .semibold)).foregroundColor(Theme.ink1)
+                        .lineLimit(1)
+                    if s.current {
+                        Text("THIS DEVICE")
+                            .font(.zkSans(9, weight: .bold)).foregroundColor(Theme.accent)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Theme.accent.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+                }
+                if let ip = s.ipAddress, !ip.isEmpty {
+                    Text(ip).font(.zkMono(11)).foregroundColor(Theme.ink3)
+                }
+                Text("Last active \(relativeLabel(s.lastUsedAt))")
+                    .font(.zkSans(11)).foregroundColor(Theme.ink3)
+            }
+            Spacer(minLength: 8)
+            if !s.current {
+                if revoking.contains(s.id) {
+                    ProgressView().scaleEffect(0.8).frame(width: 28, height: 28)
+                } else {
+                    Button(role: .destructive) {
+                        revoking.insert(s.id)
+                        Task {
+                            await store.revokeSession(s)
+                            revoking.remove(s.id)
+                        }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 16)).foregroundColor(Theme.dangerSoft)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(12)
+        .background(Theme.bg2)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.rMD, style: .continuous))
+    }
+
+    // ── Display helpers (best-effort parse of the User-Agent) ───────────────
+
+    private func relativeLabel(_ iso: String) -> String {
+        guard let d = messageDate(iso) else { return "unknown" }
+        return Self.relFormatter.localizedString(for: d, relativeTo: Date())
+    }
+
+    private static let relFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .full
+        return f
+    }()
+
+    private func deviceLabel(_ ua: String?) -> String {
+        guard let ua = ua, !ua.isEmpty else { return "Unknown device" }
+        if ua.contains("Zekktris") { return "Zekktris (iOS app)" }
+        // Ordered most-specific-first: Chrome UAs also contain "Safari", Edge
+        // contains "Chrome", etc., so a dictionary's arbitrary order would
+        // mislabel. Check the distinctive token first.
+        let browser = [("Edg", "Edge"), ("OPR", "Opera"), ("Firefox", "Firefox"),
+                       ("Chrome", "Chrome"), ("Safari", "Safari")]
+            .first { ua.contains($0.0) }?.1
+        let os = [("iPhone", "iPhone"), ("iPad", "iPad"), ("Mac OS X", "macOS"),
+                  ("Macintosh", "macOS"), ("Windows", "Windows"),
+                  ("Android", "Android"), ("Linux", "Linux")]
+            .first { ua.contains($0.0) }?.1
+        switch (browser, os) {
+        case let (b?, o?): return "\(b) on \(o)"
+        case let (b?, nil): return b
+        case let (nil, o?): return o
+        default: return String(ua.prefix(40))
+        }
+    }
+
+    private func deviceIcon(_ ua: String?) -> String {
+        guard let ua = ua else { return "globe" }
+        if ua.contains("Zekktris") || ua.contains("iPhone") { return "iphone" }
+        if ua.contains("iPad") { return "ipad" }
+        if ua.contains("Macintosh") || ua.contains("Mac OS X") || ua.contains("Windows") || ua.contains("Linux") {
+            return "laptopcomputer"
+        }
+        if ua.contains("Android") { return "candybarphone" }
+        return "globe"
     }
 }
 
