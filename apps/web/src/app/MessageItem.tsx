@@ -89,7 +89,16 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   const channelsByGuild = useAppStateSelector((v) => v.state.channelsByGuild);
   const emojisByGuild = useAppStateSelector((v) => v.state.emojisByGuild);
   const usersById = useAppStateSelector((v) => v.state.usersById);
-  const messagesByChannel = useAppStateSelector((v) => v.state.messagesByChannel);
+  // Select ONLY this message's channel slice, not the whole map. The map
+  // reference changes on every append/edit/receipt in ANY channel, so
+  // subscribing to the full map re-rendered every visible row whenever a
+  // background channel ticked. The reducer preserves per-channel array
+  // references across other channels' mutations, so this slice changes
+  // (and re-renders the row) only when THIS channel's messages actually
+  // change — exactly when `repliedTo` could differ.
+  const channelMessages = useAppStateSelector(
+    (v) => v.state.messagesByChannel[message.channelId],
+  );
   const guildsById = useAppStateSelector((v) => v.state.guildsById);
   const savedMessageIds = useAppStateSelector((v) => v.state.savedMessageIds);
   const toggleSavedMessage = useAppStateSelector((v) => v.toggleSavedMessage);
@@ -436,10 +445,10 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   // WAS a reply, even if we can't render its content.
   const repliedTo: Message | null = useMemo(() => {
     if (!message.replyToId) return null;
-    const list = messagesByChannel[message.channelId];
+    const list = channelMessages;
     if (!list) return null;
     return list.find((m) => m.id === message.replyToId) ?? null;
-  }, [message.replyToId, message.channelId, messagesByChannel]);
+  }, [message.replyToId, channelMessages]);
 
   // Permission gate for Pin: any guild member with MANAGE_MESSAGES on the
   // channel. We don't compute the bitfield here (it's expensive and

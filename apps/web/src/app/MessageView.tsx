@@ -19,7 +19,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import type { Channel, Message } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
-import { useAppState, voiceStatesForChannel, dmE2eeSuppressed } from '../state/AppState';
+import { useAppStateSelector, voiceStatesForChannel, dmE2eeSuppressed } from '../state/AppState';
 import { useTypingPing, useTypingUsers } from '../state/Typing';
 import { useToasts } from '../state/Toasts';
 import { MessageItem } from './MessageItem';
@@ -65,12 +65,26 @@ export function MessageView({
       shape — used for message-link jumping. */
   jumpToMessageId?: string;
 }) {
-  const { state, loadMessages, loadMessagesAround, ackChannel, sendMessageOptimistic } = useAppState();
+  // Granular subscriptions (was `useAppState()`): the channel container now
+  // re-renders only when a slice it actually reads changes, not on every
+  // dispatch (typing/presence/voice in unrelated channels). `messages` and
+  // `loaded` are selected as per-channel slices so a message landing in a
+  // BACKGROUND channel doesn't re-render the open conversation.
+  const loadMessages = useAppStateSelector((v) => v.loadMessages);
+  const loadMessagesAround = useAppStateSelector((v) => v.loadMessagesAround);
+  const ackChannel = useAppStateSelector((v) => v.ackChannel);
+  const sendMessageOptimistic = useAppStateSelector((v) => v.sendMessageOptimistic);
+  const messages = useAppStateSelector((v) => v.state.messagesByChannel[channel.id]);
+  const loaded = useAppStateSelector((v) => v.state.loadedChannels.has(channel.id));
+  const readStateByChannel = useAppStateSelector((v) => v.state.readStateByChannel);
+  const channelsByGuild = useAppStateSelector((v) => v.state.channelsByGuild);
+  const membersByGuild = useAppStateSelector((v) => v.state.membersByGuild);
+  const guildsById = useAppStateSelector((v) => v.state.guildsById);
+  const rolesByGuild = useAppStateSelector((v) => v.state.rolesByGuild);
+  const supervision = useAppStateSelector((v) => v.state.supervision);
   const nav = useNavigate();
   const { user, rest } = useAuth();
   const toasts = useToasts();
-  const messages = state.messagesByChannel[channel.id];
-  const loaded = state.loadedChannels.has(channel.id);
 
   // Load messages whenever we land on a channel that hasn't been loaded.
   // When a jumpToMessageId is present we load the around-window so the
@@ -199,7 +213,7 @@ export function MessageView({
       break;
     }
     if (!last) return;
-    const rs = state.readStateByChannel[channel.id];
+    const rs = readStateByChannel[channel.id];
     if (rs?.lastMessageId === last.id) return; // already acked
     void ackChannel(channel.id, last.id);
     // We intentionally only depend on the channel id and the messages array
@@ -234,12 +248,12 @@ export function MessageView({
   }, [isDM, channel.recipients, messages, user?.id]);
   // Thread parent — when viewing a thread, the breadcrumb in the header
   // shows the parent channel's name and lets the user navigate back. We
-  // resolve via state.channelsByGuild so we don't need an extra REST call.
+  // resolve via channelsByGuild so we don't need an extra REST call.
   const threadParent = useMemo(() => {
     if (!isThread || !channel.parentId || !channel.guildId) return null;
-    const list = state.channelsByGuild[channel.guildId];
+    const list = channelsByGuild[channel.guildId];
     return list?.find((c) => c.id === channel.parentId) ?? null;
-  }, [isThread, channel.parentId, channel.guildId, state.channelsByGuild]);
+  }, [isThread, channel.parentId, channel.guildId, channelsByGuild]);
 
   // ── Thread lifecycle state ─────────────────────────────────────────────
   //
@@ -264,21 +278,21 @@ export function MessageView({
   const myMember = useMemo(() => {
     if (!channel.guildId || !user) return null;
     return (
-      state.membersByGuild[channel.guildId]?.find((m) => m.userId === user.id) ?? null
+      membersByGuild[channel.guildId]?.find((m) => m.userId === user.id) ?? null
     );
-  }, [channel.guildId, user, state.membersByGuild]);
+  }, [channel.guildId, user, membersByGuild]);
 
   const canManageThread = useMemo(() => {
     if (!isThread || !channel.guildId || !user || !myMember) return false;
-    const guild = state.guildsById[channel.guildId];
+    const guild = guildsById[channel.guildId];
     if (!guild) return false;
     // MANAGE_THREADS at the guild level wins for any thread.
-    const roles = state.rolesByGuild[channel.guildId] ?? [];
+    const roles = rolesByGuild[channel.guildId] ?? [];
     const isOwner = guild.ownerId === user.id;
     const perms = computeMemberGuildPerms(roles, channel.guildId, myMember.roleIds, isOwner);
     if (hasBit(perms, 33 /* MANAGE_THREADS */)) return true;
     // Creator heuristic via the first message in the thread.
-    const list = state.messagesByChannel[channel.id];
+    const list = messages;
     if (!list || list.length === 0) return false;
     // First message by snowflake order. The messages list is kept
     // sorted ascending by id (see Scroller), so [0] is the oldest.
@@ -289,9 +303,9 @@ export function MessageView({
     channel.id,
     user,
     myMember,
-    state.guildsById,
-    state.rolesByGuild,
-    state.messagesByChannel,
+    guildsById,
+    rolesByGuild,
+    messages,
   ]);
 
   const headerLabel = isDM
@@ -633,7 +647,7 @@ export function MessageView({
               out in one guild and free in another. */}
           {(() => {
             if (!channel.guildId || !user) return null;
-            const memberList = state.membersByGuild[channel.guildId];
+            const memberList = membersByGuild[channel.guildId];
             const selfMember = memberList?.find((m) => m.userId === user.id);
             const iso = selfMember?.communicationDisabledUntil;
             if (!iso) return null;
@@ -739,7 +753,7 @@ export function MessageView({
                   processedContent &&
                   processedContent.trim().length > 0 &&
                   channel.e2eeEnabled &&
-                  !dmE2eeSuppressed(state.supervision, channel)
+                  !dmE2eeSuppressed(supervision, channel)
                 ) {
                   try {
                     const { encryptForDm, hasLocalKey } = await import('../lib/e2ee');
@@ -929,9 +943,12 @@ function Scroller({
       Turned on just before a load-older fires; reset when loading ends. */
   const [shiftPrepend, setShiftPrepend] = useState(false);
 
-  const { state, loadOlderMessages } = useAppState();
-  const loadingOlder = state.loadingOlder.has(channelId);
-  const exhausted = state.olderExhausted.has(channelId);
+  // Granular subscriptions (was `useAppState()`): the scroller re-renders
+  // only when THIS channel's older-loading flags flip — selected as
+  // per-channel booleans so other channels' pagination is invisible here.
+  const loadOlderMessages = useAppStateSelector((v) => v.loadOlderMessages);
+  const loadingOlder = useAppStateSelector((v) => v.state.loadingOlder.has(channelId));
+  const exhausted = useAppStateSelector((v) => v.state.olderExhausted.has(channelId));
 
   // Memoized grouping (see groupMessages). Stable while `messages`
   // identity is stable, so gateway ticks / typing updates don't re-run it.
@@ -2189,7 +2206,9 @@ function FilePreviewItem({ file, onRemove }: { file: File; onRemove: () => void 
 // ── TypingIndicator ────────────────────────────────────────────────────────
 
 function TypingIndicator({ channelId }: { channelId: string }) {
-  const { state } = useAppState();
+  // Granular subscription (was `useAppState()`): only the user cache drives
+  // the typing names; presence/message/voice dispatches no longer re-render.
+  const usersById = useAppStateSelector((v) => v.state.usersById);
   const userIds = useTypingUsers(channelId);
   if (userIds.length === 0) return <div className="h-5" aria-hidden />;
 
@@ -2197,7 +2216,7 @@ function TypingIndicator({ channelId }: { channelId: string }) {
   // we don't recognize yet (shouldn't happen in practice, but keeps the UI
   // resilient if a typing event arrives for someone we haven't seen).
   const names = userIds
-    .map((id) => state.usersById[id])
+    .map((id) => usersById[id])
     .map((u) => u?.displayName ?? 'someone');
 
   let text: string;
@@ -2314,13 +2333,17 @@ function StickerComposerSlot({
  * quick-toggle affordance.
  */
 function DmHeaderCallButton({ channel }: { channel: Channel }) {
-  const { state, mergeChannelVoiceStates, restForChannel } = useAppState();
+  // Granular subscriptions (was `useAppState()`).
+  const mergeChannelVoiceStates = useAppStateSelector((v) => v.mergeChannelVoiceStates);
+  const restForChannel = useAppStateSelector((v) => v.restForChannel);
+  const voiceStatesByUser = useAppStateSelector((v) => v.state.voiceStatesByUser);
+  const supervision = useAppStateSelector((v) => v.state.supervision);
   const { user } = useAuth();
   const toasts = useToasts();
 
   const selfId = user?.id;
-  const callStates = voiceStatesForChannel(state, channel.id);
-  const myInThis = state.voiceStatesByUser[selfId ?? '']?.channelId === channel.id;
+  const callStates = voiceStatesForChannel(voiceStatesByUser, channel.id);
+  const myInThis = voiceStatesByUser[selfId ?? '']?.channelId === channel.id;
   const otherInThis = callStates.some((v) => v.userId !== selfId);
   const incoming = !myInThis && otherInThis;
 
@@ -2362,7 +2385,7 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
   async function start() {
     if (busy || myInThis) return;
     // Parental controls: a supervised child barred from voice can't call.
-    if (state.supervision?.restrictions && !state.supervision.restrictions.allowVoice) {
+    if (supervision?.restrictions && !supervision.restrictions.allowVoice) {
       toasts.push('Voice calls are restricted by your parent', 'error');
       return;
     }
