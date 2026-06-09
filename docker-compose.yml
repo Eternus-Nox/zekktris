@@ -126,6 +126,11 @@ services:
       # as a Bearer token. Not proxied by Caddy — internal-network only unless
       # you add a route. Admins always get JSON metrics at /api/v1/admin/metrics.
       METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # Encrypts sensitive fields at rest (TOTP 2FA secrets, bot event secrets,
+      # and the SSO/OIDC client secret). REQUIRED to enable SSO. 32 bytes as 64
+      # hex chars or base64: `openssl rand -hex 32`. Unset → those fields are
+      # stored UNENCRYPTED and SSO config is refused.
+      FIELD_ENCRYPTION_KEY: ${FIELD_ENCRYPTION_KEY:-}
       TRUST_PROXY: "true"   # we're behind Caddy; X-Forwarded-* are trusted
       # LiveKit (voice/video). The stack ships a self-hosted LiveKit SFU
       # (the `livekit` service below) that runs by default, so voice works
