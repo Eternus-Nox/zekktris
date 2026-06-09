@@ -2294,13 +2294,8 @@ struct ProfileCardView: View {
 
             ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 6) {
-                    Circle().fill(Self.statusColor(liveStatus)).frame(width: 8, height: 8)
-                    Text(Self.statusLabel(liveStatus))
-                        .font(.zkSans(13))
-                        .foregroundColor(Theme.ink2)
-                }
-
+                // Online/offline is already shown by the status dot on the
+                // avatar above; the separate dot + text row was redundant.
                 AchievementsSection(userId: isSelf ? nil : user.id)
 
                 if (user.customStatus?.isEmpty == false) || (user.customStatusEmoji?.isEmpty == false) {
@@ -2465,23 +2460,6 @@ struct ProfileCardView: View {
         Task {
             if relType == "blocked" { await store.unblockUser(user) }
             else { await store.blockUser(user) }
-        }
-    }
-
-    static func statusColor(_ s: String) -> Color {
-        switch s {
-        case "online": return Theme.online
-        case "idle": return Color(hex: 0xFAA81A)
-        case "dnd": return Theme.danger
-        default: return Theme.ink3
-        }
-    }
-    static func statusLabel(_ s: String) -> String {
-        switch s {
-        case "online": return "Online"
-        case "idle": return "Idle"
-        case "dnd": return "Do Not Disturb"
-        default: return "Offline"
         }
     }
 }
