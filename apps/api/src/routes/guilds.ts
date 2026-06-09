@@ -1627,6 +1627,8 @@ guildsRouter.get(
       before: snowflakeSchema.optional(),
       limit: z.coerce.number().int().min(1).max(100).optional(),
       actionPrefix: z.string().max(50).optional(),
+      /** Filter to a single moderator's actions. */
+      actorId: snowflakeSchema.optional(),
     }),
   ),
   async (c) => {
@@ -1640,6 +1642,7 @@ guildsRouter.get(
       before: q.before ? BigInt(q.before) : undefined,
       limit: q.limit,
       actionPrefix: q.actionPrefix,
+      actorId: q.actorId ? BigInt(q.actorId) : undefined,
     });
     return c.json({
       entries: rows.map((r) => toAuditLogEntry(r.entry, r.actor)),
