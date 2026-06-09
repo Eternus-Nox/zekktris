@@ -29,7 +29,7 @@ struct MainView: View {
                     .environmentObject(store.voice)
             }
             .fullScreenCover(item: $store.lightbox) { img in
-                ImageLightboxView(url: img.url)
+                ImageLightboxView(item: img)
                     .environmentObject(store)
             }
             .fullScreenCover(item: compactRailPageBinding) { page in

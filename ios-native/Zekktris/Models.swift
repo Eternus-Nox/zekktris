@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 // Models mirror the server's DTO shapes (see packages/client/src/types.ts).
 // The API serializes camelCase JSON, so we rely on Codable's default key
@@ -710,7 +711,11 @@ struct SavedMembershipWrap: Codable { let savedIds: [String] }
 /// A full-screen image presentation request.
 struct LightboxImage: Identifiable {
     let id = UUID()
-    let url: URL
+    /// Remote image (plain attachments) — loaded by URL.
+    var url: URL? = nil
+    /// In-memory image (E2EE attachments, already decrypted) — shown directly
+    /// so encrypted media is previewed without ever exposing a plaintext URL.
+    var image: UIImage? = nil
 }
 
 // MARK: - Permissions

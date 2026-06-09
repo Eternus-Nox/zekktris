@@ -2476,6 +2476,9 @@ final class AppStore: ObservableObject {
     func openProfile(_ user: PublicUser) { profileUser = user }
 
     func openLightbox(_ url: URL) { lightbox = LightboxImage(url: url) }
+    /// Open the full-screen viewer for an already-decoded image (E2EE images,
+    /// which have no plaintext URL).
+    func openLightbox(image: UIImage) { lightbox = LightboxImage(image: image) }
 
     // MARK: Forwarding
 
