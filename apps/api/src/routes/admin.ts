@@ -129,6 +129,21 @@ adminRouter.get('/metrics', async (c) => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────
+// GET /admin/voice-diagnostic — end-to-end LiveKit config check (admin only)
+// ───────────────────────────────────────────────────────────────────────────
+//
+// Tests the instance's LiveKit setup (keys present, browser URL resolvable,
+// token minting, and — the #1 self-host gotcha — whether the API can actually
+// reach the SFU's signaling/control API with the configured credentials).
+// Returns a clear pass/fail per step. Hits the network (listRooms with a
+// timeout), so it's a run-on-demand check, not part of the metrics poll. No
+// secrets are returned — only config URLs and classified error guidance.
+adminRouter.get('/voice-diagnostic', async (c) => {
+  const { diagnoseLivekit } = await import('../services/livekitDiagnostic');
+  return c.json({ diagnostic: await diagnoseLivekit() });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
 // GET /admin/users — paginated user list with optional search
 // ───────────────────────────────────────────────────────────────────────────
 //

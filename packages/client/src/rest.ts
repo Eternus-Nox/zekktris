@@ -2415,6 +2415,13 @@ export class RestClient {
     return this.request('GET', '/admin/metrics');
   }
 
+  /** Run the end-to-end LiveKit/voice diagnostic (keys, browser URL, token
+   *  mint, SFU reachability + auth). Instance-admin gated. Hits the network,
+   *  so call on demand. No secrets are returned. */
+  adminVoiceDiagnostic(): Promise<{ diagnostic: LivekitDiagnostic }> {
+    return this.request('GET', '/admin/voice-diagnostic');
+  }
+
   // ── Admin: instance security ──────────────────────────────────────────────
 
   adminSecurityConfig(): Promise<{ config: SecurityConfig }> {
@@ -2852,6 +2859,25 @@ export interface AdminStats {
   channels: number;
   messages: { total: number; last24h: number };
   activeSessions: number;
+  generatedAt: string;
+}
+
+/** One step of the LiveKit/voice diagnostic. */
+export interface LivekitCheck {
+  id: string;
+  label: string;
+  status: 'pass' | 'fail' | 'warn' | 'skip';
+  detail: string;
+}
+
+/** Result of GET /admin/voice-diagnostic. No secrets — only config URLs and
+ *  classified guidance. */
+export interface LivekitDiagnostic {
+  configured: boolean;
+  ok: boolean;
+  wsUrl: string | null;
+  httpUrl: string | null;
+  checks: LivekitCheck[];
   generatedAt: string;
 }
 

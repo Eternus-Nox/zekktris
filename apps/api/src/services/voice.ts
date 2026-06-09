@@ -314,7 +314,7 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
  * Returns null when nothing usable can be derived (no explicit URL and no
  * PUBLIC_URL to build from), which keeps voice in presence-only mode.
  */
-function browserLivekitWsUrl(): string | null {
+export function browserLivekitWsUrl(): string | null {
   if (env.LIVEKIT_WS_URL) return env.LIVEKIT_WS_URL;
   if (!env.PUBLIC_URL) return null;
   try {
