@@ -519,6 +519,13 @@
       "when": 1784600100000,
       "tag": "0074_scheduled_claimed_at",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1784600110000,
+      "tag": "0075_dm_streaks_user_idx",
+      "breakpoints": true
     }
   ]
 }

@@ -71,16 +71,27 @@ export const securityConfig = pgTable('security_config', {
  * from message timestamps only, so E2EE conversations work — content is
  * never read.
  */
-export const dmStreaks = pgTable('dm_streaks', {
-  channelId: bigint('channel_id', { mode: 'bigint' }).primaryKey(),
-  userAId: bigint('user_a_id', { mode: 'bigint' }).notNull(),
-  userBId: bigint('user_b_id', { mode: 'bigint' }).notNull(),
-  /** Last UTC day (YYYY-MM-DD) each side messaged. */
-  lastDayA: text('last_day_a'),
-  lastDayB: text('last_day_b'),
-  /** Last UTC day the streak was credited. */
-  lastCountedDay: text('last_counted_day'),
-  streak: integer('streak').notNull().default(0),
-  bestStreak: integer('best_streak').notNull().default(0),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const dmStreaks = pgTable(
+  'dm_streaks',
+  {
+    channelId: bigint('channel_id', { mode: 'bigint' }).primaryKey(),
+    userAId: bigint('user_a_id', { mode: 'bigint' }).notNull(),
+    userBId: bigint('user_b_id', { mode: 'bigint' }).notNull(),
+    /** Last UTC day (YYYY-MM-DD) each side messaged. */
+    lastDayA: text('last_day_a'),
+    lastDayB: text('last_day_b'),
+    /** Last UTC day the streak was credited. */
+    lastCountedDay: text('last_counted_day'),
+    streak: integer('streak').notNull().default(0),
+    bestStreak: integer('best_streak').notNull().default(0),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    // `bestStreakForUser` filters `userAId = $1 OR userBId = $1`; two
+    // single-column indexes let Postgres BitmapOr them (a composite would
+    // only serve the leading column). The primary key already covers
+    // `channelId` lookups used by the per-DM streak read.
+    byUserA: index('dm_streaks_user_a_idx').on(t.userAId),
+    byUserB: index('dm_streaks_user_b_idx').on(t.userBId),
+  }),
+);
