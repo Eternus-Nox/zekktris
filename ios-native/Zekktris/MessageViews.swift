@@ -1584,6 +1584,8 @@ private struct UnlockPanel: View {
     @EnvironmentObject private var store: AppStore
     let channel: Channel
     @State private var password = ""
+    @State private var showRestore = false
+    @State private var restoreNote: String?
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -1632,17 +1634,53 @@ private struct UnlockPanel: View {
             .disabled(password.isEmpty)
             .padding(.horizontal, 32)
 
+            Button { showRestore = true } label: {
+                Text("Or restore from a backup file")
+                    .font(.zkSans(13, weight: .medium))
+                    .foregroundColor(Theme.accent)
+            }
+            .padding(.top, 2)
+
+            if let restoreNote {
+                Text(restoreNote)
+                    .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                    .multilineTextAlignment(.center).padding(.horizontal, 32)
+            }
+
             Spacer()
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg1)
         .onAppear { focused = true }
+        .fileImporter(
+            isPresented: $showRestore,
+            allowedContentTypes: [.json],
+            allowsMultipleSelection: false
+        ) { result in restore(result) }
     }
 
     private func unlock() {
         guard !password.isEmpty else { return }
         if store.unlockE2EE(channel, password: password) { password = "" }
+    }
+
+    private func restore(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let url = urls.first else {
+            if case .failure(let e) = result { restoreNote = e.localizedDescription }
+            return
+        }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url) else {
+            restoreNote = "Couldn't read that file."; return
+        }
+        guard let restored = store.importE2EEKeysJSON(data) else {
+            restoreNote = "That file isn't a valid Zekktris keys backup."; return
+        }
+        // Success: if this DM's key arrived the panel disappears on its own
+        // (showUnlockPanel re-evaluates via e2eeUnlockVersion).
+        restoreNote = "Restored \(restored.count) key\(restored.count == 1 ? "" : "s")."
     }
 }
 
@@ -3170,6 +3208,11 @@ struct DmSettingsSheet: View {
     let channel: Channel
     @State private var showEnableE2EE = false
     @State private var confirmDisableE2EE = false
+    // E2EE key backup / restore (cross-client with web).
+    @State private var shareFile: ShareFile?
+    @State private var showRestore = false
+    @State private var confirmRestore = false
+    @State private var keyNote: String?
 
     private let options: [(String, Int?)] = [
         ("Off", nil), ("30 seconds", 30), ("1 minute", 60), ("2 minutes", 120)
@@ -3202,6 +3245,8 @@ struct DmSettingsSheet: View {
                         .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
                         Text("Messages are encrypted with your shared password. Turning this off permanently deletes the encrypted history for both of you.")
                             .font(.zkSans(12)).foregroundColor(Theme.ink3)
+
+                        keyBackupSection
                     } else {
                         Button { showEnableE2EE = true } label: {
                             HStack(spacing: 8) {
@@ -3272,7 +3317,90 @@ struct DmSettingsSheet: View {
             } message: {
                 Text("All encrypted messages in this conversation are permanently deleted for both of you.")
             }
+            .sheet(item: $shareFile) { ActivityView(url: $0.url) }
+            .fileImporter(
+                isPresented: $showRestore,
+                allowedContentTypes: [.json],
+                allowsMultipleSelection: false
+            ) { result in onRestore(result) }
+            .confirmationDialog(
+                "Restore keys from a backup?",
+                isPresented: $confirmRestore,
+                titleVisibility: .visible
+            ) {
+                Button("Choose File…") { showRestore = true }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Importing keys will replace any matching keys on this device.")
+            }
         }
+    }
+
+    // Key backup/restore — mirrors web's DmSettingsPanel "Download keys" /
+    // "Import from backup" affordances. The backup bundles ALL of this
+    // device's DM keys into one cross-client file (see E2EE.encodeKeyBackup).
+    @ViewBuilder
+    private var keyBackupSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Your keys are stored only on this device. Back them up so you can keep reading messages on another device.")
+                .font(.zkSans(12)).foregroundColor(Theme.ink3)
+            HStack(spacing: 10) {
+                Button { backupKeys() } label: {
+                    Label("Back up keys", systemImage: "square.and.arrow.up")
+                        .font(.zkSans(13, weight: .semibold)).foregroundColor(.white)
+                        .padding(.horizontal, 12).padding(.vertical, 9)
+                        .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+                Button { confirmRestore = true } label: {
+                    Label("Restore keys", systemImage: "square.and.arrow.down")
+                        .font(.zkSans(13, weight: .semibold)).foregroundColor(Theme.ink1)
+                        .padding(.horizontal, 12).padding(.vertical, 9)
+                        .background(Theme.bg2)
+                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.line, lineWidth: 1))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+            }
+            Text("Anyone with this file can read your encrypted messages.")
+                .font(.zkSans(11)).italic().foregroundColor(Theme.ink4)
+            if let keyNote {
+                Text(keyNote).font(.zkSans(12)).foregroundColor(Theme.ink3)
+            }
+        }
+    }
+
+    private func backupKeys() {
+        keyNote = nil
+        guard let data = store.exportE2EEKeysJSON() else {
+            keyNote = "No encryption keys on this device yet."; return
+        }
+        let stamp = ISO8601DateFormatter().string(from: Date()).prefix(10)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zekktris-e2ee-keys-\(stamp).json")
+        do {
+            try data.write(to: url, options: .atomic)
+            shareFile = ShareFile(url: url)
+        } catch {
+            keyNote = "Couldn't prepare the backup file."
+        }
+    }
+
+    private func onRestore(_ result: Result<[URL], Error>) {
+        keyNote = nil
+        guard case .success(let urls) = result, let url = urls.first else {
+            if case .failure(let e) = result { keyNote = e.localizedDescription }
+            return
+        }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url) else {
+            keyNote = "Couldn't read that file."; return
+        }
+        guard let restored = store.importE2EEKeysJSON(data) else {
+            keyNote = "That file isn't a valid Zekktris keys backup."; return
+        }
+        keyNote = "Restored \(restored.count) key\(restored.count == 1 ? "" : "s")."
     }
 
     private func ttlRow(_ opt: (String, Int?)) -> some View {
@@ -3289,6 +3417,23 @@ struct DmSettingsSheet: View {
         }
         .buttonStyle(.plain)
     }
+}
+
+/// Identifiable wrapper so a temp file URL can drive `.sheet(item:)`.
+private struct ShareFile: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+/// Thin bridge to the iOS share sheet (UIActivityViewController) for exporting
+/// a file — used by the E2EE key backup. No new file needed; UIKit is already
+/// imported here.
+private struct ActivityView: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 
 /// Downloads an encrypted (.zke) attachment, decrypts it with the DM's
