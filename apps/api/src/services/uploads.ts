@@ -106,17 +106,29 @@ export async function saveUploadedFile(file: File): Promise<SavedFile> {
   let safeName = sanitizeFilename(file.name || 'untitled');
   const attachmentId = nextSnowflake();
 
-  const dir = path.join(env.UPLOAD_DIR, attachmentId.toString());
-  await fs.mkdir(dir, { recursive: true });
-
-  // Stream the buffer out. For files <100MB this is fine in one shot;
+  // Read the bytes up front. For files <100MB this is fine in one shot;
   // very large uploads would benefit from a real stream but Hono gives us
   // a Blob/File so we'd need to switch to a multipart streaming parser
-  // in stage 6+ if files get bigger.
+  // in stage 6+ if files get bigger. We read BEFORE creating any on-disk
+  // directory so the decompression-bomb guard below can reject without
+  // leaving a stray dir behind (a flood of bombs would otherwise spray
+  // empty directories / exhaust inodes).
   let buf: Buffer = Buffer.from(await file.arrayBuffer());
   let contentType = normalizeContentType(safeName, file.type || '');
   let width: number | null = null;
   let height: number | null = null;
+
+  // Decompression-bomb guard: a tiny file can declare an enormous pixel
+  // count that would OOM sharp on decode (and every client on view).
+  // Reject abusive images from the HEADER, before we decode or store
+  // anything. Only raster images are checked; non-images are opaque blobs
+  // we never decode. See assertImageWithinPixelLimit for the cap rationale.
+  if (/^image\//i.test(contentType)) {
+    await assertImageWithinPixelLimit(buf);
+  }
+
+  const dir = path.join(env.UPLOAD_DIR, attachmentId.toString());
+  await fs.mkdir(dir, { recursive: true });
 
   // Server-side WebP backstop. Clients are expected to compress + convert
   // to WebP before upload; this catches anything that didn't (a different
@@ -659,6 +671,94 @@ async function loadSharp(): Promise<any | null> {
 }
 
 /**
+ * Maximum input pixels (width × height × animation frames) we'll let sharp
+ * decode, and the ceiling the upload boundary rejects above. 100 megapixels.
+ *
+ * Rationale: far above any real avatar/banner/photo — flagship phone and pro
+ * camera sensors top out around 48–61 MP, so this leaves generous headroom —
+ * yet it blocks gigapixel "decompression bombs" (a few-KB file whose header
+ * declares tens of thousands of pixels per side) and caps a single decode at
+ * ~400 MB (100 MP × 4 bytes RGBA), well under sharp's ~268 MP / ~1 GB default
+ * limitInputPixels. Passed to every sharp() entry point (this file's
+ * encodeWebp + the periodic sweep in imageCompression.ts) so decode never
+ * allocates beyond the cap; also enforced up-front at the upload boundary.
+ */
+export const MAX_INPUT_PIXELS = 100_000_000;
+
+/**
+ * Total pixels a decoder must allocate for an image of these header
+ * dimensions. Animation frames (GIF / APNG / animated WebP) multiply,
+ * since each frame is decoded — so a small frame size with a huge frame
+ * count is still a bomb.
+ */
+export function imageTotalPixels(
+  width: number,
+  height: number,
+  pages?: number,
+): number {
+  const w = width > 0 ? width : 0;
+  const h = height > 0 ? height : 0;
+  const frames = pages && pages > 0 ? pages : 1;
+  return w * h * frames;
+}
+
+/**
+ * Whether an image of these header dimensions exceeds the pixel cap — i.e.
+ * is an abusive decompression bomb we must refuse to decode or store.
+ */
+export function exceedsPixelLimit(
+  width: number,
+  height: number,
+  pages?: number,
+): boolean {
+  return imageTotalPixels(width, height, pages) > MAX_INPUT_PIXELS;
+}
+
+/**
+ * Decompression-bomb guard for the upload boundary. Reads the image HEADER
+ * only (sharp.metadata() does not decode pixels) and throws a clear 400 if
+ * the declared total pixel count — width × height × animation frames —
+ * exceeds MAX_INPUT_PIXELS. The frame multiply also catches many-frame GIF/
+ * APNG/animated-WebP bombs, where each frame is modest but the sum is not.
+ *
+ * Best-effort: if sharp isn't installed we skip — without a decoder there's
+ * nothing to exhaust server-side, and we have no way to read dimensions. A
+ * header sharp can't parse (corrupt/non-image) is left to the rest of the
+ * pipeline, which stores it as an opaque, never-decoded blob.
+ */
+async function assertImageWithinPixelLimit(buf: Buffer): Promise<void> {
+  const sharp = await loadSharp();
+  if (!sharp) return;
+  let meta: { width?: number; height?: number; pages?: number };
+  try {
+    // limitInputPixels:false so metadata() can READ the declared dimensions
+    // even when they're abusive — metadata is header-only (no pixel decode,
+    // no large allocation; ~1ms even on a gigapixel header), so disabling
+    // the limit here is safe. We then enforce the cap ourselves below. The
+    // numeric cap stays on the actual DECODE paths (encodeWebp, the sweep),
+    // where it prevents sharp from ever allocating beyond it. (With the cap
+    // set HERE, metadata() would itself throw on a bomb, and the catch would
+    // silently treat it as an opaque file instead of rejecting it.)
+    meta = await sharp(buf, {
+      failOn: 'none',
+      limitInputPixels: false,
+    }).metadata();
+  } catch {
+    return; // not a decodable image header — treat as an opaque file
+  }
+  const w = meta.width ?? 0;
+  const h = meta.height ?? 0;
+  const frames = meta.pages && meta.pages > 0 ? meta.pages : 1;
+  if (exceedsPixelLimit(w, h, frames)) {
+    const mp = Math.round(MAX_INPUT_PIXELS / 1_000_000);
+    throw errors.badRequest(
+      `image is too large to process (${w}×${h}` +
+        `${frames > 1 ? ` × ${frames} frames` : ''} exceeds the ${mp} megapixel limit)`,
+    );
+  }
+}
+
+/**
  * Downscale + re-encode an image (path or buffer) to WebP. Returns null
  * if sharp is unavailable, the source is animated, or anything fails —
  * callers treat null as "leave the original alone". WebP keeps PNG
@@ -676,7 +776,10 @@ async function encodeWebp(
   if (!sharp) return null;
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let img: any = sharp(input, { failOn: 'none' }).rotate();
+    let img: any = sharp(input, {
+      failOn: 'none',
+      limitInputPixels: MAX_INPUT_PIXELS,
+    }).rotate();
     const meta = await img.metadata();
     if ((meta.pages ?? 1) > 1) return null; // animated — don't flatten
     if (meta.width && meta.height && Math.max(meta.width, meta.height) > opts.maxDim) {
