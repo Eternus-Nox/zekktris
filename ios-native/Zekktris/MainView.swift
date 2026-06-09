@@ -1498,6 +1498,7 @@ struct SettingsView: View {
     @State private var showChangeUsername = false
     @State private var showChangeEmail = false
     @State private var showSessions = false
+    @State private var showTwoFactor = false
     @State private var faceIDOn = false
     @State private var bioProbe: Biometrics.Probe?
     @State private var avatarPickerItem: PhotosPickerItem?
@@ -2086,11 +2087,24 @@ struct SettingsView: View {
             }
             .buttonStyle(.plain)
 
+            Button { showTwoFactor = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "lock.rotation").font(.system(size: 14)).foregroundColor(Theme.ink3).frame(width: 20)
+                    Text("Two-Factor Authentication").font(.system(size: 15)).foregroundColor(Theme.ink1)
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.system(size: 12)).foregroundColor(Theme.ink4)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 12)
+                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+
         }
         .sheet(isPresented: $showChangePassword) { ChangePasswordSheet() }
         .sheet(isPresented: $showChangeUsername) { ChangeUsernameSheet() }
         .sheet(isPresented: $showChangeEmail) { ChangeEmailSheet() }
         .sheet(isPresented: $showSessions) { SessionsSheet() }
+        .sheet(isPresented: $showTwoFactor) { TwoFactorSheet() }
     }
 
     private func accountRow(label: String, value: String, copyable: Bool = false, mono: Bool = false,
@@ -2272,6 +2286,241 @@ struct SessionsSheet: View {
         }
         if ua.contains("Android") { return "candybarphone" }
         return "globe"
+    }
+}
+
+/// TOTP two-factor enrollment + management. Mirrors web's TwoFactorSection
+/// (SettingsView.tsx): status row, enroll (QR + secret + 6-digit confirm →
+/// one-time recovery codes), and disable (current code or recovery code).
+/// Same endpoints web uses (GET/POST /users/@me/totp[/begin|confirm|disable]).
+struct TwoFactorSheet: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var status: TwoFactorStatus?
+    @State private var loading = true
+    @State private var setup: TwoFactorSecret?
+    @State private var code = ""
+    @State private var submitting = false
+    @State private var recoveryCodes: [String]?
+    @State private var disabling = false
+    @State private var disableCode = ""
+    @State private var errorText: String?
+
+    private let cols = [GridItem(.flexible()), GridItem(.flexible())]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if loading && status == nil {
+                        ProgressView().tint(Theme.accent)
+                            .frame(maxWidth: .infinity).padding(.vertical, 40)
+                    } else if let status {
+                        statusCard(status)
+                        if let setup { enrollCard(setup) }
+                        if let recoveryCodes { recoveryCard(recoveryCodes) }
+                        if disabling { disableCard }
+                        if let errorText {
+                            Text(errorText).font(.zkSans(13)).foregroundColor(Theme.danger)
+                        }
+                    }
+                }
+                .padding(16)
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Two-Factor Authentication").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .task { await load() }
+        }
+    }
+
+    // MARK: Cards
+
+    private func statusCard(_ s: TwoFactorStatus) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(s.enabled ? "Enabled" : "Not enabled")
+                        .font(.zkSans(15, weight: .semibold)).foregroundColor(Theme.ink1)
+                    Text(s.enabled
+                         ? "Account protected by an authenticator app. \(s.recoveryRemaining) recovery \(s.recoveryRemaining == 1 ? "code" : "codes") remaining."
+                         : "Add a second factor using an authenticator app like 1Password, Authy, or Google Authenticator.")
+                        .font(.zkSans(12)).foregroundColor(Theme.ink3).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                if !s.enabled && setup == nil {
+                    Button("Set Up") { Task { await beginSetup() } }
+                        .font(.zkSans(13, weight: .semibold)).foregroundColor(.white)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 10))
+                } else if s.enabled && !disabling {
+                    Button("Disable") { disabling = true; errorText = nil }
+                        .font(.zkSans(13, weight: .semibold)).foregroundColor(Theme.dangerSoft)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.danger.opacity(0.4), lineWidth: 1))
+                }
+            }
+        }
+        .padding(12)
+        .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func enrollCard(_ s: TwoFactorSecret) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Scan with your authenticator")
+                .font(.zkSans(14, weight: .semibold)).foregroundColor(Theme.ink1)
+            if let qr = qrCodeImage(s.otpauthUri) {
+                Image(uiImage: qr)
+                    .interpolation(.none).resizable().scaledToFit()
+                    .frame(width: 200, height: 200)
+                    .padding(8).background(Color.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .frame(maxWidth: .infinity)
+            }
+            Text("Can't scan? Paste this secret into your authenticator:")
+                .font(.zkSans(12)).foregroundColor(Theme.ink3)
+            Button { UIPasteboard.general.string = s.secret } label: {
+                HStack {
+                    Text(s.secret).font(.zkMono(12)).foregroundColor(Theme.ink2)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Image(systemName: "doc.on.doc").font(.system(size: 12)).foregroundColor(Theme.ink3)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 9)
+                .background(Theme.bg1).clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+
+            Text("ENTER THE 6-DIGIT CODE FROM YOUR APP")
+                .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+            TextField("123456", text: $code)
+                .keyboardType(.numberPad).textContentType(.oneTimeCode)
+                .font(.zkMono(18)).multilineTextAlignment(.center)
+                .foregroundColor(Theme.ink1).padding(.vertical, 11)
+                .background(Theme.bg1).clipShape(RoundedRectangle(cornerRadius: 10))
+                .onChange(of: code) { newValue in
+                    code = String(newValue.filter(\.isNumber).prefix(6))
+                }
+            HStack {
+                Spacer()
+                Button("Cancel") { setup = nil; code = ""; errorText = nil }
+                    .font(.zkSans(14)).foregroundColor(Theme.ink2)
+                Button { Task { await confirmSetup() } } label: {
+                    Text(submitting ? "Verifying…" : "Verify & Enable")
+                        .font(.zkSans(14, weight: .semibold)).foregroundColor(.white)
+                        .padding(.horizontal, 14).padding(.vertical, 9)
+                        .background(code.count == 6 ? Theme.accent : Theme.bg3)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .disabled(submitting || code.count != 6)
+            }
+        }
+        .padding(12)
+        .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func recoveryCard(_ codes: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 13)).foregroundColor(Theme.idle)
+                Text("Save these recovery codes now. Each works once if you lose access to your authenticator. They won't be shown again.")
+                    .font(.zkSans(12)).foregroundColor(Theme.ink2).fixedSize(horizontal: false, vertical: true)
+            }
+            LazyVGrid(columns: cols, spacing: 6) {
+                ForEach(codes, id: \.self) { c in
+                    Text(c).font(.zkMono(13)).foregroundColor(Theme.ink1)
+                        .frame(maxWidth: .infinity).padding(.vertical, 7)
+                        .background(Theme.bg1).clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Copy All") { UIPasteboard.general.string = codes.joined(separator: "\n") }
+                    .font(.zkSans(13)).foregroundColor(Theme.ink2)
+                Button("I've Saved Them") { recoveryCodes = nil }
+                    .font(.zkSans(13, weight: .semibold)).foregroundColor(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+        }
+        .padding(12)
+        .background(Theme.idle.opacity(0.08))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.idle.opacity(0.35), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var disableCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Enter a current 6-digit code or one of your recovery codes to disable two-factor authentication.")
+                .font(.zkSans(12)).foregroundColor(Theme.ink2).fixedSize(horizontal: false, vertical: true)
+            TextField("123456 or recovery code", text: $disableCode)
+                .autocorrectionDisabled().textInputAutocapitalization(.never)
+                .font(.zkMono(15)).foregroundColor(Theme.ink1).padding(.vertical, 11).padding(.horizontal, 12)
+                .background(Theme.bg1).clipShape(RoundedRectangle(cornerRadius: 10))
+            HStack {
+                Spacer()
+                Button("Cancel") { disabling = false; disableCode = ""; errorText = nil }
+                    .font(.zkSans(14)).foregroundColor(Theme.ink2)
+                Button { Task { await confirmDisable() } } label: {
+                    Text(submitting ? "Disabling…" : "Disable 2FA")
+                        .font(.zkSans(14, weight: .semibold)).foregroundColor(.white)
+                        .padding(.horizontal, 14).padding(.vertical, 9)
+                        .background(disableCode.trimmingCharacters(in: .whitespaces).isEmpty ? Theme.bg3 : Theme.danger)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .disabled(submitting || disableCode.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(12)
+        .background(Theme.bg2)
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.danger.opacity(0.3), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    // MARK: Actions
+
+    private func load() async {
+        loading = true
+        defer { loading = false }
+        status = try? await store.api.twoFactorStatus()
+        if status == nil { status = TwoFactorStatus(enabled: false, verifiedAt: nil, recoveryRemaining: 0) }
+    }
+
+    private func beginSetup() async {
+        errorText = nil
+        do { setup = try await store.api.beginTwoFactor(); code = "" }
+        catch { errorText = (error as? APIError)?.message ?? "Failed to start enrollment." }
+    }
+
+    private func confirmSetup() async {
+        guard !submitting, code.count == 6 else { return }
+        submitting = true
+        defer { submitting = false }
+        do {
+            let r = try await store.api.confirmTwoFactor(code: code)
+            recoveryCodes = r.recoveryCodes
+            setup = nil; code = ""; errorText = nil
+            await load()
+        } catch {
+            errorText = (error as? APIError)?.message ?? "Invalid code."
+        }
+    }
+
+    private func confirmDisable() async {
+        let c = disableCode.trimmingCharacters(in: .whitespaces)
+        guard !submitting, !c.isEmpty else { return }
+        submitting = true
+        defer { submitting = false }
+        do {
+            try await store.api.disableTwoFactor(code: c)
+            disabling = false; disableCode = ""; errorText = nil
+            await load()
+        } catch {
+            errorText = (error as? APIError)?.message ?? "Invalid code."
+        }
     }
 }
 

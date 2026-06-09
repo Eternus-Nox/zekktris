@@ -581,6 +581,20 @@ struct AcceptInviteResult: Codable {
     let channelId: String?
 }
 
+// MARK: Two-factor (TOTP) — mirrors web's rest 2FA methods.
+struct TwoFactorStatus: Codable {
+    let enabled: Bool
+    let verifiedAt: String?
+    let recoveryRemaining: Int
+}
+struct TwoFactorSecret: Codable {
+    let secret: String
+    let otpauthUri: String
+}
+struct TwoFactorRecovery: Codable {
+    let recoveryCodes: [String]
+}
+
 // MARK: Admin (instance)
 
 struct AdminUserCounts: Codable { let total: Int; let banned: Int }
