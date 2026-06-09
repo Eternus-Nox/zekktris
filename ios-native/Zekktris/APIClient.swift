@@ -800,6 +800,18 @@ final class APIClient {
         let wrap: MessagesWrap = try await send("GET", "/users/@me/dms/search?q=\(q)")
         return wrap.messages
     }
+
+    /// List the current user's active auth sessions (GET /users/@me/sessions).
+    func listSessions() async throws -> [UserSession] {
+        let wrap: SessionsWrap = try await send("GET", "/users/@me/sessions")
+        return wrap.sessions
+    }
+
+    /// Revoke one specific session by id (DELETE /users/@me/sessions/:id).
+    /// The server 404s if the id doesn't belong to the caller.
+    func revokeSession(id: String) async throws {
+        try await sendVoid("DELETE", "/users/@me/sessions/\(id)")
+    }
 }
 
 extension APIClient {

@@ -446,6 +446,21 @@ struct AdminUser: Codable, Identifiable {
 }
 struct AdminUsersWrap: Codable { let users: [AdminUser] }
 
+/// One active auth session for the current user.
+/// Mirrors the `toSession` DTO from apps/api (GET /users/@me/sessions).
+/// `userAgent`/`ipAddress` are nullable server-side; `current` flags the
+/// session this request is authenticated with.
+struct UserSession: Codable, Identifiable, Hashable {
+    let id: String
+    var userAgent: String?
+    var ipAddress: String?
+    var createdAt: String
+    var lastUsedAt: String
+    var expiresAt: String?
+    var current: Bool
+}
+struct SessionsWrap: Codable { let sessions: [UserSession] }
+
 struct AdminGuild: Codable, Identifiable {
     let id: String
     var name: String
