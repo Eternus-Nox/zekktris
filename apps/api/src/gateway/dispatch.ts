@@ -960,20 +960,41 @@ async function refreshUserViewableChannels(args: {
           // re-join attempts which short-circuit on existing.
           // Cheap (channel-id + user-id is a PK on stage_participants).
           // Run unconditionally — if the channel isn't a stage the
-          // delete affects zero rows and returns harmlessly.
-          await db
+          // delete affects zero rows and returns harmlessly. The
+          // returned rows tell us whether this WAS a stage roster
+          // member (only stage channels have rows), which gates the
+          // STAGE_PARTICIPANTS_UPDATE fan-out below.
+          const removedStage = await db
             .delete(schema.stageParticipants)
             .where(
               and(
                 eq(schema.stageParticipants.channelId, evicted.channelId),
                 eq(schema.stageParticipants.userId, args.userId),
               ),
-            );
+            )
+            .returning({ id: schema.stageParticipants.userId });
           publish(
             GatewayEvent.VOICE_STATE_UPDATE,
             leftVoiceStateDTO({ userId: args.userId, guildId: args.guildId }),
             { kind: 'guild', guildId: args.guildId },
           );
+          // If the user was on the stage roster, the VOICE_STATE_UPDATE
+          // above isn't enough — other clients render the stage roster
+          // from STAGE_PARTICIPANTS_UPDATE, so without this they'd keep
+          // showing the evicted user on stage. Re-list and fan out the
+          // post-eviction roster, mirroring broadcastParticipants in
+          // routes/stage.ts. Gated on removedStage so non-stage voice
+          // channels (the common case) emit no spurious stage event.
+          if (removedStage.length > 0) {
+            const stageSvc = await import('../services/stage');
+            const { toStageParticipant } = await import('../lib/dto');
+            const remaining = await stageSvc.listParticipants(evicted.channelId);
+            stageParticipantsUpdate({
+              guildId: args.guildId,
+              channelId: evicted.channelId,
+              participants: remaining.map(toStageParticipant),
+            });
+          }
         }
       }
     }
