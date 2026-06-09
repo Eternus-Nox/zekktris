@@ -1499,6 +1499,9 @@ struct SettingsView: View {
     @State private var showChangeEmail = false
     @State private var showSessions = false
     @State private var showTwoFactor = false
+    // Mic input test (record-and-discard meter; never sent). Reuses the
+    // voice-message recorder's live metering — no new audio infra.
+    @StateObject private var micTest = VoiceRecorder()
     @State private var faceIDOn = false
     @State private var bioProbe: Biometrics.Probe?
     @State private var avatarPickerItem: PhotosPickerItem?
@@ -1530,6 +1533,7 @@ struct SettingsView: View {
                     decorationSection
                     appearanceSection
                     notificationsSection
+                    micTestSection
                     featuresSection
                     securitySection
                     accountSection
@@ -1540,6 +1544,7 @@ struct SettingsView: View {
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
+            .onDisappear { micTest.cancel() } // never leave the mic open
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) { PageBackButton() }
             }
@@ -1964,6 +1969,75 @@ struct SettingsView: View {
         case .authorized, .provisional, .ephemeral: return Theme.success
         case .denied: return Theme.dangerSoft
         default: return Theme.ink3
+        }
+    }
+
+    // Mic input test. Mirrors web's MicLevelMeter (voice settings): a live
+    // level indicator so the user can confirm their mic picks up sound,
+    // independent of any call. Reuses VoiceRecorder's AVAudioRecorder
+    // metering and the WaveformBars view from the voice-message composer; the
+    // recording is discarded (cancel) and never sent. Mic permission is
+    // already declared for voice/voice-messages, so nothing new is needed.
+    private var micTestInActiveCall: Bool { store.activeVoiceOrStageId != nil }
+    private var micTestLevel: CGFloat { micTest.levels.last ?? 0 }
+
+    private var micTestSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("MICROPHONE")
+            VStack(alignment: .leading, spacing: 10) {
+                if micTestInActiveCall {
+                    HStack(spacing: 8) {
+                        Image(systemName: "mic.slash").font(.system(size: 14)).foregroundColor(Theme.ink3)
+                        Text("Your mic is in use by an active call.")
+                            .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                    }
+                } else {
+                    Text("Test your mic — the meter moves when it picks up sound. Nothing is recorded or sent.")
+                        .font(.zkSans(12)).foregroundColor(Theme.ink3)
+
+                    // Instantaneous level bar (follows current RMS, like web's
+                    // horizontal meter).
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Theme.bg3)
+                            Capsule().fill(Theme.accent)
+                                .frame(width: max(0, min(1, micTestLevel)) * geo.size.width)
+                                .animation(.linear(duration: 0.05), value: micTestLevel)
+                        }
+                    }
+                    .frame(height: 8)
+
+                    // Recent-history bars — the same visual the voice-message
+                    // recorder uses, so the meter feels native.
+                    WaveformBars(
+                        levels: micTest.levels.isEmpty ? [0.04] : micTest.levels,
+                        progress: 0,
+                        activeColor: Theme.accent2,
+                        inactiveColor: Theme.accent2
+                    )
+                    .frame(height: 28)
+                    .opacity(micTest.recording ? 1 : 0.4)
+
+                    Button {
+                        if micTest.recording { micTest.cancel() } else { micTest.start() }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: micTest.recording ? "stop.fill" : "mic.fill")
+                                .font(.system(size: 14))
+                            Text(micTest.recording ? "Stop Test" : "Test Microphone")
+                                .font(.zkSans(15, weight: .semibold))
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity).padding(.vertical, 11)
+                        .background(micTest.recording ? Theme.danger : Theme.accent)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(12)
+            .background(Theme.bg2)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
     }
 
