@@ -734,6 +734,7 @@ struct PermissionDef: Identifiable {
 enum Permissions {
     static let ADMINISTRATOR = 0
     static let VIEW_CHANNEL = 1
+    static let MANAGE_MESSAGES = 4
     static let MANAGE_CHANNELS = 10
     static let MANAGE_ROLES = 12
     static let KICK_MEMBERS = 13
@@ -984,6 +985,47 @@ struct AuditEntry: Codable, Identifiable {
 }
 
 struct AuditLogWrap: Codable { let entries: [AuditEntry] }
+
+// ── Reports / moderation queue ──────────────────────────────────────────────
+
+/// A member report (moderation queue item). Mirrors the server's ReportDTO.
+/// `messageContent` is a snapshot captured at file time, so it survives the
+/// reported message being deleted.
+struct Report: Codable, Identifiable {
+    let id: String
+    var guildId: String
+    var reporter: PublicUser?
+    var targetType: String          // "message" | "user"
+    var targetUser: PublicUser?
+    var messageId: String?
+    var channelId: String?
+    var messageContent: String?
+    var reason: String              // spam | harassment | nsfw | violence | other
+    var details: String?
+    var status: String              // open | resolved | dismissed
+    var handledById: String?
+    var handledAt: String?
+    var resolutionNote: String?
+    var createdAt: String
+
+    var reporterName: String { reporter?.name ?? "Unknown" }
+    var targetName: String {
+        targetUser?.name ?? (targetType == "user" ? "Unknown user" : "a message")
+    }
+    var reasonLabel: String {
+        switch reason {
+        case "spam": return "Spam"
+        case "harassment": return "Harassment"
+        case "nsfw": return "NSFW"
+        case "violence": return "Violence"
+        case "other": return "Other"
+        default: return reason
+        }
+    }
+}
+
+struct ReportsWrap: Codable { let reports: [Report]; let openCount: Int }
+struct ReportWrap: Codable { let report: Report }
 struct SecurityConfig: Codable, Hashable {
     var spamEnabled: Bool
     var spamMaxMessages: Int

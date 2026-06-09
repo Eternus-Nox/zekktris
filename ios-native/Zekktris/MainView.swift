@@ -4342,6 +4342,7 @@ struct GuildSettingsView: View {
     @State private var showEmojiMgr = false
     @State private var showStickerMgr = false
     @State private var showAuditLog = false
+    @State private var showReports = false
     @State private var confirmDelete = false
     @State private var confirmLeave = false
     @State private var guildIconItem: PhotosPickerItem?
@@ -4353,6 +4354,15 @@ struct GuildSettingsView: View {
 
     private var isOwner: Bool { store.isGuildOwner }
     private var isAdmin: Bool { store.canManageGuild }
+    /// Holds any moderation permission (mirrors the web Reports tab's modOnly
+    /// gate). ADMINISTRATOR/owner short-circuits to all bits in myPermissions.
+    private var isMod: Bool {
+        isAdmin
+            || store.iHavePermission(Permissions.MANAGE_MESSAGES)
+            || store.iHavePermission(Permissions.KICK_MEMBERS)
+            || store.iHavePermission(Permissions.BAN_MEMBERS)
+            || store.iHavePermission(Permissions.MODERATE_MEMBERS)
+    }
 
     var body: some View {
         NavigationStack {
@@ -4362,10 +4372,11 @@ struct GuildSettingsView: View {
                     getRolesSection
                     if isAdmin { discoverySection }
                     if isAdmin { managementSection }
-                    // Audit log — gated on its own permission, so a moderator
-                    // with VIEW_AUDIT_LOG (but not full Manage Server) still
-                    // sees it. ADMINISTRATOR/owner holds the bit too.
-                    if store.iHavePermission(Permissions.VIEW_AUDIT_LOG) { auditLogSection }
+                    // Moderation — Reports (any mod permission) and Audit Log
+                    // (VIEW_AUDIT_LOG), each gated independently so a moderator
+                    // without full Manage Server still sees what they're allowed
+                    // to. ADMINISTRATOR/owner holds all these bits.
+                    if isMod || store.iHavePermission(Permissions.VIEW_AUDIT_LOG) { moderationSection }
                     dangerSection
                 }
                 .padding(16)
@@ -4391,6 +4402,9 @@ struct GuildSettingsView: View {
             .sheet(isPresented: $showStickerMgr) { StickerManagerView() }
             .sheet(isPresented: $showAuditLog) {
                 GuildAuditLogView(guildId: store.selectedGuild?.id ?? "")
+            }
+            .sheet(isPresented: $showReports) {
+                GuildReportsView(guildId: store.selectedGuild?.id ?? "")
             }
             .confirmationDialog("Delete this server?", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("Delete Server", role: .destructive) {
@@ -4611,10 +4625,15 @@ struct GuildSettingsView: View {
         }
     }
 
-    private var auditLogSection: some View {
+    private var moderationSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader("MODERATION")
-            settingsRow("Audit Log", icon: "list.bullet.rectangle") { showAuditLog = true }
+            if isMod {
+                settingsRow("Reports", icon: "flag.fill") { showReports = true }
+            }
+            if store.iHavePermission(Permissions.VIEW_AUDIT_LOG) {
+                settingsRow("Audit Log", icon: "list.bullet.rectangle") { showAuditLog = true }
+            }
         }
     }
 
@@ -7392,6 +7411,237 @@ struct StreakChip: View {
                 .strokeBorder(Theme.plasmaAmber.opacity(0.4), lineWidth: 1)
         )
         .accessibilityLabel("\(days) day messaging streak")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Guild Reports — moderation triage queue (gated on the mod permissions).
+// Mirrors the web Reports tab: reporter → target, reason, and the preserved
+// message snapshot; Dismiss / Resolve / Resolve-and-delete / Resolve-and-ban;
+// status + type filters; an open count. Styled like the security event log.
+// ═══════════════════════════════════════════════════════════════════════════
+
+struct GuildReportsView: View {
+    let guildId: String
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var reports: [Report] = []
+    @State private var openCount = 0
+    @State private var loading = true
+    @State private var loadingMore = false
+    @State private var reachedEnd = false
+    @State private var error: String?
+    @State private var statusFilter = "open"   // open | resolved | dismissed | all
+    @State private var typeFilter: String?     // nil = all, "message", "user"
+    /// Id of the report currently being acted on (disables the action row).
+    @State private var busyId: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let error {
+                        Text(error).font(.zkSans(12)).foregroundColor(Theme.dangerSoft)
+                    }
+                    if openCount > 0 {
+                        Text("\(openCount) open")
+                            .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.danger)
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(Theme.danger.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+
+                    // Status filter.
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            filterChip("Open", selected: statusFilter == "open") { setStatus("open") }
+                            filterChip("Resolved", selected: statusFilter == "resolved") { setStatus("resolved") }
+                            filterChip("Dismissed", selected: statusFilter == "dismissed") { setStatus("dismissed") }
+                            filterChip("All", selected: statusFilter == "all") { setStatus("all") }
+                        }
+                    }
+                    // Type filter.
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            filterChip("All types", selected: typeFilter == nil) { setType(nil) }
+                            filterChip("Messages", selected: typeFilter == "message") { setType("message") }
+                            filterChip("Users", selected: typeFilter == "user") { setType("user") }
+                        }
+                    }
+
+                    if loading && reports.isEmpty {
+                        ProgressView().tint(Theme.accent)
+                            .frame(maxWidth: .infinity).padding(.top, 24)
+                    } else if reports.isEmpty {
+                        VStack(spacing: 8) {
+                            Image(systemName: "flag.slash")
+                                .font(.system(size: 28, weight: .light)).foregroundColor(Theme.ink3)
+                            Text("No reports here.")
+                                .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                        }
+                        .frame(maxWidth: .infinity).padding(.vertical, 24)
+                    } else {
+                        VStack(spacing: 8) {
+                            ForEach(reports) { reportRow($0) }
+                        }
+                        if !reachedEnd {
+                            Button {
+                                Task { await loadMore() }
+                            } label: {
+                                Text(loadingMore ? "Loading…" : "Load more")
+                                    .font(.zkSans(13)).foregroundColor(Theme.ink2)
+                                    .frame(maxWidth: .infinity).padding(.vertical, 10)
+                                    .background(Theme.bg2)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(loadingMore)
+                        }
+                    }
+                }
+                .padding(12)
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Reports").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .task { await reload() }
+        }
+    }
+
+    private func setStatus(_ v: String) { statusFilter = v; Task { await reload() } }
+    private func setType(_ v: String?) { typeFilter = v; Task { await reload() } }
+
+    private func filterChip(_ label: String, selected: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.zkSans(12, weight: selected ? .semibold : .regular))
+                .foregroundColor(selected ? Theme.bg0 : Theme.ink2)
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(selected ? Theme.accent : Theme.bg2)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func reportRow(_ r: Report) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 4) {
+                Text(r.reporterName)
+                    .font(.zkSans(13, weight: .semibold)).foregroundColor(Theme.ink1).lineLimit(1)
+                Text("reported").font(.zkSans(12)).foregroundColor(Theme.ink3)
+                Text(r.targetName)
+                    .font(.zkSans(13, weight: .semibold)).foregroundColor(Theme.ink1).lineLimit(1)
+                Spacer(minLength: 6)
+                Text(shortTime(r.createdAt)).font(.zkSans(10)).foregroundColor(Theme.ink4)
+            }
+            HStack(spacing: 6) {
+                Text(r.reasonLabel)
+                    .font(.zkSans(10, weight: .semibold)).foregroundColor(Theme.ink2)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Theme.bg0.opacity(0.5)).clipShape(Capsule())
+                Text("· \(r.targetType)").font(.zkSans(11)).foregroundColor(Theme.ink3)
+                if r.status != "open" {
+                    Text(r.status.capitalized)
+                        .font(.zkSans(10))
+                        .foregroundColor(r.status == "resolved" ? Theme.success : Theme.ink3)
+                }
+            }
+            if let details = r.details, !details.isEmpty {
+                Text(details).font(.zkSans(12)).foregroundColor(Theme.ink2)
+            }
+            if r.targetType == "message", let snap = r.messageContent, !snap.isEmpty {
+                Text(snap)
+                    .font(.zkMono(11)).foregroundColor(Theme.ink3).lineLimit(4)
+                    .padding(6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.bg0.opacity(0.6))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            if r.status == "open" {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        actionButton("Dismiss", tint: Theme.ink2, bg: Theme.bg3) { act(r, "dismiss", "none") }
+                        actionButton("Resolve", tint: Theme.ink1, bg: Theme.bg3) { act(r, "resolve", "none") }
+                        if r.targetType == "message" && r.messageId != nil {
+                            actionButton("Resolve & delete", tint: Theme.plasmaAmber,
+                                         bg: Theme.plasmaAmber.opacity(0.15)) { act(r, "resolve", "delete_message") }
+                        }
+                        if r.targetUser != nil {
+                            actionButton("Resolve & ban", tint: Theme.danger,
+                                         bg: Theme.danger.opacity(0.15)) { act(r, "resolve", "ban") }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .background(Theme.bg2)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func actionButton(_ title: String, tint: Color, bg: Color, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.zkSans(11, weight: .semibold)).foregroundColor(tint)
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(bg).clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .disabled(busyId != nil)
+    }
+
+    // ── Data ──
+    private func reload() async {
+        loading = true
+        error = nil
+        do {
+            let w = try await APIClient.shared.listReports(
+                guildId: guildId, status: statusFilter, targetType: typeFilter, before: nil)
+            reports = w.reports
+            openCount = w.openCount
+            reachedEnd = w.reports.count < 50
+        } catch {
+            self.error = (error as? APIError)?.message ?? error.localizedDescription
+        }
+        loading = false
+    }
+
+    private func loadMore() async {
+        guard !loadingMore, !reachedEnd, let last = reports.last else { return }
+        loadingMore = true
+        do {
+            let w = try await APIClient.shared.listReports(
+                guildId: guildId, status: statusFilter, targetType: typeFilter, before: last.id)
+            reports.append(contentsOf: w.reports)
+            openCount = w.openCount
+            reachedEnd = w.reports.count < 50
+        } catch {
+            self.error = (error as? APIError)?.message ?? error.localizedDescription
+        }
+        loadingMore = false
+    }
+
+    private func act(_ r: Report, _ action: String, _ moderation: String) {
+        guard busyId == nil else { return }
+        busyId = r.id
+        Task {
+            do {
+                let updated = try await APIClient.shared.handleReport(
+                    guildId: guildId, reportId: r.id, action: action, note: nil, moderation: moderation)
+                let newStatus = action == "resolve" ? "resolved" : "dismissed"
+                // Drop it from the view when the current filter no longer
+                // matches its new status (the common "open" case); else patch.
+                if statusFilter == "open" || (statusFilter != "all" && statusFilter != newStatus) {
+                    reports.removeAll { $0.id == r.id }
+                } else if let i = reports.firstIndex(where: { $0.id == r.id }) {
+                    reports[i] = updated
+                }
+                if r.status == "open" { openCount = max(0, openCount - 1) }
+            } catch {
+                self.error = (error as? APIError)?.message ?? error.localizedDescription
+            }
+            busyId = nil
+        }
     }
 }
 
