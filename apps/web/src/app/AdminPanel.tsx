@@ -27,6 +27,7 @@ import {
   type AdminPeekGuild,
   type AdminPeekMessage,
   type AdminStats,
+  type InstanceMetrics,
   type AdminStorage,
   type StorageItem,
   type StorageListing,
@@ -167,6 +168,7 @@ function OverviewTab() {
   const { rest } = useAuth();
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [activity, setActivity] = useState<AdminActivity | null>(null);
+  const [metrics, setMetrics] = useState<InstanceMetrics | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -196,10 +198,30 @@ function OverviewTab() {
         // Activity is supplementary — silent-fail so a transient backend
         // issue doesn't tear down the Overview tab.
       });
+    void rest
+      .adminMetrics()
+      .then((r) => {
+        if (cancelled) return;
+        setMetrics(r.metrics);
+      })
+      .catch(() => {
+        // Operational metrics are supplementary — silent-fail like activity.
+      });
     return () => {
       cancelled = true;
     };
   }, [rest]);
+
+  // Human-readable uptime (e.g. "3d 4h", "12m").
+  function fmtUptime(s: number): string {
+    if (s < 60) return `${s}s`;
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    if (d > 0) return `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${m}m`;
+    return `${m}m`;
+  }
 
   if (error) return <p className="text-sm text-red-400">{error}</p>;
   if (!stats) return <p className="text-sm text-ink-3">Loading…</p>;
@@ -219,6 +241,53 @@ function OverviewTab() {
         <StatCard label="Active sessions" value={stats.activeSessions.toLocaleString()} subtle="proxy for online users" />
         <StatCard label="Snapshot" value={new Date(stats.generatedAt).toLocaleTimeString()} subtle="generated at" />
       </section>
+
+      {/* Operational / runtime metrics — live process + infra health. Renders
+          only once the metrics call resolves; the counts above stay useful on
+          their own if it's slow or errors. */}
+      {metrics && (
+        <section className="space-y-2">
+          <h3 className="text-xs uppercase tracking-wider text-ink-3">Operational</h3>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <StatCard
+              label="Gateway connections"
+              value={metrics.gateway.connections.toLocaleString()}
+              subtle={`${metrics.gateway.onlineUsers.toLocaleString()} users online`}
+            />
+            <StatCard
+              label="In voice"
+              value={metrics.voice.participants.toLocaleString()}
+              subtle={`${metrics.voice.rooms.toLocaleString()} active ${metrics.voice.rooms === 1 ? 'room' : 'rooms'}`}
+            />
+            <StatCard
+              label="Scheduled messages"
+              value={metrics.scheduledMessages.pending.toLocaleString()}
+              subtle={`${metrics.scheduledMessages.due.toLocaleString()} due now`}
+            />
+            <StatCard
+              label="Uptime"
+              value={fmtUptime(metrics.process.uptimeSeconds)}
+              subtle={`worker ${metrics.process.workerId}`}
+            />
+            <StatCard
+              label="Database"
+              value={metrics.db.ok ? 'Healthy' : 'Down'}
+              subtle={`${metrics.db.latencyMs}ms query`}
+            />
+            <StatCard
+              label="Redis"
+              value={
+                !metrics.redis.configured
+                  ? 'Not configured'
+                  : metrics.redis.healthy
+                    ? 'Healthy'
+                    : 'Unreachable'
+              }
+              subtle={metrics.redis.configured ? 'gateway bus + blacklist' : 'in-memory bus'}
+            />
+          </div>
+        </section>
+      )}
 
       {activity && (activity.recentUsers.length > 0 || activity.recentGuilds.length > 0) && (
         <section className="grid grid-cols-1 md:grid-cols-2 gap-4">

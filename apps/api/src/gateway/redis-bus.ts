@@ -134,6 +134,8 @@ export interface RedisLike {
   subscribe(channel: string): Promise<unknown> | unknown;
   on(event: 'message', listener: (channel: string, message: string) => void): unknown;
   quit?(): Promise<unknown> | unknown;
+  /** Liveness probe (ioredis exposes this). Optional so fakes need not. */
+  ping?(): Promise<unknown> | unknown;
 }
 
 export interface RedisEventBusOptions {
@@ -198,6 +200,26 @@ export class RedisEventBus implements EventBus {
       Promise.resolve(this.pub.quit?.()),
       Promise.resolve(this.sub.quit?.()),
     ]);
+  }
+
+  /**
+   * Bounded liveness probe for observability. PINGs the publish connection
+   * (the subscribe connection is in subscriber mode and can't run commands).
+   * Resolves false on error OR if the ping doesn't return within `timeoutMs`
+   * — never hangs the caller (the metrics endpoint must stay fast).
+   */
+  async health(timeoutMs = 1000): Promise<boolean> {
+    if (typeof this.pub.ping !== 'function') return false;
+    try {
+      const ping = Promise.resolve(this.pub.ping());
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('redis ping timeout')), timeoutMs),
+      );
+      await Promise.race([ping, timeout]);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 

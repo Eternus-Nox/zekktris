@@ -12,6 +12,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { secureHeaders } from 'hono/secure-headers';
+import { timingSafeEqual } from 'node:crypto';
 import { healthRouter } from './routes/health';
 import { authRouter } from './routes/auth';
 import { usersRouter } from './routes/users';
@@ -57,6 +58,29 @@ export function createApp() {
 
   // ── Routes ─────────────────────────────────────────────────────────────
   app.route('/health', healthRouter);
+
+  // Prometheus scrape endpoint. Opt-in: disabled (404, no signal) unless
+  // METRICS_TOKEN is set, in which case a scraper must present it as a Bearer
+  // token (Prometheus `authorization.credentials`). Header-only — never a
+  // query param — so the token can't leak into access logs. Lives at the root
+  // (not /api/v1) and is NOT proxied by the bundled Caddy, so it's reachable
+  // only on the internal network unless an operator adds a route. The same
+  // numbers are available to instance admins at /api/v1/admin/metrics.
+  app.get('/metrics', async (c) => {
+    const token = env.METRICS_TOKEN;
+    if (!token) return c.notFound();
+    const auth = c.req.header('authorization');
+    const provided = auth?.startsWith('Bearer ') ? auth.slice(7) : '';
+    // Constant-time compare — avoid leaking the token via response timing.
+    const a = Buffer.from(provided);
+    const b = Buffer.from(token);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      return c.text('unauthorized\n', 401);
+    }
+    const { gatherMetrics, toPrometheus } = await import('./services/metrics');
+    const body = toPrometheus(await gatherMetrics());
+    return c.text(body, 200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' });
+  });
 
   // CDN: served outside the /api/v1 prefix because static-file URLs shouldn't
   // change with API version bumps. In production Caddy serves these directly.
