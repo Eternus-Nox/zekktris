@@ -1306,7 +1306,7 @@ usersRouter.get('/@me/relationships', requireAuth, async (c) => {
  * incoming request from the actor, this counts as accepting that
  * request and flips both rows to friend.
  */
-const friendRequestRl = new RateLimiter(30, 10 * 60_000);
+const friendRequestRl = new RateLimiter(30, 10 * 60_000, 'friend-request');
 
 usersRouter.post(
   '/@me/relationships/friends',
@@ -1321,7 +1321,7 @@ usersRouter.post(
     // friend 30 people in 10 minutes) but shuts down the abuse
     // pattern. Keyed by userId — IP would over-block users sharing
     // a NAT.
-    const rl = friendRequestRl.consume(userId.toString());
+    const rl = await friendRequestRl.consume(userId.toString());
     if (!rl.ok) {
       throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
     }

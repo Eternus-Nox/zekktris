@@ -45,8 +45,8 @@ import * as webhooks from '../services/webhooks';
 // failure mode of being a touch too lax is "channel temporarily noisy"
 // whereas the failure mode of being a touch too strict is "legitimate
 // CI integration breaks intermittently and operator has to debug it."
-const webhookExecBurst = new RateLimiter(10, 5_000);
-const webhookExecSustained = new RateLimiter(60, 60_000);
+const webhookExecBurst = new RateLimiter(10, 5_000, 'webhook-burst');
+const webhookExecSustained = new RateLimiter(60, 60_000, 'webhook-sustained');
 
 // ── Admin router — auth + MANAGE_WEBHOOKS ────────────────────────────────
 
@@ -234,9 +234,9 @@ webhooksExecuteRouter.post(
     // with the legitimate sender, which is the conservative choice.
     {
       const k = webhookId;
-      const burst = webhookExecBurst.consume(k);
+      const burst = await webhookExecBurst.consume(k);
       if (!burst.ok) throw errors.rateLimited(Math.ceil(burst.retryAfterMs / 1000));
-      const sustained = webhookExecSustained.consume(k);
+      const sustained = await webhookExecSustained.consume(k);
       if (!sustained.ok) throw errors.rateLimited(Math.ceil(sustained.retryAfterMs / 1000));
     }
     const body = c.req.valid('json');

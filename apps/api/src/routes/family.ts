@@ -30,7 +30,7 @@ import * as guildsSvc from '../services/guilds';
 export const familyRouter = new Hono();
 
 // Linking is a privileged action; keep it well under abuse thresholds.
-const linkRl = new RateLimiter(20, 60_000);
+const linkRl = new RateLimiter(20, 60_000, 'family-link');
 
 familyRouter.post(
   '/family/links',
@@ -38,7 +38,7 @@ familyRouter.post(
   validate('json', z.object({ username: z.string().min(1).max(64) })),
   async (c) => {
     const userId = requireUserId(c);
-    const rl = linkRl.consume(userId.toString());
+    const rl = await linkRl.consume(userId.toString());
     if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
     const { username } = c.req.valid('json');
     const child = await supervision.requestLink(userId, username);

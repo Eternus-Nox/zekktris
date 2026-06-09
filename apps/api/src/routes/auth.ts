@@ -49,9 +49,9 @@ export const authRouter = new Hono();
 //   - login per email: 10 attempts / 15 min
 //   - login per IP:    50 attempts / 15 min
 //   - register per IP:  5 attempts / 1 hour
-const loginByEmail = new RateLimiter(10, 15 * 60_000);
-const loginByIp = new RateLimiter(50, 15 * 60_000);
-const registerByIp = new RateLimiter(5, 60 * 60_000);
+const loginByEmail = new RateLimiter(10, 15 * 60_000, 'login-email');
+const loginByIp = new RateLimiter(50, 15 * 60_000, 'login-ip');
+const registerByIp = new RateLimiter(5, 60 * 60_000, 'register-ip');
 
 // Email verification token lifetime.
 const EMAIL_VERIFICATION_EXPIRY_MS = 24 * 60 * 60_000; // 24h
@@ -103,7 +103,7 @@ authRouter.post('/register', validate('json', registerSchema), async (c) => {
   const ua = getUserAgent(c);
 
   if (ip) {
-    const r = registerByIp.consume(ip);
+    const r = await registerByIp.consume(ip);
     if (!r.ok) throw errors.rateLimited(Math.ceil(r.retryAfterMs / 1000));
   }
 
@@ -207,11 +207,11 @@ authRouter.post('/login', validate('json', loginSchema), async (c) => {
   // Rate-limit before doing the work. Per-email blocks credential stuffing
   // even if attackers rotate IPs.
   if (ip) {
-    const r = loginByIp.consume(ip);
+    const r = await loginByIp.consume(ip);
     if (!r.ok) throw errors.rateLimited(Math.ceil(r.retryAfterMs / 1000));
   }
   {
-    const r = loginByEmail.consume(body.email);
+    const r = await loginByEmail.consume(body.email);
     if (!r.ok) throw errors.rateLimited(Math.ceil(r.retryAfterMs / 1000));
   }
 
@@ -258,7 +258,7 @@ authRouter.post('/login', validate('json', loginSchema), async (c) => {
       // branch's `else` below where loginByEmail has already been
       // consumed at the top of the handler), so this doesn't open
       // the 2FA verifier to free brute-force attempts.
-      loginByEmail.reset(body.email);
+      await loginByEmail.reset(body.email);
       // Client needs to prompt the user. Use a 401 with a hint flag
       // so the existing error-handling path takes over.
       return c.json({ requires2FA: true }, 401);
@@ -271,7 +271,7 @@ authRouter.post('/login', validate('json', loginSchema), async (c) => {
 
   // Successful login — reset the per-email counter so a legitimate user
   // doesn't lock themselves out by mistyping a few times.
-  loginByEmail.reset(body.email);
+  await loginByEmail.reset(body.email);
 
   const { session, refreshToken } = await createSession({
     userId: user.id,
@@ -493,8 +493,8 @@ authRouter.post('/disconnect-beacon', async (c) => {
 //   - Expires in 60 minutes
 //   - Single-use (used_at marked on successful reset)
 
-const forgotByIp = new RateLimiter(3, 60 * 60_000);
-const forgotByEmail = new RateLimiter(3, 60 * 60_000);
+const forgotByIp = new RateLimiter(3, 60 * 60_000, 'forgot-ip');
+const forgotByEmail = new RateLimiter(3, 60 * 60_000, 'forgot-email');
 const PASSWORD_RESET_EXPIRY_MS = 60 * 60_000;
 
 const forgotPasswordSchema = z.object({ email: emailSchema });
@@ -519,8 +519,8 @@ authRouter.post(
     // Both rate limits: silently no-op on hit. The response stays
     // generic so an attacker can't probe for "is this email
     // already over the limit?" which would re-leak existence.
-    if (!forgotByIp.consume(ip).ok) return genericOk();
-    if (!forgotByEmail.consume(email).ok) return genericOk();
+    if (!(await forgotByIp.consume(ip)).ok) return genericOk();
+    if (!(await forgotByEmail.consume(email)).ok) return genericOk();
 
     const { isEmailConfigured, sendPasswordResetEmail } = await import('../services/email');
     if (!isEmailConfigured()) {
@@ -633,7 +633,7 @@ authRouter.post(
 // be used as a DoS. 50/hr per IP — generous for legit users who
 // will only ever hit this once successfully, restrictive enough
 // to defang flood attacks.
-const resetByIp = new RateLimiter(50, 60 * 60_000);
+const resetByIp = new RateLimiter(50, 60 * 60_000, 'reset-ip');
 
 const resetPasswordSchema = z.object({
   token: z.string().min(1).max(200),
@@ -646,7 +646,7 @@ authRouter.post(
   async (c) => {
     const ip = getClientIp(c) ?? 'unknown';
     {
-      const r = resetByIp.consume(ip);
+      const r = await resetByIp.consume(ip);
       if (!r.ok) throw errors.rateLimited(Math.ceil(r.retryAfterMs / 1000));
     }
 
@@ -895,10 +895,10 @@ authRouter.post(
 );
 
 // Resend the verification email to the logged-in user's address.
-const resendByUser = new RateLimiter(3, 10 * 60_000);
+const resendByUser = new RateLimiter(3, 10 * 60_000, 'resend-verification');
 authRouter.post('/resend-verification', requireAuth, async (c) => {
   const userId = requireUserId(c);
-  const r = resendByUser.consume(userId.toString());
+  const r = await resendByUser.consume(userId.toString());
   if (!r.ok) throw errors.rateLimited(Math.ceil(r.retryAfterMs / 1000));
 
   const { isEmailConfigured } = await import('../services/email');
