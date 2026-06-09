@@ -547,6 +547,40 @@ export async function leaveVoice(userId: bigint): Promise<LeaveVoiceResult> {
  * eviction still lands and the user's client sees the kick via
  * the voice-state broadcast.
  */
+/**
+ * The voice channel a user is currently in within `guildId`, or null.
+ * voice_states is keyed by userId PK (one row per user globally), so this is
+ * at most one row. Used by the single-user permission-change refresh path.
+ */
+export async function voiceChannelInGuild(
+  userId: bigint,
+  guildId: bigint,
+): Promise<bigint | null> {
+  const [row] = await db
+    .select({ channelId: schema.voiceStates.channelId })
+    .from(schema.voiceStates)
+    .where(and(eq(schema.voiceStates.userId, userId), eq(schema.voiceStates.guildId, guildId)))
+    .limit(1);
+  return row?.channelId ?? null;
+}
+
+/**
+ * Map of userId → voice channelId for everyone currently in voice in a guild,
+ * in ONE query. The bulk permission-change path uses this so it issues a
+ * single voice_states read instead of one per affected member. Because
+ * voice_states is keyed by userId, `listGuildVoiceChannels(g).get(u) ?? null`
+ * is exactly equivalent to `voiceChannelInGuild(u, g)`.
+ */
+export async function listGuildVoiceChannels(guildId: bigint): Promise<Map<bigint, bigint>> {
+  const rows = await db
+    .select({ userId: schema.voiceStates.userId, channelId: schema.voiceStates.channelId })
+    .from(schema.voiceStates)
+    .where(eq(schema.voiceStates.guildId, guildId));
+  const map = new Map<bigint, bigint>();
+  for (const r of rows) map.set(r.userId, r.channelId);
+  return map;
+}
+
 export async function evictFromVoiceInGuild(
   userId: bigint,
   guildId: bigint,
