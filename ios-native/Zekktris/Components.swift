@@ -13,6 +13,12 @@ import Foundation
 struct RetryingImage: View {
     let url: URL
     @State private var image: UIImage?
+    /// Which URL the current `image` belongs to. A recycled LazyVStack row
+    /// rebinds this view to a different url, but `@State` survives the
+    /// rebind — without this guard the `image == nil` check skipped the
+    /// reload and the PREVIOUS row's image (someone else's avatar) stayed
+    /// on screen permanently.
+    @State private var loadedURL: URL?
 
     var body: some View {
         Group {
@@ -23,6 +29,10 @@ struct RetryingImage: View {
             }
         }
         .task(id: url) {
+            if loadedURL != url {
+                image = nil // drop the stale image while the right one loads
+                loadedURL = url
+            }
             if image == nil { image = await Self.load(url) }
         }
     }

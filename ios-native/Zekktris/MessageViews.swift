@@ -108,8 +108,18 @@ struct MessageListView: View {
                         // After an older page prepends, jump back to the message
                         // that was previously at the top so the view doesn't lurch.
                         guard let anchor else { return }
-                        proxy.scrollTo(anchor, anchor: .top)
-                        store.pendingScrollAnchorId = nil
+                        // Two-phase restore: once synchronously (limits the
+                        // visible flash), then again on the next runloop turn
+                        // AFTER the freshly-prepended LazyVStack rows have
+                        // actually laid out — scrolling only in the same
+                        // transaction that inserted them targets unmeasured
+                        // rows and produced the exact lurch this exists to
+                        // prevent.
+                        withAnimation(.none) { proxy.scrollTo(anchor, anchor: .top) }
+                        DispatchQueue.main.async {
+                            withAnimation(.none) { proxy.scrollTo(anchor, anchor: .top) }
+                            store.pendingScrollAnchorId = nil
+                        }
                     }
                     .onAppear {
                         lastBottomId = store.messages.last?.id
@@ -1668,7 +1678,9 @@ private struct UnlockPanel: View {
 
     private func unlock() {
         guard !password.isEmpty else { return }
-        if store.unlockE2EE(channel, password: password) { password = "" }
+        Task {
+            if await store.unlockE2EE(channel, password: password) { password = "" }
+        }
     }
 
     private func restore(_ result: Result<[URL], Error>) {

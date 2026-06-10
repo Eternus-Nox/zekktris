@@ -19,6 +19,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useRef,
   useState,
   type ReactNode,
@@ -41,9 +42,26 @@ const ToastContext = createContext<ToastContextValue | null>(null);
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const nextIdRef = useRef(1);
+  // Per-toast expiry timer handles, so a manual click-dismiss cancels the
+  // pending auto-expire and provider unmount clears everything (untracked
+  // timers fired into unmounted state).
+  const timersRef = useRef(new Map<number, ReturnType<typeof setTimeout>>());
 
   const dismiss = useCallback((id: number) => {
+    const timer = timersRef.current.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timersRef.current.delete(id);
+    }
     setToasts((arr) => arr.filter((t) => t.id !== id));
+  }, []);
+
+  useEffect(() => {
+    const timers = timersRef.current;
+    return () => {
+      for (const t of timers.values()) clearTimeout(t);
+      timers.clear();
+    };
   }, []);
 
   const push = useCallback(
@@ -58,7 +76,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       const id = nextIdRef.current++;
       setToasts((arr) => [...arr, { id, message, kind }]);
       if (effectiveTtl > 0) {
-        setTimeout(() => dismiss(id), effectiveTtl);
+        timersRef.current.set(
+          id,
+          setTimeout(() => dismiss(id), effectiveTtl),
+        );
       }
     },
     [dismiss],

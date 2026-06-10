@@ -677,7 +677,26 @@ async function handleResume(conn: Connection, payload: ResumePayload | undefined
   // 2. Locate the retained session AFTER the await, so anything that landed
   //    in the gap (and during this await) is already buffered. Unknown /
   //    expired / different-node / not-ours / gap-too-large → IDENTIFY.
-  const prev = registry.findResumable(payload.session_id);
+  let prev = registry.findResumable(payload.session_id);
+  if (!prev) {
+    // Not detached — but it may still be indexed as LIVE: in the silent-
+    // death case (WiFi→LTE, iOS suspension — the exact scenario RESUME was
+    // built for) the client's ~10s ack watchdog notices the zombie long
+    // before our 40s server watchdog, so its RESUME beats our detach. Take
+    // over the live session, Discord-style: the resume displaces the old
+    // socket. The gap check runs BEFORE the takeover so a too-large gap
+    // leaves the zombie to expire through its normal watchdog path.
+    const live = registry.findLiveSession(payload.session_id, userId);
+    if (
+      live &&
+      live !== conn &&
+      live.resumeBuffer &&
+      live.resumeBuffer.canResume(payload.seq, live.currentSeq)
+    ) {
+      registry.takeoverLiveSession(live);
+      prev = live;
+    }
+  }
   if (
     !prev ||
     prev.userId !== userId ||

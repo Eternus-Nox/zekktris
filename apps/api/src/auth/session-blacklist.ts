@@ -116,7 +116,18 @@ let redisClient: Redis | null = null;
 function getStore(): BlacklistStore {
   if (store) return store;
   if (env.REDIS_URL) {
-    redisClient = new Redis(env.REDIS_URL, { maxRetriesPerRequest: null, lazyConnect: false });
+    // Fail-open requires commands to REJECT when Redis is unhealthy. With
+    // ioredis defaults (offline queue + unlimited retries) a command issued
+    // during an outage is queued forever — `await exists` never settles, and
+    // since isSessionBlacklisted is awaited inside requireAuth, EVERY
+    // authenticated request on the instance would hang. No offline queue,
+    // one retry, hard per-command timeout.
+    redisClient = new Redis(env.REDIS_URL, {
+      maxRetriesPerRequest: 1,
+      enableOfflineQueue: false,
+      commandTimeout: 1000,
+      lazyConnect: false,
+    });
     // Swallow connection errors here; the per-op try/catch handles request-time
     // failures (fail open). Without this listener ioredis would emit 'error' as
     // an unhandled event and crash the process on a transient blip.

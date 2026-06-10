@@ -32,15 +32,19 @@
 
 import { useMemo } from 'react';
 import { useAuth } from '../auth/AuthContext';
-import { useAppState, voiceStatesForChannel, selfVoiceState } from '../state/AppState';
+import { useAppStateSelector, voiceStatesForChannel, selfVoiceState } from '../state/AppState';
 import { IncomingCallModal } from './IncomingCallModal';
 import { OutgoingCallModal } from './OutgoingCallModal';
 
 export function GlobalCallOverlay() {
-  const { state } = useAppState();
+  // Mounted unconditionally in the Shell — subscribe only to the two
+  // slices the call scan reads (voice states + DM list) instead of the
+  // whole state, so unrelated dispatches don't re-render it.
+  const voiceStatesByUser = useAppStateSelector((v) => v.state.voiceStatesByUser);
+  const dmChannels = useAppStateSelector((v) => v.state.dmChannels);
   const { user } = useAuth();
   const selfId = user?.id;
-  const myVoice = selfVoiceState(state.voiceStatesByUser, selfId);
+  const myVoice = selfVoiceState(voiceStatesByUser, selfId);
 
   // Resolve incoming and outgoing channels in one pass. useMemo
   // gates the work on the inputs the scan actually reads — voice
@@ -56,11 +60,11 @@ export function GlobalCallOverlay() {
     // from the dmChannels list (filtering to type='dm' to skip
     // group DMs — outgoing modal logic only handles 1:1).
     if (myVoice) {
-      const ch = state.dmChannels.find(
+      const ch = dmChannels.find(
         (c) => c.id === myVoice.channelId && c.type === 'dm',
       );
       if (ch) {
-        const inThis = voiceStatesForChannel(state.voiceStatesByUser, ch.id);
+        const inThis = voiceStatesForChannel(voiceStatesByUser, ch.id);
         const otherInThis = inThis.some((v) => v.userId !== selfId);
         if (!otherInThis) {
           // Ring-out state. No incoming can fire simultaneously
@@ -77,9 +81,9 @@ export function GlobalCallOverlay() {
 
     // Incoming path: user is NOT in voice anywhere; find a 1:1 DM
     // where someone else is. First match wins.
-    for (const c of state.dmChannels) {
+    for (const c of dmChannels) {
       if (c.type !== 'dm') continue;
-      const inThis = voiceStatesForChannel(state.voiceStatesByUser, c.id);
+      const inThis = voiceStatesForChannel(voiceStatesByUser, c.id);
       // We know !myVoice here, so no voice state in this channel can
       // be ours. Any presence at all = someone else ringing us.
       if (inThis.length > 0) {
@@ -87,7 +91,7 @@ export function GlobalCallOverlay() {
       }
     }
     return { incomingChannel: null, outgoingChannel: null };
-  }, [selfId, myVoice, state]);
+  }, [selfId, myVoice, dmChannels, voiceStatesByUser]);
 
   return (
     <>

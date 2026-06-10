@@ -29,6 +29,9 @@ import { db, schema } from '../db';
 import { and, eq } from 'drizzle-orm';
 import { toChannel, leftVoiceStateDTO } from '../lib/dto';
 
+/** Shared empty set for "no viewable channels in this guild" lookups. */
+const EMPTY_CHANNEL_SET: ReadonlySet<bigint> = new Set();
+
 function publish(t: typeof GatewayEvent[keyof typeof GatewayEvent], d: unknown, audience: Audience): void {
   eventBus().publish({ t, d, audience });
 }
@@ -903,12 +906,13 @@ async function refreshUserViewableChannels(args: {
   }
 
   for (const conn of conns) {
-    // Slice the connection's cache down to channels that belong to this
-    // guild — that's the only set we're allowed to mutate here.
-    const currentForGuild = new Set<bigint>();
-    for (const [cid, gid] of conn.channelToGuild) {
-      if (gid === args.guildId) currentForGuild.add(cid);
-    }
+    // The connection's cache slice for THIS guild, straight from the
+    // forward index (this helper runs for every connection in the guild on
+    // any override/role change — the old per-conn scan of the entire
+    // channelToGuild map was O(all the user's channels) each time). Read
+    // only: the diff below is fully computed before the mutators run.
+    const currentForGuild: ReadonlySet<bigint> =
+      conn.guildToChannels.get(args.guildId) ?? EMPTY_CHANNEL_SET;
 
     const added: bigint[] = [];
     const removed: bigint[] = [];

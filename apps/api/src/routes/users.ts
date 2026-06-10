@@ -656,6 +656,17 @@ usersRouter.post('/@me/mentions/clear', requireAuth, async (c) => {
 // POST /@me/password
 // ───────────────────────────────────────────────────────────────────────────
 
+// One per-user budget shared by every "step-up" endpoint that verifies the
+// current password or a TOTP code on an already-authenticated request
+// (password/username/email change, 2FA confirm/disable). Without this, a
+// stolen access token can brute-force the password or the 6-digit TOTP —
+// the exact secrets these checks exist to demand.
+const stepUpRl = new RateLimiter(10, 15 * 60_000, 'step-up-verify');
+async function consumeStepUp(userId: bigint): Promise<void> {
+  const r = await stepUpRl.consume(userId.toString());
+  if (!r.ok) throw errors.rateLimited(Math.ceil(r.retryAfterMs / 1000));
+}
+
 const passwordChangeSchema = z.object({
   currentPassword: z.string().min(1).max(1024),
   newPassword: passwordSchema,
@@ -671,6 +682,7 @@ usersRouter.post(
     const userId = requireUserId(c);
     const sessionId = requireSessionId(c);
     const body = c.req.valid('json');
+    await consumeStepUp(userId);
 
     const rows = await db
       .select()
@@ -893,6 +905,7 @@ usersRouter.post(
   async (c) => {
     const userId = requireUserId(c);
     const { code } = c.req.valid('json');
+    await consumeStepUp(userId);
     const twoFactor = await import('../services/twoFactor');
     const r = await twoFactor.confirmEnrollment({ userId, code });
     return c.json(r);
@@ -906,6 +919,7 @@ usersRouter.post(
   async (c) => {
     const userId = requireUserId(c);
     const { code } = c.req.valid('json');
+    await consumeStepUp(userId);
     const twoFactor = await import('../services/twoFactor');
     await twoFactor.disable({ userId, code });
     return c.json({ ok: true });
@@ -1756,8 +1770,21 @@ usersRouter.delete(
   },
 );
 
+// Cursor is `<iso-savedAt>_<messageId>` (composite keyset); a bare ISO
+// datetime (older clients) is still accepted and parses as a
+// timestamp-only boundary.
 const savedListQuery = z.object({
-  cursor: z.string().datetime().optional(),
+  cursor: z
+    .string()
+    .max(80)
+    .optional()
+    .superRefine((v, ctx) => {
+      if (v === undefined) return;
+      const [iso, mid] = v.split("_");
+      if (Number.isNaN(new Date(iso!).getTime()) || (mid !== undefined && !/^\d{1,20}$/.test(mid))) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Invalid cursor" });
+      }
+    }),
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 
@@ -1770,8 +1797,15 @@ usersRouter.get(
     const { cursor, limit } = c.req.valid("query");
     const savedSvc = await import("../services/savedMessages");
     const messagesSvc = await import("../services/messages");
+    let before: { savedAt: Date; messageId: bigint } | undefined;
+    if (cursor) {
+      const [iso, mid] = cursor.split("_");
+      // Bare-ISO (legacy) cursors get messageId 0 — the composite
+      // boundary then degenerates to the old strict savedAt < cursor.
+      before = { savedAt: new Date(iso!), messageId: mid ? BigInt(mid) : 0n };
+    }
     const { items, nextCursor } = await savedSvc.listSavedMessages(userId, {
-      beforeSavedAt: cursor ? new Date(cursor) : undefined,
+      before,
       limit,
     });
 
@@ -1909,6 +1943,7 @@ usersRouter.patch(
   async (c) => {
     const userId = requireUserId(c);
     const body = c.req.valid('json');
+    await consumeStepUp(userId);
     const accountSvc = await import('../services/accountChanges');
     let result;
     try {
@@ -1999,6 +2034,7 @@ usersRouter.post(
   async (c) => {
     const userId = requireUserId(c);
     const body = c.req.valid('json');
+    await consumeStepUp(userId);
 
     const accountSvc = await import('../services/accountChanges');
     const emailSvc = await import('../services/email');

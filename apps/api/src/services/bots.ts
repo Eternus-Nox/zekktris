@@ -17,7 +17,7 @@
  */
 
 import { and, eq } from 'drizzle-orm';
-import { createHash, randomBytes } from 'crypto';
+import { createHash, createHmac, randomBytes } from 'crypto';
 import { db, schema } from '../db';
 import { errors } from '../errors';
 import { nextSnowflake } from '../snowflake';
@@ -238,6 +238,18 @@ export async function addBotToGuild(args: {
     .limit(1);
   if (!bot || !bot.isBot) throw errors.notFound('Bot');
 
+  // The installer must OWN the bot. Without this, any guild manager who
+  // learns a bot's id (it's on every message the bot authors) could
+  // conscript a stranger's bot into their guild — and since membership
+  // makes deliverMessageEventToBots stream every viewable message to the
+  // bot's external callback URL, that silently exfiltrates the guild's
+  // content to a third party who never consented. If shared/public bots
+  // become a feature, gate this on an explicit owner-set "public" flag
+  // instead (Discord's public-bot / OAuth-invite model).
+  if (bot.botOwnerId !== actorId) {
+    throw errors.forbidden('Only the bot’s owner can add it to a server.');
+  }
+
   // Already a member? Idempotent success.
   const existing = await db
     .select({ userId: schema.guildMembers.userId })
@@ -356,9 +368,11 @@ async function postEventToBot(
   if (!pinned) return;
 
   const payload = JSON.stringify(body);
-  const signature = createHash('sha256')
-    .update(`${secret}.${payload}`)
-    .digest('hex');
+  // True HMAC-SHA256, not a bare hash of secret‖payload: SHA-256 is a
+  // Merkle–Damgård construction, so hash(secret.payload) is forgeable via
+  // length-extension by anyone who has seen one valid (payload, signature)
+  // pair. HMAC is immune by design.
+  const signature = createHmac('sha256', secret).update(payload).digest('hex');
 
   const agent = new Agent({
     connect: {
@@ -376,8 +390,8 @@ async function postEventToBot(
         'content-type': 'application/json',
         'user-agent': 'Zekktris-BotEvents/1.0',
         'x-zekktris-event': 'message.create',
-        // HMAC-style signature (SHA-256 of secret.payload). The bot
-        // recomputes this and compares to authenticate the POST.
+        // HMAC-SHA256 of the raw body, keyed by the bot's event secret.
+        // The bot recomputes this and compares to authenticate the POST.
         'x-zekktris-signature': signature,
       },
       body: payload,
@@ -636,9 +650,17 @@ export async function invokeBotCommand(args: {
       ),
     );
   if (candidates.length === 0) throw errors.notFound('Command');
-  // Guild-scoped wins over global.
-  const cmd =
-    candidates.find((c) => c.guildId !== null) ?? candidates[0]!;
+  // Guild-scoped wins over global; ties (two bots registering the same
+  // command name at the same scope) break by lowest bot id so resolution
+  // is STABLE — without an explicit order the row Postgres returns first
+  // is plan-dependent, and a shared name like /help could route to a
+  // different bot between invocations.
+  const cmd = [...candidates].sort((a, b) => {
+    const scopeA = a.guildId !== null ? 0 : 1;
+    const scopeB = b.guildId !== null ? 0 : 1;
+    if (scopeA !== scopeB) return scopeA - scopeB;
+    return a.botId < b.botId ? -1 : a.botId > b.botId ? 1 : 0;
+  })[0]!;
 
   // The bot must be able to view the channel to receive the interaction.
   const { computeMemberChannelPermissions, hasPermission } = await import(

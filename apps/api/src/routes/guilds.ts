@@ -2137,6 +2137,11 @@ guildsRouter.put(
     const memberState = await getMemberState(guildId, userId);
     if (memberState === 'pending') throw errors.pendingAcknowledgment();
     await roles.selfAssignRole({ guildId, userId, roleId });
+    // A self-assignable role can carry channel VIEW_CHANNEL overrides —
+    // refresh this user's gateway viewable-channel cache (emits
+    // CHANNEL_CREATE for newly visible channels) or their connections
+    // miss events for the unlocked channels until reconnect.
+    await dispatch.applyMemberRoleChange({ userId, guildId });
     // Broadcast the member update so the change appears in every
     // connected client's member list immediately.
     const updated = await getMemberDetailed(guildId, userId);
@@ -2166,6 +2171,10 @@ guildsRouter.delete(
     const memberState = await getMemberState(guildId, userId);
     if (memberState === 'pending') throw errors.pendingAcknowledgment();
     await roles.selfRevokeRole({ guildId, userId, roleId });
+    // Mirror of the self-assign path: dropping the role may hide channels
+    // — refresh the cache so events stop flowing (and CHANNEL_DELETE is
+    // emitted) immediately rather than on reconnect.
+    await dispatch.applyMemberRoleChange({ userId, guildId });
     const updated = await getMemberDetailed(guildId, userId);
     if (updated) {
       dispatch.guildMemberUpdate(

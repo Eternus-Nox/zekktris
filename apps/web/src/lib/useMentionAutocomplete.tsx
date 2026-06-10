@@ -30,7 +30,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import type { Channel, GuildMember, PublicUser } from '@zekktris/client';
-import { useAppState } from '../state/AppState';
+import { useAppStateSelector } from '../state/AppState';
 import { Portal } from './Portal';
 import { avatarColor, avatarInitials } from './avatar';
 import { AvatarImage } from './AvatarImage';
@@ -62,7 +62,16 @@ export function useMentionAutocomplete({
       apply the substitution after a selection. */
   setValue: (next: string) => void;
 }) {
-  const { state } = useAppState();
+  // Narrow selector subscriptions: this hook lives inside the Composer,
+  // which renders on every keystroke — a full useAppState() subscription
+  // re-rendered it on every reducer dispatch app-wide (typing indicators,
+  // presence, unrelated channels' messages).
+  const guildMembers = useAppStateSelector((v) =>
+    channel.guildId ? v.state.membersByGuild[channel.guildId] : undefined,
+  );
+  const channelMessages = useAppStateSelector((v) =>
+    channel.guildId ? undefined : v.state.messagesByChannel[channel.id],
+  );
   const [mention, setMention] = useState<MentionState | null>(null);
   const [anchor, setAnchor] = useState<Anchor | null>(null);
 
@@ -71,11 +80,11 @@ export function useMentionAutocomplete({
   // already loaded for this channel and pull distinct author profiles.
   const candidates = useMemo<PublicUser[]>(() => {
     if (channel.guildId) {
-      const members: GuildMember[] = state.membersByGuild[channel.guildId] ?? [];
+      const members: GuildMember[] = guildMembers ?? [];
       return members.map((m) => m.user);
     }
     // DM: collect distinct authors from loaded messages
-    const messages = state.messagesByChannel[channel.id] ?? [];
+    const messages = channelMessages ?? [];
     const seen = new Set<string>();
     const out: PublicUser[] = [];
     for (const m of messages) {
@@ -85,7 +94,7 @@ export function useMentionAutocomplete({
       }
     }
     return out;
-  }, [channel.guildId, channel.id, state.membersByGuild, state.messagesByChannel]);
+  }, [channel.guildId, guildMembers, channelMessages]);
 
   // Filter + cap the candidate list against the active query. Kept
   // separate so it only recomputes when query or candidates change,

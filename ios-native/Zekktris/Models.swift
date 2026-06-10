@@ -377,12 +377,21 @@ struct Poll: Codable, Hashable {
     var expiresAt: String?
     var closedAt: String?
 
+    // Hoisted: isExpired runs on every poll-row render, and an
+    // ISO8601DateFormatter allocation is one of the more expensive Foundation
+    // constructions — two per call here added measurable scroll cost.
+    // ISO8601DateFormatter is documented thread-safe.
+    private static let isoFractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let iso = ISO8601DateFormatter()
+
     var isExpired: Bool {
         guard let expiresAt else { return false }
-        let withFractional = ISO8601DateFormatter()
-        withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = withFractional.date(from: expiresAt) { return d <= Date() }
-        if let d = ISO8601DateFormatter().date(from: expiresAt) { return d <= Date() }
+        if let d = Self.isoFractional.date(from: expiresAt) { return d <= Date() }
+        if let d = Self.iso.date(from: expiresAt) { return d <= Date() }
         return false
     }
     var isOpen: Bool { closedAt == nil && !isExpired }

@@ -95,6 +95,14 @@ export class Connection {
   channelToGuild = new Map<bigint, bigint>();
 
   /**
+   * Forward index: guild → the viewable channel ids in it. Kept in lockstep
+   * with channelToGuild so the per-guild permission-refresh helpers (which
+   * run for EVERY connection in a guild on any override/role change) read
+   * one map entry instead of scanning the user's entire channelToGuild.
+   */
+  guildToChannels = new Map<bigint, Set<bigint>>();
+
+  /**
    * Last frame sequence number sent on this connection. Bumped on every
    * DISPATCH; included in the frame so the client can request RESUME later.
    */
@@ -155,9 +163,9 @@ export class Connection {
     this.dmChannelIds = new Set(dmChannelIds);
     this.viewableGuildChannelIds = new Set();
     this.channelToGuild = new Map();
+    this.guildToChannels = new Map();
     for (const v of viewableChannels) {
-      this.viewableGuildChannelIds.add(v.channelId);
-      this.channelToGuild.set(v.channelId, v.guildId);
+      this.addViewableChannel(v.channelId, v.guildId);
     }
     // Fresh session → fresh replay buffer (RESUME adopts the prior one
     // instead, via adoptResumedSession).
@@ -187,6 +195,7 @@ export class Connection {
     this.dmChannelIds = prev.dmChannelIds;
     this.viewableGuildChannelIds = prev.viewableGuildChannelIds;
     this.channelToGuild = prev.channelToGuild;
+    this.guildToChannels = prev.guildToChannels;
     this.seq = prev.currentSeq;
     this.resumeBuffer = prev.resumeBuffer;
     if (this.identifyTimer) {
@@ -226,20 +235,22 @@ export class Connection {
    */
   addViewableChannels(guildId: bigint, channelIds: Iterable<bigint>): void {
     for (const cid of channelIds) {
-      this.viewableGuildChannelIds.add(cid);
-      this.channelToGuild.set(cid, guildId);
+      this.addViewableChannel(cid, guildId);
     }
   }
 
   removeGuild(guildId: bigint): void {
     this.guildIds.delete(guildId);
     // Drop every channel that belonged to this guild from the viewable
-    // snapshot. We use the reverse map populated at IDENTIFY/addViewable.
-    for (const [cid, gid] of this.channelToGuild) {
-      if (gid === guildId) {
+    // snapshot — one forward-index lookup instead of scanning the whole
+    // channelToGuild map.
+    const channels = this.guildToChannels.get(guildId);
+    if (channels) {
+      for (const cid of channels) {
         this.viewableGuildChannelIds.delete(cid);
         this.channelToGuild.delete(cid);
       }
+      this.guildToChannels.delete(guildId);
     }
   }
 
@@ -251,10 +262,24 @@ export class Connection {
   addViewableChannel(channelId: bigint, guildId: bigint): void {
     this.viewableGuildChannelIds.add(channelId);
     this.channelToGuild.set(channelId, guildId);
+    let set = this.guildToChannels.get(guildId);
+    if (!set) {
+      set = new Set();
+      this.guildToChannels.set(guildId, set);
+    }
+    set.add(channelId);
   }
   removeViewableChannel(channelId: bigint): void {
     this.viewableGuildChannelIds.delete(channelId);
+    const guildId = this.channelToGuild.get(channelId);
     this.channelToGuild.delete(channelId);
+    if (guildId !== undefined) {
+      const set = this.guildToChannels.get(guildId);
+      if (set) {
+        set.delete(channelId);
+        if (set.size === 0) this.guildToChannels.delete(guildId);
+      }
+    }
   }
 
   addDMChannel(channelId: bigint): void {

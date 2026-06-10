@@ -19,14 +19,17 @@
  * brute-force window meaningfully.
  *
  * Threat model notes:
- *   - Brute-force is mitigated by per-user 5-attempt-per-15-min
- *     limiter in the route layer. With a 10^6 code space and 5
- *     guesses per window, a determined attacker has ~5e-6 chance
- *     per window — they'd need >2 weeks of nonstop guessing to
- *     hit 50% probability, and we'd see the activity spike well
- *     before then.
- *   - Replay is prevented because each code only validates within
- *     its ±1 window. A leaked code expires within 90 seconds.
+ *   - Brute-force is mitigated by per-user limiters in the route
+ *     layer: `twoFactorByUser` on login (routes/auth.ts) and the
+ *     shared `stepUpRl` on confirm/disable (routes/users.ts).
+ *     With a 10^6 code space and a handful of guesses per 15-min
+ *     window, a determined attacker would need weeks of nonstop
+ *     guessing to hit 50% probability, and the activity would
+ *     spike the logs well before then.
+ *   - Replay is only WINDOW-bounded: a captured code stays valid
+ *     for up to ~90 seconds (±1 step) and we do not persist a
+ *     last-used step. True single-use would need a per-user
+ *     `totp_last_step` column checked on verify.
  *   - Recovery codes are sha256-hashed at rest. Hashing is fine
  *     here (not bcrypt) because the codes ARE random 80-bit
  *     secrets — pre-image attacks on sha256 of an 80-bit secret

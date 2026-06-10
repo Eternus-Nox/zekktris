@@ -20,6 +20,7 @@ import { db, schema } from '../db';
 import { errors } from '../errors';
 import { nextSnowflake } from '../snowflake';
 import { parseMentions, resolveMentions, writeMessageMentions } from './mentions';
+import { listViewableGuildChannelIds } from './permissions';
 import { deleteStorageItem } from './uploads';
 import type { Database } from '@zekktris/db';
 
@@ -458,10 +459,23 @@ export async function listMessages(channelId: bigint, opts: ListMessagesOptions)
       eq(schema.messages.channelId, channelId),
       isNull(schema.messages.deletedAt),
     ];
+    // The anchor is fetched explicitly so it doesn't consume one of the
+    // "older" slots (which skewed the context window) — and so the page
+    // always fills `limit` rows: half older, the anchor, and the
+    // remainder newer. A soft-deleted anchor is simply omitted (normal
+    // clients never see tombstone content); the surrounding context
+    // still loads, so a jump-to-deleted-message lands adjacent to where
+    // the message was.
+    const [anchor] = await db
+      .select()
+      .from(schema.messages)
+      .where(and(...baseConditions, eq(schema.messages.id, opts.around)))
+      .limit(1);
+    const newerLimit = Math.max(1, opts.limit - half - (anchor ? 1 : 0));
     const older = await db
       .select()
       .from(schema.messages)
-      .where(and(...baseConditions, lte(schema.messages.id, opts.around)))
+      .where(and(...baseConditions, lt(schema.messages.id, opts.around)))
       .orderBy(desc(schema.messages.id))
       .limit(half);
     const newer = await db
@@ -469,10 +483,10 @@ export async function listMessages(channelId: bigint, opts: ListMessagesOptions)
       .from(schema.messages)
       .where(and(...baseConditions, gt(schema.messages.id, opts.around)))
       .orderBy(asc(schema.messages.id))
-      .limit(half);
+      .limit(newerLimit);
     // older is desc (newest of older first); reverse to oldest-first
     // so concatenation produces chronological order.
-    return [...older.reverse(), ...newer];
+    return [...older.reverse(), ...(anchor ? [anchor] : []), ...newer];
   }
 
   const useAsc = opts.after !== undefined && opts.before === undefined;
@@ -942,26 +956,51 @@ export async function hydrateMessages(
     new Set(rows.map((m) => m.authorId).filter((x): x is bigint => x !== null)),
   );
   const messageIds = rows.map((m) => m.id);
+  const stickerIds = Array.from(
+    new Set(rows.map((m) => m.stickerId).filter((x): x is bigint => x !== null)),
+  );
+  const forwardSourceIds = Array.from(
+    new Set(
+      rows.map((m) => m.forwardedFromMessageId).filter((x): x is bigint => x !== null),
+    ),
+  );
+  // Lazy import to keep the polls↔messages module edge one-directional.
+  const polls = await import('./polls');
 
-  const [authors, attachmentMap, userMentionRows, roleMentionRows, reactionRows] =
-    await Promise.all([
-      authorIds.length === 0
-        ? Promise.resolve<Array<typeof schema.users.$inferSelect>>([])
-        : db.select().from(schema.users).where(inArray(schema.users.id, authorIds)),
-      loadAttachments(messageIds),
-      db
-        .select()
-        .from(schema.messageUserMentions)
-        .where(inArray(schema.messageUserMentions.messageId, messageIds)),
-      db
-        .select()
-        .from(schema.messageRoleMentions)
-        .where(inArray(schema.messageRoleMentions.messageId, messageIds)),
-      db
-        .select()
-        .from(schema.reactions)
-        .where(inArray(schema.reactions.messageId, messageIds)),
-    ]);
+  const [
+    authors,
+    attachmentMap,
+    userMentionRows,
+    roleMentionRows,
+    reactionRows,
+    pollMap,
+    stickerMap,
+    forwardSources,
+  ] = await Promise.all([
+    authorIds.length === 0
+      ? Promise.resolve<Array<typeof schema.users.$inferSelect>>([])
+      : db.select().from(schema.users).where(inArray(schema.users.id, authorIds)),
+    loadAttachments(messageIds),
+    db
+      .select()
+      .from(schema.messageUserMentions)
+      .where(inArray(schema.messageUserMentions.messageId, messageIds)),
+    db
+      .select()
+      .from(schema.messageRoleMentions)
+      .where(inArray(schema.messageRoleMentions.messageId, messageIds)),
+    db
+      .select()
+      .from(schema.reactions)
+      .where(inArray(schema.reactions.messageId, messageIds)),
+    // Polls / stickers / forward-sources were missing from this hydrator,
+    // so every consumer (pins, search, saved, mentions inbox) rendered
+    // "[unavailable]" placeholders for them while the channel list route
+    // ran its own complete hydration. Same batched loaders, one shot each.
+    polls.loadPollsForMessages(messageIds, selfId ?? null),
+    loadStickersForMessages(stickerIds),
+    loadForwardSources(forwardSourceIds),
+  ]);
 
   const authorMap = new Map(authors.map((u) => [u.id, u]));
   const userMentionMap = new Map<bigint, bigint[]>();
@@ -999,18 +1038,34 @@ export async function hydrateMessages(
 
   // Imported lazily to avoid a circular import (dto imports back from
   // schema, which would loop through this module otherwise).
-  const { toMessage } = await import('../lib/dto');
-  return rows.map((m) =>
-    toMessage({
+  const { toMessage, toPoll, toSticker, toForwardSource } = await import('../lib/dto');
+  return rows.map((m) => {
+    const pollEntry = pollMap.get(m.id);
+    const stickerRow = m.stickerId ? stickerMap.get(m.stickerId) : undefined;
+    let forwardedFrom = null;
+    if (m.forwardedFromMessageId) {
+      const sm = forwardSources.messages.get(m.forwardedFromMessageId) ?? null;
+      forwardedFrom = toForwardSource({
+        sourceMessageId: m.forwardedFromMessageId,
+        sourceMessage: sm,
+        sourceAuthor: sm?.authorId ? forwardSources.authors.get(sm.authorId) ?? null : null,
+        sourceChannel: sm ? forwardSources.channels.get(sm.channelId) ?? null : null,
+        sourceAttachments: forwardSources.attachments.get(m.forwardedFromMessageId) ?? [],
+      });
+    }
+    return toMessage({
       message: m,
       author: m.authorId ? authorMap.get(m.authorId) ?? null : null,
       attachments: attachmentMap.get(m.id) ?? [],
       reactions: reactionsByMessage.get(m.id) ?? [],
       mentionedUserIds: userMentionMap.get(m.id) ?? [],
       mentionedRoleIds: roleMentionMap.get(m.id) ?? [],
+      poll: pollEntry ? toPoll(pollEntry) : null,
+      sticker: stickerRow ? toSticker(stickerRow) : null,
+      forwardedFrom,
       selfId,
-    }),
-  );
+    });
+  });
 }
 
 // ── User mentions inbox ───────────────────────────────────────────────────
@@ -1021,11 +1076,10 @@ export async function hydrateMessages(
 //
 // Permission model: the user must currently be a member of the guild
 // the channel belongs to (we don't surface mentions from servers you've
-// left). For DM channels, the user must be a participant. We do NOT
-// re-check channel-level VIEW_CHANNEL overrides at query time — that
-// would multiply the query cost by the number of channels and the
-// edge case (channel perm changed after a mention was sent) is rare
-// enough to accept ghost mentions until the next mark-as-read.
+// left). For DM channels, the user must be a participant. Channel-level
+// VIEW_CHANNEL is ALSO re-checked after the page loads (one resolver call
+// per distinct guild in the page) — membership alone would leak private-
+// channel message bodies through old mention rows or revoked access.
 //
 // Ordering: newest first. Pagination via `before` (a message id).
 
@@ -1059,7 +1113,7 @@ export async function listUserMentions(
   // We do the membership filter inline via EXISTS subselects so the
   // query stays a single round trip.
   const rows = await db
-    .select({ msg: schema.messages })
+    .select({ msg: schema.messages, guildId: schema.channels.guildId })
     .from(schema.messageUserMentions)
     .innerJoin(
       schema.messages,
@@ -1087,5 +1141,21 @@ export async function listUserMentions(
     .orderBy(desc(schema.messages.id))
     .limit(opts.limit);
 
-  return rows.map((r) => r.msg);
+  // Guild membership is necessary but not sufficient: channel overrides can
+  // hide a channel from a member (private mod channels), mention rows can
+  // predate the VIEW_CHANNEL filter in resolveMentions, and access can be
+  // revoked after the mention landed. Re-check per-channel visibility so
+  // the inbox never returns message bodies from channels the user can't
+  // open. Cost: one resolver call per distinct guild in the page.
+  const guildIds = [...new Set(rows.filter((r) => r.guildId !== null).map((r) => r.guildId!))];
+  if (guildIds.length === 0) return rows.map((r) => r.msg);
+  const viewableByGuild = new Map<bigint, Set<bigint>>();
+  await Promise.all(
+    guildIds.map(async (gid) => {
+      viewableByGuild.set(gid, new Set(await listViewableGuildChannelIds(gid, userId)));
+    }),
+  );
+  return rows
+    .filter((r) => r.guildId === null || viewableByGuild.get(r.guildId)?.has(r.msg.channelId))
+    .map((r) => r.msg);
 }

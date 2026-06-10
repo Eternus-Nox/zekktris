@@ -25,7 +25,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import type { Channel, GuildEmoji } from '@zekktris/client';
-import { useAppState } from '../state/AppState';
+import { useAppStateSelector } from '../state/AppState';
 import { Portal } from './Portal';
 
 interface EmojiState {
@@ -97,14 +97,16 @@ export function useEmojiAutocomplete({
   textareaRef: React.MutableRefObject<HTMLTextAreaElement | null>;
   setValue: (next: string) => void;
 }) {
-  const { state } = useAppState();
+  // Narrow selector: this hook lives inside the Composer (renders per
+  // keystroke); a full useAppState() subscription re-rendered it on every
+  // reducer dispatch app-wide.
+  const guildEmojiList = useAppStateSelector((v) =>
+    channel.guildId ? v.state.emojisByGuild[channel.guildId] : undefined,
+  );
   const [emoji, setEmoji] = useState<EmojiState | null>(null);
   const [anchor, setAnchor] = useState<Anchor | null>(null);
 
-  const guildEmojis = useMemo<GuildEmoji[]>(() => {
-    if (!channel.guildId) return [];
-    return state.emojisByGuild[channel.guildId] ?? [];
-  }, [channel.guildId, state.emojisByGuild]);
+  const guildEmojis = useMemo<GuildEmoji[]>(() => guildEmojiList ?? [], [guildEmojiList]);
 
   const filtered = useMemo<Suggestion[]>(() => {
     if (!emoji) return [];

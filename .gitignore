@@ -11,3 +11,6 @@ DerivedData/
 *.xcuserstate
 Pods/
 .build/
+
+# Local appdata (APPDATA_PATH=./data): live Postgres volume, Caddy certs, uploads.
+/data/

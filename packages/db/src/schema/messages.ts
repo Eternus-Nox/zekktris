@@ -10,7 +10,7 @@ import {
   jsonb,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import { users } from './users';
 import { channels } from './channels';
 import { roles } from './guilds';
@@ -146,8 +146,13 @@ export const messages = pgTable(
     /** Primary read pattern: latest N messages in a channel, paginated. */
     channelTimeIdx: index('messages_channel_time_idx').on(t.channelId, t.id),
     authorIdx: index('messages_author_idx').on(t.authorId),
-    /** Used for unread badge counts and last-message display. */
-    pinnedIdx: index('messages_pinned_idx').on(t.channelId, t.pinned),
+    /** Pin-panel lookups (`WHERE channel_id = ? AND pinned AND deleted_at
+     *  IS NULL`). Partial — pinned rows are a tiny fraction of messages, so
+     *  a full (channel_id, pinned) btree was near-table-sized for no
+     *  selectivity gain. Matches migration 0077. */
+    pinnedIdx: index('messages_pinned_idx')
+      .on(t.channelId)
+      .where(sql`pinned AND deleted_at IS NULL`),
   }),
 );
 

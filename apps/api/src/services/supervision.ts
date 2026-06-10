@@ -83,10 +83,15 @@ export async function requestLink(parentId: bigint, childUsername: string) {
   }
 
   // Capacity caps (active links only — a pending request isn't control).
-  if ((await getActiveChildIds(parentId)).length >= MAX_CHILDREN_PER_PARENT) {
+  // Independent lookups; run them together.
+  const [activeChildren, activeParents] = await Promise.all([
+    getActiveChildIds(parentId),
+    getActiveParentIds(child.id),
+  ]);
+  if (activeChildren.length >= MAX_CHILDREN_PER_PARENT) {
     throw errors.badRequest(`You can supervise up to ${MAX_CHILDREN_PER_PARENT} accounts`);
   }
-  if ((await getActiveParentIds(child.id)).length >= MAX_PARENTS_PER_CHILD) {
+  if (activeParents.length >= MAX_PARENTS_PER_CHILD) {
     throw errors.badRequest(
       `That account already has the maximum of ${MAX_PARENTS_PER_CHILD} guardians`,
     );
@@ -107,12 +112,16 @@ export async function requestLink(parentId: bigint, childUsername: string) {
 export async function acceptLink(childId: bigint, parentId: bigint) {
   // Re-check caps at accept time — counts can change between request and
   // acceptance (two pending requests could otherwise both activate).
-  if ((await getActiveParentIds(childId)).length >= MAX_PARENTS_PER_CHILD) {
+  const [activeParents, activeChildren] = await Promise.all([
+    getActiveParentIds(childId),
+    getActiveChildIds(parentId),
+  ]);
+  if (activeParents.length >= MAX_PARENTS_PER_CHILD) {
     throw errors.badRequest(
       `You already have the maximum of ${MAX_PARENTS_PER_CHILD} guardians`,
     );
   }
-  if ((await getActiveChildIds(parentId)).length >= MAX_CHILDREN_PER_PARENT) {
+  if (activeChildren.length >= MAX_CHILDREN_PER_PARENT) {
     throw errors.badRequest(
       `That guardian is already supervising the maximum of ${MAX_CHILDREN_PER_PARENT} accounts`,
     );

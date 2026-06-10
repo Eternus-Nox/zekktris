@@ -30,6 +30,9 @@ import { eventBus, type PublishedEvent } from './bus';
 import type { Connection } from './connection';
 import { RESUME_WINDOW_MS, RESUME_MAX_DETACHED_SESSIONS } from './resume';
 
+/** Shared empty iterable for index misses — saves an allocation per event. */
+const EMPTY_CONNECTION_SET: ReadonlySet<Connection> = new Set();
+
 class Registry {
   /** Authenticated only. Pre-IDENTIFY connections aren't here. */
   private byUser = new Map<bigint, Set<Connection>>();
@@ -187,6 +190,46 @@ class Registry {
   /** Look up a retained session for RESUME. Null if unknown/expired. */
   findResumable(sessionId: string): Connection | null {
     return this.detachedSessions.get(sessionId)?.conn ?? null;
+  }
+
+  /**
+   * Look up a STILL-LIVE authenticated session by logical session id (no
+   * side effects). This exists for RESUME's headline scenario — a SILENT
+   * socket death (WiFi→LTE handoff, iOS suspension): the client's 10s ack
+   * watchdog notices long before our 40s+grid watchdog does, so its RESUME
+   * usually arrives while the zombie is still indexed as live and
+   * findResumable (detached-only) misses.
+   */
+  findLiveSession(sessionId: string, userId: bigint): Connection | null {
+    const set = this.byUser.get(userId);
+    if (!set) return null;
+    for (const c of set) {
+      if (c.sessionId === sessionId && !c.detached) return c;
+    }
+    return null;
+  }
+
+  /**
+   * Displace a live zombie so its session can be adopted by a new socket
+   * (Discord-style RESUME takeover). Order matters:
+   *   1. Disarm onCleanup FIRST — close() invokes it synchronously, and
+   *      handleClose → detach()/remove() would yank the session out of the
+   *      fan-out indexes before completeResume() swaps the new socket in.
+   *   2. Mark detached so buffered frames stop attempting socket writes and
+   *      any concurrent remove() sees wasLive=false (the user stays
+   *      continuously present — no full-disconnect hook, no presence flap).
+   *   3. Close the old socket best-effort (it's presumed dead anyway).
+   * The caller then runs the normal adopt/replay/completeResume path, which
+   * removes this conn from the indexes after the new one is indexed.
+   */
+  takeoverLiveSession(conn: Connection): void {
+    conn.onCleanup = null;
+    conn.detached = true;
+    try {
+      conn.close(4000, 'resumed on a new connection');
+    } catch {
+      // Already dead — that's the premise.
+    }
   }
 
   /**
@@ -368,6 +411,20 @@ class Registry {
     return set ? Array.from(set) : [];
   }
 
+  /**
+   * True if the user has at least one connection with a LIVE socket. Since
+   * RESUME landed, byUserId also returns detached (resume-window) ghosts for
+   * up to RESUME_WINDOW_MS after a disconnect — callers that mean "is this
+   * user actually reachable right now" (e.g. the DM delivered-receipt stamp)
+   * must use this instead of byUserId().length.
+   */
+  hasLiveConnection(userId: bigint): boolean {
+    const set = this.byUser.get(userId);
+    if (!set) return false;
+    for (const c of set) if (!c.detached) return true;
+    return false;
+  }
+
   /** Diagnostic: total open connections (incl. unauthenticated). */
   get connectionCount(): number {
     return this.bySession.size;
@@ -376,6 +433,29 @@ class Registry {
   /** Diagnostic: count of distinct authenticated users currently connected. */
   get userCount(): number {
     return this.byUser.size;
+  }
+
+  /** Diagnostic: open connections with a live socket (excludes detached
+   *  resume-window ghosts). */
+  get liveConnectionCount(): number {
+    let n = 0;
+    for (const c of this.bySession.values()) if (!c.detached) n++;
+    return n;
+  }
+
+  /** Diagnostic: distinct users with at least one live (non-detached)
+   *  connection. */
+  get liveUserCount(): number {
+    let n = 0;
+    for (const set of this.byUser.values()) {
+      for (const c of set) {
+        if (!c.detached) {
+          n++;
+          break;
+        }
+      }
+    }
+    return n;
   }
 
   /**
@@ -414,27 +494,28 @@ class Registry {
       return;
     }
 
-    const candidates = this.candidateConnections(event.audience);
-    if (candidates.length === 0) return;
-
-    // Pre-serialize the DISPATCH body ONCE. On a guild with N connected
-    // members receiving the same MESSAGE_CREATE we previously paid N
-    // full JSON.stringify calls of the identical payload — same DTO,
-    // same bigint walk, same UTF-8 encoding, just with a different
-    // `s` (seq) field per recipient. The seq is now spliced in
-    // per-recipient by sendPreparedDispatch via a substring concat,
-    // so we walk the payload exactly once regardless of audience
-    // size. Heartbeat acks, READY, and other single-recipient frames
-    // still go through the plain send() path which keeps its own
-    // per-call stringify (no win there — single recipient already).
-    const partialJson = JSON.stringify(
-      { op: GatewayOp.DISPATCH, t: event.t, d: event.d },
-      jsonReplacer,
-    );
-    for (const conn of candidates) {
-      if (this.shouldReceive(conn, event.audience)) {
-        conn.sendPreparedDispatch(partialJson);
+    // Pre-serialize the DISPATCH body ONCE — but lazily, on the first
+    // matching recipient. On a guild with N connected members receiving the
+    // same MESSAGE_CREATE we previously paid N full JSON.stringify calls of
+    // the identical payload — same DTO, same bigint walk, same UTF-8
+    // encoding, just with a different `s` (seq) field per recipient. The
+    // seq is now spliced in per-recipient by sendPreparedDispatch via a
+    // substring concat, so we walk the payload at most once regardless of
+    // audience size (and not at all when nobody passes the filter).
+    // Heartbeat acks, READY, and other single-recipient frames still go
+    // through the plain send() path which keeps its own per-call stringify
+    // (no win there — single recipient already). candidateConnections
+    // returns the live index sets — iterate without copying.
+    let partialJson: string | null = null;
+    for (const conn of this.candidateConnections(event.audience)) {
+      if (!this.shouldReceive(conn, event.audience)) continue;
+      if (partialJson === null) {
+        partialJson = JSON.stringify(
+          { op: GatewayOp.DISPATCH, t: event.t, d: event.d },
+          jsonReplacer,
+        );
       }
+      conn.sendPreparedDispatch(partialJson);
     }
   }
 
@@ -524,11 +605,14 @@ class Registry {
    * authenticated connection — only ones whose snapshot already
    * includes the relevant guild or DM.
    */
-  private candidateConnections(audience: Audience): Connection[] {
+  private candidateConnections(audience: Audience): Iterable<Connection> {
     switch (audience.kind) {
       case 'user':
-        return this.byUserId(audience.userId);
+        // The live index set, not a copy — onPublished only iterates, and
+        // every message event used to pay an Array.from allocation here.
+        return this.byUser.get(audience.userId) ?? EMPTY_CONNECTION_SET;
       case 'users': {
+        // A genuine merge — the one case that still builds an array.
         const out: Connection[] = [];
         for (const uid of audience.userIds) {
           const conns = this.byUser.get(uid);
@@ -538,28 +622,25 @@ class Registry {
       }
       case 'guild': {
         // O(connections-in-this-guild) — was O(total-connections).
-        const set = this.byGuild.get(audience.guildId);
-        return set ? Array.from(set) : [];
+        return this.byGuild.get(audience.guildId) ?? EMPTY_CONNECTION_SET;
       }
       case 'channel': {
         if (audience.guildId === null) {
           // DM channel — use the DM index. Audience is at most the
           // two recipients × their open tabs.
-          const set = this.byDMChannel.get(audience.channelId);
-          return set ? Array.from(set) : [];
+          return this.byDMChannel.get(audience.channelId) ?? EMPTY_CONNECTION_SET;
         }
         // Guild channel — narrow to connections in this guild. The
         // shouldReceive filter then checks the per-conn viewability
         // set (members with VIEW_CHANNEL denied on this specific
         // channel get filtered out there). Same end result as the
         // old full-scan, much smaller candidate set.
-        const set = this.byGuild.get(audience.guildId);
-        return set ? Array.from(set) : [];
+        return this.byGuild.get(audience.guildId) ?? EMPTY_CONNECTION_SET;
       }
       case 'presence':
         // Handled by deliverPresence before this is reached. Listed for
         // switch exhaustiveness only.
-        return [];
+        return EMPTY_CONNECTION_SET;
     }
   }
 

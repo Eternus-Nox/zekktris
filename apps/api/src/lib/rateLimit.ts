@@ -64,7 +64,19 @@ function getRedis(): RateLimitRedis | null {
   if (redisInit) return redisClient;
   redisInit = true;
   if (env.REDIS_URL) {
-    const client = new Redis(env.REDIS_URL, { maxRetriesPerRequest: null, lazyConnect: false });
+    // The fail-open guarantee above depends on commands REJECTING when Redis
+    // is unhealthy. With ioredis defaults (offline queue on, unlimited
+    // retries) a command issued during an outage is queued indefinitely —
+    // `await eval` neither resolves nor rejects, and every limited endpoint
+    // (login, register, …) hangs instead of failing open. So: no offline
+    // queue (reject immediately while disconnected), one retry, and a hard
+    // per-command timeout for the connected-but-unresponsive case.
+    const client = new Redis(env.REDIS_URL, {
+      maxRetriesPerRequest: 1,
+      enableOfflineQueue: false,
+      commandTimeout: 1000,
+      lazyConnect: false,
+    });
     // Swallow connection-level errors; per-op try/catch handles request-time
     // failures (fail open). Without this listener a transient blip would emit
     // an unhandled 'error' event and crash the process.

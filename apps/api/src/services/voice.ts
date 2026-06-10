@@ -17,7 +17,7 @@
  * field returned from `joinVoice` is null with a note — clients can see
  * the participant count update, but no audio flows.
  */
-import { eq, and, inArray, isNull, isNotNull, lt, ne } from 'drizzle-orm';
+import { eq, and, inArray, isNull, isNotNull, lt, ne, sql } from 'drizzle-orm';
 import { AccessToken, RoomServiceClient, TrackSource } from 'livekit-server-sdk';
 import { db, schema } from '../db';
 import { env } from '../env';
@@ -186,47 +186,31 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
   // message summarizing the call (duration if answered, "missed"
   // otherwise). See leaveVoice below for the corresponding read side.
   if (channel.type === 'dm') {
-    const otherInVoice = await db
-      .select({ userId: schema.voiceStates.userId })
-      .from(schema.voiceStates)
-      .where(
-        and(
-          eq(schema.voiceStates.channelId, channelId),
-          ne(schema.voiceStates.userId, userId),
-        ),
-      )
-      .limit(1);
-    if (otherInVoice.length === 0) {
-      // First participant — caller initiating. Only stamp the started
-      // columns if they're not already set; a stale row from a prior
-      // call that didn't clean up would otherwise get clobbered.
-      await db
-        .update(schema.channels)
-        .set({
-          dmActiveCallStartedAt: new Date(),
-          dmActiveCallInitiatorId: userId,
-        })
-        .where(
-          and(
-            eq(schema.channels.id, channelId),
-            isNull(schema.channels.dmActiveCallStartedAt),
-          ),
-        );
-    } else {
-      // Second participant — callee answering. Stamp answeredAt iff
-      // not already set.
-      await db
-        .update(schema.channels)
-        .set({
-          dmActiveCallAnsweredAt: new Date(),
-        })
-        .where(
-          and(
-            eq(schema.channels.id, channelId),
-            isNull(schema.channels.dmActiveCallAnsweredAt),
-          ),
-        );
-    }
+    // One atomic statement, with the channel row's OWN columns as the
+    // caller-vs-answerer discriminator (every SET expression sees the
+    // pre-update values, and the row lock serializes concurrent joins):
+    //   - startedAt null            → I'm first: stamp startedAt + initiator
+    //   - started by someone else,
+    //     not yet answered          → I'm answering: stamp answeredAt
+    //   - otherwise (rejoin/echo)   → no change
+    // The previous SELECT-voice_states-then-branch version raced: two
+    // near-simultaneous joins could both observe "no other participant",
+    // classify a connected call as missed, or strand answeredAt with no
+    // startedAt — which then poisoned the NEXT call's duration math.
+    await db
+      .update(schema.channels)
+      .set({
+        dmActiveCallStartedAt: sql`COALESCE(${schema.channels.dmActiveCallStartedAt}, NOW())`,
+        dmActiveCallInitiatorId: sql`COALESCE(${schema.channels.dmActiveCallInitiatorId}, ${userId})`,
+        dmActiveCallAnsweredAt: sql`CASE
+          WHEN ${schema.channels.dmActiveCallStartedAt} IS NOT NULL
+           AND ${schema.channels.dmActiveCallInitiatorId} IS DISTINCT FROM ${userId}
+           AND ${schema.channels.dmActiveCallAnsweredAt} IS NULL
+          THEN NOW()
+          ELSE ${schema.channels.dmActiveCallAnsweredAt}
+        END`,
+      })
+      .where(eq(schema.channels.id, channelId));
   }
 
   // Detect AFK-channel join. If the guild has an AFK channel configured
@@ -463,8 +447,21 @@ export async function leaveVoice(userId: bigint): Promise<LeaveVoiceResult> {
   }
   if (channelRow.startedAt === null) {
     // No call was tracked — could happen if the join path raced or
-    // the columns were already cleared by a concurrent leave. Treat
-    // as a benign no-op.
+    // the columns were already cleared by a concurrent leave. Clear any
+    // stray answeredAt/initiator before returning: a half-stamped row
+    // left behind would make the NEXT call on this channel classify as
+    // answered with a duration computed from the stale timestamp.
+    if (channelRow.answeredAt !== null || channelRow.initiatorId !== null) {
+      await db
+        .update(schema.channels)
+        .set({ dmActiveCallAnsweredAt: null, dmActiveCallInitiatorId: null })
+        .where(
+          and(
+            eq(schema.channels.id, priorState.channelId),
+            isNull(schema.channels.dmActiveCallStartedAt),
+          ),
+        );
+    }
     return { priorState, systemCallMessage: null, systemCallChannelId: null };
   }
 

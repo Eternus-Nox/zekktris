@@ -50,6 +50,7 @@ import {
   type Guild,
   type GuildMember,
   type Message,
+  type Poll,
   type PublicUser,
   type FamilySummary,
   type ReactionAggregate,
@@ -312,6 +313,12 @@ type Action =
       pollId: string;
       closedAt: string;
     }
+  /** Replace a message's poll with a locally-computed snapshot (the
+   *  voter's optimistic tallies + their own myVotes). Gateway poll
+   *  broadcasts carry no per-recipient vote state, so the user's own
+   *  selection must be persisted here to survive MESSAGE_PATCH
+   *  resyncs. */
+  | { type: 'POLL_LOCAL_REPLACE'; channelId: string; messageId: string; poll: Poll }
   | { type: 'MESSAGE_REMOVE'; channelId: string; messageId: string }
   | { type: 'MESSAGES_REMOVE_BULK'; channelId: string; messageIds: string[] }
   /**
@@ -830,8 +837,27 @@ function reducer(state: State, action: Action): State {
       if (!existing) return state;
       const idx = existing.findIndex((m) => m.id === action.message.id);
       if (idx === -1) return state;
+      // Gateway MESSAGE_UPDATE fans ONE DTO to every channel member, so it
+      // cannot carry per-recipient state: poll.myVotes arrives empty and
+      // reactions[].me arrives false for everyone. Preserve what this
+      // client already knows about the current user (REST hydration,
+      // reaction events, and POLL_LOCAL_REPLACE are the per-self truth).
+      const prev = existing[idx];
+      let merged = action.message;
+      if (merged.poll && prev.poll && merged.poll.id === prev.poll.id && prev.poll.myVotes.length > 0) {
+        merged = { ...merged, poll: { ...merged.poll, myVotes: prev.poll.myVotes } };
+      }
+      if (merged.reactions?.length && prev.reactions?.length) {
+        const mine = new Set(prev.reactions.filter((r) => r.me).map((r) => r.emoji));
+        if (mine.size > 0) {
+          merged = {
+            ...merged,
+            reactions: merged.reactions.map((r) => (mine.has(r.emoji) && !r.me ? { ...r, me: true } : r)),
+          };
+        }
+      }
       const nextList = existing.slice();
-      nextList[idx] = action.message;
+      nextList[idx] = merged;
       const next: State = {
         ...state,
         messagesByChannel: {
@@ -839,7 +865,24 @@ function reducer(state: State, action: Action): State {
           [action.channelId]: nextList,
         },
       };
-      return upsertUsersFromMessages(next, [action.message]);
+      return upsertUsersFromMessages(next, [merged]);
+    }
+    case 'POLL_LOCAL_REPLACE': {
+      const existing = state.messagesByChannel[action.channelId];
+      if (!existing) return state;
+      const idx = existing.findIndex((m) => m.id === action.messageId);
+      if (idx === -1) return state;
+      const msg = existing[idx];
+      if (!msg.poll || msg.poll.id !== action.poll.id) return state;
+      const nextList = existing.slice();
+      nextList[idx] = { ...msg, poll: action.poll };
+      return {
+        ...state,
+        messagesByChannel: {
+          ...state.messagesByChannel,
+          [action.channelId]: nextList,
+        },
+      };
     }
     case 'POLL_PATCH': {
       // Focused poll-only patch — locate the message and patch the
@@ -1712,6 +1755,10 @@ interface AppStateValue {
    * already-saved messages.
    */
   hydrateSavedMembership: (messageIds: string[]) => Promise<void>;
+  /** Persist the voter's optimistic poll snapshot (tallies + own myVotes)
+   *  into the canonical message — gateway poll broadcasts carry no
+   *  per-recipient vote state. */
+  setPollLocal: (channelId: string, messageId: string, poll: Poll) => void;
 }
 
 const AppStateContext = createContext<AppStateValue | null>(null);
@@ -1833,6 +1880,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     },
     [],
   );
+
+  // Persist a locally-computed poll snapshot (the voter's optimistic
+  // tallies + their own myVotes) into the canonical message. Gateway
+  // poll broadcasts carry no per-recipient vote state, so without this
+  // the next MESSAGE_UPDATE resync would wipe the user's selection.
+  const setPollLocal = useCallback((channelId: string, messageId: string, poll: Poll) => {
+    dispatch({ type: 'POLL_LOCAL_REPLACE', channelId, messageId, poll });
+  }, []);
 
   const loadMessages = useCallback(
     async (channelId: string) => {
@@ -2606,7 +2661,15 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
                   : guildIdForChannel
                     ? `/channels/${guildIdForChannel}/${m.channelId}`
                     : null;
-                if (path) window.location.assign(path);
+                // Soft navigation — same pattern as the service-worker
+                // NAVIGATE handler in main.tsx. location.assign() here
+                // was a full bundle reload: in-memory AppState and the
+                // gateway connection were torn down and re-bootstrapped
+                // just to switch channels.
+                if (path) {
+                  window.history.pushState({}, '', path);
+                  window.dispatchEvent(new PopStateEvent('popstate'));
+                }
               } catch {
                 // ignore — focusing the window already happened
               }
@@ -3056,6 +3119,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       mergeChannelVoiceStates,
       toggleSavedMessage,
       hydrateSavedMembership,
+      setPollLocal,
     }),
     [
       state,
@@ -3084,6 +3148,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       mergeChannelVoiceStates,
       toggleSavedMessage,
       hydrateSavedMembership,
+      setPollLocal,
       loadSupervision,
     ],
   );

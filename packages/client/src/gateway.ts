@@ -59,6 +59,15 @@ export class GatewayClient {
   private ws: WebSocket | null = null;
   private status: ConnectionStatus = 'idle';
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * The pending random initial-delay timeout that startHeartbeat schedules
+   * before the first heartbeat. Tracked so reconnects can cancel it: an
+   * untracked one that outlived its socket would start a SECOND interval
+   * alongside the new connection's — whichever assignment lost the
+   * heartbeatTimer slot became an orphan that heartbeated forever and
+   * could never be cleared (one leaked interval per fast reconnect).
+   */
+  private heartbeatStartTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * Watchdog that fires if a HEARTBEAT we sent doesn't get acked
@@ -105,6 +114,14 @@ export class GatewayClient {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
+    }
+    if (this.heartbeatStartTimer) {
+      clearTimeout(this.heartbeatStartTimer);
+      this.heartbeatStartTimer = null;
+    }
+    if (this.ackWatchdogTimer) {
+      clearTimeout(this.ackWatchdogTimer);
+      this.ackWatchdogTimer = null;
     }
     if (this.ws) {
       try {
@@ -157,11 +174,15 @@ export class GatewayClient {
       }
       this.ws = null;
     }
-    // Stop the existing heartbeat timer; the new connection's HELLO
-    // will start a fresh one.
+    // Stop the existing heartbeat timers; the new connection's HELLO
+    // will start fresh ones.
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
+    }
+    if (this.heartbeatStartTimer) {
+      clearTimeout(this.heartbeatStartTimer);
+      this.heartbeatStartTimer = null;
     }
     this.connect();
   }
@@ -236,6 +257,19 @@ export class GatewayClient {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
+    }
+    if (this.heartbeatStartTimer) {
+      clearTimeout(this.heartbeatStartTimer);
+      this.heartbeatStartTimer = null;
+    }
+    // A watchdog armed by a heartbeat on the dying socket must not fire
+    // during the reconnect backoff — it would forceReconnect immediately,
+    // resetting the backoff to 1s and defeating exponential backoff right
+    // when the server is down (thundering-herd window), or tear down a
+    // fresh healthy socket if the reconnect already succeeded.
+    if (this.ackWatchdogTimer) {
+      clearTimeout(this.ackWatchdogTimer);
+      this.ackWatchdogTimer = null;
     }
     this.ws = null;
   }
@@ -368,12 +402,17 @@ export class GatewayClient {
 
   private startHeartbeat(intervalMs: number): void {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    if (this.heartbeatStartTimer) clearTimeout(this.heartbeatStartTimer);
     // Send first heartbeat at a random offset 0..interval so multiple clients
     // don't synchronize on reconnect storms.
     const initialDelay = Math.floor(Math.random() * intervalMs);
-    setTimeout(() => {
+    this.heartbeatStartTimer = setTimeout(() => {
+      this.heartbeatStartTimer = null;
       if (!this.ws || this.ws.readyState !== this.ws.OPEN) return;
       this.sendHeartbeat();
+      // Defensive: never let two intervals exist, even if a stale
+      // initial-delay timeout slipped through a reconnect.
+      if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = setInterval(() => {
         if (!this.ws || this.ws.readyState !== this.ws.OPEN) return;
         this.sendHeartbeat();

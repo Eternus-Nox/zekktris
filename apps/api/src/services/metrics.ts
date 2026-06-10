@@ -95,60 +95,81 @@ export async function gatherMetrics(): Promise<InstanceMetrics> {
 
   if (dbOk) {
     const n = (rows: { n: number }[]) => rows[0]?.n ?? 0;
-    const [
-      users,
-      banned,
-      guilds,
-      channels,
-      messages,
-      messages24h,
-      sessions,
-      voiceRow,
-      schedRow,
-    ] = await Promise.all([
-      db.select({ n: sql<number>`COUNT(*)::int` }).from(schema.users).where(isNull(schema.users.deletedAt)),
-      db.select({ n: sql<number>`COUNT(*)::int` }).from(schema.users).where(isNotNull(schema.users.bannedAt)),
-      db.select({ n: sql<number>`COUNT(*)::int` }).from(schema.guilds).where(isNull(schema.guilds.deletedAt)),
-      db.select({ n: sql<number>`COUNT(*)::int` }).from(schema.channels).where(isNull(schema.channels.deletedAt)),
-      db.select({ n: sql<number>`COUNT(*)::int` }).from(schema.messages).where(isNull(schema.messages.deletedAt)),
-      db
-        .select({ n: sql<number>`COUNT(*)::int` })
-        .from(schema.messages)
-        .where(and(isNull(schema.messages.deletedAt), gt(schema.messages.createdAt, sql`NOW() - INTERVAL '24 hours'`))),
-      db
-        .select({ n: sql<number>`COUNT(*)::int` })
-        .from(schema.sessions)
-        .where(and(isNull(schema.sessions.revokedAt), gt(schema.sessions.expiresAt, sql`NOW()`))),
-      db
-        .select({
-          rooms: sql<number>`COUNT(DISTINCT ${schema.voiceStates.channelId})::int`,
-          participants: sql<number>`COUNT(*)::int`,
-        })
-        .from(schema.voiceStates),
-      db
-        .select({
-          pending: sql<number>`COUNT(*) FILTER (WHERE ${schema.scheduledMessages.attempts} < 3)::int`,
-          due: sql<number>`COUNT(*) FILTER (WHERE ${schema.scheduledMessages.attempts} < 3 AND ${schema.scheduledMessages.scheduledFor} <= NOW())::int`,
-        })
-        .from(schema.scheduledMessages),
-    ]);
-    counts = {
-      users: n(users),
-      bannedUsers: n(banned),
-      guilds: n(guilds),
-      channels: n(channels),
-      messages: n(messages),
-      messagesLast24h: n(messages24h),
-      activeSessions: n(sessions),
-    };
-    voice = {
-      rooms: voiceRow[0]?.rooms ?? 0,
-      participants: voiceRow[0]?.participants ?? 0,
-    };
-    scheduledMessages = {
-      pending: schedRow[0]?.pending ?? 0,
-      due: schedRow[0]?.due ?? 0,
-    };
+    try {
+      const [users, banned, guilds, channels, messages, messages24h, sessions, voiceRow, schedRow] =
+        await Promise.all([
+          db
+            .select({ n: sql<number>`COUNT(*)::int` })
+            .from(schema.users)
+            .where(isNull(schema.users.deletedAt)),
+          db
+            .select({ n: sql<number>`COUNT(*)::int` })
+            .from(schema.users)
+            .where(isNotNull(schema.users.bannedAt)),
+          db
+            .select({ n: sql<number>`COUNT(*)::int` })
+            .from(schema.guilds)
+            .where(isNull(schema.guilds.deletedAt)),
+          db
+            .select({ n: sql<number>`COUNT(*)::int` })
+            .from(schema.channels)
+            .where(isNull(schema.channels.deletedAt)),
+          db
+            .select({ n: sql<number>`COUNT(*)::int` })
+            .from(schema.messages)
+            .where(isNull(schema.messages.deletedAt)),
+          db
+            .select({ n: sql<number>`COUNT(*)::int` })
+            .from(schema.messages)
+            .where(
+              and(
+                isNull(schema.messages.deletedAt),
+                gt(schema.messages.createdAt, sql`NOW() - INTERVAL '24 hours'`),
+              ),
+            ),
+          db
+            .select({ n: sql<number>`COUNT(*)::int` })
+            .from(schema.sessions)
+            .where(
+              and(isNull(schema.sessions.revokedAt), gt(schema.sessions.expiresAt, sql`NOW()`)),
+            ),
+          db
+            .select({
+              rooms: sql<number>`COUNT(DISTINCT ${schema.voiceStates.channelId})::int`,
+              participants: sql<number>`COUNT(*)::int`,
+            })
+            .from(schema.voiceStates),
+          db
+            .select({
+              pending: sql<number>`COUNT(*) FILTER (WHERE ${schema.scheduledMessages.attempts} < 3)::int`,
+              due: sql<number>`COUNT(*) FILTER (WHERE ${schema.scheduledMessages.attempts} < 3 AND ${schema.scheduledMessages.scheduledFor} <= NOW())::int`,
+            })
+            .from(schema.scheduledMessages),
+        ]);
+      counts = {
+        users: n(users),
+        bannedUsers: n(banned),
+        guilds: n(guilds),
+        channels: n(channels),
+        messages: n(messages),
+        messagesLast24h: n(messages24h),
+        activeSessions: n(sessions),
+      };
+      voice = {
+        rooms: voiceRow[0]?.rooms ?? 0,
+        participants: voiceRow[0]?.participants ?? 0,
+      };
+      scheduledMessages = {
+        pending: schedRow[0]?.pending ?? 0,
+        due: schedRow[0]?.due ?? 0,
+      };
+    } catch {
+      // A count query failing after the probe succeeded (transient pool/
+      // statement error mid-gather) must degrade, not 500 the admin
+      // dashboard and the Prometheus scrape: surface zeros with db.ok=false,
+      // exactly what the comment above the probe promises.
+      dbOk = false;
+    }
   }
 
   // Redis: configured = env present; healthy = a bounded live ping IF the
@@ -167,8 +188,11 @@ export async function gatherMetrics(): Promise<InstanceMetrics> {
       nodeEnv: env.NODE_ENV,
     },
     gateway: {
-      connections: registry.connectionCount,
-      onlineUsers: registry.userCount,
+      // Live-socket counts: byUser/bySession also retain detached
+      // resume-window ghosts for up to 60s after a disconnect, which would
+      // overcount "connected" on a dashboard.
+      connections: registry.liveConnectionCount,
+      onlineUsers: registry.liveUserCount,
     },
     counts,
     voice,

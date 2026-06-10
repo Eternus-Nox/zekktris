@@ -32,6 +32,14 @@ export const RESUME_MAX_FRAMES = 1024;
  *  session from replaying minutes-old events. */
 export const RESUME_MAX_AGE_MS = 3 * 60 * 1000;
 
+/** Per-buffer byte budget. The frame-count cap alone leaves worst-case
+ *  memory unbudgeted — each entry is a fully-materialized, per-connection-
+ *  unique JSON string that can be multi-KB (long messages, embeds), so
+ *  under a mass disconnect 20k retained sessions × 1024 frames had no byte
+ *  ceiling. Exceeding the budget drops oldest-first, exactly like the
+ *  count overflow (that prefix simply becomes un-resumable). */
+export const RESUME_MAX_BYTES = 256 * 1024;
+
 /** How long the registry keeps a detached session around for a possible
  *  RESUME before evicting it (full cleanup). Comfortably covers a mobile
  *  network handoff / tab refocus; bounded so memory can't grow without end. */
@@ -50,24 +58,45 @@ interface BufferedFrame {
 
 export class ResumeBuffer {
   private frames: BufferedFrame[] = [];
+  /** Cumulative json.length across retained frames (chars ≈ bytes for the
+   *  ASCII-dominated frames we emit; close enough for a budget). */
+  private bytes = 0;
 
   constructor(
     private readonly maxFrames = RESUME_MAX_FRAMES,
     private readonly maxAgeMs = RESUME_MAX_AGE_MS,
+    private readonly maxBytes = RESUME_MAX_BYTES,
   ) {}
 
   /** Record a frame we sent (or buffered while detached). `now` is injected
-   *  so tests are deterministic. Prunes by age and size. */
+   *  so tests are deterministic. Prunes by age, count, and bytes. */
   append(seq: number, json: string, now: number): void {
     this.frames.push({ seq, json, at: now });
+    this.bytes += json.length;
     // Prune by age from the front (frames are append-only ascending in time).
     const cutoff = now - this.maxAgeMs;
     let drop = 0;
-    while (drop < this.frames.length && this.frames[drop]!.at < cutoff) drop++;
-    // Prune by size.
-    const overflow = this.frames.length - drop - this.maxFrames;
-    if (overflow > 0) drop += overflow;
-    if (drop > 0) this.frames.splice(0, drop);
+    let droppedBytes = 0;
+    while (drop < this.frames.length && this.frames[drop]!.at < cutoff) {
+      droppedBytes += this.frames[drop]!.json.length;
+      drop++;
+    }
+    // Prune by count.
+    let overflow = this.frames.length - drop - this.maxFrames;
+    while (overflow > 0) {
+      droppedBytes += this.frames[drop]!.json.length;
+      drop++;
+      overflow--;
+    }
+    // Prune by bytes.
+    while (this.bytes - droppedBytes > this.maxBytes && drop < this.frames.length - 1) {
+      droppedBytes += this.frames[drop]!.json.length;
+      drop++;
+    }
+    if (drop > 0) {
+      this.frames.splice(0, drop);
+      this.bytes -= droppedBytes;
+    }
   }
 
   /** Lowest seq still retained, or null if empty. */

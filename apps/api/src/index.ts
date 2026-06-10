@@ -503,6 +503,16 @@ async function main(): Promise<void> {
     shuttingDown = true;
     log.info(`received ${signal}, shutting down`);
 
+    // Hard drain deadline. server.close() waits for every in-flight
+    // request and idle keep-alive socket; a single stuck request would
+    // otherwise hang the close callback until Docker's stop_timeout
+    // SIGKILLs us — skipping closeDb() and the clean-exit path entirely.
+    const forceExit = setTimeout(() => {
+      log.error('shutdown drain deadline exceeded — forcing exit');
+      process.exit(1);
+    }, 10_000);
+    forceExit.unref();
+
     // Stop the inactivity sweep timer so we don't kick off a long
     // delete query mid-shutdown.
     if (sweepTimer) clearInterval(sweepTimer);
@@ -524,9 +534,12 @@ async function main(): Promise<void> {
       log.error('event bus close failed during shutdown', { err });
     }
 
-    // Stop accepting new connections; finish in-flight ones.
+    // Stop accepting new connections; finish in-flight ones. Idle
+    // keep-alive sockets would hold close() open indefinitely — drop
+    // them (in-flight requests on those sockets are unaffected).
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
+      (server as unknown as { closeIdleConnections?: () => void }).closeIdleConnections?.();
     });
 
     try {
@@ -543,14 +556,19 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => void shutdown('SIGINT'));
 }
 
-// Last-resort handlers — these mean a bug, log loudly and exit.
+// Last-resort handlers. uncaughtException means process state is genuinely
+// unknown — log loudly and exit. unhandledRejection is different: a single
+// un-awaited promise in a background sweep or gateway fan-out is a BUG to
+// fix, but killing the process for it drops every live WebSocket and
+// in-flight request on the instance — collective punishment far worse than
+// the missed rejection. Log loudly (with stack) and keep serving.
 process.on('uncaughtException', (err) => {
   log.error('uncaughtException', { err });
   process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
-  log.error('unhandledRejection', { reason });
-  process.exit(1);
+  const stack = reason instanceof Error ? reason.stack : undefined;
+  log.error('unhandledRejection (continuing — fix the missing await)', { reason, stack });
 });
 
 main().catch((err: unknown) => {

@@ -91,21 +91,15 @@ export async function createChannel(input: CreateChannelInput) {
 
   // Place new channels at the end. Position is per-guild but the sort key
   // really used by the client is (parentId, position) — so "end" means
-  // largest among siblings with the same parent.
-  const top = await db
-    .select({ position: schema.channels.position })
-    .from(schema.channels)
-    .where(
-      and(
-        eq(schema.channels.guildId, input.guildId),
-        input.parentId === null || input.parentId === undefined
-          ? isNull(schema.channels.parentId)
-          : eq(schema.channels.parentId, input.parentId),
-      ),
-    )
-    .orderBy(desc(schema.channels.position))
-    .limit(1);
-  const nextPosition = (top[0]?.position ?? -1) + 1;
+  // largest among siblings with the same parent. The MAX+1 is computed as
+  // an inline scalar subquery INSIDE the insert so two concurrent creates
+  // under the same parent can't read the same max and collide (ties were
+  // only cosmetic — list order breaks them by id — but the append
+  // invariant should hold).
+  const parentCond =
+    input.parentId === null || input.parentId === undefined
+      ? sql`${schema.channels.parentId} IS NULL`
+      : sql`${schema.channels.parentId} = ${input.parentId}`;
 
   const id = nextSnowflake();
   const [channel] = await db
@@ -120,7 +114,7 @@ export async function createChannel(input: CreateChannelInput) {
       nsfw: input.nsfw ?? false,
       rateLimitPerUser: input.rateLimitPerUser ?? 0,
       linkUrl: input.linkUrl ?? null,
-      position: nextPosition,
+      position: sql`(SELECT COALESCE(MAX(${schema.channels.position}), -1) + 1 FROM ${schema.channels} WHERE ${schema.channels.guildId} = ${input.guildId} AND ${parentCond})`,
     })
     .returning();
   if (!channel) throw errors.internal('Channel insert returned no row');

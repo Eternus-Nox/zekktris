@@ -21,6 +21,7 @@ import type { Poll, PollOption } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useToasts } from '../state/Toasts';
+import { useAppStateSelector } from '../state/AppState';
 
 interface Props {
   channelId: string;
@@ -33,11 +34,7 @@ interface Props {
 export function PollMessage({ channelId, messageId, poll: initial, authorId }: Props) {
   const { rest, user } = useAuth();
   const toasts = useToasts();
-  // messageId is part of the prop contract for symmetry with future
-  // operations (delete/edit poll attachments, audit attribution) but
-  // isn't read directly today — the poll id alone is sufficient for
-  // every current vote/end mutation.
-  void messageId;
+  const setPollLocal = useAppStateSelector((v) => v.setPollLocal);
 
   // Local snapshot of the poll for optimistic rendering. The canonical
   // copy lives in the message that's stored in AppState; whenever the
@@ -73,43 +70,8 @@ export function PollMessage({ channelId, messageId, poll: initial, authorId }: P
     //  - alreadyVoted → remove this vote
     //  - !alreadyVoted single-choice → switch all my votes to this option
     //  - !alreadyVoted multi-choice → add this option to my votes
-    setSnapshot((prev) => {
-      const newMyVotes = new Set(prev.myVotes);
-      const opts = prev.options.map((o) => ({ ...o }));
-
-      function dec(optId: string) {
-        const o = opts.find((x) => x.id === optId);
-        if (o && o.voteCount > 0) o.voteCount--;
-      }
-      function inc(optId: string) {
-        const o = opts.find((x) => x.id === optId);
-        if (o) o.voteCount++;
-      }
-
-      if (alreadyVoted) {
-        newMyVotes.delete(option.id);
-        dec(option.id);
-      } else {
-        if (!prev.multipleChoice) {
-          // Clear all my prior votes, then add the new one.
-          for (const id of newMyVotes) dec(id);
-          newMyVotes.clear();
-        }
-        newMyVotes.add(option.id);
-        inc(option.id);
-      }
-
-      // Recompute totalVoters: sum up myVote count delta. For single-
-      // choice this stays at -1/0/+1; for multi-choice we estimate
-      // (the server's exact value will replace ours on MESSAGE_UPDATE).
-      const beforeHadAny = prev.myVotes.length > 0;
-      const afterHasAny = newMyVotes.size > 0;
-      let newTotal = prev.totalVoters;
-      if (beforeHadAny && !afterHasAny) newTotal--;
-      else if (!beforeHadAny && afterHasAny) newTotal++;
-
-      return { ...prev, options: opts, myVotes: [...newMyVotes], totalVoters: Math.max(0, newTotal) };
-    });
+    const next = applyVote(snapshot, option, alreadyVoted);
+    setSnapshot(next);
 
     try {
       if (alreadyVoted) {
@@ -117,12 +79,13 @@ export function PollMessage({ channelId, messageId, poll: initial, authorId }: P
       } else {
         await rest.voteOnPoll(channelId, snapshot.id, option.id);
       }
-      // Server will broadcast MESSAGE_UPDATE; the parent's effect
-      // refreshes `initial` and we sync.
+      // Persist the snapshot into the canonical message: the server's
+      // MESSAGE_UPDATE broadcast is shared by every recipient and carries
+      // no per-user vote state, so the user's own selection must live in
+      // AppState (MESSAGE_PATCH preserves it on each broadcast resync).
+      setPollLocal(channelId, messageId, next);
     } catch (e) {
-      // Revert: we don't have the original snapshot anymore (we mutated
-      // it above), so we just trust the next gateway update to fix it.
-      // Surface the error via a toast.
+      // Revert to the canonical copy and surface the error via a toast.
       toasts.push(e instanceof ApiError ? e.message : 'Vote failed', 'error');
       setSnapshot(initial);
     }
@@ -231,6 +194,49 @@ export function PollMessage({ channelId, messageId, poll: initial, authorId }: P
       </div>
     </div>
   );
+}
+
+/**
+ * Pure optimistic vote transition: given the current poll snapshot and the
+ * toggled option, return the next snapshot (updated myVotes + tallies).
+ * Single-choice switches all prior votes to the new option; the server's
+ * exact tallies replace ours on the next MESSAGE_UPDATE.
+ */
+function applyVote(prev: Poll, option: PollOption, alreadyVoted: boolean): Poll {
+  const newMyVotes = new Set(prev.myVotes);
+  const opts = prev.options.map((o) => ({ ...o }));
+
+  function dec(optId: string) {
+    const o = opts.find((x) => x.id === optId);
+    if (o && o.voteCount > 0) o.voteCount--;
+  }
+  function inc(optId: string) {
+    const o = opts.find((x) => x.id === optId);
+    if (o) o.voteCount++;
+  }
+
+  if (alreadyVoted) {
+    newMyVotes.delete(option.id);
+    dec(option.id);
+  } else {
+    if (!prev.multipleChoice) {
+      // Clear all my prior votes, then add the new one.
+      for (const id of newMyVotes) dec(id);
+      newMyVotes.clear();
+    }
+    newMyVotes.add(option.id);
+    inc(option.id);
+  }
+
+  // Recompute totalVoters from the myVote count delta. For single-
+  // choice this stays at -1/0/+1; for multi-choice we estimate.
+  const beforeHadAny = prev.myVotes.length > 0;
+  const afterHasAny = newMyVotes.size > 0;
+  let newTotal = prev.totalVoters;
+  if (beforeHadAny && !afterHasAny) newTotal--;
+  else if (!beforeHadAny && afterHasAny) newTotal++;
+
+  return { ...prev, options: opts, myVotes: [...newMyVotes], totalVoters: Math.max(0, newTotal) };
 }
 
 /**

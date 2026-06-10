@@ -249,16 +249,42 @@ const redisCheck: Check = {
     if (!env.REDIS_URL) {
       return { ok: true, detail: 'not configured (gateway pubsub will be in-memory)' };
     }
-    // Live ping is wired in stage 6 when the gateway lands. For now we just
-    // confirm the URL parses so a broken value doesn't slip past until later.
+    let host: string;
     try {
-      const u = new URL(env.REDIS_URL);
-      return {
-        ok: true,
-        detail: `${u.host} (URL valid; live ping deferred to gateway stage)`,
-      };
+      host = new URL(env.REDIS_URL).host;
     } catch {
       return { ok: false, reason: 'REDIS_URL is set but unparseable' };
+    }
+    // Real round-trip, not just a URL parse: a wrong host/port/password
+    // would otherwise pass startup silently and only surface later as
+    // gateway-bus and session-blacklist errors at runtime. Redis is
+    // fail-soft by design (everything that uses it degrades rather than
+    // breaks), and the api container may win the boot race against the
+    // cache container — so an unreachable Redis is reported LOUDLY in the
+    // detail but does not block boot.
+    const { default: Redis } = await import('ioredis');
+    const client = new Redis(env.REDIS_URL, {
+      lazyConnect: true,
+      connectTimeout: 3000,
+      maxRetriesPerRequest: 1,
+      enableOfflineQueue: false,
+      retryStrategy: () => null, // one shot; don't keep the check alive retrying
+    });
+    client.on('error', () => {}); // surfaced via the try/catch below
+    try {
+      await client.connect();
+      const pong = await client.ping();
+      if (pong !== 'PONG') {
+        return { ok: true, detail: `${host} — UNEXPECTED PING REPLY (continuing, fail-soft)` };
+      }
+      return { ok: true, detail: `${host} (PING ok)` };
+    } catch (err) {
+      return {
+        ok: true,
+        detail: `${host} UNREACHABLE — continuing fail-soft; multi-node fanout, shared rate limits and session revocation are degraded until it returns (${(err as Error).message})`,
+      };
+    } finally {
+      client.disconnect();
     }
   },
 };

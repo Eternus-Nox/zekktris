@@ -188,6 +188,14 @@ channelsRouter.patch(
     const channelDTO = toChannel(updated);
     if (existing.guildId) {
       dispatch.channelUpdate({ channelDTO, channelId, guildId: existing.guildId });
+      // Reparenting changes which category's overrides cascade onto this
+      // channel, which can flip VIEW_CHANNEL for members — refresh the
+      // gateway viewable-channel caches or events keep flowing to (or stay
+      // hidden from) the wrong connections until they reconnect. The bulk
+      // reorder route does the same for its reparent case.
+      if (body.parentId !== undefined) {
+        await dispatch.applyGuildPermissionChange({ guildId: existing.guildId });
+      }
     }
     return c.json({ channel: channelDTO });
   },

@@ -88,10 +88,14 @@ EXPOSE 3000
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["pnpm", "--filter", "@zekktris/api", "start"]
 
-# Container health is /health on port 3000. The endpoint short-circuits the
-# auth middleware and just returns {ok:true} once the server is listening.
+# Container health is the READINESS probe /health/ready on port 3000 — it
+# exercises the DB (returns 503 when Postgres is unreachable), so `docker ps`
+# shows the api unhealthy during a post-boot database outage instead of
+# reporting a listening-but-useless process as healthy. (Docker itself never
+# restarts on unhealthy — this is signal, not a flap risk; the generous
+# retries ride out brief DB blips.)
 # Use 127.0.0.1 (not 'localhost') because Node v17+ resolves localhost as
 # IPv6 first, but the api binds to 0.0.0.0 (IPv4-only); without forcing
 # IPv4 the healthcheck fails on systems where ::1 is preferred.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:3000/health || exit 1
+  CMD wget -qO- http://127.0.0.1:3000/health/ready || exit 1

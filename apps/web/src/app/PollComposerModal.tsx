@@ -18,7 +18,7 @@
  * each field.
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Portal } from '../lib/Portal';
 import { Plus, Trash } from '../lib/icons';
 import { ModalHeader } from '../lib/ModalHeader';
@@ -46,17 +46,25 @@ const DURATION_OPTIONS: Array<{ hours: number; label: string }> = [
 export function PollComposerModal({ onCancel, onSubmit }: Props) {
   const [question, setQuestion] = useState('');
   // Two empty option slots by default — the minimum a poll needs.
-  // Users can add up to 10 with the "+ Add option" button.
-  const [options, setOptions] = useState<string[]>(['', '']);
+  // Users can add up to 10 with the "+ Add option" button. Each slot
+  // carries a stable key so React doesn't re-associate DOM inputs
+  // (focus, IME composition) when a MIDDLE option is removed — keying
+  // by array index made every input below the removed one adopt its
+  // neighbor's value/focus.
+  const nextOptionKey = useRef(2);
+  const [options, setOptions] = useState<Array<{ key: number; text: string }>>([
+    { key: 0, text: '' },
+    { key: 1, text: '' },
+  ]);
   const [multipleChoice, setMultipleChoice] = useState(false);
   const [durationHours, setDurationHours] = useState<number>(24);
 
   function setOption(idx: number, value: string) {
-    setOptions((prev) => prev.map((v, i) => (i === idx ? value : v)));
+    setOptions((prev) => prev.map((o, i) => (i === idx ? { ...o, text: value } : o)));
   }
   function addOption() {
     if (options.length >= 10) return;
-    setOptions((prev) => [...prev, '']);
+    setOptions((prev) => [...prev, { key: nextOptionKey.current++, text: '' }]);
   }
   function removeOption(idx: number) {
     if (options.length <= 2) return; // can't go below 2
@@ -65,7 +73,7 @@ export function PollComposerModal({ onCancel, onSubmit }: Props) {
 
   // Validation: trim before checking because trailing whitespace on an
   // option is harmless but shouldn't count toward "is it filled in".
-  const trimmedOptions = options.map((o) => o.trim());
+  const trimmedOptions = options.map((o) => o.text.trim());
   const trimmedQuestion = question.trim();
   const allFilled = trimmedOptions.every((o) => o.length > 0);
   const noDupes = new Set(trimmedOptions).size === trimmedOptions.length;
@@ -122,10 +130,10 @@ export function PollComposerModal({ onCancel, onSubmit }: Props) {
               </span>
               <ul className="mt-2 space-y-2">
                 {options.map((opt, i) => (
-                  <li key={i} className="flex items-center gap-2">
+                  <li key={opt.key} className="flex items-center gap-2">
                     <input
                       type="text"
-                      value={opt}
+                      value={opt.text}
                       maxLength={80}
                       placeholder={`Option ${i + 1}`}
                       onChange={(e) => setOption(i, e.target.value)}

@@ -15,6 +15,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 process.env.NODE_ENV ||= 'test';
+// Each vitest worker is a separate process; left at the default they would all
+// mint snowflakes as WORKER_ID=0 and collide when test files run in parallel
+// (duplicate-PK flakes in the integration suite). VITEST_POOL_ID is the
+// worker's 1-based pool index, unique among concurrently-running workers.
+process.env.WORKER_ID ||= String(Number(process.env.VITEST_POOL_ID ?? '0') % 1024);
 // Uploads default to /data/uploads (not writable in a test run); point them
 // at a throwaway temp dir so upload-path tests can write without root.
 process.env.UPLOAD_DIR ||= join(tmpdir(), 'zekktris-test-uploads');

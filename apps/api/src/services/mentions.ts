@@ -22,6 +22,7 @@
 
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db, schema } from '../db';
+import { listViewableGuildChannelIdsForUsers } from './permissions';
 import type { Database } from '@zekktris/db';
 
 type DbHandle = Omit<Database, '$client'>;
@@ -129,6 +130,21 @@ export async function resolveMentions(
             isNull(schema.users.deletedAt),
           ),
         );
+      // Guild membership alone is NOT the channel's audience: role/member
+      // overrides can hide a channel from most members (private mod
+      // channels). A mention that resolves for a non-viewer leaks the
+      // private channel's existence and content downstream — a phantom
+      // badge on an invisible channel, a push notification carrying the
+      // message preview, and a mentions-inbox row that returns the full
+      // message body. Restrict to users who can VIEW_CHANNEL here, the
+      // single choke point all three flows derive from.
+      if (found.length > 0 && channelId !== null) {
+        const viewable = await listViewableGuildChannelIdsForUsers(
+          guildId,
+          found.map((u) => u.id),
+        );
+        found = found.filter((u) => viewable.get(u.id)?.has(channelId));
+      }
     } else if (channelId !== null) {
       // DM channel: require dm_recipients membership.
       found = await baseQuery

@@ -9,6 +9,7 @@
  * See migration 0046_scheduled_messages.sql for the column
  * rationale.
  */
+import { sql } from 'drizzle-orm';
 import {
   bigint,
   index,
@@ -61,7 +62,12 @@ export const scheduledMessages = pgTable(
       .defaultNow(),
   },
   (t) => ({
-    dueIdx: index('idx_scheduled_messages_due').on(t.scheduledFor),
+    // Partial — matches migration 0046's `WHERE attempts < 3`, which the
+    // worker's claim query depends on. Declared here so a future
+    // drizzle-kit generate/push doesn't recreate it without the predicate.
+    dueIdx: index('idx_scheduled_messages_due')
+      .on(t.scheduledFor)
+      .where(sql`attempts < 3`),
     authorIdx: index('idx_scheduled_messages_author').on(
       t.authorId,
       t.scheduledFor,

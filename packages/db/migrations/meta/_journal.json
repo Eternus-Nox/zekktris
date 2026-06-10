@@ -533,6 +533,13 @@
       "when": 1784600120000,
       "tag": "0076_user_oidc_sub",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1784600130000,
+      "tag": "0077_messages_pinned_partial_idx",
+      "breakpoints": true
     }
   ]
 }

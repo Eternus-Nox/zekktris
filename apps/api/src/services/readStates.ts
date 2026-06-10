@@ -47,7 +47,12 @@ export async function ack(
   channelId: bigint,
   messageId: bigint,
 ): Promise<{ lastMessageId: bigint; mentionCount: number }> {
-  // Sanity: message must exist and be in this channel.
+  // Sanity: message must exist and be in this channel. deletedAt is
+  // deliberately NOT filtered here: clients ack the newest message as it
+  // arrives, so "ack a message that was just deleted" is a routine race —
+  // rejecting it would 404 a legitimate read. A tombstone id is a perfectly
+  // good watermark (unread math only compares snowflake ordering), and the
+  // channel-membership check below still blocks forged cross-channel markers.
   const m = await db
     .select({ id: schema.messages.id, channelId: schema.messages.channelId })
     .from(schema.messages)

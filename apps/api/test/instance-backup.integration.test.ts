@@ -78,8 +78,16 @@ describe.runIf(dbReady)('instance backup / restore', () => {
     expect(newGuild?.ownerId).toBe(restorer);
     expect(await channelCount(newGuildId)).toBe(srcChannels);
 
-    // Clean up the freshly-created guild (not tracked by seed).
-    await db.delete(schema.guilds).where(eq(schema.guilds.id, newGuildId));
+    // Clean up EVERY guild the import created, not just ours: under
+    // parallel test runs the export snapshot bundles other suites'
+    // concurrent guilds too, and the imported copies (owned by
+    // `restorer`, untracked by seed) would break afterAll's user
+    // cleanup with an FK violation if left behind.
+    for (const r of created) {
+      if (r.ok && r.guildId) {
+        await db.delete(schema.guilds).where(eq(schema.guilds.id, BigInt(r.guildId)));
+      }
+    }
   });
 
   it('importInstance is per-guild best-effort: a bad entry fails without aborting the rest', async () => {

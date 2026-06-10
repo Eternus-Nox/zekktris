@@ -606,6 +606,12 @@ final class AppStore: ObservableObject {
         guard selectedChannel?.id != channel.id else { return }
         selectedChannel = channel
         messages = []
+        // Drop decrypted E2EE plaintext from the channel we're leaving —
+        // it otherwise stayed resident for the whole session (only relock/
+        // sign-out cleared it), defeating the "plaintext doesn't linger in
+        // memory" intent and growing unbounded. decryptVisible() repopulates
+        // for the new channel right after loadMessages.
+        decrypted = [:]
         typing = [:]
         replyingTo = nil
         pins = []
@@ -805,25 +811,41 @@ final class AppStore: ObservableObject {
         readStates = map
     }
 
+    /// Pending coalesced server acks, keyed by channel id. Each MESSAGE_CREATE
+    /// in the open channel calls markChannelRead; without coalescing that was
+    /// one POST /ack per incoming message in a busy channel. The local marker
+    /// updates immediately (UI stays correct); the network ack trails on a
+    /// short timer and always sends the NEWEST marker at fire time.
+    private var pendingAckTasks: [String: Task<Void, Never>] = [:]
+
     /// Mark a channel read up to its newest known message and ack server-side.
     func markChannelRead(_ channel: Channel) {
         let newest = (channel.id == selectedChannel?.id ? messages.last?.id : nil) ?? channel.lastMessageId
         guard let last = newest, !last.isEmpty else { return }
         if let rs = readStates[channel.id], rs.lastMessageId == last, (rs.mentionCount ?? 0) == 0 { return }
         readStates[channel.id] = ReadState(channelId: channel.id, lastMessageId: last, mentionCount: 0)
-        Task {
-            if let rs = try? await api.ackChannel(channelId: channel.id, messageId: last) {
+        // Trailing-debounce the server ack (1s). Cancelling the prior task
+        // also removes the interleaved-response race: at most one ack per
+        // channel is in flight, carrying the newest local marker.
+        pendingAckTasks[channel.id]?.cancel()
+        let channelId = channel.id
+        pendingAckTasks[channelId] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.pendingAckTasks[channelId] = nil
+            guard let marker = self.readStates[channelId]?.lastMessageId, !marker.isEmpty else { return }
+            if let rs = try? await self.api.ackChannel(channelId: channelId, messageId: marker) {
                 // Only apply if the server marker is >= the local one — a slow
                 // response for an older ack must not regress a newer marker
                 // (the server itself upserts with GREATEST).
-                let local = readStates[channel.id]?.lastMessageId
+                let local = self.readStates[channelId]?.lastMessageId
                 let apply: Bool
                 if let serverMarker = rs.lastMessageId, let localMarker = local {
                     apply = serverMarker == localMarker || snowflakeGreater(serverMarker, than: localMarker)
                 } else {
                     apply = (local == nil)
                 }
-                if apply { readStates[channel.id] = rs }
+                if apply { self.readStates[channelId] = rs }
             }
         }
     }
@@ -1675,6 +1697,20 @@ final class AppStore: ObservableObject {
                 try await api.removePollVote(channelId: channel.id, pollId: poll.id, optionId: option.id)
             } else {
                 try await api.voteOnPoll(channelId: channel.id, pollId: poll.id, optionId: option.id)
+            }
+            // Record our own ballot locally. The MESSAGE_UPDATE broadcast is
+            // shared by every recipient and carries no per-user vote state
+            // (upsert preserves local myVotes), so without this the user's
+            // selection would never render.
+            if let mi = messages.firstIndex(where: { $0.id == message.id }),
+               var p = messages[mi].poll, p.id == poll.id {
+                if voted {
+                    p.myVotes.removeAll { $0 == option.id }
+                } else {
+                    if !p.multipleChoice { p.myVotes = [] }
+                    p.myVotes.append(option.id)
+                }
+                messages[mi].poll = p
             }
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
@@ -2542,12 +2578,30 @@ final class AppStore: ObservableObject {
     func loadSwitcherChannels() async {
         loadingSwitcher = true
         defer { loadingSwitcher = false }
+        // Fetch all guilds concurrently — the previous serial loop made the
+        // switcher's open latency the SUM of every guild's round-trip.
+        // Results keyed by guild id so ordering stays deterministic
+        // (guild-list order) regardless of response arrival.
+        let current = selectedGuild?.id
+        let currentChannels = channels
+        let api = self.api
+        let fetched = await withTaskGroup(of: (String, [Channel]).self) { group -> [String: [Channel]] in
+            for g in guilds where g.id != current {
+                let gid = g.id
+                group.addTask {
+                    (gid, (try? await api.channels(guildId: gid)) ?? [])
+                }
+            }
+            var out: [String: [Channel]] = [:]
+            for await (gid, chs) in group { out[gid] = chs }
+            return out
+        }
         var all: [Channel] = []
         for g in guilds {
-            if g.id == selectedGuild?.id {
-                all.append(contentsOf: channels)
-            } else if let chs = try? await api.channels(guildId: g.id) {
-                all.append(contentsOf: chs)
+            if g.id == current {
+                all.append(contentsOf: currentChannels)
+            } else {
+                all.append(contentsOf: fetched[g.id] ?? [])
             }
         }
         switcherChannels = all
@@ -2771,9 +2825,14 @@ final class AppStore: ObservableObject {
                 )
             }
         case "MESSAGE_REACTION_REMOVE_ALL":
-            // All reactions cleared on a message; refresh the open channel.
+            // All reactions cleared on one message — patch that row in place.
+            // The previous full loadMessages() refetch reloaded the whole
+            // channel (and reset scroll-adjacent state) for a one-field change.
             if let d = jsonDict(data), (d["channel_id"] as? String) == selectedChannel?.id,
-               let c = selectedChannel { Task { await loadMessages(c) } }
+               let mid = d["message_id"] as? String,
+               let idx = messages.firstIndex(where: { $0.id == mid }) {
+                messages[idx].reactions = []
+            }
         case "MESSAGE_POLL_UPDATE":
             // Poll closed/updated (payload carries channel_id, message_id).
             if let d = jsonDict(data), (d["channel_id"] as? String) == selectedChannel?.id,
@@ -2912,7 +2971,25 @@ final class AppStore: ObservableObject {
             return
         }
         if let idx = messages.firstIndex(where: { $0.id == message.id }) {
-            messages[idx] = message
+            // Gateway MESSAGE_UPDATE fans ONE DTO to every channel member, so
+            // it carries no per-recipient state: poll.myVotes arrives empty
+            // and reactions[].me arrives false for everyone. Keep what this
+            // device already knows about the current user (REST loads,
+            // reaction events, and togglePollVote are the per-self truth).
+            var incoming = message
+            let prev = messages[idx]
+            if var p = incoming.poll, let oldP = prev.poll, p.id == oldP.id, !oldP.myVotes.isEmpty {
+                p.myVotes = oldP.myVotes
+                incoming.poll = p
+            }
+            if var rs = incoming.reactions, let oldRs = prev.reactions {
+                let mine = Set(oldRs.filter { $0.me }.map { $0.emoji })
+                if !mine.isEmpty {
+                    for i in rs.indices where mine.contains(rs[i].emoji) { rs[i].me = true }
+                    incoming.reactions = rs
+                }
+            }
+            messages[idx] = incoming
         } else {
             messages.append(message)
             messages.sort { $0.createdAt < $1.createdAt }
@@ -2978,13 +3055,17 @@ final class AppStore: ObservableObject {
     /// Derive + verify + store a key from the user's password. Returns false
     /// (and sets `e2eeError`) when the password doesn't match the verifier.
     @discardableResult
-    func unlockE2EE(_ channel: Channel, password: String) -> Bool {
+    func unlockE2EE(_ channel: Channel, password: String) async -> Bool {
         e2eeError = nil
         guard let salt = channel.e2eeSalt else {
             e2eeError = "This conversation isn't set up for encryption."
             return false
         }
-        guard let key = E2EE.deriveKey(password: password, saltBase64: salt) else {
+        // PBKDF2 at 250k iterations takes ~100-500ms — run it off the main
+        // actor (AppStore is @MainActor) or the whole UI janks for the
+        // duration on older devices. deriveKey is a pure static function,
+        // safe to hop.
+        guard let key = await Self.deriveKeyOffMain(password: password, saltBase64: salt) else {
             e2eeError = "Couldn't derive a key."
             return false
         }
@@ -2997,12 +3078,21 @@ final class AppStore: ObservableObject {
         return true
     }
 
+    /// PBKDF2 on a background task — see unlockE2EE.
+    nonisolated private static func deriveKeyOffMain(
+        password: String, saltBase64: String
+    ) async -> Data? {
+        await Task.detached(priority: .userInitiated) {
+            E2EE.deriveKey(password: password, saltBase64: saltBase64)
+        }.value
+    }
+
     /// Turn on E2EE for a DM: generate salt, derive key, upload salt+verifier,
     /// store the key locally, and flip the channel's local state.
     func enableE2EE(_ channel: Channel, password: String) async -> Bool {
         e2eeError = nil
         let salt = E2EE.generateSalt()
-        guard let key = E2EE.deriveKey(password: password, saltBase64: salt) else {
+        guard let key = await Self.deriveKeyOffMain(password: password, saltBase64: salt) else {
             e2eeError = "Couldn't derive a key."
             return false
         }

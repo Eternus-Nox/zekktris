@@ -227,6 +227,12 @@ export const users = pgTable(
     oidcSubIdx: uniqueIndex('users_oidc_sub_idx')
       .on(t.oidcSub)
       .where(sql`oidc_sub IS NOT NULL`),
+    // Bot-token auth runs this equality lookup in the auth middleware on
+    // every bot REST call. Created by migration 0049; declared here so a
+    // future drizzle-kit generate/push doesn't drop it.
+    botTokenHashIdx: uniqueIndex('users_bot_token_hash_idx')
+      .on(t.botTokenHash)
+      .where(sql`bot_token_hash IS NOT NULL`),
   }),
 );
 

@@ -636,12 +636,16 @@ messagesRouter.post(
         try {
           const other = await dms.getOtherRecipient(channelId, userId);
           if (other === null) return;
-          // Only stamp if the recipient has an active connection.
-          // Their dmReadReceiptsEnabled toggle is also re-checked
-          // inside markMessageDelivered so the gate is honored
-          // even if the connection lookup says they're online.
-          const conns = registry.byUserId(other);
-          if (conns.length === 0) return;
+          // Only stamp if the recipient has a LIVE connection. byUserId
+          // also returns detached resume-window ghosts (sockets that
+          // closed up to 60s ago) — stamping against a ghost would flip
+          // the sender's UI to Delivered for a message the recipient may
+          // never receive (frame buffered, then discarded at eviction).
+          // Offline recipients are handled by the IDENTIFY-time backfill,
+          // which stamps only when they actually reconnect. Their
+          // dmReadReceiptsEnabled toggle is also re-checked inside
+          // markMessageDelivered so the gate is honored either way.
+          if (!registry.hasLiveConnection(other)) return;
           const { stamped, recipientReceiptsEnabled } =
             await dms.markMessageDelivered(result.message.id, other);
           if (!stamped) return;
@@ -1332,21 +1336,30 @@ messagesRouter.patch(
       });
     }
 
-    const messageDTO = toMessage({
+    const editReactionAgg = await reactions.aggregateReactions(result.message.id);
+    const editBaseArgs = {
       message: result.message,
       author,
       attachments: attachmentMap.get(result.message.id) ?? [],
-      reactions: await reactions.aggregateReactions(result.message.id),
+      reactions: editReactionAgg,
       mentionedUserIds: result.mentionedUserIds,
       mentionedRoleIds: result.mentionedRoleIds,
       sticker: editStickerDTO,
-      poll: editPollDTO,
       forwardedFrom: editForwardDTO,
-      selfId: userId,
+    };
+    // The HTTP response is for the EDITOR, so it carries their own
+    // myVotes / reactions[].me. The gateway broadcast goes to every
+    // channel member and must carry NO per-recipient state — sending
+    // the editor's ballot/highlights as everyone's would both corrupt
+    // each recipient's UI and reveal the editor's poll votes.
+    const messageDTO = toMessage({ ...editBaseArgs, poll: editPollDTO, selfId: userId });
+    const broadcastDTO = toMessage({
+      ...editBaseArgs,
+      poll: editPollDTO ? { ...editPollDTO, myVotes: [] } : null,
     });
 
     dispatch.messageUpdate({
-      messageDTO,
+      messageDTO: broadcastDTO,
       channelId,
       guildId: ctx.channel.guildId ?? null,
     });
@@ -2214,7 +2227,7 @@ void MESSAGE_CONTENT_MAX_LENGTH;
 // clients see live vote counts. The MESSAGE_UPDATE replaces the bubble's
 // poll block in place; React diffs on poll.options[*].voteCount.
 
-async function broadcastPollUpdate(channelId: bigint, messageId: bigint, selfId: bigint) {
+async function broadcastPollUpdate(channelId: bigint, messageId: bigint) {
   const messageRows = await db
     .select()
     .from(schema.messages)
@@ -2224,7 +2237,14 @@ async function broadcastPollUpdate(channelId: bigint, messageId: bigint, selfId:
   if (!m) return;
   const author = m.authorId ? await loadUser(m.authorId) : null;
   const attachmentMap = await messages.loadAttachments([messageId]);
-  const pollMap = await polls.loadPollsForMessages([messageId], selfId);
+  // selfId is deliberately NOT passed to the poll loader: this DTO fans out
+  // to every channel member, and per-recipient vote state can't be expressed
+  // in one payload. Passing the acting user here broadcast THEIR ballot as
+  // everyone's `myVotes` — each recipient's UI showed (and revealed) the
+  // last voter's choices. Clients keep their own selection locally and the
+  // broadcast only refreshes the shared tallies. (embeds.ts:resolveEmbeds
+  // already follows this contract.)
+  const pollMap = await polls.loadPollsForMessages([messageId], null);
   const pollEntry = pollMap.get(messageId);
 
   // Reactions for the message
@@ -2270,7 +2290,8 @@ async function broadcastPollUpdate(channelId: bigint, messageId: bigint, selfId:
       const sr = await stickers.getSticker(m.stickerId!);
       return sr ? toSticker(sr) : null;
     })()) : null,
-    selfId,
+    // No selfId: reactions[].me must be false in a fan-out DTO for the
+    // same reason myVotes must be empty — it's one payload for everyone.
   });
   dispatch.messageUpdate({ messageDTO, channelId, guildId });
 }
@@ -2293,7 +2314,7 @@ messagesRouter.post(
       optionId: BigInt(params.optionId),
       userId,
     });
-    await broadcastPollUpdate(channelId, messageId, userId);
+    await broadcastPollUpdate(channelId, messageId);
     return c.body(null, 204);
   },
 );
@@ -2316,7 +2337,7 @@ messagesRouter.delete(
       optionId: BigInt(params.optionId),
       userId,
     });
-    await broadcastPollUpdate(channelId, messageId, userId);
+    await broadcastPollUpdate(channelId, messageId);
     return c.body(null, 204);
   },
 );
@@ -2334,7 +2355,7 @@ messagesRouter.post(
     const userId = requireUserId(c);
     const params = c.req.valid('param');
     const { channelId, messageId } = await polls.endPoll(BigInt(params.pollId), userId);
-    await broadcastPollUpdate(channelId, messageId, userId);
+    await broadcastPollUpdate(channelId, messageId);
     return c.body(null, 204);
   },
 );

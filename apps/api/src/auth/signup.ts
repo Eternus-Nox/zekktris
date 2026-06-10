@@ -77,3 +77,22 @@ export async function gateSignup(input: SignupGateInput): Promise<void> {
     }
   }
 }
+
+/**
+ * Compensate a consumed signup-code use when registration fails AFTER
+ * gateSignup committed the increment (the gate and the user insert are
+ * separate statements). Without this, every failed attempt — most commonly
+ * a duplicate email/username — permanently burns a redemption, and anyone
+ * who knows a multi-use code can exhaust it by registering with
+ * known-taken emails, locking out the real invitees.
+ *
+ * Best-effort by design: a crash between gate and refund still leaks one
+ * use, which is acceptable; the GREATEST guard keeps concurrent refunds
+ * from driving the counter negative.
+ */
+export async function refundSignupCode(code: string): Promise<void> {
+  await db
+    .update(schema.signupCodes)
+    .set({ uses: sql`GREATEST(${schema.signupCodes.uses} - 1, 0)` })
+    .where(eq(schema.signupCodes.code, code));
+}

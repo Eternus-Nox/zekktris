@@ -12,7 +12,7 @@
  * UI that bounces back) without worrying about 409 noise.
  */
 
-import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 
 const PAGE_SIZE = 25;
@@ -98,21 +98,38 @@ export async function listSavedAmong(
 }
 
 /**
- * Paginated list of saved messages, newest save first. The cursor
- * is the `savedAt` timestamp of the last seen item from the previous
- * page — keyset pagination keeps performance constant regardless of
- * how many saves the user has. Returns the message + channel rows
- * the caller needs for rendering.
+ * Paginated list of saved messages, newest save first. Keyset pagination
+ * on the COMPOSITE (savedAt, messageId): savedAt alone isn't unique (a
+ * bulk "save several" lands on identical timestamps), and a boundary
+ * inside a same-timestamp cluster would silently drop every remaining
+ * row at that timestamp. The cursor encodes both as
+ * `<iso-savedAt>_<messageId>`; a bare ISO cursor (older clients /
+ * in-flight pages) still parses and behaves like the old timestamp-only
+ * boundary.
  */
 export async function listSavedMessages(
   userId: bigint,
-  opts?: { beforeSavedAt?: Date; limit?: number },
+  opts?: { before?: { savedAt: Date; messageId: bigint }; limit?: number },
 ): Promise<{ items: SavedListItem[]; nextCursor: string | null }> {
   const limit = Math.min(opts?.limit ?? PAGE_SIZE, 100);
 
-  const conditions = [eq(schema.savedMessages.userId, userId)];
-  if (opts?.beforeSavedAt) {
-    conditions.push(lt(schema.savedMessages.savedAt, opts.beforeSavedAt));
+  const conditions = [
+    eq(schema.savedMessages.userId, userId),
+    // Saved-then-deleted messages must tombstone like every other read
+    // path; without this the bookmark list kept serving full deleted
+    // content.
+    isNull(schema.messages.deletedAt),
+  ];
+  if (opts?.before) {
+    conditions.push(
+      or(
+        lt(schema.savedMessages.savedAt, opts.before.savedAt),
+        and(
+          eq(schema.savedMessages.savedAt, opts.before.savedAt),
+          lt(schema.savedMessages.messageId, opts.before.messageId),
+        ),
+      )!,
+    );
   }
 
   const rows = await db
@@ -131,7 +148,7 @@ export async function listSavedMessages(
       eq(schema.channels.id, schema.messages.channelId),
     )
     .where(and(...conditions))
-    .orderBy(desc(schema.savedMessages.savedAt))
+    .orderBy(desc(schema.savedMessages.savedAt), desc(schema.savedMessages.messageId))
     .limit(limit + 1);
 
   const hasMore = rows.length > limit;
@@ -140,13 +157,9 @@ export async function listSavedMessages(
     message: r.message,
     channel: r.channel,
   }));
-  // Cursor is the savedAt of the LAST item. Encoded as ISO so
-  // the client just passes it back in a query param. We use the
-  // typed Date directly via toISOString.
+  const last = items[items.length - 1];
   const nextCursor =
-    hasMore && items.length > 0
-      ? items[items.length - 1]!.savedAt.toISOString()
-      : null;
+    hasMore && last ? `${last.savedAt.toISOString()}_${last.message.id.toString()}` : null;
 
   return { items, nextCursor };
 }

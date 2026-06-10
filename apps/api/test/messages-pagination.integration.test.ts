@@ -51,9 +51,33 @@ describe.runIf(dbReady)('message pagination cursor (integration)', () => {
   });
 
   it('around: returns a chronological window centered on the target (inclusive)', async () => {
-    // half = floor(4/2) = 2 → older (≤ m2, desc, 2) = [m2,m1] reversed → [m1,m2];
-    // newer (> m2, asc, 2) = [m3,m4]. Merged chronological: [m1,m2,m3,m4].
+    // The anchor is fetched explicitly and doesn't consume an "older" slot:
+    // half = floor(4/2) = 2 → older (< m2) = [m0,m1]; anchor = m2;
+    // newer limit = 4 - 2 - 1 = 1 → [m3]. Chronological: [m0,m1,m2,m3].
     const rows = await listMessages(channelId, { around: m[2], limit: 4 });
-    expect(ids(rows)).toEqual([m[1], m[2], m[3], m[4]]);
+    expect(ids(rows)).toEqual([m[0], m[1], m[2], m[3]]);
+  });
+
+  it('around: odd limits fill the full page (no off-by-one underfill)', async () => {
+    // half = floor(5/2) = 2 → older [m0,m1]; anchor m2; newer 5-2-1 = 2 → [m3,m4].
+    const rows = await listMessages(channelId, { around: m[2], limit: 5 });
+    expect(ids(rows)).toEqual([m[0], m[1], m[2], m[3], m[4]]);
+  });
+
+  it('around: a soft-deleted anchor is omitted but its context still loads', async () => {
+    await db
+      .update(schema.messages)
+      .set({ deletedAt: new Date() })
+      .where(eq(schema.messages.id, m[2]!));
+    try {
+      const rows = await listMessages(channelId, { around: m[2], limit: 4 });
+      // No anchor → 2 older + 2 newer, still a usable jump-target window.
+      expect(ids(rows)).toEqual([m[0], m[1], m[3], m[4]]);
+    } finally {
+      await db
+        .update(schema.messages)
+        .set({ deletedAt: null })
+        .where(eq(schema.messages.id, m[2]!));
+    }
   });
 });

@@ -199,6 +199,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # Redis is fail-soft at runtime, but starting after it avoids a
+      # degraded first minute (and an UNREACHABLE warning in the startup
+      # checks) on every stack boot.
+      cache:
+        condition: service_healthy
     # LiveKit runs on host networking and isn't reachable as `livekit` from the
     # bridge; the api reaches its admin API (token/room ops) via
     # host.docker.internal:7880 (LIVEKIT_HTTP_URL above). Requires Docker 20.10+.
@@ -272,6 +277,12 @@ services:
     # service is started anyway so it's ready when the bus is swapped in
     # later (no breaking config changes).
     command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
     networks:
       - zekktris
 

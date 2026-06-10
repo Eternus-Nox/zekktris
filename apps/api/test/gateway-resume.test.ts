@@ -127,6 +127,50 @@ describe('gateway RESUME mechanism', () => {
     expect(fullyGone).toHaveBeenCalledTimes(1);
   });
 
+  it('takes over a STILL-LIVE zombie session (silent socket death) without a presence flap', () => {
+    const fullyGone = vi.fn();
+    const reconnected = vi.fn();
+    registry.onUserFullyDisconnected = fullyGone;
+    registry.onUserConnected = reconnected;
+
+    const a = connect();
+    dispatch.messageCreate({ messageDTO: { id: 'e1' }, channelId: CH_VISIBLE, guildId: G });
+    const clientLastSeq = a.conn.currentSeq;
+
+    // The socket silently dies — the server never observes a close, so the
+    // session is NOT detached. Events keep "sending" (buffered + written to
+    // the dead socket). The client's ack watchdog notices first and RESUMEs.
+    dispatch.messageCreate({ messageDTO: { id: 'e2' }, channelId: CH_VISIBLE, guildId: G });
+    expect(registry.findResumable(a.conn.sessionId)).toBeNull(); // not detached
+
+    // The live-session lookup finds it; takeover displaces the zombie.
+    const liveSession = registry.findLiveSession(a.conn.sessionId, U)!;
+    expect(liveSession).toBe(a.conn);
+    expect(liveSession.resumeBuffer!.canResume(clientLastSeq, liveSession.currentSeq)).toBe(true);
+    registry.takeoverLiveSession(liveSession);
+    // Displacement is not a disconnect: the user stays continuously present.
+    expect(fullyGone).not.toHaveBeenCalled();
+
+    // Normal adopt/replay/completeResume path: e2 (swallowed by the zombie's
+    // dead socket but buffered first) is recovered.
+    const missed = liveSession.resumeBuffer!.framesAfter(clientLastSeq);
+    const b = makeConn();
+    b.conn.adoptResumedSession(liveSession);
+    for (const j of missed) b.conn.sendRaw(j);
+    registry.completeResume(liveSession, b.conn);
+    live.push(b.conn);
+
+    expect(frames(b.sent).map((f) => f.d?.id)).toEqual(['e2']);
+    expect(reconnected).toHaveBeenCalled();
+    // The takeover-marked old conn was removed without firing the
+    // full-disconnect hook (wasLive=false): no presence flap, no voice kick.
+    expect(fullyGone).not.toHaveBeenCalled();
+
+    // Post-resume events flow to the new socket with contiguous seq.
+    dispatch.messageCreate({ messageDTO: { id: 'e3' }, channelId: CH_VISIBLE, guildId: G });
+    expect(frames(b.sent).map((f) => f.d?.id)).toEqual(['e2', 'e3']);
+  });
+
   it('evicts a detached session after the resume window (full cleanup, no double hook)', () => {
     vi.useFakeTimers();
     const fullyGone = vi.fn();

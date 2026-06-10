@@ -11,7 +11,7 @@ import { Hono } from 'hono';
 import { validate } from '../lib/validate';
 import { z } from 'zod';
 import { and, eq, isNull } from 'drizzle-orm';
-import { db, schema } from '../db';
+import { db, schema, isUniqueViolation } from '../db';
 import { errors } from '../errors';
 import { log } from '../log';
 import { nextSnowflake } from '../snowflake';
@@ -30,7 +30,7 @@ import {
   clearRefreshCookie,
   readRefreshCookie,
 } from '../auth/cookies';
-import { gateSignup } from '../auth/signup';
+import { gateSignup, refundSignupCode } from '../auth/signup';
 import { toSelfUser } from '../lib/dto';
 import { getClientIp, getUserAgent } from '../lib/request';
 import { requireAuth, requireUserId } from '../auth/middleware';
@@ -52,6 +52,11 @@ export const authRouter = new Hono();
 const loginByEmail = new RateLimiter(10, 15 * 60_000, 'login-email');
 const loginByIp = new RateLimiter(50, 15 * 60_000, 'login-ip');
 const registerByIp = new RateLimiter(5, 60 * 60_000, 'register-ip');
+// Second-factor guesses get their own per-USER budget. The per-email limiter
+// alone can't be the 2FA throttle: the legitimate no-code → code two-step
+// would double-charge it, and any path that refunds it for UX reopens
+// distributed brute-force of the 6-digit space.
+const twoFactorByUser = new RateLimiter(5, 15 * 60_000, 'login-2fa-user');
 
 // Email verification token lifetime.
 const EMAIL_VERIFICATION_EXPIRY_MS = 24 * 60 * 60_000; // 24h
@@ -170,6 +175,12 @@ authRouter.post('/register', validate('json', registerSchema), async (c) => {
       201,
     );
   } catch (err: unknown) {
+    // Registration failed after gateSignup consumed an invite-code use —
+    // refund it so a failed attempt (duplicate email/username) doesn't
+    // permanently burn a redemption. Best-effort; see refundSignupCode.
+    if (env.ALLOW_REGISTRATION === 'invite-only' && body.code) {
+      await refundSignupCode(body.code).catch(() => undefined);
+    }
     // Postgres unique violation = 23505. Different message for email vs username
     // makes the form UX nicer.
     if (isUniqueViolation(err)) {
@@ -250,23 +261,28 @@ authRouter.post('/login', validate('json', loginSchema), async (c) => {
   // avoid leaking whether the password was right.
   if (user.totpEnabled) {
     if (!body.code) {
-      // Password was correct — release the per-email counter so a
-      // 2FA user mistyping or re-entering their password while the
-      // authenticator app is open can't burn their 10/15min budget
-      // and lock themselves out of their own account. Bad 2FA codes
-      // on the follow-up call still consume slots (they reach this
-      // branch's `else` below where loginByEmail has already been
-      // consumed at the top of the handler), so this doesn't open
-      // the 2FA verifier to free brute-force attempts.
-      await loginByEmail.reset(body.email);
+      // Do NOT refund the per-email counter here, even though the password
+      // was correct: a refund on this branch lets an attacker who knows the
+      // password interleave no-code requests between wrong-code guesses and
+      // keep the counter pinned at zero — unlimited distributed TOTP
+      // brute-force. A legitimate 2FA login costs 2 of the 10 slots
+      // (password step + code step), which leaves several full retries
+      // before any lockout, and a successful login resets the counter.
+      //
       // Client needs to prompt the user. Use a 401 with a hint flag
       // so the existing error-handling path takes over.
       return c.json({ requires2FA: true }, 401);
+    }
+    // Per-user budget for second-factor guesses, independent of email/IP.
+    {
+      const r = await twoFactorByUser.consume(user.id.toString());
+      if (!r.ok) throw errors.rateLimited(Math.ceil(r.retryAfterMs / 1000));
     }
     const codeOk = await twoFactor.verifyForLogin({ userId: user.id, code: body.code });
     if (!codeOk) {
       throw errors.invalidCredentials();
     }
+    await twoFactorByUser.reset(user.id.toString());
   }
 
   // Successful login — reset the per-email counter so a legitimate user
@@ -767,15 +783,6 @@ authRouter.post(
 // ───────────────────────────────────────────────────────────────────────────
 // helpers
 // ───────────────────────────────────────────────────────────────────────────
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'code' in err &&
-    (err as { code: unknown }).code === '23505'
-  );
-}
 
 // ── Confirm email change ────────────────────────────────────────────────
 //

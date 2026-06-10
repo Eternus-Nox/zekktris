@@ -32,7 +32,7 @@
 import { jwtVerify, createRemoteJWKSet, type JWTPayload, type JWTVerifyGetKey, type KeyLike } from 'jose';
 import { randomBytes, createHash } from 'node:crypto';
 import { and, eq, isNull } from 'drizzle-orm';
-import { db, schema } from '../db';
+import { db, schema, isUniqueViolation } from '../db';
 import { env } from '../env';
 import { errors } from '../errors';
 import { nextSnowflake } from '../snowflake';
@@ -198,6 +198,18 @@ async function discover(issuer: string): Promise<{ doc: Discovery; jwks: JWTVeri
   }
   if (!doc.authorization_endpoint || !doc.token_endpoint || !doc.jwks_uri) {
     throw errors.badRequest('SSO provider discovery document is incomplete.');
+  }
+  // OIDC Discovery requires the advertised issuer to be identical to the URL
+  // the document was fetched from; a mismatch means a misconfigured (or
+  // hostile) provider, and accepting it would validate ID tokens against an
+  // issuer the admin never trusted.
+  if (doc.issuer && doc.issuer.replace(/\/+$/, '') !== issuer.replace(/\/+$/, '')) {
+    throw errors.badRequest('SSO provider discovery issuer does not match the configured issuer.');
+  }
+  // The token/JWKS endpoints come from the (remote) discovery JSON, and the
+  // token POST carries the client secret — never follow them to plaintext.
+  if (!doc.token_endpoint.startsWith('https://') || !doc.jwks_uri.startsWith('https://')) {
+    throw errors.badRequest('SSO provider endpoints must be https.');
   }
   const jwks = createRemoteJWKSet(new URL(doc.jwks_uri));
   discoveryCache.set(issuer, { doc, jwks, exp: Date.now() + 5 * 60_000 });
@@ -397,23 +409,47 @@ export async function resolveUserFromClaims(payload: JWTPayload, cfg: OidcConfig
     return byEmail.id;
   }
 
-  // JIT provision.
+  // JIT provision — but only where the instance's registration policy allows
+  // new accounts. Password signup enforces ALLOW_REGISTRATION via gateSignup;
+  // without this gate, anyone who can authenticate at the IdP would get a
+  // fully-provisioned account on a `closed` or `invite-only` instance. (We
+  // don't call gateSignup directly: invite-only demands a signup code the SSO
+  // flow has no way to supply, so the net effect is the same rejection with a
+  // clearer message.)
+  if (env.ALLOW_REGISTRATION !== 'open') {
+    throw errors.forbidden(
+      'Registration is closed on this server. Ask an admin to create or invite your account, then link it via SSO.',
+    );
+  }
   const username = await generateUniqueUsername(payload, email);
   const displayName =
     (typeof payload.name === 'string' && payload.name.trim()) ||
     (typeof payload.given_name === 'string' && payload.given_name.trim()) ||
     username;
   const id = nextSnowflake();
-  await db.insert(schema.users).values({
-    id,
-    email,
-    emailVerified: true, // verified by the IdP (we required email_verified)
-    username,
-    displayName: displayName.slice(0, 80),
-    passwordHash: SSO_PASSWORD_SENTINEL,
-    oidcSub: subKey,
-    status: 'online',
-  });
+  try {
+    await db.insert(schema.users).values({
+      id,
+      email,
+      emailVerified: true, // verified by the IdP (we required email_verified)
+      username,
+      displayName: displayName.slice(0, 80),
+      passwordHash: SSO_PASSWORD_SENTINEL,
+      oidcSub: subKey,
+      status: 'online',
+    });
+  } catch (err) {
+    // The live-account lookup above filters soft-deleted rows, but the unique
+    // indexes on email/username are NOT partial — a soft-deleted account can
+    // still collide here. Surface something actionable instead of a generic
+    // "SSO login failed".
+    if (isUniqueViolation(err)) {
+      throw errors.conflict(
+        'An account with this email or username already existed on this server. Ask an admin to restore or remove it.',
+      );
+    }
+    throw err;
+  }
   return id;
 }
 
@@ -433,7 +469,10 @@ export async function completeLogin(args: {
   const { doc, jwks } = await discover(cfg.issuer);
   const idToken = await exchangeCode(cfg, doc.token_endpoint, args.code, args.codeVerifier, args.redirectUri);
   const payload = await validateIdToken(idToken, {
-    issuer: doc.issuer || cfg.issuer,
+    // Always validate against the ADMIN-configured issuer (the trust anchor),
+    // never the provider-supplied discovery value — discover() asserts they
+    // match when the doc carries one.
+    issuer: cfg.issuer,
     audience: cfg.clientId,
     nonce: args.nonce,
     keySource: jwks,

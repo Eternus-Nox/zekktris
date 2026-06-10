@@ -18,16 +18,22 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ApiError } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
-import { useAppState, selfVoiceState } from '../state/AppState';
+import { useAppStateSelector, selfVoiceState } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
 import { Volume2, Mic, MicOff, PhoneOff, Headphones, HeadphonesOff } from '../lib/icons';
 import { disconnectVoice, setMicMuted, setDeafened, isDeafened } from '../lib/voice';
 
 export function VoicePanel({ activeChannelId }: { activeChannelId?: string | null }) {
-  const { state, restForChannel } = useAppState();
+  // Mounted in the Shell rail — subscribe to the narrow slices this panel
+  // reads instead of the whole state (a full useAppState() re-rendered it
+  // on every reducer dispatch).
+  const voiceStatesByUser = useAppStateSelector((v) => v.state.voiceStatesByUser);
+  const channelsByGuild = useAppStateSelector((v) => v.state.channelsByGuild);
+  const guildsById = useAppStateSelector((v) => v.state.guildsById);
+  const restForChannel = useAppStateSelector((v) => v.restForChannel);
   const { user } = useAuth();
   const toasts = useToasts();
-  const my = selfVoiceState(state.voiceStatesByUser, user?.id);
+  const my = selfVoiceState(voiceStatesByUser, user?.id);
   // Local-deafen mirror so toggling re-renders this component.
   const [deafened, setDeafenedState] = useState(isDeafened());
 
@@ -45,12 +51,12 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
   // hook order stable.
   const channel = useMemo(() => {
     if (!my?.channelId) return null;
-    for (const list of Object.values(state.channelsByGuild)) {
+    for (const list of Object.values(channelsByGuild)) {
       const found = list.find((c) => c.id === my.channelId);
       if (found) return found;
     }
     return null;
-  }, [state.channelsByGuild, my?.channelId]);
+  }, [channelsByGuild, my?.channelId]);
 
   if (!my || !my.channelId) return null;
   // Hide when the main view is already rendering the voice arena for
@@ -62,7 +68,7 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
   if (activeChannelId && my.channelId === activeChannelId) return null;
 
   const channelLabel = channel?.name ?? 'Voice channel';
-  const guild = channel?.guildId ? state.guildsById[channel.guildId] : null;
+  const guild = channel?.guildId ? guildsById[channel.guildId] : null;
 
   async function toggleMute() {
     if (!my?.channelId) return;

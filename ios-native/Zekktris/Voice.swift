@@ -190,10 +190,16 @@ final class VoiceManager: ObservableObject {
                 }
             }
         }
-        // Assign unconditionally — Track equality isn't guaranteed and the
-        // sync cadence is modest, so the extra publishes are cheap.
-        remoteVideoTracks = video
-        screenTracks = screens
+        // Skip no-op publishes: this runs on EVERY speaking-participants
+        // update (several times a second mid-conversation), and each
+        // @Published reassignment re-renders every observer of the track
+        // maps even when nothing changed. Tracks are reference types, so
+        // identity comparison is exact.
+        func sameTracks(_ a: [String: VideoTrack], _ b: [String: VideoTrack]) -> Bool {
+            a.count == b.count && a.allSatisfy { b[$0.key] === $0.value }
+        }
+        if !sameTracks(remoteVideoTracks, video) { remoteVideoTracks = video }
+        if !sameTracks(screenTracks, screens) { screenTracks = screens }
         // Preserve deafen/mute-for-me on newly discovered audio pubs.
         for (uid, pub) in audio where audioPubs[uid] == nil {
             audioPubs[uid] = pub
@@ -615,7 +621,12 @@ struct VoiceChannelView: View {
             // wall clock each frame, and every seat counter-rotates by the
             // exact negation — so avatars stay upright, and a seat that
             // mounts mid-orbit is in perfect phase (no spin drift).
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            //
+            // 10fps cadence: the orbit moves 4°/second, so each tick is a
+            // 0.4° step — visually indistinguishable from 30fps for this
+            // animation, at a third of the per-frame seat re-evaluations
+            // (the single biggest steady-state cost of an open call UI).
+            TimelineView(.animation(minimumInterval: 1.0 / 10.0)) { timeline in
                 let angle = Self.orbitAngle(at: timeline.date)
                 ZStack {
                     ForEach(Array(store.voiceStates.enumerated()), id: \.element.id) { idx, vs in
