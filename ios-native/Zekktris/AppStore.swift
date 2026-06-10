@@ -1,6 +1,12 @@
 import Foundation
 import SwiftUI
 import UIKit
+import os
+
+/// Diagnostic log for the 1:1 call ring path. Visible in Console.app
+/// (filter subsystem com.zekktris.native, category "calls") even when the
+/// app runs outside Xcode — used to pin where an incoming ring is dropped.
+private let callLog = Logger(subsystem: "com.zekktris.native", category: "calls")
 
 /// A drill-down destination beyond the root channel/DM list.
 enum Route: Hashable {
@@ -1188,21 +1194,29 @@ final class AppStore: ObservableObject {
             }
             return
         }
+        callLog.info("ring? caller=\(vs.userId, privacy: .public) ch=\(channelId, privacy: .public) me=\(self.currentUserId ?? "nil", privacy: .public) inVoice=\(self.voiceChannelId ?? "nil", privacy: .public)")
         guard vs.userId != currentUserId,
               voiceChannelId != channelId,
-              incomingCall?.channelId != channelId else { return }
+              incomingCall?.channelId != channelId else {
+            callLog.info("ring dropped by guard (self/already-in-channel/dup)")
+            return
+        }
         // The DM may not be cached yet (first-ever call from this person,
         // or the ring raced the initial loadDMs). Fetch and retry ONCE
         // instead of silently dropping the ring — this was the main
         // "some calls don't come through" failure.
         guard let dm = dms.first(where: { $0.id == channelId }) else {
+            callLog.info("DM \(channelId, privacy: .public) not cached (\(self.dms.count) DMs); loadDMs + retry")
             Task { [weak self] in
                 await self?.loadDMs()
                 guard let self,
                       self.voiceChannelId != channelId,
                       self.incomingCall?.channelId != channelId,
                       let dm = self.dms.first(where: { $0.id == channelId })
-                else { return }
+                else {
+                    callLog.error("ring dropped: DM \(channelId, privacy: .public) still not found after loadDMs (\(self?.dms.count ?? -1) DMs)")
+                    return
+                }
                 self.presentIncomingCall(dm: dm, callerId: vs.userId)
             }
             return
@@ -1220,6 +1234,7 @@ final class AppStore: ObservableObject {
         // can turn the system ring off entirely.
         let ringEnabled = UserDefaults.standard.object(forKey: "zk.notifyCalls") == nil
             || UserDefaults.standard.bool(forKey: "zk.notifyCalls")
+        callLog.info("presenting ring from \(callerName, privacy: .public) (ch \(channelId, privacy: .public), ringEnabled=\(ringEnabled), fg=\(UIApplication.shared.applicationState == .active))")
         if ringEnabled && UIApplication.shared.applicationState != .active {
             CallManager.shared.reportIncoming(channelId: channelId, callerName: callerName)
         }
@@ -2800,9 +2815,12 @@ final class AppStore: ObservableObject {
         case "VOICE_STATE_UPDATE":
             // Payload is the camelCase VoiceState DTO (channelId null = left).
             if let vs = try? JSONDecoder().decode(VoiceState.self, from: data) {
+                callLog.info("VOICE_STATE_UPDATE recv user=\(vs.userId, privacy: .public) ch=\(vs.channelId ?? "nil", privacy: .public)")
                 handleVoiceSelfMove(vs)
                 applyVoiceState(vs)
                 handleIncomingCall(vs)
+            } else {
+                callLog.error("VOICE_STATE_UPDATE decode FAILED: \(String(data: data.prefix(300), encoding: .utf8) ?? "<binary>", privacy: .public)")
             }
         case "CHANNEL_UPDATE":
             // Full channel DTO. Among other things this propagates E2EE

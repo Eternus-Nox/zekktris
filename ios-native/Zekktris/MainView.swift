@@ -1504,6 +1504,13 @@ struct SettingsView: View {
     // voice-message recorder's live metering — no new audio infra.
     @StateObject private var micTest = VoiceRecorder()
     @State private var faceIDOn = false
+    // Local mirror for the achievements-visibility toggle, same pattern as
+    // faceIDOn / displayName / customStatus above. Binding a Toggle directly
+    // to session.currentUser made the knob snap back to its old position on
+    // tap (the async setter returns before currentUser updates), so it read
+    // as "won't turn on." The mirror updates optimistically and reconciles
+    // with the server result.
+    @State private var achievementsPublicOn = false
     @State private var bioProbe: Biometrics.Probe?
     @State private var avatarPickerItem: PhotosPickerItem?
     @State private var bannerPickerItem: PhotosPickerItem?
@@ -1521,23 +1528,49 @@ struct SettingsView: View {
         ("Invisible", "invisible", Theme.offline),
     ]
 
+    /// Top-level grouping for the Settings screen so the ~12 sections aren't
+    /// one long scroll. The profile header stays pinned above the tabs.
+    private enum SettingsTab: String, CaseIterable, Identifiable {
+        case profile = "Profile"
+        case preferences = "Preferences"
+        case account = "Account"
+        var id: String { rawValue }
+    }
+    @State private var settingsTab: SettingsTab = .profile
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
+                    // Profile frame is always visible — it anchors the screen
+                    // and shows your avatar (with its decoration), banner, and
+                    // name regardless of which tab is active.
                     profileHeader
-                    achievementsSection
-                    statusSection
-                    displayNameSection
-                    customStatusSection
-                    decorationSection
-                    appearanceSection
-                    notificationsSection
-                    micTestSection
-                    featuresSection
-                    securitySection
-                    accountSection
-                    logoutSection
+
+                    Picker("Settings section", selection: $settingsTab) {
+                        ForEach(SettingsTab.allCases) { tab in
+                            Text(tab.rawValue).tag(tab)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    switch settingsTab {
+                    case .profile:
+                        statusSection
+                        displayNameSection
+                        customStatusSection
+                        decorationSection
+                        achievementsSection
+                    case .preferences:
+                        appearanceSection
+                        notificationsSection
+                        micTestSection
+                        featuresSection
+                    case .account:
+                        securitySection
+                        accountSection
+                        logoutSection
+                    }
                 }
                 .padding(16)
             }
@@ -1557,6 +1590,12 @@ struct SettingsView: View {
                 customStatusExpiry =
                     customStatusHasFutureExpiry(session.currentUser?.customStatusExpiresAt) ? .keep : .off
                 faceIDOn = session.faceIDEnabled
+                achievementsPublicOn = session.currentUser?.achievementsPublic ?? false
+            }
+            // Keep the mirror in sync if currentUser is refreshed (e.g. the
+            // background getMe on foreground) while Settings is open.
+            .onChange(of: session.currentUser?.achievementsPublic) { newValue in
+                achievementsPublicOn = newValue ?? false
             }
         }
     }
@@ -1605,6 +1644,10 @@ struct SettingsView: View {
                     // launch (often 'offline' because getMe ran before the
                     // gateway identified). The presence map has the truth.
                     status: store.status(for: user?.id, fallback: user?.status),
+                    // Show the selected avatar decoration here too — the
+                    // header is the user's own profile frame, so the frame
+                    // they pick below should be reflected.
+                    decoration: user?.avatarDecoration,
                     toneId: user?.id
                 )
                 .padding(.top, -38)
@@ -1685,6 +1728,15 @@ struct SettingsView: View {
         .sheet(isPresented: $showAchievements) { AchievementsGallerySheet() }
     }
 
+    /// The status to show as selected. When the account has no status set
+    /// (nil/empty — e.g. a fresh account, or the launch snapshot before the
+    /// gateway identifies), default to "online" so a status is always
+    /// selected rather than leaving every row unchecked.
+    private var effectiveStatus: String {
+        let s = session.currentUser?.status ?? ""
+        return s.isEmpty ? "online" : s
+    }
+
     private var statusSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("STATUS")
@@ -1694,7 +1746,7 @@ struct SettingsView: View {
                         Circle().fill(color).frame(width: 10, height: 10)
                         Text(label).font(.zkSans(15)).foregroundColor(Theme.ink1)
                         Spacer()
-                        if session.currentUser?.status == value {
+                        if effectiveStatus == value {
                             Image(systemName: "checkmark")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundColor(Theme.accent)
@@ -2088,8 +2140,16 @@ struct SettingsView: View {
             // computation could fail and report public:false even when the
             // column was true — making the toggle appear not to persist.)
             Toggle(isOn: Binding(
-                get: { session.currentUser?.achievementsPublic ?? false },
-                set: { newValue in Task { await session.setAchievementsPublic(newValue) } }
+                get: { achievementsPublicOn },
+                set: { newValue in
+                    achievementsPublicOn = newValue // optimistic — reflect the tap immediately
+                    Task {
+                        await session.setAchievementsPublic(newValue)
+                        // Reconcile with the server's persisted value; reverts
+                        // the knob if the write failed.
+                        achievementsPublicOn = session.currentUser?.achievementsPublic ?? false
+                    }
+                }
             )) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Public achievements")
