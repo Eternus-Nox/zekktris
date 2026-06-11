@@ -1068,14 +1068,20 @@ extension APIClient {
     }
 
     // ── DM settings (auto-delete TTL + close) ──────────────────────────────────
-    func getDmSettings(channelId: String) async throws -> Int? {
-        let wrap: DmSettings = try await send("GET", "/users/@me/channels/\(channelId)/settings")
-        return wrap.ttlSecondsAfterRead
+    func getDmSettings(channelId: String) async throws -> DmSettings {
+        try await send("GET", "/users/@me/channels/\(channelId)/settings")
     }
     func updateDmSettings(channelId: String, ttlSecondsAfterRead: Int?) async throws {
         let body: [String: Any] = ["ttlSecondsAfterRead": ttlSecondsAfterRead ?? NSNull()]
         let data = try JSONSerialization.data(withJSONObject: body)
         try await sendVoid("PATCH", "/users/@me/channels/\(channelId)/settings", bodyData: data)
+    }
+    /// Set this user's notification-preview choice for a DM (private). nil
+    /// reverts to the default.
+    func setDmNotificationPreview(channelId: String, showContent: Bool?) async throws {
+        let body: [String: Any] = ["showContent": showContent ?? NSNull()]
+        let data = try JSONSerialization.data(withJSONObject: body)
+        try await sendVoid("PATCH", "/users/@me/channels/\(channelId)/notification-preview", bodyData: data)
     }
     func closeDM(channelId: String) async throws {
         try await sendVoid("DELETE", "/users/@me/channels/\(channelId)")

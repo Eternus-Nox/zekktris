@@ -799,12 +799,16 @@ messagesRouter.post(
         // subtitle and read weirdly ("Zekktris / from Zekktris").
         // "New message" describes the actual event in a way that
         // composes well with the iOS-injected line.
-        const title = isE2EEContent ? 'New message' : authorName;
-        const body = isE2EEContent
-          ? 'Open app to see message.'
-          : isDM
-            ? messagePart
-            : `${messagePart}  ·  #${channelName}`;
+        // Generic (privacy-preserving) vs content-bearing strings. Which a
+        // recipient gets depends on E2EE state and — for DMs — their personal
+        // notification-preview preference (resolved per-recipient below).
+        const genericTitle = 'New message';
+        const genericBody = 'Open app to see message.';
+        const contentTitle = authorName;
+        const contentBody = isDM ? messagePart : `${messagePart}  ·  #${channelName}`;
+        // Guild messages (never E2EE) keep today's behavior.
+        const title = isE2EEContent ? genericTitle : contentTitle;
+        const body = isE2EEContent ? genericBody : contentBody;
 
         // URL the click should open. For guild channels:
         // /channels/<guildId>/<channelId>; for DMs: /channels/@me/<channelId>.
@@ -852,16 +856,33 @@ messagesRouter.post(
 
         if (allowedTargets.length === 0) return;
 
-        const pushPayload = {
-          title,
-          body,
-          url,
-          tag: channelId.toString(),
-        };
-
-        await Promise.all(
-          allowedTargets.map((target) => sendToUser(target, pushPayload)),
-        );
+        if (isDM) {
+          // Per-recipient preview preference. No explicit row → default:
+          // E2EE generic, plaintext shows content (today's behavior). For an
+          // E2EE DM with "show content" opted in, the server can only reveal
+          // the SENDER (it holds ciphertext, not plaintext); a Notification
+          // Service Extension would decrypt the body on-device.
+          const prefs = await dms.getDmNotificationPrefsForChannel(channelId, allowedTargets);
+          await Promise.all(
+            allowedTargets.map((target) => {
+              const showContent = prefs.get(target) ?? !isE2EEContent;
+              const payload = showContent
+                ? {
+                    title: contentTitle,
+                    body: isE2EEContent ? 'Encrypted message' : contentBody,
+                    url,
+                    tag: channelId.toString(),
+                  }
+                : { title: genericTitle, body: genericBody, url, tag: channelId.toString() };
+              return sendToUser(target, payload);
+            }),
+          );
+        } else {
+          // Guild mentions: one shared payload (the per-DM preview pref
+          // doesn't apply, and guild messages are never E2EE).
+          const pushPayload = { title, body, url, tag: channelId.toString() };
+          await Promise.all(allowedTargets.map((target) => sendToUser(target, pushPayload)));
+        }
       } catch {
         // Push is non-critical; failure here mustn't surface anywhere.
       }

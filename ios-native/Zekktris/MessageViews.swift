@@ -3332,6 +3332,14 @@ struct DmSettingsSheet: View {
 
                     Divider().overlay(Theme.line)
 
+                    Text("NOTIFICATIONS")
+                        .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                    notificationPreviewToggle
+                    Text(notifPreviewFootnote)
+                        .font(.zkSans(12)).foregroundColor(Theme.ink3)
+
+                    Divider().overlay(Theme.line)
+
                     Button(role: .destructive) {
                         Task { await store.closeDM(channel); dismiss() }
                     } label: {
@@ -3379,6 +3387,42 @@ struct DmSettingsSheet: View {
                 Text("Importing keys will replace any matching keys on this device.")
             }
         }
+    }
+
+    // Per-user notification-preview preference (mirrors web's
+    // NotificationPreviewToggle). Default depends on encryption: plaintext DMs
+    // preview the message; E2EE DMs hide it unless the user opts in.
+    private var notifPreviewEffective: Bool {
+        store.dmNotifShowContent ?? !liveChannel.isE2EE
+    }
+    private var notifPreviewFootnote: String {
+        liveChannel.isE2EE
+            ? "When on, push notifications reveal the decrypted message and sender. When off, you only see that you have new messages — your encrypted content stays hidden on the lock screen."
+            : "When on, push notifications show a preview of the message. When off, you only see that you have new messages."
+    }
+    @ViewBuilder
+    private var notificationPreviewToggle: some View {
+        Toggle(isOn: Binding(
+            get: { notifPreviewEffective },
+            set: { newValue in
+                // Persist an explicit choice; store the same value the default
+                // would yield so the knob reads back consistently.
+                Task { await store.setDmNotifShowContent(channel.id, newValue) }
+            }
+        )) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Show message in notifications")
+                    .font(.zkSans(15)).foregroundColor(Theme.ink1)
+                Text(liveChannel.isE2EE
+                    ? "Reveals decrypted message text in push notifications."
+                    : "Previews message text in push notifications.")
+                    .font(.zkSans(11)).foregroundColor(Theme.ink4)
+            }
+        }
+        .tint(Theme.accent)
+        .disabled(store.loadingDmSettings)
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     // Key backup/restore — mirrors web's DmSettingsPanel "Download keys" /

@@ -188,7 +188,31 @@ dmsRouter.get(
     const channelId = BigInt(c.req.valid('param').channelId);
     await dms.ensureRecipient(channelId, userId);
     const settings = await dms.getDmSettings(channelId);
-    return c.json({ ttlSecondsAfterRead: settings.ttlSecondsAfterRead });
+    // notificationShowContent is the CALLER's private preview choice (null =
+    // not set → client applies the E2EE-aware default). It is not shared with
+    // the other recipient, unlike the conversation-scoped TTL.
+    const notificationShowContent = await dms.getDmNotificationPref(userId, channelId);
+    return c.json({
+      ttlSecondsAfterRead: settings.ttlSecondsAfterRead,
+      notificationShowContent,
+    });
+  },
+);
+
+/** PATCH — set THIS recipient's notification-preview choice for the DM.
+    Private per-user (not broadcast to the other party). `showContent`:
+    true = show sender/content, false = generic, null = revert to default. */
+dmsRouter.patch(
+  '/:channelId/notification-preview',
+  validate('param', z.object({ channelId: snowflakeSchema })),
+  validate('json', z.object({ showContent: z.boolean().nullable() })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const channelId = BigInt(c.req.valid('param').channelId);
+    await dms.ensureRecipient(channelId, userId);
+    const { showContent } = c.req.valid('json');
+    await dms.setDmNotificationPref(userId, channelId, showContent);
+    return c.json({ notificationShowContent: showContent });
   },
 );
 

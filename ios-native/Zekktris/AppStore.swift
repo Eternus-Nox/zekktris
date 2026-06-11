@@ -2388,19 +2388,35 @@ final class AppStore: ObservableObject {
     // MARK: DM settings
 
     @Published var dmTtl: Int?
+    /// This user's notification-preview choice for the open DM. nil = not set
+    /// (use the E2EE-aware default).
+    @Published var dmNotifShowContent: Bool?
     @Published var loadingDmSettings = false
 
     func loadDmSettings(_ channelId: String) async {
         loadingDmSettings = true
         defer { loadingDmSettings = false }
-        do { dmTtl = try await api.getDmSettings(channelId: channelId) }
-        catch { dmTtl = nil }
+        do {
+            let settings = try await api.getDmSettings(channelId: channelId)
+            dmTtl = settings.ttlSecondsAfterRead
+            dmNotifShowContent = settings.notificationShowContent
+        } catch {
+            dmTtl = nil
+            dmNotifShowContent = nil
+        }
     }
     func setDmTtl(_ channelId: String, _ seconds: Int?) async {
         let prev = dmTtl
         dmTtl = seconds
         do { try await api.updateDmSettings(channelId: channelId, ttlSecondsAfterRead: seconds) }
         catch { dmTtl = prev; errorText = (error as? APIError)?.message ?? error.localizedDescription }
+    }
+    /// Set this user's notification-preview choice for the open DM (private).
+    func setDmNotifShowContent(_ channelId: String, _ value: Bool?) async {
+        let prev = dmNotifShowContent
+        dmNotifShowContent = value
+        do { try await api.setDmNotificationPreview(channelId: channelId, showContent: value) }
+        catch { dmNotifShowContent = prev; errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
     func closeDM(_ channel: Channel) async {
         do {

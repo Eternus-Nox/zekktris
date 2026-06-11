@@ -399,6 +399,35 @@ export const dmSettings = pgTable('dm_settings', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * Per-RECIPIENT push-notification preview preference for a DM. Unlike
+ * dm_settings (conversation-scoped — both sides share), this is private to
+ * each user, since it controls THEIR device's lock-screen exposure.
+ *
+ * A row's mere presence is an explicit choice:
+ *   - show_content = true  → show the sender + message content (or, for an
+ *     E2EE DM, reveal the sender name; the body stays generic server-side
+ *     because the server only holds ciphertext — a Notification Service
+ *     Extension would decrypt it on-device).
+ *   - show_content = false → generic "New message" only.
+ * No row → the default (E2EE DMs generic, plaintext DMs show content),
+ * preserving today's behavior until the user opts in/out.
+ */
+export const dmNotificationPrefs = pgTable(
+  'dm_notification_prefs',
+  {
+    userId: bigint('user_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    channelId: bigint('channel_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => channels.id, { onDelete: 'cascade' }),
+    showContent: boolean('show_content').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.userId, t.channelId] }) }),
+);
+
 // ───────────────────────────────────────────────────────────────────────────
 // Inferred types
 // ───────────────────────────────────────────────────────────────────────────

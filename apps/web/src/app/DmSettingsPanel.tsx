@@ -60,6 +60,9 @@ export function DmSettingsPanel({
   const panelRef = useRef<HTMLDivElement | null>(null);
 
   const [ttl, setTtl] = useState<number | null>(null);
+  // This user's explicit notification-preview choice for this DM (null = not
+  // set → fall back to the E2EE-aware default in the toggle).
+  const [notifShowContent, setNotifShowContent] = useState<boolean | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [pending, setPending] = useState(false);
 
@@ -72,6 +75,7 @@ export function DmSettingsPanel({
       .then((r) => {
         if (cancelled) return;
         setTtl(r.ttlSecondsAfterRead);
+        setNotifShowContent(r.notificationShowContent);
       })
       .catch(() => {
         // Don't toast — the panel is opening, surfacing an error
@@ -184,7 +188,99 @@ export function DmSettingsPanel({
         })}
       </ul>
       <ReadReceiptsToggle />
+      <NotificationPreviewToggle
+        channel={channel}
+        explicit={notifShowContent}
+        onChange={setNotifShowContent}
+      />
       <E2eeToggle channel={channel} selfId={selfId} />
+    </div>
+  );
+}
+
+/**
+ * Per-DM, per-USER notification-preview toggle: whether push notifications for
+ * this DM show the sender + message content, or a generic "New message".
+ * Private to this user (their lock-screen exposure). The default depends on
+ * E2EE — an encrypted DM defaults to generic (the server only holds
+ * ciphertext; even revealing the sender leaks metadata), a plaintext DM
+ * defaults to showing content. Flipping it stores an explicit override.
+ * For an E2EE DM with "show content" on, the server reveals the sender's name
+ * but the body stays generic (only an on-device decryptor could show the
+ * plaintext).
+ */
+function NotificationPreviewToggle({
+  channel,
+  explicit,
+  onChange,
+}: {
+  channel: Channel;
+  explicit: boolean | null;
+  onChange: (v: boolean | null) => void;
+}) {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const [pending, setPending] = useState(false);
+  const isE2EE = channel.e2eeEnabled === true;
+  const effective = explicit ?? !isE2EE;
+
+  async function toggle() {
+    if (pending) return;
+    setPending(true);
+    const next = !effective;
+    onChange(next); // optimistic
+    try {
+      await rest.setDmNotificationPreview(channel.id, next);
+    } catch (err) {
+      onChange(explicit); // rollback
+      toasts.push(
+        err instanceof ApiError ? err.message : 'Could not update notification preview.',
+        'error',
+      );
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="border-t border-line px-3 py-3">
+      <div className="flex items-start gap-3">
+        <div className="flex-1 min-w-0">
+          <h3 className="text-sm font-semibold text-ink-1">Show message in notifications</h3>
+          <p className="text-xs text-ink-3 mt-0.5 leading-snug">
+            {isE2EE ? (
+              <>
+                This chat is encrypted, so notifications only show that you have a new
+                message. Turning this on reveals the <span className="text-ink-2">sender</span>;
+                the message text stays hidden (only this device can decrypt it).
+              </>
+            ) : (
+              <>
+                Show the sender and a preview of the message on your lock screen. Off shows
+                a generic <span className="text-ink-2">“New message”</span> instead.
+              </>
+            )}
+          </p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={effective}
+          onClick={() => void toggle()}
+          disabled={pending}
+          className={`relative w-10 h-6 rounded-full transition-colors shrink-0 disabled:opacity-60 ${
+            effective ? 'bg-accent' : 'bg-bg-3'
+          }`}
+          title={effective ? 'Hide message content in notifications' : 'Show message content in notifications'}
+        >
+          <span
+            className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
+              effective ? 'left-[18px]' : 'left-0.5'
+            }`}
+            aria-hidden
+          />
+        </button>
+      </div>
     </div>
   );
 }

@@ -652,6 +652,78 @@ export async function updateDmSettings(input: {
     });
 }
 
+// ── Per-recipient DM notification preview preference ────────────────────────
+
+/** This user's notification-preview choice for a DM: true = show content,
+ *  false = generic, null = not set (use the default). */
+export async function getDmNotificationPref(
+  userId: bigint,
+  channelId: bigint,
+): Promise<boolean | null> {
+  const [r] = await db
+    .select({ showContent: schema.dmNotificationPrefs.showContent })
+    .from(schema.dmNotificationPrefs)
+    .where(
+      and(
+        eq(schema.dmNotificationPrefs.userId, userId),
+        eq(schema.dmNotificationPrefs.channelId, channelId),
+      ),
+    )
+    .limit(1);
+  return r ? r.showContent : null;
+}
+
+/** Set (true/false) or clear (null → revert to default) this user's
+ *  notification-preview choice for a DM. */
+export async function setDmNotificationPref(
+  userId: bigint,
+  channelId: bigint,
+  showContent: boolean | null,
+): Promise<void> {
+  if (showContent === null) {
+    await db
+      .delete(schema.dmNotificationPrefs)
+      .where(
+        and(
+          eq(schema.dmNotificationPrefs.userId, userId),
+          eq(schema.dmNotificationPrefs.channelId, channelId),
+        ),
+      );
+    return;
+  }
+  await db
+    .insert(schema.dmNotificationPrefs)
+    .values({ userId, channelId, showContent, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: [schema.dmNotificationPrefs.userId, schema.dmNotificationPrefs.channelId],
+      set: { showContent, updatedAt: new Date() },
+    });
+}
+
+/** Bulk-load several users' preview choices for one DM (push fan-out). Returns
+ *  a map of userId → explicit choice; absence means "no row → use default". */
+export async function getDmNotificationPrefsForChannel(
+  channelId: bigint,
+  userIds: bigint[],
+): Promise<Map<bigint, boolean>> {
+  const out = new Map<bigint, boolean>();
+  if (userIds.length === 0) return out;
+  const rows = await db
+    .select({
+      userId: schema.dmNotificationPrefs.userId,
+      showContent: schema.dmNotificationPrefs.showContent,
+    })
+    .from(schema.dmNotificationPrefs)
+    .where(
+      and(
+        eq(schema.dmNotificationPrefs.channelId, channelId),
+        inArray(schema.dmNotificationPrefs.userId, userIds),
+      ),
+    );
+  for (const r of rows) out.set(r.userId, r.showContent);
+  return out;
+}
+
 /**
  * Stamp `viewed_at = now()` on every message in `messageIds` that:
  *   - lives in `channelId`,

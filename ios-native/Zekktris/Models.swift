@@ -299,7 +299,12 @@ struct MyEvent: Codable, Identifiable {
 }
 struct MyEventsWrap: Codable { let events: [MyEvent] }
 
-struct DmSettings: Codable { let ttlSecondsAfterRead: Int? }
+struct DmSettings: Codable {
+    let ttlSecondsAfterRead: Int?
+    /// This user's notification-preview choice for the DM. nil = not set
+    /// (use the E2EE-aware default).
+    var notificationShowContent: Bool?
+}
 
 struct StorageItem: Codable, Identifiable {
     let id: String

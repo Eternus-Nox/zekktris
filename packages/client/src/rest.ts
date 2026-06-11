@@ -2139,8 +2139,27 @@ export class RestClient {
    * `{ ttlSecondsAfterRead: null }` when auto-delete is off (the
    * default for any DM that has never been configured).
    */
-  getDmSettings(channelId: string): Promise<{ ttlSecondsAfterRead: number | null }> {
+  getDmSettings(
+    channelId: string,
+  ): Promise<{ ttlSecondsAfterRead: number | null; notificationShowContent: boolean | null }> {
     return this.request('GET', `/users/@me/channels/${channelId}/settings`);
+  }
+
+  /**
+   * Set THIS user's notification-preview preference for a DM (private; not
+   * shared with the other recipient). `showContent`: true = show sender +
+   * content in pushes, false = generic "New message", null = revert to the
+   * default (E2EE generic, plaintext shows content).
+   */
+  setDmNotificationPreview(
+    channelId: string,
+    showContent: boolean | null,
+  ): Promise<{ notificationShowContent: boolean | null }> {
+    return this.request(
+      'PATCH',
+      `/users/@me/channels/${channelId}/notification-preview`,
+      { showContent },
+    );
   }
 
   /**
