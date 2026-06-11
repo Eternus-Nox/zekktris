@@ -298,10 +298,18 @@ function DMSearchResult({ message, onClick }: { message: Message; onClick: () =>
 function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
   const notificationOverrides = useAppStateSelector((v) => v.state.notificationOverrides);
   const readStateByChannel = useAppStateSelector((v) => v.state.readStateByChannel);
-  const messagesByChannel = useAppStateSelector((v) => v.state.messagesByChannel);
+  // Only subscribe to THIS DM's messages, and only as a legacy fallback when
+  // the server didn't provide recipients. Subscribing to the whole
+  // messagesByChannel map re-rendered every visible DM row on every message
+  // in ANY channel (its reference changes on each append/patch/receipt).
+  const fallbackMessages = useAppStateSelector((v) =>
+    channel.recipients && channel.recipients.length > 0
+      ? undefined
+      : v.state.messagesByChannel[channel.id],
+  );
   const ackChannel = useAppStateSelector((v) => v.ackChannel);
   const setNotificationOverride = useAppStateSelector((v) => v.setNotificationOverride);
-  const state = { notificationOverrides, readStateByChannel, messagesByChannel };
+  const state = { notificationOverrides, readStateByChannel };
   const { user, rest } = useAuth();
   const selfId = user?.id;
   const toasts = useToasts();
@@ -327,7 +335,7 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
     if (channel.recipients && channel.recipients.length > 0) {
       return channel.recipients[0]!;
     }
-    const messages = state.messagesByChannel[channel.id];
+    const messages = fallbackMessages;
     if (messages) {
       for (let i = messages.length - 1; i >= 0; i--) {
         const m = messages[i]!;

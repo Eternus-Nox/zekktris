@@ -18,7 +18,7 @@ import { useNavigate } from 'react-router-dom';
 import { ApiError, type Channel } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import {
-  useAppState,
+  useAppStateSelector,
   voiceStatesForChannel,
   selfVoiceState,
 } from '../state/AppState';
@@ -154,12 +154,21 @@ export function VoiceView({
       this undefined and we fall back to channel.name. */
   displayName?: string;
 }) {
-  const { state, mergeChannelVoiceStates, restForChannel } = useAppState();
+  // Narrow selectors instead of useAppState(): the voice arena stays mounted
+  // for the whole call, and a whole-state subscription re-rendered this large
+  // component on every reducer dispatch (every message/typing/presence event
+  // in any channel). Subscribe only to the three slices it reads. Mirrors
+  // VoicePanel/MemberList.
+  const supervision = useAppStateSelector((v) => v.state.supervision);
+  const voiceStatesByUser = useAppStateSelector((v) => v.state.voiceStatesByUser);
+  const usersById = useAppStateSelector((v) => v.state.usersById);
+  const mergeChannelVoiceStates = useAppStateSelector((v) => v.mergeChannelVoiceStates);
+  const restForChannel = useAppStateSelector((v) => v.restForChannel);
   const { user } = useAuth();
   // Parental controls: a supervised child may be barred from video and/or
   // screen sharing. The server already enforces this at the SFU token;
   // here we disable the controls so the restriction is visible too.
-  const childRestr = state.supervision?.restrictions ?? null;
+  const childRestr = supervision?.restrictions ?? null;
   const videoRestricted = childRestr ? !childRestr.allowVideo : false;
   const streamRestricted = childRestr ? !childRestr.allowStream : false;
   const toasts = useToasts();
@@ -173,12 +182,12 @@ export function VoiceView({
   // identity (the reducer only swaps that ref when a state actually
   // changes) confines recomputation to actual voice transitions.
   const participants = useMemo(
-    () => voiceStatesForChannel(state.voiceStatesByUser, channel.id),
-    [state.voiceStatesByUser, channel.id],
+    () => voiceStatesForChannel(voiceStatesByUser, channel.id),
+    [voiceStatesByUser, channel.id],
   );
   const myVoice = useMemo(
-    () => selfVoiceState(state.voiceStatesByUser, user?.id),
-    [state.voiceStatesByUser, user?.id],
+    () => selfVoiceState(voiceStatesByUser, user?.id),
+    [voiceStatesByUser, user?.id],
   );
   const inThis = !!myVoice && myVoice.channelId === channel.id;
 
@@ -710,7 +719,7 @@ export function VoiceView({
             </div>
             <div className={`grid ${featuredCols} auto-rows-fr gap-3 flex-1 min-h-0`}>
               {featuredStreams.map((f) => {
-                const cached = state.usersById[f.userId];
+                const cached = usersById[f.userId];
                 const recipient = !cached
                   ? channel.recipients?.find((r) => r.id === f.userId)
                   : null;
@@ -740,7 +749,7 @@ export function VoiceView({
             {!theater && (
               <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2 shrink-0">
                 {participants.map((p, i) => {
-                  const cached = state.usersById[p.userId];
+                  const cached = usersById[p.userId];
                   const recipient = !cached
                     ? channel.recipients?.find((r) => r.id === p.userId)
                     : null;
@@ -980,7 +989,7 @@ export function VoiceView({
                   // page can surface participants as "few numbers" of
                   // their snowflake ID — the cache hadn't been
                   // populated yet because no message had been loaded.
-                  const cached = state.usersById[p.userId];
+                  const cached = usersById[p.userId];
                   const recipient = !cached
                     ? channel.recipients?.find((r) => r.id === p.userId)
                     : null;
@@ -1034,7 +1043,7 @@ export function VoiceView({
                     and rotation winding up to suggest tidal
                     stretching as they cross the event horizon. */}
                 {Array.from(leaving.values()).map((leaver) => {
-                  const u = state.usersById[leaver.userId];
+                  const u = usersById[leaver.userId];
                   const label =
                     u?.displayName ?? u?.username ?? leaver.userId.slice(-5);
                   return (

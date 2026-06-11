@@ -20,9 +20,15 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ApiError, type Channel, type Message, type PublicUser } from '@zekktris/client';
+import {
+  ApiError,
+  type Channel,
+  type GuildMember,
+  type Message,
+  type PublicUser,
+} from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
-import { useAppState } from '../state/AppState';
+import { useAppStateSelector } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
 import { Search, X } from '../lib/icons';
 import { ModalHeader } from '../lib/ModalHeader';
@@ -30,6 +36,11 @@ import { MessageItem } from './MessageItem';
 import { parseSearchQuery, dateBoundToSnowflake } from '../lib/searchQuery';
 
 const DEBOUNCE_MS = 300;
+// Stable empty fallbacks so the selectors' `?? EMPTY` keeps a constant
+// reference (a fresh `[]` would defeat the selector's reference-equality skip).
+const EMPTY_MEMBERS: GuildMember[] = [];
+const EMPTY_MSGS: Message[] = [];
+const EMPTY_CHS: Channel[] = [];
 
 interface ResolvedFilters {
   /** Raw `from:` value as the user typed it. */
@@ -59,7 +70,19 @@ export function SearchPanel({
   onClose: () => void;
 }) {
   const { rest, user } = useAuth();
-  const { state } = useAppState();
+  // Narrow selectors: the panel sits open beside a streaming channel, so a
+  // whole-state useAppState() re-rendered it (and re-ran the query-parse memo)
+  // on every message anywhere. Subscribe only to this guild's members, this
+  // channel's messages, and (for jump-to-message) this guild's channels —
+  // with stable EMPTY constants so the `?? []` fallback keeps a stable
+  // reference and the selector actually skips re-renders.
+  const guildMembers = useAppStateSelector((v) =>
+    channel.guildId ? (v.state.membersByGuild[channel.guildId] ?? EMPTY_MEMBERS) : EMPTY_MEMBERS,
+  );
+  const channelMessages = useAppStateSelector((v) => v.state.messagesByChannel[channel.id] ?? EMPTY_MSGS);
+  const guildChannels = useAppStateSelector((v) =>
+    channel.guildId ? (v.state.channelsByGuild[channel.guildId] ?? EMPTY_CHS) : EMPTY_CHS,
+  );
   const toasts = useToasts();
   const navigate = useNavigate();
   const [results, setResults] = useState<Message[] | null>(null);
@@ -86,7 +109,7 @@ export function SearchPanel({
       const needle = parsed.from.toLowerCase();
       let found: PublicUser | undefined;
       if (channel.guildId) {
-        const members = state.membersByGuild[channel.guildId] ?? [];
+        const members = guildMembers;
         const match = members.find(
           (m) =>
             m.user.username.toLowerCase() === needle ||
@@ -99,7 +122,7 @@ export function SearchPanel({
         // DM: search distinct authors from the loaded message stream.
         const seen = new Set<string>();
         const candidates: PublicUser[] = [];
-        const ms = state.messagesByChannel[channel.id] ?? [];
+        const ms = channelMessages;
         for (const m of ms) {
           if (m.author && !seen.has(m.author.id)) {
             seen.add(m.author.id);
@@ -137,7 +160,7 @@ export function SearchPanel({
     }
     return { keywords: parsed.keywords, filters: result };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, channel.id, channel.guildId, state.membersByGuild, state.messagesByChannel]);
+  }, [query, channel.id, channel.guildId, guildMembers, channelMessages]);
 
   // Search effect. Re-runs on keyword or filter change. We branch on
   // "is anything actionable" — empty keywords AND no resolved filters
@@ -369,9 +392,8 @@ export function SearchPanel({
                 const inOtherChannel = m.channelId !== channel.id;
                 const chanName =
                   inOtherChannel && channel.guildId
-                    ? (state.channelsByGuild[channel.guildId] ?? []).find(
-                        (ch) => ch.id === m.channelId,
-                      )?.name ?? 'unknown-channel'
+                    ? guildChannels.find((ch) => ch.id === m.channelId)?.name ??
+                      'unknown-channel'
                     : null;
                 return (
                   <li

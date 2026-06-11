@@ -25,7 +25,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError, type Channel } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
-import { useAppState } from '../state/AppState';
+import { useAppStateSelector } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
 import {
   Mic,
@@ -48,7 +48,13 @@ import {
 const AUDIENCE_VISIBLE = 12; // before "+N more" overflow
 
 export function StageChannelView({ channel }: { channel: Channel }) {
-  const { state } = useAppState();
+  // Narrow selectors — a stage view stays mounted for the whole session, and
+  // a whole-state useAppState() re-rendered it on every reducer dispatch.
+  const stageParticipantsByChannel = useAppStateSelector((v) => v.state.stageParticipantsByChannel);
+  const guildsById = useAppStateSelector((v) => v.state.guildsById);
+  const rolesByGuild = useAppStateSelector((v) => v.state.rolesByGuild);
+  const membersByGuild = useAppStateSelector((v) => v.state.membersByGuild);
+  const usersById = useAppStateSelector((v) => v.state.usersById);
   const { user, rest } = useAuth();
   const toasts = useToasts();
   const navigate = useNavigate();
@@ -56,7 +62,7 @@ export function StageChannelView({ channel }: { channel: Channel }) {
   // Pull the current participant list from AppState; populated by the
   // initial REST fetch (below) and refreshed by every gateway
   // STAGE_PARTICIPANTS_UPDATE.
-  const participants = state.stageParticipantsByChannel[channel.id] ?? [];
+  const participants = stageParticipantsByChannel[channel.id] ?? [];
   const myParticipant = user
     ? participants.find((p) => p.userId === user.id) ?? null
     : null;
@@ -68,11 +74,11 @@ export function StageChannelView({ channel }: { channel: Channel }) {
   // this client-side check just decides what UI to show.
   const isMod = (() => {
     if (!user || !channel.guildId) return false;
-    const guild = state.guildsById[channel.guildId];
+    const guild = guildsById[channel.guildId];
     if (!guild) return false;
     if (guild.ownerId === user.id) return true;
-    const roles = state.rolesByGuild[channel.guildId] ?? [];
-    const member = state.membersByGuild[channel.guildId]?.find((m) => m.user.id === user.id);
+    const roles = rolesByGuild[channel.guildId] ?? [];
+    const member = membersByGuild[channel.guildId]?.find((m) => m.user.id === user.id);
     const memberRoleIds = member?.roleIds ?? [];
     if (memberIsAdmin(roles, channel.guildId, memberRoleIds, false)) return true;
     const perms = computeMemberGuildPerms(roles, channel.guildId, memberRoleIds, false);
@@ -94,7 +100,7 @@ export function StageChannelView({ channel }: { channel: Channel }) {
   // Bootstrap: fetch participants once on mount (gateway delivers
   // updates afterwards). Skipped if AppState already has the list.
   useEffect(() => {
-    if (state.stageParticipantsByChannel[channel.id]) return;
+    if (stageParticipantsByChannel[channel.id]) return;
     void rest
       .listStageParticipants(channel.id)
       .then(() => undefined) // dispatch happens via gateway; the REST hit primes the slice on the server side
@@ -292,7 +298,7 @@ export function StageChannelView({ channel }: { channel: Channel }) {
           ) : (
             <div className="flex flex-wrap gap-3">
               {speakers.map((p) => {
-                const u = state.usersById[p.userId];
+                const u = usersById[p.userId];
                 const tone = avatarColor(p.userId);
                 const initials = avatarInitials(u?.displayName);
                 return (
@@ -327,7 +333,7 @@ export function StageChannelView({ channel }: { channel: Channel }) {
           <Section title="Raised hands" count={raisedHands.length} accent>
             <ul className="flex flex-col gap-2">
               {raisedHands.map((p) => {
-                const u = state.usersById[p.userId];
+                const u = usersById[p.userId];
                 const tone = avatarColor(p.userId);
                 const initials = avatarInitials(u?.displayName);
                 return (
@@ -360,7 +366,7 @@ export function StageChannelView({ channel }: { channel: Channel }) {
           ) : (
             <div className="flex flex-wrap gap-2">
               {audience.slice(0, AUDIENCE_VISIBLE).map((p) => {
-                const u = state.usersById[p.userId];
+                const u = usersById[p.userId];
                 const tone = avatarColor(p.userId);
                 const initials = avatarInitials(u?.displayName);
                 return (
