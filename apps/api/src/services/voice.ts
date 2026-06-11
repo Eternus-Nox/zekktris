@@ -48,6 +48,11 @@ export interface JoinResult {
    * switching user as still in their channel.
    */
   priorVoiceState: schema.VoiceState | null;
+  /** If the user MOVED OUT of a 1:1 DM call into this channel, the
+   *  system_call message finalizing that prior DM's call (so the route can
+   *  dispatch it). Null otherwise. */
+  priorCallSystemMessage: schema.Message | null;
+  priorCallSystemChannelId: bigint | null;
   token: string | null;
   wsUrl: string | null;
 }
@@ -261,6 +266,19 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
     }
   }
 
+  // If the user MOVED OUT of a 1:1 DM call into this channel, finalize the
+  // prior DM's call record. The upsert above already moved their
+  // voice_states row off the prior channel, so endDmCallBookkeeping sees the
+  // correct remaining-participant count. Without this, navigating away from a
+  // ringing/active DM call stranded its dmActiveCall* columns.
+  let priorCall: {
+    systemCallMessage: schema.Message | null;
+    systemCallChannelId: bigint | null;
+  } = { systemCallMessage: null, systemCallChannelId: null };
+  if (priorRow && priorRow.channelId !== channelId && priorRow.guildId === null) {
+    priorCall = await endDmCallBookkeeping(priorRow.channelId, userId);
+  }
+
   return {
     voiceState: row!,
     // Only report a prior state if it pointed at a DIFFERENT channel.
@@ -268,6 +286,8 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
     // suppress the leave dispatch — nothing to tell anyone about.
     priorVoiceState:
       priorRow && priorRow.channelId !== channelId ? priorRow : null,
+    priorCallSystemMessage: priorCall.systemCallMessage,
+    priorCallSystemChannelId: priorCall.systemCallChannelId,
     ...(await mintLivekitToken(
       userId,
       channelId,
@@ -459,12 +479,30 @@ export async function leaveVoice(
     return { priorState, systemCallMessage: null, systemCallChannelId: null };
   }
 
-  // DM voice. We only care about 1:1 DMs (channel.type='dm'); group
-  // DMs (channel.type='group_dm') are excluded — the "missed call /
-  // duration" framing doesn't apply when 3+ people can come and go.
-  // The channel row's call columns are only populated for 1:1 DMs
-  // by the join path, so a group_dm leave naturally finds them
-  // null and writes nothing.
+  const bookkeeping = await endDmCallBookkeeping(priorState.channelId, userId);
+  return { priorState, ...bookkeeping };
+}
+
+/**
+ * Resolve the 1:1 DM call record after a user left `channelId` (the leaver's
+ * voice_states row must ALREADY be removed/moved before calling).
+ *   - not a 1:1 DM, or no call was tracked → no record (and clear stray
+ *     half-stamped columns so the NEXT call isn't misclassified).
+ *   - someone still present → the call continues; no record yet.
+ *   - last participant gone → clear the call columns and write the
+ *     system_call (missed / duration) message.
+ *
+ * Shared by leaveVoice (normal/forced hang-up) and joinVoice (when a user
+ * MOVES OUT of a ringing/active DM into another channel — without running
+ * this for the prior channel, its dmActiveCall* columns stranded: the missed
+ * call was never logged and the next call there was auto-classified
+ * 'answered' off the stale timestamps).
+ */
+async function endDmCallBookkeeping(
+  channelId: bigint,
+  leaverId: bigint,
+): Promise<{ systemCallMessage: schema.Message | null; systemCallChannelId: bigint | null }> {
+  const none = { systemCallMessage: null, systemCallChannelId: null };
   const [channelRow] = await db
     .select({
       id: schema.channels.id,
@@ -474,56 +512,44 @@ export async function leaveVoice(
       initiatorId: schema.channels.dmActiveCallInitiatorId,
     })
     .from(schema.channels)
-    .where(eq(schema.channels.id, priorState.channelId))
+    .where(eq(schema.channels.id, channelId))
     .limit(1);
-  if (!channelRow || channelRow.type !== 'dm') {
-    return { priorState, systemCallMessage: null, systemCallChannelId: null };
-  }
+  // Only 1:1 DMs carry call columns; group DMs / guild channels never do.
+  if (!channelRow || channelRow.type !== 'dm') return none;
   if (channelRow.startedAt === null) {
-    // No call was tracked — could happen if the join path raced or
-    // the columns were already cleared by a concurrent leave. Clear any
-    // stray answeredAt/initiator before returning: a half-stamped row
-    // left behind would make the NEXT call on this channel classify as
-    // answered with a duration computed from the stale timestamp.
+    // No call tracked. Clear any stray answeredAt/initiator (a half-stamped
+    // row would make the next call classify 'answered' off a stale timestamp).
     if (channelRow.answeredAt !== null || channelRow.initiatorId !== null) {
       await db
         .update(schema.channels)
         .set({ dmActiveCallAnsweredAt: null, dmActiveCallInitiatorId: null })
         .where(
           and(
-            eq(schema.channels.id, priorState.channelId),
+            eq(schema.channels.id, channelId),
             isNull(schema.channels.dmActiveCallStartedAt),
           ),
         );
     }
-    return { priorState, systemCallMessage: null, systemCallChannelId: null };
+    return none;
   }
 
-  // Count remaining participants in this channel after the delete.
-  // Anyone still present means the call continues for them — no
-  // call-end message yet.
+  // Anyone still present → the call continues for them; no record yet.
   const remaining = await db
     .select({ userId: schema.voiceStates.userId })
     .from(schema.voiceStates)
-    .where(eq(schema.voiceStates.channelId, priorState.channelId))
+    .where(eq(schema.voiceStates.channelId, channelId))
     .limit(1);
-  if (remaining.length > 0) {
-    return { priorState, systemCallMessage: null, systemCallChannelId: null };
-  }
+  if (remaining.length > 0) return none;
 
-  // Last leaver → call has ended. Compute duration / missed and
-  // write the system message.
+  // Last leaver → call ended. Compute duration / missed.
   const missed = channelRow.answeredAt === null;
   const durationMs = channelRow.answeredAt
     ? Math.max(0, Date.now() - channelRow.answeredAt.getTime())
     : 0;
-  const initiatorId = channelRow.initiatorId ?? userId;
+  const initiatorId = channelRow.initiatorId ?? leaverId;
 
-  // Clear the call columns BEFORE writing the message so a retry
-  // can't double-write. If the message write fails after this clear,
-  // the call is logged as ended without a record — acceptable
-  // (history loses one bookkeeping message), much better than the
-  // alternative of duplicate records.
+  // Clear columns BEFORE writing so a retry can't double-write (a lost
+  // message is better than duplicate records).
   await db
     .update(schema.channels)
     .set({
@@ -531,31 +557,20 @@ export async function leaveVoice(
       dmActiveCallAnsweredAt: null,
       dmActiveCallInitiatorId: null,
     })
-    .where(eq(schema.channels.id, priorState.channelId));
+    .where(eq(schema.channels.id, channelId));
 
   const { createSystemMessage } = await import('./messages');
   const systemCallMessage = await createSystemMessage({
-    channelId: priorState.channelId,
+    channelId,
     guildId: null,
     authorId: initiatorId,
-    // Content is left blank — the client renders from `metadata` so
-    // we don't have to localize human-readable text on the server.
-    content: '',
+    content: '', // client renders from metadata
     type: 'system_call',
     mentionedUserIds: [],
-    metadata: {
-      kind: 'call',
-      missed,
-      durationMs,
-      initiatorId: initiatorId.toString(),
-    },
+    metadata: { kind: 'call', missed, durationMs, initiatorId: initiatorId.toString() },
   });
 
-  return {
-    priorState,
-    systemCallMessage,
-    systemCallChannelId: priorState.channelId,
-  };
+  return { systemCallMessage, systemCallChannelId: channelId };
 }
 
 /**

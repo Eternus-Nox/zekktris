@@ -89,6 +89,14 @@ voiceRouter.post(
         }),
       });
     }
+    // If moving here ended a 1:1 DM call the user was in, broadcast its
+    // system_call (missed / duration) record to that DM.
+    if (result.priorCallSystemMessage && result.priorCallSystemChannelId !== null) {
+      await dispatchSystemCallMessage(
+        result.priorCallSystemChannelId,
+        result.priorCallSystemMessage,
+      );
+    }
 
     // Then announce the new state to the NEW channel's audience.
     dispatch.voiceStateUpdate({
