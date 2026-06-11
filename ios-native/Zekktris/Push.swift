@@ -127,6 +127,15 @@ final class VoipPushHandler: NSObject, PKPushRegistryDelegate {
         Task { _ = await APIClient.shared.registerDeviceToken(token: token, platform: "ios_voip") }
     }
 
+    /// Best-effort unregister on logout — without this the server keeps
+    /// sending VoIP rings to a signed-out (or account-switched) device, so
+    /// every call to the OLD account rings this phone full-screen with a
+    /// dead-end answer. See Session.logout for the auth-ordered call.
+    func unregister() {
+        guard let token = voipTokenHex else { return }
+        Task { await APIClient.shared.unregisterDeviceToken(token: token) }
+    }
+
     func pushRegistry(_ registry: PKPushRegistry, didUpdate pushCredentials: PKPushCredentials, for type: PKPushType) {
         guard type == .voIP else { return }
         voipTokenHex = pushCredentials.token.map { String(format: "%02x", $0) }.joined()

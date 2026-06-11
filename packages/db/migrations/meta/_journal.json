@@ -540,6 +540,13 @@
       "when": 1784600130000,
       "tag": "0077_messages_pinned_partial_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1784600140000,
+      "tag": "0078_message_send_indexes",
+      "breakpoints": true
     }
   ]
 }

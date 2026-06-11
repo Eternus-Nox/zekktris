@@ -164,6 +164,20 @@ final class AppStore: ObservableObject {
                 // Answered from a notification before the gateway ring
                 // arrived — join directly.
                 self.openVoice(dm)
+            } else {
+                // Cold start: a VoIP push relaunched the app and the user
+                // answered from the lock screen before the gateway ring
+                // (incomingCall) or the DM list (dms) were ready. Without
+                // this the CallKit UI dismissed and nothing joined — the
+                // caller kept ringing into a dead end. Load DMs once and
+                // join. Mirrors handleIncomingCall's loadDMs-and-retry.
+                Task { [weak self] in
+                    guard let self else { return }
+                    await self.loadDMs()
+                    if let dm = self.dms.first(where: { $0.id == channelId }) {
+                        self.openVoice(dm)
+                    }
+                }
             }
         }
         CallManager.shared.onEnd = { [weak self] channelId in

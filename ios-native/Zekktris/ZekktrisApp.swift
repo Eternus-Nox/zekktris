@@ -81,7 +81,9 @@ struct RootView: View {
                 PushManager.shared.registerWithServerIfPossible()
                 VoipPushHandler.shared.registerWithServerIfPossible()
             case .signedOut:
-                PushManager.shared.unregister()
+                // Push-token unregister now happens inside Session.logout()
+                // BEFORE session revocation (so the DELETEs are still
+                // authenticated and the server stops ringing this device).
                 store.stop()
             case .loading:
                 break

@@ -145,7 +145,21 @@ export const messages = pgTable(
   (t) => ({
     /** Primary read pattern: latest N messages in a channel, paginated. */
     channelTimeIdx: index('messages_channel_time_idx').on(t.channelId, t.id),
-    authorIdx: index('messages_author_idx').on(t.authorId),
+    /** (author_id, created_at): the AutoMod repeat-message scan filters
+     *  `author_id = ? AND created_at > cutoff` on every send. The bare
+     *  (author_id) index forced a scan+filter of the author's whole history;
+     *  the composite serves the range directly (and still covers any
+     *  author_id-only lookup as the leading column). Matches migration 0078. */
+    authorIdx: index('messages_author_idx').on(t.authorId, t.createdAt),
+    /** (channel_id, author_id, id): the per-send slowmode check finds the
+     *  author's newest message in the channel (`channel_id = ? AND
+     *  author_id = ? ORDER BY id DESC LIMIT 1`). Without it the
+     *  (channel_id, id) index scanned every message in the channel. */
+    channelAuthorIdx: index('messages_channel_author_idx').on(
+      t.channelId,
+      t.authorId,
+      t.id,
+    ),
     /** Pin-panel lookups (`WHERE channel_id = ? AND pinned AND deleted_at
      *  IS NULL`). Partial — pinned rows are a tiny fraction of messages, so
      *  a full (channel_id, pinned) btree was near-table-sized for no

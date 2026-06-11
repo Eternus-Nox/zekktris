@@ -18,6 +18,23 @@ import { db, schema } from '../db';
 import { errors } from '../errors';
 import { nextSnowflake } from '../snowflake';
 import { writeAudit } from './audit';
+import { Permissions } from '@zekktris/shared/permissions';
+
+/**
+ * Permission bits a self-assignable role must NEVER carry. selfAssignRole
+ * grants a flagged role to any member with NO permission or hierarchy check,
+ * so a privileged self-assignable role is a one-flag path from member to admin.
+ */
+const PRIVILEGED_ROLE_PERMS =
+  Permissions.ADMINISTRATOR |
+  Permissions.MANAGE_ROLES |
+  Permissions.MANAGE_GUILD |
+  Permissions.MANAGE_CHANNELS |
+  Permissions.KICK_MEMBERS |
+  Permissions.BAN_MEMBERS |
+  Permissions.MODERATE_MEMBERS |
+  Permissions.MANAGE_WEBHOOKS |
+  Permissions.MANAGE_MESSAGES;
 
 export interface CreateRoleInput {
   guildId: bigint;
@@ -32,15 +49,14 @@ export interface CreateRoleInput {
 }
 
 export async function createRole(input: CreateRoleInput) {
-  // Place new roles at the bottom of the actor's reach: position = max-existing + 1.
-  // The actor's manage-role hierarchy guard is run by the route layer before us.
-  const top = await db
-    .select({ position: schema.roles.position })
-    .from(schema.roles)
-    .where(eq(schema.roles.guildId, input.guildId))
-    .orderBy(desc(schema.roles.position))
-    .limit(1);
-  const nextPosition = (top[0]?.position ?? 0) + 1;
+  // Place new roles just ABOVE @everyone (position 1), matching Discord.
+  // The previous `max(position)+1` put new roles at the TOP of the
+  // hierarchy — above owner/admin-designated roles, and out of the
+  // creator's own manage reach (a role at or above your highest is
+  // unmanageable), so a non-owner with MANAGE_ROLES couldn't edit the role
+  // they'd just made. Positions are non-unique (ties broken by id), so
+  // a fixed 1 needs no renumbering of existing roles.
+  const nextPosition = 1;
 
   const id = nextSnowflake();
   const [role] = await db
@@ -135,6 +151,19 @@ export async function updateRole(input: UpdateRoleInput) {
   // grant with system behavior.
   if (role.managed && input.selfAssignable !== undefined) {
     throw errors.badRequest('Cannot toggle self-assignable on a managed role');
+  }
+  // A self-assignable role can be self-granted by any member with no
+  // permission/hierarchy check, so it must not carry privileged bits.
+  // Check the EFFECTIVE permissions (the new value if this call also sets
+  // them, else the current ones) so you can't flip selfAssignable and raise
+  // permissions in one request.
+  if (input.selfAssignable === true) {
+    const effectivePerms = input.permissions ?? role.permissions;
+    if ((effectivePerms & PRIVILEGED_ROLE_PERMS) !== 0n) {
+      throw errors.badRequest(
+        'Roles carrying privileged permissions cannot be made self-assignable',
+      );
+    }
   }
 
   const update: Record<string, unknown> = {};
@@ -339,6 +368,12 @@ export async function selfAssignRole(args: {
   if (!role) throw errors.notFound('Role');
   if (!role.selfAssignable) {
     throw errors.forbidden('This role is not self-assignable');
+  }
+  // Defense in depth: refuse to self-grant a role that carries privileged
+  // bits even if it was somehow flagged self-assignable (e.g. permissions
+  // raised after the flag, or a row from before the updateRole guard).
+  if ((role.permissions & PRIVILEGED_ROLE_PERMS) !== 0n) {
+    throw errors.forbidden('This role can no longer be self-assigned');
   }
   const { addMemberRole } = await import('./members');
   await addMemberRole({

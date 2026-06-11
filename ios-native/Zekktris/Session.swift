@@ -110,6 +110,17 @@ final class Session: ObservableObject {
         // first made the logout request go out unauthenticated, so the
         // server-side session was never actually revoked.
         Task { [api] in
+            // Unregister push tokens FIRST, while the access token is still
+            // valid — api.logout() revokes the session and blacklists the
+            // token, after which a device-token DELETE would 401 and the
+            // server would keep pushing (incl. VoIP call rings) to this
+            // signed-out device. Both best-effort.
+            if let t = PushManager.shared.apnsTokenHex {
+                await api.unregisterDeviceToken(token: t)
+            }
+            if let t = VoipPushHandler.shared.voipTokenHex {
+                await api.unregisterDeviceToken(token: t)
+            }
             await api.logout()
             api.token = nil
             // The server clears the refresh cookie on logout; mirror it
