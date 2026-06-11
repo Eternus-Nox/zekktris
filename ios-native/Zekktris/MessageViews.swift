@@ -2286,6 +2286,21 @@ func markdownAttributed(_ string: String) -> AttributedString {
 /// Floating profile shown when tapping a user anywhere (message author,
 /// member list, voice tile). Mirrors the web ProfileCard: avatar, name,
 /// @username, presence, and relationship-aware actions.
+/// Sizing for the profile card sheet. On "Designed for iPad on Mac" a `.sheet`
+/// renders as a form-sheet that does NOT grow to the `.large` detent, so the
+/// content under the avatar was squeezed into a small scrolling strip. There we
+/// give the card an explicit generous size so it fits without an inner scroll
+/// bar; on iPhone/iPad we keep draggable detents (large first so it opens tall).
+private struct ProfileCardPresentation: ViewModifier {
+    func body(content: Content) -> some View {
+        if ProcessInfo.processInfo.isiOSAppOnMac {
+            content.frame(minWidth: 600, idealWidth: 620, minHeight: 880, idealHeight: 920)
+        } else {
+            content.presentationDetents([.large, .medium])
+        }
+    }
+}
+
 struct ProfileCardView: View {
     let user: PublicUser
     @EnvironmentObject private var store: AppStore
@@ -2391,9 +2406,7 @@ struct ProfileCardView: View {
             }
         }
         .background(Theme.bg1)
-        // Large first so the card opens tall (esp. on iPad / Designed-for-iPad
-        // on Mac, where a sheet is a fixed form-sheet); iPhone can drag to medium.
-        .presentationDetents([.large, .medium])
+        .modifier(ProfileCardPresentation())
     }
 
     @ViewBuilder

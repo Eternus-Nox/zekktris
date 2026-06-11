@@ -22,6 +22,10 @@ final class CallManager: NSObject, ObservableObject {
     var onEnd: ((String) -> Void)?
     /// System call-screen mute toggled.
     var onSetMuted: ((Bool) -> Void)?
+    /// CallKit activated the audio session — the store re-asserts the mic so
+    /// capture starts on the now-active session (the room connected with the
+    /// LiveKit engine gated for CallKit).
+    var onAudioActivated: (() -> Void)?
 
     private let provider: CXProvider
     private let controller = CXCallController()
@@ -204,6 +208,9 @@ extension CallManager: CXProviderDelegate {
         // the mic/subscribe requests issued by the room connect). This is the
         // documented LiveKit CallKit hook (AudioManager.setEngineAvailability).
         try? AudioManager.shared.setEngineAvailability(.default)
+        // The mic was published while the engine was gated; re-assert it now
+        // that the session is live so the peer actually hears us.
+        Task { @MainActor in onAudioActivated?() }
     }
 
     nonisolated func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {

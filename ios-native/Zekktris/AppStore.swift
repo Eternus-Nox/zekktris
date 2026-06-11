@@ -197,6 +197,13 @@ final class AppStore: ObservableObject {
                 if self.voice.isMuted != muted { await self.toggleVoiceMute() }
             }
         }
+        CallManager.shared.onAudioActivated = { [weak self] in
+            guard let self else { return }
+            // CallKit just activated the session — make sure the mic is
+            // actually capturing on it (the room connected with the engine
+            // gated, so the initial publish may not have started capture).
+            Task { await self.voice.ensureMicEnabled() }
+        }
         NotificationDelegate.shared.visibleChannelId = { [weak self] in
             self?.selectedChannel?.id
         }

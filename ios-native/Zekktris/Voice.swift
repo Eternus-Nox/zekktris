@@ -23,12 +23,11 @@ final class VoiceManager: ObservableObject {
     private var wasMutedBeforeDeafen = false
     /// Whether the local camera is publishing.
     @Published private(set) var isCameraOn = false
-    /// Whether the local screen-share track is publishing (in-app capture).
-    @Published private(set) var isScreenSharing = false
     /// Remote screen-share tracks keyed by user id (kept separate from
-    /// camera tracks so one doesn't clobber the other).
+    /// camera tracks so one doesn't clobber the other). Native can VIEW a
+    /// screen share started elsewhere (e.g. the web client); it can no longer
+    /// publish one itself (the in-app ReplayKit capture was removed).
     @Published private(set) var screenTracks: [String: VideoTrack] = [:]
-    @Published private(set) var localScreenTrack: VideoTrack?
     /// The local camera track (captured on publish) and remote video tracks
     /// keyed by user id, so the arena can render video tiles.
     @Published private(set) var localVideoTrack: VideoTrack?
@@ -97,6 +96,24 @@ final class VoiceManager: ObservableObject {
         }
     }
 
+    /// Re-assert the mic publication after CallKit activates the audio session.
+    /// On the CallKit answer path the room connects (and publishes the mic)
+    /// while the LiveKit engine is gated OFF, so capture may not resume when
+    /// CallKit hands us the activated session — the other side hears nothing.
+    /// The session can activate before connect() returns, so wait briefly for
+    /// the room, then force a fresh capture start (toggle off→on). Respects the
+    /// user's mute state and is a no-op outside an active, unmuted call.
+    func ensureMicEnabled() async {
+        var waited = 0
+        while !isConnected && waited < 30 {
+            try? await Task.sleep(nanoseconds: 100_000_000) // 0.1s, up to ~3s
+            waited += 1
+        }
+        guard let room, isConnected, !isMuted else { return }
+        try? await room.localParticipant.setMicrophone(enabled: false)
+        try? await room.localParticipant.setMicrophone(enabled: true)
+    }
+
     /// Toggle deafen: mute/unmute every remote participant's audio for the local
     /// listener, and mute the mic while deafened (restoring it on undeafen).
     /// Per-user "muted for me" choices are preserved when undeafening.
@@ -115,21 +132,6 @@ final class VoiceManager: ObservableObject {
             }
         }
         isDeafened = next
-    }
-
-    /// Toggle in-app screen sharing. Captures THIS app's screen via
-    /// ReplayKit; sharing the whole device (other apps / home screen)
-    /// requires a Broadcast Upload Extension target, which has to be
-    /// added in Xcode (separate follow-up).
-    func toggleScreenShare() async {
-        let next = !isScreenSharing
-        do {
-            try await room?.localParticipant.setScreenShare(enabled: next)
-            isScreenSharing = next
-            if !next { localScreenTrack = nil }
-        } catch {
-            lastError = error.localizedDescription
-        }
     }
 
     /// Switch the publishing camera between front and back.
@@ -234,9 +236,7 @@ final class VoiceManager: ObservableObject {
         isMuted = false
         isDeafened = false
         isCameraOn = false
-        isScreenSharing = false
         localVideoTrack = nil
-        localScreenTrack = nil
         remoteVideoTracks.removeAll()
         screenTracks.removeAll()
         speakingUserIds = []
@@ -318,12 +318,9 @@ extension VoiceManager: RoomDelegate {
     nonisolated func room(_ room: Room, participant: LocalParticipant, didPublishTrack publication: LocalTrackPublication) {
         Task { @MainActor in
             guard room === self.room else { return }
-            if let vt = publication.track as? VideoTrack {
-                if publication.source == .screenShareVideo {
-                    self.localScreenTrack = vt
-                } else {
-                    self.localVideoTrack = vt
-                }
+            // Native only publishes the camera (screen share was removed).
+            if let vt = publication.track as? VideoTrack, publication.source != .screenShareVideo {
+                self.localVideoTrack = vt
             }
         }
     }
@@ -331,12 +328,8 @@ extension VoiceManager: RoomDelegate {
     nonisolated func room(_ room: Room, participant: LocalParticipant, didUnpublishTrack publication: LocalTrackPublication) {
         Task { @MainActor in
             guard room === self.room else { return }
-            if publication.track is VideoTrack {
-                if publication.source == .screenShareVideo {
-                    self.localScreenTrack = nil
-                } else {
-                    self.localVideoTrack = nil
-                }
+            if publication.track is VideoTrack, publication.source != .screenShareVideo {
+                self.localVideoTrack = nil
             }
         }
     }
@@ -470,12 +463,10 @@ struct VoiceChannelView: View {
         }
     }
 
-    /// Participants sharing their screen (self included).
+    /// Remote participants sharing their screen. Native can no longer publish
+    /// a screen share, so the local user never appears here.
     private var screenSharers: [VoiceState] {
-        store.voiceStates.filter { vs in
-            let isSelf = vs.userId == session.currentUser?.id
-            return (isSelf ? voice.localScreenTrack : voice.screenTracks[vs.userId]) != nil
-        }
+        store.voiceStates.filter { voice.screenTracks[$0.userId] != nil }
     }
 
     private var hasAnyVideo: Bool {
@@ -568,10 +559,10 @@ struct VoiceChannelView: View {
     /// (screens are landscape; cropping would cut content off).
     @ViewBuilder
     private func screenTile(_ vs: VoiceState) -> some View {
-        let isSelf = vs.userId == session.currentUser?.id
-        let name = isSelf ? "Your screen" : "\(store.memberName(vs.userId) ?? "Member")'s screen"
+        // Native only ever shows REMOTE screen shares now (it can't publish one).
+        let name = "\(store.memberName(vs.userId) ?? "Member")'s screen"
         ZStack(alignment: .bottomLeading) {
-            if let track = isSelf ? voice.localScreenTrack : voice.screenTracks[vs.userId] {
+            if let track = voice.screenTracks[vs.userId] {
                 SwiftUIVideoView(track, layoutMode: .fit)
             }
             HStack(spacing: 4) {
@@ -927,17 +918,6 @@ struct VoiceChannelView: View {
                         .clipShape(Circle())
                 }
             }
-
-            Button { Task { await voice.toggleScreenShare() } } label: {
-                Image(systemName: voice.isScreenSharing ? "rectangle.on.rectangle.slash" : "rectangle.on.rectangle")
-                    .font(.system(size: 18))
-                    .foregroundColor(voice.isScreenSharing ? Theme.accent : Theme.ink1)
-                    .frame(width: 54, height: 54)
-                    .background(Theme.bg3)
-                    .clipShape(Circle())
-            }
-            .disabled(!voice.isConnected)
-            .opacity(voice.isConnected ? 1 : 0.5)
 
             Button(action: leave) {
                 Image(systemName: "phone.down.fill")

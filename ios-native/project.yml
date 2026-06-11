@@ -8,7 +8,10 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    MARKETING_VERSION: "0.1.0"
+    # Keep in sync with Info.plist CFBundleShortVersionString / pbxproj
+    # MARKETING_VERSION so a future `xcodegen generate` doesn't regress the
+    # shipping version. Bump all three together on release.
+    MARKETING_VERSION: "0.1.4"
     CURRENT_PROJECT_VERSION: "1"
 
 packages:
@@ -29,7 +32,7 @@ targets:
       path: Zekktris/Info.plist
       properties:
         CFBundleDisplayName: Zekktris
-        CFBundleShortVersionString: "0.1.0"
+        CFBundleShortVersionString: "0.1.4"
         CFBundleVersion: "1"
         UILaunchScreen: {}
         UIApplicationSceneManifest:
