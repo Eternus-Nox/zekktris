@@ -36,14 +36,25 @@ final class APIClient {
 
     /// In-flight refresh, shared so concurrent 401s trigger ONE /auth/refresh
     /// (the server rotates the cookie per call — parallel refreshes with the
-    /// same cookie would 401 each other).
+    /// same cookie would 401 each other). Guarded by `refreshLock`: APIClient
+    /// is a plain class whose async methods run on the concurrent executor,
+    /// so the check-then-store below MUST be atomic. Without the lock, the
+    /// cold-start burst (getMe + loadGuilds/loadDMs/loadReadStates all 401 at
+    /// once) could launch TWO refreshes; the loser's rotation wiped the fresh
+    /// cookie → every later refresh failed → spurious force-logout.
     private var refreshTask: Task<Bool, Never>?
+    private let refreshLock = NSLock()
 
     /// Exchange the refresh cookie (stored by URLSession from login's
     /// Set-Cookie) for a fresh access token. Returns false when the cookie
     /// is missing/expired/revoked — i.e. the user genuinely must sign in.
     func refreshAccessToken() async -> Bool {
-        if let inFlight = refreshTask { return await inFlight.value }
+        // Atomically claim or join the single in-flight refresh.
+        refreshLock.lock()
+        if let inFlight = refreshTask {
+            refreshLock.unlock()
+            return await inFlight.value
+        }
         let work = Task<Bool, Never> { [session, decoder] in
             struct RefreshResponse: Decodable { let accessToken: String }
             guard let url = URL(string: Config.apiBaseURL + "/auth/refresh") else { return false }
@@ -62,8 +73,11 @@ final class APIClient {
             return true
         }
         refreshTask = work
+        refreshLock.unlock() // stored before unlocking — no second refresh can start
         let ok = await work.value
+        refreshLock.lock()
         refreshTask = nil
+        refreshLock.unlock()
         return ok
     }
 
