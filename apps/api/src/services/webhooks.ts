@@ -35,7 +35,7 @@ import { errors } from '../errors';
 import { nextSnowflake } from '../snowflake';
 import { writeAudit } from './audit';
 import { log } from '../log';
-import { createMessage, loadAttachments } from './messages';
+import { createMessage } from './messages';
 import * as dispatch from '../gateway/dispatch';
 import { toMessage } from '../lib/dto';
 import { computeMemberChannelPermissions, Permissions, hasPermission } from './permissions';
@@ -376,11 +376,10 @@ export async function executeWebhook(input: ExecuteWebhookInput): Promise<schema
   if (!wh.createdBy) {
     throw errors.badRequest('Webhook owner has been removed; recreate this webhook');
   }
+  // Full row (not just bannedAt/deletedAt) so we can reuse it as the message
+  // author below instead of re-querying the same user.
   const ownerRows = await db
-    .select({
-      bannedAt: schema.users.bannedAt,
-      deletedAt: schema.users.deletedAt,
-    })
+    .select()
     .from(schema.users)
     .where(eq(schema.users.id, wh.createdBy))
     .limit(1);
@@ -409,21 +408,15 @@ export async function executeWebhook(input: ExecuteWebhookInput): Promise<schema
   // attachments, hand to the toMessage builder. The message DTO
   // carries webhookId + override fields so client-side renderers know
   // which row is webhook-authored.
-  // Inline user lookup. messages route has its own loadUser helper; we
-  // duplicate the few lines here rather than promote it to a service
-  // — promoting risks a bunch of cascading import churn for what is
-  // ultimately a one-call shape.
-  const userRows = await db
-    .select()
-    .from(schema.users)
-    .where(and(eq(schema.users.id, wh.createdBy), isNull(schema.users.deletedAt)))
-    .limit(1);
-  const author = userRows[0] ?? null;
-  const attachmentRows = await loadAttachments([result.message.id]);
+  // Reuse the owner row fetched above (already proven to exist and be
+  // non-deleted/non-banned) instead of re-querying. Webhook messages carry
+  // no attachments (createMessage was called without any), so the previous
+  // loadAttachments() was a guaranteed-empty round-trip — pass [] directly.
+  const author = ownerRows[0];
   const messageDTO = toMessage({
     message: result.message,
     author,
-    attachments: attachmentRows.get(result.message.id) ?? [],
+    attachments: [],
     reactions: [],
     mentionedUserIds: result.mentionedUserIds,
     mentionedRoleIds: result.mentionedRoleIds,

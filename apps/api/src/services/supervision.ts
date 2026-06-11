@@ -733,6 +733,36 @@ async function watchWordsFor(childId: bigint): Promise<string[]> {
  * Guild "received" is intentionally out of scope — it would mean scanning
  * every channel member per message, which is both expensive and noisy.
  */
+// Process-level cache of the ids of children under ACTIVE supervision. The
+// per-message flag scan runs (fire-and-forget) on EVERY message send, so
+// without this an instance with NO parental controls still paid 1 query per
+// guild message and 2-3 per DM. The fast path below short-circuits when this
+// set is empty (the common case) or doesn't contain the candidate. 15s TTL —
+// a newly supervised child starts being scanned within that window.
+let supervisedChildIdsCache: Set<bigint> | null = null;
+let supervisedChildIdsCacheAt = 0;
+const SUPERVISED_CACHE_MS = 15_000;
+
+async function getSupervisedChildIds(): Promise<Set<bigint>> {
+  if (supervisedChildIdsCache && Date.now() - supervisedChildIdsCacheAt < SUPERVISED_CACHE_MS) {
+    return supervisedChildIdsCache;
+  }
+  let ids: Set<bigint>;
+  try {
+    const rows = await db
+      .selectDistinct({ childId: schema.parentChildLinks.childId })
+      .from(schema.parentChildLinks)
+      .where(eq(schema.parentChildLinks.status, 'active'));
+    ids = new Set(rows.map((r) => r.childId));
+  } catch {
+    // Table missing (migration not applied) → treat as no supervision active.
+    ids = new Set();
+  }
+  supervisedChildIdsCache = ids;
+  supervisedChildIdsCacheAt = Date.now();
+  return ids;
+}
+
 export async function scanMessageForFlags(input: {
   messageId: bigint;
   channelId: bigint;
@@ -742,6 +772,11 @@ export async function scanMessageForFlags(input: {
 }): Promise<void> {
   const content = (input.content || '').toLowerCase();
   if (!content.trim() || !input.authorId) return;
+
+  // Fast path: no children under active supervision → nothing to scan, zero
+  // queries. (This is the steady state for most self-hosted instances.)
+  const supervised = await getSupervisedChildIds();
+  if (supervised.size === 0) return;
 
   const candidates: Array<{ childId: bigint; direction: 'sent' | 'received' }> = [
     { childId: input.authorId, direction: 'sent' },
@@ -753,10 +788,11 @@ export async function scanMessageForFlags(input: {
   }
 
   for (const cand of candidates) {
+    if (!supervised.has(cand.childId)) continue; // not a supervised child
     const words = await watchWordsFor(cand.childId);
     if (words.length === 0) continue;
     const parents = await getActiveParentIds(cand.childId);
-    if (parents.length === 0) continue; // not supervised
+    if (parents.length === 0) continue; // not supervised (cache raced a revoke)
     const matched = [...new Set(words.filter((w) => content.includes(w)))];
     if (matched.length === 0) continue;
     const matchedWord = matched.join(', ').slice(0, 200);
