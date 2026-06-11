@@ -495,4 +495,67 @@ O2/O3 (hot paths), O4, O6, O7 · E1–E7, E9 (shipped as features) · ENV empty-
   **OPS-CI** (no .github/workflows — typecheck + vitest + Postgres service container;
   the suite is now parallel-safe so CI is cheap), Caddy edge rate-limit/CSP.
 - **find:permissions-escalation, find:web-fresh, find:native-fresh** audit lanes never
-  completed (session limit) — worth a future pass.
+  completed (session limit) — worth a future pass. *(find:web-fresh now run — see the
+  2026-06-11 follow-up below.)*
+
+---
+
+# 2026-06-11 follow-up — web/XSS audit lane (fresh, adversarially verified)
+
+Ran the web-client security lane that never completed on 2026-06-10 (`find:web-fresh`):
+4 focused finders — markdown XSS, reducer correctness, `e2ee.ts`, injection/auth — each
+finding adversarially verified. **8 confirmed, 6 refuted.** Headline result: the markdown
+renderer audited **clean** — no `dangerouslySetInnerHTML`, scheme-restricted autolinks,
+React-escaped attributes; no working XSS constructible.
+
+## Fixed (commit 123ca60)
+- **E2EE stale key survives a peer re-key (medium).** `encryptForDm` never re-checked the
+  channel verifier, so after a peer disabled + re-enabled E2EE with a fresh salt this
+  device kept encrypting under the dead key — the UI showed "sent securely" while the
+  re-keyed peer received an undecryptable tombstone. `encryptForDm(plaintext, channelId,
+  expectedVerifier)` now drops the stale key on mismatch (mirrors the existing
+  `getCallKeyString` guard); the send and edit paths pass `channel.e2eeVerifier`.
+  (`lib/e2ee.ts`, `app/MessageView.tsx`, `app/MessageItem.tsx`)
+- **Edit of an encrypted message could send PLAINTEXT (low / privacy).** `saveEdit` fell
+  through to the raw typed text when `encryptForDm` returned null (key dropped between
+  opening the composer and saving) → cleartext written into the server-stored history of a
+  conversation the user believes is end-to-end encrypted. Now aborts with an
+  "enter password" / "encryption failed" message instead of degrading to plaintext.
+  (`app/MessageItem.tsx`)
+- **Guild-import `linkUrl` skipped scheme validation (low).** The normal channel
+  create/patch routes enforce `.url()` + `^https?://`; `POST /guilds/import` typed
+  `linkUrl` as a bare string, so a crafted backup could persist a `javascript:` / `data:`
+  URL into the web `window.open` sink. The import schema now mirrors `channels.ts`.
+  (`routes/guilds.ts`)
+- **Embed image/favicon accepted any scheme (low, defense-in-depth).** `og:image` and
+  `<link rel=icon>` resolved via `new URL(raw, base)`, which ignores the base for an
+  absolute href → an attacker-controlled `javascript:` / `data:` survived into the
+  `<img src>` sinks (inert there, but unbounded). Now rejects non-http(s) at the source.
+  (`services/embeds.ts`)
+- **Service-worker notification-click not origin-constrained (low, latent).** The
+  origin-strip ran only on the call branch; ordinary message clicks passed `data.url`
+  verbatim to `openWindow` — a latent open-redirect / window-injection if any future
+  payload carried a cross-origin URL. Same-origin normalization now runs for **every**
+  click. (`public/sw.js`)
+- **Native push deep-link allowed protocol-relative `//host` (low, latent).**
+  `routeFromPush` lacked the `!startsWith('//')` guard the web `?next=` handler has → a
+  protocol-relative `data.url` would bounce the WKWebView off-app. Guard added.
+  (`app/useNativePush.ts`)
+- **`aesKeyCache` never evicted on `clearLocalKey` (low, hygiene).** Disabled/rotated
+  imported `CryptoKey`s lingered for the page lifetime; now released alongside the raw key
+  bytes. (`lib/e2ee.ts`)
+
+## Deferred (no exploit; tracked)
+- **`usersById` cache grows unbounded** — populated on every message/member load, never
+  pruned (not even scrubbed on `GUILD_REMOVE`). Single-digit-MB, local to the victim's own
+  client, no crafted-input amplification. Sits alongside the existing "unbounded
+  presence/emojiImages caches" deferral above. If revisited: prune guild-only users on
+  `GUILD_REMOVE` + cap `messagesByChannel` key count (LRU).
+
+## Refuted (verified NOT real)
+Markdown XSS (negative result confirmed end-to-end) · poll-ballot self-merge race (impact
+overstated — the REST vote response re-stamps the ballot) · `READ_STATE_UPSERT`
+backward-move "bypass" (server contract holds) · `MESSAGE_PATCH` reaction resurrection
+(requires an impossible local state) · `MESSAGE_CREATE` `mentionedUserIds` deref crash
+(unreachable input) · non-constant-time verifier compare (not security-relevant — the
+verifier is server-public).
