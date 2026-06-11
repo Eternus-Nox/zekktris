@@ -1,6 +1,7 @@
 import Foundation
 import CallKit
 import AVFAudio
+import LiveKit
 
 /// CallKit bridge: 1:1 DM calls ring and behave like normal phone calls —
 /// full-screen system UI on the lock screen, answer/decline/mute from the
@@ -55,6 +56,10 @@ final class CallManager: NSObject, ObservableObject {
             channelByUUID.removeValue(forKey: u)
             ringing.remove(u)
         }
+        // Safety: ensure the engine gate isn't left closed if a call ended
+        // before CallKit's didActivate/didDeactivate fired (e.g. the caller
+        // cancelled as we answered). .default is the resting state.
+        try? AudioManager.shared.setEngineAvailability(.default)
     }
 
     // MARK: Incoming
@@ -151,6 +156,15 @@ extension CallManager: CXProviderDelegate {
     nonisolated func providerDidReset(_ provider: CXProvider) {}
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
+        // Gate the LiveKit audio engine OFF until CallKit activates the audio
+        // session (provider(_:didActivate:)). Without this, LiveKit's engine
+        // could start on a session CallKit hasn't activated yet — the race that
+        // previously left CallKit-answered calls silent. Pending mic/playback
+        // requests issued by the room connect are honored once we flip back to
+        // .default in didActivate. Scoped to the CallKit answer path only; the
+        // foreground in-app answer never reaches here, so guild voice and
+        // foreground calls keep LiveKit's normal auto-managed session.
+        try? AudioManager.shared.setEngineAvailability(.none)
         Task { @MainActor in
             if let channelId = channelByUUID[action.callUUID] {
                 ringing.remove(action.callUUID)
@@ -185,11 +199,18 @@ extension CallManager: CXProviderDelegate {
     }
 
     nonisolated func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
-        // Intentionally empty: CallKit is used as a RINGER only. The call
-        // is reported ended at answer time, releasing the session before
-        // LiveKit configures it — configuring it here fought WebRTC's own
-        // audio unit and silenced calls in both directions.
+        // CallKit has activated the audio session — release the engine gate so
+        // LiveKit starts capture/playback on the now-active session (honoring
+        // the mic/subscribe requests issued by the room connect). This is the
+        // documented LiveKit CallKit hook (AudioManager.setEngineAvailability).
+        try? AudioManager.shared.setEngineAvailability(.default)
     }
 
-    nonisolated func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {}
+    nonisolated func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+        // Safety restore: never leave the global engine gate closed once the
+        // CallKit session is gone, or a later guild-voice/next-call session
+        // would be silently gated off. .default is the resting state; LiveKit
+        // won't start the engine without a pending request.
+        try? AudioManager.shared.setEngineAvailability(.default)
+    }
 }

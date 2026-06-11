@@ -13,8 +13,10 @@ if (!dbReady) {
 
 // Underpins the native achievements gallery: the owner's shelf must return the
 // FULL catalog with both earned and not-yet-earned entries (locked entries
-// carry live progress toward `goal`). The route layer filters to earned-only
-// for other viewers and gates on achievements_public (verified live).
+// carry live progress toward `goal`). The route layer returns this full set to
+// other viewers of a PUBLIC profile too, but with the raw `value` progress
+// counter scrubbed to 0, and gates on achievements_public (private → empty).
+// Route-level coverage lives in achievements-route.integration.test.ts.
 describe.runIf(dbReady)('achievementsForUser (integration)', () => {
   afterAll(async () => {
     await cleanupAll();

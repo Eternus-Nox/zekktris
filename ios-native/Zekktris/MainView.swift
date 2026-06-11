@@ -572,6 +572,9 @@ struct ServerRailView: View {
 /// Channel list for the selected guild.
 struct ChannelListView: View {
     @EnvironmentObject private var store: AppStore
+    // Forwarded into the GuildSettings sheet (and its nested Members sheet) so
+    // they keep env objects on "Designed for iPad on Mac".
+    @EnvironmentObject private var session: Session
     @State private var showCreateChannel = false
     @State private var showGuildSettings = false
     @State private var showGuildInfo = false
@@ -670,7 +673,13 @@ struct ChannelListView: View {
             CreateChannelSheet(categories: sortedCategories, initialParentId: createInCategory?.id)
         }
         .sheet(isPresented: $showGuildSettings) {
+            // Re-inject env objects so the nested Members/Roles sheets (and the
+            // resize-driven sheet re-presentation on "Designed for iPad on Mac")
+            // keep store/session/voice instead of trapping the @EnvironmentObject.
             GuildSettingsView()
+                .environmentObject(store)
+                .environmentObject(session)
+                .environmentObject(store.voice)
         }
         .sheet(isPresented: $showGuildInfo) {
             GuildInfoCard(onOpenSettings: {
@@ -1741,7 +1750,12 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("STATUS")
             ForEach(statuses, id: \.1) { label, value, color in
-                Button { Task { await session.setStatus(value) } } label: {
+                Button {
+                    // Surrender auto-idle control so the manual pick sticks
+                    // (a manual "idle" must not be auto-bounced to "online").
+                    store.noteManualStatusChange()
+                    Task { await session.setStatus(value) }
+                } label: {
                     HStack(spacing: 10) {
                         Circle().fill(color).frame(width: 10, height: 10)
                         Text(label).font(.zkSans(15)).foregroundColor(Theme.ink1)
@@ -4515,6 +4529,9 @@ struct RoleEditSheet: View {
 /// zone. Overview is read-only for non-managers; everyone can leave.
 struct GuildSettingsView: View {
     @EnvironmentObject private var store: AppStore
+    // Forwarded to the MemberListView sheet below (sheet hosts don't inherit
+    // env objects on "Designed for iPad on Mac").
+    @EnvironmentObject private var session: Session
     @Environment(\.dismiss) private var dismiss
 
     @State private var name = ""
@@ -4583,7 +4600,12 @@ struct GuildSettingsView: View {
                 discoveryCategory = store.selectedGuild?.discoveryCategory
             }
             .sheet(isPresented: $showRoles) { RolesListView() }
-            .sheet(isPresented: $showMembers) { MemberListView() }
+            .sheet(isPresented: $showMembers) {
+                MemberListView()
+                    .environmentObject(store)
+                    .environmentObject(session)
+                    .environmentObject(store.voice)
+            }
             .sheet(isPresented: $showInvite) { CreateInviteSheet() }
             .sheet(isPresented: $showGetRoles) { BrowseRolesView() }
             .sheet(isPresented: $showEvents) { EventsView() }

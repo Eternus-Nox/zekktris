@@ -114,13 +114,18 @@ usersRouter.get(
       return c.json({ achievements: [], public: false });
     }
     const { achievementsForUser } = await import('../services/achievements');
-    // Other people only ever see EARNED badges — locked entries carry
-    // live progress counters (message totals, friend counts) that the
-    // public shelf shouldn't leak. The owner sees the full catalog.
     const all = await achievementsForUser(targetId);
     const isOwner = targetId === requireUserId(c);
+    // The owner sees their full shelf with real progress. Other viewers of a
+    // PUBLIC profile see the same set of badges (earned + in-progress, so the
+    // shelf isn't silently empty for anyone who hasn't crossed a threshold yet)
+    // but with the raw `value` progress counter scrubbed to 0 — that field
+    // leaks exact totals (message counts, friend counts, call hours). `goal`
+    // and `earned` are kept so in-progress badges still render "x/goal" as 0/goal.
+    // value is set to 0 rather than omitted: the native model decodes it as a
+    // non-optional Int, so omitting it would break the client decode.
     return c.json({
-      achievements: isOwner ? all : all.filter((a) => a.earned),
+      achievements: isOwner ? all : all.map((a) => ({ ...a, value: 0 })),
       public: target.pub,
     });
   },

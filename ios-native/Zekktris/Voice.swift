@@ -607,7 +607,16 @@ struct VoiceChannelView: View {
         let speaking = voice.speakingUserIds.contains(vs.userId)
         ZStack(alignment: .bottomLeading) {
             if let vt = voice.videoTrack(for: vs.userId, isSelf: isSelf) {
+                // Key the self-preview by the track's object identity so a fresh
+                // VideoView is built whenever the local camera track (re)binds.
+                // Re-enabling the camera UNMUTES the same LocalVideoTrack object
+                // (same trackId), and LiveKit's pooled VideoView only re-attaches
+                // its renderer when the track DIFFERS — so without a new identity
+                // the sharer's own preview stayed blank on a re-share (the remote
+                // saw it fine via a distinct subscribed track). Remote tiles keep
+                // a stable per-user id (they already re-attach on resubscribe).
                 SwiftUIVideoView(vt)
+                    .id(isSelf ? "self-cam-\(ObjectIdentifier(vt).hashValue)" : "remote-\(vs.userId)")
             }
             Text(name)
                 .font(.zkSans(12, weight: .medium))
@@ -637,7 +646,14 @@ struct VoiceChannelView: View {
     }
 
     private func arenaContent(size: CGSize) -> some View {
-        let side = min(size.width, size.height)
+        // Clamp the LAYOUT canvas to a phone-sized reference. Orbit radii,
+        // rings and the glow are all sized as a fraction of `side`, but the
+        // satellites on them (black hole 22pt, avatars 54pt, tiles 92pt) are
+        // fixed px — tuned for a ~phone canvas. On a large/resizable "Designed
+        // for iPad on Mac" window an unclamped `side` flung the avatars far out
+        // into tiny dots around a speck and hard-edged the glow. cx/cy still use
+        // the REAL size so the galaxy stays centered; it just stops inflating.
+        let side = min(min(size.width, size.height), 420)
         let cx = size.width / 2
         let cy = size.height / 2
         return ZStack {
@@ -648,7 +664,7 @@ struct VoiceChannelView: View {
                     colors: [Theme.accent.opacity(0.45), .clear],
                     center: .center, startRadius: 0, endRadius: side * 0.2))
                 .frame(width: side * 0.55, height: side * 0.55)
-                .blur(radius: 34)
+                .blur(radius: side * 0.09)
                 .position(x: cx, y: cy)
 
             BlackHoleView()

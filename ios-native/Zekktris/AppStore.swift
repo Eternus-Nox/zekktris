@@ -152,11 +152,13 @@ final class AppStore: ObservableObject {
     private func wireCallKit() {
         CallManager.shared.onAnswer = { [weak self] channelId in
             guard let self else { return }
-            // CallKit is a ringer, not the in-call session owner: end the
-            // system call right away so AVAudioSession is fully released to
-            // LiveKit before the room connects (a CallKit-held session left
-            // both sides silent).
-            CallManager.shared.callEnded(channelId: channelId, remoteEnded: false)
+            // Do NOT report the CallKit call ended here. Reporting ended on
+            // answer (it used reason .declinedElsewhere) tore down the
+            // AVAudioSession CallKit had just activated, leaving the answered
+            // call with no audio. The CallKit call now stays active for the
+            // call's lifetime; CallManager gates the LiveKit audio engine off
+            // until CallKit's didActivate fires (see CallManager). Hangup
+            // still flows through onEnd → leaveCurrentVoice → callEnded.
             if let call = self.incomingCall, call.channelId == channelId {
                 self.incomingCall = nil
                 self.openVoice(call.channel)
@@ -376,10 +378,11 @@ final class AppStore: ObservableObject {
 
     // MARK: Automatic presence (online ↔ idle)
     //
-    // "Online" is an AUTOMATIC mode: while the chosen status is online/idle the
-    // app flips between online (foreground + recent UI interaction OR talking in
-    // voice) and idle (5+ min without UI interaction and not talking). dnd and
-    // invisible are manual and untouched. Offline is handled by the gateway
+    // "Online" is an AUTOMATIC mode: while the chosen status is online the app
+    // flips to idle (5+ min without UI interaction and not talking) and back to
+    // online on activity. A MANUALLY chosen idle, dnd, and invisible are all
+    // manual and untouched (tracked via `autoSetIdle` so a user-set idle is
+    // never auto-bounced to online). Offline is handled by the gateway
     // disconnect (background/close). Pushes go through `autoStatusPush`
     // (wired to Session.setStatus) so it reuses the normal status path; the
     // chosen status is read via `currentChosenStatus`. AFK voice-channel
@@ -391,6 +394,12 @@ final class AppStore: ObservableObject {
     var currentChosenStatus: (() -> String)?
     private var lastInteractionAt = Date()
     private var appActive = true
+    /// True only when the auto-presence machine itself moved the user to
+    /// "idle" (online → idle on inactivity). Mirrors the web client's
+    /// `autoSetRef`: it lets us restore idle → online when the user becomes
+    /// active again WITHOUT ever stomping a manually-chosen "idle" (or dnd /
+    /// invisible). Cleared on any manual status pick (noteManualStatusChange).
+    private var autoSetIdle = false
     private var autoPresenceTimer: Timer?
     /// Becomes true after the first gateway READY. A later READY means we
     /// reconnected after a drop, so we re-sync state (events were missed while
@@ -424,23 +433,37 @@ final class AppStore: ObservableObject {
 
     // MARK: Automatic presence state machine
 
-    /// Pure decision: the effective auto status, or nil when auto shouldn't act
-    /// (manual dnd/invisible, or backgrounded → offline handled by disconnect).
-    /// ONLINE when foreground and (recent UI interaction OR talking in voice);
-    /// otherwise IDLE.
+    /// Pure decision: the status to push, or nil when auto shouldn't act.
+    /// The auto-machine only ever touches the online↔idle band, and ONLY for
+    /// transitions it owns:
+    ///   • chosen "online" + inactive  → "idle"   (auto-away)
+    ///   • auto-set "idle" + active     → "online" (auto-return)
+    /// A MANUALLY chosen "idle" (autoSetIdle == false), or "dnd"/"invisible",
+    /// is left alone so the user's pick persists across launches/reconnects.
+    /// Backgrounded → nil (the gateway disconnect sets offline; don't fight it).
     static func desiredAutoStatus(
         chosen: String,
+        autoSetIdle: Bool,
         appActive: Bool,
         secondsSinceInteraction: TimeInterval,
         talking: Bool
     ) -> String? {
-        // Only the online/idle band is automatic; dnd & invisible are manual.
-        guard chosen == "online" || chosen == "idle" else { return nil }
-        // Backgrounded/closed → the gateway disconnect sets offline; don't fight it.
         guard appActive else { return nil }
-        if talking || secondsSinceInteraction < autoIdleThresholdSeconds { return "online" }
-        return "idle"
+        let active = talking || secondsSinceInteraction < autoIdleThresholdSeconds
+        if chosen == "online" {
+            return active ? nil : "idle"
+        }
+        if chosen == "idle", autoSetIdle {
+            return active ? "online" : nil
+        }
+        // Manual idle, dnd, invisible: never auto-act.
+        return nil
     }
+
+    /// The user manually picked a status — surrender automatic idle control so
+    /// the choice sticks (a manual "idle" must not be auto-bounced to online,
+    /// and a manual "online" re-enables auto-away from a clean slate).
+    func noteManualStatusChange() { autoSetIdle = false }
 
     /// Record a user interaction (resets the idle clock). `evaluate: false` is
     /// the cheap hot path for app-wide touch/scroll — it ONLY bumps the
@@ -484,9 +507,14 @@ final class AppStore: ObservableObject {
         let talking = voice.speakingUserIds.contains(uid)
         let secs = Date().timeIntervalSince(lastInteractionAt)
         guard let desired = Self.desiredAutoStatus(
-            chosen: chosen, appActive: appActive, secondsSinceInteraction: secs, talking: talking
+            chosen: chosen, autoSetIdle: autoSetIdle, appActive: appActive,
+            secondsSinceInteraction: secs, talking: talking
         ) else { return }
         guard desired != chosen else { return }
+        // Track which side of the auto-away transition we drove so a manual
+        // idle is never mistaken for an auto idle on the next evaluation.
+        if desired == "idle" { autoSetIdle = true }
+        else if desired == "online" { autoSetIdle = false }
         Task { await autoStatusPush?(desired) }
     }
 
@@ -1097,7 +1125,14 @@ final class AppStore: ObservableObject {
         guard let cid = voiceChannelId, let dm = dms.first(where: { $0.id == cid }) else { return nil }
         let others = dm.recipients ?? []
         guard others.count == 1, let callee = others.first else { return nil }
-        if voiceStates.contains(where: { $0.userId == callee.id }) { return nil }
+        // Read the callee's presence from the GLOBAL voice map, not the
+        // channel-scoped `voiceStates` array. `voiceStatesByUser` is upserted
+        // BEFORE the `voiceChannelId` guard in applyVoiceState, so it captures
+        // the callee answering even in the race where their JOIN arrives while
+        // our own REST join is still in flight (web mirrors this via
+        // voiceStatesForChannel). Reading `voiceStates` left the overlay stuck
+        // on "Calling…" after the callee answered.
+        if voiceStatesByUser.values.contains(where: { $0.channelId == cid && $0.userId == callee.id }) { return nil }
         return (dm, callee)
     }
     func leaveActiveCall() async {
@@ -1133,7 +1168,6 @@ final class AppStore: ObservableObject {
             voiceStatesByUser[vs.userId] = vs
         }
         guard let active = voiceChannelId else { return }
-        let wasInCall = voiceStates.contains { $0.userId == vs.userId }
         // Stable join order: update IN PLACE (planetary seating — first-in
         // stays closest; remove+append used to shuffle a user to the
         // outermost orbit on every mute toggle). Removals compact the
@@ -1147,11 +1181,30 @@ final class AppStore: ObservableObject {
 
 
 
-        // 1:1 DM auto-end (web parity): the peer who WAS in this call just
-        // left it — hang up our side too instead of stranding a solo call.
-        if wasInCall, vs.channelId != active, vs.userId != currentUserId,
-           let dm = dms.first(where: { $0.id == active }), dm.type == "dm" {
-            Task { await leaveCurrentVoice() }
+        // 1:1 DM auto-end (web parity): when no other participant remains in
+        // our active 1:1 DM call, hang up our side too instead of stranding a
+        // solo call. Keyed on "no non-self peer left" rather than `wasInCall`
+        // so it still fires when the peer's JOIN lost the voiceChannelId race
+        // (never added to voiceStates). If the DM isn't cached yet (cold-start
+        // answer before loadDMs), resolve it once and re-check — mirrors
+        // handleIncomingCall's loadDMs-and-retry. group_dm / guild voice are
+        // intentionally excluded (they legitimately keep one person).
+        if vs.userId != currentUserId, vs.channelId != active {
+            let peerStillPresent = voiceStates.contains { $0.userId != currentUserId && $0.channelId == active }
+            if !peerStillPresent {
+                if let dm = dms.first(where: { $0.id == active }) {
+                    if dm.type == "dm" { Task { await leaveCurrentVoice() } }
+                } else {
+                    Task { [weak self] in
+                        await self?.loadDMs()
+                        guard let self, self.voiceChannelId == active,
+                              let dm = self.dms.first(where: { $0.id == active }), dm.type == "dm",
+                              !self.voiceStates.contains(where: { $0.userId != self.currentUserId && $0.channelId == active })
+                        else { return }
+                        await self.leaveCurrentVoice()
+                    }
+                }
+            }
         }
 
         // Server evicted US (callee declined the call, a kick, or a
@@ -1224,6 +1277,17 @@ final class AppStore: ObservableObject {
         if let active = voiceChannelId,
            !states.contains(where: { $0.userId == currentUserId && $0.channelId == active }) {
             callLog.info("READY: reconcile stale voiceChannelId \(active, privacy: .public) (not in snapshot) — leaving")
+            Task { await leaveCurrentVoice() }
+        } else if let active = voiceChannelId,
+                  let dm = dms.first(where: { $0.id == active }), dm.type == "dm",
+                  states.contains(where: { $0.userId == currentUserId && $0.channelId == active }),
+                  !states.contains(where: { $0.userId != currentUserId && $0.channelId == active }) {
+            // We're still in a 1:1 DM call per the snapshot, but the PEER is
+            // gone from it — they left while our socket was down, so the live
+            // LEAVE never reached us. The READY snapshot omits a left peer's
+            // row (server sends no row), so this is the reconnect-gap fix for
+            // "call doesn't hang up when the other person leaves."
+            callLog.info("READY: 1:1 peer gone from snapshot — leaving")
             Task { await leaveCurrentVoice() }
         }
 

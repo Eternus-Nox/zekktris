@@ -291,7 +291,13 @@ struct MessageListView: View {
             SearchSheet(channel: channel)
         }
         .sheet(isPresented: $store.showMembers) {
+            // Re-inject env objects: the sheet host doesn't inherit them on
+            // "Designed for iPad on Mac", which crashed the Members sheet
+            // ("No ObservableObject of type AppStore found").
             MemberListView()
+                .environmentObject(store)
+                .environmentObject(session)
+                .environmentObject(store.voice)
         }
         .sheet(isPresented: $showPins) {
             PinPanelView(channel: channel)
@@ -2310,7 +2316,7 @@ struct ProfileCardView: View {
                     )
                 }
             }
-            .frame(height: 240)
+            .frame(height: 160)
             .frame(maxWidth: .infinity)
             .clipped()
 
@@ -2385,7 +2391,9 @@ struct ProfileCardView: View {
             }
         }
         .background(Theme.bg1)
-        .presentationDetents([.medium, .large])
+        // Large first so the card opens tall (esp. on iPad / Designed-for-iPad
+        // on Mac, where a sheet is a fixed form-sheet); iPhone can drag to medium.
+        .presentationDetents([.large, .medium])
     }
 
     @ViewBuilder
@@ -2527,6 +2535,10 @@ struct ProfileCardView: View {
 /// roles are modeled.
 struct MemberListView: View {
     @EnvironmentObject private var store: AppStore
+    // Held so it can be forwarded to the ProfileCardView sheet below — on
+    // "Designed for iPad on Mac", SwiftUI's sheet presentation host does not
+    // inherit environment objects, so they must be re-injected explicitly.
+    @EnvironmentObject private var session: Session
     @Environment(\.dismiss) private var dismiss
     @State private var selectedProfile: PublicUser?
 
@@ -2613,7 +2625,14 @@ struct MemberListView: View {
                 }
             }
         }
-        .sheet(item: $selectedProfile) { ProfileCardView(user: $0) }
+        .sheet(item: $selectedProfile) { u in
+            // Re-inject env objects for the Mac sheet host (ProfileCardView
+            // reads both store and session).
+            ProfileCardView(user: u)
+                .environmentObject(store)
+                .environmentObject(session)
+                .environmentObject(store.voice)
+        }
     }
 
     private func sectionHeader(_ s: MemberSection) -> some View {

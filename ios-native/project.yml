@@ -34,7 +34,9 @@ targets:
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
-        UIRequiresFullScreen: true
+        # false so the "Designed for iPad" build is resizable / full-screenable
+        # on Apple Silicon Macs (true pins the window to a fixed iPad canvas).
+        UIRequiresFullScreen: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         UISupportedInterfaceOrientations~ipad:
