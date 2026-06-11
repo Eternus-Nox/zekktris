@@ -49,35 +49,38 @@ final class APIClient {
     /// Set-Cookie) for a fresh access token. Returns false when the cookie
     /// is missing/expired/revoked — i.e. the user genuinely must sign in.
     func refreshAccessToken() async -> Bool {
-        // Atomically claim or join the single in-flight refresh.
-        refreshLock.lock()
-        if let inFlight = refreshTask {
-            refreshLock.unlock()
-            return await inFlight.value
+        // Atomically claim or join the single in-flight refresh. The lock is
+        // confined to a synchronous closure (no `await` inside) so it never
+        // spans a suspension point — required under Swift 6 strict
+        // concurrency, where holding NSLock across an await is a hard error.
+        let work: Task<Bool, Never> = refreshLock.withLock {
+            if let inFlight = refreshTask { return inFlight }
+            let task = Task<Bool, Never> { [session, decoder] in
+                struct RefreshResponse: Decodable { let accessToken: String }
+                guard let url = URL(string: Config.apiBaseURL + "/auth/refresh") else { return false }
+                var req = URLRequest(url: url)
+                req.httpMethod = "POST"
+                req.setValue("application/json", forHTTPHeaderField: "Accept")
+                guard let (data, resp) = try? await session.data(for: req),
+                      let http = resp as? HTTPURLResponse,
+                      (200..<300).contains(http.statusCode),
+                      let decoded = try? decoder.decode(RefreshResponse.self, from: data)
+                else { return false }
+                self.token = decoded.accessToken
+                self.onTokenRefresh?(decoded.accessToken)
+                NotificationCenter.default.post(
+                    name: APIClient.tokenRefreshedNotification, object: decoded.accessToken)
+                return true
+            }
+            refreshTask = task
+            return task
         }
-        let work = Task<Bool, Never> { [session, decoder] in
-            struct RefreshResponse: Decodable { let accessToken: String }
-            guard let url = URL(string: Config.apiBaseURL + "/auth/refresh") else { return false }
-            var req = URLRequest(url: url)
-            req.httpMethod = "POST"
-            req.setValue("application/json", forHTTPHeaderField: "Accept")
-            guard let (data, resp) = try? await session.data(for: req),
-                  let http = resp as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode),
-                  let decoded = try? decoder.decode(RefreshResponse.self, from: data)
-            else { return false }
-            self.token = decoded.accessToken
-            self.onTokenRefresh?(decoded.accessToken)
-            NotificationCenter.default.post(
-                name: APIClient.tokenRefreshedNotification, object: decoded.accessToken)
-            return true
-        }
-        refreshTask = work
-        refreshLock.unlock() // stored before unlocking — no second refresh can start
         let ok = await work.value
-        refreshLock.lock()
-        refreshTask = nil
-        refreshLock.unlock()
+        // Clear only if this is still the in-flight task — a newer refresh may
+        // have already replaced it, and a late joiner must not wipe it.
+        refreshLock.withLock {
+            if let current = refreshTask, current == work { refreshTask = nil }
+        }
         return ok
     }
 
