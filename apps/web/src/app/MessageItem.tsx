@@ -382,10 +382,22 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
     // into the audit history.
     let outgoing = trimmed;
     if (decryption.isEncrypted) {
-      if (channel) {
-        const encrypted = await encryptForDm(trimmed, channel.id);
-        if (encrypted) outgoing = encrypted;
+      // Never fall back to sending plaintext for an encrypted message —
+      // that would leak cleartext into server-stored history for a
+      // conversation the user believes is end-to-end encrypted. Require a
+      // channel and a live key, and abort (rather than degrade) otherwise.
+      if (!channel || !hasLocalKey(channel.id)) {
+        setEditErr('Enter the conversation password to edit.');
+        setPendingEdit(false);
+        return;
       }
+      const encrypted = await encryptForDm(trimmed, channel.id, channel.e2eeVerifier);
+      if (!encrypted) {
+        setEditErr('Encryption failed — message not changed.');
+        setPendingEdit(false);
+        return;
+      }
+      outgoing = encrypted;
     }
     try {
       await (await restForChannel(message.channelId)).editMessage(message.channelId, message.id, outgoing);

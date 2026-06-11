@@ -239,6 +239,18 @@ export function hasLocalKey(channelId: string): boolean {
 }
 
 export function clearLocalKey(channelId: string): void {
+  // Release the imported AES-GCM CryptoKey alongside the raw bytes so a
+  // disabled/rotated key doesn't linger in aesKeyCache for the page
+  // lifetime. Read the bytes first (before deleting) to recover the
+  // content-addressed cache id.
+  const existing = cache.get(channelId);
+  if (existing) {
+    try {
+      aesKeyCache.delete(naclUtil.encodeBase64(existing));
+    } catch {
+      // ignore — eviction is best-effort hygiene
+    }
+  }
   cache.delete(channelId);
   try {
     localStorage.removeItem(storageKey(channelId));
@@ -255,13 +267,33 @@ export function clearLocalKey(channelId: string): void {
  * Returns the wire-format string or null if no local key exists.
  * Caller should check hasLocalKey first or surface "enter password"
  * UI when this returns null.
+ *
+ * When `expectedVerifier` is supplied and the cached key no longer
+ * matches it — a stale key left over from a previous E2EE epoch after
+ * the peer disabled + re-enabled the DM with a fresh salt — the stale
+ * key is dropped and null is returned, rather than encrypting under a
+ * dead key (which would produce ciphertext the re-keyed peer can't
+ * decrypt while the sender's UI shows a normally-sent message). Mirrors
+ * the call-path guard in getCallKeyString.
  */
 export async function encryptForDm(
   plaintext: string,
   channelId: string,
+  expectedVerifier?: string | null,
 ): Promise<string | null> {
   const key = getLocalKey(channelId);
   if (!key) return null;
+  if (expectedVerifier) {
+    try {
+      const verifier = await computeVerifier(naclUtil.encodeBase64(key));
+      if (verifier !== expectedVerifier) {
+        clearLocalKey(channelId);
+        return null;
+      }
+    } catch {
+      return null;
+    }
+  }
   try {
     const cryptoKey = await importAesKey(key);
     const iv = crypto.getRandomValues(new Uint8Array(GCM_IV_BYTES));

@@ -764,10 +764,17 @@ export function MessageView({
                       );
                       return; // abort send
                     }
-                    const encrypted = await encryptForDm(processedContent, channel.id);
+                    const encrypted = await encryptForDm(
+                      processedContent,
+                      channel.id,
+                      channel.e2eeVerifier,
+                    );
                     if (encrypted) {
                       outgoingContent = encrypted;
                     } else {
+                      // null here also covers a stale key dropped by the
+                      // verifier guard — encryptForDm cleared it, so the next
+                      // attempt prompts for the new conversation password.
                       toasts.push(
                         'Encryption failed — message not sent.',
                         'error',

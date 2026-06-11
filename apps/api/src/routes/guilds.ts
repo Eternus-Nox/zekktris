@@ -207,7 +207,19 @@ const guildBackupSchema = z.object({
         position: z.number().int(),
         nsfw: z.boolean(),
         rateLimitPerUser: z.number().int().min(0).max(86_400),
-        linkUrl: z.string().max(2000).nullable(),
+        // Mirror the http(s)-scheme validation the normal channel
+        // create/patch routes enforce (channels.ts) so an imported backup
+        // can't persist an arbitrary-scheme linkUrl (e.g. javascript:/data:)
+        // that later reaches the web client's window.open navigation sink.
+        linkUrl: z
+          .string()
+          .trim()
+          .max(2048)
+          .url()
+          .refine((u) => /^https?:\/\//i.test(u), {
+            message: 'Link URL must use http or https',
+          })
+          .nullable(),
         parentKey: keyString.nullable(),
       }),
     )

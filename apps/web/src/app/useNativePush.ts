@@ -94,7 +94,13 @@ function routeFromPush(
       const u = new URL(raw);
       path = u.pathname + u.search;
     }
-    if (path.startsWith('/')) navigate(path);
+    // Require a single-slash absolute path. Reject protocol-relative
+    // ("//host", "/\\host") and backslash-prefixed values, which some
+    // browsers treat as protocol-relative and would bounce the WKWebView
+    // off-app. Mirrors the ?next= hardening in AuthScreens.tsx.
+    if (path.startsWith('/') && !path.startsWith('//') && !path.startsWith('/\\')) {
+      navigate(path);
+    }
   } catch {
     /* malformed url — ignore */
   }

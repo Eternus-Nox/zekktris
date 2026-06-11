@@ -356,18 +356,24 @@ self.addEventListener('notificationclick', (event) => {
   // we trust the SW to gate based on tap type rather than relying
   // on the server to encode intent into the URL.
   let targetUrl = data.url || '/';
-  if (isCall && action !== 'accept-call') {
-    try {
-      const u = new URL(targetUrl, self.location.origin);
+  try {
+    const u = new URL(targetUrl, self.location.origin);
+    if (isCall && action !== 'accept-call') {
       u.searchParams.delete('autojoin');
-      // Strip the leading origin so we navigate within the SPA
-      // rather than triggering a full reload.
-      targetUrl = u.pathname + (u.search ? u.search : '') + (u.hash ? u.hash : '');
-    } catch {
-      // Malformed URL — fall back to root rather than risk
-      // navigating somewhere unexpected.
-      targetUrl = '/';
     }
+    // Force same-origin navigation for EVERY notification click. No present-day
+    // server push sets a cross-origin data.url (all are server-built relative
+    // paths), but normalizing unconditionally closes the latent open-redirect /
+    // window-injection sink at openWindow before any future payload can carry
+    // user-influenced data. A cross-origin URL collapses to root.
+    targetUrl =
+      u.origin === self.location.origin
+        ? u.pathname + (u.search ? u.search : '') + (u.hash ? u.hash : '')
+        : '/';
+  } catch {
+    // Malformed URL — fall back to root rather than risk
+    // navigating somewhere unexpected.
+    targetUrl = '/';
   }
   event.waitUntil(
     (async () => {

@@ -239,7 +239,13 @@ function htmlFavicon(html: string, baseUrl: URL): string | null {
     return new URL('/favicon.ico', baseUrl.origin).href;
   }
   try {
-    return new URL(m[1], baseUrl).href;
+    const u = new URL(m[1], baseUrl);
+    // Only surface http(s) favicons. new URL() ignores the base for an
+    // absolute href, so an attacker-controlled <link rel=icon> of
+    // javascript:/data:/etc. would otherwise pass straight through to the
+    // client's <img src>. Drop non-http(s) schemes at the source.
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    return u.href;
   } catch {
     return null;
   }
@@ -492,7 +498,11 @@ export async function resolveEmbed(rawUrl: string): Promise<MessageEmbedJson | n
   let imageUrl: string | null = null;
   if (rawImage) {
     try {
-      imageUrl = new URL(rawImage, finalUrl).href;
+      const u = new URL(rawImage, finalUrl);
+      // Only surface http(s) images. new URL() ignores the base for an
+      // absolute href, so an attacker-controlled og:image of
+      // javascript:/data:/etc. would otherwise reach the client's <img src>.
+      if (u.protocol === 'http:' || u.protocol === 'https:') imageUrl = u.href;
     } catch {
       // ignore — bad og:image is recoverable, just no image
     }
