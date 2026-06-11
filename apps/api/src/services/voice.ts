@@ -411,7 +411,37 @@ export interface LeaveVoiceResult {
   systemCallChannelId: bigint | null;
 }
 
-export async function leaveVoice(userId: bigint): Promise<LeaveVoiceResult> {
+/**
+ * Best-effort SFU eviction for a single voice_states row — stops the
+ * participant's audio/video flowing immediately instead of waiting out the
+ * LiveKit token TTL (~1h). No-op when LiveKit is unconfigured. Used by every
+ * FORCED removal (decline, kick, ban); a user's own self-leave doesn't need
+ * it (their client disconnects from the room itself).
+ */
+async function sfuRemoveParticipant(row: schema.VoiceState): Promise<void> {
+  const apiKey = env.LIVEKIT_API_KEY;
+  const apiSecret = env.LIVEKIT_API_SECRET;
+  const httpUrl =
+    env.LIVEKIT_HTTP_URL ??
+    env.LIVEKIT_WS_URL?.replace(/^wss?:/i, (m) =>
+      m.toLowerCase() === 'wss:' ? 'https:' : 'http:',
+    );
+  if (!apiKey || !apiSecret || !httpUrl) return;
+  try {
+    const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret);
+    await svc.removeParticipant(roomNameForRow(row), row.userId.toString());
+  } catch (err) {
+    log.warn?.('livekit removeParticipant failed (best-effort)', {
+      userId: row.userId.toString(),
+      err: (err as Error).message,
+    });
+  }
+}
+
+export async function leaveVoice(
+  userId: bigint,
+  opts?: { evictFromSfu?: boolean },
+): Promise<LeaveVoiceResult> {
   const [priorState] = await db
     .delete(schema.voiceStates)
     .where(eq(schema.voiceStates.userId, userId))
@@ -419,6 +449,10 @@ export async function leaveVoice(userId: bigint): Promise<LeaveVoiceResult> {
   if (!priorState) {
     return { priorState: null, systemCallMessage: null, systemCallChannelId: null };
   }
+  // Forced removal (decline/kick): the target isn't the one initiating, so
+  // their client won't disconnect itself — kick them off the SFU or they
+  // keep streaming/ringing until the token expires.
+  if (opts?.evictFromSfu) await sfuRemoveParticipant(priorState);
 
   // Non-DM voice short-circuits — call-record bookkeeping is 1:1 only.
   if (priorState.guildId !== null) {
@@ -863,19 +897,23 @@ export async function getMyVoiceState(
     per user is enforced by the table's primary key, so duplicates
     can't occur in practice, but defensive dedup costs nothing). */
 export async function listVoiceStatesForReady(args: {
-  guildIds: bigint[];
+  /** The user's VIEWABLE guild channel ids — NOT all guild channels. The
+   *  guild leg filters on these so the READY snapshot doesn't leak voice
+   *  presence in private channels the user can't VIEW_CHANNEL (the live
+   *  VOICE_STATE_UPDATE fan-out is channel-scoped for the same reason). */
+  viewableChannelIds: bigint[];
   dmChannelIds: bigint[];
 }): Promise<schema.VoiceState[]> {
-  const { guildIds, dmChannelIds } = args;
-  if (guildIds.length === 0 && dmChannelIds.length === 0) return [];
+  const { viewableChannelIds, dmChannelIds } = args;
+  if (viewableChannelIds.length === 0 && dmChannelIds.length === 0) return [];
 
   const queries: Promise<schema.VoiceState[]>[] = [];
-  if (guildIds.length > 0) {
+  if (viewableChannelIds.length > 0) {
     queries.push(
       db
         .select()
         .from(schema.voiceStates)
-        .where(inArray(schema.voiceStates.guildId, guildIds)),
+        .where(inArray(schema.voiceStates.channelId, viewableChannelIds)),
     );
   }
   if (dmChannelIds.length > 0) {

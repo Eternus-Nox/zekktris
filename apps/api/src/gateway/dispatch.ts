@@ -787,22 +787,30 @@ export function messageViewed(args: {
 export function voiceStateUpdate(args: {
   /** Null for DM voice (1-on-1 calls). */
   guildId: bigint | null;
-  /** Channel the voice state belongs to. Required when guildId is null
-      so we can fan to the channel audience (dm_recipients membership);
-      ignored when guildId is set (guild audience covers it). */
+  /** Channel the voice state belongs to. Always provide it: it scopes the
+      fan-out to connections that can VIEW_CHANNEL it (the 'channel' audience
+      filters on each connection's viewable set), so voice presence in a
+      private channel doesn't leak to guild members who can't see it. */
   channelId: bigint | null;
   voiceState: unknown;
 }): void {
-  if (args.guildId !== null) {
-    publish(GatewayEvent.VOICE_STATE_UPDATE, args.voiceState, {
-      kind: 'guild',
-      guildId: args.guildId,
-    });
-  } else if (args.channelId !== null) {
+  if (args.channelId !== null) {
+    // Channel audience for BOTH guild voice and DM voice. For guild voice
+    // this restricts to VIEW_CHANNEL holders (was the 'guild' audience,
+    // which fanned to EVERY member and leaked who's in a private voice
+    // channel); for a public channel the audience is identical, so no
+    // functional change there.
     publish(GatewayEvent.VOICE_STATE_UPDATE, args.voiceState, {
       kind: 'channel',
       channelId: args.channelId,
-      guildId: null,
+      guildId: args.guildId,
+    });
+  } else if (args.guildId !== null) {
+    // Defensive fallback — a guild voice event with no channelId (shouldn't
+    // happen; all callers pass it). Fan to the guild rather than drop it.
+    publish(GatewayEvent.VOICE_STATE_UPDATE, args.voiceState, {
+      kind: 'guild',
+      guildId: args.guildId,
     });
   }
 }

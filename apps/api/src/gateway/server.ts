@@ -462,7 +462,9 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
   // rows have guildId=null and so are invisible to the guild leg.
   const dmChannelIds = dmChannelIdRows.map((r) => r.channelId);
   const voiceStateRows = await voice.listVoiceStatesForReady({
-    guildIds,
+    // Only channels the user can VIEW_CHANNEL — so the snapshot doesn't leak
+    // voice presence in private channels (mirrors the live fan-out filter).
+    viewableChannelIds: viewableChannels.map((v) => v.channelId),
     dmChannelIds,
   });
 
