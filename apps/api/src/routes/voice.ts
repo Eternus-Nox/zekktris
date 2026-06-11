@@ -146,18 +146,23 @@ voiceRouter.post(
         ]);
 
         if (otherUserId === null) return;
-        // Skip if the other party is already in voice in this channel
-        // (they're not being "rung" — they're joining a call we both
-        // happen to be in).
-        if (states.some((s) => s.userId === otherUserId)) return;
 
-        // Reliable in-app ring: push the caller's voice state straight
-        // to the callee's connections. This guarantees their
-        // GlobalCallOverlay surfaces the incoming-call modal no matter
-        // which screen they're on, rather than depending on the DM
-        // channel fan-out (which previously only materialized once they
-        // opened the DM and it fetched voice states over REST).
+        // Reliable presence delivery to the OTHER recipient, ALWAYS — both
+        // when the caller dials (rings the callee) AND when the callee
+        // answers (so the CALLER learns the callee joined and its "Calling…"
+        // overlay dismisses). The DM channel-audience fan-out has indexing
+        // gaps for voice (see dispatch.voiceStateUpdateToUser's note), so the
+        // caller previously stayed stuck on "Calling…" — connected to LiveKit
+        // but never told, in-app, that the callee picked up. The client
+        // upserts by user id, so receiving this alongside the channel
+        // broadcast is harmless. Must run BEFORE the ring short-circuit below.
         dispatch.voiceStateUpdateToUser(otherUserId, dto);
+
+        // Skip only the RING (push notifications) if the other party is
+        // already in voice here — they're not being "rung", they're joining
+        // a call we both happen to be in. The presence delivery above still
+        // happened, so a caller already in voice still learns of the answer.
+        if (states.some((s) => s.userId === otherUserId)) return;
 
         const caller = callerRow[0];
         const callerName =
