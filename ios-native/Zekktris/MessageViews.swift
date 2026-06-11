@@ -3437,9 +3437,13 @@ struct DmSettingsSheet: View {
         Toggle(isOn: Binding(
             get: { notifPreviewEffective },
             set: { newValue in
-                // Persist an explicit choice; store the same value the default
-                // would yield so the knob reads back consistently.
-                Task { await store.setDmNotifShowContent(channel.id, newValue) }
+                // Reflect the tap IMMEDIATELY (synchronously) so SwiftUI's
+                // re-read of `get` sees the new value — otherwise the knob
+                // snapped back to off because the update only happened inside
+                // the async Task. The Task then persists and reverts on failure.
+                let prev = store.dmNotifShowContent
+                store.dmNotifShowContent = newValue
+                Task { await store.persistDmNotifShowContent(channel.id, newValue, fallback: prev) }
             }
         )) {
             VStack(alignment: .leading, spacing: 2) {

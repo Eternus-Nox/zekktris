@@ -325,6 +325,10 @@ final class AppStore: ObservableObject {
     @Published var voiceStatesByUser: [String: VoiceState] = [:]
     @Published var voiceConnecting = false
     @Published var voiceTokenMissing = false
+    /// Re-entrancy guard: leaveCurrentVoice has many overlapping callers and
+    /// must run exactly once per teardown (concurrent Room teardowns crashed
+    /// the LiveKit audio worker). Not @Published — internal serialization only.
+    private var isLeavingVoice = false
     @Published var stageParticipants: [StageParticipant] = []
     @Published var stageChannelId: String?
     @Published var stageConnecting = false
@@ -989,8 +993,15 @@ final class AppStore: ObservableObject {
             // joining voice — otherwise the server keeps us in the stage roster
             // and the old LiveKit room stays connected.
             if stageChannelId != nil { await leaveStage() }
-            let res = try await api.joinVoice(channelId: channel.id)
+            // Own the channel BEFORE the network round-trip so the outgoing
+            // "Calling…" overlay (outgoingCall) and the CallKit End handler can
+            // reference it while the join is in flight — without this, an End
+            // pressed mid-join saw voiceChannelId == nil and failed to hang up.
             voiceChannelId = channel.id
+            let res = try await api.joinVoice(channelId: channel.id)
+            // Abort if a leave/hangup raced the in-flight join (voiceChannelId
+            // was cleared/changed) — otherwise we'd connect a room nobody's in.
+            guard voiceChannelId == channel.id else { return }
             voiceStates = res.channelVoiceStates
             // Merge the authoritative snapshot into the sidebar presence map.
             for vs in res.channelVoiceStates { voiceStatesByUser[vs.userId] = vs }
@@ -1000,6 +1011,8 @@ final class AppStore: ObservableObject {
             if let token = res.token, let url = res.wsUrl, !token.isEmpty, !url.isEmpty {
                 let key: Data? = channel.isE2EE ? e2eeKey(for: channel) : nil
                 await voice.connect(url: url, token: token, e2eeKey: key)
+                // Leave raced the connect — tear the just-connected room back down.
+                guard voiceChannelId == channel.id else { await voice.disconnect(); return }
             } else {
                 voiceTokenMissing = true
             }
@@ -1010,11 +1023,28 @@ final class AppStore: ObservableObject {
     }
 
     func leaveCurrentVoice() async {
+        // Collapse the many overlapping teardown triggers (red button, CallKit
+        // End, the 1:1 auto-end Task, READY reconciliation, self-evict) into a
+        // single teardown. Without this, two leaveCurrentVoice runs raced into
+        // two Room teardowns and crashed LiveKit's audio worker thread.
+        guard !isLeavingVoice else { return }
+        isLeavingVoice = true
+        defer { isLeavingVoice = false }
         let id = voiceChannelId
         voiceChannelId = nil
         voiceStates = []
         voiceTokenMissing = false
-        if let uid = currentUserId { voiceStatesByUser.removeValue(forKey: uid) }
+        // For a 1:1 DM, purge the whole channel's presence rows — not just our
+        // own — so a missed peer LEAVE can't strand a stale callee row that
+        // makes the NEXT outgoing call think the callee already answered (the
+        // "caller dropped straight into the call" bug). Guild/group voice keeps
+        // other participants visible in the sidebar after we leave, so there we
+        // only remove ourselves.
+        if let id, let dm = dms.first(where: { $0.id == id }), dm.type == "dm" {
+            voiceStatesByUser = voiceStatesByUser.filter { $0.value.channelId != id }
+        } else if let uid = currentUserId {
+            voiceStatesByUser.removeValue(forKey: uid)
+        }
         popVoiceRoutes()
         if let id { CallManager.shared.callEnded(channelId: id, remoteEnded: false) }
         await voice.disconnect()
@@ -2483,11 +2513,13 @@ final class AppStore: ObservableObject {
         catch { dmTtl = prev; errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
     /// Set this user's notification-preview choice for the open DM (private).
-    func setDmNotifShowContent(_ channelId: String, _ value: Bool?) async {
-        let prev = dmNotifShowContent
-        dmNotifShowContent = value
+    /// Persist the notification-preview choice. The caller applies the
+    /// optimistic value SYNCHRONOUSLY (so the Toggle doesn't snap back when
+    /// SwiftUI re-reads its binding); this only writes through to the server
+    /// and reverts to `fallback` if that write fails.
+    func persistDmNotifShowContent(_ channelId: String, _ value: Bool?, fallback: Bool?) async {
         do { try await api.setDmNotificationPreview(channelId: channelId, showContent: value) }
-        catch { dmNotifShowContent = prev; errorText = (error as? APIError)?.message ?? error.localizedDescription }
+        catch { dmNotifShowContent = fallback; errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
     func closeDM(_ channel: Channel) async {
         do {

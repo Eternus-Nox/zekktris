@@ -44,11 +44,19 @@ final class VoiceManager: ObservableObject {
     private var audioPubs: [String: RemoteTrackPublication] = [:]
 
     private var room: Room?
+    /// True while disconnect() is tearing the room down. Concurrent mic/track
+    /// operations bail on this so they can't run against a Room whose WebRTC
+    /// transport is being closed — the race that crashed the LiveKit audio
+    /// worker thread (EXC_BAD_ACCESS) on call-end.
+    private var isTearingDown = false
 
     var isConnected: Bool { state == .connected }
 
     func connect(url: String, token: String, e2eeKey: Data? = nil, publishMic: Bool = true) async {
         await disconnect()
+        // Fresh session — never inherit a prior teardown's guard (in case a
+        // previous disconnect is still draining), or mic/deafen would no-op.
+        isTearingDown = false
         state = .connecting
         isMuted = !publishMic
         let r: Room
@@ -86,7 +94,7 @@ final class VoiceManager: ObservableObject {
     }
 
     func toggleMute() async {
-        guard let room else { return }
+        guard let room, !isTearingDown else { return }
         let next = !isMuted
         do {
             try await room.localParticipant.setMicrophone(enabled: !next)
@@ -109,25 +117,29 @@ final class VoiceManager: ObservableObject {
             try? await Task.sleep(nanoseconds: 100_000_000) // 0.1s, up to ~3s
             waited += 1
         }
-        guard let room, isConnected, !isMuted else { return }
-        try? await room.localParticipant.setMicrophone(enabled: false)
-        try? await room.localParticipant.setMicrophone(enabled: true)
+        guard let room, isConnected, !isMuted, !isTearingDown else { return }
+        _ = try? await room.localParticipant.setMicrophone(enabled: false)
+        // Re-check between awaits: a hangup may have started teardown while the
+        // first call was in flight — don't issue a second Room op into it.
+        guard !isTearingDown, self.room != nil else { return }
+        _ = try? await room.localParticipant.setMicrophone(enabled: true)
     }
 
     /// Toggle deafen: mute/unmute every remote participant's audio for the local
     /// listener, and mute the mic while deafened (restoring it on undeafen).
     /// Per-user "muted for me" choices are preserved when undeafening.
     func toggleDeafen() async {
+        guard let room, !isTearingDown else { return }
         let next = !isDeafened
         if next {
             wasMutedBeforeDeafen = isMuted
             for pub in audioPubs.values { try? await pub.set(enabled: false) }
-            _ = try? await room?.localParticipant.setMicrophone(enabled: false)
+            _ = try? await room.localParticipant.setMicrophone(enabled: false)
             isMuted = true
         } else {
             for (uid, pub) in audioPubs { try? await pub.set(enabled: !mutedForMe.contains(uid)) }
             if !wasMutedBeforeDeafen {
-                _ = try? await room?.localParticipant.setMicrophone(enabled: true)
+                _ = try? await room.localParticipant.setMicrophone(enabled: true)
                 isMuted = false
             }
         }
@@ -230,7 +242,17 @@ final class VoiceManager: ObservableObject {
     }
 
     func disconnect() async {
-        if let room { await room.disconnect() }
+        // Single-shot, and clear the room ref + reset published state
+        // SYNCHRONOUSLY before awaiting the SDK disconnect. Niling `room` first
+        // closes the re-entrancy window: any concurrent disconnect()/toggleMute/
+        // toggleDeafen/ensureMicEnabled now sees room==nil / isTearingDown and
+        // no-ops instead of issuing Room ops against a transport that another
+        // teardown is freeing (the LiveKit audio-worker UAF crash on call-end).
+        guard let r = room, !isTearingDown else {
+            room = nil
+            return
+        }
+        isTearingDown = true
         room = nil
         state = .idle
         isMuted = false
@@ -241,6 +263,8 @@ final class VoiceManager: ObservableObject {
         screenTracks.removeAll()
         speakingUserIds = []
         audioPubs.removeAll()
+        await r.disconnect()
+        isTearingDown = false
     }
 }
 
