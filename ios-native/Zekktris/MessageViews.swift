@@ -2428,8 +2428,8 @@ struct ProfileCardView: View {
                         .font(.zkSans(15, weight: .semibold))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 11)
-                        .background(Theme.bg3)
-                        .foregroundColor(Theme.ink1)
+                        .background(Theme.accent)
+                        .foregroundColor(.white)
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
             }

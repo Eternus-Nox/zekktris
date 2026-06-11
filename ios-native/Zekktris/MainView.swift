@@ -8464,9 +8464,10 @@ struct AchievementsSection: View {
                             }
                         }
                     }
-                    // Locked badges arrive only for the viewer's own
-                    // shelf (the server strips them for other users) and
-                    // render dimmed with a value/goal progress capsule.
+                    // Locked badges render dimmed with a value/goal progress
+                    // capsule. They arrive for the viewer's own shelf (real
+                    // progress) and, for a PUBLIC profile viewed by someone
+                    // else, with the progress value scrubbed to 0 server-side.
                     if !locked.isEmpty {
                         Text("IN PROGRESS")
                             .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)

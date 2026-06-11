@@ -178,6 +178,18 @@ final class VoipPushHandler: NSObject, PKPushRegistryDelegate {
                 CallManager.shared.callEnded(channelId: placeholder, remoteEnded: true)
             } else {
                 CallManager.shared.reportIncoming(channelId: channelId, callerName: callerName)
+                // Connect the gateway so the caller's HANGUP arrives as a normal
+                // event while the CallKit ring is active (iOS grants background
+                // runtime for an active call). This dismisses the ring when the
+                // caller cancels — the gateway WS is otherwise iOS-suspended in
+                // the background, so the server's cancel event never reaches us.
+                // Best-effort and AFTER the synchronous reportIncoming above, so
+                // Apple's reportNewIncomingCall-before-return rule is honored.
+                // The token is keychain-readable while locked (AfterFirstUnlock).
+                if let token = KeychainStore().get("accessToken"), !token.isEmpty {
+                    APIClient.shared.token = token
+                    AppStore.shared?.ensureGatewayConnected(token: token, user: nil)
+                }
             }
         }
         completion()

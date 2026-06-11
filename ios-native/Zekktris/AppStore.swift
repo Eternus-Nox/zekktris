@@ -139,12 +139,18 @@ final class AppStore: ObservableObject {
     /// UserDefaults; setting it via `setTheme` re-renders the UI.
     @Published var themeId: String = UserDefaults.standard.string(forKey: "zk.theme") ?? "default"
 
+    /// Process-wide reference so the PushKit VoIP handler can connect the
+    /// gateway from a background launch (no SwiftUI scene exists then). Weak so
+    /// it never keeps the store alive on its own.
+    static weak var shared: AppStore?
+
     init() {
         // Apply the saved theme before the first render so there's no flash
         // of the default palette on launch.
         Theme.current = ThemePalette.palette(for: themeId)
         wireCallKit()
         wirePushRouting()
+        Self.shared = self
     }
 
     /// CallKit → store: the system call screen's Answer/End/Mute drive the
@@ -432,6 +438,26 @@ final class AppStore: ObservableObject {
         Task { await loadDMs() }
         Task { await loadReadStates() }
         startAutoPresence()
+    }
+
+    /// Callers (e.g. a 1:1 ring) whose hangup arrived before `dms` was loaded
+    /// on a cold VoIP launch — the channel can't be resolved yet, so we stash
+    /// the caller id and dismiss the CallKit ring once `dms` loads.
+    private var pendingCallerCancels: Set<String> = []
+
+    /// Connect the gateway from a background VoIP launch (PushKit) so the
+    /// caller's hangup arrives as a normal event while iOS grants runtime for
+    /// the active CallKit ring (no fragile cancel push needed).
+    func ensureGatewayConnected(token: String, user: SelfUser?) {
+        if currentUserId == nil {
+            // Cold: never started this process — full start (connects + loads
+            // DMs so the cancel can resolve the channel from the caller).
+            start(token: token, user: user)
+        } else {
+            // Warm: the socket may be an iOS-suspended zombie — revive it so
+            // the hangup event actually arrives.
+            gateway.forceReconnect()
+        }
     }
 
     /// Called when the app returns to the foreground. iOS commonly kills the
@@ -731,6 +757,19 @@ final class AppStore: ObservableObject {
             // Channels with no messages fall back to their own id (creation).
             dms = fetched.sorted {
                 snowflakeGreater($0.lastMessageId ?? $0.id, than: $1.lastMessageId ?? $1.id)
+            }
+            // A caller's hangup may have arrived before `dms` loaded on a cold
+            // VoIP launch — now that DMs are here, dismiss those CallKit rings.
+            if !pendingCallerCancels.isEmpty {
+                for callerId in pendingCallerCancels {
+                    if let cid = dms.first(where: {
+                        $0.type == "dm" && ($0.recipients?.contains(where: { $0.id == callerId }) ?? false)
+                    })?.id {
+                        CallManager.shared.remoteCancelled(channelId: cid)
+                        if incomingCall?.channelId == cid { incomingCall = nil }
+                    }
+                }
+                pendingCallerCancels.removeAll()
             }
             // Merge presence — DON'T blindly overwrite with REST.
             //
@@ -1341,10 +1380,24 @@ final class AppStore: ObservableObject {
 
     private func handleIncomingCall(_ vs: VoiceState) {
         guard let channelId = vs.channelId else {
-            // They hung up / declined before we answered — drop the ring.
-            if vs.userId == incomingCall?.callerId, let call = incomingCall {
-                CallManager.shared.remoteCancelled(channelId: call.channelId)
-                incomingCall = nil
+            // Caller hung up / declined (leftDto carries channelId=null).
+            // Resolve the channel even when `incomingCall` is nil — that's the
+            // case when the ring came via a PushKit VoIP push (app backgrounded)
+            // and the in-app ring state was never set, which left the CallKit
+            // ring stuck. Prefer the live incomingCall, else map caller → the
+            // 1:1 DM whose other recipient is them. remoteCancelled no-ops when
+            // no CallKit UUID maps the channel, so a wrong/absent match is safe.
+            let cid = (vs.userId == incomingCall?.callerId ? incomingCall?.channelId : nil)
+                ?? dms.first(where: {
+                    $0.type == "dm" && ($0.recipients?.contains(where: { $0.id == vs.userId }) ?? false)
+                })?.id
+            if let cid {
+                CallManager.shared.remoteCancelled(channelId: cid)
+                if incomingCall?.channelId == cid { incomingCall = nil }
+            } else {
+                // dms not loaded yet (cold VoIP launch) — remember the caller and
+                // dismiss once loadDMs resolves the channel.
+                pendingCallerCancels.insert(vs.userId)
             }
             return
         }
