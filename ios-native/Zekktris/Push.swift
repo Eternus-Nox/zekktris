@@ -166,10 +166,19 @@ final class VoipPushHandler: NSObject, PKPushRegistryDelegate {
         // (reportIncoming is idempotent per channel, so a duplicate in-app
         // ring from the booting store can't double-ring.)
         MainActor.assumeIsolated {
-            CallManager.shared.reportIncoming(
-                channelId: channelId.isEmpty ? UUID().uuidString : channelId,
-                callerName: callerName
-            )
+            if channelId.isEmpty {
+                // Malformed push (our server always includes channelId). Apple
+                // still requires we report a call before returning, but a
+                // call with no channel is unanswerable and the server can't
+                // cancel it (its cancel events are keyed by channelId) — so
+                // report a placeholder and immediately end it rather than
+                // leave an uncancellable ghost ringing on the lock screen.
+                let placeholder = UUID().uuidString
+                CallManager.shared.reportIncoming(channelId: placeholder, callerName: callerName)
+                CallManager.shared.callEnded(channelId: placeholder, remoteEnded: true)
+            } else {
+                CallManager.shared.reportIncoming(channelId: channelId, callerName: callerName)
+            }
         }
         completion()
     }

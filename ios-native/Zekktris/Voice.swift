@@ -195,6 +195,10 @@ final class VoiceManager: ObservableObject {
             for pub in participant.trackPublications.values {
                 guard let remotePub = pub as? RemoteTrackPublication else { continue }
                 if let vt = remotePub.track as? VideoTrack {
+                    // Skip a MUTED video publication (remote turned their camera
+                    // off without unpublishing — LiveKit's default). Otherwise
+                    // their last frame stays on screen as a frozen tile.
+                    guard !remotePub.isMuted else { continue }
                     if remotePub.source == .screenShareVideo { screens[uid] = vt }
                     else { video[uid] = vt }
                 } else if remotePub.track is AudioTrack {
@@ -243,6 +247,9 @@ final class VoiceManager: ObservableObject {
 extension VoiceManager: RoomDelegate {
     nonisolated func room(_ room: Room, didUpdateConnectionState connectionState: ConnectionState, from oldConnectionState: ConnectionState) {
         Task { @MainActor in
+            // Ignore late callbacks from a room we've already replaced
+            // (rapid reconnect) — they'd clobber the live connection's state.
+            guard room === self.room else { return }
             switch connectionState {
             case .connected: self.state = .connected; self.syncRemoteTracks()
             case .connecting: self.state = .connecting
@@ -256,6 +263,7 @@ extension VoiceManager: RoomDelegate {
 
     nonisolated func room(_ room: Room, didFailToConnectWithError error: LiveKitError?) {
         Task { @MainActor in
+            guard room === self.room else { return }
             self.lastError = error?.localizedDescription ?? "Connection failed"
             self.state = .failed
         }
@@ -263,6 +271,7 @@ extension VoiceManager: RoomDelegate {
 
     nonisolated func room(_ room: Room, didUpdateSpeakingParticipants participants: [Participant]) {
         Task { @MainActor in
+            guard room === self.room else { return }
             var ids = Set<String>()
             for p in room.activeSpeakers {
                 if let identity = p.identity { ids.insert("\(identity)") }
@@ -276,7 +285,7 @@ extension VoiceManager: RoomDelegate {
     nonisolated func room(_ room: Room, participant: RemoteParticipant, didSubscribeTrack publication: RemoteTrackPublication) {
         let uid = participant.identity.map { "\($0)" }
         Task { @MainActor in
-            guard let uid else { return }
+            guard room === self.room, let uid else { return }
             if publication.track is AudioTrack {
                 self.audioPubs[uid] = publication
                 if self.isDeafened || self.mutedForMe.contains(uid) {
@@ -295,7 +304,7 @@ extension VoiceManager: RoomDelegate {
     nonisolated func room(_ room: Room, participant: RemoteParticipant, didUnsubscribeTrack publication: RemoteTrackPublication) {
         let uid = participant.identity.map { "\($0)" }
         Task { @MainActor in
-            guard let uid else { return }
+            guard room === self.room, let uid else { return }
             if publication.track is AudioTrack {
                 self.audioPubs.removeValue(forKey: uid)
             } else if publication.source == .screenShareVideo {
@@ -308,6 +317,7 @@ extension VoiceManager: RoomDelegate {
 
     nonisolated func room(_ room: Room, participant: LocalParticipant, didPublishTrack publication: LocalTrackPublication) {
         Task { @MainActor in
+            guard room === self.room else { return }
             if let vt = publication.track as? VideoTrack {
                 if publication.source == .screenShareVideo {
                     self.localScreenTrack = vt
@@ -320,6 +330,7 @@ extension VoiceManager: RoomDelegate {
 
     nonisolated func room(_ room: Room, participant: LocalParticipant, didUnpublishTrack publication: LocalTrackPublication) {
         Task { @MainActor in
+            guard room === self.room else { return }
             if publication.track is VideoTrack {
                 if publication.source == .screenShareVideo {
                     self.localScreenTrack = nil
@@ -327,6 +338,22 @@ extension VoiceManager: RoomDelegate {
                     self.localVideoTrack = nil
                 }
             }
+        }
+    }
+
+    /// A participant muted/unmuted a track. For a remote VIDEO publication
+    /// this is how a camera-off arrives (LiveKit mutes rather than
+    /// unpublishes), so re-sync to add/drop the tile — otherwise a remote's
+    /// camera-off left a frozen tile and camera-back-on never reappeared.
+    nonisolated func room(
+        _ room: Room,
+        participant: Participant,
+        trackPublication: TrackPublication,
+        didUpdateIsMuted isMuted: Bool
+    ) {
+        Task { @MainActor in
+            guard room === self.room else { return }
+            if trackPublication.kind == .video { self.syncRemoteTracks() }
         }
     }
 }
