@@ -39,8 +39,13 @@ targets:
         UIRequiresFullScreen: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        # All four orientations are REQUIRED on iPad once UIRequiresFullScreen
+        # is false: a multitasking-capable iPad app must support them all, or
+        # App Store validation rejects the build (ITMS-90474). PortraitUpsideDown
+        # is the one App Store Connect flagged as missing.
         UISupportedInterfaceOrientations~ipad:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         ITSAppUsesNonExemptEncryption: false
