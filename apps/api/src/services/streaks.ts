@@ -27,7 +27,7 @@ export async function recordDmMessage(args: {
   channelId: bigint;
   authorId: bigint;
   recipientId: bigint;
-}): Promise<void> {
+}): Promise<{ streak: number; changed: boolean }> {
   const today = utcDay();
   const [a, b] = args.authorId < args.recipientId
     ? [args.authorId, args.recipientId]
@@ -45,6 +45,7 @@ export async function recordDmMessage(args: {
   let lastCountedDay = row?.lastCountedDay ?? null;
   let streak = row?.streak ?? 0;
   let bestStreak = row?.bestStreak ?? 0;
+  const prevStreak = streak;
 
   if (authorIsA) lastDayA = today;
   else lastDayB = today;
@@ -77,6 +78,11 @@ export async function recordDmMessage(args: {
       target: schema.dmStreaks.channelId,
       set: { lastDayA, lastDayB, lastCountedDay, streak, bestStreak, updatedAt: new Date() },
     });
+
+  // `streak` is the live display value (the chain is alive — someone just
+  // messaged today). `changed` is true only when the credited count moved,
+  // so the caller dispatches at most once per day per channel.
+  return { streak, changed: streak !== prevStreak };
 }
 
 /**

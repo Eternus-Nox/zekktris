@@ -876,11 +876,16 @@ messagesRouter.post(
           const other = recipients.find((id) => id !== userId);
           if (other) {
             const streaks = await import('../services/streaks');
-            await streaks.recordDmMessage({
+            const { streak, changed } = await streaks.recordDmMessage({
               channelId,
               authorId: userId,
               recipientId: other,
             });
+            // Push the new streak live to both sides so the chip updates
+            // mid-session instead of only after the next DM-list fetch.
+            if (changed) {
+              dispatch.dmStreakUpdate({ channelId, recipientIds: [userId, other], streak });
+            }
           }
         } catch {
           // Streaks are decorative; never fail a send over them.

@@ -214,5 +214,24 @@ describe.runIf(dbReady)('permission enforcement (integration)', () => {
       }); // cannot act on owner
       await expect(assertCanManageMember(g, owner, actor)).resolves.toBeUndefined(); // owner bypass
     });
+
+    it('a non-owner ADMINISTRATOR is still bound by the role-position ceiling (no admin bypass)', async () => {
+      const owner = await createUser();
+      const admin = await createUser();
+      const g = await createGuild(owner, 0n);
+      await addMember(g, admin);
+      await addMember(g, owner);
+      // Admin role at position 5; an owner-designated role above it at 9.
+      await assignRole(g, admin, await createRole(g, P.ADMINISTRATOR, 5));
+      const below = await createRole(g, 0n, 3);
+      const above = await createRole(g, 0n, 9);
+      // ADMINISTRATOR implies MANAGE_ROLES, so below-ceiling is fine…
+      await expect(assertCanManageRole(g, admin, below)).resolves.toBeUndefined(); // 3 < 5
+      // …but the admin must NOT be able to manage a role above their highest.
+      await expect(assertCanManageRole(g, admin, above)).rejects.toMatchObject({
+        code: 'FORBIDDEN',
+      }); // 9 ≥ 5 — previously bypassed via ALL_PERMISSIONS
+      await expect(assertCanManageRole(g, owner, above)).resolves.toBeUndefined(); // owner still bypasses
+    });
   });
 });

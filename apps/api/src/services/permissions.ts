@@ -955,7 +955,13 @@ export async function assertCanManageRole(
     everyoneRole: m.everyoneRole,
     memberRoles: m.memberRoles,
   });
-  if (perms === ALL_PERMISSIONS) return;
+  // NOTE: ADMINISTRATOR does NOT bypass role hierarchy — only the owner does
+  // (checked above). The previous `if (perms === ALL_PERMISSIONS) return;`
+  // here let any non-owner admin edit/delete/reorder roles ABOVE their own
+  // and self-assign a higher role (the member-roles PATCH gates each added
+  // role on this function), escalating above peer admins. Admins still pass
+  // the MANAGE_ROLES check below (ADMINISTRATOR implies it) but remain
+  // bound by the position ceiling — matching assertCanManageMember.
   if (!hasPermission(perms, Permissions.MANAGE_ROLES)) {
     throw errors.missingPermissions(['MANAGE_ROLES']);
   }

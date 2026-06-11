@@ -117,6 +117,12 @@ export const GatewayEvent = {
   // reflects the change in real time across all connected tabs.
   DM_SETTINGS_UPDATE: 'DM_SETTINGS_UPDATE',
 
+  // 1:1 DM messaging streak changed. Payload: { channel_id, streak }. Sent to
+  // both recipients when the credited streak value moves (at most once per
+  // day per channel) so the streak chip updates live instead of only after
+  // the next DM-list fetch / app relaunch.
+  DM_STREAK_UPDATE: 'DM_STREAK_UPDATE',
+
   // DM read-receipt events. Both fire only on 1:1 DMs where the
   // recipient has dmReadReceiptsEnabled=true; suppressed otherwise.
   //

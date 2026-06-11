@@ -371,6 +371,7 @@ type Action =
   | { type: 'REACTION_REMOVE_ALL'; channelId: string; messageId: string; emoji?: string }
   | { type: 'DMS_SET'; channels: Channel[] }
   | { type: 'DM_UPSERT'; channel: Channel }
+  | { type: 'DM_STREAK_SET'; channelId: string; streak: number }
   | { type: 'READ_STATES_SET'; readStates: ReadState[] }
   | { type: 'READ_STATES_MERGE'; readStates: ReadState[] }
   | { type: 'READ_STATE_UPSERT'; readState: ReadState }
@@ -1274,11 +1275,25 @@ function reducer(state: State, action: Action): State {
       return { ...state, dmChannels: action.channels, loadedDMs: true };
     case 'DM_UPSERT': {
       const idx = state.dmChannels.findIndex((c) => c.id === action.channel.id);
+      // The gateway Channel DTO never carries `streak` (REST-only), so a
+      // wholesale replace would wipe a loaded streak on any unrelated
+      // CHANNEL_UPDATE (e.g. E2EE toggle). Preserve the existing value.
+      const merged =
+        idx === -1
+          ? action.channel
+          : { ...action.channel, streak: action.channel.streak ?? state.dmChannels[idx].streak };
       const next =
         idx === -1
           ? // New DM goes to the top — most-recent-first ordering
-            [action.channel, ...state.dmChannels]
-          : state.dmChannels.map((c) => (c.id === action.channel.id ? action.channel : c));
+            [merged, ...state.dmChannels]
+          : state.dmChannels.map((c) => (c.id === action.channel.id ? merged : c));
+      return { ...state, dmChannels: next };
+    }
+    case 'DM_STREAK_SET': {
+      const idx = state.dmChannels.findIndex((c) => c.id === action.channelId);
+      if (idx === -1) return state;
+      const next = state.dmChannels.slice();
+      next[idx] = { ...next[idx], streak: action.streak };
       return { ...state, dmChannels: next };
     }
 
@@ -2569,7 +2584,22 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         // resolveLevelsBulk helper — so mute is consistent across
         // every notification surface.
 
-        if (!selfId || m.authorId === selfId) return;
+        if (!selfId || m.authorId === selfId) {
+          // Our OWN message must not light an unread dot for us. Unread is a
+          // bare lastMessageId comparison with no authorship concept, so a
+          // message we sent (from this or another tab/device) would show a
+          // dot in DMList/ChannelList until the channel is opened. Advance
+          // our read marker locally; the READ_STATE_UPSERT reducer's
+          // monotonic + numeric-id guards make this safe (optimistic
+          // `local-` ids are dropped). The server also advances it on create.
+          if (m.authorId === selfId && /^\d+$/.test(m.id)) {
+            dispatch({
+              type: 'READ_STATE_UPSERT',
+              readState: { channelId: m.channelId, lastMessageId: m.id, mentionCount: 0 },
+            });
+          }
+          return;
+        }
 
         const fresh = stateRef.current;
         const isMention = m.mentionedUserIds.includes(selfId);
@@ -2800,6 +2830,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       gateway.on<Channel>(GatewayEvent.CHANNEL_UPDATE, (ch) => {
         if (ch.guildId) dispatch({ type: 'CHANNEL_UPSERT', channel: ch });
         else dispatch({ type: 'DM_UPSERT', channel: ch });
+      }),
+      gateway.on<{ channel_id: string; streak: number }>(GatewayEvent.DM_STREAK_UPDATE, (d) => {
+        dispatch({ type: 'DM_STREAK_SET', channelId: d.channel_id, streak: d.streak });
       }),
       gateway.on<Channel>(GatewayEvent.CHANNEL_DELETE, (ch) => {
         dispatch({ type: 'CHANNEL_REMOVE', channelId: ch.id, guildId: ch.guildId });

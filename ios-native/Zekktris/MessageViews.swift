@@ -932,7 +932,12 @@ struct MessageRow: View {
             Label(store.isSaved(message.id) ? "Unsave" : "Save",
                   systemImage: store.isSaved(message.id) ? "bookmark.slash" : "bookmark")
         }
-        if isOwn {
+        // Only CONFIRMED own messages get Edit/Delete. An optimistic
+        // placeholder (sendState "sending"/"failed") has a client-UUID id,
+        // so editing/deleting it PATCHes /messages/<UUID> → 400 and the
+        // edit is silently lost — which read as "I can't edit the message I
+        // just sent." Failed rows have their own inline Retry/Delete.
+        if isOwn && message.sendState == nil {
             Button { beginEdit() } label: {
                 Label("Edit", systemImage: "pencil")
             }

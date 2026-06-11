@@ -316,6 +316,33 @@ export async function createMessage(input: CreateMessageInput): Promise<MessageW
       .set({ lastMessageId: messageId })
       .where(eq(schema.channels.id, input.channelId));
 
+    // Advance the AUTHOR's own read marker to this message. Unread is
+    // `channel.lastMessageId > readState.lastMessageId`, with no concept of
+    // authorship — so without this a user's own message lights an unread
+    // dot for themselves on every OTHER device (and on this one in a
+    // send-then-navigate race). Sending is a full ack (Discord-style):
+    // advance lastMessageId and clear mention_count. GREATEST guard so an
+    // out-of-order insert can't roll the marker backward. Skipped for
+    // authorless messages (system/webhook).
+    if (input.authorId) {
+      await tx
+        .insert(schema.readStates)
+        .values({
+          userId: input.authorId,
+          channelId: input.channelId,
+          lastMessageId: messageId,
+          mentionCount: 0,
+        })
+        .onConflictDoUpdate({
+          target: [schema.readStates.userId, schema.readStates.channelId],
+          set: {
+            lastMessageId: sql`GREATEST(${schema.readStates.lastMessageId}, ${messageId})`,
+            mentionCount: 0,
+            updatedAt: new Date(),
+          },
+        });
+    }
+
     // Mention-count bookkeeping: for every user this message directly
     // mentions (except the author themselves — self-mentions are noise),
     // increment their read_state.mention_count for this channel. This is

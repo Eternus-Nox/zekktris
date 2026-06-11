@@ -1185,6 +1185,45 @@ final class AppStore: ObservableObject {
 
     /// Detect an incoming DM call from a VOICE_STATE_UPDATE: someone *else*
     /// joined voice on a DM we're a recipient of, and we're not already in it.
+    /// Apply the `voice_states` snapshot from a READY frame. The READY `d`
+    /// payload uses a snake_case `voice_states` key whose elements are the
+    /// camelCase VoiceState DTOs the gateway sends live. Rebuilds the global
+    /// presence map, reconciles our own call state, and replays any in-flight
+    /// ring that we missed while the socket was down.
+    private func applyReadyVoiceStates(_ data: Data) {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = obj["voice_states"] as? [[String: Any]] else { return }
+        let states: [VoiceState] = rows.compactMap { row in
+            guard let d = try? JSONSerialization.data(withJSONObject: row) else { return nil }
+            return try? JSONDecoder().decode(VoiceState.self, from: d)
+        }
+        // Rebuild the sidebar/DM voice-presence map from the authoritative
+        // snapshot (channelId == nil shouldn't appear here, but guard anyway).
+        var map: [String: VoiceState] = [:]
+        for vs in states where vs.channelId != nil { map[vs.userId] = vs }
+        voiceStatesByUser = map
+
+        // Reconcile our OWN call: if we believe we're in a call but the
+        // snapshot doesn't list us there, it ended while we were suspended —
+        // tear the dead call down locally so the stale voiceChannelId stops
+        // swallowing future rings (and our own call button works again).
+        if let active = voiceChannelId,
+           !states.contains(where: { $0.userId == currentUserId && $0.channelId == active }) {
+            callLog.info("READY: reconcile stale voiceChannelId \(active, privacy: .public) (not in snapshot) — leaving")
+            Task { await leaveCurrentVoice() }
+        }
+
+        // Replay incoming-call detection for 1:1 DM rings that survive only in
+        // this snapshot (the live VOICE_STATE_UPDATE arrived on our dead
+        // socket). Gate on the local DM list so guild-voice rows don't trigger
+        // a wasted loadDMs; handleIncomingCall re-applies the self/dup guards.
+        for vs in states where vs.userId != currentUserId {
+            if let ch = dms.first(where: { $0.id == vs.channelId }), ch.type == "dm" {
+                handleIncomingCall(vs)
+            }
+        }
+    }
+
     private func handleIncomingCall(_ vs: VoiceState) {
         guard let channelId = vs.channelId else {
             // They hung up / declined before we answered — drop the ring.
@@ -1264,7 +1303,13 @@ final class AppStore: ObservableObject {
     /// a re-keyed conversation re-prompts (and a freshly-enabled one locks).
     private func handleChannelUpdate(_ updated: Channel) {
         if let i = dms.firstIndex(where: { $0.id == updated.id }) {
-            dms[i] = updated
+            // The gateway Channel DTO never carries `streak` (it's only
+            // attached on the REST DM list), so a wholesale replace here
+            // would WIPE a loaded streak on any unrelated CHANNEL_UPDATE
+            // (e.g. an E2EE toggle/re-key). Carry the old value forward.
+            var u = updated
+            if u.streak == nil { u.streak = dms[i].streak }
+            dms[i] = u
         }
         if let j = channels.firstIndex(where: { $0.id == updated.id }) {
             channels[j] = updated
@@ -2729,6 +2774,16 @@ final class AppStore: ObservableObject {
     private func handleEvent(_ name: String, _ data: Data) {
         switch name {
         case "READY":
+            // Consume the voice_states snapshot the server ships in READY.
+            // Without this, two things broke after a reconnect: (a) a stale
+            // voiceChannelId (a call that ended while we were suspended, whose
+            // self-left event hit a dead socket) was never cleared, so
+            // handleIncomingCall's `voiceChannelId != channelId` guard
+            // permanently swallowed future rings for that DM; (b) a ring that
+            // arrived during the socket gap — recoverable only from this
+            // snapshot on a fresh IDENTIFY — was thrown away. The web client
+            // consumes voice_states here too (VOICE_STATES_SET).
+            applyReadyVoiceStates(data)
             if didInitialReady {
                 // A READY after the first one means we reconnected following a
                 // drop. Re-sync state, since dispatch events were missed while
@@ -2770,6 +2825,19 @@ final class AppStore: ObservableObject {
             // A user's message supersedes their typing indicator (web parity).
             if let author = message.authorId ?? message.author?.id {
                 typing.removeValue(forKey: author)
+                // Our OWN message must never light an unread dot for us —
+                // advance our local read marker immediately (the message we
+                // just sent from THIS or another device). The server also
+                // advances it on create, but doing it locally clears the dot
+                // without a round-trip. Guarded by snowflakeGreater so an
+                // out-of-order echo can't regress the marker.
+                if author == currentUserId {
+                    let prev = readStates[message.channelId]?.lastMessageId
+                    if prev == nil || snowflakeGreater(message.id, than: prev!) {
+                        readStates[message.channelId] = ReadState(
+                            channelId: message.channelId, lastMessageId: message.id, mentionCount: 0)
+                    }
+                }
             }
             if message.channelId == selectedChannel?.id {
                 upsert(message)
@@ -2780,6 +2848,14 @@ final class AppStore: ObservableObject {
             if let m = try? JSONDecoder().decode(Message.self, from: data),
                m.channelId == selectedChannel?.id {
                 upsert(m)
+            }
+        case "DM_STREAK_UPDATE":
+            // Payload snake_case: { channel_id, streak }. Update the streak
+            // chip live instead of waiting for the next DM-list fetch.
+            if let d = jsonDict(data), let cid = d["channel_id"] as? String,
+               let streak = d["streak"] as? Int {
+                if let i = dms.firstIndex(where: { $0.id == cid }) { dms[i].streak = streak }
+                if selectedChannel?.id == cid { selectedChannel?.streak = streak }
             }
         case "MESSAGE_DELETE":
             // Payload is snake_case: { id, channel_id }.

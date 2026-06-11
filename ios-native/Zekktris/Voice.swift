@@ -145,9 +145,21 @@ final class VoiceManager: ObservableObject {
     func toggleCamera() async {
         let next = !isCameraOn
         do {
-            try await room?.localParticipant.setCamera(enabled: next)
+            // setCamera returns the publication on BOTH paths. The first
+            // enable PUBLISHES a track (didPublishTrack fires, caching
+            // localVideoTrack); but disable only MUTES the publication (it
+            // is not unpublished), so a SECOND enable merely UNMUTES — no
+            // didPublishTrack, so we must read the track back here. Without
+            // this, localVideoTrack stayed nil after a re-enable: the local
+            // tile never reappeared even though the camera was live and
+            // publishing to peers (an invisible-but-broadcasting hazard).
+            let pub = try await room?.localParticipant.setCamera(enabled: next)
             isCameraOn = next
-            if !next { localVideoTrack = nil }
+            if next {
+                if let vt = pub?.track as? VideoTrack { localVideoTrack = vt }
+            } else {
+                localVideoTrack = nil
+            }
         } catch {
             lastError = error.localizedDescription
         }

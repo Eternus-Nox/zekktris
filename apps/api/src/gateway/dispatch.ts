@@ -576,6 +576,19 @@ export function dmChannelCreated(args: {
   }
 }
 
+/** A 1:1 DM's messaging streak changed — push the new value to both
+ *  recipients so the streak chip updates without a DM-list refetch. */
+export function dmStreakUpdate(args: {
+  channelId: bigint;
+  recipientIds: bigint[];
+  streak: number;
+}): void {
+  const payload = { channel_id: args.channelId.toString(), streak: args.streak };
+  for (const userId of args.recipientIds) {
+    publish(GatewayEvent.DM_STREAK_UPDATE, payload, { kind: 'user', userId });
+  }
+}
+
 /**
  * The current user has closed a DM. We strip the channel from their
  * connections' subscription set (so further events for the channel
