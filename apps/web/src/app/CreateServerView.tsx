@@ -47,6 +47,28 @@ export function CreateServerView() {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [importing, setImporting] = useState(false);
 
+  // Optional server picture + banner (uploaded to the new guild after create).
+  const [iconFile, setIconFile] = useState<File | null>(null);
+  const [bannerFile, setBannerFile] = useState<File | null>(null);
+  const [iconPreview, setIconPreview] = useState<string | null>(null);
+  const [bannerPreview, setBannerPreview] = useState<string | null>(null);
+  const iconInputRef = useRef<HTMLInputElement | null>(null);
+  const bannerInputRef = useRef<HTMLInputElement | null>(null);
+
+  function onPickImage(e: React.ChangeEvent<HTMLInputElement>, which: 'icon' | 'banner') {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    if (which === 'icon') {
+      setIconFile(f);
+      setIconPreview(url);
+    } else {
+      setBannerFile(f);
+      setBannerPreview(url);
+    }
+  }
+
   const trimmedName = name.trim();
 
   // Step 1 — name submitted. Don't create yet; open the setup popup.
@@ -68,6 +90,21 @@ export function CreateServerView() {
     setErr(null);
     try {
       const r = await rest.createGuild({ name: trimmedName });
+      // Upload the optional picture + banner to the new guild (non-fatal).
+      if (iconFile) {
+        try {
+          await rest.uploadGuildIcon(r.guild.id, iconFile);
+        } catch {
+          /* ignore — server still created fine */
+        }
+      }
+      if (bannerFile) {
+        try {
+          await rest.uploadGuildBanner(r.guild.id, bannerFile);
+        } catch {
+          /* ignore */
+        }
+      }
       await refreshGuilds();
       nav(`/channels/${r.guild.id}/${r.defaultChannelId}`);
     } catch (e) {
@@ -150,21 +187,55 @@ export function CreateServerView() {
 
       <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin">
         <div className="max-w-lg mx-auto px-4 sm:px-6 py-8 sm:py-12">
-          <div className="flex flex-col items-center text-center mb-8">
-            <div
-              className={`w-24 h-24 rounded-3xl flex items-center justify-center text-3xl font-bold mb-4 shadow-lg ring-1 ring-line/50 ${tone}`}
-              aria-hidden
-            >
-              {initials}
+          <div className="mb-8">
+            {/* Optional server banner + picture. The picture overhangs the
+                banner's bottom-left (mirrors the profile/guild header). Both
+                optional; the picture falls back to the live initials preview. */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => bannerInputRef.current?.click()}
+                disabled={busy}
+                aria-label="Add server banner (optional)"
+                className="block w-full h-28 rounded-xl overflow-hidden ring-1 ring-line/50 hover:ring-accent transition-all disabled:opacity-60"
+              >
+                {bannerPreview ? (
+                  <img src={bannerPreview} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full bg-gradient-to-br from-accent/35 to-accent-2/25 flex items-center justify-center gap-1.5 text-xs font-semibold text-ink-2">
+                    <Upload size={14} /> Add banner (optional)
+                  </div>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => iconInputRef.current?.click()}
+                disabled={busy}
+                aria-label="Add server picture (optional)"
+                className="absolute -bottom-6 left-4 w-20 h-20 rounded-2xl overflow-hidden ring-4 ring-bg-1 shadow-lg hover:brightness-110 transition-all disabled:opacity-60"
+              >
+                {iconPreview ? (
+                  <img src={iconPreview} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  <div
+                    className={`w-full h-full flex items-center justify-center text-2xl font-bold ${tone}`}
+                    aria-hidden
+                  >
+                    {initials}
+                  </div>
+                )}
+              </button>
             </div>
-            <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-              Create your server
-            </h2>
-            <p className="mt-2 text-sm text-ink-2 max-w-sm leading-relaxed">
-              A server is where you and your community hang out — text, voice,
-              and everything in between. Pick a name to get started; you can
-              change it any time.
-            </p>
+            <div className="text-center mt-10">
+              <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight">
+                Create your server
+              </h2>
+              <p className="mt-2 text-sm text-ink-2 max-w-sm mx-auto leading-relaxed">
+                A server is where you and your community hang out — text, voice,
+                and everything in between. Pick a name to get started; you can
+                change it any time.
+              </p>
+            </div>
           </div>
 
           <form onSubmit={onSubmitName} className="glass glass-edge rounded-xl p-5 sm:p-6 shadow-sm space-y-4">
@@ -216,6 +287,21 @@ export function CreateServerView() {
         type="file"
         accept="application/json,.json"
         onChange={onImportFile}
+        className="hidden"
+      />
+      {/* Hidden inputs for the optional server picture + banner. */}
+      <input
+        ref={iconInputRef}
+        type="file"
+        accept="image/*"
+        onChange={(e) => onPickImage(e, 'icon')}
+        className="hidden"
+      />
+      <input
+        ref={bannerInputRef}
+        type="file"
+        accept="image/*"
+        onChange={(e) => onPickImage(e, 'banner')}
         className="hidden"
       />
 
