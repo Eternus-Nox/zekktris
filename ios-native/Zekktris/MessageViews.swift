@@ -2301,29 +2301,42 @@ private struct ProfileCardPresentation: ViewModifier {
     }
 }
 
-/// A rounded speech bubble with a tail on the LEFT edge. `tailCenterY`
-/// (fraction down the body) places the tail vertically; `tailTipDY` slides the
-/// TIP up/down relative to its base — negative makes it point up-and-left (NW)
-/// at the avatar. Clamped to stay clear of the rounded corners.
+/// A rounded message bubble whose LEFT edge bulges out into a tail — drawn as
+/// ONE continuous outline (rounded rect + tail in a single path), so the stroke
+/// has no seam and it reads as a single message box. `tailCenterY` (fraction
+/// down the body) places the tail; `tailTipDY` slides the tip up/down — positive
+/// points down-and-left (SW) at the avatar, negative up-and-left (NW).
 private struct SpeechBubbleLeft: Shape {
-    var cornerRadius: CGFloat = 11
+    var cornerRadius: CGFloat = 9
     var tailWidth: CGFloat = 8   // how far the tail protrudes left of the body
-    var tailHeight: CGFloat = 11 // vertical span of the tail base
+    var tailHeight: CGFloat = 8  // vertical span of the tail base
     var tailCenterY: CGFloat = 0.5
-    var tailTipDY: CGFloat = 0   // tip vertical offset; negative = points NW
+    var tailTipDY: CGFloat = 0   // tip vertical offset; positive = points SW
 
     func path(in rect: CGRect) -> Path {
-        let bodyMinX = rect.minX + tailWidth
-        let body = CGRect(x: bodyMinX, y: rect.minY,
-                          width: max(cornerRadius * 2, rect.width - tailWidth),
-                          height: rect.height)
-        var p = Path(roundedRect: body, cornerRadius: cornerRadius)
-        let minCY = rect.minY + cornerRadius + tailHeight / 2
-        let maxCY = rect.maxY - cornerRadius - tailHeight / 2
-        let cy = min(max(rect.minY + rect.height * tailCenterY, minCY), max(minCY, maxCY))
-        p.move(to: CGPoint(x: bodyMinX, y: cy - tailHeight / 2))
-        p.addLine(to: CGPoint(x: rect.minX, y: cy + tailTipDY)) // tip (NW when DY<0)
-        p.addLine(to: CGPoint(x: bodyMinX, y: cy + tailHeight / 2))
+        let r = min(cornerRadius, rect.height / 2 - 1, (rect.width - tailWidth) / 2 - 1)
+        let minX = rect.minX + tailWidth   // body's left edge (tail protrudes left of this)
+        let maxX = rect.maxX
+        let minY = rect.minY
+        let maxY = rect.maxY
+        // Tail base, clamped onto the straight part of the left edge.
+        let minCY = minY + r + tailHeight / 2
+        let maxCY = maxY - r - tailHeight / 2
+        let cy = min(max(minY + (maxY - minY) * tailCenterY, minCY), max(minCY, maxCY))
+
+        var p = Path()
+        p.move(to: CGPoint(x: minX + r, y: minY))                                   // top edge
+        p.addLine(to: CGPoint(x: maxX - r, y: minY))
+        p.addQuadCurve(to: CGPoint(x: maxX, y: minY + r), control: CGPoint(x: maxX, y: minY)) // TR
+        p.addLine(to: CGPoint(x: maxX, y: maxY - r))                                // right edge
+        p.addQuadCurve(to: CGPoint(x: maxX - r, y: maxY), control: CGPoint(x: maxX, y: maxY)) // BR
+        p.addLine(to: CGPoint(x: minX + r, y: maxY))                                // bottom edge
+        p.addQuadCurve(to: CGPoint(x: minX, y: maxY - r), control: CGPoint(x: minX, y: maxY)) // BL
+        p.addLine(to: CGPoint(x: minX, y: cy + tailHeight / 2))                     // down to tail base
+        p.addLine(to: CGPoint(x: rect.minX, y: cy + tailTipDY))                     // out to the tail tip
+        p.addLine(to: CGPoint(x: minX, y: cy - tailHeight / 2))                     // back to the edge
+        p.addLine(to: CGPoint(x: minX, y: minY + r))                               // up the left edge
+        p.addQuadCurve(to: CGPoint(x: minX + r, y: minY), control: CGPoint(x: minX, y: minY)) // TL
         p.closeSubpath()
         return p
     }
