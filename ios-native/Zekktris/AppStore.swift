@@ -871,7 +871,16 @@ final class AppStore: ObservableObject {
             hasMoreMessages = fetched.count >= 50
             decryptVisible()
         } catch {
-            errorText = (error as? APIError)?.message ?? error.localizedDescription
+            // Access to the open channel was revoked (made private / deleted)
+            // out from under us — the server denies the read. Pop out so its
+            // stale on-screen history isn't left readable. (Defense-in-depth on
+            // top of the CHANNEL_DELETE pop and the reconnect re-validate.)
+            if let status = (error as? APIError)?.status, status == 403 || status == 404,
+               channel.id == selectedChannel?.id {
+                clearChannel()
+            } else {
+                errorText = (error as? APIError)?.message ?? error.localizedDescription
+            }
         }
     }
 
@@ -2433,32 +2442,49 @@ final class AppStore: ObservableObject {
         return acc
     }
     var myPermissions: UInt64 { currentUserId.map { memberPermissions($0) } ?? 0 }
-    func iHavePermission(_ bit: Int) -> Bool { Permissions.has(myPermissions, bit) }
+    // Guild-management permissions must be FALSE while the foreground channel
+    // is a direct message — `selectedGuild`/`roles`/`members` linger from the
+    // last-viewed server (showDMs / "Message"-from-profile don't clear them),
+    // which otherwise let you e.g. assign yourself a role inside a DM. Derive
+    // the DM context from the nav stack (reliable across every DM-entry path,
+    // unlike the `inDMs` flag which startDM→push doesn't set).
+    var isViewingDM: Bool {
+        if inDMs { return true }
+        switch stack.last {
+        case .messages(let ch)?, .threadList(let ch)?, .voice(let ch)?:
+            return ch.isDM
+        case nil:
+            return false
+        }
+    }
+    func iHavePermission(_ bit: Int) -> Bool {
+        !isViewingDM && Permissions.has(myPermissions, bit)
+    }
 
     /// Gated client-side; the server still enforces the real check. Owner
     /// short-circuits (covers servers where our member row isn't loaded).
     var canManageChannels: Bool {
-        guard let g = selectedGuild else { return false }
+        guard let g = selectedGuild, !isViewingDM else { return false }
         if g.ownerId == currentUserId { return true }
         return iHavePermission(Permissions.MANAGE_CHANNELS)
     }
     var canManageRoles: Bool {
-        guard let g = selectedGuild else { return false }
+        guard let g = selectedGuild, !isViewingDM else { return false }
         if g.ownerId == currentUserId { return true }
         return iHavePermission(Permissions.MANAGE_ROLES)
     }
     var canKickMembers: Bool {
-        guard let g = selectedGuild else { return false }
+        guard let g = selectedGuild, !isViewingDM else { return false }
         if g.ownerId == currentUserId { return true }
         return iHavePermission(Permissions.KICK_MEMBERS)
     }
     var canBanMembers: Bool {
-        guard let g = selectedGuild else { return false }
+        guard let g = selectedGuild, !isViewingDM else { return false }
         if g.ownerId == currentUserId { return true }
         return iHavePermission(Permissions.BAN_MEMBERS)
     }
     var canModerateMembers: Bool {
-        guard let g = selectedGuild else { return false }
+        guard let g = selectedGuild, !isViewingDM else { return false }
         if g.ownerId == currentUserId { return true }
         return iHavePermission(Permissions.MODERATE_MEMBERS)
     }
@@ -2490,7 +2516,9 @@ final class AppStore: ObservableObject {
             members[userId] = updated
         } catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
-    var isGuildOwner: Bool { selectedGuild?.ownerId != nil && selectedGuild?.ownerId == currentUserId }
+    var isGuildOwner: Bool {
+        !isViewingDM && selectedGuild?.ownerId != nil && selectedGuild?.ownerId == currentUserId
+    }
     var canManageGuild: Bool {
         if isGuildOwner { return true }
         return iHavePermission(Permissions.MANAGE_GUILD)
@@ -2977,7 +3005,22 @@ final class AppStore: ObservableObject {
                 Task { await loadGuilds() }
                 Task { await loadDMs() }
                 Task { await loadReadStates() }
-                if let c = selectedChannel { Task { await loadMessages(c) } }
+                // Re-pull the (server-filtered) channel list and re-validate the
+                // open channel: a channel may have been made PRIVATE while we
+                // were disconnected (offline clients aren't sent the per-user
+                // CHANNEL_DELETE — they must refresh on reconnect, like web). If
+                // our open channel is no longer visible, pop out of it instead
+                // of leaving a now-private channel on screen.
+                if let c = selectedChannel {
+                    Task {
+                        if let g = selectedGuild, !c.isDM { await loadChannels(g) }
+                        if c.isDM || channels.contains(where: { $0.id == c.id }) {
+                            await loadMessages(c)
+                        } else {
+                            clearChannel()
+                        }
+                    }
+                }
                 // Presence deltas missed while suspended are unrecoverable
                 // (no resume/replay) — refetch members so guild status dots
                 // converge from the REST snapshot.
@@ -3123,10 +3166,28 @@ final class AppStore: ObservableObject {
                let c = selectedChannel { Task { await loadPins(c) } }
         case "CHANNEL_CREATE", "CHANNEL_DELETE":
             // Channel added/removed: DMs go to the DM list, guild channels to
-            // the open guild's channel list.
+            // the open guild's channel list. A CHANNEL_DELETE also arrives when
+            // a channel is made PRIVATE for us (override change) — not just on
+            // real deletion — so pop out of it if we're inside, otherwise we'd
+            // keep reading the already-loaded history of a now-private channel.
             if let ch = try? JSONDecoder().decode(Channel.self, from: data) {
                 if let gid = ch.guildId {
-                    if gid == selectedGuild?.id, let g = selectedGuild { Task { await loadChannels(g) } }
+                    // Immediate pop for the direct match (the common case).
+                    if name == "CHANNEL_DELETE", ch.id == selectedChannel?.id { clearChannel() }
+                    if gid == selectedGuild?.id, let g = selectedGuild {
+                        Task {
+                            await loadChannels(g)
+                            // Category-cascade: a private parent drops its
+                            // children without a direct id match above. If our
+                            // open guild channel is no longer in the filtered
+                            // list, it lost visibility — pop out. Guard on
+                            // guildId so a stale-guild event never pops a DM.
+                            if let sel = selectedChannel, sel.guildId == gid,
+                               !channels.contains(where: { $0.id == sel.id }) {
+                                clearChannel()
+                            }
+                        }
+                    }
                 } else {
                     Task { await loadDMs() }
                 }
