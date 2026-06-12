@@ -1115,6 +1115,31 @@ enum ReportReason: String, CaseIterable, Identifiable {
         }
     }
 }
+
+/// User-selectable camera publish quality (Settings → Preferences). Mirrors
+/// web's camera-quality picker. The LiveKit dimensions/bitrate mapping lives in
+/// Voice.swift so this stays UI-only (no LiveKit dependency here).
+enum CameraQuality: String, CaseIterable, Identifiable {
+    case auto, low, medium, high
+    var id: String { rawValue }
+    var shortLabel: String {
+        switch self {
+        case .auto: return "Auto"
+        case .low: return "Low"
+        case .medium: return "Medium"
+        case .high: return "High"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .auto: return "Adapts to your connection (≈720p)."
+        case .low: return "480p · saves bandwidth, good for slow networks."
+        case .medium: return "720p · balanced."
+        case .high: return "1080p · sharpest, needs a strong uplink."
+        }
+    }
+}
+
 struct SecurityConfig: Codable, Hashable {
     var spamEnabled: Bool
     var spamMaxMessages: Int

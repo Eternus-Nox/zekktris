@@ -155,22 +155,46 @@ final class VoiceManager: ObservableObject {
         catch { lastError = error.localizedDescription }
     }
 
-    /// Capture the camera at 1080p. The default was 720p; 1080p gives the
-    /// encoder a sharper source to work from.
-    private static let cameraCapture = CameraCaptureOptions(
-        position: .front, dimensions: .h1080_169, fps: 30)
+    /// The user's saved camera quality (Settings → Preferences). Defaults to
+    /// high (1080p). Read at publish time, so a change applies on the next
+    /// camera-on (matches web).
+    private var savedCameraQuality: CameraQuality {
+        CameraQuality(rawValue: UserDefaults.standard.string(forKey: "zk.cameraQuality") ?? "high") ?? .high
+    }
+
+    /// Capture dimensions + fps for the chosen quality.
+    private func cameraCaptureOptions(_ q: CameraQuality) -> CameraCaptureOptions {
+        let dims: Dimensions
+        let fps: Int
+        switch q {
+        case .low: dims = Dimensions(width: 640, height: 480); fps = 15
+        case .medium, .auto: dims = .h720_169; fps = 30
+        case .high: dims = .h1080_169; fps = 30
+        }
+        return CameraCaptureOptions(position: .front, dimensions: dims, fps: fps)
+    }
 
     /// Publish with H.264 so Apple devices use the VideoToolbox HARDWARE
     /// encoder/decoder. The old default (software VP8) degraded the image to
     /// keep up under CPU/thermal pressure — that's the blur. H.264 is sharper
-    /// per bit and far cheaper, and 3 Mbps gives 1080p real headroom.
-    /// Simulcast stays on so the SFU can still hand weaker viewers a lower layer.
-    private static let cameraPublish = VideoPublishOptions(
-        encoding: VideoEncoding(maxBitrate: 3_000_000, maxFps: 30),
-        simulcast: true,
-        preferredCodec: .h264)
+    /// per bit and far cheaper. Simulcast stays on so the SFU can hand weaker
+    /// viewers a lower layer; bitrate scales with the chosen quality.
+    private func cameraPublishOptions(_ q: CameraQuality) -> VideoPublishOptions {
+        let bitrate: Int
+        switch q {
+        case .low: bitrate = 600_000
+        case .medium: bitrate = 2_000_000
+        case .auto: bitrate = 2_500_000
+        case .high: bitrate = 3_000_000
+        }
+        return VideoPublishOptions(
+            encoding: VideoEncoding(maxBitrate: bitrate, maxFps: q == .low ? 15 : 30),
+            simulcast: true,
+            preferredCodec: .h264)
+    }
 
-    /// Publish/unpublish the local camera (front camera, hardware H.264 @ 1080p).
+    /// Publish/unpublish the local camera (front camera, hardware H.264 at the
+    /// user's chosen quality).
     func toggleCamera() async {
         let next = !isCameraOn
         do {
@@ -182,10 +206,11 @@ final class VoiceManager: ObservableObject {
             // this, localVideoTrack stayed nil after a re-enable: the local
             // tile never reappeared even though the camera was live and
             // publishing to peers (an invisible-but-broadcasting hazard).
+            let q = savedCameraQuality
             let pub = try await room?.localParticipant.setCamera(
                 enabled: next,
-                captureOptions: Self.cameraCapture,
-                publishOptions: Self.cameraPublish)
+                captureOptions: cameraCaptureOptions(q),
+                publishOptions: cameraPublishOptions(q))
             isCameraOn = next
             if next {
                 if let vt = pub?.track as? VideoTrack { localVideoTrack = vt }

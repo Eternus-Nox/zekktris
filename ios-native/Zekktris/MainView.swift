@@ -1531,6 +1531,7 @@ struct SettingsView: View {
     @AppStorage("zk.showFamily") private var showFamilyButton = false
     @AppStorage("zk.notifyMessages") private var notifyMessages = true
     @AppStorage("zk.notifyCalls") private var notifyCalls = true
+    @AppStorage("zk.cameraQuality") private var cameraQuality = "high"
     @ObservedObject private var push = PushManager.shared
     @Environment(\.zkDismissPage) private var zkDismissPage
 
@@ -1579,6 +1580,7 @@ struct SettingsView: View {
                         appearanceSection
                         notificationsSection
                         micTestSection
+                        cameraSection
                         featuresSection
                     case .account:
                         securitySection
@@ -2168,6 +2170,27 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.plain)
                 }
+            }
+            .padding(12)
+            .background(Theme.bg2)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+    }
+
+    private var cameraSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("CAMERA")
+            VStack(alignment: .leading, spacing: 10) {
+                Picker("Quality", selection: $cameraQuality) {
+                    ForEach(CameraQuality.allCases) { q in
+                        Text(q.shortLabel).tag(q.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text((CameraQuality(rawValue: cameraQuality) ?? .high).detail)
+                    .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                Text("Video uses hardware H.264. Changes apply the next time you turn your camera on.")
+                    .font(.zkSans(11)).foregroundColor(Theme.ink4)
             }
             .padding(12)
             .background(Theme.bg2)
