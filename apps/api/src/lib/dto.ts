@@ -24,10 +24,6 @@ export interface SelfUserDTO {
   avatarUrl: string | null;
   bannerUrl: string | null;
   bio: string | null;
-  /** Short, free-form gender label shown on the profile. Null = unset. */
-  gender: string | null;
-  /** Whether gender is shown on the public profile. */
-  genderVisible: boolean;
   /** Cosmetic avatar decoration id (CSS ring/glow). Null = none. */
   avatarDecoration: string | null;
   status: User['status'];
@@ -88,8 +84,6 @@ export interface PublicUserDTO {
   avatarUrl: string | null;
   bannerUrl: string | null;
   bio: string | null;
-  /** Short, free-form gender label shown on the profile. Null = unset. */
-  gender: string | null;
   /** Cosmetic avatar decoration id (CSS ring/glow). Null = none. */
   avatarDecoration: string | null;
   status: User['status'];
@@ -108,10 +102,6 @@ export interface PublicUserDTO {
   createdAt: string;
   /** True for bot accounts. Drives the BOT badge in clients. */
   isBot: boolean;
-  /** Custom name tag ("clan tag") rendered next to the name. Any/all null. */
-  tagLabel: string | null;
-  tagColor: string | null;
-  tagEmoji: string | null;
 }
 
 export function toSelfUser(user: User): SelfUserDTO {
@@ -124,8 +114,6 @@ export function toSelfUser(user: User): SelfUserDTO {
     avatarUrl: user.avatarUrl,
     bannerUrl: user.bannerUrl,
     bio: user.bio,
-    gender: user.gender ?? null,
-    genderVisible: user.genderVisible,
     avatarDecoration: user.avatarDecoration ?? null,
     status: user.status,
     customStatus: user.customStatus,
@@ -153,8 +141,6 @@ export function toPublicUser(user: User): PublicUserDTO {
     avatarUrl: user.avatarUrl,
     bannerUrl: user.bannerUrl,
     bio: user.bio,
-    // Gender only leaves the server when the user opted to show it.
-    gender: user.genderVisible ? user.gender ?? null : null,
     avatarDecoration: user.avatarDecoration ?? null,
     // 'invisible' is shown as 'offline' to others.
     status: hideStatus ? 'offline' : user.status,
@@ -166,9 +152,6 @@ export function toPublicUser(user: User): PublicUserDTO {
     publicKey: user.publicKey ?? null,
     createdAt: isoDate(user.createdAt),
     isBot: user.isBot,
-    tagLabel: user.tagLabel ?? null,
-    tagColor: user.tagColor ?? null,
-    tagEmoji: user.tagEmoji ?? null,
   };
 }
 

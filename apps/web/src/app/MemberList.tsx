@@ -19,7 +19,6 @@
  */
 
 import { memo, useEffect, useMemo } from 'react';
-import { UserTag } from '../lib/UserTag';
 import { useAppStateSelector } from '../state/AppState';
 import { useAuth } from '../auth/AuthContext';
 import { avatarColor, avatarInitials } from '../lib/avatar';
@@ -327,7 +326,6 @@ const MemberRow = memo(function MemberRow({
             Bot
           </span>
         )}
-        <UserTag user={m.user} />
         {timeoutUntil && (
           <span
             className="ml-1 text-amber-400 shrink-0"

@@ -152,10 +152,6 @@ const patchMeSchema = z
         equivalent to clearing the status entirely. */
     customStatusExpiresAt: z.union([z.string().datetime(), z.null()]).optional(),
     locale: z.string().min(2).max(35).optional(),
-    /** One of the fixed options, or null to clear. */
-    gender: z.union([z.enum(['Male', 'Female', 'Non-Binary', 'N/A']), z.null()]).optional(),
-    /** Whether to display gender on the public profile. */
-    genderVisible: z.boolean().optional(),
     /** Cosmetic avatar decoration id (a preset CSS ring/glow chosen on the
         client). A short id string, or null/'none' to clear. The client
         validates it against its registry; the server only bounds length. */
@@ -196,15 +192,6 @@ const patchMeSchema = z
         z.null(),
       ])
       .optional(),
-    /** Custom name tag ("clan tag"). All optional + independently
-        clearable with null. tagLabel is capped at 6 chars; tagColor must
-        be a #rrggbb hex; tagEmoji is a short string (one emoji, allowing
-        multi-codepoint sequences). */
-    tagLabel: z.union([z.string().max(6), z.null()]).optional(),
-    tagColor: z
-      .union([z.string().regex(/^#[0-9a-fA-F]{6}$/), z.null()])
-      .optional(),
-    tagEmoji: z.union([z.string().max(16), z.null()]).optional(),
   })
   .refine((v) => Object.keys(v).length > 0, {
     message: 'At least one field is required',
@@ -228,8 +215,6 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
       : null;
   }
   if (body.locale !== undefined) update.locale = body.locale;
-  if (body.gender !== undefined) update.gender = body.gender ?? null;
-  if (body.genderVisible !== undefined) update.genderVisible = body.genderVisible;
   if (body.avatarDecoration !== undefined) {
     // Normalize 'none'/'' to null so the column stays clean.
     update.avatarDecoration =
@@ -248,17 +233,6 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   }
   if (body.publicKey !== undefined) {
     update.publicKey = body.publicKey;
-  }
-  // Name tag. Empty/whitespace label or emoji collapses to null so the tag
-  // disappears cleanly rather than rendering an empty pill.
-  if (body.tagLabel !== undefined) {
-    const v = body.tagLabel?.trim();
-    update.tagLabel = v ? v : null;
-  }
-  if (body.tagColor !== undefined) update.tagColor = body.tagColor;
-  if (body.tagEmoji !== undefined) {
-    const v = body.tagEmoji?.trim();
-    update.tagEmoji = v ? v : null;
   }
 
   // Whether THIS patch touches the avatar/banner columns — used to gate

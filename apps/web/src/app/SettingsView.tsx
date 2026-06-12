@@ -15,7 +15,6 @@
  */
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { UserTag } from '../lib/UserTag';
 import { ApiError } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
@@ -96,8 +95,6 @@ export function SettingsView() {
 
   const [displayName, setDisplayName] = useState(user?.displayName ?? '');
   const [bio, setBio] = useState(user?.bio ?? '');
-  const [gender, setGender] = useState(user?.gender ?? '');
-  const [genderVisible, setGenderVisible] = useState<boolean>(user?.genderVisible ?? false);
   const [status, setStatus] = useState<Status>(
     // Show the user's actual stored status, including 'invisible' so
     // they can see their privacy choice persists across sessions.
@@ -353,13 +350,9 @@ export function SettingsView() {
       const patch: {
         displayName: string;
         bio: string;
-        gender: string | null;
-        genderVisible: boolean;
       } = {
         displayName: displayName.trim(),
         bio: bio.trim(),
-        gender: gender.trim() || null,
-        genderVisible,
       };
 
       // Validate locally before round-tripping. The server enforces
@@ -386,8 +379,6 @@ export function SettingsView() {
       });
       setDisplayName(r.user.displayName);
       setBio(r.user.bio ?? '');
-      setGender(r.user.gender ?? '');
-      setGenderVisible(r.user.genderVisible ?? false);
 
       if (!opts?.silent) toasts.push('Settings saved', 'success');
     } catch (e) {
@@ -412,15 +403,13 @@ export function SettingsView() {
     if (!user) return;
     const changed =
       displayName.trim() !== (user.displayName ?? '') ||
-      bio.trim() !== (user.bio ?? '') ||
-      genderVisible !== (user.genderVisible ?? false) ||
-      (gender.trim() || null) !== (user.gender ?? null);
+      bio.trim() !== (user.bio ?? '');
     // Don't auto-save an empty display name (invalid) — wait for valid input.
     if (!changed || displayName.trim().length === 0) return;
     const t = setTimeout(() => void saveRef.current({ silent: true }), 1000);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [displayName, bio, gender, genderVisible, user]);
+  }, [displayName, bio, user]);
 
   return (
     <div className="h-full bg-bg-1 text-ink-1 flex flex-col">
@@ -588,28 +577,6 @@ export function SettingsView() {
               />
               <span className="text-xs text-ink-3 block mt-1">{(bio ?? '').length}/500</span>
             </label>
-            <div className="block">
-              <span className="text-sm text-ink-2">Gender</span>
-              <select
-                value={gender || 'N/A'}
-                onChange={(e) => setGender(e.target.value)}
-                className="mt-1 w-full bg-bg-1 border border-line rounded-md px-3 py-2 outline-none focus:border-accent transition-colors"
-              >
-                <option value="Male">Male</option>
-                <option value="Female">Female</option>
-                <option value="Non-Binary">Non-Binary</option>
-                <option value="N/A">N/A</option>
-              </select>
-              <label className="mt-2 flex items-center gap-2 text-sm text-ink-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={genderVisible}
-                  onChange={(e) => setGenderVisible(e.target.checked)}
-                  className="shrink-0"
-                />
-                Show my gender on my profile
-              </label>
-            </div>
           </section>
 
           {/* ── Status ───────────────────────────────────────────────────
@@ -675,13 +642,6 @@ export function SettingsView() {
           <div className="flex items-baseline justify-between gap-2">
             <h2 className="text-sm font-semibold text-ink-1">Appearance</h2>
             <span className="text-[0.65rem] text-ink-3 shrink-0">Theme · OLED = true black</span>
-          </div>
-
-          {/* Guild Tag — the small tag shown after your name in chat and
-              the member list. */}
-          <div className="mt-3">
-            <h3 className="text-sm font-medium text-ink-1 mb-1.5">Guild Tag</h3>
-            <TagSettings />
           </div>
 
           <h3 className="text-sm font-medium text-ink-1 mt-4 mb-1.5">Themes</h3>
@@ -1869,137 +1829,6 @@ function detectDeviceLabel(): string {
 //
 // Empty state is friendly rather than apologetic — "no one blocked" is
 // the desired state, not a failure.
-
-/**
- * Global privacy settings. Single toggle for now: who can open a new
- * DM or 1:1-call this user. Friends-only by default; opt-in to also
- * accepting from anyone sharing a guild with this user. Block list
- * always wins regardless of this setting. Existing DMs are not
- * affected by this toggle — it only gates NEW conversations.
- */
-function TagSettings() {
-  const { rest, user, updateUser } = useAuth();
-  const toasts = useToasts();
-  const [emoji, setEmoji] = useState(user?.tagEmoji ?? '');
-  const [color, setColor] = useState(user?.tagColor ?? '#3dd7ec');
-  const [label, setLabel] = useState(user?.tagLabel ?? '');
-  const [pending, setPending] = useState(false);
-
-  const dirty =
-    emoji !== (user?.tagEmoji ?? '') ||
-    color !== (user?.tagColor ?? '#3dd7ec') ||
-    label !== (user?.tagLabel ?? '');
-
-  async function save() {
-    if (pending) return;
-    setPending(true);
-    try {
-      const res = await rest.patchMe({
-        tagLabel: label.trim() === '' ? null : label.trim(),
-        tagColor: color,
-        tagEmoji: emoji.trim() === '' ? null : emoji.trim(),
-      });
-      updateUser(res.user);
-      toasts.push('Tag saved', 'success');
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Tag update failed', 'error');
-    } finally {
-      setPending(false);
-    }
-  }
-
-  async function clearTag() {
-    if (pending) return;
-    setEmoji('');
-    setLabel('');
-    setPending(true);
-    try {
-      const res = await rest.patchMe({ tagLabel: null, tagEmoji: null });
-      updateUser(res.user);
-      toasts.push('Tag cleared', 'success');
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Tag update failed', 'error');
-    } finally {
-      setPending(false);
-    }
-  }
-
-  const preview = {
-    tagLabel: label.trim() || null,
-    tagColor: color,
-    tagEmoji: emoji.trim() || null,
-  };
-  const hasTag = !!(user?.tagLabel || user?.tagEmoji);
-
-  return (
-    <div className="space-y-3">
-      <p className="text-xs text-ink-3">
-        A small tag shown to the right of your name everywhere — an emoji, a
-        color, and up to 6 characters. Leave it blank for no tag.
-      </p>
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1">
-          <span className="text-[0.7rem] text-ink-3">Emoji</span>
-          <input
-            value={emoji}
-            onChange={(e) => setEmoji(e.target.value)}
-            maxLength={16}
-            placeholder="😎"
-            className="w-16 bg-bg-2 border border-line rounded-md px-2 py-1.5 text-sm text-center outline-none focus:border-accent transition-colors"
-          />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-[0.7rem] text-ink-3">Color</span>
-          <input
-            type="color"
-            value={color}
-            onChange={(e) => setColor(e.target.value)}
-            className="w-12 h-9 bg-bg-2 border border-line rounded-md p-0.5 cursor-pointer"
-          />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-[0.7rem] text-ink-3">Label</span>
-          <input
-            value={label}
-            onChange={(e) => setLabel(e.target.value.slice(0, 6))}
-            maxLength={6}
-            placeholder="CLAN"
-            className="w-28 bg-bg-2 border border-line rounded-md px-2 py-1.5 text-sm outline-none focus:border-accent transition-colors"
-          />
-        </label>
-        <div className="flex flex-col gap-1">
-          <span className="text-[0.7rem] text-ink-3">Preview</span>
-          <div className="h-9 flex items-center gap-1.5 px-2.5 rounded-md bg-bg-2 border border-line">
-            <span className="text-sm text-ink-1 font-medium truncate max-w-[10rem]">
-              {user?.displayName ?? 'You'}
-            </span>
-            <UserTag user={preview} />
-          </div>
-        </div>
-      </div>
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={() => void save()}
-          disabled={pending || !dirty}
-          className="px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-bg-0 hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-        >
-          {pending ? 'Saving…' : 'Save tag'}
-        </button>
-        {hasTag && (
-          <button
-            type="button"
-            onClick={() => void clearTag()}
-            disabled={pending}
-            className="px-3 py-1.5 rounded-md text-sm text-ink-2 hover:text-ink-1 border border-line hover:bg-bg-3 disabled:opacity-50 transition-colors"
-          >
-            Clear
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
 
 function PrivacySettings() {
   const { rest, user, updateUser } = useAuth();

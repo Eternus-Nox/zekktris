@@ -268,7 +268,7 @@ function WebhookRow({
               </div>
               <p className="text-[0.7rem] text-ink-3 leading-relaxed">
                 Upload an image or paste a URL — this is the webhook’s own picture. Webhook messages
-                show this avatar and name, never your profile or clan tag.
+                show this avatar and name, never your profile.
               </p>
               <div className="flex gap-2 justify-end">
                 <button

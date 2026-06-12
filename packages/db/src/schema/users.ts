@@ -40,10 +40,6 @@ export const users = pgTable(
     avatarUrl: text('avatar_url'),
     bannerUrl: text('banner_url'),
     bio: text('bio'),
-    /** Short, free-form gender label shown on the profile. NULL = unset. */
-    gender: text('gender'),
-    /** Whether gender is shown on the public profile. */
-    genderVisible: boolean('gender_visible').notNull().default(false),
     /** Cosmetic avatar decoration id (a CSS ring/glow overlay rendered by the
      *  client from a preset registry). NULL / 'none' = no decoration. */
     avatarDecoration: text('avatar_decoration'),
@@ -159,18 +155,6 @@ export const users = pgTable(
     customStatusExpiresAt: timestamp('custom_status_expires_at', {
       withTimezone: true,
     }),
-    /**
-     * Custom name tag ("clan tag") — a small pill rendered to the right of
-     * the user's name everywhere it appears (messages, member list, profile).
-     * All three parts are optional and independent:
-     *   tagLabel  — up to 6 characters of text (NULL = no text)
-     *   tagColor  — hex color (e.g. #3dd7ec) for the pill (NULL = accent)
-     *   tagEmoji  — a single leading emoji (NULL = none)
-     * The tag renders only when at least a label or emoji is set.
-     */
-    tagLabel: text('tag_label'),
-    tagColor: text('tag_color'),
-    tagEmoji: text('tag_emoji'),
     /**
      * Privacy preference controlling who can open a DM with this user
      * and ring them for a 1:1 call.

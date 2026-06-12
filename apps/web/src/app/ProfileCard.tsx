@@ -20,7 +20,6 @@
  * height to avoid clipping at the bottom of the screen.
  */
 import { useEffect, useState } from 'react';
-import { UserTag } from '../lib/UserTag';
 import { useNavigate } from 'react-router-dom';
 import { ApiError, type PublicUser, type Role } from '@zekktris/client';
 import { AchievementsShelf } from './AchievementsShelf';
@@ -717,7 +716,6 @@ export function ProfileCard({
                     Bot
                   </span>
                 )}
-                <UserTag user={user} />
               </div>
               <div className="text-xs text-ink-3 truncate">@{user.username}</div>
             </div>
@@ -736,19 +734,6 @@ export function ProfileCard({
               <div className="mt-2 flex items-center gap-1.5 text-sm text-ink-2 line-clamp-2">
                 {cs.emoji && <span className="text-base shrink-0">{cs.emoji}</span>}
                 {cs.text && <span className="italic">{cs.text}</span>}
-              </div>
-            );
-          })()}
-
-          {(() => {
-            // Optional free-form gender label. Falls back to the lazily
-            // fetched full profile when the lightweight member object omits it.
-            const g = user.gender ?? fullProfile?.gender ?? null;
-            if (!g) return null;
-            return (
-              <div className="mt-2 text-xs">
-                <span className="uppercase tracking-wider text-[0.6rem] text-ink-3">Gender</span>{' '}
-                <span className="text-ink-2">{g}</span>
               </div>
             );
           })()}

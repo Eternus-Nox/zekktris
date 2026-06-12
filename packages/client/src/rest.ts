@@ -279,8 +279,6 @@ export class RestClient {
         SelfUser,
         | 'displayName'
         | 'bio'
-        | 'gender'
-        | 'genderVisible'
         | 'status'
         | 'customStatus'
         | 'locale'
@@ -290,9 +288,6 @@ export class RestClient {
         | 'dmReadReceiptsEnabled'
         | 'allowDmsFromServerMembers'
         | 'publicKey'
-        | 'tagLabel'
-        | 'tagColor'
-        | 'tagEmoji'
         | 'achievementsPublic'
       >
     >,

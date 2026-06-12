@@ -14,8 +14,6 @@ function fakeUser(overrides: Partial<User> = {}): User {
     avatarUrl: null,
     bannerUrl: null,
     bio: null,
-    gender: null,
-    genderVisible: false,
     avatarDecoration: null,
     status: 'online',
     customStatus: null,

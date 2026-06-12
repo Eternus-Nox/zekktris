@@ -20,8 +20,6 @@ export interface PublicUser {
   avatarUrl: string | null;
   /** Cosmetic avatar decoration id (CSS ring/glow). Null = none. */
   avatarDecoration?: string | null;
-  /** Short, free-form gender label shown on the profile. Null = unset. */
-  gender?: string | null;
   /** Whether the current viewer may DM / ring this user under the target's
       privacy policy (friend, or server-member opt-in + a shared guild). Only
       populated by the single-profile fetch (GET /users/:id); undefined on
@@ -50,12 +48,6 @@ export interface PublicUser {
       back-compat with payloads serialized before bots existed;
       treat missing as false. */
   isBot?: boolean;
-  /** Custom name tag ("clan tag") rendered to the right of the name.
-      Any/all may be null. Renders only when label or emoji is set.
-      tagColor is a #rrggbb hex (defaults to accent when null). */
-  tagLabel?: string | null;
-  tagColor?: string | null;
-  tagEmoji?: string | null;
 }
 
 /** A bot account owned by the current user. Like a PublicUser but with
@@ -90,8 +82,6 @@ export interface GuildCommand {
 
 export interface SelfUser extends PublicUser {
   email: string;
-  /** Whether gender is shown on the public profile (owner-only field). */
-  genderVisible?: boolean;
   /** Whether the account's email has been confirmed. Drives the
       verify-email gate when the deployment requires verification. */
   emailVerified: boolean;
