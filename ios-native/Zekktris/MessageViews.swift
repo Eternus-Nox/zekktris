@@ -2301,15 +2301,16 @@ private struct ProfileCardPresentation: ViewModifier {
     }
 }
 
-/// A rounded speech bubble with a tail on the LEFT edge pointing left. Used
-/// just above the display name so the tail points back at the avatar to its
-/// left — like the picture is speaking. `tailCenterY` (fraction down the body)
-/// places the tail vertically; clamped to stay clear of the rounded corners.
+/// A rounded speech bubble with a tail on the LEFT edge. `tailCenterY`
+/// (fraction down the body) places the tail vertically; `tailTipDY` slides the
+/// TIP up/down relative to its base — negative makes it point up-and-left (NW)
+/// at the avatar. Clamped to stay clear of the rounded corners.
 private struct SpeechBubbleLeft: Shape {
     var cornerRadius: CGFloat = 11
     var tailWidth: CGFloat = 8   // how far the tail protrudes left of the body
     var tailHeight: CGFloat = 11 // vertical span of the tail base
     var tailCenterY: CGFloat = 0.5
+    var tailTipDY: CGFloat = 0   // tip vertical offset; negative = points NW
 
     func path(in rect: CGRect) -> Path {
         let bodyMinX = rect.minX + tailWidth
@@ -2321,7 +2322,7 @@ private struct SpeechBubbleLeft: Shape {
         let maxCY = rect.maxY - cornerRadius - tailHeight / 2
         let cy = min(max(rect.minY + rect.height * tailCenterY, minCY), max(minCY, maxCY))
         p.move(to: CGPoint(x: bodyMinX, y: cy - tailHeight / 2))
-        p.addLine(to: CGPoint(x: rect.minX, y: cy)) // tip at the far left
+        p.addLine(to: CGPoint(x: rect.minX, y: cy + tailTipDY)) // tip (NW when DY<0)
         p.addLine(to: CGPoint(x: bodyMinX, y: cy + tailHeight / 2))
         p.closeSubpath()
         return p
@@ -2381,8 +2382,8 @@ struct ProfileCardView: View {
                 .clipped()
 
                 customStatusBubble
-                    .padding(.leading, 100)
-                    .padding(.bottom, 16)
+                    .padding(.leading, 92)
+                    .padding(.bottom, 10)
             }
 
             // Avatar straddles the banner's bottom edge — half over the
@@ -2454,6 +2455,12 @@ struct ProfileCardView: View {
         .background(Theme.bg1)
         .modifier(ProfileCardPresentation())
         .task(id: user.id) {
+            // Refresh relationships so the friend button reflects the CURRENT
+            // status — the in-memory list is only loaded on the DMs/friends
+            // screen, so opening a guild member's card cold otherwise showed
+            // "Add Friend" for someone you're already friends with (web fetches
+            // relationships on card-open for the same reason).
+            if !isSelf { await store.loadRelationships() }
             // Full profile for canMessage + bio/banner the list user may omit
             // (mirrors web's on-open fetch). On failure it stays nil → non-friends
             // see no contact buttons, same as web's fetch-fail behavior.
@@ -2473,7 +2480,7 @@ struct ProfileCardView: View {
         let exp = user.customStatusExpiresAt
         let expired = (exp?.isEmpty == false) && !customStatusHasFutureExpiry(exp)
         if !expired, !emoji.isEmpty || !text.isEmpty {
-            let shape = SpeechBubbleLeft()
+            let shape = SpeechBubbleLeft(tailTipDY: -8) // points NW toward the avatar
             HStack(spacing: 5) {
                 if !emoji.isEmpty { Text(emoji).font(.zkSans(13)) }
                 if !text.isEmpty {
