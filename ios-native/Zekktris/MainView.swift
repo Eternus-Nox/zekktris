@@ -1753,7 +1753,9 @@ struct SettingsView: View {
     /// selected rather than leaving every row unchecked.
     private var effectiveStatus: String {
         let s = session.currentUser?.status ?? ""
-        return s.isEmpty ? "online" : s
+        // "offline" is never a deliberate choice (it's the stale pre-connect
+        // snapshot) — show Online selected, matching the in-app presence.
+        return (s.isEmpty || s == "offline") ? "online" : s
     }
 
     private var statusSection: some View {

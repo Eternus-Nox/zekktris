@@ -721,7 +721,18 @@ final class AppStore: ObservableObject {
 
     /// Resolved status for a user — live presence wins over the DTO fallback.
     func status(for userId: String?, fallback: String? = nil) -> String {
-        if let userId, let s = presence[userId] { return s }
+        if let userId {
+            // The SELF user: the server never echoes our own presence back to
+            // us, and currentUser.status is a stale pre-connect snapshot (often
+            // "offline" because getMe ran before the gateway identified). While
+            // we're in the app we are online — so report "online" unless a
+            // deliberate status (idle/dnd/invisible) was chosen in Settings.
+            if userId == currentUserId {
+                let chosen = currentUser?.status ?? "offline"
+                return chosen == "offline" ? "online" : chosen
+            }
+            if let s = presence[userId] { return s }
+        }
         return fallback ?? "offline"
     }
 
