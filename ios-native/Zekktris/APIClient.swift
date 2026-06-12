@@ -1285,6 +1285,18 @@ extension APIClient {
         let wrap: SecurityConfigWrap = try await send("PATCH", "/admin/security/config", bodyData: body)
         return wrap.config
     }
+    /// SSO / OIDC instance config. GET returns the safe fields + whether a
+    /// client secret is set (never the secret). PUT updates; the secret is
+    /// write-only and left unchanged when omitted.
+    func adminGetSso() async throws -> AdminSsoConfig {
+        let wrap: AdminSsoWrap = try await send("GET", "/admin/sso")
+        return wrap.sso
+    }
+    func adminSetSso(_ patch: [String: Any]) async throws -> AdminSsoConfig {
+        let body = try JSONSerialization.data(withJSONObject: patch)
+        let wrap: AdminSsoWrap = try await send("PUT", "/admin/sso", bodyData: body)
+        return wrap.sso
+    }
 
     // ── Achievements ─────────────────────────────────────────────────────────
     func myAchievements() async throws -> AchievementsWrap {

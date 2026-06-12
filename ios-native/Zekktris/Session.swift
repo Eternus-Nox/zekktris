@@ -141,6 +141,14 @@ final class Session: ObservableObject {
         catch { return message(for: error) }
     }
 
+    /// Update the profile bio. Empty/whitespace clears it (sent as ""). Returns
+    /// nil on success, or a user-facing error string.
+    func updateBio(_ bio: String) async -> String? {
+        let trimmed = bio.trimmingCharacters(in: .whitespacesAndNewlines)
+        do { currentUser = try await api.updateProfile(["bio": trimmed]); return nil }
+        catch { return message(for: error) }
+    }
+
     func setStatus(_ status: String) async {
         do { currentUser = try await api.updateProfile(["status": status]) }
         catch { authError = message(for: error) }

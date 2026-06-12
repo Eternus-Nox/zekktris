@@ -2301,14 +2301,16 @@ private struct ProfileCardPresentation: ViewModifier {
     }
 }
 
-/// A rounded speech bubble with a downward-pointing tail at the bottom. The
-/// `tailX` fraction (0 = left, 1 = right) positions the tail along the bottom
-/// edge; it's clamped so it never sits under a rounded corner.
+/// A rounded speech bubble with a downward-pointing tail at the bottom.
+/// `tailInset` is a FIXED distance (points) from the bubble's leading edge to
+/// the tail center — fixed rather than a fraction so the tail keeps pointing at
+/// the same spot (the avatar below it) no matter how wide the text makes the
+/// bubble. Clamped so the tail never sits under a rounded corner.
 private struct SpeechBubbleDown: Shape {
     var cornerRadius: CGFloat = 11
     var tailWidth: CGFloat = 12
     var tailHeight: CGFloat = 7
-    var tailX: CGFloat = 0.2
+    var tailInset: CGFloat = 22
 
     func path(in rect: CGRect) -> Path {
         let bodyHeight = max(cornerRadius * 2, rect.height - tailHeight)
@@ -2316,7 +2318,7 @@ private struct SpeechBubbleDown: Shape {
         var p = Path(roundedRect: body, cornerRadius: cornerRadius)
         let minCX = rect.minX + cornerRadius + tailWidth / 2
         let maxCX = rect.maxX - cornerRadius - tailWidth / 2
-        let cx = min(max(rect.minX + rect.width * tailX, minCX), max(minCX, maxCX))
+        let cx = min(max(rect.minX + tailInset, minCX), max(minCX, maxCX))
         p.move(to: CGPoint(x: cx - tailWidth / 2, y: body.maxY))
         p.addLine(to: CGPoint(x: cx, y: rect.maxY))
         p.addLine(to: CGPoint(x: cx + tailWidth / 2, y: body.maxY))
@@ -2336,28 +2338,38 @@ struct ProfileCardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Group {
-                if let bannerURL = assetURL(user.bannerUrl) {
-                    AsyncImage(url: bannerURL) { phase in
-                        if let img = phase.image {
-                            img.resizable().aspectRatio(contentMode: .fill)
-                        } else {
-                            LinearGradient(
-                                colors: [Theme.accent.opacity(0.55), Theme.accent2.opacity(0.45)],
-                                startPoint: .leading, endPoint: .trailing
-                            )
+            // Banner with the custom-status bubble floated in its lower-left,
+            // just above where the avatar overhangs — tail points down at the
+            // picture. bottomLeading anchor + paddings sit it above the avatar
+            // (avatar is ~18pt from the left, overhanging the banner by 38pt).
+            ZStack(alignment: .bottomLeading) {
+                Group {
+                    if let bannerURL = assetURL(user.bannerUrl) {
+                        AsyncImage(url: bannerURL) { phase in
+                            if let img = phase.image {
+                                img.resizable().aspectRatio(contentMode: .fill)
+                            } else {
+                                LinearGradient(
+                                    colors: [Theme.accent.opacity(0.55), Theme.accent2.opacity(0.45)],
+                                    startPoint: .leading, endPoint: .trailing
+                                )
+                            }
                         }
+                    } else {
+                        LinearGradient(
+                            colors: [Theme.accent.opacity(0.55), Theme.accent2.opacity(0.45)],
+                            startPoint: .leading, endPoint: .trailing
+                        )
                     }
-                } else {
-                    LinearGradient(
-                        colors: [Theme.accent.opacity(0.55), Theme.accent2.opacity(0.45)],
-                        startPoint: .leading, endPoint: .trailing
-                    )
                 }
+                .frame(height: 160)
+                .frame(maxWidth: .infinity)
+                .clipped()
+
+                customStatusBubble
+                    .padding(.leading, 56)
+                    .padding(.bottom, 50)
             }
-            .frame(height: 160)
-            .frame(maxWidth: .infinity)
-            .clipped()
 
             // Avatar straddles the banner's bottom edge — half over the
             // banner, half below — with name + username to its right.
@@ -2368,9 +2380,6 @@ struct ProfileCardView: View {
                     .padding(.top, -38)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    // Custom status as a speech bubble whose tail points down to
-                    // the avatar's top-right, sitting just above the name.
-                    customStatusBubble
                     HStack(spacing: 8) {
                         Text(user.displayName ?? user.username ?? "Unknown")
                             .font(.zkSans(21, weight: .bold))
@@ -2435,8 +2444,8 @@ struct ProfileCardView: View {
         .modifier(ProfileCardPresentation())
     }
 
-    /// Custom status rendered as a speech bubble (tail points down toward the
-    /// avatar's top-right). Empty → renders nothing.
+    /// Custom status rendered as a speech bubble that floats in the banner
+    /// above the avatar, its tail pointing down at the picture. Empty → nothing.
     @ViewBuilder
     private var customStatusBubble: some View {
         let emoji = user.customStatusEmoji?.trimmingCharacters(in: .whitespaces) ?? ""
@@ -2453,9 +2462,9 @@ struct ProfileCardView: View {
             .padding(.horizontal, 11)
             .padding(.top, 6)
             .padding(.bottom, 6 + 7) // leave room for the 7pt tail at the bottom
-            .background(SpeechBubbleDown(tailX: 0.16).fill(Theme.bg3))
-            .overlay(SpeechBubbleDown(tailX: 0.16).stroke(Theme.line, lineWidth: 1))
-            .padding(.bottom, 1)
+            .background(SpeechBubbleDown(tailInset: 22).fill(Theme.bg3))
+            .overlay(SpeechBubbleDown(tailInset: 22).stroke(Theme.line, lineWidth: 1))
+            .shadow(color: .black.opacity(0.28), radius: 5, x: 0, y: 2)
         }
     }
 

@@ -31,6 +31,7 @@ struct SelfUser: Codable, Identifiable, Hashable {
     var displayName: String?
     var avatarUrl: String?
     var bannerUrl: String?
+    var bio: String?
     var email: String?
     var status: String?
     var customStatus: String?
@@ -1096,6 +1097,19 @@ struct SecurityConfig: Codable, Hashable {
     var wordFilterEnabled: Bool
 }
 struct SecurityConfigWrap: Codable { let config: SecurityConfig }
+
+// ── Admin SSO / OIDC ─────────────────────────────────────────────────────────
+struct AdminSsoConfig: Codable, Hashable {
+    var enabled: Bool
+    var issuer: String
+    var clientId: String
+    var scopes: String
+    var buttonLabel: String
+    var allowLinking: Bool
+    /// True if a client secret is stored. The secret itself is never returned.
+    var hasClientSecret: Bool
+}
+struct AdminSsoWrap: Codable { let sso: AdminSsoConfig }
 
 // ── Achievements ────────────────────────────────────────────────────────────
 struct Achievement: Codable, Identifiable, Hashable {
