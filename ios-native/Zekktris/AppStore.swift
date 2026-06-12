@@ -2146,11 +2146,24 @@ final class AppStore: ObservableObject {
 
     // MARK: Server creation / join / discovery
 
-    func createServer(name: String, description: String?) async {
+    func createServer(name: String, description: String?,
+                      icon: (data: Data, ext: String, mime: String)? = nil,
+                      banner: (data: Data, ext: String, mime: String)? = nil) async {
         do {
             let result = try await api.createGuild(name: name, description: description)
+            let gid = result.guild.id
+            // Upload the optional picture + banner to the freshly-created guild
+            // before reloading, so the loaded guild already carries them.
+            if let icon {
+                _ = try? await api.uploadGuildIcon(guildId: gid, filename: "icon.\(icon.ext)",
+                                                   contentType: icon.mime, data: icon.data)
+            }
+            if let banner {
+                _ = try? await api.uploadGuildBanner(guildId: gid, filename: "banner.\(banner.ext)",
+                                                     contentType: banner.mime, data: banner.data)
+            }
             await loadGuilds()
-            if let guild = guilds.first(where: { $0.id == result.guild.id }) {
+            if let guild = guilds.first(where: { $0.id == gid }) {
                 selectGuild(guild)
             } else {
                 selectGuild(result.guild)

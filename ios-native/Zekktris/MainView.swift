@@ -2979,6 +2979,15 @@ struct CreateServerSheet: View {
     @State private var name = ""
     @State private var serverDescription = ""
     @State private var busy = false
+    // Optional server picture + banner (uploaded to the new guild after create).
+    @State private var iconItem: PhotosPickerItem?
+    @State private var bannerItem: PhotosPickerItem?
+    @State private var iconData: Data?
+    @State private var bannerData: Data?
+    @State private var iconExt = "jpg"
+    @State private var iconMime = "image/jpeg"
+    @State private var bannerExt = "jpg"
+    @State private var bannerMime = "image/jpeg"
     // Import-from-file flow (template or backup — same on-disk JSON format).
     @State private var showImporter = false
     @State private var importing = false
@@ -2993,6 +3002,7 @@ struct CreateServerSheet: View {
                 VStack(alignment: .leading, spacing: 18) {
                     Text("Give your server a name. You can change it later.")
                         .font(.zkSans(14)).foregroundColor(Theme.ink3)
+                    serverImagePickers
                     field("SERVER NAME") { TextField("My cool server", text: $name) }
                     field("DESCRIPTION (OPTIONAL)") {
                         TextField("What's it about?", text: $serverDescription, axis: .vertical).lineLimit(2...4)
@@ -3000,7 +3010,10 @@ struct CreateServerSheet: View {
                     Button {
                         busy = true
                         Task {
-                            await store.createServer(name: name, description: serverDescription)
+                            let icon = iconData.map { (data: $0, ext: iconExt, mime: iconMime) }
+                            let banner = bannerData.map { (data: $0, ext: bannerExt, mime: bannerMime) }
+                            await store.createServer(name: name, description: serverDescription,
+                                                     icon: icon, banner: banner)
                             busy = false
                             dismiss()
                         }
@@ -3025,6 +3038,63 @@ struct CreateServerSheet: View {
                 allowedContentTypes: [.json],
                 allowsMultipleSelection: false
             ) { result in onImportFile(result) }
+        }
+    }
+
+    /// Optional server picture + banner. A banner strip with the round server
+    /// picture overhanging its bottom-left — mirrors the profile header. Both
+    /// optional; tapping either opens the photo picker.
+    private var serverImagePickers: some View {
+        ZStack(alignment: .bottomLeading) {
+            PhotosPicker(selection: $bannerItem, matching: .images) {
+                Group {
+                    if let bannerData, let ui = UIImage(data: bannerData) {
+                        Image(uiImage: ui).resizable().scaledToFill()
+                    } else {
+                        LinearGradient(colors: [Theme.accent.opacity(0.35), Theme.accent2.opacity(0.25)],
+                                       startPoint: .topLeading, endPoint: .bottomTrailing)
+                            .overlay {
+                                Label("Add banner", systemImage: "photo")
+                                    .font(.zkSans(12, weight: .semibold)).foregroundColor(Theme.ink2)
+                            }
+                    }
+                }
+                .frame(height: 110).frame(maxWidth: .infinity).clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(.plain)
+
+            PhotosPicker(selection: $iconItem, matching: .images) {
+                ZStack {
+                    if let iconData, let ui = UIImage(data: iconData) {
+                        Image(uiImage: ui).resizable().scaledToFill()
+                    } else {
+                        Theme.bg3.overlay {
+                            Image(systemName: "camera.fill")
+                                .font(.system(size: 16)).foregroundColor(Theme.ink2)
+                        }
+                    }
+                }
+                .frame(width: 64, height: 64).clipShape(Circle())
+                .overlay(Circle().stroke(Theme.bg1, lineWidth: 4))
+            }
+            .buttonStyle(.plain)
+            .offset(x: 12, y: 20)
+        }
+        .padding(.bottom, 20)
+        .onChange(of: iconItem) { item in loadServerImage(item, isIcon: true) }
+        .onChange(of: bannerItem) { item in loadServerImage(item, isIcon: false) }
+    }
+
+    private func loadServerImage(_ item: PhotosPickerItem?, isIcon: Bool) {
+        guard let item else { return }
+        Task {
+            guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+            let t = item.supportedContentTypes.first
+            let ext = t?.preferredFilenameExtension ?? "jpg"
+            let mime = t?.preferredMIMEType ?? "image/jpeg"
+            if isIcon { iconData = data; iconExt = ext; iconMime = mime }
+            else { bannerData = data; bannerExt = ext; bannerMime = mime }
         }
     }
 
