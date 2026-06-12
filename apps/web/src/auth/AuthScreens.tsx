@@ -9,7 +9,7 @@
  * Failure displays the server's error message in red.
  */
 
-import { useState, useEffect, useRef, type FormEvent, type KeyboardEventHandler, type Ref, type RefObject } from 'react';
+import { useState, useRef, type FormEvent, type KeyboardEventHandler, type Ref, type RefObject } from 'react';
 import { ZekktrisMark } from '../lib/ZekktrisMark';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { ApiError } from '@zekktris/client';
@@ -153,20 +153,8 @@ function setStoredLastEmail(email: string): void {
 }
 
 export function LoginPage() {
-  const { login, token, hydrating, rest } = useAuth();
+  const { login, token, hydrating } = useAuth();
   const nav = useNavigate();
-  // SSO availability — fetched once; the button only renders when configured.
-  const [sso, setSso] = useState<{ enabled: boolean; buttonLabel: string } | null>(null);
-  useEffect(() => {
-    let alive = true;
-    rest
-      .getSsoConfig()
-      .then((r) => alive && setSso(r))
-      .catch(() => alive && setSso({ enabled: false, buttonLabel: '' }));
-    return () => {
-      alive = false;
-    };
-  }, [rest]);
   // Initialize from storage so a returning user sees their address
   // already filled in — they only need to type the password. lazy
   // initial state so the localStorage read happens once at mount.
@@ -192,8 +180,6 @@ export function LoginPage() {
   // reset. The reset flow lands users here with ?reset=ok; we show
   // a small green banner so they know the action took effect.
   const justReset = searchParams.get('reset') === 'ok';
-  // An SSO attempt that failed bounces back here with ?sso_error=<message>.
-  const ssoError = searchParams.get('sso_error');
 
   if (hydrating) return null;
   if (token) return <Navigate to={nextPath} replace />;
@@ -226,26 +212,6 @@ export function LoginPage() {
       {justReset && !needs2FA && (
         <div className="mb-4 rounded-md border border-emerald-600/40 bg-emerald-600/15 px-3 py-2 text-sm text-emerald-300">
           Your password was reset. Sign in with your new password below.
-        </div>
-      )}
-      {ssoError && !needs2FA && (
-        <div className="mb-4 rounded-md border border-red-600/40 bg-red-600/15 px-3 py-2 text-sm text-red-300">
-          {ssoError}
-        </div>
-      )}
-      {sso?.enabled && !needs2FA && (
-        <div className="mb-4 space-y-3">
-          <a
-            href="/api/v1/auth/sso/login"
-            className="block w-full text-center rounded-md border border-line bg-bg-2 px-3 py-2 text-sm font-medium text-ink-1 hover:border-accent transition-colors"
-          >
-            {sso.buttonLabel || 'Sign in with SSO'}
-          </a>
-          <div className="flex items-center gap-3 text-xs text-ink-3">
-            <span className="h-px flex-1 bg-line" />
-            or
-            <span className="h-px flex-1 bg-line" />
-          </div>
         </div>
       )}
       <form onSubmit={onSubmit} className="space-y-4">
@@ -305,50 +271,6 @@ export function LoginPage() {
           </>
         )}
       </form>
-    </AuthCard>
-  );
-}
-
-// ── SSO completion ───────────────────────────────────────────────────────────
-
-/**
- * Landing page the SSO callback redirects to after it set the refresh cookie.
- * We exchange the cookie for an access token + load the user, then bounce to
- * the app. On failure we send the user back to /login with a message.
- */
-export function SsoCompletePage() {
-  const { completeSso, token, hydrating } = useAuth();
-  const nav = useNavigate();
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    void (async () => {
-      try {
-        await completeSso();
-        if (alive) nav('/', { replace: true });
-      } catch {
-        if (alive) {
-          nav('/login?sso_error=' + encodeURIComponent('Could not complete SSO sign-in.'), {
-            replace: true,
-          });
-          setErr('Could not complete SSO sign-in.');
-        }
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-    // completeSso is stable; run once on mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  if (token && !hydrating) return <Navigate to="/" replace />;
-  return (
-    <AuthCard title="Signing you in…">
-      <p className="text-sm text-ink-2 text-center">
-        {err ?? 'Completing single sign-on, one moment…'}
-      </p>
     </AuthCard>
   );
 }

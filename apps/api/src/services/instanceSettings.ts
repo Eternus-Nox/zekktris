@@ -4,8 +4,7 @@
  * Thin accessor over the `instance_settings` table — instance-wide config an
  * admin can change at runtime without a redeploy (vs env, which is fixed at
  * boot). Values are stored as text; the absence of a row means "fall back to
- * the env/default". Used by the OIDC/SSO config (and open to other runtime
- * settings later).
+ * the env/default". Generic infrastructure — no consumers at present.
  */
 
 import { eq, inArray } from 'drizzle-orm';

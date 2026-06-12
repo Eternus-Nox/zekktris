@@ -3401,7 +3401,6 @@ struct AdminView: View {
                     Text("Servers").tag(2)
                     Text("Storage").tag(3)
                     Text("Security").tag(4)
-                    Text("SSO").tag(5)
                 }
                 .pickerStyle(.segmented)
                 .padding(12)
@@ -3410,8 +3409,7 @@ struct AdminView: View {
                 else if tab == 1 { users }
                 else if tab == 2 { guilds }
                 else if tab == 3 { storage }
-                else if tab == 4 { AdminSecurityTab() }
-                else { AdminSsoTab() }
+                else { AdminSecurityTab() }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.bg1.ignoresSafeArea())
@@ -8339,162 +8337,6 @@ struct AdminSecurityTab: View {
     private func removeWord(_ word: String) {
         Task {
             if let updated = try? await APIClient.shared.adminRemoveSecurityWord(word) { words = updated }
-        }
-    }
-}
-
-/// Admin → SSO: view/edit the instance OIDC config. Mirrors the web SsoAdminTab.
-/// The client secret is write-only — the server never returns it, so the field
-/// stays blank (placeholder shows whether one is already set) and is sent only
-/// when the admin types a new one.
-struct AdminSsoTab: View {
-    @State private var cfg: AdminSsoConfig?
-    @State private var issuer = ""
-    @State private var clientId = ""
-    @State private var clientSecret = ""
-    @State private var scopes = ""
-    @State private var buttonLabel = ""
-    @State private var allowLinking = false
-    @State private var enabled = false
-    @State private var loading = true
-    @State private var saving = false
-    @State private var error: String?
-    @State private var savedNote: String?
-
-    private var redirectUri: String { Config.apiBaseURL + "/auth/sso/callback" }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                if loading && cfg == nil {
-                    HStack { Spacer(); ProgressView().tint(Theme.accent); Spacer() }.padding(.top, 40)
-                } else {
-                    Text("Let users sign in with any OpenID Connect provider (Google, Okta, Keycloak, Authentik, Entra…).")
-                        .font(.zkSans(12)).foregroundColor(Theme.ink3)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("REDIRECT URI").font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
-                        Text("Register this with your provider.").font(.zkSans(11)).foregroundColor(Theme.ink4)
-                        HStack(spacing: 8) {
-                            Text(redirectUri)
-                                .font(.zkMono(11)).foregroundColor(Theme.ink1)
-                                .lineLimit(2).textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Button {
-                                UIPasteboard.general.string = redirectUri
-                                savedNote = "Redirect URI copied."
-                            } label: {
-                                Image(systemName: "doc.on.doc").font(.system(size: 13)).foregroundColor(Theme.accent)
-                            }.buttonStyle(.plain)
-                        }
-                        .padding(10).background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
-
-                    ssoField("Issuer URL", text: $issuer, placeholder: "https://accounts.google.com", keyboard: .URL)
-                    ssoField("Client ID", text: $clientId)
-                    ssoSecureField(cfg?.hasClientSecret == true ? "Client secret (set — leave blank to keep)" : "Client secret",
-                                   text: $clientSecret,
-                                   placeholder: cfg?.hasClientSecret == true ? "••••••••" : "")
-                    ssoField("Scopes", text: $scopes, placeholder: "openid profile email")
-                    ssoField("Button label", text: $buttonLabel, placeholder: "Sign in with SSO")
-
-                    Toggle(isOn: $allowLinking) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Allow account linking").font(.zkSans(14)).foregroundColor(Theme.ink1)
-                            Text("When a verified SSO email matches an existing account, link them instead of rejecting. Only enable if you trust your provider's email verification.")
-                                .font(.zkSans(11)).foregroundColor(Theme.ink4)
-                        }
-                    }
-                    .tint(Theme.accent)
-                    .padding(.vertical, 2)
-
-                    HStack(spacing: 10) {
-                        Button { save(enable: nil) } label: {
-                            Text(saving ? "Saving…" : "Save")
-                                .font(.zkSans(14, weight: .semibold)).foregroundColor(Theme.ink1)
-                                .padding(.horizontal, 16).padding(.vertical, 10)
-                                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
-                        }.buttonStyle(.plain).disabled(saving)
-                        Button { save(enable: !enabled) } label: {
-                            Text(enabled ? "Disable SSO" : "Save & enable")
-                                .font(.zkSans(14, weight: .semibold)).foregroundColor(.white)
-                                .padding(.horizontal, 16).padding(.vertical, 10)
-                                .background(enabled ? Theme.dangerSoft : Theme.accent)
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
-                        }.buttonStyle(.plain).disabled(saving)
-                        Spacer()
-                        Text(enabled ? "ON" : "off")
-                            .font(.zkSans(12, weight: .bold))
-                            .foregroundColor(enabled ? Theme.online : Theme.ink4)
-                    }
-
-                    if let error { Text(error).font(.zkSans(12)).foregroundColor(Theme.dangerSoft) }
-                    if let savedNote { Text(savedNote).font(.zkSans(12)).foregroundColor(Theme.ink2) }
-                }
-            }
-            .padding(16)
-        }
-        .task { await load() }
-    }
-
-    @ViewBuilder
-    private func ssoField(_ label: String, text: Binding<String>, placeholder: String = "",
-                          keyboard: UIKeyboardType = .default) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label).font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
-            TextField(placeholder, text: text)
-                .keyboardType(keyboard)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .foregroundColor(Theme.ink1)
-                .padding(11).background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
-        }
-    }
-
-    @ViewBuilder
-    private func ssoSecureField(_ label: String, text: Binding<String>, placeholder: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label).font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
-            SecureField(placeholder, text: text)
-                .foregroundColor(Theme.ink1)
-                .padding(11).background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
-        }
-    }
-
-    private func load() async {
-        do { apply(try await APIClient.shared.adminGetSso()) }
-        catch { self.error = (error as? APIError)?.message ?? error.localizedDescription }
-        loading = false
-    }
-
-    private func apply(_ c: AdminSsoConfig) {
-        cfg = c
-        issuer = c.issuer
-        clientId = c.clientId
-        scopes = c.scopes
-        buttonLabel = c.buttonLabel
-        allowLinking = c.allowLinking
-        enabled = c.enabled
-        clientSecret = ""
-    }
-
-    private func save(enable: Bool?) {
-        guard !saving else { return }
-        saving = true; error = nil; savedNote = nil
-        var patch: [String: Any] = [
-            "issuer": issuer.trimmingCharacters(in: .whitespacesAndNewlines),
-            "clientId": clientId.trimmingCharacters(in: .whitespacesAndNewlines),
-            "scopes": scopes.trimmingCharacters(in: .whitespacesAndNewlines),
-            "buttonLabel": buttonLabel.trimmingCharacters(in: .whitespacesAndNewlines),
-            "allowLinking": allowLinking,
-        ]
-        let secret = clientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !secret.isEmpty { patch["clientSecret"] = secret }
-        if let enable { patch["enabled"] = enable }
-        Task {
-            do { apply(try await APIClient.shared.adminSetSso(patch)); savedNote = "SSO settings saved." }
-            catch { self.error = (error as? APIError)?.message ?? error.localizedDescription }
-            saving = false
         }
     }
 }

@@ -30,6 +30,10 @@ export interface PublicUser {
       demand when the profile card opens. SelfUser narrows this
       to a required nullable since /users/@me always returns it. */
   bannerUrl?: string | null;
+  /** Free-form "about me" bio shown on the profile card. The server sends it
+      in the public DTO; optional here because list-derived users omit it
+      (fetched on demand when the profile card opens). */
+  bio?: string | null;
   status: 'online' | 'idle' | 'dnd' | 'offline' | 'invisible';
   customStatus: string | null;
   /** Emoji alongside the custom status text. Independent — text-only,

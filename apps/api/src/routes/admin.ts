@@ -144,36 +144,6 @@ adminRouter.get('/voice-diagnostic', async (c) => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// SSO / OIDC config (instance-admin only)
-// ───────────────────────────────────────────────────────────────────────────
-//
-// GET returns the safe fields + whether a client secret is set — NEVER the
-// secret itself. PUT updates the config; the secret is write-only (encrypted
-// at rest) and is left unchanged when omitted. Enabling requires issuer +
-// client id + secret to be present.
-adminRouter.get('/sso', async (c) => {
-  const { getAdminOidcConfig } = await import('../services/oidc');
-  return c.json({ sso: await getAdminOidcConfig() });
-});
-
-const ssoConfigBody = z.object({
-  enabled: z.boolean().optional(),
-  issuer: z.string().trim().max(500).optional(),
-  clientId: z.string().trim().max(300).optional(),
-  /** Write-only. Omit to keep the current secret; '' is ignored (keeps it). */
-  clientSecret: z.string().max(1000).optional(),
-  scopes: z.string().trim().max(300).optional(),
-  buttonLabel: z.string().trim().max(60).optional(),
-  allowLinking: z.boolean().optional(),
-});
-
-adminRouter.put('/sso', validate('json', ssoConfigBody), async (c) => {
-  const { setOidcConfig, getAdminOidcConfig } = await import('../services/oidc');
-  await setOidcConfig(c.req.valid('json'));
-  return c.json({ sso: await getAdminOidcConfig() });
-});
-
-// ───────────────────────────────────────────────────────────────────────────
 // Instance backup / restore (instance-admin only)
 // ───────────────────────────────────────────────────────────────────────────
 //

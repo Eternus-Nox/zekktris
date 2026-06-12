@@ -2301,16 +2301,18 @@ private struct ProfileCardPresentation: ViewModifier {
     }
 }
 
-/// A rounded speech bubble with a downward-pointing tail at the bottom.
-/// `tailInset` is a FIXED distance (points) from the bubble's leading edge to
-/// the tail center — fixed rather than a fraction so the tail keeps pointing at
-/// the same spot (the avatar below it) no matter how wide the text makes the
-/// bubble. Clamped so the tail never sits under a rounded corner.
+/// A rounded speech bubble whose tail drops from the bottom edge. `tailInset`
+/// is a FIXED distance (points) from the leading edge to the tail base center,
+/// so the tail keeps pointing at the same spot no matter how wide the text
+/// makes the bubble. `tailTipDX` slides the tail TIP horizontally relative to
+/// its base — negative leans the tail down-LEFT so a bubble sitting up-and-right
+/// of the avatar points back at it, like the picture is speaking.
 private struct SpeechBubbleDown: Shape {
     var cornerRadius: CGFloat = 11
     var tailWidth: CGFloat = 12
-    var tailHeight: CGFloat = 7
-    var tailInset: CGFloat = 22
+    var tailHeight: CGFloat = 9
+    var tailInset: CGFloat = 18
+    var tailTipDX: CGFloat = 0
 
     func path(in rect: CGRect) -> Path {
         let bodyHeight = max(cornerRadius * 2, rect.height - tailHeight)
@@ -2320,7 +2322,7 @@ private struct SpeechBubbleDown: Shape {
         let maxCX = rect.maxX - cornerRadius - tailWidth / 2
         let cx = min(max(rect.minX + tailInset, minCX), max(minCX, maxCX))
         p.move(to: CGPoint(x: cx - tailWidth / 2, y: body.maxY))
-        p.addLine(to: CGPoint(x: cx, y: rect.maxY))
+        p.addLine(to: CGPoint(x: cx + tailTipDX, y: rect.maxY))
         p.addLine(to: CGPoint(x: cx + tailWidth / 2, y: body.maxY))
         p.closeSubpath()
         return p
@@ -2331,20 +2333,35 @@ struct ProfileCardView: View {
     let user: PublicUser
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var session: Session
+    /// Full profile lazily fetched from GET /users/:id when the card opens —
+    /// supplies canMessage (Message/Call gate) plus bio/banner that list-derived
+    /// users don't carry. Mirrors the web card's fullProfile fallback.
+    @State private var fetched: PublicUser?
 
     private var isSelf: Bool { user.id == session.currentUser?.id }
     private var relType: String? { store.relationshipType(with: user.id) }
     private var liveStatus: String { store.status(for: user.id, fallback: user.status) }
+    /// Banner height. Taller (+25%) on iPhone per design; Mac keeps the compact
+    /// height since the card window is already large there.
+    private var bannerHeight: CGFloat { ProcessInfo.processInfo.isiOSAppOnMac ? 160 : 200 }
+    private var profileBio: String? { user.bio ?? fetched?.bio }
+    private var profileBanner: String? { user.bannerUrl ?? fetched?.bannerUrl }
+    /// Show the Message/Call pair only when the viewer may reach this user —
+    /// mirrors web (`rel !== 'blocked' && (canMessage || rel === 'friend')`).
+    private var canShowContact: Bool {
+        relType != "blocked" && ((fetched?.canMessage ?? user.canMessage) == true || relType == "friend")
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Banner with the custom-status bubble floated in its lower-left,
-            // just above where the avatar overhangs — tail points down at the
-            // picture. bottomLeading anchor + paddings sit it above the avatar
-            // (avatar is ~18pt from the left, overhanging the banner by 38pt).
+            // Banner with the custom-status bubble floated at the top
+            // middle-right of the avatar, its tail leaning down-left back at the
+            // picture — like the avatar is speaking. bottomLeading anchor +
+            // paddings sit it up and to the right of the avatar (which is ~18pt
+            // from the left and overhangs the banner's bottom by 38pt).
             ZStack(alignment: .bottomLeading) {
                 Group {
-                    if let bannerURL = assetURL(user.bannerUrl) {
+                    if let bannerURL = assetURL(profileBanner) {
                         AsyncImage(url: bannerURL) { phase in
                             if let img = phase.image {
                                 img.resizable().aspectRatio(contentMode: .fill)
@@ -2362,13 +2379,13 @@ struct ProfileCardView: View {
                         )
                     }
                 }
-                .frame(height: 160)
+                .frame(height: bannerHeight)
                 .frame(maxWidth: .infinity)
                 .clipped()
 
                 customStatusBubble
-                    .padding(.leading, 56)
-                    .padding(.bottom, 50)
+                    .padding(.leading, 60)
+                    .padding(.bottom, 42)
             }
 
             // Avatar straddles the banner's bottom edge — half over the
@@ -2408,7 +2425,7 @@ struct ProfileCardView: View {
             ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 // Bio first…
-                if let bio = user.bio, !bio.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if let bio = profileBio, !bio.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("ABOUT ME")
                             .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
@@ -2421,13 +2438,10 @@ struct ProfileCardView: View {
                 // …then EARNED achievements only (the Settings gallery shows all).
                 AchievementsSection(userId: user.id, earnedOnly: true)
 
-                Rectangle().fill(Theme.line).frame(height: 1)
-
-                if isSelf {
-                    Text("This is you.")
-                        .font(.zkSans(13))
-                        .foregroundColor(Theme.ink3)
-                } else {
+                // Message / Call / friend actions — only for OTHER users. Your
+                // own card just shows your profile (no "this is you" filler).
+                if !isSelf {
+                    Rectangle().fill(Theme.line).frame(height: 1)
                     actions
                 }
 
@@ -2442,15 +2456,27 @@ struct ProfileCardView: View {
         }
         .background(Theme.bg1)
         .modifier(ProfileCardPresentation())
+        .task(id: user.id) {
+            // Full profile for canMessage + bio/banner the list user may omit
+            // (mirrors web's on-open fetch). On failure it stays nil → non-friends
+            // see no contact buttons, same as web's fetch-fail behavior.
+            fetched = try? await APIClient.shared.getUserProfile(userId: user.id)
+        }
     }
 
-    /// Custom status rendered as a speech bubble that floats in the banner
-    /// above the avatar, its tail pointing down at the picture. Empty → nothing.
+    /// Custom status as a speech bubble that floats in the banner at the top
+    /// middle-right of the avatar, its tail leaning down-left back at the
+    /// picture — like the avatar is saying it. Empty → nothing.
     @ViewBuilder
     private var customStatusBubble: some View {
         let emoji = user.customStatusEmoji?.trimmingCharacters(in: .whitespaces) ?? ""
         let text = user.customStatus?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !emoji.isEmpty || !text.isEmpty {
+        // Treat a past expiry as cleared, like web's formatCustomStatus — the
+        // server leaves expired statuses on the row for the client to hide.
+        let exp = user.customStatusExpiresAt
+        let expired = (exp?.isEmpty == false) && !customStatusHasFutureExpiry(exp)
+        if !expired, !emoji.isEmpty || !text.isEmpty {
+            let shape = SpeechBubbleDown(tailInset: 18, tailTipDX: -8)
             HStack(spacing: 5) {
                 if !emoji.isEmpty { Text(emoji).font(.zkSans(13)) }
                 if !text.isEmpty {
@@ -2461,9 +2487,9 @@ struct ProfileCardView: View {
             }
             .padding(.horizontal, 11)
             .padding(.top, 6)
-            .padding(.bottom, 6 + 7) // leave room for the 7pt tail at the bottom
-            .background(SpeechBubbleDown(tailInset: 22).fill(Theme.bg3))
-            .overlay(SpeechBubbleDown(tailInset: 22).stroke(Theme.line, lineWidth: 1))
+            .padding(.bottom, 6 + 9) // leave room for the 9pt tail at the bottom
+            .background(shape.fill(Theme.bg3))
+            .overlay(shape.stroke(Theme.line, lineWidth: 1))
             .shadow(color: .black.opacity(0.28), radius: 5, x: 0, y: 2)
         }
     }
@@ -2471,25 +2497,29 @@ struct ProfileCardView: View {
     @ViewBuilder
     private var actions: some View {
         VStack(spacing: 10) {
-            HStack(spacing: 10) {
-                Button { message() } label: {
-                    Label("Message", systemImage: "bubble.left.fill")
-                        .font(.zkSans(15, weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                        .background(Theme.accent)
-                        .foregroundColor(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                }
+            // Message + Call only when the viewer can reach this user (gated
+            // like web — see canShowContact).
+            if canShowContact {
+                HStack(spacing: 10) {
+                    Button { message() } label: {
+                        Label("Message", systemImage: "bubble.left.fill")
+                            .font(.zkSans(15, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 11)
+                            .background(Theme.accent)
+                            .foregroundColor(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
 
-                Button { call() } label: {
-                    Label("Call", systemImage: "phone.fill")
-                        .font(.zkSans(15, weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                        .background(Theme.accent)
-                        .foregroundColor(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    Button { call() } label: {
+                        Label("Call", systemImage: "phone.fill")
+                            .font(.zkSans(15, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 11)
+                            .background(Theme.accent)
+                            .foregroundColor(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
                 }
             }
 
@@ -2512,7 +2542,9 @@ struct ProfileCardView: View {
     private var friendButton: some View {
         switch relType {
         case .some("outgoing_request"):
-            secondaryButton("Friend Request Sent", icon: "clock", disabled: true) {}
+            secondaryButton("Cancel Friend Request", icon: "xmark") {
+                Task { await store.removeFriend(user) }
+            }
         case .some("incoming_request"):
             secondaryButton("Accept Friend Request", icon: "person.badge.plus") {
                 Task { await store.acceptFriend(user) }

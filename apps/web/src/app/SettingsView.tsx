@@ -18,6 +18,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ApiError } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
+import { AchievementsShelf } from './AchievementsShelf';
 import { useParentalControlsEnabled, setParentalControlsEnabled } from '../lib/familyPrefs';
 import { isNative, requestNotificationPermission } from '../lib/native';
 import {
@@ -756,6 +757,10 @@ export function SettingsView() {
             <div className="pt-3 border-t border-line">
               <div className="text-sm text-ink-2 font-medium mb-1">Achievements</div>
               <AchievementsVisibilityToggle />
+              {/* Full shelf (earned + in-progress) — mirrors the iOS Settings
+                  achievements gallery so in-progress badges stay visible even
+                  though the profile card itself shows earned-only. */}
+              <AchievementsShelf />
             </div>
             <div className="pt-3 border-t border-line">
               <div className="text-sm text-ink-2 font-medium mb-2">Blocked users</div>

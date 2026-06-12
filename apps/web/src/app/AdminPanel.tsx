@@ -43,7 +43,7 @@ import { AvatarImage } from '../lib/AvatarImage';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { Hash, Lock, Search as SearchIcon, Shield, Volume2, X as CloseIcon, Users, Archive, BarChart, ChevronLeft } from '../lib/icons';
 
-type Tab = 'overview' | 'users' | 'guilds' | 'storage' | 'security' | 'backup' | 'sso';
+type Tab = 'overview' | 'users' | 'guilds' | 'storage' | 'security' | 'backup';
 
 export function AdminPanel() {
   const navigate = useNavigate();
@@ -116,7 +116,6 @@ export function AdminPanel() {
                 { id: 'storage', label: 'Storage' },
                 { id: 'security', label: 'Security' },
                 { id: 'backup', label: 'Backup' },
-                { id: 'sso', label: 'SSO' },
               ] as { id: Tab; label: string }[]
             ).map((t) => {
               const active = tab === t.id;
@@ -160,7 +159,6 @@ export function AdminPanel() {
             {tab === 'storage' && <StorageTab />}
             {tab === 'security' && <AdminSecurityTab />}
             {tab === 'backup' && <BackupAdminTab />}
-            {tab === 'sso' && <SsoAdminTab />}
           </div>
         )}
       </main>
@@ -1982,166 +1980,5 @@ function BackupAdminTab() {
         )}
       </section>
     </div>
-  );
-}
-
-// ── SSO / OIDC config tab (instance-admin) ──────────────────────────────────
-//
-// Generic OIDC: configure issuer/client-id/secret/scopes and enable. The
-// client secret is write-only (encrypted at rest server-side); we only learn
-// whether one is set. Account linking (matching an SSO identity to an existing
-// local account by verified email) is opt-in for safety.
-
-function SsoAdminTab() {
-  const { rest } = useAuth();
-  const toasts = useToasts();
-  const [cfg, setCfg] = useState<import('@zekktris/client').AdminSsoConfig | null>(null);
-  const [issuer, setIssuer] = useState('');
-  const [clientId, setClientId] = useState('');
-  const [clientSecret, setClientSecret] = useState('');
-  const [scopes, setScopes] = useState('openid email profile');
-  const [buttonLabel, setButtonLabel] = useState('Sign in with SSO');
-  const [allowLinking, setAllowLinking] = useState(false);
-  const [enabled, setEnabled] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    void rest
-      .adminGetSso()
-      .then((r) => {
-        if (!alive) return;
-        setCfg(r.sso);
-        setIssuer(r.sso.issuer);
-        setClientId(r.sso.clientId);
-        setScopes(r.sso.scopes);
-        setButtonLabel(r.sso.buttonLabel);
-        setAllowLinking(r.sso.allowLinking);
-        setEnabled(r.sso.enabled);
-      })
-      .catch(() => alive && setCfg(null));
-    return () => {
-      alive = false;
-    };
-  }, [rest]);
-
-  async function save(nextEnabled?: boolean) {
-    setSaving(true);
-    try {
-      const r = await rest.adminSetSso({
-        issuer,
-        clientId,
-        ...(clientSecret ? { clientSecret } : {}),
-        scopes,
-        buttonLabel,
-        allowLinking,
-        ...(nextEnabled !== undefined ? { enabled: nextEnabled } : {}),
-      });
-      setCfg(r.sso);
-      setEnabled(r.sso.enabled);
-      setClientSecret('');
-      toasts.push('SSO settings saved', 'success');
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Could not save SSO settings', 'error');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const redirectUri = `${window.location.origin}/api/v1/auth/sso/callback`;
-
-  return (
-    <div className="space-y-6 max-w-2xl">
-      <AdminTabHeader
-        icon={Shield}
-        title="Single Sign-On (OIDC)"
-        subtitle="Let users sign in with any OpenID Connect provider (Google, Okta, Keycloak, Authentik, Entra…)."
-      />
-
-      <div className="rounded-md border border-line bg-bg-2/40 p-3 text-xs text-ink-3 space-y-1">
-        <div>
-          Register this <strong className="text-ink-2">redirect URI</strong> with your provider:
-        </div>
-        <code className="block bg-bg-1 border border-line rounded px-2 py-1 text-ink-1 break-all">
-          {redirectUri}
-        </code>
-      </div>
-
-      <div className="space-y-3">
-        <SsoField label="Issuer URL" placeholder="https://accounts.google.com" value={issuer} onChange={setIssuer} />
-        <SsoField label="Client ID" value={clientId} onChange={setClientId} />
-        <SsoField
-          label={cfg?.hasClientSecret ? 'Client secret (set — leave blank to keep)' : 'Client secret'}
-          type="password"
-          placeholder={cfg?.hasClientSecret ? '••••••••' : ''}
-          value={clientSecret}
-          onChange={setClientSecret}
-        />
-        <SsoField label="Scopes" value={scopes} onChange={setScopes} />
-        <SsoField label="Button label" value={buttonLabel} onChange={setButtonLabel} />
-        <label className="flex items-start gap-2 text-sm text-ink-2">
-          <input type="checkbox" className="mt-0.5" checked={allowLinking} onChange={(e) => setAllowLinking(e.target.checked)} />
-          <span>
-            Allow account linking
-            <span className="block text-xs text-ink-3">
-              When a verified SSO email matches an existing account, link them instead of rejecting.
-              Only enable if you trust your provider's email verification — it lets SSO take over
-              accounts that share an email.
-            </span>
-          </span>
-        </label>
-      </div>
-
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => void save()}
-          disabled={saving}
-          className="px-3 py-1.5 rounded-md text-sm font-medium bg-bg-2 text-ink-1 border border-line hover:border-accent transition-colors disabled:opacity-50"
-        >
-          {saving ? 'Saving…' : 'Save'}
-        </button>
-        <button
-          onClick={() => void save(!enabled)}
-          disabled={saving}
-          className={`px-3 py-1.5 rounded-md text-sm font-medium border transition-colors disabled:opacity-50 ${
-            enabled
-              ? 'bg-red-500/15 text-red-300 border-red-500/40 hover:bg-red-500/25'
-              : 'bg-green-500/15 text-green-300 border-green-500/40 hover:bg-green-500/25'
-          }`}
-        >
-          {enabled ? 'Disable SSO' : 'Save & enable SSO'}
-        </button>
-        <span className={`text-xs ${enabled ? 'text-green-300' : 'text-ink-3'}`}>
-          {enabled ? 'SSO is ON' : 'SSO is off'}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function SsoField({
-  label,
-  value,
-  onChange,
-  type = 'text',
-  placeholder,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  type?: string;
-  placeholder?: string;
-}) {
-  return (
-    <label className="block">
-      <span className="block text-xs text-ink-3 mb-1">{label}</span>
-      <input
-        type={type}
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full bg-bg-2 border border-line rounded-md px-2.5 py-1.5 text-sm text-ink-1 focus:outline-none focus:ring-1 focus:ring-accent"
-      />
-    </label>
   );
 }

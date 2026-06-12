@@ -119,22 +119,6 @@ export class RestClient {
     return this.refreshInFlight;
   }
 
-  /**
-   * Force a session refresh from the httpOnly refresh cookie. Returns the new
-   * access token, or null if there's no valid session cookie. Used after the
-   * SSO callback (which set the refresh cookie via a redirect) to bootstrap the
-   * SPA's in-memory token. Reuses the same single-flight refresh path.
-   */
-  async refreshSession(): Promise<string | null> {
-    return this.tryRefresh();
-  }
-
-  /** Public OIDC/SSO config for the login page — { enabled, buttonLabel }.
-   *  Never includes provider secrets. */
-  getSsoConfig(): Promise<{ enabled: boolean; buttonLabel: string }> {
-    return this.request('GET', '/auth/sso/config');
-  }
-
   private async request<T>(
     method: string,
     path: string,
@@ -2490,26 +2474,6 @@ export class RestClient {
     return this.request('GET', '/admin/voice-diagnostic');
   }
 
-  /** Read the instance SSO/OIDC config (safe fields; never the client secret).
-   *  Instance-admin gated. */
-  adminGetSso(): Promise<{ sso: AdminSsoConfig }> {
-    return this.request('GET', '/admin/sso');
-  }
-
-  /** Update the SSO/OIDC config. The client secret is write-only — pass it to
-   *  set/rotate, omit to keep the existing one. Instance-admin gated. */
-  adminSetSso(patch: {
-    enabled?: boolean;
-    issuer?: string;
-    clientId?: string;
-    clientSecret?: string;
-    scopes?: string;
-    buttonLabel?: string;
-    allowLinking?: boolean;
-  }): Promise<{ sso: AdminSsoConfig }> {
-    return this.request('PUT', '/admin/sso', patch);
-  }
-
   /** Download an instance-wide configuration backup — every guild's config
    *  backup bundled into one document. Instance-admin gated. `includeImages`
    *  defaults to true; pass false for a smaller config-only bundle. */
@@ -2981,18 +2945,6 @@ export interface LivekitDiagnostic {
   httpUrl: string | null;
   checks: LivekitCheck[];
   generatedAt: string;
-}
-
-/** Admin view of the SSO/OIDC config — safe fields + whether a secret is set.
- *  The client secret itself is never returned. */
-export interface AdminSsoConfig {
-  enabled: boolean;
-  issuer: string;
-  clientId: string;
-  scopes: string;
-  buttonLabel: string;
-  allowLinking: boolean;
-  hasClientSecret: boolean;
 }
 
 /** Instance-wide configuration backup (GET /admin/backup). Bundles each

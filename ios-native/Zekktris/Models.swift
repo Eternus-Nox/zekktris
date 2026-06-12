@@ -19,11 +19,21 @@ struct PublicUser: Codable, Identifiable, Hashable {
     var bio: String?
     var customStatus: String?
     var customStatusEmoji: String?
+    /// ISO-8601 auto-clear time. A past timestamp means "no status" — the
+    /// server doesn't clear it, so clients must (mirrors web formatCustomStatus).
+    var customStatusExpiresAt: String?
     var avatarDecoration: String?
+    /// Whether the current viewer may DM / ring this user under the target's
+    /// privacy policy. Only populated by the single-profile fetch
+    /// (GET /users/:id); nil on list-derived users. The profile card uses it
+    /// to gate the Message + Call buttons (mirrors web).
+    var canMessage: Bool?
 
     /// Best display label with sensible fallbacks.
     var name: String { displayName ?? username ?? "Unknown" }
 }
+
+struct PublicUserWrap: Codable { let user: PublicUser }
 
 struct SelfUser: Codable, Identifiable, Hashable {
     let id: String
@@ -1097,19 +1107,6 @@ struct SecurityConfig: Codable, Hashable {
     var wordFilterEnabled: Bool
 }
 struct SecurityConfigWrap: Codable { let config: SecurityConfig }
-
-// ── Admin SSO / OIDC ─────────────────────────────────────────────────────────
-struct AdminSsoConfig: Codable, Hashable {
-    var enabled: Bool
-    var issuer: String
-    var clientId: String
-    var scopes: String
-    var buttonLabel: String
-    var allowLinking: Bool
-    /// True if a client secret is stored. The secret itself is never returned.
-    var hasClientSecret: Bool
-}
-struct AdminSsoWrap: Codable { let sso: AdminSsoConfig }
 
 // ── Achievements ────────────────────────────────────────────────────────────
 struct Achievement: Codable, Identifiable, Hashable {

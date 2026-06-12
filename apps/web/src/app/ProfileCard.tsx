@@ -2,18 +2,19 @@
  * ProfileCard
  * -----------
  * Small floating profile card that appears when you click an avatar
- * anywhere in the app. Shows display name + username + bio + status
- * and exposes the social actions:
+ * anywhere in the app. Mirrors the iOS profile card: banner with a
+ * custom-status speech bubble pointing at the avatar, display name +
+ * username, an "ABOUT ME" bio, earned-only achievements, then the
+ * social actions:
  *   - Send message (opens or creates a DM)
  *   - Add friend / Cancel request / Accept request / Remove friend
  *   - Block / Unblock
  *
  * The "right" actions are picked based on the current relationship
  * state, which we fetch lazily — most users haven't sent anything to
- * most other users, so a fresh fetch on open is fine. If the user
- * profile is the viewer themselves, the social buttons collapse to
- * "This is you" — clicking your own avatar shouldn't suggest you can
- * friend yourself.
+ * most other users, so a fresh fetch on open is fine. On your own
+ * card the social actions are simply omitted (no "this is you" filler) —
+ * clicking your own avatar shouldn't suggest you can friend yourself.
  *
  * Positioning: anchored to the click point. The trigger passes (x, y)
  * coords; this component decides flip-up/flip-down based on viewport
@@ -676,6 +677,45 @@ export function ProfileCard({
               draggable={false}
             />
           )}
+
+          {/* Custom status as a speech bubble floating at the top middle-right
+              of the avatar, its tail leaning down-left back at the picture —
+              like the avatar is saying it (mirrors the iOS profile card). The
+              avatar overlaps the banner bottom by 40px (-mt-10 below); anchoring
+              from the banner's bottom keeps the bubble just above it regardless
+              of banner height. */}
+          {(() => {
+            const cs = formatCustomStatus(user);
+            if (!cs.emoji && !cs.text) return null;
+            return (
+              <div className="absolute left-[60px] bottom-[52px] max-w-[58%] z-10">
+                <div className="relative inline-flex max-w-full items-center gap-1.5 rounded-[11px] bg-bg-3 border border-line px-2.5 py-1.5 shadow-md">
+                  {cs.emoji && <span className="text-sm leading-none shrink-0">{cs.emoji}</span>}
+                  {cs.text && (
+                    <span className="text-xs font-medium text-ink-1 line-clamp-2">{cs.text}</span>
+                  )}
+                  {/* Down-left tail: fill merges with the bubble's bottom edge;
+                      only the two slanted sides are stroked with the border. */}
+                  <svg
+                    width="16"
+                    height="11"
+                    viewBox="0 0 16 11"
+                    className="absolute left-3 top-full -mt-px"
+                    aria-hidden
+                  >
+                    <path d="M1 1 L5 10 L13 1 Z" style={{ fill: 'rgb(var(--c-bg-3))' }} />
+                    <path
+                      d="M1 1 L5 10 L13 1"
+                      fill="none"
+                      style={{ stroke: 'rgb(var(--c-line))' }}
+                      strokeWidth="1"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         <div className="px-4 -mt-10 pb-4">
@@ -721,57 +761,50 @@ export function ProfileCard({
             </div>
           </div>
 
-          <AchievementsShelf userId={isSelf ? undefined : user.id} />
-
           {(() => {
-            // Composite status display: emoji on the left, text
-            // following, both optional. formatCustomStatus respects
-            // client-side expiry so an expired status renders as
-            // nothing without waiting for a server cleanup.
-            const cs = formatCustomStatus(user);
-            if (!cs.emoji && !cs.text) return null;
+            // Bio ("ABOUT ME") — falls back to the lazily-fetched full profile
+            // when the lightweight member object omits it.
+            const bioText = (user.bio ?? fullProfile?.bio ?? '').trim();
+            if (!bioText) return null;
             return (
-              <div className="mt-2 flex items-center gap-1.5 text-sm text-ink-2 line-clamp-2">
-                {cs.emoji && <span className="text-base shrink-0">{cs.emoji}</span>}
-                {cs.text && <span className="italic">{cs.text}</span>}
+              <div className="mt-3">
+                <div className="text-[11px] font-semibold tracking-wide text-ink-3 mb-1">
+                  ABOUT ME
+                </div>
+                <div className="text-sm text-ink-2 whitespace-pre-wrap break-words">{bioText}</div>
               </div>
             );
           })()}
 
-          {isSelf ? (
-            <div className="mt-3 text-xs text-ink-3 italic">This is you.</div>
-          ) : (
-            <div className="mt-3 flex flex-col gap-1.5">
-              {/* Message + Call as a side-by-side primary pair. Both
-                  are "reach out to this person" actions; reading
-                  them as one row emphasizes they're equivalent
-                  affordances. Each button is flex-1 so they split
-                  the modal width evenly. Call is FIRST — most
-                  contact starts as a quick voice ping, and
-                  surfacing it as the leading action matches user
-                  expectation. The friend-action button (Add /
-                  Accept / Cancel / Remove) stacks below as a
-                  full-width row to give it its own visual weight —
-                  it's a less-frequent action and benefits from the
-                  separation. Labels are bare text (no icon) so the
-                  alignment is truly centered; icon+label inside a
-                  centered flex looks visually off-center because
-                  the icon weight pulls perception rightward. */}
+          {/* EARNED achievements only on the card (the Settings gallery shows all). */}
+          <AchievementsShelf userId={isSelf ? undefined : user.id} earnedOnly />
+
+          {/* Message / Call / friend actions — only for OTHER users. Your own
+              card just shows your profile (no "this is you" filler). */}
+          {!isSelf && (
+            <>
+              <div className="mt-3 border-t border-line" />
+              <div className="mt-3 flex flex-col gap-1.5">
+              {/* Message + Call as a side-by-side primary pair, accent-filled
+                  to read as the prominent "reach out" actions — matching the
+                  iOS profile card (Message FIRST, both accent). Each is flex-1
+                  so they split the width evenly. The friend-action button
+                  stacks below as its own full-width row. */}
               {rel !== 'blocked' && (canMessage === true || rel === 'friend') && (
                 <div className="flex gap-1.5">
                   <button
+                    onClick={() => void openDM()}
+                    className="flex-1 px-3 py-2 rounded-md bg-accent hover:brightness-110 text-sm font-semibold text-white transition-all text-center"
+                  >
+                    Message
+                  </button>
+                  <button
                     disabled={pending}
                     onClick={() => void startVoiceCall()}
-                    className="flex-1 px-3 py-2 rounded-md bg-bg-3 hover:bg-bg-3/80 text-sm font-medium text-ink-1 transition-colors disabled:opacity-60 text-center"
+                    className="flex-1 px-3 py-2 rounded-md bg-accent hover:brightness-110 text-sm font-semibold text-white transition-all disabled:opacity-60 text-center"
                     title={`Call ${user.displayName || user.username}`}
                   >
                     Call
-                  </button>
-                  <button
-                    onClick={() => void openDM()}
-                    className="flex-1 px-3 py-2 rounded-md bg-bg-3 hover:bg-bg-3/80 text-sm font-medium text-ink-1 transition-colors text-center"
-                  >
-                    Message
                   </button>
                 </div>
               )}
@@ -841,6 +874,7 @@ export function ProfileCard({
                 </button>
               )}
             </div>
+            </>
           )}
 
           {/* ── Roles (guild owner only) ───────────────────────────────
