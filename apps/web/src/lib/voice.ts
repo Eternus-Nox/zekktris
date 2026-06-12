@@ -34,7 +34,7 @@ type RoomLike = {
     // quality. The Room's videoCaptureDefaults is the static default;
     // these per-call options let us switch quality between publishes
     // without reconnecting the Room.
-    setCameraEnabled(on: boolean, opts?: VideoOpts): Promise<unknown>;
+    setCameraEnabled(on: boolean, opts?: VideoOpts, publishOpts?: VideoPublishOpts): Promise<unknown>;
     setScreenShareEnabled(on: boolean, opts?: ScreenOpts): Promise<unknown>;
     identity: string;
   };
@@ -46,6 +46,11 @@ type RoomLike = {
 
 interface VideoOpts {
   resolution?: { width: number; height: number; frameRate: number };
+}
+// Per-publish overrides (merged over the Room's publishDefaults). Used to give
+// the CAMERA an H.264 codec without changing screen share (which stays VP8).
+interface VideoPublishOpts {
+  videoCodec?: 'vp8' | 'h264' | 'vp9' | 'av1';
 }
 interface ScreenOpts {
   resolution?: { width: number; height: number; frameRate: number };
@@ -1675,16 +1680,25 @@ export async function setCameraEnabled(on: boolean): Promise<void> {
       // the option and let the SDK + browser negotiate adaptively.
       const q = getSavedCameraQuality();
       const preset = CAMERA_QUALITY_PRESETS[q];
+      // H.264 for the camera so it uses the browser's hardware encoder/decoder
+      // (sharper, lower CPU) — overrides the VP8 publishDefault for THIS track
+      // only; screen share keeps VP8. videoEncoding/simulcast still come from
+      // publishDefaults via the merge.
+      const cameraPublish: VideoPublishOpts = { videoCodec: 'h264' };
       if (preset) {
-        await room.localParticipant.setCameraEnabled(true, {
-          resolution: {
-            width: preset.width,
-            height: preset.height,
-            frameRate: preset.frameRate,
+        await room.localParticipant.setCameraEnabled(
+          true,
+          {
+            resolution: {
+              width: preset.width,
+              height: preset.height,
+              frameRate: preset.frameRate,
+            },
           },
-        });
+          cameraPublish,
+        );
       } else {
-        await room.localParticipant.setCameraEnabled(true);
+        await room.localParticipant.setCameraEnabled(true, undefined, cameraPublish);
       }
     } else {
       await room.localParticipant.setCameraEnabled(false);
