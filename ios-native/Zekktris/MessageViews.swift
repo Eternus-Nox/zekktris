@@ -2353,28 +2353,37 @@ struct ProfileCardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Group {
-                if let bannerURL = assetURL(profileBanner) {
-                    AsyncImage(url: bannerURL) { phase in
-                        if let img = phase.image {
-                            img.resizable().aspectRatio(contentMode: .fill)
-                        } else {
-                            LinearGradient(
-                                colors: [Theme.accent.opacity(0.55), Theme.accent2.opacity(0.45)],
-                                startPoint: .leading, endPoint: .trailing
-                            )
+            // Custom status floats IN the banner (bottom-left, to the right of
+            // the avatar) so it never pushes the display name down; its tail
+            // points left at the avatar — like the picture is speaking.
+            ZStack(alignment: .bottomLeading) {
+                Group {
+                    if let bannerURL = assetURL(profileBanner) {
+                        AsyncImage(url: bannerURL) { phase in
+                            if let img = phase.image {
+                                img.resizable().aspectRatio(contentMode: .fill)
+                            } else {
+                                LinearGradient(
+                                    colors: [Theme.accent.opacity(0.55), Theme.accent2.opacity(0.45)],
+                                    startPoint: .leading, endPoint: .trailing
+                                )
+                            }
                         }
+                    } else {
+                        LinearGradient(
+                            colors: [Theme.accent.opacity(0.55), Theme.accent2.opacity(0.45)],
+                            startPoint: .leading, endPoint: .trailing
+                        )
                     }
-                } else {
-                    LinearGradient(
-                        colors: [Theme.accent.opacity(0.55), Theme.accent2.opacity(0.45)],
-                        startPoint: .leading, endPoint: .trailing
-                    )
                 }
+                .frame(height: bannerHeight)
+                .frame(maxWidth: .infinity)
+                .clipped()
+
+                customStatusBubble
+                    .padding(.leading, 100)
+                    .padding(.bottom, 16)
             }
-            .frame(height: bannerHeight)
-            .frame(maxWidth: .infinity)
-            .clipped()
 
             // Avatar straddles the banner's bottom edge — half over the
             // banner, half below — with name + username to its right.
@@ -2385,9 +2394,6 @@ struct ProfileCardView: View {
                     .padding(.top, -38)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    // Custom status sits right above the name, its tail on the
-                    // left pointing back at the avatar — like the picture speaks.
-                    customStatusBubble
                     HStack(spacing: 8) {
                         Text(user.displayName ?? user.username ?? "Unknown")
                             .font(.zkSans(21, weight: .bold))
@@ -2455,9 +2461,9 @@ struct ProfileCardView: View {
         }
     }
 
-    /// Custom status as a speech bubble sitting right above the display name,
-    /// its tail on the LEFT edge pointing back at the avatar — like the picture
-    /// is saying it. Empty / expired → nothing.
+    /// Custom status as a speech bubble floating in the banner (to the right of
+    /// the avatar), its tail on the LEFT edge pointing back at the avatar — like
+    /// the picture is saying it. Empty / expired → nothing.
     @ViewBuilder
     private var customStatusBubble: some View {
         let emoji = user.customStatusEmoji?.trimmingCharacters(in: .whitespaces) ?? ""
