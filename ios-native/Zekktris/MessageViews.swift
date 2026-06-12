@@ -2342,6 +2342,87 @@ private struct SpeechBubbleLeft: Shape {
     }
 }
 
+/// Report form — the reporter must BOTH pick a reason AND describe what
+/// happened (both required). Files to the current server's moderation queue.
+struct ReportUserSheet: View {
+    let user: PublicUser
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var reason: ReportReason?
+    @State private var details = ""
+    @State private var submitting = false
+
+    private var canSubmit: Bool {
+        reason != nil
+            && !details.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !submitting
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Reports go to this server's moderators. Choose a reason and describe what happened.")
+                        .font(.zkSans(13)).foregroundColor(Theme.ink3)
+
+                    Text("REASON").font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                    VStack(spacing: 0) {
+                        ForEach(ReportReason.allCases) { r in
+                            Button { reason = r } label: {
+                                HStack {
+                                    Text(r.label).font(.zkSans(15)).foregroundColor(Theme.ink1)
+                                    Spacer()
+                                    Image(systemName: reason == r ? "largecircle.fill.circle" : "circle")
+                                        .foregroundColor(reason == r ? Theme.accent : Theme.ink4)
+                                }
+                                .contentShape(Rectangle())
+                                .padding(.horizontal, 12).padding(.vertical, 11)
+                            }
+                            .buttonStyle(.plain)
+                            if r != ReportReason.allCases.last { Divider().overlay(Theme.line) }
+                        }
+                    }
+                    .background(Theme.bg2)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                    Text("WHAT HAPPENED?").font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                    TextField("Describe why you're reporting this user…", text: $details, axis: .vertical)
+                        .lineLimit(3...6)
+                        .foregroundColor(Theme.ink1)
+                        .padding(12).background(Theme.bg2)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .onChange(of: details) { v in if v.count > 1000 { details = String(v.prefix(1000)) } }
+                    Text("\(details.count)/1000").font(.zkSans(11)).foregroundColor(Theme.ink4)
+
+                    Button { submit() } label: {
+                        Text(submitting ? "Submitting…" : "Submit Report")
+                            .font(.zkSans(15, weight: .semibold)).foregroundColor(.white)
+                            .frame(maxWidth: .infinity).padding(.vertical, 13)
+                            .background(canSubmit ? Theme.danger : Theme.bg3)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSubmit)
+                }
+                .padding(18)
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Report User").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        }
+    }
+
+    private func submit() {
+        guard let reason, canSubmit else { return }
+        submitting = true
+        Task {
+            await store.reportUser(user.id, reason: reason.rawValue,
+                                   details: details.trimmingCharacters(in: .whitespacesAndNewlines))
+            dismiss()
+        }
+    }
+}
+
 struct ProfileCardView: View {
     let user: PublicUser
     @EnvironmentObject private var store: AppStore
@@ -2350,6 +2431,7 @@ struct ProfileCardView: View {
     /// supplies canMessage (Message/Call gate) plus bio/banner that list-derived
     /// users don't carry. Mirrors the web card's fullProfile fallback.
     @State private var fetched: PublicUser?
+    @State private var showReport = false
 
     private var isSelf: Bool { user.id == session.currentUser?.id }
     private var relType: String? { store.relationshipType(with: user.id) }
@@ -2479,6 +2561,9 @@ struct ProfileCardView: View {
             // see no contact buttons, same as web's fetch-fail behavior.
             fetched = try? await APIClient.shared.getUserProfile(userId: user.id)
         }
+        .sheet(isPresented: $showReport) {
+            ReportUserSheet(user: user).environmentObject(store)
+        }
     }
 
     /// Custom status as a speech bubble floating in the banner (to the right of
@@ -2553,16 +2638,10 @@ struct ProfileCardView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
 
-            // Report — only in a guild context (reports are filed to the
-            // current server's moderation queue).
-            if store.selectedGuild != nil {
-                Menu {
-                    ForEach(ReportReason.allCases) { reason in
-                        Button { Task { await store.reportUser(user.id, reason: reason.rawValue) } } label: {
-                            Text(reason.label)
-                        }
-                    }
-                } label: {
+            // Report — only for a member of the CURRENT server (not DMs/friends).
+            // Opens a form to pick a reason + describe what happened.
+            if store.members[user.id] != nil && relType != "friend" {
+                Button { showReport = true } label: {
                     Label("Report User", systemImage: "flag")
                         .font(.zkSans(15, weight: .medium))
                         .frame(maxWidth: .infinity)
@@ -2571,6 +2650,7 @@ struct ProfileCardView: View {
                         .foregroundColor(Theme.danger)
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -2682,6 +2762,7 @@ struct MemberListView: View {
     @EnvironmentObject private var session: Session
     @Environment(\.dismiss) private var dismiss
     @State private var selectedProfile: PublicUser?
+    @State private var reportTarget: PublicUser?
 
     private struct MemberSection: Identifiable {
         let id: String
@@ -2774,6 +2855,9 @@ struct MemberListView: View {
                 .environmentObject(session)
                 .environmentObject(store.voice)
         }
+        .sheet(item: $reportTarget) { u in
+            ReportUserSheet(user: u).environmentObject(store)
+        }
     }
 
     private func sectionHeader(_ s: MemberSection) -> some View {
@@ -2821,15 +2905,15 @@ struct MemberListView: View {
                 Label("View Profile", systemImage: "person.crop.circle")
             }
             if m.userId != store.currentUserId {
-                // Any member can report another member; surfaces to mods in
-                // guild settings → Reports.
-                Menu {
-                    ForEach(ReportReason.allCases) { reason in
-                        Button { Task { await store.reportUser(m.userId, reason: reason.rawValue) } } label: {
-                            Text(reason.label)
-                        }
+                // Report another member (this is a guild member list — a server
+                // context). Not offered for friends. Opens a form to pick a
+                // reason + describe what happened; surfaces to mods in guild
+                // settings → Reports.
+                if store.relationshipType(with: m.userId) != "friend" {
+                    Button { reportTarget = m.user } label: {
+                        Label("Report User", systemImage: "flag")
                     }
-                } label: { Label("Report User", systemImage: "flag") }
+                }
                 if store.canModerateMembers {
                     Menu {
                         Button { Task { await store.timeoutMember(m.userId, minutes: 5) } } label: { Text("5 minutes") }

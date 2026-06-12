@@ -437,6 +437,9 @@ final class AppStore: ObservableObject {
         Task { await loadGuilds() }
         Task { await loadDMs() }
         Task { await loadReadStates() }
+        // Load relationships up front so friend-aware UI (e.g. hiding "Report"
+        // for friends) is correct anywhere, not just after visiting DMs.
+        Task { await loadRelationships() }
         startAutoPresence()
     }
 
