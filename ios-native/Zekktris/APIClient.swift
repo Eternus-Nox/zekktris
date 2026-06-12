@@ -1239,6 +1239,21 @@ extension APIClient {
         return wrap.entries
     }
 
+    /// File a report against a user (or message) in a guild. Any guild member
+    /// may report; the server dedups an existing open report by the same
+    /// reporter against the same target. Returns the (new or existing) id.
+    @discardableResult
+    func createReport(guildId: String, targetType: String, targetUserId: String? = nil,
+                      messageId: String? = nil, reason: String, details: String? = nil) async throws -> String {
+        var obj: [String: Any] = ["targetType": targetType, "reason": reason]
+        if let targetUserId { obj["targetUserId"] = targetUserId }
+        if let messageId { obj["messageId"] = messageId }
+        if let details, !details.isEmpty { obj["details"] = details }
+        let body = try JSONSerialization.data(withJSONObject: obj)
+        let ack: CreateReportAck = try await send("POST", "/guilds/\(guildId)/reports", bodyData: body)
+        return ack.reportId
+    }
+
     /// Moderation queue for a guild (gated server-side on the mod permissions).
     /// Returns the reports plus the current open count. Filter by status
     /// (default "open") and/or target type; keyset-paginate with `before`.

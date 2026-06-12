@@ -586,10 +586,12 @@ struct ChannelListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Guild banner (web: aspect 16:9, object-cover, border-b line).
+            // Guild banner — one shared 250pt height across server header,
+            // server settings, profile settings, and profile view.
             if let banner = assetURL(store.selectedGuild?.bannerUrl) {
                 Color.clear
-                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                    .frame(height: 250)
+                    .frame(maxWidth: .infinity)
                     .background(Theme.bg3)
                     .overlay {
                         AsyncImage(url: banner) { phase in
@@ -1629,7 +1631,7 @@ struct SettingsView: View {
                                        startPoint: .topLeading, endPoint: .bottomTrailing)
                     }
                 }
-                .frame(height: 240)
+                .frame(height: 250)
                 .frame(maxWidth: .infinity)
                 .clipped()
 
@@ -1643,7 +1645,9 @@ struct SettingsView: View {
                 }
                 .padding(8)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            // Edge to edge: cancel the Settings content's 16pt horizontal inset
+            // so the banner spans the full screen width (square, no rounding).
+            .padding(.horizontal, -16)
 
             let user = session.currentUser
             // Mirrors the profile card: avatar halfway over the banner's
@@ -4773,9 +4777,9 @@ struct GuildSettingsView: View {
                                            startPoint: .topLeading, endPoint: .bottomTrailing)
                         }
                     }
-                    // Match the server profile-picture (Avatar size: 56) height
-                    // so the banner and icon controls share the same footprint.
-                    .frame(height: 56)
+                    // One shared banner height (250) across server settings,
+                    // profile settings, profile view, and the server header.
+                    .frame(height: 250)
                     .frame(maxWidth: .infinity)
                     .clipped()
 
@@ -4789,7 +4793,8 @@ struct GuildSettingsView: View {
                     }
                     .padding(8)
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                // Edge to edge: cancel the settings content's 16pt inset.
+                .padding(.horizontal, -16)
             }
             let guild = store.selectedGuild
             HStack(spacing: 12) {
@@ -5382,22 +5387,27 @@ struct BrowseRolesView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Claim roles to customize your access and how you appear in this server.")
-                        .font(.zkSans(13)).foregroundColor(Theme.ink3)
-                    if store.loadingSelfRoles && store.selfAssignableRoles.isEmpty {
-                        ProgressView().tint(Theme.accent).frame(maxWidth: .infinity).padding(.top, 20)
-                    } else if store.selfAssignableRoles.isEmpty {
-                        Text("No roles are available to claim right now.")
-                            .font(.zkSans(13)).foregroundColor(Theme.ink4).padding(.top, 8)
-                    } else {
-                        ForEach(store.selfAssignableRoles) { role in roleRow(role) }
+            ZStack {
+                // Full-bleed theme background so it spans edge to edge (no grey
+                // bars on the sides behind the scroll content).
+                Theme.bg1.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Claim roles to customize your access and how you appear in this server.")
+                            .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                        if store.loadingSelfRoles && store.selfAssignableRoles.isEmpty {
+                            ProgressView().tint(Theme.accent).frame(maxWidth: .infinity).padding(.top, 20)
+                        } else if store.selfAssignableRoles.isEmpty {
+                            Text("No roles are available to claim right now.")
+                                .font(.zkSans(13)).foregroundColor(Theme.ink4).padding(.top, 8)
+                        } else {
+                            ForEach(store.selfAssignableRoles) { role in roleRow(role) }
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
                 }
-                .padding(16)
             }
-            .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Get Roles").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
             .task { await store.loadSelfAssignableRoles() }

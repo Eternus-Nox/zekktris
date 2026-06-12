@@ -2505,6 +2505,16 @@ final class AppStore: ObservableObject {
             members[userId] = nil
         } catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
+    /// File a report against a member of the current guild. `reason` is one of
+    /// spam | harassment | nsfw | violence | other. Surfaces to moderators in
+    /// the guild settings → Reports queue.
+    func reportUser(_ userId: String, reason: String, details: String? = nil) async {
+        guard let g = selectedGuild else { return }
+        do {
+            _ = try await api.createReport(guildId: g.id, targetType: "user",
+                                           targetUserId: userId, reason: reason, details: details)
+        } catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
+    }
     /// Time a member out for `minutes` (0 clears the timeout).
     func timeoutMember(_ userId: String, minutes: Int) async {
         guard let g = selectedGuild else { return }

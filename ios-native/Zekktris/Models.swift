@@ -1099,6 +1099,22 @@ struct Report: Codable, Identifiable {
 
 struct ReportsWrap: Codable { let reports: [Report]; let openCount: Int }
 struct ReportWrap: Codable { let report: Report }
+struct CreateReportAck: Codable { let ok: Bool; let reportId: String }
+
+/// User-report reasons accepted by the server (POST /guilds/:id/reports).
+enum ReportReason: String, CaseIterable, Identifiable {
+    case spam, harassment, nsfw, violence, other
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .spam: return "Spam"
+        case .harassment: return "Harassment"
+        case .nsfw: return "NSFW"
+        case .violence: return "Violence"
+        case .other: return "Other"
+        }
+    }
+}
 struct SecurityConfig: Codable, Hashable {
     var spamEnabled: Bool
     var spamMaxMessages: Int

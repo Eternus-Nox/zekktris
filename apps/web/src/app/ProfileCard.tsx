@@ -678,44 +678,6 @@ export function ProfileCard({
             />
           )}
 
-          {/* Custom status as a speech bubble floating at the top middle-right
-              of the avatar, its tail leaning down-left back at the picture —
-              like the avatar is saying it (mirrors the iOS profile card). The
-              avatar overlaps the banner bottom by 40px (-mt-10 below); anchoring
-              from the banner's bottom keeps the bubble just above it regardless
-              of banner height. */}
-          {(() => {
-            const cs = formatCustomStatus(user);
-            if (!cs.emoji && !cs.text) return null;
-            return (
-              <div className="absolute left-[60px] bottom-[52px] max-w-[58%] z-10">
-                <div className="relative inline-flex max-w-full items-center gap-1.5 rounded-[11px] bg-bg-3 border border-line px-2.5 py-1.5 shadow-md">
-                  {cs.emoji && <span className="text-sm leading-none shrink-0">{cs.emoji}</span>}
-                  {cs.text && (
-                    <span className="text-xs font-medium text-ink-1 line-clamp-2">{cs.text}</span>
-                  )}
-                  {/* Down-left tail: fill merges with the bubble's bottom edge;
-                      only the two slanted sides are stroked with the border. */}
-                  <svg
-                    width="16"
-                    height="11"
-                    viewBox="0 0 16 11"
-                    className="absolute left-3 top-full -mt-px"
-                    aria-hidden
-                  >
-                    <path d="M1 1 L5 10 L13 1 Z" style={{ fill: 'rgb(var(--c-bg-3))' }} />
-                    <path
-                      d="M1 1 L5 10 L13 1"
-                      fill="none"
-                      style={{ stroke: 'rgb(var(--c-line))' }}
-                      strokeWidth="1"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </div>
-              </div>
-            );
-          })()}
         </div>
 
         <div className="px-4 -mt-10 pb-4">
@@ -746,6 +708,39 @@ export function ProfileCard({
                 Nudged down a few px (translate-y) so it reads as
                 sitting slightly below the avatar's vertical centre. */}
             <div className="min-w-0 flex-1 pb-1 translate-y-1.5">
+              {/* Custom status sits right above the name, its tail on the LEFT
+                  pointing back at the avatar — like the picture is speaking
+                  (mirrors the iOS profile card). */}
+              {(() => {
+                const cs = formatCustomStatus(user);
+                if (!cs.emoji && !cs.text) return null;
+                return (
+                  <div className="relative inline-flex items-center gap-1.5 max-w-full rounded-[11px] bg-bg-3 border border-line pl-3 pr-2.5 py-1 mb-1 shadow-sm">
+                    {cs.emoji && <span className="text-sm leading-none shrink-0">{cs.emoji}</span>}
+                    {cs.text && (
+                      <span className="text-xs font-medium text-ink-1 line-clamp-2">{cs.text}</span>
+                    )}
+                    {/* Left tail: base merges with the bubble's left edge, tip
+                        points left at the avatar. */}
+                    <svg
+                      width="9"
+                      height="14"
+                      viewBox="0 0 9 14"
+                      className="absolute right-full top-1/2 -translate-y-1/2 -mr-px"
+                      aria-hidden
+                    >
+                      <path d="M8 1 L0 7 L8 13 Z" style={{ fill: 'rgb(var(--c-bg-3))' }} />
+                      <path
+                        d="M8 1 L0 7 L8 13"
+                        fill="none"
+                        style={{ stroke: 'rgb(var(--c-line))' }}
+                        strokeWidth="1"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </div>
+                );
+              })()}
               <div className="flex items-center gap-1.5">
                 <div className="font-semibold text-base text-ink-1 truncate">{user.displayName}</div>
                 {user.isBot && (

@@ -2301,29 +2301,28 @@ private struct ProfileCardPresentation: ViewModifier {
     }
 }
 
-/// A rounded speech bubble whose tail drops from the bottom edge. `tailInset`
-/// is a FIXED distance (points) from the leading edge to the tail base center,
-/// so the tail keeps pointing at the same spot no matter how wide the text
-/// makes the bubble. `tailTipDX` slides the tail TIP horizontally relative to
-/// its base — negative leans the tail down-LEFT so a bubble sitting up-and-right
-/// of the avatar points back at it, like the picture is speaking.
-private struct SpeechBubbleDown: Shape {
+/// A rounded speech bubble with a tail on the LEFT edge pointing left. Used
+/// just above the display name so the tail points back at the avatar to its
+/// left — like the picture is speaking. `tailCenterY` (fraction down the body)
+/// places the tail vertically; clamped to stay clear of the rounded corners.
+private struct SpeechBubbleLeft: Shape {
     var cornerRadius: CGFloat = 11
-    var tailWidth: CGFloat = 12
-    var tailHeight: CGFloat = 9
-    var tailInset: CGFloat = 18
-    var tailTipDX: CGFloat = 0
+    var tailWidth: CGFloat = 8   // how far the tail protrudes left of the body
+    var tailHeight: CGFloat = 11 // vertical span of the tail base
+    var tailCenterY: CGFloat = 0.5
 
     func path(in rect: CGRect) -> Path {
-        let bodyHeight = max(cornerRadius * 2, rect.height - tailHeight)
-        let body = CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: bodyHeight)
+        let bodyMinX = rect.minX + tailWidth
+        let body = CGRect(x: bodyMinX, y: rect.minY,
+                          width: max(cornerRadius * 2, rect.width - tailWidth),
+                          height: rect.height)
         var p = Path(roundedRect: body, cornerRadius: cornerRadius)
-        let minCX = rect.minX + cornerRadius + tailWidth / 2
-        let maxCX = rect.maxX - cornerRadius - tailWidth / 2
-        let cx = min(max(rect.minX + tailInset, minCX), max(minCX, maxCX))
-        p.move(to: CGPoint(x: cx - tailWidth / 2, y: body.maxY))
-        p.addLine(to: CGPoint(x: cx + tailTipDX, y: rect.maxY))
-        p.addLine(to: CGPoint(x: cx + tailWidth / 2, y: body.maxY))
+        let minCY = rect.minY + cornerRadius + tailHeight / 2
+        let maxCY = rect.maxY - cornerRadius - tailHeight / 2
+        let cy = min(max(rect.minY + rect.height * tailCenterY, minCY), max(minCY, maxCY))
+        p.move(to: CGPoint(x: bodyMinX, y: cy - tailHeight / 2))
+        p.addLine(to: CGPoint(x: rect.minX, y: cy)) // tip at the far left
+        p.addLine(to: CGPoint(x: bodyMinX, y: cy + tailHeight / 2))
         p.closeSubpath()
         return p
     }
@@ -2341,9 +2340,9 @@ struct ProfileCardView: View {
     private var isSelf: Bool { user.id == session.currentUser?.id }
     private var relType: String? { store.relationshipType(with: user.id) }
     private var liveStatus: String { store.status(for: user.id, fallback: user.status) }
-    /// Banner height. Taller (+25%) on iPhone per design; Mac keeps the compact
-    /// height since the card window is already large there.
-    private var bannerHeight: CGFloat { ProcessInfo.processInfo.isiOSAppOnMac ? 160 : 200 }
+    /// Banner height — a single fixed height shared across the profile view,
+    /// profile settings, server settings, and the server header banner.
+    private var bannerHeight: CGFloat { 250 }
     private var profileBio: String? { user.bio ?? fetched?.bio }
     private var profileBanner: String? { user.bannerUrl ?? fetched?.bannerUrl }
     /// Show the Message/Call pair only when the viewer may reach this user —
@@ -2354,39 +2353,28 @@ struct ProfileCardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Banner with the custom-status bubble floated at the top
-            // middle-right of the avatar, its tail leaning down-left back at the
-            // picture — like the avatar is speaking. bottomLeading anchor +
-            // paddings sit it up and to the right of the avatar (which is ~18pt
-            // from the left and overhangs the banner's bottom by 38pt).
-            ZStack(alignment: .bottomLeading) {
-                Group {
-                    if let bannerURL = assetURL(profileBanner) {
-                        AsyncImage(url: bannerURL) { phase in
-                            if let img = phase.image {
-                                img.resizable().aspectRatio(contentMode: .fill)
-                            } else {
-                                LinearGradient(
-                                    colors: [Theme.accent.opacity(0.55), Theme.accent2.opacity(0.45)],
-                                    startPoint: .leading, endPoint: .trailing
-                                )
-                            }
+            Group {
+                if let bannerURL = assetURL(profileBanner) {
+                    AsyncImage(url: bannerURL) { phase in
+                        if let img = phase.image {
+                            img.resizable().aspectRatio(contentMode: .fill)
+                        } else {
+                            LinearGradient(
+                                colors: [Theme.accent.opacity(0.55), Theme.accent2.opacity(0.45)],
+                                startPoint: .leading, endPoint: .trailing
+                            )
                         }
-                    } else {
-                        LinearGradient(
-                            colors: [Theme.accent.opacity(0.55), Theme.accent2.opacity(0.45)],
-                            startPoint: .leading, endPoint: .trailing
-                        )
                     }
+                } else {
+                    LinearGradient(
+                        colors: [Theme.accent.opacity(0.55), Theme.accent2.opacity(0.45)],
+                        startPoint: .leading, endPoint: .trailing
+                    )
                 }
-                .frame(height: bannerHeight)
-                .frame(maxWidth: .infinity)
-                .clipped()
-
-                customStatusBubble
-                    .padding(.leading, 60)
-                    .padding(.bottom, 42)
             }
+            .frame(height: bannerHeight)
+            .frame(maxWidth: .infinity)
+            .clipped()
 
             // Avatar straddles the banner's bottom edge — half over the
             // banner, half below — with name + username to its right.
@@ -2397,6 +2385,9 @@ struct ProfileCardView: View {
                     .padding(.top, -38)
 
                 VStack(alignment: .leading, spacing: 3) {
+                    // Custom status sits right above the name, its tail on the
+                    // left pointing back at the avatar — like the picture speaks.
+                    customStatusBubble
                     HStack(spacing: 8) {
                         Text(user.displayName ?? user.username ?? "Unknown")
                             .font(.zkSans(21, weight: .bold))
@@ -2464,9 +2455,9 @@ struct ProfileCardView: View {
         }
     }
 
-    /// Custom status as a speech bubble that floats in the banner at the top
-    /// middle-right of the avatar, its tail leaning down-left back at the
-    /// picture — like the avatar is saying it. Empty → nothing.
+    /// Custom status as a speech bubble sitting right above the display name,
+    /// its tail on the LEFT edge pointing back at the avatar — like the picture
+    /// is saying it. Empty / expired → nothing.
     @ViewBuilder
     private var customStatusBubble: some View {
         let emoji = user.customStatusEmoji?.trimmingCharacters(in: .whitespaces) ?? ""
@@ -2476,7 +2467,7 @@ struct ProfileCardView: View {
         let exp = user.customStatusExpiresAt
         let expired = (exp?.isEmpty == false) && !customStatusHasFutureExpiry(exp)
         if !expired, !emoji.isEmpty || !text.isEmpty {
-            let shape = SpeechBubbleDown(tailInset: 18, tailTipDX: -8)
+            let shape = SpeechBubbleLeft()
             HStack(spacing: 5) {
                 if !emoji.isEmpty { Text(emoji).font(.zkSans(13)) }
                 if !text.isEmpty {
@@ -2485,9 +2476,9 @@ struct ProfileCardView: View {
                         .lineLimit(2)
                 }
             }
-            .padding(.horizontal, 11)
-            .padding(.top, 6)
-            .padding(.bottom, 6 + 9) // leave room for the 9pt tail at the bottom
+            .padding(.leading, 11 + 8) // extra leading room for the 8pt left tail
+            .padding(.trailing, 11)
+            .padding(.vertical, 6)
             .background(shape.fill(Theme.bg3))
             .overlay(shape.stroke(Theme.line, lineWidth: 1))
             .shadow(color: .black.opacity(0.28), radius: 5, x: 0, y: 2)
@@ -2534,6 +2525,26 @@ struct ProfileCardView: View {
                     .background(Theme.bg3)
                     .foregroundColor(Theme.danger)
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+
+            // Report — only in a guild context (reports are filed to the
+            // current server's moderation queue).
+            if store.selectedGuild != nil {
+                Menu {
+                    ForEach(ReportReason.allCases) { reason in
+                        Button { Task { await store.reportUser(user.id, reason: reason.rawValue) } } label: {
+                            Text(reason.label)
+                        }
+                    }
+                } label: {
+                    Label("Report User", systemImage: "flag")
+                        .font(.zkSans(15, weight: .medium))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 11)
+                        .background(Theme.bg3)
+                        .foregroundColor(Theme.danger)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
             }
         }
     }
@@ -2784,6 +2795,15 @@ struct MemberListView: View {
                 Label("View Profile", systemImage: "person.crop.circle")
             }
             if m.userId != store.currentUserId {
+                // Any member can report another member; surfaces to mods in
+                // guild settings → Reports.
+                Menu {
+                    ForEach(ReportReason.allCases) { reason in
+                        Button { Task { await store.reportUser(m.userId, reason: reason.rawValue) } } label: {
+                            Text(reason.label)
+                        }
+                    }
+                } label: { Label("Report User", systemImage: "flag") }
                 if store.canModerateMembers {
                     Menu {
                         Button { Task { await store.timeoutMember(m.userId, minutes: 5) } } label: { Text("5 minutes") }
