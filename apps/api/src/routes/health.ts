@@ -15,7 +15,14 @@ import { log } from '../log';
 export const healthRouter = new Hono();
 
 healthRouter.get('/', (c) => {
-  return c.json({ status: 'ok', uptimeSeconds: Math.round(process.uptime()) });
+  // `version` is the git commit the image was built from (Dockerfile.api sets
+  // GIT_SHA via --build-arg). 'dev' locally / 'unknown' if the build didn't
+  // pass it. Lets you confirm what's actually deployed: GET /api/v1/health.
+  return c.json({
+    status: 'ok',
+    uptimeSeconds: Math.round(process.uptime()),
+    version: process.env.GIT_SHA ?? 'dev',
+  });
 });
 
 healthRouter.get('/ready', async (c) => {

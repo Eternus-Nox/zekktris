@@ -82,6 +82,15 @@ ENV UPLOAD_DIR=/data/uploads
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
 ENV PORT=3000
+
+# Build-time git commit so the DEPLOYED version is checkable at GET /health
+# (returns it as `version`). Pass it when building:
+#   docker compose build --build-arg GIT_SHA=$(git rev-parse --short HEAD) api
+# or in docker-compose.yml under the api service:
+#   build: { args: { GIT_SHA: "${GIT_SHA:-unknown}" } }
+ARG GIT_SHA=unknown
+ENV GIT_SHA=$GIT_SHA
+
 EXPOSE 3000
 
 # tini → pnpm → tsx so SIGTERM propagates and shutdown is clean.

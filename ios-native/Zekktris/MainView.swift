@@ -8448,6 +8448,7 @@ struct AchievementsSection: View {
     let userId: String?
     @State private var achievements: [Achievement] = []
     @State private var loaded = false
+    @State private var loadError: String?
 
     var body: some View {
         Group {
@@ -8479,15 +8480,33 @@ struct AchievementsSection: View {
                         }
                     }
                 }
-            } else if !loaded {
+            } else if loaded {
+                // Make a blank section diagnosable instead of silent: distinguish
+                // a load failure from a genuinely empty/private shelf.
+                if let loadError {
+                    Text("Achievements couldn’t load — \(loadError)")
+                        .font(.zkSans(11)).foregroundColor(Theme.dangerSoft)
+                } else {
+                    Text("No achievements to show yet.")
+                        .font(.zkSans(11)).foregroundColor(Theme.ink4)
+                }
+            } else {
                 EmptyView()
             }
         }
-        .task {
-            if let userId {
-                achievements = (try? await APIClient.shared.userAchievements(userId: userId)) ?? []
-            } else {
-                achievements = (try? await APIClient.shared.myAchievements())?.achievements ?? []
+        .task(id: userId) {
+            loaded = false
+            loadError = nil
+            do {
+                if let userId {
+                    achievements = try await APIClient.shared.userAchievements(userId: userId)
+                } else {
+                    achievements = try await APIClient.shared.myAchievements().achievements
+                }
+            } catch {
+                achievements = []
+                loadError = (error as? APIError).map { "HTTP \($0.status): \($0.message)" }
+                    ?? error.localizedDescription
             }
             loaded = true
         }
