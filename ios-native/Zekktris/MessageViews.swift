@@ -2480,7 +2480,7 @@ struct ProfileCardView: View {
         let exp = user.customStatusExpiresAt
         let expired = (exp?.isEmpty == false) && !customStatusHasFutureExpiry(exp)
         if !expired, !emoji.isEmpty || !text.isEmpty {
-            let shape = SpeechBubbleLeft(tailTipDY: -8) // points NW toward the avatar
+            let shape = SpeechBubbleLeft(tailTipDY: 8) // points SW (down-left) toward the avatar
             HStack(spacing: 5) {
                 if !emoji.isEmpty { Text(emoji).font(.zkSans(13)) }
                 if !text.isEmpty {
