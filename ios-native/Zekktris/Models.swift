@@ -16,6 +16,7 @@ struct PublicUser: Codable, Identifiable, Hashable {
     var bannerUrl: String?
     var status: String?
     var isBot: Bool?
+    var bio: String?
     var customStatus: String?
     var customStatusEmoji: String?
     var avatarDecoration: String?

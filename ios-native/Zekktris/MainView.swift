@@ -8444,65 +8444,52 @@ private struct FlowWords: View {
 // ═══════════════════════════════════════════════════════════════════════════
 
 struct AchievementsSection: View {
-    /// Whose achievements; nil = the signed-in user (always visible).
-    let userId: String?
+    /// The VIEWED user's id (always — including the signed-in user). Routing
+    /// self through GET /users/<id>/achievements returns the owner their full
+    /// shelf, and a STABLE id avoids the `.task` re-keying that left the own
+    /// profile card blank when `isSelf ? nil : user.id` flipped as currentUser
+    /// resolved.
+    let userId: String
+    /// Profile cards show only EARNED badges; the Settings gallery shows all.
+    var earnedOnly: Bool = false
     @State private var achievements: [Achievement] = []
     @State private var loaded = false
     @State private var loadError: String?
 
+    private var earned: [Achievement] { achievements.filter { $0.isEarned } }
+    private var locked: [Achievement] { achievements.filter { !$0.isEarned } }
+
     var body: some View {
         Group {
-            if !achievements.isEmpty {
-                let earned = achievements.filter { $0.isEarned }
-                let locked = achievements.filter { !$0.isEarned }
+            if !earned.isEmpty || (!earnedOnly && !locked.isEmpty) {
                 VStack(alignment: .leading, spacing: 8) {
                     if !earned.isEmpty {
                         Text("ACHIEVEMENTS")
                             .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
-                            ForEach(earned) { a in
-                                AchievementBadge(achievement: a)
-                            }
+                            ForEach(earned) { AchievementBadge(achievement: $0) }
                         }
                     }
-                    // Locked badges render dimmed with a value/goal progress
-                    // capsule. They arrive for the viewer's own shelf (real
-                    // progress) and, for a PUBLIC profile viewed by someone
-                    // else, with the progress value scrubbed to 0 server-side.
-                    if !locked.isEmpty {
+                    // In-progress badges only outside earnedOnly (Settings gallery).
+                    if !earnedOnly && !locked.isEmpty {
                         Text("IN PROGRESS")
                             .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
                             .padding(.top, earned.isEmpty ? 0 : 4)
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
-                            ForEach(locked) { a in
-                                AchievementBadge(achievement: a)
-                            }
+                            ForEach(locked) { AchievementBadge(achievement: $0) }
                         }
                     }
                 }
-            } else if loaded {
-                // Make a blank section diagnosable instead of silent: distinguish
-                // a load failure from a genuinely empty/private shelf.
-                if let loadError {
-                    Text("Achievements couldn’t load — \(loadError)")
-                        .font(.zkSans(11)).foregroundColor(Theme.dangerSoft)
-                } else {
-                    Text("No achievements to show yet.")
-                        .font(.zkSans(11)).foregroundColor(Theme.ink4)
-                }
-            } else {
-                EmptyView()
+            } else if loaded, let loadError {
+                Text("Achievements couldn’t load — \(loadError)")
+                    .font(.zkSans(11)).foregroundColor(Theme.dangerSoft)
             }
+            // Loaded with nothing to show → render nothing (no badges earned).
         }
         .task(id: userId) {
-            loaded = false
             loadError = nil
             do {
-                if let userId {
-                    achievements = try await APIClient.shared.userAchievements(userId: userId)
-                } else {
-                    achievements = try await APIClient.shared.myAchievements().achievements
-                }
+                achievements = try await APIClient.shared.userAchievements(userId: userId)
             } catch {
                 achievements = []
                 loadError = (error as? APIError).map { "HTTP \($0.status): \($0.message)" }

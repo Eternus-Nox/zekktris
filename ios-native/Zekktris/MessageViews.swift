@@ -2301,6 +2301,30 @@ private struct ProfileCardPresentation: ViewModifier {
     }
 }
 
+/// A rounded speech bubble with a downward-pointing tail at the bottom. The
+/// `tailX` fraction (0 = left, 1 = right) positions the tail along the bottom
+/// edge; it's clamped so it never sits under a rounded corner.
+private struct SpeechBubbleDown: Shape {
+    var cornerRadius: CGFloat = 11
+    var tailWidth: CGFloat = 12
+    var tailHeight: CGFloat = 7
+    var tailX: CGFloat = 0.2
+
+    func path(in rect: CGRect) -> Path {
+        let bodyHeight = max(cornerRadius * 2, rect.height - tailHeight)
+        let body = CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: bodyHeight)
+        var p = Path(roundedRect: body, cornerRadius: cornerRadius)
+        let minCX = rect.minX + cornerRadius + tailWidth / 2
+        let maxCX = rect.maxX - cornerRadius - tailWidth / 2
+        let cx = min(max(rect.minX + rect.width * tailX, minCX), max(minCX, maxCX))
+        p.move(to: CGPoint(x: cx - tailWidth / 2, y: body.maxY))
+        p.addLine(to: CGPoint(x: cx, y: rect.maxY))
+        p.addLine(to: CGPoint(x: cx + tailWidth / 2, y: body.maxY))
+        p.closeSubpath()
+        return p
+    }
+}
+
 struct ProfileCardView: View {
     let user: PublicUser
     @EnvironmentObject private var store: AppStore
@@ -2344,6 +2368,9 @@ struct ProfileCardView: View {
                     .padding(.top, -38)
 
                 VStack(alignment: .leading, spacing: 3) {
+                    // Custom status as a speech bubble whose tail points down to
+                    // the avatar's top-right, sitting just above the name.
+                    customStatusBubble
                     HStack(spacing: 8) {
                         Text(user.displayName ?? user.username ?? "Unknown")
                             .font(.zkSans(21, weight: .bold))
@@ -2371,20 +2398,19 @@ struct ProfileCardView: View {
 
             ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                // Online/offline is already shown by the status dot on the
-                // avatar above; the separate dot + text row was redundant.
-                AchievementsSection(userId: isSelf ? nil : user.id)
-
-                if (user.customStatus?.isEmpty == false) || (user.customStatusEmoji?.isEmpty == false) {
-                    HStack(spacing: 6) {
-                        if let e = user.customStatusEmoji, !e.isEmpty {
-                            Text(e).font(.zkSans(15))
-                        }
-                        if let cs = user.customStatus, !cs.isEmpty {
-                            Text(cs).font(.zkSans(14)).foregroundColor(Theme.ink2)
-                        }
+                // Bio first…
+                if let bio = user.bio, !bio.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("ABOUT ME")
+                            .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                        Text(bio)
+                            .font(.zkSans(14)).foregroundColor(Theme.ink2)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+
+                // …then EARNED achievements only (the Settings gallery shows all).
+                AchievementsSection(userId: user.id, earnedOnly: true)
 
                 Rectangle().fill(Theme.line).frame(height: 1)
 
@@ -2407,6 +2433,30 @@ struct ProfileCardView: View {
         }
         .background(Theme.bg1)
         .modifier(ProfileCardPresentation())
+    }
+
+    /// Custom status rendered as a speech bubble (tail points down toward the
+    /// avatar's top-right). Empty → renders nothing.
+    @ViewBuilder
+    private var customStatusBubble: some View {
+        let emoji = user.customStatusEmoji?.trimmingCharacters(in: .whitespaces) ?? ""
+        let text = user.customStatus?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !emoji.isEmpty || !text.isEmpty {
+            HStack(spacing: 5) {
+                if !emoji.isEmpty { Text(emoji).font(.zkSans(13)) }
+                if !text.isEmpty {
+                    Text(text)
+                        .font(.zkSans(12, weight: .medium)).foregroundColor(Theme.ink1)
+                        .lineLimit(2)
+                }
+            }
+            .padding(.horizontal, 11)
+            .padding(.top, 6)
+            .padding(.bottom, 6 + 7) // leave room for the 7pt tail at the bottom
+            .background(SpeechBubbleDown(tailX: 0.16).fill(Theme.bg3))
+            .overlay(SpeechBubbleDown(tailX: 0.16).stroke(Theme.line, lineWidth: 1))
+            .padding(.bottom, 1)
+        }
     }
 
     @ViewBuilder
