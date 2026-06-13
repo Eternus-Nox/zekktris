@@ -1415,24 +1415,14 @@ final class AppStore: ObservableObject {
                 handleIncomingCall(vs)
             }
         }
-
-        // Cancel any local CallKit ring whose caller is no longer in the
-        // snapshot. A caller who hung up while our socket was down leaves NO
-        // row in voice_states (the server omits a departed peer), so the live
-        // channelId==nil cancel never reached us and the ring (often via a
-        // VoIP push) is stranded — a ghost ring that, if answered, rings the
-        // caller back. A DM is still "really ringing" only if some OTHER user
-        // is present in it in this authoritative snapshot.
-        for cid in CallManager.shared.ringingChannelIds {
-            let stillRinging = states.contains {
-                $0.channelId == cid && $0.userId != currentUserId
-            }
-            if !stillRinging {
-                callLog.info("READY: cancel stale ring ch \(cid, privacy: .public) (caller absent from snapshot)")
-                CallManager.shared.remoteCancelled(channelId: cid)
-                if incomingCall?.channelId == cid { incomingCall = nil }
-            }
-        }
+        // NOTE: a "cancel stale rings absent from the READY snapshot" pass used
+        // to live here (to clear a ghost ring after a missed hangup). It was
+        // removed: on a cold-start/locked call the VoIP push reports the ring,
+        // THEN the gateway connects and READY arrives — and if the caller's
+        // voice_state hadn't propagated into that snapshot yet, the pass would
+        // CANCEL the legitimate, just-appeared incoming ring. A lingering ghost
+        // ring is a far smaller problem than silently dropping a real call, so
+        // the cancel is not worth the risk on this timing-sensitive path.
     }
 
     private func handleIncomingCall(_ vs: VoiceState) {

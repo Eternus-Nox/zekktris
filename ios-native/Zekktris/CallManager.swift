@@ -34,13 +34,6 @@ final class CallManager: NSObject, ObservableObject {
     /// UUIDs still in the ringing (unanswered) state.
     private var ringing: Set<UUID> = []
 
-    /// Channel ids that currently have a ringing (reported-but-unanswered)
-    /// incoming CallKit call. The gateway READY reconcile uses this to cancel
-    /// rings whose call already ended while the socket was down.
-    var ringingChannelIds: [String] {
-        ringing.compactMap { channelByUUID[$0] }
-    }
-
     override private init() {
         let config = CXProviderConfiguration()
         config.supportsVideo = false
