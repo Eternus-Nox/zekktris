@@ -612,6 +612,14 @@ first-run UX walk. 41 findings confirmed (2 independent verifiers each), 1 refut
   (`web/lib/voice.ts`, `manualGain.ts`, `voiceQuality.ts`, `VoiceView.tsx`, + 6 call sites)
 - **UX:** message view opens already at the bottom (visibility-gated until first snap) instead
   of rendering at top and jumping down. (`web/MessageView.tsx`)
+- **Newcomer UX (web — verified typecheck + web tests):** invite-only registration dead end
+  fixed — RegisterPage has a `?code=`-prefillable Invite code field threaded through
+  AuthContext.register + RestClient.register ('open' mode ignores it server-side);
+  error toasts render as a readable red card (was a 3s grey pill that shadowed the styled
+  tone) with ttl `max(6000, len*55)` + `whitespace-pre-line`; every voice-join site
+  best-effort `rest.leaveVoice` on a failed connect so a denied-mic/no-UDP/SFU-down join
+  doesn't strand a silent ghost (gateway echoes the leave); "presence only — voice not
+  configured" jargon replaced with plain language across all join/call sites.
 - **Native iOS (HIGH/MED — verified by Xcode build + iOS unit tests):** native login now has a
   2FA step (LoginBody.code + APIClient.login(code:) + APIError.requires2FA flag + Session.needs2FA
   + a revealed code field in LoginView) — TOTP accounts could not sign in at all before
@@ -630,6 +638,10 @@ first-run UX walk. 41 findings confirmed (2 independent verifiers each), 1 refut
   voice-message playback clobbers the live call's AVAudioSession (`VoiceMessage.swift`, HIGH);
   mention badges only repair on reconnect; notification tap dead-ends for un-loaded guilds;
   back-nav leaves false read receipts (all MED/LOW).
+- **Web UX (MED, remaining):** locked-E2EE DM gives no obvious unlock affordance (form behind
+  an unlabeled gear); email-verify gate has no escape for a typo'd address (needs a small
+  change-email endpoint for never-verified accounts); raw transport errors leak to auth
+  screens; blank "no servers" on a silent boot failure.
 - **`Config.swift` hardcodes `zekktris.com`** — the canonical native client cannot reach a
   self-hosted instance without recompiling. Recommend the scan-to-connect QR flow (`lib/qr.ts`
   exists). Major self-hosting gap. (HIGH, product)
