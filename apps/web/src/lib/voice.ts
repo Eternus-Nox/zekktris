@@ -681,9 +681,12 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
   // track list, blanking video tiles every second), leaked the prefs
   // subscription, and kept the manual-gain mic capture alive. This is
   // the channel-switch path (clicking another voice channel while
-  // connected), so it has to clean up exactly like an explicit leave.
+  // connected), so it has to clean up exactly like an explicit leave —
+  // EXCEPT we keep the shared AudioContext alive (it was just primed inside
+  // this click gesture and the new connect follows immediately; closing it
+  // would force a suspended re-create on Safari and kill the speaking rings).
   if (room) {
-    await disconnectVoice();
+    await disconnectVoice({ keepAudioContext: true });
   }
 
   // Read the user's current quality preference. The preset caps audio
@@ -1663,8 +1666,14 @@ interface TrackPublicationLike {
 /**
  * Close the active voice connection. Safe to call when not connected —
  * returns immediately.
+ *
+ * `keepAudioContext` is set ONLY by the channel-switch reconnect path: that
+ * path already primed the shared AudioContext inside the click gesture, and a
+ * new connect follows immediately, so closing the context here would force it
+ * to be re-created OUTSIDE the gesture (born suspended on Safari → speaking
+ * rings stop lighting up until the next interaction). A real leave closes it.
  */
-export async function disconnectVoice(): Promise<void> {
+export async function disconnectVoice(opts: { keepAudioContext?: boolean } = {}): Promise<void> {
   if (!room) return;
   // Tear down our hidden audio sinks before disconnecting LiveKit so we
   // don't leak <video> elements if the unsubscribe events don't fire
@@ -1717,9 +1726,10 @@ export async function disconnectVoice(): Promise<void> {
     detachRemoteSpeakerProbe(sid);
   }
   remoteWebAudioSpeakers.clear();
-  // Release the shared AudioContext. The next join will re-create
-  // one inside that gesture's call stack.
-  closeSharedAudioContext();
+  // Release the shared AudioContext — UNLESS this is a channel-switch
+  // reconnect (keepAudioContext), where the gesture-primed context must
+  // survive into the immediate re-connect (see the doc comment).
+  if (!opts.keepAudioContext) closeSharedAudioContext();
   // Exit call-background mode: release the screen wake lock, clear
   // media-session metadata, drop the visibility listener. Fire-and-
   // forget — none of these can fail in a way that should block

@@ -19,10 +19,18 @@ final class VoiceManager: ObservableObject {
     /// connected → reconnecting). Read by VoiceMessage's recorder/player so
     /// they never re-categorize or deactivate the session out from under a
     /// live call (which killed the mic / deactivated the call mid-conversation).
-    /// All touch points are @MainActor, so the unsafe-static is fine.
+    /// DERIVED from `state` (see its didSet) rather than toggled by hand, so it
+    /// can never latch true on a delegate-driven transport failure (which would
+    /// silently break voice messages until a manual leave). All touch points
+    /// are @MainActor, so the unsafe-static is fine.
     nonisolated(unsafe) static var callAudioActive = false
 
-    @Published private(set) var state: State = .idle
+    @Published private(set) var state: State = .idle {
+        didSet {
+            Self.callAudioActive =
+                state == .connecting || state == .connected || state == .reconnecting
+        }
+    }
     @Published private(set) var isMuted = false
     /// When deafened, all remote audio is muted for the local listener (and the
     /// mic is muted too, mirroring Discord). Restored on undeafen.
@@ -64,10 +72,10 @@ final class VoiceManager: ObservableObject {
         // Fresh session — never inherit a prior teardown's guard (in case a
         // previous disconnect is still draining), or mic/deafen would no-op.
         isTearingDown = false
+        // state = .connecting drives callAudioActive=true via its didSet, so
+        // voice-message playback/recording is blocked from re-categorizing or
+        // deactivating the shared session for the call's lifetime.
         state = .connecting
-        // LiveKit is taking the shared audio session — block voice-message
-        // playback/recording from re-categorizing or deactivating it.
-        Self.callAudioActive = true
         isMuted = !publishMic
         let r: Room
         if let e2eeKey {
@@ -98,9 +106,8 @@ final class VoiceManager: ObservableObject {
             state = .connected
         } catch {
             lastError = error.localizedDescription
-            state = .failed
+            state = .failed // didSet clears callAudioActive
             room = nil
-            Self.callAudioActive = false
         }
     }
 
@@ -307,14 +314,15 @@ final class VoiceManager: ObservableObject {
         // teardown is freeing (the LiveKit audio-worker UAF crash on call-end).
         guard let r = room, !isTearingDown else {
             room = nil
+            // Defensive: this early-return path doesn't transition `state`, so
+            // sync the derived flag directly in case state was left non-idle.
             Self.callAudioActive = false
             return
         }
         isTearingDown = true
         room = nil
-        // LiveKit is releasing the shared audio session — voice messages may
-        // use it again.
-        Self.callAudioActive = false
+        // state = .idle releases the shared session (didSet clears
+        // callAudioActive) so voice messages may use it again.
         state = .idle
         isMuted = false
         isDeafened = false
