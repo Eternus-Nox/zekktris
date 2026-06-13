@@ -371,8 +371,15 @@ export async function mintLivekitToken(
   const at = new AccessToken(apiKey, apiSecret, {
     identity: userId.toString(),
     // TTL bounds the join handshake, not the connected session — LiveKit
-    // only validates at join time. 1 hour gives plenty of slack.
-    ttl: '1h',
+    // only validates at join time, and refreshes tokens for connected
+    // participants over the signaling channel, so a short TTL never
+    // interrupts a live call. Keeping it short matters for security:
+    // every forced-removal path (kick/ban/eviction) only DISCONNECTS the
+    // participant at the SFU — it can't revoke an already-minted token —
+    // so the TTL is exactly the window in which a kicked user's client
+    // could rejoin the room directly. 5 minutes still leaves generous
+    // slack for slow mic-permission prompts before connect.
+    ttl: '5m',
   });
   at.addGrant({
     roomJoin: true,
@@ -549,15 +556,26 @@ async function endDmCallBookkeeping(
   const initiatorId = channelRow.initiatorId ?? leaverId;
 
   // Clear columns BEFORE writing so a retry can't double-write (a lost
-  // message is better than duplicate records).
-  await db
+  // message is better than duplicate records). The IS NOT NULL guard +
+  // RETURNING makes the clear the gate: when both participants hang up
+  // near-simultaneously, both can observe remaining=0 above, but exactly
+  // one concurrent leaver wins this conditional UPDATE — the loser sees
+  // zero rows and skips the system_call write instead of duplicating it.
+  const cleared = await db
     .update(schema.channels)
     .set({
       dmActiveCallStartedAt: null,
       dmActiveCallAnsweredAt: null,
       dmActiveCallInitiatorId: null,
     })
-    .where(eq(schema.channels.id, channelId));
+    .where(
+      and(
+        eq(schema.channels.id, channelId),
+        isNotNull(schema.channels.dmActiveCallStartedAt),
+      ),
+    )
+    .returning({ id: schema.channels.id });
+  if (cleared.length === 0) return none;
 
   const { createSystemMessage } = await import('./messages');
   const systemCallMessage = await createSystemMessage({
@@ -1014,6 +1032,28 @@ export async function moveVoiceMember(args: {
   );
   if (!hasPermission(sourcePerms, Permissions.MOVE_MEMBERS)) {
     throw errors.missingPermissions(['MOVE_MEMBERS']);
+  }
+
+  // 3b. Destination gate. The mover needs CONNECT on the target (you
+  //     can only drop people into rooms you could enter — Discord's
+  //     rule, and it stops MOVE_MEMBERS on a public channel being used
+  //     to push people into private rooms). The moved member must also
+  //     hold VIEW_CHANNEL+CONNECT there: their own client re-joins via
+  //     joinVoice, which re-checks CONNECT and throws — without this
+  //     gate the row gets repointed at a channel they can never connect
+  //     to, stranding a silent ghost in the roster.
+  const [actorTargetPerms, targetUserPerms] = await Promise.all([
+    computeMemberChannelPermissions(targetChannelId, callerId),
+    computeMemberChannelPermissions(targetChannelId, targetUserId),
+  ]);
+  if (!hasPermission(actorTargetPerms, Permissions.CONNECT)) {
+    throw errors.missingPermissions(['CONNECT']);
+  }
+  if (
+    !hasPermission(targetUserPerms, Permissions.VIEW_CHANNEL) ||
+    !hasPermission(targetUserPerms, Permissions.CONNECT)
+  ) {
+    throw errors.badRequest('That member cannot access the destination channel');
   }
 
   // 4. Update the row. We bump the sessionId so any stale LiveKit

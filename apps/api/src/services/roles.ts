@@ -21,20 +21,36 @@ import { writeAudit } from './audit';
 import { Permissions } from '@zekktris/shared/permissions';
 
 /**
- * Permission bits a self-assignable role must NEVER carry. selfAssignRole
- * grants a flagged role to any member with NO permission or hierarchy check,
- * so a privileged self-assignable role is a one-flag path from member to admin.
+ * Permission bits a self-assignable role MAY carry. selfAssignRole grants a
+ * flagged role to any member with NO permission or hierarchy check, so this
+ * is an ALLOWLIST of harmless participation-level bits (channel access,
+ * messaging, voice participation) rather than a denylist of known-dangerous
+ * ones — a denylist silently opens a hole every time a new permission bit is
+ * added to the enum (which is exactly how MANAGE_THREADS, MOVE_MEMBERS,
+ * MENTION_EVERYONE, VIEW_AUDIT_LOG et al. became self-grantable). Anything
+ * not listed here — every MANAGE_*, kick/ban/timeout, mute/deafen/move,
+ * audit-log access, @everyone mentions, priority speaker — is refused.
  */
-const PRIVILEGED_ROLE_PERMS =
-  Permissions.ADMINISTRATOR |
-  Permissions.MANAGE_ROLES |
-  Permissions.MANAGE_GUILD |
-  Permissions.MANAGE_CHANNELS |
-  Permissions.KICK_MEMBERS |
-  Permissions.BAN_MEMBERS |
-  Permissions.MODERATE_MEMBERS |
-  Permissions.MANAGE_WEBHOOKS |
-  Permissions.MANAGE_MESSAGES;
+const SELF_ASSIGNABLE_ALLOWED_PERMS =
+  Permissions.VIEW_CHANNEL |
+  Permissions.READ_MESSAGE_HISTORY |
+  Permissions.SEND_MESSAGES |
+  Permissions.ATTACH_FILES |
+  Permissions.EMBED_LINKS |
+  Permissions.ADD_REACTIONS |
+  Permissions.USE_EXTERNAL_EMOJIS |
+  Permissions.CREATE_INVITE |
+  Permissions.CHANGE_NICKNAME |
+  Permissions.CONNECT |
+  Permissions.SPEAK |
+  Permissions.USE_VAD |
+  Permissions.STREAM |
+  Permissions.USE_EMBEDDED_ACTIVITIES;
+
+/** True when `perms` carries any bit a self-assignable role must not have. */
+function carriesPrivilegedBits(perms: bigint): boolean {
+  return (perms & ~SELF_ASSIGNABLE_ALLOWED_PERMS) !== 0n;
+}
 
 export interface CreateRoleInput {
   guildId: bigint;
@@ -154,14 +170,16 @@ export async function updateRole(input: UpdateRoleInput) {
   }
   // A self-assignable role can be self-granted by any member with no
   // permission/hierarchy check, so it must not carry privileged bits.
-  // Check the EFFECTIVE permissions (the new value if this call also sets
-  // them, else the current ones) so you can't flip selfAssignable and raise
-  // permissions in one request.
-  if (input.selfAssignable === true) {
+  // Check the EFFECTIVE flag and EFFECTIVE permissions (the new values if
+  // this call sets them, else the current ones) so you can't flip
+  // selfAssignable and raise permissions in one request — and equally
+  // can't raise permissions on a role that is ALREADY self-assignable.
+  const willBeSelfAssignable = input.selfAssignable ?? role.selfAssignable;
+  if (willBeSelfAssignable) {
     const effectivePerms = input.permissions ?? role.permissions;
-    if ((effectivePerms & PRIVILEGED_ROLE_PERMS) !== 0n) {
+    if (carriesPrivilegedBits(effectivePerms)) {
       throw errors.badRequest(
-        'Roles carrying privileged permissions cannot be made self-assignable',
+        'Self-assignable roles may only carry participation permissions (no management or moderation powers)',
       );
     }
   }
@@ -372,7 +390,7 @@ export async function selfAssignRole(args: {
   // Defense in depth: refuse to self-grant a role that carries privileged
   // bits even if it was somehow flagged self-assignable (e.g. permissions
   // raised after the flag, or a row from before the updateRole guard).
-  if ((role.permissions & PRIVILEGED_ROLE_PERMS) !== 0n) {
+  if (carriesPrivilegedBits(role.permissions)) {
     throw errors.forbidden('This role can no longer be self-assigned');
   }
   const { addMemberRole } = await import('./members');

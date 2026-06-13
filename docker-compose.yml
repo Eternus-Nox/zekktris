@@ -317,11 +317,15 @@ services:
   # To use LiveKit Cloud instead, set LIVEKIT_WS_URL (+ key/secret) in .env;
   # this container then goes unused (you can stop it).
   livekit:
-    # Pinned to a v1.9 line so it speaks the same signaling protocol (16) as
-    # the bundled livekit-client — older servers (e.g. v1.7) 404 the client's
-    # /rtc/v1 probe and force a fallback round-trip on every connect.
-    # Override with LIVEKIT_IMAGE_TAG to pin a specific patch.
-    image: livekit/livekit-server:${LIVEKIT_IMAGE_TAG:-v1.9}
+    # Pinned to an exact v1.9.x patch so it speaks the same signaling
+    # protocol (16) as the bundled livekit-client — older servers (e.g.
+    # v1.7) 404 the client's /rtc/v1 probe and force a fallback round-trip
+    # on every connect. The pin is a SPECIFIC patch (not the floating v1.9
+    # minor tag) because LiveKit re-points minor tags at new patches, and a
+    # silent SFU patch bump on rebuild/pull has shipped behavior changes
+    # (env parsing, node-ip handling) that can break working voice with no
+    # config change. Bump deliberately via LIVEKIT_IMAGE_TAG or here.
+    image: livekit/livekit-server:${LIVEKIT_IMAGE_TAG:-v1.9.12}
     container_name: zekktris-livekit
     restart: unless-stopped
     command: ["--config", "/etc/livekit.yaml"]
@@ -354,10 +358,19 @@ services:
       # candidate is provided automatically by host networking above, so
       # same-LAN clients work regardless of this. Set false + LIVEKIT_HOST to
       # pin a single advertised IP instead.
-      LIVEKIT_RTC__USE_EXTERNAL_IP: ${LIVEKIT_USE_EXTERNAL_IP:-true}
+      #
+      # Env naming: livekit-server maps a nested YAML key to an env var by
+      # replacing each dot with a SINGLE underscore (rtc.use_external_ip →
+      # LIVEKIT_RTC_USE_EXTERNAL_IP; see pkg/config/config.go). These were
+      # previously spelled with DOUBLE underscores (LIVEKIT_RTC__…), which
+      # the server silently ignores — so use_external_ip stayed at its
+      # `false` default, the SFU advertised only private/LAN ICE candidates
+      # on NAT'd hosts, and every off-LAN client hit "negotiation timed
+      # out". Keep these single-underscore.
+      LIVEKIT_RTC_USE_EXTERNAL_IP: ${LIVEKIT_USE_EXTERNAL_IP:-true}
       # Explicit advertised media IP. Only honored when USE_EXTERNAL_IP is
       # false (livekit#4049). Leave empty for STUN + host-interface detection.
-      LIVEKIT_RTC__NODE_IP: ${LIVEKIT_HOST:-}
+      LIVEKIT_RTC_NODE_IP: ${LIVEKIT_HOST:-}
     volumes:
       - ./ops/livekit.yaml:/etc/livekit.yaml:ro
 

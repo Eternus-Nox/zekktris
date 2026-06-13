@@ -183,6 +183,40 @@ export function attachGateway(httpServer: HttpServer): void {
       }
 
       try {
+        // Stage roster cleanup. Stage joins create stage_participants
+        // rows WITHOUT a voice_states row, so the leaveVoice above never
+        // touches them — without this, a closed tab / dead connection
+        // leaves a ghost participant (or ghost SPEAKER) on the roster
+        // forever, and their own re-join short-circuits on the stale row.
+        // Runs after the same 45s grace as voice eviction.
+        const removedStage = await db
+          .delete(schema.stageParticipants)
+          .where(eq(schema.stageParticipants.userId, userId))
+          .returning({ channelId: schema.stageParticipants.channelId });
+        for (const r of removedStage) {
+          const [ch] = await db
+            .select({ guildId: schema.channels.guildId })
+            .from(schema.channels)
+            .where(eq(schema.channels.id, r.channelId))
+            .limit(1);
+          if (!ch?.guildId) continue;
+          const stageSvc = await import('../services/stage');
+          const { toStageParticipant } = await import('../lib/dto');
+          const remaining = await stageSvc.listParticipants(r.channelId);
+          dispatch.stageParticipantsUpdate({
+            guildId: ch.guildId,
+            channelId: r.channelId,
+            participants: remaining.map(toStageParticipant),
+          });
+        }
+      } catch (err) {
+        log.warn('gateway: stage cleanup on disconnect failed', {
+          userId: userId.toString(),
+          err: (err as Error).message,
+        });
+      }
+
+      try {
         // Read the user's current status. If they're 'invisible' we
         // leave it alone — their wire-presence is already 'offline' to
         // others, and bumping the column would lose their privacy

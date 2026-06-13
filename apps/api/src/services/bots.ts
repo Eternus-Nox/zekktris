@@ -203,7 +203,23 @@ export async function resolveBotByToken(
       ),
     )
     .limit(1);
-  return bot ?? null;
+  if (!bot) return null;
+  // A banned or deleted bot must not authenticate — and neither may a
+  // bot whose OWNER is missing, banned, or soft-deleted. Banning a bad
+  // actor has to cut off their bot tokens too, or the ban leaves them a
+  // fully-functional API backchannel (the bot keeps reading messages and
+  // exercising its role grants). Mirrors the owner-status guard on
+  // webhook execution in services/webhooks.ts. All failure modes return
+  // null so a revoked credential is indistinguishable from a wrong one.
+  if (bot.bannedAt !== null || bot.deletedAt !== null) return null;
+  if (!bot.botOwnerId) return null;
+  const [owner] = await db
+    .select({ bannedAt: schema.users.bannedAt, deletedAt: schema.users.deletedAt })
+    .from(schema.users)
+    .where(eq(schema.users.id, bot.botOwnerId))
+    .limit(1);
+  if (!owner || owner.bannedAt !== null || owner.deletedAt !== null) return null;
+  return bot;
 }
 
 

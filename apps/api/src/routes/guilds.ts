@@ -16,6 +16,7 @@ import { eq, and, inArray, isNull, sql } from 'drizzle-orm';
 import { errors, AppError } from '../errors';
 import { requireAuth, requireUserId } from '../auth/middleware';
 import { validate } from '../lib/validate';
+import { RateLimiter } from '../lib/rateLimit';
 import {
   snowflakeSchema,
   guildNameSchema,
@@ -1780,6 +1781,13 @@ const createReportSchema = z.object({
   details: z.string().max(1000).optional(),
 });
 
+// Per-reporter limit. createReport's dedup only stops repeat reports
+// against the SAME target — without this, a member can iterate a
+// channel's history and file one report per message, flooding the
+// moderation queue and the open-count badge. Same shape and rationale
+// as friendRequestRl in routes/users.ts.
+const reportRl = new RateLimiter(10, 10 * 60_000, 'report-create');
+
 guildsRouter.post(
   '/:guildId/reports',
   validate('param', z.object({ guildId: snowflakeSchema })),
@@ -1788,6 +1796,8 @@ guildsRouter.post(
     const userId = requireUserId(c);
     const guildId = BigInt(c.req.valid('param').guildId);
     await ensureMember(guildId, userId);
+    const rl = await reportRl.consume(userId.toString());
+    if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
     const body = c.req.valid('json');
 
     let targetUserId: bigint | null = null;

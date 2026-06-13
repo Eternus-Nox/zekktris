@@ -100,14 +100,21 @@ stageRouter.post(
     const userId = requireUserId(c);
     const channelId = BigInt(c.req.valid('param').channelId);
     const channel = await requireStageChannel(channelId);
-    const { participant } = await stage.joinStage({ channelId, userId });
+    const { participant, publishSources } = await stage.joinStage({
+      channelId,
+      userId,
+      guildId: channel.guildId!,
+    });
 
-    // Mint LiveKit token with publish gated on speaker status.
+    // Mint LiveKit token with publish gated on speaker status, and
+    // sources gated on parental controls (audio-only children must not
+    // get camera/screen-share grants just because they were promoted).
     const token = await voice.mintLivekitToken(
       userId,
       channelId,
       channel.guildId!,
       participant.isSpeaker,
+      publishSources,
     );
 
     await broadcastParticipants(channel);

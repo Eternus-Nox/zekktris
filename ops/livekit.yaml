@@ -3,8 +3,9 @@
 # Single-node, no Redis (clustering not needed for self-hosted scale).
 # Single UDP port for media so we don't expose a wide range. The
 # `node_ip` (what LiveKit advertises to browsers in SDP) comes from
-# the LIVEKIT_RTC__NODE_IP env var set in docker-compose, which itself
-# is sourced from LIVEKIT_HOST in .env.
+# the LIVEKIT_RTC_NODE_IP env var set in docker-compose (single
+# underscores — livekit maps rtc.node_ip → LIVEKIT_RTC_NODE_IP),
+# which itself is sourced from LIVEKIT_HOST in .env.
 
 # WebSocket signaling port. Browsers connect here first.
 port: 7880

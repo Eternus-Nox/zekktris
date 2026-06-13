@@ -559,3 +559,94 @@ backward-move "bypass" (server contract holds) · `MESSAGE_PATCH` reaction resur
 (requires an impossible local state) · `MESSAGE_CREATE` `mentionedUserIds` deref crash
 (unreachable input) · non-constant-time verifier compare (not security-relevant — the
 verifier is server-public).
+
+---
+
+# 2026-06-12 session — deep voice/permissions/native/UX audit (104-agent fan-out, adversarially verified)
+
+Ran the never-completed audit lanes (permissions-escalation, native-fresh) plus full
+voice/LiveKit (server/web/native/ops), a fresh-commit review since 123ca60, and a
+first-run UX walk. 41 findings confirmed (2 independent verifiers each), 1 refuted.
+
+## Fixed THIS session (typecheck + 274 API tests + 25 web tests green)
+- **stage participation gates (HIGH security):** `joinStage` now enforces the same
+  parental-controls (`allowVoice`/source restriction), guild-timeout, and onboarding-pending
+  gates as `joinVoice`; stage token mint now passes `publishSources` so an audio-only child
+  can't get camera/screen grants on a stage. (`services/stage.ts`, `routes/stage.ts`)
+- **SFU token TTL 1h→5m (HIGH security):** kicked/banned users could rejoin the deterministic
+  room with their cached token for up to an hour (removeParticipant only disconnects, can't
+  revoke). 5m still leaves slack for the join handshake; live calls refresh tokens over
+  signaling so they're unaffected. (`services/voice.ts`)
+- **bot-token ban bypass (HIGH security):** `resolveBotByToken` now returns null if the bot or
+  its owner is banned/deleted — mirrors the webhook-execute owner guard. (`services/bots.ts`)
+- **self-assignable role denylist → allowlist (MED security):** replaced the incomplete
+  PRIVILEGED_ROLE_PERMS denylist (missed MANAGE_THREADS, MOVE/MUTE/DEAFEN_MEMBERS,
+  VIEW_AUDIT_LOG, MANAGE_NICKNAMES/EMOJIS/INVITES/EVENTS, MENTION_EVERYONE) with a
+  participation-only allowlist; also closed the raise-perms-on-already-self-assignable path.
+  (`services/roles.ts`)
+- **report flood (MED):** added per-user `reportRl` (10/10min). (`routes/guilds.ts`)
+- **duplicate system_call (LOW):** concurrent last-leaver race now gated by a conditional
+  `UPDATE ... WHERE startedAt IS NOT NULL RETURNING` — exactly one leaver writes the record.
+  (`services/voice.ts`)
+- **moveVoiceMember destination gate (LOW):** requires actor CONNECT + target VIEW+CONNECT on
+  the destination so a move can't strand a ghost in an inaccessible channel. (`services/voice.ts`)
+- **ghost stage rows on disconnect (MED):** `runDisconnectCleanup` now deletes the user's
+  stage_participants rows and broadcasts STAGE_PARTICIPANTS_UPDATE (stage joins create no
+  voice_states row, so the existing voice cleanup never touched them). (`gateway/server.ts`)
+- **LiveKit NAT env typo (HIGH ops):** `LIVEKIT_RTC__USE_EXTERNAL_IP`/`__NODE_IP` (double
+  underscore) are ignored by livekit-server (single-underscore only) → external-IP STUN
+  discovery silently never enabled → NAT'd hosts advertise only private candidates → all
+  remote media fails. Renamed to single underscore. (`docker-compose.yml`, `ops/livekit.yaml`)
+- **diagnostic false-confidence (MED ops):** `ok` no longer implies media works; added an
+  always-present `media_path` warn step (UDP 7882 / TCP 7881 untestable server-side); web
+  badge "Voice OK"→"Server checks OK". (`services/livekitDiagnostic.ts`, `web/AdminPanel.tsx`)
+- **LiveKit image pin (LOW ops):** floating `v1.9`→exact `v1.9.12`. (`docker-compose.yml`)
+- **web voice client (HIGH/MED bugs):** channel-switch now full-teardown (was leaking the old
+  room's pollers → blanked new call's video tiles); added RoomEvent.Disconnected→teardown +
+  Reconnecting/Reconnected pub-sub + a "Reconnecting…" banner; manual-gain mic now stopped on
+  leave; listen-only joins (stage audience/AFK) skip the mic + claim `room` before publish so
+  they don't 403-leak; unplugged saved mic falls back to default; PTT can't transmit while
+  deafened; setAudioMode vad branch won't unmute while deafened; camera-denial now toasts;
+  High preset now actually stereo (channelCount:2 + dtx off); moderator-move reconnect fixed
+  (every join now threads channelId; CallKit decoupled to DM-only via `isDmCall`).
+  (`web/lib/voice.ts`, `manualGain.ts`, `voiceQuality.ts`, `VoiceView.tsx`, + 6 call sites)
+- **UX:** message view opens already at the bottom (visibility-gated until first snap) instead
+  of rendering at top and jumping down. (`web/MessageView.tsx`)
+- **Native iOS (HIGH/MED — verified by Xcode build + iOS unit tests):** native login now has a
+  2FA step (LoginBody.code + APIClient.login(code:) + APIError.requires2FA flag + Session.needs2FA
+  + a revealed code field in LoginView) — TOTP accounts could not sign in at all before
+  (`AuthViews.swift`/`Session.swift`/`APIClient.swift`/`Models.swift`); gateway now attempts ONE
+  token refresh + reconnect on an IDENTIFY-rejected frame before latching closed, re-armed on
+  READY (`Gateway.swift`, `identifyRefreshAttempted`) — fixes permanent realtime death after a
+  >15min background; logout snapshots the old token, nils api.token immediately, revokes with a
+  per-call `bearerOverride` (which also disables refresh-retry), and guards the cookie wipe behind
+  `api.token == nil` — fixes a fast re-login getting its new session revoked
+  (`Session.swift`/`APIClient.swift`); bio editor cap 500→200 to match BIO_MAX_LENGTH (`MainView.swift`).
+
+## Still OPEN (prioritized; not yet fixed)
+- **Native iOS — runtime-sensitive, need a device/simulator call to verify:** CallKit holes —
+  multi-device answer doesn't dismiss ring + decline kills live call, ghost ring after missed
+  hangup, unconditional VoIP ring, E2EE-answer dead-ends (`AppStore.swift`/`Push.swift`, HIGH);
+  voice-message playback clobbers the live call's AVAudioSession (`VoiceMessage.swift`, HIGH);
+  mention badges only repair on reconnect; notification tap dead-ends for un-loaded guilds;
+  back-nav leaves false read receipts (all MED/LOW).
+- **`Config.swift` hardcodes `zekktris.com`** — the canonical native client cannot reach a
+  self-hosted instance without recompiling. Recommend the scan-to-connect QR flow (`lib/qr.ts`
+  exists). Major self-hosting gap. (HIGH, product)
+- **Web/UX (newcomer-facing):** invite-only registration has no signup-code field on web
+  (`AuthScreens.tsx`, HIGH); error toasts are 3s/tiny so multi-sentence help can't be read
+  (`Toasts.tsx`, HIGH); failed voice connect leaves a silent ghost participant — REST join not
+  rolled back (`ChannelList.tsx`, HIGH); locked-E2EE DM offers no unlock affordance; email-verify
+  has no escape for a typo'd address; raw transport errors leak to auth screens (MED/LOW).
+- **Contested:** inline SFU admin calls have no timeout (hang when LiveKit slow) — low-med, add
+  a timeout wrapper; `livekit` service has no healthcheck — low (fix risky under host-networking).
+
+## Refuted
+Web call forcing camera to H.264 with "no backup codec" — VP8 publishDefault + per-track H.264
+override is correct; subscribers negotiate.
+
+## Feature recommendations (full ranked list in the Obsidian vault: Documents/zekktris/Audit 2026-06-12.md)
+Top voice: (1) studio-grade noise suppression everywhere [M], (2) connection-quality HUD [S],
+(3) in-call reactions + hand-raise [M]. Top freshness: server template gallery [S], render the
+achievements shelf [S], Kid Mode preset [M]. Top self-host: mobile-config QR [M] (fixes the
+hardcoded-server gap), one-command update + auto-backup/rollback [M], unraid CA template [S].

@@ -31,12 +31,13 @@ import { db, schema } from '../db';
 import { errors } from '../errors';
 import { env } from '../env';
 import { log } from '../log';
-import { RoomServiceClient } from 'livekit-server-sdk';
+import { RoomServiceClient, TrackSource } from 'livekit-server-sdk';
 import {
   Permissions,
   computeMemberChannelPermissions,
   hasPermission,
 } from './permissions';
+import * as supervision from './supervision';
 
 // ── Reads ────────────────────────────────────────────────────────────────
 
@@ -80,14 +81,21 @@ export async function getParticipant(channelId: bigint, userId: bigint) {
 export async function joinStage(args: {
   channelId: bigint;
   userId: bigint;
-}): Promise<{ participant: schema.StageParticipant; isFirstJoiner: boolean }> {
-  const existing = await getParticipant(args.channelId, args.userId);
-  if (existing) return { participant: existing, isFirstJoiner: false };
-
+  guildId: bigint;
+}): Promise<{
+  participant: schema.StageParticipant;
+  isFirstJoiner: boolean;
+  /** Parental-controls source restriction for the LiveKit token (see
+      joinVoice). Undefined = all sources allowed. */
+  publishSources?: TrackSource[];
+}> {
   // Check membership and permissions on the channel. Audience-side
   // join needs VIEW_CHANNEL + CONNECT (we reuse the voice CONNECT
   // permission for stage too); moderators need MANAGE_CHANNELS for
-  // the host-as-speaker bootstrap.
+  // the host-as-speaker bootstrap. All checks run BEFORE the
+  // idempotent early-return because the route re-mints a LiveKit
+  // token on every join call (that's the promotion-refresh path) —
+  // the gates must hold for re-joins too.
   const perms = await computeMemberChannelPermissions(args.channelId, args.userId);
   if (!hasPermission(perms, Permissions.VIEW_CHANNEL)) {
     throw errors.notFound('Channel');
@@ -96,6 +104,36 @@ export async function joinStage(args: {
     throw errors.missingPermissions(['CONNECT']);
   }
   const isMod = hasPermission(perms, Permissions.MANAGE_CHANNELS);
+
+  // Participation gates — a stage join is voice participation, so the
+  // same gates joinVoice enforces for guild voice apply here. Without
+  // them the stage endpoint is a side door around onboarding, timeouts,
+  // and parental controls.
+  const { getMemberState, getActiveTimeout } = await import('./members');
+  const state = await getMemberState(args.guildId, args.userId);
+  if (state === 'pending') throw errors.pendingAcknowledgment();
+  const until = await getActiveTimeout(args.guildId, args.userId);
+  if (until !== null) throw errors.timedOut(until);
+
+  // Parental controls: barred from voice entirely, or limited sources
+  // (audio-only / no screen share) — mirrors joinVoice exactly.
+  let publishSources: TrackSource[] | undefined;
+  const childRestr = await supervision.getEnforcedRestrictions(args.userId);
+  if (childRestr) {
+    if (!childRestr.allowVoice) {
+      throw errors.forbidden('Voice calls are restricted by your parent');
+    }
+    if (!childRestr.allowVideo || !childRestr.allowStream) {
+      publishSources = [TrackSource.MICROPHONE];
+      if (childRestr.allowVideo) publishSources.push(TrackSource.CAMERA);
+      if (childRestr.allowStream) {
+        publishSources.push(TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO);
+      }
+    }
+  }
+
+  const existing = await getParticipant(args.channelId, args.userId);
+  if (existing) return { participant: existing, isFirstJoiner: false, publishSources };
 
   // Empty-room check: the first user with MANAGE_CHANNELS becomes
   // the speaker. This avoids the "host stuck as audience" deadlock
@@ -114,7 +152,7 @@ export async function joinStage(args: {
     })
     .returning();
   if (!row) throw errors.internal('Stage participant insert returned no row');
-  return { participant: row, isFirstJoiner };
+  return { participant: row, isFirstJoiner, publishSources };
 }
 
 // ── Leave ────────────────────────────────────────────────────────────────

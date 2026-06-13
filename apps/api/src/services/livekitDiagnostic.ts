@@ -37,7 +37,15 @@ export interface LivekitCheck {
 export interface LivekitDiagnostic {
   /** Whether LiveKit credentials are configured at all. */
   configured: boolean;
-  /** True iff every executed check passed (voice should work end-to-end). */
+  /**
+   * True iff every check that CAN run server-side passed (config, token
+   * minting, api→SFU control plane). Deliberately NOT "voice works
+   * end-to-end": browser↔SFU media (UDP 7882 / TCP 7881 + a routable
+   * advertised IP) is untestable from the server and is the most common
+   * real-world failure — the always-present `media_path` warn step keeps
+   * that visible so a green control plane can't masquerade as working
+   * audio.
+   */
   ok: boolean;
   /** Browser-facing signaling URL (clients connect here). Config, not secret. */
   wsUrl: string | null;
@@ -155,6 +163,22 @@ export async function diagnoseLivekit(): Promise<LivekitDiagnostic> {
   }
   checks.push({ id: 'server', label: 'Reach LiveKit signaling + auth', status: serverStatus, detail: serverDetail });
 
-  const ok = checks.every((c) => c.status === 'pass' || c.status === 'skip');
+  // 5. Media reachability — always-present and always 'warn', because the
+  //    server CANNOT test it: WebRTC media flows browser↔SFU directly and
+  //    its reachability depends on each client's network. This is the #1
+  //    real-world voice failure ("connects but no audio" / endless
+  //    reconnect), so the diagnostic must surface it explicitly instead of
+  //    letting four green control-plane checks imply calls will work.
+  checks.push({
+    id: 'media_path',
+    label: 'Media ports (cannot be tested server-side)',
+    status: 'warn',
+    detail:
+      'Verify manually: UDP 7882 (media) and TCP 7881 (fallback) must be reachable from clients — open them in the host firewall and, behind NAT, forward both on the router. If remote users see "negotiation timed out" or connect with no audio, the SFU is likely advertising an unroutable/private IP: either let it STUN-discover the public IP (LIVEKIT_USE_EXTERNAL_IP=true, the default) or pin one via LIVEKIT_HOST with LIVEKIT_USE_EXTERNAL_IP=false. A quick end-to-end test is joining a voice channel from a phone on cellular (off the LAN).',
+  });
+
+  // 'warn' steps don't fail the diagnostic — they flag what couldn't be
+  // verified. Only a hard 'fail' (bad config/creds/unreachable SFU) does.
+  const ok = checks.every((c) => c.status !== 'fail');
   return { configured: true, ok, wsUrl, httpUrl, checks, generatedAt: now() };
 }
