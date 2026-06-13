@@ -165,14 +165,20 @@ final class AppStore: ObservableObject {
             // call's lifetime; CallManager gates the LiveKit audio engine off
             // until CallKit's didActivate fires (see CallManager). Hangup
             // still flows through onEnd → leaveCurrentVoice → callEnded.
+            // Go straight through openVoice — the SAME path the in-app Answer
+            // button uses — so a CallKit answer behaves identically to an
+            // in-app answer (which works for E2EE calls). A previous guard
+            // ended the CallKit call when the E2EE key wasn't immediately
+            // available; that made E2EE calls UN-answerable from the lock
+            // screen (the app opened but nothing connected). openVoice reads
+            // the key (keychain, AfterFirstUnlock — readable here) at connect
+            // time, exactly like the in-app path.
             if let call = self.incomingCall, call.channelId == channelId {
                 self.incomingCall = nil
-                guard !self.endCallKitIfLockedE2EE(call.channel) else { return }
                 self.openVoice(call.channel)
             } else if let dm = self.dms.first(where: { $0.id == channelId }) {
                 // Answered from a notification before the gateway ring
                 // arrived — join directly.
-                guard !self.endCallKitIfLockedE2EE(dm) else { return }
                 self.openVoice(dm)
             } else {
                 // Cold start: a VoIP push relaunched the app and the user
@@ -185,7 +191,6 @@ final class AppStore: ObservableObject {
                     guard let self else { return }
                     await self.loadDMs()
                     if let dm = self.dms.first(where: { $0.id == channelId }) {
-                        guard !self.endCallKitIfLockedE2EE(dm) else { return }
                         self.openVoice(dm)
                     }
                 }
@@ -1047,19 +1052,6 @@ final class AppStore: ObservableObject {
         } else if voiceChannelId != channel.id {
             Task { await joinVoice(channel) }
         }
-    }
-
-    /// CallKit answered a call we can't actually join because the E2EE key
-    /// isn't on this device. Don't strand an active CXCall with no audio
-    /// (openVoice would just silently early-return) — end it cleanly
-    /// (callEnded → forget restores the audio engine gate) and tell the user
-    /// why. Returns true if it handled (blocked) the answer.
-    private func endCallKitIfLockedE2EE(_ channel: Channel) -> Bool {
-        guard channel.isE2EE, e2eeKey(for: channel) == nil else { return false }
-        CallManager.shared.callEnded(channelId: channel.id, remoteEnded: false)
-        e2eeError = "Unlock this conversation to answer this encrypted call."
-        errorText = "That call is end-to-end encrypted. Unlock the conversation, then call back."
-        return true
     }
 
     func joinVoice(_ channel: Channel) async {
