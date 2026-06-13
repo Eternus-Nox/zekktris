@@ -81,6 +81,22 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Human-readable fallback for an HTTP status when the server didn't supply a
+ * message (gateway/proxy errors, unexpected bodies). Keeps raw codes like
+ * "Non-JSON response (502)" / "HTTP 500" off user-facing screens.
+ */
+function friendlyHttpMessage(status: number): string {
+  if (status === 429) return "You're doing that a bit too fast — wait a moment and try again.";
+  if (status === 502 || status === 503 || status === 504) {
+    return 'The server is unavailable right now. Please try again in a moment.';
+  }
+  if (status >= 500) return 'Something went wrong on the server. Please try again.';
+  if (status === 413) return 'That was too large to upload.';
+  if (status === 408) return 'The request timed out. Please try again.';
+  return `Request failed (${status}).`;
+}
+
 export class RestClient {
   constructor(private opts: RestClientOptions) {}
 
@@ -138,18 +154,26 @@ export class RestClient {
     }
 
     const fetchImpl = this.opts.fetch ?? fetch;
-    const res = await fetchImpl(`${this.opts.baseUrl}${path}`, {
-      method,
-      headers,
-      // Cookies are needed for the refresh endpoint; harmless elsewhere.
-      credentials: 'include',
-      body:
-        body === undefined
-          ? undefined
-          : body instanceof FormData
-            ? body
-            : JSON.stringify(body),
-    });
+    let res: Response;
+    try {
+      res = await fetchImpl(`${this.opts.baseUrl}${path}`, {
+        method,
+        headers,
+        // Cookies are needed for the refresh endpoint; harmless elsewhere.
+        credentials: 'include',
+        body:
+          body === undefined
+            ? undefined
+            : body instanceof FormData
+              ? body
+              : JSON.stringify(body),
+      });
+    } catch {
+      // fetch() rejects on network-level failure (server unreachable, DNS,
+      // offline, CORS). The raw "Failed to fetch" / "Load failed" is opaque —
+      // surface a plain, actionable message instead (status 0 = no response).
+      throw new ApiError(0, 'NETWORK', "Can't reach the server. Check your connection and try again.");
+    }
 
     // 204 No Content / empty body — return undefined as T.
     if (res.status === 204) return undefined as unknown as T;
@@ -159,7 +183,10 @@ export class RestClient {
     try {
       parsed = text ? JSON.parse(text) : undefined;
     } catch {
-      throw new ApiError(res.status, 'BAD_RESPONSE', `Non-JSON response (${res.status})`);
+      // Non-JSON body almost always means a gateway/proxy error page (502/503/
+      // 504) or the API being down — show a human message, not "Non-JSON
+      // response (502)".
+      throw new ApiError(res.status, 'BAD_RESPONSE', friendlyHttpMessage(res.status));
     }
 
     if (!res.ok) {
@@ -185,11 +212,19 @@ export class RestClient {
         this.opts.onRefreshFailed?.();
       }
       const err = (parsed as { error?: { code?: string; message?: string; details?: Record<string, unknown> } })?.error;
+      // When the body has no standard { error } envelope (e.g. login's
+      // top-level { requires2FA: true } 401), surface the whole parsed object
+      // as `details` so callers can read those flags, and fall back to a
+      // human message instead of a bare "HTTP 401".
+      const topLevelDetails =
+        !err && parsed && typeof parsed === 'object'
+          ? (parsed as Record<string, unknown>)
+          : undefined;
       throw new ApiError(
         res.status,
         err?.code ?? 'UNKNOWN',
-        err?.message ?? `HTTP ${res.status}`,
-        err?.details,
+        err?.message ?? friendlyHttpMessage(res.status),
+        err?.details ?? topLevelDetails,
       );
     }
     return parsed as T;
