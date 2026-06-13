@@ -1831,12 +1831,21 @@ final class AppStore: ObservableObject {
         do { channelOverrides = try await api.listChannelOverrides(channelId: channelId) }
         catch { channelOverrides = [] }
     }
-    func saveChannelOverride(channelId: String, targetId: String, allow: UInt64, deny: UInt64) async -> String? {
+    func saveChannelOverride(channelId: String, targetId: String, type: String = "role", allow: UInt64, deny: UInt64) async -> String? {
         do {
             try await api.putChannelOverride(
-                channelId: channelId, targetId: targetId, type: "role",
+                channelId: channelId, targetId: targetId, type: type,
                 allow: Permissions.serialize(allow), deny: Permissions.serialize(deny)
             )
+            await loadChannelOverrides(channelId)
+            return nil
+        } catch { return (error as? APIError)?.message ?? error.localizedDescription }
+    }
+
+    /// Remove a channel/category permission override (role or member).
+    func deleteChannelOverride(channelId: String, targetId: String, type: String) async -> String? {
+        do {
+            try await api.deleteChannelOverride(channelId: channelId, targetId: targetId, type: type)
             await loadChannelOverrides(channelId)
             return nil
         } catch { return (error as? APIError)?.message ?? error.localizedDescription }

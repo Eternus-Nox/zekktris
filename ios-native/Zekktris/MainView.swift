@@ -5348,37 +5348,67 @@ struct ChannelPermissionsView: View {
     @Environment(\.dismiss) private var dismiss
     let channel: Channel
 
-    @State private var selectedRoleId: String?
+    // The override currently being edited (role or member). nil = none open.
+    @State private var selectedId: String?
+    @State private var selectedType: String = "role"
     @State private var allowBits: UInt64 = 0
     @State private var denyBits: UInt64 = 0
     @State private var saving = false
     @State private var error: String?
 
     private var roles: [Role] { store.roles.sorted { $0.position > $1.position } }
+    private var overrides: [PermissionOverride] { store.channelOverrides }
+    /// Roles that don't already have an override on this channel (add menu).
+    private var addableRoles: [Role] {
+        roles.filter { r in !overrides.contains { $0.targetType == "role" && $0.targetId == r.id } }
+    }
+    private var thisLabel: String {
+        channel.isCategory ? "this category" : "#\(channel.name ?? "this channel")"
+    }
+
+    private func overrideName(_ ov: PermissionOverride) -> String {
+        if ov.targetType == "role" {
+            return roles.first(where: { $0.id == ov.targetId })?.name ?? "(deleted role)"
+        }
+        return store.memberName(ov.targetId) ?? "User \(ov.targetId.suffix(4))"
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("ROLE").font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                    // ── Existing overrides (the roles/members added here) ──
+                    Text("OVERRIDES").font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                    if overrides.isEmpty {
+                        Text("No overrides yet. Add a role below to allow or deny its permissions for \(thisLabel). Without an override, a role uses its server-wide permissions.")
+                            .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(overrides) { ov in overrideRow(ov) }
+                        }
+                        .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+
+                    // ── Add a role override ──
+                    if !addableRoles.isEmpty {
                         Menu {
-                            ForEach(roles) { r in Button(r.name) { selectRole(r) } }
+                            ForEach(addableRoles) { r in Button(r.name) { selectNew(r.id) } }
                         } label: {
-                            HStack {
-                                Text(roles.first(where: { $0.id == selectedRoleId })?.name ?? "Select a role")
-                                    .foregroundColor(selectedRoleId == nil ? Theme.ink3 : Theme.ink1)
+                            HStack(spacing: 8) {
+                                Image(systemName: "plus.circle.fill").font(.system(size: 15)).foregroundColor(Theme.accent)
+                                Text("Add role override").font(.zkSans(14, weight: .medium)).foregroundColor(Theme.accent)
                                 Spacer()
-                                Image(systemName: "chevron.up.chevron.down").font(.system(size: 12)).foregroundColor(Theme.ink3)
                             }
                             .padding(12).background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
                         }
                     }
 
-                    if selectedRoleId == nil {
-                        Text("Pick a role to override its permissions for #\(channel.name ?? "this channel"). Allow or deny here takes precedence over the role's server-wide permissions.")
-                            .font(.zkSans(13)).foregroundColor(Theme.ink3)
-                    } else {
+                    // ── Editor for the selected override ──
+                    if let sel = selectedId {
+                        Rectangle().fill(Theme.line).frame(height: 1).padding(.vertical, 2)
+                        Text(editorTitle(sel)).font(.zkSans(14, weight: .bold)).foregroundColor(Theme.ink1)
+                        Text("Allow or Deny takes precedence over the \(selectedType == "role" ? "role's" : "member's") server-wide permissions; leave Inherit (—) to keep them.")
+                            .font(.zkSans(12)).foregroundColor(Theme.ink3)
                         ForEach(Permissions.groupOrder, id: \.self) { group in
                             permGroup(group)
                         }
@@ -5398,8 +5428,41 @@ struct ChannelPermissionsView: View {
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Permissions").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
-            .task { await store.loadChannelOverrides(channel.id) }
+            .task {
+                await store.loadChannelOverrides(channel.id)
+                if store.roles.isEmpty, let g = store.selectedGuild { await store.loadRoles(g) }
+            }
         }
+    }
+
+    private func overrideRow(_ ov: PermissionOverride) -> some View {
+        let isSel = selectedId == ov.targetId && selectedType == ov.targetType
+        let isRole = ov.targetType == "role"
+        return HStack(spacing: 10) {
+            Text(isRole ? "ROLE" : "USER")
+                .font(.zkSans(9, weight: .bold))
+                .foregroundColor(isRole ? Theme.accent : Theme.online)
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background((isRole ? Theme.accent : Theme.online).opacity(0.15))
+                .clipShape(Capsule())
+            Text(overrideName(ov)).font(.zkSans(14)).foregroundColor(Theme.ink1).lineLimit(1)
+            Spacer(minLength: 8)
+            if isSel { Image(systemName: "pencil").font(.system(size: 11)).foregroundColor(Theme.ink3) }
+            Button { remove(ov) } label: {
+                Image(systemName: "trash").font(.system(size: 13)).foregroundColor(Theme.danger)
+                    .frame(width: 30, height: 30)
+            }.buttonStyle(.plain)
+        }
+        .padding(.leading, 12)
+        .background(isSel ? Theme.bg3 : Color.clear)
+        .contentShape(Rectangle())
+        .onTapGesture { selectExisting(ov) }
+        .overlay(Rectangle().fill(Theme.line).frame(height: 1), alignment: .bottom)
+    }
+
+    private func editorTitle(_ id: String) -> String {
+        if selectedType == "role" { return roles.first(where: { $0.id == id })?.name ?? "Role override" }
+        return store.memberName(id) ?? "Member override"
     }
 
     @ViewBuilder
@@ -5454,22 +5517,40 @@ struct ChannelPermissionsView: View {
             allowBits &= ~Permissions.mask(bit); denyBits &= ~Permissions.mask(bit)
         }
     }
-    private func selectRole(_ r: Role) {
-        selectedRoleId = r.id
-        if let ov = store.channelOverrides.first(where: { $0.targetId == r.id }) {
-            allowBits = Permissions.parse(ov.allow)
-            denyBits = Permissions.parse(ov.deny)
-        } else {
-            allowBits = 0; denyBits = 0
-        }
+    /// Open an existing override for editing (loads its allow/deny bits).
+    private func selectExisting(_ ov: PermissionOverride) {
+        selectedId = ov.targetId
+        selectedType = ov.targetType
+        allowBits = Permissions.parse(ov.allow)
+        denyBits = Permissions.parse(ov.deny)
+        error = nil
+    }
+    /// Start a fresh (all-inherit) role override.
+    private func selectNew(_ roleId: String) {
+        selectedId = roleId
+        selectedType = "role"
+        allowBits = 0
+        denyBits = 0
+        error = nil
     }
     private func save() {
-        guard let rid = selectedRoleId else { return }
+        guard let id = selectedId else { return }
         saving = true; error = nil
+        let type = selectedType
         Task {
-            let err = await store.saveChannelOverride(channelId: channel.id, targetId: rid, allow: allowBits, deny: denyBits)
+            let err = await store.saveChannelOverride(
+                channelId: channel.id, targetId: id, type: type, allow: allowBits, deny: denyBits)
             saving = false
             if let err { error = err }
+        }
+    }
+    private func remove(_ ov: PermissionOverride) {
+        Task {
+            let err = await store.deleteChannelOverride(
+                channelId: channel.id, targetId: ov.targetId, type: ov.targetType)
+            if let err { error = err; return }
+            // Close the editor if we just removed the override it was showing.
+            if selectedId == ov.targetId && selectedType == ov.targetType { selectedId = nil }
         }
     }
 }
