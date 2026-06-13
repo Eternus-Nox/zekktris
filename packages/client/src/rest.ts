@@ -254,6 +254,13 @@ export class RestClient {
     return this.request('POST', '/auth/resend-verification');
   }
 
+  /** Correct the email on a NOT-YET-VERIFIED account (escape hatch for a
+      typo at signup) and re-send the verification link. Verified accounts
+      must use the password-gated change-email flow instead. */
+  changeUnverifiedEmail(email: string): Promise<{ ok: boolean; email: string }> {
+    return this.request('POST', '/auth/change-unverified-email', { email });
+  }
+
   // ── Users ───────────────────────────────────────────────────────────────
 
   getMe(): Promise<{ user: SelfUser }> {

@@ -17,6 +17,29 @@ export function VerifyEmailGate() {
   const [sending, setSending] = useState(false);
   const [checking, setChecking] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  // "Wrong email?" inline correction — the escape hatch for a typo at signup,
+  // which would otherwise strand the account behind this gate forever.
+  const [editing, setEditing] = useState(false);
+  const [newEmail, setNewEmail] = useState('');
+  const [savingEmail, setSavingEmail] = useState(false);
+
+  async function saveEmail() {
+    const next = newEmail.trim();
+    if (!next || savingEmail) return;
+    setSavingEmail(true);
+    setNote(null);
+    try {
+      const r = await rest.changeUnverifiedEmail(next);
+      updateUser({ email: r.email });
+      setEditing(false);
+      setNewEmail('');
+      setNote(`Email updated — verification sent to ${r.email}. Check your inbox (and spam).`);
+    } catch (e) {
+      setNote(e instanceof ApiError ? e.message : 'Could not update your email. Try again shortly.');
+    } finally {
+      setSavingEmail(false);
+    }
+  }
 
   async function resend() {
     setSending(true);
@@ -60,6 +83,47 @@ export function VerifyEmailGate() {
           <span className="font-medium text-ink-1">{user?.email}</span>. Click it to
           start using Zekktris. This keeps accounts secure and tied to a real inbox.
         </p>
+
+        {/* Typo escape hatch — correct the address and re-send, so a mistyped
+            email doesn't lock the account out of the app permanently. */}
+        {editing ? (
+          <div className="mt-3 flex flex-col gap-2">
+            <input
+              type="email"
+              autoFocus
+              value={newEmail}
+              onChange={(e) => setNewEmail(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void saveEmail(); }}
+              placeholder="you@example.com"
+              className="w-full px-3 py-2 rounded-lg bg-bg-2 border border-line text-ink-1 text-sm focus:outline-none focus:border-accent"
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => void saveEmail()}
+                disabled={savingEmail || !newEmail.trim()}
+                className="flex-1 px-3 py-2 rounded-lg bg-accent text-bg-0 text-sm font-semibold hover:brightness-110 disabled:opacity-60 transition-all"
+              >
+                {savingEmail ? 'Saving…' : 'Update & resend'}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setEditing(false); setNewEmail(''); }}
+                className="px-3 py-2 rounded-lg border border-line bg-bg-2 text-ink-2 hover:text-ink-1 text-sm transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => { setEditing(true); setNewEmail(user?.email ?? ''); setNote(null); }}
+            className="mt-2 text-xs text-accent hover:underline"
+          >
+            Wrong email address?
+          </button>
+        )}
 
         {note && (
           <p className="text-xs mt-3 px-3 py-2 rounded-lg bg-bg-2 border border-line text-ink-2">

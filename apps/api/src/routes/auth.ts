@@ -926,3 +926,74 @@ authRouter.post('/resend-verification', requireAuth, async (c) => {
   }
   return c.json({ ok: true });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// POST /change-unverified-email
+// ───────────────────────────────────────────────────────────────────────────
+// Escape hatch for the verify-email gate: a user who registered with a typo'd
+// email is otherwise stuck forever (resend goes to the wrong inbox, recheck
+// never passes, Settings is behind the gate). This lets a NOT-YET-VERIFIED
+// account correct its email and re-send the link, without the full verified-
+// account email-change flow.
+//
+// Safety: gated to unverified accounts only — a stolen access token for a
+// VERIFIED account cannot repoint its email here (that's what the verified
+// email-change flow, which re-checks the password, is for). The email column
+// is UNIQUE, so you can never collide with / take over an existing account's
+// email (409 instead). The account stays unverified until the NEW address is
+// confirmed.
+const changeUnverifiedEmailByUser = new RateLimiter(5, 60 * 60_000, 'change-unverified-email');
+authRouter.post(
+  '/change-unverified-email',
+  requireAuth,
+  validate('json', z.object({ email: emailSchema })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const { email } = c.req.valid('json');
+    const r = await changeUnverifiedEmailByUser.consume(userId.toString());
+    if (!r.ok) throw errors.rateLimited(Math.ceil(r.retryAfterMs / 1000));
+
+    const [user] = await db
+      .select({ email: schema.users.email, emailVerified: schema.users.emailVerified })
+      .from(schema.users)
+      .where(eq(schema.users.id, userId))
+      .limit(1);
+    if (!user) throw errors.unauthenticated();
+    // Verified accounts must use the password-gated email-change flow.
+    if (user.emailVerified) {
+      throw errors.badRequest('This account is already verified; change your email in settings.');
+    }
+    // No-op when unchanged — still re-send so a user who just mistyped can
+    // retry the same address without an error.
+    if (user.email !== email) {
+      try {
+        await db
+          .update(schema.users)
+          .set({ email })
+          .where(
+            and(eq(schema.users.id, userId), eq(schema.users.emailVerified, false)),
+          );
+      } catch (err) {
+        if (isUniqueViolation(err)) {
+          throw errors.conflict('That email is already registered to another account.');
+        }
+        throw err;
+      }
+      // Invalidate any verification links sent to the OLD address.
+      await db
+        .delete(schema.emailVerifications)
+        .where(eq(schema.emailVerifications.userId, userId));
+    }
+
+    const { isEmailConfigured } = await import('../services/email');
+    if (isEmailConfigured()) {
+      try {
+        await issueEmailVerification(userId, email);
+      } catch (err) {
+        log.warn('change-unverified-email send failed', { err: String(err) });
+        throw errors.internal('Could not send the verification email');
+      }
+    }
+    return c.json({ ok: true, email });
+  },
+);
