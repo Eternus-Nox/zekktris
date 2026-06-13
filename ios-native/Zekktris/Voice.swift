@@ -36,6 +36,19 @@ final class VoiceManager: ObservableObject {
     /// mic is muted too, mirroring Discord). Restored on undeafen.
     @Published private(set) var isDeafened = false
     private var wasMutedBeforeDeafen = false
+    /// Speaker (loudspeaker) vs receiver (earpiece) output. Defaults ON for
+    /// calls — LiveKit otherwise routes a call to the EARPIECE
+    /// (.playAndRecordReceiver), so audio comes out the tiny top speaker and
+    /// feels like "we can't hear each other." This drives
+    /// AudioManager.shared.isSpeakerOutputPreferred (LiveKit reconfigures the
+    /// AVAudioSession accordingly). Local-only; not synced to the server.
+    @Published private(set) var isSpeakerOn = true
+
+    /// Route call audio to the loudspeaker (on) or the earpiece (off).
+    func setSpeaker(_ on: Bool) {
+        isSpeakerOn = on
+        AudioManager.shared.isSpeakerOutputPreferred = on
+    }
     /// Whether the local camera is publishing.
     @Published private(set) var isCameraOn = false
     /// Remote screen-share tracks keyed by user id (kept separate from
@@ -77,6 +90,12 @@ final class VoiceManager: ObservableObject {
         // deactivating the shared session for the call's lifetime.
         state = .connecting
         isMuted = !publishMic
+        // Route to the loudspeaker by default — set BEFORE connecting so LiveKit
+        // configures the session for speaker when the audio engine starts.
+        // Without this, calls default to the earpiece and sound silent unless
+        // the phone is held to the ear.
+        isSpeakerOn = true
+        AudioManager.shared.isSpeakerOutputPreferred = true
         let r: Room
         if let e2eeKey {
             // Encrypted 1:1 call: key LiveKit's media E2EE with the DM key.
@@ -1011,6 +1030,19 @@ struct VoiceChannelView: View {
                         .clipShape(Circle())
                 }
             }
+
+            // Speaker (loudspeaker) vs earpiece. On by default so calls are
+            // audible out loud; tap to switch to the earpiece.
+            Button { voice.setSpeaker(!voice.isSpeakerOn) } label: {
+                Image(systemName: voice.isSpeakerOn ? "speaker.wave.2.fill" : "ear.fill")
+                    .font(.system(size: 19))
+                    .foregroundColor(voice.isSpeakerOn ? Theme.accent : Theme.ink1)
+                    .frame(width: 54, height: 54)
+                    .background(Theme.bg3)
+                    .clipShape(Circle())
+            }
+            .disabled(!voice.isConnected)
+            .opacity(voice.isConnected ? 1 : 0.5)
 
             Button(action: leave) {
                 Image(systemName: "phone.down.fill")

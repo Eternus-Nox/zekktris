@@ -208,6 +208,14 @@ extension CallManager: CXProviderDelegate {
         // the mic/subscribe requests issued by the room connect). This is the
         // documented LiveKit CallKit hook (AudioManager.setEngineAvailability).
         try? AudioManager.shared.setEngineAvailability(.default)
+        // Force the output route to match the speaker preference. CallKit can
+        // activate the session on the EARPIECE; without this an answered call
+        // is near-silent until the user fiddles with routing. Agrees with
+        // LiveKit's own session config (isSpeakerOutputPreferred), so they
+        // don't fight — this just guarantees it on the CallKit-activated path.
+        if AudioManager.shared.isSpeakerOutputPreferred {
+            try? audioSession.overrideOutputAudioPort(.speaker)
+        }
         // The mic was published while the engine was gated; re-assert it now
         // that the session is live so the peer actually hears us.
         Task { @MainActor in onAudioActivated?() }
