@@ -739,7 +739,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
             <Shield size={11} className="text-ink-3 shrink-0" />
             <span>
               {decryption.noKey
-                ? 'Encrypted — enter the conversation password to read.'
+                ? 'Encrypted — enter the password (banner above the message box) to read.'
                 : "Couldn't decrypt this message — the password may have changed."}
             </span>
           </div>

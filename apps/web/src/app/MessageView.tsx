@@ -15,7 +15,8 @@
  * latency on send.)
  */
 
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
 import type { Channel, Message } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
@@ -26,7 +27,7 @@ import { MessageItem } from './MessageItem';
 import { PinPanel } from './PinPanel';
 import { SearchPanel } from './SearchPanel';
 import { useNavigate } from 'react-router-dom';
-import { Hash, AtSign, Paperclip, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronLeft, ChevronRight, CheckCircle } from '../lib/icons';
+import { Hash, AtSign, Paperclip, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronLeft, ChevronRight, CheckCircle, Lock } from '../lib/icons';
 import { SchedulePickerModal } from './SchedulePickerModal';
 // Lazy-loaded: the DM settings/privacy panel only mounts when opened.
 const DmSettingsPanel = lazy(() =>
@@ -346,6 +347,9 @@ export function MessageView({
   // hold off until we have a clearer mental model. The cog button is
   // hidden in that case via the isDM1to1 gate below.
   const [dmSettingsOpen, setDmSettingsOpen] = useState(false);
+  // Reactive E2EE key availability so the locked-DM banner appears/disappears
+  // live the moment the conversation is unlocked (mirrors MessageItem).
+  const keyVersion = useSyncExternalStore(subscribeToKeyChanges, getKeyVersion, getKeyVersion);
   // Ref to the cog button so the DmSettingsPanel's click-outside
   // listener can ignore clicks on the toggle itself. Without this,
   // clicking the cog while the panel is open fires the panel's
@@ -712,6 +716,37 @@ export function MessageView({
               )}
             </div>
           ) : (
+            <>
+            {/* Locked-E2EE banner. When a DM is encrypted but this device
+                has no key, every message shows a lock tombstone and sending
+                is blocked — without a visible way to unlock, a newcomer reads
+                it as "my messages are gone." This gives an explicit
+                [Enter password] that opens the existing unlock panel. Gate
+                matches the send-gate exactly so banner-visible ⇔ send-blocked.
+                keyVersion makes it disappear live on unlock. */}
+            {isDM1to1 &&
+              channel.e2eeEnabled === true &&
+              !dmE2eeSuppressed(supervision, channel) &&
+              !hasLocalKey(channel.id) &&
+              (void keyVersion, true) && (
+                <div
+                  role="status"
+                  className="mx-3 mb-2 px-3 py-2 rounded-md bg-amber-500/10 border border-amber-500/30 flex items-center gap-3"
+                >
+                  <Lock size={16} className="text-amber-400 shrink-0" />
+                  <div className="flex-1 min-w-0 text-sm">
+                    <span className="text-amber-200 font-medium">This conversation is encrypted.</span>
+                    <span className="text-ink-2 hidden sm:inline"> Enter the password to read and send messages.</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setDmSettingsOpen(true)}
+                    className="shrink-0 px-3 py-1.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white text-xs sm:text-sm font-medium transition-colors"
+                  >
+                    Enter password
+                  </button>
+                </div>
+              )}
             <Composer
               channel={channel}
               placeholder={composerPlaceholder}
@@ -866,6 +901,7 @@ export function MessageView({
                 toasts.push(`Scheduled for ${when}.`, 'success');
               }}
             />
+            </>
           )}
         </div>
 
