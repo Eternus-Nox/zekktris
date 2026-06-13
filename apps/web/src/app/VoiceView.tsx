@@ -330,6 +330,10 @@ export function VoiceView({
               : {}),
           });
         } catch (e) {
+          // Roll back the server-side join so a failed media connect doesn't
+          // leave us as a silent ghost in the channel (the gateway echoes the
+          // leave). Best-effort.
+          void (await restForChannel(channel.id)).leaveVoice(channel.id).catch(() => {});
           toasts.push(
             e instanceof VoiceError
               ? e.message
@@ -340,7 +344,7 @@ export function VoiceView({
           );
         }
       } else {
-        toasts.push('Joined (presence only — voice not configured)', 'info');
+        toasts.push('Voice isn’t set up on this server yet — you’ve joined the channel, but no audio will connect. Ask the server admin to enable voice.', 'info');
       }
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Failed to join voice', 'error');

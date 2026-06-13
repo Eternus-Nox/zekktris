@@ -336,6 +336,10 @@ export function RegisterPage() {
   const [pending, setPending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [searchParams] = useSearchParams();
+  // Invite/signup code. Pre-filled from an invite link's ?code= so a
+  // friend handed a link doesn't have to type it. Required only on
+  // invite-only instances (the server enforces) — otherwise ignored.
+  const [code, setCode] = useState(() => searchParams.get('code') ?? '');
   // Same ?next= treatment as LoginPage — same-origin paths only.
   const rawNext = searchParams.get('next');
   const nextPath = rawNext && rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/';
@@ -371,7 +375,13 @@ export function RegisterPage() {
     setPending(true);
     setErr(null);
     try {
-      await register({ email, username, displayName: displayName || username, password });
+      await register({
+        email,
+        username,
+        displayName: displayName || username,
+        password,
+        code: code.trim() || undefined,
+      });
       nav(nextPath, { replace: true });
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : 'Registration failed');
@@ -446,6 +456,14 @@ export function RegisterPage() {
             </span>
           )}
         </div>
+        <Field
+          label="Invite code"
+          value={code}
+          onChange={setCode}
+          required={false}
+          maxLength={64}
+          hint="Only needed if this server is invite-only. Paste the code you were given (invite links fill this in for you)."
+        />
         {err && <ErrorBanner message={err} />}
         <SubmitButton pending={pending}>Create account</SubmitButton>
         <p className="text-sm text-ink-2 text-center pt-2">

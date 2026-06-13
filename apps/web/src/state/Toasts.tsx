@@ -72,7 +72,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       if (kind === 'error' && typeof console !== 'undefined') {
         console.error('[zekktris]', message);
       }
-      const effectiveTtl = ttlMs ?? (kind === 'error' ? 3000 : 4000);
+      // Errors get AT LEAST 6s and scale with length, so the app's
+      // multi-sentence remediation copy (mic-denied walkthroughs, the
+      // no-voice-configured explanation) can actually be read before it
+      // vanishes. The old 3s default — shorter than info's 4s — meant the
+      // most important guidance flickered away unread.
+      const effectiveTtl =
+        ttlMs ?? (kind === 'error' ? Math.max(6000, message.length * 55) : 4000);
       const id = nextIdRef.current++;
       setToasts((arr) => [...arr, { id, message, kind }]);
       if (effectiveTtl > 0) {
@@ -95,35 +101,22 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         role="status"
         aria-live="polite"
       >
-        {toasts.map((t) =>
-          t.kind === 'error' ? (
-            // Subtle inline cue — a quiet muted pill with a small dot,
-            // not a prominent colored popup. Easy to ignore, brief, but
-            // present enough to hint that something didn't work.
-            <button
-              key={t.id}
-              onClick={() => dismiss(t.id)}
-              className="pointer-events-auto text-left flex items-center gap-2 px-3 py-1.5 rounded-md border border-line bg-bg-2/90 text-ink-2 text-xs shadow-md transition-all hover:opacity-90"
-            >
-              <span
-                className="w-1.5 h-1.5 rounded-full bg-red-400/90 shrink-0"
-                aria-hidden
-              />
-              <span className="min-w-0">{t.message}</span>
-            </button>
-          ) : (
-            <button
-              key={t.id}
-              onClick={() => dismiss(t.id)}
-              className={
-                'pointer-events-auto text-left px-4 py-2 rounded-md shadow-lg border text-sm transition-all hover:opacity-90 ' +
-                toneClass(t.kind)
-              }
-            >
-              {t.message}
-            </button>
-          ),
-        )}
+        {toasts.map((t) => (
+          // All kinds render as a readable card (errors in the red tone).
+          // Errors previously rendered as a tiny, easy-to-miss grey pill —
+          // which hid exactly the multi-sentence fix-it instructions a
+          // first-time user needs when a call or upload fails.
+          <button
+            key={t.id}
+            onClick={() => dismiss(t.id)}
+            className={
+              'pointer-events-auto text-left px-4 py-2.5 rounded-md shadow-lg border text-sm leading-snug whitespace-pre-line transition-all hover:opacity-90 ' +
+              toneClass(t.kind)
+            }
+          >
+            {t.message}
+          </button>
+        ))}
       </div>
     </ToastContext.Provider>
   );

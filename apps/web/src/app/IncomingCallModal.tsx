@@ -264,6 +264,10 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
               : {}),
           });
         } catch (e) {
+          // Roll back the server-side join so a failed media connect doesn't
+          // leave the caller in dead air with a callee who "answered." The
+          // gateway echoes the leave. Best-effort.
+          void rest.leaveVoice(channel.id).catch(() => {});
           toasts.push(
             e instanceof VoiceError
               ? e.message
@@ -274,7 +278,7 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
           );
         }
       } else {
-        toasts.push('Joined (presence-only — voice not configured)', 'info');
+        toasts.push('Voice isn’t set up on this server yet — you’ve joined the channel, but no audio will connect. Ask the server admin to enable voice.', 'info');
       }
     } catch (e) {
       // A 404 here usually means the call already ended on the server

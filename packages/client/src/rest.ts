@@ -202,6 +202,9 @@ export class RestClient {
     username: string;
     displayName: string;
     password: string;
+    /** Signup code. Required when the instance is invite-only; ignored
+        otherwise. */
+    code?: string;
   }): Promise<AuthSession> {
     return this.request('POST', '/auth/register', input);
   }

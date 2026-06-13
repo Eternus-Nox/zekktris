@@ -2452,6 +2452,11 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
               : {}),
           });
         } catch (e) {
+          // Roll back the server-side join so a failed media connect doesn't
+          // strand us as a silent ghost — for a 1:1 DM call that means the
+          // other party sits in dead air with someone who "answered." The
+          // gateway echoes the leave. Best-effort.
+          void (await restForChannel(channel.id)).leaveVoice(channel.id).catch(() => {});
           toasts.push(
             e instanceof VoiceError
               ? e.message
@@ -2462,7 +2467,7 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
           );
         }
       } else {
-        toasts.push('Calling (presence-only — voice not configured)', 'info');
+        toasts.push('Voice isn’t set up on this server yet, so there’s no audio. Ask the server admin to enable voice.', 'info');
       }
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Failed to start call', 'error');

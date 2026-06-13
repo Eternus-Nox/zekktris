@@ -176,7 +176,7 @@ export function StageChannelView({ channel }: { channel: Channel }) {
           );
         }
       } else {
-        toasts.push('Joined (presence only — voice not configured)', 'info');
+        toasts.push('Voice isn’t set up on this server yet — you’ve joined the channel, but no audio will connect. Ask the server admin to enable voice.', 'info');
       }
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Failed to join stage', 'error');

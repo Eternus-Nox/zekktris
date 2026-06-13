@@ -362,9 +362,14 @@ function FriendRow({
               : {}),
           });
         } else {
-          toasts.push('Calling (presence-only — voice not configured)', 'info');
+          toasts.push('Voice isn’t set up on this server yet, so there’s no audio. Ask the server admin to enable voice.', 'info');
         }
       } catch (e) {
+        // Roll back the server-side join so a failed media connect doesn't
+        // leave the callee in dead air with a caller who never actually
+        // connected. Harmless no-op if joinVoice itself was what failed. The
+        // gateway echoes the leave. Best-effort.
+        void rest.leaveVoice(dm.channel.id).catch(() => {});
         toasts.push(
           e instanceof VoiceError
             ? e.message

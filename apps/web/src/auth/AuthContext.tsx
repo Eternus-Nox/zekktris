@@ -44,7 +44,7 @@ interface AuthContextValue extends AuthState {
   rest: RestClient;
   gateway: GatewayClient;
   login: (email: string, password: string, code?: string) => Promise<void>;
-  register: (input: { email: string; username: string; displayName: string; password: string }) => Promise<void>;
+  register: (input: { email: string; username: string; displayName: string; password: string; code?: string }) => Promise<void>;
   logout: () => Promise<void>;
   /**
    * Patch the local SelfUser snapshot. Call after a settings save so the
