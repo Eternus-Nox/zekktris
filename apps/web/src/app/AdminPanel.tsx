@@ -368,7 +368,7 @@ function OverviewTab() {
                       : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
                 }`}
               >
-                {diag.ok ? 'Voice OK' : diag.configured ? 'Problem found' : 'Not configured'}
+                {diag.ok ? 'Server checks OK' : diag.configured ? 'Problem found' : 'Not configured'}
               </span>
               {diag.wsUrl && <span className="text-xs text-ink-3 font-mono truncate">{diag.wsUrl}</span>}
             </div>

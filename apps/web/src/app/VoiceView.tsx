@@ -58,9 +58,12 @@ import {
   getCurrentSpeakers,
   subscribeTracks,
   getCurrentTracks,
+  subscribeConnectionState,
+  getConnectionState,
   prepareVoiceAudio,
   VoiceError,
   type VoiceTrackInfo,
+  type VoiceConnectionState,
 } from '../lib/voice';
 
 /**
@@ -194,6 +197,7 @@ export function VoiceView({
   // Live state from the voice manager.
   const speakers = useSpeakers();
   const tracks = useTracks();
+  const connState = useVoiceConnectionState();
 
   const [cameraOn, setCameraOn] = useState(false);
   const [screenOn, setScreenOn] = useState(false);
@@ -316,6 +320,8 @@ export function VoiceView({
             token: r.token,
             wsUrl: r.wsUrl,
             sessionId: r.voiceState.sessionId,
+            channelId: channel.id,
+            isDmCall: channel.type === 'dm',
             // Only 1:1 DMs have a shared passphrase; encrypt the call
             // media with it when the DM has E2EE on. Guild/stage/group-DM
             // voice has no shared key and is never E2EE.
@@ -465,8 +471,18 @@ export function VoiceView({
       await setCameraEnabled(next);
       setCameraOn(next);
     } catch (e) {
+      // A permission denial reaches us as code 'mic_denied_browser'
+      // (mediaErrorToVoiceError maps every NotAllowedError to that code).
+      // For the CAMERA button there's no OS picker to cancel — this means
+      // the user (or a Permissions-Policy) blocked camera access, so we
+      // must TELL them, not silently no-op. (Screen-share suppresses this
+      // code because there a denial is just "user cancelled the picker".)
       if (e instanceof VoiceError && e.code === 'mic_denied_browser') {
         setCameraOn(false);
+        toasts.push(
+          'Camera access is blocked. Click the camera/lock icon in your browser’s address bar and allow Camera, then try again.',
+          'error',
+        );
         return;
       }
       toasts.push(
@@ -662,6 +678,20 @@ export function VoiceView({
           </>
         )}
       </header>
+
+      {/* Reconnecting banner. LiveKit fires Reconnecting when the media
+          transport drops (network change, brief outage) and is trying to
+          recover. Surfacing it stops the "everyone went silent and I don't
+          know why" confusion — and a terminal Disconnected now tears the
+          call down via voice.ts so we never sit here forever. */}
+      {inThis && connState === 'reconnecting' && (
+        <div className="shrink-0 bg-amber-500/10 border-b border-amber-500/30 px-4 py-2 flex items-center gap-3">
+          <span className="size-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
+          <div className="flex-1 min-w-0 text-sm text-amber-200">
+            Reconnecting to voice…
+          </div>
+        </div>
+      )}
 
       {/* Active screen-share banner. Shown when WE are publishing a
           screen-share track. The point isn't decoration — the browser
@@ -1851,6 +1881,14 @@ function useTracks(): VoiceTrackInfo[] {
     subscribeTracks,
     () => getCurrentTracks(),
     () => [],
+  );
+}
+
+function useVoiceConnectionState(): VoiceConnectionState {
+  return useSyncExternalStore(
+    subscribeConnectionState,
+    () => getConnectionState(),
+    () => 'disconnected' as VoiceConnectionState,
   );
 }
 

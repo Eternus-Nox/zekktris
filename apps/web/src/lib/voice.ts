@@ -78,16 +78,24 @@ interface ConnectArgs {
       video or screen-share track. The callback receives the current
       list of media tiles to display. */
   onTracksChange?: (tracks: VoiceTrackInfo[]) => void;
+  /** Whether this device should publish its microphone. Defaults to
+      true. Pass false for listen-only joins (stage AUDIENCE, AFK /
+      voice-disabled channels) whose server token has canPublish=false —
+      LiveKit throws a 403 if we try to publish under such a token, so we
+      skip the mic entirely and just subscribe. */
+  publish?: boolean;
   /** Display title for the OS lock-screen / media controls "Now
       Playing" entry. Typically the other DM party's display name
       or the channel name. Omit to fall back to "Voice call". */
   backgroundTitle?: string;
-  /** Channel id of the voice call. Used by the native CallKit
-      bridge as the unique call identifier so the system call UI
-      can match incoming/outgoing/ended events. Optional — web
-      contexts don't need it; native callers should always thread
-      it through. */
+  /** Channel id of the voice room. Threaded through for the self-move
+      detector (so a moderator-initiated move reconnects this device)
+      AND, for DM calls, used as the native CallKit call identifier.
+      Pass it for EVERY join. */
   channelId?: string;
+  /** True only for 1:1 DM calls. Gates the native CallKit registration
+      — CallKit should model DM calls, not guild-voice/stage joins. */
+  isDmCall?: boolean;
   /** End-to-end media encryption for a 1:1 DM call. Pass this ONLY
       for 1:1 DM calls whose DM has E2EE enabled (channel.e2eeEnabled
       === true). voice.ts looks up the locally-cached shared key for
@@ -173,8 +181,15 @@ let activeSessionId: string | null = null;
 /** Channel id of the currently-connected voice call. Set on
     connect, cleared on disconnect. Needed at disconnect time to
     tell CallKit which call to terminate — without it the system
-    call UI would linger after our internal teardown. */
+    call UI would linger after our internal teardown. Set ONLY for
+    DM calls (the only thing CallKit should model), independently of
+    `connectedChannelId` below. */
 let activeChannelId: string | null = null;
+
+/** Channel id of the currently-connected voice room — set for EVERY
+    join (guild voice, stage, DM), unlike `activeChannelId` which is
+    DM-only. Drives the self-move detector. */
+let connectedChannelId: string | null = null;
 
 export function getActiveVoiceSessionId(): string | null {
   return activeSessionId;
@@ -186,7 +201,7 @@ export function getActiveVoiceSessionId(): string | null {
     differs from connected) vs. a benign state delta (mute/deaf
     toggle on the same channel). Null when not connected. */
 export function getConnectedChannelId(): string | null {
-  return activeChannelId;
+  return connectedChannelId;
 }
 
 import { getCurrentPreset } from './voiceQuality';
@@ -402,6 +417,32 @@ export async function setSavedInputDeviceId(deviceId: string): Promise<void> {
       // and switch. Caller should re-enumerate; live state is
       // self-correcting on next connect.
     }
+    // If manual gain is active, switchActiveDevice just replaced the
+    // published track with LiveKit's own capture of the new device —
+    // which silently drops the gain chain (slider goes dead) and leaves
+    // the OLD device's raw capture hot. Re-activate manual gain against
+    // the new device so the slider keeps working and the prior chain is
+    // torn down. (activateManualGain is idempotent — it deactivates the
+    // previous chain first.)
+    if (voicePrefs.getVoicePrefs().gainMode === 'manual') {
+      try {
+        const localPubs = (room as unknown as {
+          localParticipant: { trackPublications: Map<string, TrackPublicationLike> };
+        }).localParticipant;
+        for (const [, pub] of localPubs.trackPublications) {
+          if (pub.kind === 'audio' && pub.track && 'replaceTrack' in pub.track) {
+            const { activateManualGain } = await import('./manualGain');
+            await activateManualGain({
+              liveKitTrack: pub.track as unknown as Parameters<typeof activateManualGain>[0]['liveKitTrack'],
+              inputDeviceId: deviceId,
+            });
+            break;
+          }
+        }
+      } catch {
+        // Best-effort — voice continues with LiveKit's captured track.
+      }
+    }
   }
 }
 
@@ -587,7 +628,7 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
   // crisp messages BEFORE LiveKit's connect path wraps them in
   // generic "could not establish session" errors. Track is stopped
   // immediately — LiveKit will re-acquire on its own when we publish.
-  const inputDeviceId = getSavedInputDeviceId();
+  let inputDeviceId = getSavedInputDeviceId();
   // First make sure the capture API even exists. In the iOS WebView
   // (and any insecure-context load) `navigator.mediaDevices` can be
   // undefined; calling getUserMedia on it throws a bare TypeError
@@ -596,26 +637,53 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
   if (!isMediaCaptureAvailable()) {
     throw new VoiceError('browser_unsupported', mediaUnavailableMessage());
   }
-  try {
-    const probe = await navigator.mediaDevices.getUserMedia({
-      audio: inputDeviceId ? { deviceId: { exact: inputDeviceId } } : true,
-    });
-    probe.getTracks().forEach((t) => t.stop());
-  } catch (err) {
-    throw mediaErrorToVoiceError(err);
+  const wantPublish = args.publish !== false;
+  if (wantPublish) {
+    try {
+      const probe = await navigator.mediaDevices.getUserMedia({
+        audio: inputDeviceId ? { deviceId: { exact: inputDeviceId } } : true,
+      });
+      probe.getTracks().forEach((t) => t.stop());
+    } catch (err) {
+      // If the user's SAVED mic is gone (unplugged USB headset), don't
+      // block the join — the Room's own audioCaptureDefaults use a
+      // non-exact deviceId and would fall back to the default mic
+      // anyway. Retry the probe against the default device and clear
+      // the stale preference; only a default-device failure (real
+      // permission/hardware problem) aborts the join.
+      const name = (err as { name?: string })?.name ?? '';
+      const deviceGone =
+        inputDeviceId &&
+        (name === 'OverconstrainedError' ||
+          name === 'ConstraintNotSatisfiedError' ||
+          name === 'NotFoundError' ||
+          name === 'DevicesNotFoundError');
+      if (!deviceGone) throw mediaErrorToVoiceError(err);
+      try {
+        const fallbackProbe = await navigator.mediaDevices.getUserMedia({ audio: true });
+        fallbackProbe.getTracks().forEach((t) => t.stop());
+        // Drop the stale preference (storage + this join's capture
+        // config) so the rest of the connect uses the default mic.
+        inputDeviceId = '';
+        try {
+          localStorage.removeItem(STORAGE_INPUT);
+        } catch {}
+      } catch (fallbackErr) {
+        throw mediaErrorToVoiceError(fallbackErr);
+      }
+    }
   }
 
-  // Tear down any prior session before opening a new one. The previous
-  // join's REST cleanup already happened via the server-side single-row
-  // invariant, but the Room object on the client side needs to be
-  // disposed independently.
+  // Tear down any prior session before opening a new one — and do it
+  // through the FULL disconnect path, not a bare room.disconnect().
+  // The bare disconnect left the old session's stale-tracks poll and
+  // speaking poll running (the old poll then fought the new call's
+  // track list, blanking video tiles every second), leaked the prefs
+  // subscription, and kept the manual-gain mic capture alive. This is
+  // the channel-switch path (clicking another voice channel while
+  // connected), so it has to clean up exactly like an explicit leave.
   if (room) {
-    try {
-      await room.disconnect();
-    } catch {
-      // Disconnect failures are non-fatal — we're recreating anyway.
-    }
-    room = null;
+    await disconnectVoice();
   }
 
   // Read the user's current quality preference. The preset caps audio
@@ -709,6 +777,12 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
       // (see createManualGainedTrack below); 'off' leaves the
       // mic signal untouched.
       autoGainControl: audioPrefs.gainMode === 'agc',
+      // Honor the quality preset's channel count. Previously `audioChannels`
+      // was dead config — the "High" preset advertised "Stereo" in its help
+      // text but capture stayed mono, so the stereo path never engaged.
+      // Requesting 2 channels here lets the High preset actually carry
+      // stereo (meaningful for the music/hi-fi use case it targets).
+      channelCount: preset.audioChannels,
       ...(inputDeviceId ? { deviceId: inputDeviceId } : {}),
     },
     // Video capture defaults — width/height map directly to getUserMedia
@@ -728,6 +802,11 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
     publishDefaults: {
       audioPreset: {
         maxBitrate: preset.audioBitrate,
+        // Opus stereo. Only meaningful on the High preset (audioChannels:2)
+        // — it's the music/hi-fi tier. Pairs with channelCount:2 in
+        // audioCaptureDefaults above; together they make the "Stereo"
+        // the High preset's help text promises actually happen.
+        ...(preset.audioChannels === 2 ? { dtx: false } : {}),
       },
       videoEncoding: {
         maxBitrate: preset.videoBitrate,
@@ -753,10 +832,12 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
       // encoders have. AV1 would be even better quality-per-bit
       // but isn't reliably supported by viewer browsers yet.
       videoCodec: 'vp8',
-      // Stereo on the high preset for music; the low/normal presets
-      // collapse to mono via the channel hint passed below.
       red: true, // forward-error-correction-ish; helps lossy networks
-      dtx: true, // discontinuous transmission — saves bw during silence
+      // DTX (discontinuous transmission) saves bandwidth during silence
+      // for speech, but harms continuous audio (music) — so it's disabled
+      // on the High/music preset via the audioPreset above and left on
+      // here for the speech-oriented Normal/Low presets.
+      dtx: preset.audioChannels !== 2,
     },
     // End-to-end media encryption, present only for unlocked 1:1 DM
     // calls (see the e2ee resolution block above). Spread so the key
@@ -795,6 +876,30 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
   if (args.onStateChange) {
     r.on(RoomEvent.ConnectionStateChanged, args.onStateChange as never);
   }
+
+  // Terminal-disconnect safety net. Without this, when LiveKit gives up
+  // reconnecting (network change, laptop sleep, SFU restart) or the
+  // server removes the participant, the Room goes to `disconnected`
+  // silently: module `room` stays set, pollers keep running, the wake
+  // lock stays held, and the UI keeps rendering live in-call controls
+  // on a dead room. Route a terminal disconnect through the existing
+  // full-cleanup path (it's idempotent against an already-disconnected
+  // room). Guarded on identity so a stale event from a previous Room
+  // can't tear down a newer session.
+  r.on(RoomEvent.Disconnected, (() => {
+    if (room === (r as unknown as RoomLike)) {
+      publishConnectionState('disconnected');
+      void disconnectVoice();
+    }
+  }) as never);
+  // Surface SDK-internal reconnect attempts so the UI can show a
+  // "reconnecting…" banner instead of appearing healthy-but-silent.
+  r.on(RoomEvent.Reconnecting, (() => {
+    if (room === (r as unknown as RoomLike)) publishConnectionState('reconnecting');
+  }) as never);
+  r.on(RoomEvent.Reconnected, (() => {
+    if (room === (r as unknown as RoomLike)) publishConnectionState('connected');
+  }) as never);
 
   // Speaking indicator: LiveKit emits ActiveSpeakersChanged with the
   // full current speaker set on every transition. Build a Set<userId>
@@ -1314,15 +1419,54 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
     const msg = (err as Error).message ?? 'connection failed';
     throw new VoiceError('connect_failed', `Couldn't reach voice server: ${msg}`);
   }
-  await r.localParticipant.setMicrophoneEnabled(
-    true,
-    inputDeviceId ? { deviceId: inputDeviceId } : undefined,
-  );
-  // Mic is live after the call above, so the local mute state is false.
-  // Reset explicitly: mutedFlag is module-scoped and could otherwise
-  // carry a stale `true` from a previous session into this join (the PTT
-  // branch below re-sets it to true when appropriate).
-  mutedFlag = false;
+
+  // Claim the Room as the active session AS SOON AS connect succeeds —
+  // before any mic publish — so that if a later step throws (e.g. a
+  // listen-only / stage-audience token rejects setMicrophoneEnabled with
+  // a 403), disconnectVoice() can actually tear the connection down
+  // instead of no-opping on a null `room` and leaking the live Room +
+  // its pollers + the prefs subscription forever.
+  room = r as unknown as RoomLike;
+  localIdentity = r.localParticipant.identity;
+  // Track the connected channel for the self-move detector. Set for
+  // EVERY join (guild/stage/DM) the moment we have it — the prior code
+  // only set this for calls that passed channelId (DM calls), so a
+  // moderator dragging a web user between GUILD voice channels never
+  // reconnected them (getConnectedChannelId() was null → the detector
+  // early-returned and the user's audio silently died in the old room).
+  connectedChannelId = args.channelId ?? null;
+  publishConnectionState('connected');
+
+  const localPubs = r.localParticipant as unknown as { trackPublications: Map<string, TrackPublicationLike> };
+
+  // Publish the mic only for publishing contexts. Stage AUDIENCE (and
+  // AFK / voice-disabled channels) get canPublish=false tokens, and
+  // LiveKit throws a 403 PublishTrackError if we try to publish under
+  // one — which is exactly the leak above. `args.publish === false`
+  // marks those listen-only joins so we skip the mic entirely (they
+  // still subscribe and hear everyone).
+  if (wantPublish) {
+    try {
+      await r.localParticipant.setMicrophoneEnabled(
+        true,
+        inputDeviceId ? { deviceId: inputDeviceId } : undefined,
+      );
+    } catch (err) {
+      // Publishing failed on a token we believed could publish — tear
+      // the whole connection down (now safe because `room` is set) and
+      // surface a clear error rather than stranding a half-joined room.
+      await disconnectVoice();
+      throw new VoiceError(
+        'connect_failed',
+        `Couldn't start your microphone: ${(err as Error)?.message ?? 'unknown error'}`,
+      );
+    }
+    // Mic is live after the call above, so the local mute state is false.
+    // Reset explicitly: mutedFlag is module-scoped and could otherwise
+    // carry a stale `true` from a previous session into this join (the PTT
+    // branch below re-sets it to true when appropriate).
+    mutedFlag = false;
+  }
 
   // Apply saved output device after connect — switchActiveDevice needs
   // a live Room. Failures here are non-fatal (Firefox/Safari may not
@@ -1337,99 +1481,100 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
     }
   }
 
-  room = r as unknown as RoomLike;
-  localIdentity = r.localParticipant.identity;
   // Initial track snapshot so the UI doesn't have to wait for the
   // first track event before rendering empty/non-empty state.
   rebuildTracks();
 
-  // PTT keyboard listeners. Installed once per page load — checking
-  // the audio mode from localStorage on each event so changes from the
-  // settings UI take effect immediately without re-installing.
-  installPttListeners();
+  // Mic-publish-dependent setup. None of this applies to a listen-only
+  // join (no published track to monitor, gain, process, or PTT-toggle).
+  if (wantPublish) {
+    // PTT keyboard listeners. Installed once per page load — checking
+    // the audio mode from localStorage on each event so changes from the
+    // settings UI take effect immediately without re-installing.
+    installPttListeners();
 
-  // If the user is in PTT mode, mute by default. They have to push the
-  // key to talk. This MUST happen after setMicrophoneEnabled(true)
-  // above; LiveKit otherwise wouldn't have a published audio track to
-  // toggle on/off via the keyboard listener.
-  if (getAudioMode() === 'ptt') {
-    mutedFlag = true;
-    await r.localParticipant.setMicrophoneEnabled(false);
-  }
-
-  // Start the local-level monitor so the user's own tile shows the
-  // green ring when they speak. The monitor reads the actual published
-  // mic track, so we need to grab it after setMicrophoneEnabled(true).
-  // Walk the local participant's track publications to find the audio
-  // track LiveKit just published.
-  const localPubs = r.localParticipant as unknown as { trackPublications: Map<string, TrackPublicationLike> };
-  for (const [, pub] of localPubs.trackPublications) {
-    if (pub.kind === 'audio' && pub.track?.mediaStreamTrack) {
-      startLocalLevelMonitor(pub.track.mediaStreamTrack);
-      break;
+    // If the user is in PTT mode, mute by default. They have to push the
+    // key to talk. This MUST happen after setMicrophoneEnabled(true)
+    // above; LiveKit otherwise wouldn't have a published audio track to
+    // toggle on/off via the keyboard listener.
+    if (getAudioMode() === 'ptt') {
+      mutedFlag = true;
+      await r.localParticipant.setMicrophoneEnabled(false);
     }
-  }
 
-  // Manual gain mode: replace the captured mic track with a
-  // Web-Audio-gained version so the user's `micGain` slider
-  // actually affects the published signal. Only relevant when
-  // gainMode === 'manual' — 'agc' and 'off' both leave the
-  // LiveKit-captured track alone. Best-effort: if the replace
-  // fails (browser compat edge case, LiveKit internal change in
-  // a future version) we keep the un-gained track and log; voice
-  // still works, the slider just has no effect.
-  if (audioPrefs.gainMode === 'manual') {
+    // Start the local-level monitor so the user's own tile shows the
+    // green ring when they speak. The monitor reads the actual published
+    // mic track, so we need to grab it after setMicrophoneEnabled(true).
+    // Walk the local participant's track publications to find the audio
+    // track LiveKit just published.
     for (const [, pub] of localPubs.trackPublications) {
-      if (pub.kind === 'audio' && pub.track && 'replaceTrack' in pub.track) {
-        try {
-          const { activateManualGain } = await import('./manualGain');
-          await activateManualGain({
-            liveKitTrack: pub.track as unknown as Parameters<typeof activateManualGain>[0]['liveKitTrack'],
-            inputDeviceId,
-          });
-        } catch (err) {
-          // Non-fatal — voice continues with the un-gained track.
-          // The user will see the slider in settings but it won't
-          // affect the live published signal until next reconnect.
-          // eslint-disable-next-line no-console
-          console.warn('manual gain activation failed:', err);
-        }
+      if (pub.kind === 'audio' && pub.track?.mediaStreamTrack) {
+        startLocalLevelMonitor(pub.track.mediaStreamTrack);
         break;
       }
     }
-  }
 
-  // Noise/compression processing chain — runs as a LiveKit
-  // TrackProcessor on top of whatever the mic track is at this
-  // point (raw browser-captured OR manual-gain-replaced if the
-  // user is in that mode). Adds high-pass / compressor / low-pass
-  // / makeup-gain stages targeting the noise classes browser-
-  // native noiseSuppression doesn't catch — desk thumps, AC hum,
-  // dynamic-range swings, hiss above the speech band. See
-  // ./audioProcessor.ts for tuning rationale per stage.
-  //
-  // Gated on the existing noiseSuppression preference: if the
-  // user has turned suppression off (they explicitly want raw
-  // mic — maybe for music or for accessibility/processing
-  // downstream), we skip this chain too. Consistent with their
-  // intent rather than silently overriding it.
-  if (audioPrefs.noiseSuppression) {
-    for (const [, pub] of localPubs.trackPublications) {
-      if (pub.kind === 'audio' && pub.track && 'setProcessor' in pub.track) {
-        try {
-          const { createNoiseCompressor } = await import('./audioProcessor');
-          await (pub.track as unknown as {
-            setProcessor: (p: ReturnType<typeof createNoiseCompressor>) => Promise<void>;
-          }).setProcessor(createNoiseCompressor());
-        } catch (err) {
-          // Non-fatal — voice continues without the processing
-          // chain. The user is on the un-processed signal which
-          // is still better than no audio. Log so a future bug
-          // hunt has a starting point.
-          // eslint-disable-next-line no-console
-          console.warn('noise compressor activation failed:', err);
+    // Manual gain mode: replace the captured mic track with a
+    // Web-Audio-gained version so the user's `micGain` slider
+    // actually affects the published signal. Only relevant when
+    // gainMode === 'manual' — 'agc' and 'off' both leave the
+    // LiveKit-captured track alone. Best-effort: if the replace
+    // fails (browser compat edge case, LiveKit internal change in
+    // a future version) we keep the un-gained track and log; voice
+    // still works, the slider just has no effect.
+    if (audioPrefs.gainMode === 'manual') {
+      for (const [, pub] of localPubs.trackPublications) {
+        if (pub.kind === 'audio' && pub.track && 'replaceTrack' in pub.track) {
+          try {
+            const { activateManualGain } = await import('./manualGain');
+            await activateManualGain({
+              liveKitTrack: pub.track as unknown as Parameters<typeof activateManualGain>[0]['liveKitTrack'],
+              inputDeviceId,
+            });
+          } catch (err) {
+            // Non-fatal — voice continues with the un-gained track.
+            // The user will see the slider in settings but it won't
+            // affect the live published signal until next reconnect.
+            // eslint-disable-next-line no-console
+            console.warn('manual gain activation failed:', err);
+          }
+          break;
         }
-        break;
+      }
+    }
+
+    // Noise/compression processing chain — runs as a LiveKit
+    // TrackProcessor on top of whatever the mic track is at this
+    // point (raw browser-captured OR manual-gain-replaced if the
+    // user is in that mode). Adds high-pass / compressor / low-pass
+    // / makeup-gain stages targeting the noise classes browser-
+    // native noiseSuppression doesn't catch — desk thumps, AC hum,
+    // dynamic-range swings, hiss above the speech band. See
+    // ./audioProcessor.ts for tuning rationale per stage.
+    //
+    // Gated on the existing noiseSuppression preference: if the
+    // user has turned suppression off (they explicitly want raw
+    // mic — maybe for music or for accessibility/processing
+    // downstream), we skip this chain too. Consistent with their
+    // intent rather than silently overriding it.
+    if (audioPrefs.noiseSuppression) {
+      for (const [, pub] of localPubs.trackPublications) {
+        if (pub.kind === 'audio' && pub.track && 'setProcessor' in pub.track) {
+          try {
+            const { createNoiseCompressor } = await import('./audioProcessor');
+            await (pub.track as unknown as {
+              setProcessor: (p: ReturnType<typeof createNoiseCompressor>) => Promise<void>;
+            }).setProcessor(createNoiseCompressor());
+          } catch (err) {
+            // Non-fatal — voice continues without the processing
+            // chain. The user is on the un-processed signal which
+            // is still better than no audio. Log so a future bug
+            // hunt has a starting point.
+            // eslint-disable-next-line no-console
+            console.warn('noise compressor activation failed:', err);
+          }
+          break;
+        }
       }
     }
   }
@@ -1468,10 +1613,12 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
   // that iOS keeps alive when the screen locks. Without this,
   // wake-lock + media-session alone aren't enough; iOS strips mic
   // access on lock regardless. No-op on web (existing wake-lock
-  // path stays in charge). Skipped when no channelId was passed
-  // — without an id we can't track the call through CallKit's
-  // identifier-based API.
-  if (args.channelId) {
+  // path stays in charge). Gated on `isDmCall` (not merely channelId):
+  // CallKit should model 1:1 DM calls only — registering a guild-voice
+  // or stage join as a CallKit "call" is wrong (and now that every join
+  // passes channelId for move detection, a bare channelId check would
+  // do exactly that).
+  if (args.channelId && args.isDmCall) {
     activeChannelId = args.channelId;
     void (async () => {
       try {
@@ -1527,12 +1674,23 @@ export async function disconnectVoice(): Promise<void> {
   // Clear the stale-tracks polling interval set up in connectToVoice.
   const stalePoll = (room as unknown as { _stalePoll?: number })._stalePoll;
   if (typeof stalePoll === 'number') clearInterval(stalePoll);
+  // Tear down the manual-gain chain (second mic capture + AudioContext)
+  // if it was active. It has no other caller, so without this a user in
+  // manual-gain mode keeps a live mic capture (OS recording indicator
+  // lit) until the tab closes. Fire-and-forget dynamic import mirrors
+  // the activation path. No-op when manual gain was never engaged.
+  void import('./manualGain').then((m) => m.deactivateManualGain()).catch(() => {});
   // Defensive: remove anything still tagged in the DOM, in case the
-  // map and the DOM diverged.
-  document.querySelectorAll('video[data-zk-audio-sink]').forEach((el) => {
-    (el as HTMLVideoElement).srcObject = null;
-    el.remove();
-  });
+  // map and the DOM diverged. track.attach() yields <audio> for audio
+  // tracks, so this MUST match audio elements too — a video-only
+  // selector matched nothing and let orphaned <audio> sinks keep
+  // playing after leave.
+  document
+    .querySelectorAll('audio[data-zk-audio-sink], video[data-zk-audio-sink]')
+    .forEach((el) => {
+      (el as HTMLMediaElement).srcObject = null;
+      el.remove();
+    });
   try {
     await room.disconnect();
   } catch {
@@ -1581,9 +1739,11 @@ export async function disconnectVoice(): Promise<void> {
     }
   })();
   activeChannelId = null;
+  connectedChannelId = null;
   // Clear pub/sub state so the UI's voice-view drops empty.
   publishSpeakers(new Set());
   publishTracks([]);
+  publishConnectionState('disconnected');
   deafenedFlag = false;
 }
 
@@ -1639,9 +1799,11 @@ export async function setDeafened(deafened: boolean): Promise<void> {
         }
       }
     }
-    document.querySelectorAll('video[data-zk-audio-sink]').forEach((el) => {
-      (el as HTMLVideoElement).volume = deafened ? 0 : 1;
-    });
+    document
+      .querySelectorAll('audio[data-zk-audio-sink], video[data-zk-audio-sink]')
+      .forEach((el) => {
+        (el as HTMLMediaElement).volume = deafened ? 0 : 1;
+      });
   }
   // Deafen couples the mic on the way in AND the way out — pressing
   // deafen disables the mic so other users see the right icon and you
@@ -1805,12 +1967,18 @@ export async function setScreenShareEnabled(on: boolean): Promise<void> {
 
 type SpeakerListener = (speakers: Set<string>) => void;
 type TrackListener = (tracks: VoiceTrackInfo[]) => void;
+/** Coarse connection state surfaced to the UI so it can show a
+    "Reconnecting…" banner or drop the call view on a terminal drop. */
+export type VoiceConnectionState = 'connected' | 'reconnecting' | 'disconnected';
+type ConnectionStateListener = (state: VoiceConnectionState) => void;
 
 const speakerListeners = new Set<SpeakerListener>();
 const trackListeners = new Set<TrackListener>();
+const connectionStateListeners = new Set<ConnectionStateListener>();
 let currentSpeakers: Set<string> = new Set();
 let remoteSpeakingPollInterval: number | null = null;
 let currentTracks: VoiceTrackInfo[] = [];
+let currentConnectionState: VoiceConnectionState = 'disconnected';
 
 // ── Remote-track WebAudio speaker probes ───────────────────────────────────
 //
@@ -1965,6 +2133,21 @@ export function subscribeTracks(listener: TrackListener): () => void {
 }
 export function getCurrentTracks(): VoiceTrackInfo[] {
   return currentTracks;
+}
+
+export function subscribeConnectionState(listener: ConnectionStateListener): () => void {
+  connectionStateListeners.add(listener);
+  return () => {
+    connectionStateListeners.delete(listener);
+  };
+}
+export function getConnectionState(): VoiceConnectionState {
+  return currentConnectionState;
+}
+function publishConnectionState(state: VoiceConnectionState): void {
+  if (state === currentConnectionState) return;
+  currentConnectionState = state;
+  for (const l of connectionStateListeners) l(state);
 }
 
 function publishSpeakers(s: Set<string>): void {
@@ -2226,8 +2409,11 @@ export function setAudioMode(mode: AudioMode): void {
       // Switching INTO ptt → mute right now (user has to push to talk).
       mutedFlag = true;
       void room.localParticipant.setMicrophoneEnabled(false);
-    } else {
-      // Switching OUT of ptt → unmute (assuming user wasn't manually muted).
+    } else if (!deafenedFlag) {
+      // Switching OUT of ptt → unmute — but NOT while deafened (deafen
+      // implies muted; force-unmuting here would start broadcasting
+      // while the user is supposed to be silent). The deafen toggle
+      // owns the mic in that state and will re-enable it on undeafen.
       mutedFlag = false;
       void room.localParticipant.setMicrophoneEnabled(true);
     }
@@ -2265,6 +2451,11 @@ function installPttListeners(): void {
     if (getAudioMode() !== 'ptt') return;
     if (e.code !== getPttKey()) return;
     if (pttKeyDown) return;
+    // Deafened implies muted (Discord's invariant, enforced across the
+    // rest of the voice code). A PTT key tap must NOT punch through it
+    // and start transmitting while the UI + server still show the user
+    // as deaf+muted — that broadcasts audio they believe is silenced.
+    if (deafenedFlag) return;
     pttKeyDown = true;
     if (room) {
       mutedFlag = false;

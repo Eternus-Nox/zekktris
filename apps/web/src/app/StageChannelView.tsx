@@ -129,7 +129,14 @@ export function StageChannelView({ channel }: { channel: Channel }) {
           await disconnectVoice();
           const r = await rest.joinStage(channel.id);
           if (r.token && r.wsUrl) {
-            await connectToVoice({ token: r.token, wsUrl: r.wsUrl });
+            await connectToVoice({
+              token: r.token,
+              wsUrl: r.wsUrl,
+              channelId: channel.id,
+              // Audience tokens are canPublish=false — publishing under
+              // one throws a 403. Mirror the server-granted capability.
+              publish: r.participant.isSpeaker,
+            });
           }
           toasts.push(
             isSpeaker ? 'You can now speak' : 'You are now in the audience',
@@ -154,7 +161,14 @@ export function StageChannelView({ channel }: { channel: Channel }) {
       const r = await rest.joinStage(channel.id);
       if (r.token && r.wsUrl) {
         try {
-          await connectToVoice({ token: r.token, wsUrl: r.wsUrl });
+          await connectToVoice({
+            token: r.token,
+            wsUrl: r.wsUrl,
+            channelId: channel.id,
+            // Audience joins get a no-publish token — tell voice.ts to
+            // skip the mic entirely (it'd 403 otherwise and leak the room).
+            publish: r.participant.isSpeaker,
+          });
         } catch (e) {
           toasts.push(
             e instanceof VoiceError ? e.message : 'Voice connect failed',

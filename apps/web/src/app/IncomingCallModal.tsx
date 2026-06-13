@@ -252,6 +252,8 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
             token: r.token,
             wsUrl: r.wsUrl,
             sessionId: r.voiceState.sessionId,
+            channelId: channel.id,
+            isDmCall: true,
             backgroundTitle: `Call with ${callerName}`,
             // This modal only renders for 1:1 DMs (guarded above). If the
             // DM is encrypted, key the call media with the same shared

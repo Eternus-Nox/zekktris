@@ -1264,6 +1264,9 @@ function VoiceChannelRow({
             token: r.token,
             wsUrl: r.wsUrl,
             sessionId: r.voiceState.sessionId,
+            // Thread the channel through so the self-move detector can
+            // reconnect this device if a moderator drags us elsewhere.
+            channelId: channel.id,
           });
         } catch (e) {
           if (e instanceof VoiceError) {

@@ -945,6 +945,14 @@ function Scroller({
   const triggerArmedRef = useRef(true);
   /** Drives the jump-to-bottom pill. */
   const [unreadBelow, setUnreadBelow] = useState(false);
+  /** Hide the message list until the first post-switch snap-to-bottom
+      lands, so a freshly-opened channel appears ALREADY at the newest
+      message instead of rendering at the top and visibly jumping down.
+      virtua has no initial-scroll-index, so we mount, snap, then reveal
+      within a frame or two (imperceptible). Starts true: the first mount
+      isn't a "switch" (the forceSnapToBottom append path snaps pre-paint
+      there), so only an actual channel switch hides + re-reveals. */
+  const [bottomReady, setBottomReady] = useState(true);
   /** When true, virtua keeps the viewport anchored to the END as items
       are prepended (older-message load) so the view doesn't lurch.
       Turned on just before a load-older fires; reset when loading ends. */
@@ -1021,9 +1029,19 @@ function Scroller({
       forceSnapToBottomRef.current = true;
       setShiftPrepend(false);
       setUnreadBelow(false);
-      // Snap now, then a short chase: images/embeds grow rows after the
-      // first commit and virtua keeps adjusting as it measures. Stop
-      // chasing if the user has actively scrolled away.
+      // Hide the list until the first snap lands, so a cached channel
+      // opens ALREADY at the newest message rather than painting at the
+      // top and visibly jumping down. (When messages load AFTER the
+      // switch, the forceSnapToBottom append path below snaps pre-paint,
+      // so that case never shows a jump and doesn't need the gate.)
+      if (messageGroups.length > 0) setBottomReady(false);
+      // Synchronous pre-paint snap for the cached-messages case: virtua
+      // positions at its best estimate for the last index before the
+      // browser paints, so the very first (hidden) frame is at bottom.
+      vref.current?.scrollToIndex(messageGroups.length, { align: 'end' });
+      // Then a short chase: images/embeds grow rows after the first
+      // commit and virtua keeps adjusting as it measures. Reveal on the
+      // first tick (always — so the list can never get stuck hidden).
       const chase = (delays: number[]) => {
         if (delays.length === 0) return;
         const [d, ...rest] = delays;
@@ -1035,6 +1053,7 @@ function Scroller({
           if (forceSnapToBottomRef.current || distance < 400) {
             vref.current?.scrollToIndex(messageGroups.length, { align: 'end' });
           }
+          setBottomReady(true);
           chase(rest);
         }, d);
       };
@@ -1171,7 +1190,9 @@ function Scroller({
       <div
         ref={ref}
         onScroll={handleScroll}
-        className="absolute inset-0 overflow-y-auto scrollbar-thin px-4 pb-2"
+        className={`absolute inset-0 overflow-y-auto scrollbar-thin px-4 pb-2 ${
+          bottomReady ? '' : 'opacity-0'
+        }`}
       >
         <Virtualizer ref={vref} scrollRef={ref} shift={shiftPrepend}>
           {[
@@ -2409,6 +2430,8 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
             token: r.token,
             wsUrl: r.wsUrl,
             sessionId: r.voiceState.sessionId,
+            channelId: channel.id,
+            isDmCall: channel.type === 'dm',
             // Encrypt the call media when this 1:1 DM has E2EE on, using
             // the same shared key the DM uses for messages.
             ...(channel.type === 'dm' && channel.e2eeEnabled

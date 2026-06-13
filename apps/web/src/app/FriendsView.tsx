@@ -353,6 +353,7 @@ function FriendRow({
             wsUrl: r.wsUrl,
             sessionId: r.voiceState.sessionId,
             channelId: dm.channel.id,
+            isDmCall: true,
             backgroundTitle: `Call with ${user.displayName || user.username}`,
             // 1:1 DM with E2EE on → encrypt the call media with the same
             // shared key the DM uses for messages.
