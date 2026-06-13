@@ -167,10 +167,12 @@ final class AppStore: ObservableObject {
             // still flows through onEnd → leaveCurrentVoice → callEnded.
             if let call = self.incomingCall, call.channelId == channelId {
                 self.incomingCall = nil
+                guard !self.endCallKitIfLockedE2EE(call.channel) else { return }
                 self.openVoice(call.channel)
             } else if let dm = self.dms.first(where: { $0.id == channelId }) {
                 // Answered from a notification before the gateway ring
                 // arrived — join directly.
+                guard !self.endCallKitIfLockedE2EE(dm) else { return }
                 self.openVoice(dm)
             } else {
                 // Cold start: a VoIP push relaunched the app and the user
@@ -183,6 +185,7 @@ final class AppStore: ObservableObject {
                     guard let self else { return }
                     await self.loadDMs()
                     if let dm = self.dms.first(where: { $0.id == channelId }) {
+                        guard !self.endCallKitIfLockedE2EE(dm) else { return }
                         self.openVoice(dm)
                     }
                 }
@@ -1046,6 +1049,19 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// CallKit answered a call we can't actually join because the E2EE key
+    /// isn't on this device. Don't strand an active CXCall with no audio
+    /// (openVoice would just silently early-return) — end it cleanly
+    /// (callEnded → forget restores the audio engine gate) and tell the user
+    /// why. Returns true if it handled (blocked) the answer.
+    private func endCallKitIfLockedE2EE(_ channel: Channel) -> Bool {
+        guard channel.isE2EE, e2eeKey(for: channel) == nil else { return false }
+        CallManager.shared.callEnded(channelId: channel.id, remoteEnded: false)
+        e2eeError = "Unlock this conversation to answer this encrypted call."
+        errorText = "That call is end-to-end encrypted. Unlock the conversation, then call back."
+        return true
+    }
+
     func joinVoice(_ channel: Channel) async {
         voiceConnecting = true
         voiceTokenMissing = false
@@ -1399,6 +1415,24 @@ final class AppStore: ObservableObject {
                 handleIncomingCall(vs)
             }
         }
+
+        // Cancel any local CallKit ring whose caller is no longer in the
+        // snapshot. A caller who hung up while our socket was down leaves NO
+        // row in voice_states (the server omits a departed peer), so the live
+        // channelId==nil cancel never reached us and the ring (often via a
+        // VoIP push) is stranded — a ghost ring that, if answered, rings the
+        // caller back. A DM is still "really ringing" only if some OTHER user
+        // is present in it in this authoritative snapshot.
+        for cid in CallManager.shared.ringingChannelIds {
+            let stillRinging = states.contains {
+                $0.channelId == cid && $0.userId != currentUserId
+            }
+            if !stillRinging {
+                callLog.info("READY: cancel stale ring ch \(cid, privacy: .public) (caller absent from snapshot)")
+                CallManager.shared.remoteCancelled(channelId: cid)
+                if incomingCall?.channelId == cid { incomingCall = nil }
+            }
+        }
     }
 
     private func handleIncomingCall(_ vs: VoiceState) {
@@ -1425,6 +1459,22 @@ final class AppStore: ObservableObject {
             return
         }
         callLog.info("ring? caller=\(vs.userId, privacy: .public) ch=\(channelId, privacy: .public) me=\(self.currentUserId ?? "nil", privacy: .public) inVoice=\(self.voiceChannelId ?? "nil", privacy: .public)")
+        // We are now present in this DM call on ANOTHER device (answered there).
+        // The DM-channel fan-out delivers our OWN join to every device of ours,
+        // so this device's ring is stale. Dismiss the local CallKit ring +
+        // in-app overlay WITHOUT a server decline/hangup — the call is live on
+        // the other device, and a decline here would evict the caller from the
+        // SFU and kill it. Scope tightly: only when this device is ringing or
+        // isn't itself joined to that channel, so an outgoing/self-join echo on
+        // the ANSWERING device (voiceChannelId == channelId) never misfires.
+        if vs.userId == currentUserId {
+            if incomingCall?.channelId == channelId || voiceChannelId != channelId {
+                if incomingCall?.channelId == channelId { incomingCall = nil }
+                CallManager.shared.remoteCancelled(channelId: channelId)
+                callLog.info("ring dismissed: answered elsewhere ch=\(channelId, privacy: .public)")
+            }
+            return
+        }
         guard vs.userId != currentUserId,
               voiceChannelId != channelId,
               incomingCall?.channelId != channelId else {

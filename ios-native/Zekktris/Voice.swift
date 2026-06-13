@@ -15,6 +15,13 @@ import AudioToolbox
 final class VoiceManager: ObservableObject {
     enum State: String { case idle, connecting, connected, reconnecting, failed }
 
+    /// True whenever LiveKit owns the shared AVAudioSession (connecting →
+    /// connected → reconnecting). Read by VoiceMessage's recorder/player so
+    /// they never re-categorize or deactivate the session out from under a
+    /// live call (which killed the mic / deactivated the call mid-conversation).
+    /// All touch points are @MainActor, so the unsafe-static is fine.
+    nonisolated(unsafe) static var callAudioActive = false
+
     @Published private(set) var state: State = .idle
     @Published private(set) var isMuted = false
     /// When deafened, all remote audio is muted for the local listener (and the
@@ -58,6 +65,9 @@ final class VoiceManager: ObservableObject {
         // previous disconnect is still draining), or mic/deafen would no-op.
         isTearingDown = false
         state = .connecting
+        // LiveKit is taking the shared audio session — block voice-message
+        // playback/recording from re-categorizing or deactivating it.
+        Self.callAudioActive = true
         isMuted = !publishMic
         let r: Room
         if let e2eeKey {
@@ -90,6 +100,7 @@ final class VoiceManager: ObservableObject {
             lastError = error.localizedDescription
             state = .failed
             room = nil
+            Self.callAudioActive = false
         }
     }
 
@@ -119,9 +130,12 @@ final class VoiceManager: ObservableObject {
         }
         guard let room, isConnected, !isMuted, !isTearingDown else { return }
         _ = try? await room.localParticipant.setMicrophone(enabled: false)
-        // Re-check between awaits: a hangup may have started teardown while the
-        // first call was in flight — don't issue a second Room op into it.
-        guard !isTearingDown, self.room != nil else { return }
+        // Re-check between awaits: a hangup may have started teardown OR the
+        // user may have muted while the first call was in flight. Re-check
+        // !isMuted (also covers deafen, which forces isMuted=true) so we don't
+        // re-enable the mic against a fresh mute, and re-read self.room so we
+        // target the CURRENT room, not a stale captured reference.
+        guard !isTearingDown, !isMuted, let room = self.room else { return }
         _ = try? await room.localParticipant.setMicrophone(enabled: true)
     }
 
@@ -293,10 +307,14 @@ final class VoiceManager: ObservableObject {
         // teardown is freeing (the LiveKit audio-worker UAF crash on call-end).
         guard let r = room, !isTearingDown else {
             room = nil
+            Self.callAudioActive = false
             return
         }
         isTearingDown = true
         room = nil
+        // LiveKit is releasing the shared audio session — voice messages may
+        // use it again.
+        Self.callAudioActive = false
         state = .idle
         isMuted = false
         isDeafened = false

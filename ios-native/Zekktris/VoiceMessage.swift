@@ -18,6 +18,11 @@ final class VoiceRecorder: ObservableObject {
     private var powerSamples: [Float] = []
 
     func start() {
+        // Never seize the shared audio session from a live call — recording
+        // a voice message mid-call would kill the call's mic/audio. (The
+        // composer also hides the recorder during a call; this is defense
+        // in depth.)
+        guard !VoiceManager.callAudioActive else { return }
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playAndRecord, mode: .default)
@@ -66,7 +71,10 @@ final class VoiceRecorder: ObservableObject {
         let dur = max(1, Int(rec.currentTime.rounded()))
         rec.stop()
         recording = false
-        try? AVAudioSession.sharedInstance().setActive(false)
+        // Don't deactivate the shared session while a call holds it — that
+        // would drop the call's audio. If a call is active the recorder
+        // never activated the session (start() bailed), so skipping is safe.
+        if !VoiceManager.callAudioActive { try? AVAudioSession.sharedInstance().setActive(false) }
         let waveform = Self.waveformBase64(from: powerSamples, buckets: 48)
         recorder = nil
         return (url, dur, waveform)
@@ -79,7 +87,8 @@ final class VoiceRecorder: ObservableObject {
         recording = false
         if let url = fileURL { try? FileManager.default.removeItem(at: url) }
         fileURL = nil
-        try? AVAudioSession.sharedInstance().setActive(false)
+        // See stop(): never deactivate the shared session out from under a call.
+        if !VoiceManager.callAudioActive { try? AVAudioSession.sharedInstance().setActive(false) }
     }
 
     /// Map an averagePower dB reading (~ -50…0) to 0…1.
@@ -147,8 +156,13 @@ final class VoiceClipPlayer: ObservableObject {
             }
             player = p
         }
-        try? AVAudioSession.sharedInstance().setCategory(.playback)
-        try? AVAudioSession.sharedInstance().setActive(true)
+        // Don't re-categorize/activate the shared session while a call owns it
+        // (that would switch the call's route / interrupt it). The clip still
+        // plays on the call's already-active session.
+        if !VoiceManager.callAudioActive {
+            try? AVAudioSession.sharedInstance().setCategory(.playback)
+            try? AVAudioSession.sharedInstance().setActive(true)
+        }
         player?.play()
         playing = true
     }

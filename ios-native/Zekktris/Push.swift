@@ -177,7 +177,24 @@ final class VoipPushHandler: NSObject, PKPushRegistryDelegate {
                 CallManager.shared.reportIncoming(channelId: placeholder, callerName: callerName)
                 CallManager.shared.callEnded(channelId: placeholder, remoteEnded: true)
             } else {
-                CallManager.shared.reportIncoming(channelId: channelId, callerName: callerName)
+                // Suppress a DUPLICATE ring: if we're already in this call, or
+                // an in-app ring overlay is already showing for it (foreground),
+                // a CallKit ring here is a redundant double-ring. PushKit still
+                // forbids returning without reporting a call, so satisfy the
+                // contract with a throwaway placeholder we immediately end —
+                // no ring surfaces, yet iOS keeps delivering future VoIP pushes.
+                // (store==nil = cold VoIP relaunch: we know nothing, so ring.)
+                let store = AppStore.shared
+                let suppressRing = store != nil
+                    && (store?.voiceChannelId == channelId
+                        || store?.incomingCall?.channelId == channelId)
+                if suppressRing {
+                    let placeholder = UUID().uuidString
+                    CallManager.shared.reportIncoming(channelId: placeholder, callerName: callerName)
+                    CallManager.shared.callEnded(channelId: placeholder, remoteEnded: true)
+                } else {
+                    CallManager.shared.reportIncoming(channelId: channelId, callerName: callerName)
+                }
                 // Connect the gateway so the caller's HANGUP arrives as a normal
                 // event while the CallKit ring is active (iOS grants background
                 // runtime for an active call). This dismisses the ring when the
