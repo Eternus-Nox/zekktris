@@ -1827,11 +1827,13 @@ struct SettingsView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .foregroundColor(Theme.ink1)
                 .onChange(of: bio) { newValue in
-                    // Hard cap mirrors the server's 500-char bound.
-                    if newValue.count > 500 { bio = String(newValue.prefix(500)) }
+                    // Hard cap mirrors the server's BIO_MAX_LENGTH (200) —
+                    // the web editor uses the same limit. A higher cap here
+                    // just invited 400s on Save for 201–500-char bios.
+                    if newValue.count > 200 { bio = String(newValue.prefix(200)) }
                 }
             HStack {
-                Text("\(bio.count)/500").font(.zkSans(11)).foregroundColor(Theme.ink3)
+                Text("\(bio.count)/200").font(.zkSans(11)).foregroundColor(Theme.ink3)
                 Spacer()
                 Button {
                     let b = bio

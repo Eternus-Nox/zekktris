@@ -13,6 +13,11 @@ final class Session: ObservableObject {
     @Published var currentUser: SelfUser? { didSet { cacheUser(currentUser) } }
     @Published var authError: String?
     @Published var busy = false
+    /// True once a login returned `requires2FA` — the password was accepted
+    /// but the account has 2FA on. The login view reveals a code field and
+    /// resubmits with it. Cleared on a fresh email/password attempt and on
+    /// success.
+    @Published var needs2FA = false
     /// When true, a signed-in session is gated behind a biometric unlock.
     @Published var locked = false
 
@@ -78,13 +83,31 @@ final class Session: ObservableObject {
         }
     }
 
-    func login(email: String, password: String) async {
+    func login(email: String, password: String, code: String? = nil) async {
         busy = true; authError = nil
+        // A fresh email/password attempt (no code) resets the 2FA prompt; a
+        // resubmit WITH a code keeps it visible until we know the code took.
+        if code == nil { needs2FA = false }
         defer { busy = false }
         do {
-            let session = try await api.login(email: email, password: password)
+            let session = try await api.login(email: email, password: password, code: code)
+            needs2FA = false
             persist(session)
         } catch {
+            // Password was right but the account needs a 2FA code — reveal the
+            // code field instead of surfacing the raw JSON body as an error.
+            if let apiErr = error as? APIError, apiErr.requires2FA {
+                needs2FA = true
+                authError = nil
+                return
+            }
+            // Already in the code stage and the entered code was rejected. The
+            // server returns a plain 401 for a wrong code (indistinguishable
+            // from a bad password, by design), so key off our own state.
+            if needs2FA, code != nil, (error as? APIError)?.status == 401 {
+                authError = "That code didn't work. Try again."
+                return
+            }
             authError = message(for: error)
         }
     }
@@ -106,26 +129,34 @@ final class Session: ObservableObject {
         keychain.delete(tokenKey)
         currentUser = nil
         phase = .signedOut
-        // Revoke server-side BEFORE dropping the token — clearing the token
-        // first made the logout request go out unauthenticated, so the
-        // server-side session was never actually revoked.
+        // Snapshot the token to revoke with, then drop it from the client
+        // IMMEDIATELY. The teardown below makes up to three network calls
+        // that can stall for many seconds; if the user signs back in
+        // (password autofill makes this a few seconds) while they're in
+        // flight, the OLD code read `api.token` at execution time and
+        // revoked the NEW session, then nil'd the new token and deleted its
+        // refresh cookie — leaving the just-signed-in user broken. We now
+        // revoke with the captured OLD token and never touch the new one.
+        let oldToken = api.token
+        api.token = nil
         Task { [api] in
-            // Unregister push tokens FIRST, while the access token is still
-            // valid — api.logout() revokes the session and blacklists the
-            // token, after which a device-token DELETE would 401 and the
-            // server would keep pushing (incl. VoIP call rings) to this
-            // signed-out device. Both best-effort.
+            guard let oldToken else { return }
+            // Unregister push tokens FIRST, then revoke — all pinned to the
+            // OLD token (bearerOverride also disables refresh-retry so a 401
+            // can't resurrect + re-persist a dead session). Best-effort.
             if let t = PushManager.shared.apnsTokenHex {
-                await api.unregisterDeviceToken(token: t)
+                await api.unregisterDeviceToken(token: t, bearer: oldToken)
             }
             if let t = VoipPushHandler.shared.voipTokenHex {
-                await api.unregisterDeviceToken(token: t)
+                await api.unregisterDeviceToken(token: t, bearer: oldToken)
             }
-            await api.logout()
-            api.token = nil
+            await api.logout(bearer: oldToken)
             // The server clears the refresh cookie on logout; mirror it
-            // locally in case the request didn't land.
-            if let url = URL(string: Config.apiBaseURL) {
+            // locally in case the request didn't land — but ONLY if we're
+            // still signed out. A re-login during these in-flight calls set
+            // api.token non-nil via persist(); deleting cookies then would
+            // wipe the fresh refresh cookie and break the new session.
+            if api.token == nil, let url = URL(string: Config.apiBaseURL) {
                 for cookie in HTTPCookieStorage.shared.cookies(for: url) ?? [] {
                     HTTPCookieStorage.shared.deleteCookie(cookie)
                 }

@@ -46,6 +46,10 @@ final class Gateway: ObservableObject {
     private var token: String?
     private var tokenObserver: NSObjectProtocol?
     private var intentionallyClosed = false
+    /// Guards the IDENTIFY-rejected → one-shot-token-refresh recovery so a
+    /// server that keeps rejecting (genuine revoke) can't loop forever.
+    /// Reset to false on a successful READY.
+    private var identifyRefreshAttempted = false
     /// Dedups reconnect scheduling so the zombie-watchdog and a real close
     /// event racing each other can't double-advance the backoff. Reset when a
     /// socket opens.
@@ -198,12 +202,39 @@ final class Gateway: ObservableObject {
                 sendIdentify()
                 return
             }
-            // IDENTIFY itself was rejected — token bad or session revoked. Fatal:
-            // don't auto-retry (today's behavior).
-            intentionallyClosed = true
-            status = .closed
+            // IDENTIFY itself was rejected. The common, RECOVERABLE cause is a
+            // simply-expired access token: tokens live ~15 min and only refresh
+            // on REST 401s, so after the app idles in the background past expiry
+            // the foreground reconnect IDENTIFYs with a stale token and lands
+            // here. Previously this latched closed permanently — realtime stayed
+            // dead (no messages/presence) until app relaunch while REST kept
+            // working off the cookie. Attempt ONE token refresh and reconnect;
+            // only latch closed if the refresh itself fails (genuine
+            // revoke/ban/logout — the refresh cookie is dead too).
             heartbeatTask?.cancel(); heartbeatTask = nil
             ackWatchdogTask?.cancel(); ackWatchdogTask = nil
+            if identifyRefreshAttempted {
+                intentionallyClosed = true
+                status = .closed
+                return
+            }
+            identifyRefreshAttempted = true
+            status = .connecting
+            Task { @MainActor in
+                if await APIClient.shared.refreshAccessToken() {
+                    // refreshAccessToken sets APIClient.shared.token synchronously
+                    // before returning; read it directly rather than waiting on
+                    // the (async) notification observer.
+                    self.token = APIClient.shared.token
+                    self.sessionId = nil
+                    self.lastSeq = nil
+                    self.resuming = false
+                    self.openSocket()
+                } else {
+                    self.intentionallyClosed = true
+                    self.status = .closed
+                }
+            }
         case 0: // DISPATCH
             guard let t = obj["t"] as? String else { return }
             // READY (fresh identify) or RESUMED (replay caught us up) both mean
@@ -213,6 +244,9 @@ final class Gateway: ObservableObject {
                 status = .ready
                 backoffMs = 1_000
                 resuming = false
+                // A live session means the token worked — re-arm the one-shot
+                // IDENTIFY-refresh recovery for any future expiry.
+                identifyRefreshAttempted = false
                 if let d = obj["d"] as? [String: Any], let sid = d["session_id"] as? String {
                     sessionId = sid
                 }

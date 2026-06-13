@@ -565,7 +565,13 @@ struct JoinVoiceResult: Codable {
 }
 
 // ── Request bodies ──────────────────────────────────────────────────────────
-struct LoginBody: Codable { let email: String; let password: String }
+struct LoginBody: Codable {
+    let email: String
+    let password: String
+    /// TOTP or recovery code for 2FA accounts. Omitted on the first attempt;
+    /// the server replies `{requires2FA:true}` and the UI resubmits with it.
+    var code: String? = nil
+}
 struct RegisterBody: Codable {
     let email: String
     let username: String

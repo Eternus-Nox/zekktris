@@ -5,6 +5,10 @@ import Foundation
 struct APIError: LocalizedError {
     let status: Int
     let message: String
+    /// True when the server answered a login with `{requires2FA:true}` — the
+    /// password was correct but a TOTP/recovery code is needed. Lets the
+    /// login UI reveal a code field instead of showing the raw JSON body.
+    var requires2FA: Bool = false
     var errorDescription: String? { message }
 }
 
@@ -123,9 +127,13 @@ final class APIClient {
             return try await send(method, path, bodyData: bodyData, authorized: authorized, isRetry: true)
         }
         guard (200..<300).contains(http.statusCode) else {
+            let needs2FA = Self.requires2FA(data)
             throw APIError(
                 status: http.statusCode,
-                message: Self.extractError(data) ?? "Request failed (\(http.statusCode))"
+                message: needs2FA
+                    ? "Enter your two-factor code."
+                    : (Self.extractError(data) ?? "Request failed (\(http.statusCode))"),
+                requires2FA: needs2FA
             )
         }
         do {
@@ -135,17 +143,32 @@ final class APIClient {
         }
     }
 
+    /// Detects the login `{requires2FA:true}` 401 hint so callers can prompt
+    /// for a code instead of surfacing the raw JSON body as an error.
+    private static func requires2FA(_ data: Data) -> Bool {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return obj["requires2FA"] as? Bool == true
+    }
+
     /// Fire-and-mostly-forget for endpoints whose body we don't decode.
     @discardableResult
-    private func sendNoDecode(_ method: String, _ path: String, authorized: Bool = true, isRetry: Bool = false) async -> Bool {
+    /// `bearerOverride` pins the Authorization token for THIS call instead of
+    /// using `self.token`, and disables the 401→refresh retry. Used by logout's
+    /// teardown so it revokes the OLD session with the OLD token even after a
+    /// fast re-login has replaced `self.token` — and so it never refreshes a
+    /// dead session back into a live one (which would re-persist a token the
+    /// logout just deleted).
+    private func sendNoDecode(_ method: String, _ path: String, authorized: Bool = true, isRetry: Bool = false, bearerOverride: String? = nil) async -> Bool {
         guard let url = URL(string: Config.apiBaseURL + path) else { return false }
         var req = URLRequest(url: url)
         req.httpMethod = method
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        if authorized, let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        let bearer = bearerOverride ?? token
+        if authorized, let bearer { req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization") }
         guard let (_, resp) = try? await session.data(for: req),
               let http = resp as? HTTPURLResponse else { return false }
-        if http.statusCode == 401, canRetryAfterRefresh(path, authorized: authorized, isRetry: isRetry),
+        if bearerOverride == nil, http.statusCode == 401,
+           canRetryAfterRefresh(path, authorized: authorized, isRetry: isRetry),
            await refreshAccessToken() {
             return await sendNoDecode(method, path, authorized: authorized, isRetry: true)
         }
@@ -188,8 +211,8 @@ final class APIClient {
     }
 
     // ── Auth ──────────────────────────────────────────────────────────────
-    func login(email: String, password: String) async throws -> AuthSession {
-        let body = try JSONEncoder().encode(LoginBody(email: email, password: password))
+    func login(email: String, password: String, code: String? = nil) async throws -> AuthSession {
+        let body = try JSONEncoder().encode(LoginBody(email: email, password: password, code: code))
         return try await send("POST", "/auth/login", bodyData: body, authorized: false)
     }
 
@@ -210,8 +233,8 @@ final class APIClient {
         return try await send("POST", "/auth/register", bodyData: body, authorized: false)
     }
 
-    func logout() async {
-        await sendNoDecode("POST", "/auth/logout")
+    func logout(bearer: String? = nil) async {
+        await sendNoDecode("POST", "/auth/logout", bearerOverride: bearer)
     }
 
     /// Single public profile. Includes `canMessage` (whether the viewer may
@@ -791,9 +814,9 @@ final class APIClient {
     }
 
     /// Unregister an APNs device token (e.g. on logout). Best-effort.
-    func unregisterDeviceToken(token: String) async {
+    func unregisterDeviceToken(token: String, bearer: String? = nil) async {
         let encoded = token.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? token
-        await sendNoDecode("DELETE", "/users/@me/device-tokens/\(encoded)")
+        await sendNoDecode("DELETE", "/users/@me/device-tokens/\(encoded)", bearerOverride: bearer)
     }
 
     // ── Profile ───────────────────────────────────────────────────────────

@@ -122,11 +122,16 @@ struct LoginView: View {
 
     @State private var email = ""
     @State private var password = ""
+    @State private var code = ""
     @State private var showForgot = false
     @FocusState private var focus: Field?
-    private enum Field { case email, password }
+    private enum Field { case email, password, code }
 
-    private var canSubmit: Bool { !email.isEmpty && !password.isEmpty }
+    private var canSubmit: Bool {
+        guard !email.isEmpty, !password.isEmpty else { return false }
+        // In the 2FA stage, also require a code.
+        return !session.needs2FA || !code.isEmpty
+    }
 
     var body: some View {
         ScrollView {
@@ -145,16 +150,35 @@ struct LoginView: View {
                     AuthField(
                         title: "Password", text: $password, isSecure: true,
                         textContentType: .password,
-                        submitLabel: .go, onSubmit: submit
+                        submitLabel: session.needs2FA ? .next : .go,
+                        onSubmit: { session.needs2FA ? (focus = .code) : submit() }
                     )
                     .focused($focus, equals: .password)
+
+                    // Revealed once the server says the account has 2FA on.
+                    // Accepts a TOTP code or a one-time recovery code.
+                    if session.needs2FA {
+                        AuthField(
+                            title: "Two-factor code", text: $code,
+                            keyboard: .numberPad,
+                            textContentType: .oneTimeCode,
+                            submitLabel: .go, onSubmit: submit
+                        )
+                        .focused($focus, equals: .code)
+                        Text("Enter the 6-digit code from your authenticator app, or a recovery code.")
+                            .font(.zkSans(12))
+                            .foregroundColor(Theme.ink3)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
 
-                HStack {
-                    Spacer()
-                    Button("Forgot password?") { showForgot = true }
-                        .font(.zkSans(13))
-                        .foregroundColor(Theme.accent)
+                if !session.needs2FA {
+                    HStack {
+                        Spacer()
+                        Button("Forgot password?") { showForgot = true }
+                            .font(.zkSans(13))
+                            .foregroundColor(Theme.accent)
+                    }
                 }
 
                 if let error = session.authError {
@@ -164,15 +188,28 @@ struct LoginView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                PrimaryButton(title: "Sign in", busy: session.busy, enabled: canSubmit, action: submit)
+                PrimaryButton(
+                    title: session.needs2FA ? "Verify" : "Sign in",
+                    busy: session.busy, enabled: canSubmit, action: submit
+                )
 
-                Button(action: switchToRegister) {
-                    Text("Need an account? ")
-                        .foregroundColor(Theme.ink3)
-                    + Text("Register").foregroundColor(Theme.accent)
+                if session.needs2FA {
+                    Button("Use a different account") {
+                        session.needs2FA = false
+                        session.authError = nil
+                        code = ""
+                    }
+                    .font(.zkSans(13))
+                    .foregroundColor(Theme.ink3)
+                } else {
+                    Button(action: switchToRegister) {
+                        Text("Need an account? ")
+                            .foregroundColor(Theme.ink3)
+                        + Text("Register").foregroundColor(Theme.accent)
+                    }
+                    .font(.zkSans(14))
+                    .padding(.top, 4)
                 }
-                .font(.zkSans(14))
-                .padding(.top, 4)
 
                 Spacer(minLength: 0)
             }
@@ -189,7 +226,8 @@ struct LoginView: View {
     private func submit() {
         guard canSubmit else { return }
         focus = nil
-        Task { await session.login(email: email, password: password) }
+        let twoFactor = session.needs2FA ? code.trimmingCharacters(in: .whitespaces) : nil
+        Task { await session.login(email: email, password: password, code: twoFactor) }
     }
 }
 
