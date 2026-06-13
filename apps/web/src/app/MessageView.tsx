@@ -1040,20 +1040,33 @@ function Scroller({
       // browser paints, so the very first (hidden) frame is at bottom.
       vref.current?.scrollToIndex(messageGroups.length, { align: 'end' });
       // Then a short chase: images/embeds grow rows after the first
-      // commit and virtua keeps adjusting as it measures. Reveal on the
-      // first tick (always — so the list can never get stuck hidden).
+      // commit and virtua keeps adjusting as it measures. We REVEAL only
+      // once the list is confirmed pinned at the bottom (checked on the
+      // frame AFTER each snap, since virtua applies scrollToIndex
+      // asynchronously) — revealing before then would flash the top and
+      // look like a scroll-down. A final unconditional reveal guarantees
+      // the list can never get stuck hidden (e.g. a measurement quirk).
+      const revealIfPinned = () => {
+        requestAnimationFrame(() => {
+          if (prevChannelRef.current !== channelId) { setBottomReady(true); return; }
+          const el = ref.current;
+          if (!el) { setBottomReady(true); return; }
+          const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+          if (distance < PIN_THRESHOLD_PX) setBottomReady(true);
+        });
+      };
       const chase = (delays: number[]) => {
-        if (delays.length === 0) return;
+        if (delays.length === 0) { setBottomReady(true); return; }
         const [d, ...rest] = delays;
         setTimeout(() => {
-          if (prevChannelRef.current !== channelId) return;
+          if (prevChannelRef.current !== channelId) { setBottomReady(true); return; }
           const el = ref.current;
-          if (!el) return;
+          if (!el) { setBottomReady(true); return; }
           const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
           if (forceSnapToBottomRef.current || distance < 400) {
             vref.current?.scrollToIndex(messageGroups.length, { align: 'end' });
           }
-          setBottomReady(true);
+          revealIfPinned();
           chase(rest);
         }, d);
       };

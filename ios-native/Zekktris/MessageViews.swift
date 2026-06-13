@@ -97,7 +97,15 @@ struct MessageListView: View {
                                let firstUnread = firstUnreadId(boundary) {
                                 // Initial load with unread → land on the divider.
                                 proxy.scrollTo(firstUnread, anchor: .top)
+                            } else if wasEmpty {
+                                // Initial fill of this channel → just BE at the
+                                // bottom. No animation: animating here reads as
+                                // the view "scrolling down to" the newest message
+                                // on every open, which is what we don't want.
+                                proxy.scrollTo(bottomAnchor, anchor: .bottom)
                             } else {
+                                // A new message arrived while we're viewing →
+                                // a gentle scroll-to-bottom is appropriate here.
                                 withAnimation(.easeOut(duration: 0.2)) {
                                     proxy.scrollTo(bottomAnchor, anchor: .bottom)
                                 }
