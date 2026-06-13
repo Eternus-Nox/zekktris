@@ -631,17 +631,30 @@ first-run UX walk. 41 findings confirmed (2 independent verifiers each), 1 refut
   `api.token == nil` — fixes a fast re-login getting its new session revoked
   (`Session.swift`/`APIClient.swift`); bio editor cap 500→200 to match BIO_MAX_LENGTH (`MainView.swift`).
 
+- **Native CallKit/audio batch (HIGH/MED — Xcode build + iOS tests green; adversarially reviewed
+  non-regressing; each needs a 2-device call to CONFIRM the fix lands):** answered-elsewhere ring
+  now dismissed without a server decline so it can't evict the caller/kill the live call
+  (handleIncomingCall self-branch); applyReadyVoiceStates cancels a stale ring whose caller is
+  absent from the snapshot (+ CallManager.ringingChannelIds); VoiceManager.callAudioActive gates
+  the voice-message recorder/player off the shared AVAudioSession during a call; VoIP push
+  reports-then-ends a placeholder instead of double-ringing when already-in-call/in-app-ring-showing
+  (notifyCalls gating deferred); CallKit answer of a keyless E2EE DM ends cleanly + prompts unlock
+  (endCallKitIfLockedE2EE); ensureMicEnabled re-checks !isMuted + re-reads room between awaits.
+- **Web UX: locked-E2EE DM unlock affordance (MED) — FIXED:** persistent "Enter password" banner
+  above the composer (opens the existing DmSettingsPanel unlock form), gate matches the send-gate,
+  clears live via the e2ee key-version store; tombstone copy points at the banner. (`MessageView.tsx`,
+  `MessageItem.tsx`)
+
 ## Still OPEN (prioritized; not yet fixed)
-- **Native iOS — runtime-sensitive, need a device/simulator call to verify:** CallKit holes —
-  multi-device answer doesn't dismiss ring + decline kills live call, ghost ring after missed
-  hangup, unconditional VoIP ring, E2EE-answer dead-ends (`AppStore.swift`/`Push.swift`, HIGH);
-  voice-message playback clobbers the live call's AVAudioSession (`VoiceMessage.swift`, HIGH);
-  mention badges only repair on reconnect; notification tap dead-ends for un-loaded guilds;
-  back-nav leaves false read receipts (all MED/LOW).
-- **Web UX (MED, remaining):** locked-E2EE DM gives no obvious unlock affordance (form behind
-  an unlabeled gear); email-verify gate has no escape for a typo'd address (needs a small
-  change-email endpoint for never-verified accounts); raw transport errors leak to auth
-  screens; blank "no servers" on a silent boot failure.
+- **Native iOS:** camera-quality change doesn't apply on next camera-on — the ONLY remaining voice
+  finding the review flagged risk-as-planned (the LiveKit Swift republish API in the plan was
+  invalid); needs a safe rewrite + device test (`Voice.swift`, LOW). Plus: mention badges only
+  repair on reconnect; notification tap dead-ends for un-loaded guilds; back-nav false read receipts
+  (all LOW).
+- **Web UX (MED, remaining):** email-verify gate has no escape for a typo'd address (needs a small
+  change-email endpoint for never-verified accounts — server route + client method, planned but not
+  built); raw transport errors leak to auth screens; blank "no servers" on a silent boot failure.
+  (locked-E2EE unlock affordance — now FIXED, see above.)
 - **`Config.swift` hardcodes `zekktris.com`** — the canonical native client cannot reach a
   self-hosted instance without recompiling. Recommend the scan-to-connect QR flow (`lib/qr.ts`
   exists). Major self-hosting gap. (HIGH, product)
