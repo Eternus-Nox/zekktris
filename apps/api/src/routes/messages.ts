@@ -869,6 +869,14 @@ messagesRouter.post(
           // with headroom; larger messages just show the fallback.
           const E2EE_PUSH_MAX = 3500;
           const prefs = await dms.getDmNotificationPrefsForChannel(channelId, allowedTargets);
+          // Common fields so every DM notification carries an inline Reply
+          // action: `kind: 'message'` → the Reply category on the client, and
+          // `data` with the channel id + whether the conversation is encrypted
+          // (so the reply handler knows to encrypt on-device before sending).
+          // The channel id is already in `url`/`tag`, so adding it to `data`
+          // leaks nothing new.
+          const replyData = { channelId: channelId.toString(), isE2EE: isE2EEContent };
+          const common = { url, tag: channelId.toString(), kind: 'message' as const };
           await Promise.all(
             allowedTargets.map((target) => {
               const showContent = prefs.get(target) ?? !isE2EEContent;
@@ -878,25 +886,31 @@ messagesRouter.post(
                   ? {
                       title: contentTitle,
                       body: 'Encrypted message',
-                      url,
-                      tag: channelId.toString(),
+                      ...common,
+                      // NSE decrypt payload (e2ee = ciphertext) only when it
+                      // fits; either way the reply data rides along.
                       ...(fits
-                        ? {
-                            mutableContent: true,
-                            data: { e2ee: payload.content, channelId: channelId.toString() },
-                          }
-                        : {}),
+                        ? { mutableContent: true, data: { ...replyData, e2ee: payload.content } }
+                        : { data: replyData }),
                     }
                   : showContent
-                    ? { title: contentTitle, body: contentBody, url, tag: channelId.toString() }
-                    : { title: genericTitle, body: genericBody, url, tag: channelId.toString() };
+                    ? { title: contentTitle, body: contentBody, ...common, data: replyData }
+                    : { title: genericTitle, body: genericBody, ...common, data: replyData };
               return sendToUser(target, push);
             }),
           );
         } else {
           // Guild mentions: one shared payload (the per-DM preview pref
-          // doesn't apply, and guild messages are never E2EE).
-          const pushPayload = { title, body, url, tag: channelId.toString() };
+          // doesn't apply, and guild messages are never E2EE). Inline reply is
+          // offered here too (kind 'message' + channel id in data).
+          const pushPayload = {
+            title,
+            body,
+            url,
+            tag: channelId.toString(),
+            kind: 'message' as const,
+            data: { channelId: channelId.toString(), isE2EE: false },
+          };
           await Promise.all(allowedTargets.map((target) => sendToUser(target, pushPayload)));
         }
       } catch {

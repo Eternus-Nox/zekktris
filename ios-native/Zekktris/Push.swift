@@ -58,8 +58,12 @@ final class PushManager: ObservableObject {
         }
     }
 
-    /// Notification categories: the "call" category carries inline
-    /// Answer/Decline buttons (matched against the server's action ids).
+    /// Notification categories (matched against the server's `category`):
+    ///  • "call"    — inline Answer/Decline buttons.
+    ///  • "message" — an inline **Reply** text field. On iPhone this opens the
+    ///    keyboard right on the notification; on a paired Apple Watch the same
+    ///    action automatically offers dictation / scribble / canned replies —
+    ///    no watchOS app needed. The typed reply is handled in `didReceive`.
     private func registerCategories() {
         let answer = UNNotificationAction(
             identifier: "accept-call", title: "Answer", options: [.foreground])
@@ -68,7 +72,13 @@ final class PushManager: ObservableObject {
         let call = UNNotificationCategory(
             identifier: "call", actions: [answer, decline],
             intentIdentifiers: [], options: [])
-        UNUserNotificationCenter.current().setNotificationCategories([call])
+        let reply = UNTextInputNotificationAction(
+            identifier: "reply", title: "Reply", options: [],
+            textInputButtonTitle: "Send", textInputPlaceholder: "Message")
+        let message = UNNotificationCategory(
+            identifier: "message", actions: [reply],
+            intentIdentifiers: [], options: [])
+        UNUserNotificationCenter.current().setNotificationCategories([call, message])
     }
 
     /// Called by the app delegate when APNs hands us a token. Forces the
@@ -253,6 +263,24 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         let info = response.notification.request.content.userInfo
         let kind = info["kind"] as? String
         let channelId = Self.channelId(from: info)
+
+        // Inline reply (notification "Reply" field — iPhone keyboard or Apple
+        // Watch). Sending is async, so we hold the completion handler until the
+        // post finishes. Done in a self-contained sender (QuickReply) because
+        // iOS may launch the app into the background just for this, before the
+        // normal UI/session bootstrap has run.
+        if response.actionIdentifier == "reply",
+           let channelId,
+           let textResponse = response as? UNTextInputNotificationResponse {
+            let text = textResponse.userText
+            let isE2EE = (info["isE2EE"] as? Bool)
+                ?? (info["isE2EE"] as? NSNumber)?.boolValue ?? false
+            Task {
+                await QuickReply.send(channelId: channelId, text: text, isE2EE: isE2EE)
+                completionHandler()
+            }
+            return
+        }
 
         switch response.actionIdentifier {
         case "accept-call":

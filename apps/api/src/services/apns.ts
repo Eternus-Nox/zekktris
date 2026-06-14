@@ -231,9 +231,11 @@ function buildApnsPayload(payload: PushPayload): string {
   if (payload.mutableContent) aps['mutable-content'] = 1;
   // Collapse rapid repeats (e.g. one channel) into a thread on the lock screen.
   if (payload.tag) aps['thread-id'] = payload.tag;
-  // Call rings get the "call" category so the native client renders its
-  // inline Answer / Decline actions (registered as a UNNotificationCategory).
-  if (payload.kind === 'call') aps.category = 'call';
+  // The category selects which inline actions the native client renders
+  // (registered as UNNotificationCategory): 'call' → Answer / Decline;
+  // 'message' → an inline Reply text field (iPhone keyboard + Apple Watch
+  // dictation/scribble).
+  if (payload.kind === 'call' || payload.kind === 'message') aps.category = payload.kind;
   // Carry routing data at the top level so the app's tap handler can read it
   // (Capacitor surfaces non-`aps` keys as notification.data).
   const data: Record<string, unknown> = { ...(payload.data ?? {}) };
