@@ -142,6 +142,23 @@ struct MessageListView: View {
         }
         .background(Theme.bg1.opacity(0.9))
         .onAppear { store.openChannel(channel) }
+        .simultaneousGesture(
+            // Swipe to go back to the channel list / DM list. Phone only — on
+            // wide (iPad/Mac) layouts the panes are side-by-side, so there's
+            // nothing to pop. A clearly-horizontal rightward drag pops the
+            // channel (the iOS-standard back direction; the channel view slid
+            // in from the right, so swiping it right reveals the list again).
+            // minimumDistance + the horizontal-dominance test keep it from
+            // stealing the message list's vertical scroll.
+            DragGesture(minimumDistance: 24)
+                .onEnded { v in
+                    guard !store.isWideLayout else { return }
+                    if v.translation.width > 70,
+                       abs(v.translation.width) > abs(v.translation.height) * 1.7 {
+                        store.clearChannel()
+                    }
+                }
+        )
         .safeAreaInset(edge: .bottom) {
             if !isLocked { composer }
         }

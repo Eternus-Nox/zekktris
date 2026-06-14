@@ -160,15 +160,16 @@ extension CallManager: CXProviderDelegate {
     nonisolated func providerDidReset(_ provider: CXProvider) {}
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-        // Gate the LiveKit audio engine OFF until CallKit activates the audio
-        // session (provider(_:didActivate:)). Without this, LiveKit's engine
-        // could start on a session CallKit hasn't activated yet — the race that
-        // previously left CallKit-answered calls silent. Pending mic/playback
-        // requests issued by the room connect are honored once we flip back to
-        // .default in didActivate. Scoped to the CallKit answer path only; the
-        // foreground in-app answer never reaches here, so guild voice and
-        // foreground calls keep LiveKit's normal auto-managed session.
-        try? AudioManager.shared.setEngineAvailability(.none)
+        // Keep LiveKit's audio engine AVAILABLE and let it manage its own
+        // AVAudioSession — exactly like the IN-APP answer path, which has
+        // working two-way audio. We used to gate the engine OFF here
+        // (setEngineAvailability(.none)) and wait for CallKit's
+        // provider(_:didActivate:) to flip it back. But that deadlocked on a
+        // lock-screen answer: with the engine gated, LiveKit never configured/
+        // activated the session, so CallKit's didActivate never fired, the gate
+        // never lifted, and the call was silent BOTH ways. Mirroring the in-app
+        // path (no gate, LiveKit auto-manages .playAndRecord) restores audio.
+        try? AudioManager.shared.setEngineAvailability(.default)
         Task { @MainActor in
             if let channelId = channelByUUID[action.callUUID] {
                 ringing.remove(action.callUUID)
