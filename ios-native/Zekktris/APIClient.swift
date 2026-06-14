@@ -260,9 +260,10 @@ final class APIClient {
         return wrap.channels
     }
 
-    func messages(channelId: String, limit: Int = 50, before: String? = nil) async throws -> [Message] {
+    func messages(channelId: String, limit: Int = 50, before: String? = nil, after: String? = nil) async throws -> [Message] {
         var path = "/channels/\(channelId)/messages?limit=\(limit)"
         if let before { path += "&before=\(before)" }
+        if let after { path += "&after=\(after)" }
         let wrap: MessagesWrap = try await send("GET", path)
         return wrap.messages
     }

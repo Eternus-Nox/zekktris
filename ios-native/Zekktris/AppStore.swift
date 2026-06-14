@@ -486,6 +486,12 @@ final class AppStore: ObservableObject {
     func foregroundReconnect() {
         guard currentUserId != nil else { return }
         gateway.forceReconnect()
+        // The gateway's RESUME replays missed events, but a resume gap — or a
+        // message delivered to the now-discarded suspended socket — can leave
+        // the OPEN conversation missing messages that arrived while we were
+        // backgrounded, and RESUMED skips the READY full-resync. Reconcile the
+        // open channel directly so new messages always appear on return.
+        Task { await reconcileOpenChannel() }
     }
 
     // MARK: Automatic presence state machine
@@ -937,6 +943,34 @@ final class AppStore: ObservableObject {
             decryptVisible()
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
+        }
+    }
+
+    /// Pull any messages that arrived in the OPEN conversation while we were
+    /// backgrounded / the socket was suspended, and append them — so new
+    /// messages show on return without having to leave and re-enter the
+    /// channel. Surgical: fetches only messages NEWER than the newest we hold
+    /// (server `after` cursor), so it preserves scroll position and doesn't
+    /// flash, and it's dedup-safe via `upsert`, so it can't double up with the
+    /// gateway's RESUME replay. Best-effort — a failure just leaves things as
+    /// they were. Called on foreground because the RESUMED path intentionally
+    /// skips the READY full-resync and a resume gap (or a message delivered to
+    /// the now-discarded suspended socket) can otherwise be missed.
+    func reconcileOpenChannel() async {
+        guard let channel = selectedChannel else { return }
+        // Cursor on the newest SERVER-confirmed message (a numeric snowflake);
+        // skip optimistic placeholders, whose ids are send nonces the server
+        // can't page from. Nothing loaded yet → a normal load instead.
+        guard let afterId = messages.last(where: { $0.id.allSatisfy(\.isNumber) })?.id else {
+            await loadMessages(channel)
+            return
+        }
+        do {
+            let newer = try await api.messages(channelId: channel.id, limit: 50, after: afterId)
+            guard channel.id == selectedChannel?.id, !newer.isEmpty else { return }
+            for m in newer.sorted(by: { $0.createdAt < $1.createdAt }) { upsert(m) }
+        } catch {
+            // Best-effort background refresh — don't surface a toast.
         }
     }
 
