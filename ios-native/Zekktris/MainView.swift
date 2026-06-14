@@ -221,7 +221,7 @@ struct MainView: View {
     }
 
     /// Compact (phone) navigation with an interactive **swipe-back**: drag the
-    /// conversation to the RIGHT and it follows your finger; release past 66%
+    /// conversation to the RIGHT and it follows your finger; release past 45%
     /// of the width and it follows through — sliding the rest of the way off
     /// and popping to the previous screen; release short of that (or push it
     /// back left) and it snaps back and stays. Only the message screens (text
@@ -230,13 +230,22 @@ struct MainView: View {
     private var compactNav: some View {
         ZStack {
             // The screen we'd return to, revealed behind the dragged page.
-            // Only the root list (the common "back to the channel/DM list"
-            // case, i.e. a single-item stack) is rendered behind — it's
-            // side-effect-free. Deeper stacks just slide over the backdrop and
-            // pop, avoiding a previous conversation's onAppear firing mid-drag.
+            // Mirror the REAL root layout — the 72pt server rail + the
+            // channel/DM list — so the reveal looks identical to what the shell
+            // renders once the pop completes (the server rail is hidden while a
+            // conversation is open, so we re-create it here). Non-interactive
+            // while the gesture is in flight. Only the root list (single-item
+            // stack) is revealed; deeper stacks slide over the backdrop and pop
+            // so a previous conversation's onAppear doesn't fire mid-drag.
             if backActive && belowRoute == nil {
-                rootContent
-                    .allowsHitTesting(false)
+                HStack(spacing: 0) {
+                    ServerRailView()
+                        .frame(width: 72)
+                        .background(Theme.bg0.opacity(0.85))
+                    Rectangle().fill(Theme.line).frame(width: 1)
+                    rootContent
+                }
+                .allowsHitTesting(false)
             }
             page(for: store.stack.last)
                 .id(routeKey)
@@ -280,7 +289,7 @@ struct MainView: View {
                 // are always cleared by the scheduled completion below.
                 settleX = value.translation.width
                 settling = true
-                if value.translation.width > width * 0.66 {
+                if value.translation.width > width * 0.45 {
                     // Past the threshold: follow through — slide fully off,
                     // then pop (un-animated so the fade doesn't double up).
                     withAnimation(.easeOut(duration: 0.22)) { settleX = width }
