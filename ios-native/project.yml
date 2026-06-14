@@ -28,6 +28,10 @@ targets:
       - path: Zekktris
     dependencies:
       - package: LiveKit
+      # Bundles + embeds the Notification Service Extension into the app so it
+      # can decrypt E2EE message previews on-device (xcodegen auto-adds it to
+      # the Embed App Extensions build phase).
+      - target: NotificationService
     info:
       path: Zekktris/Info.plist
       properties:
@@ -64,6 +68,12 @@ targets:
       path: Zekktris/Zekktris.entitlements
       properties:
         aps-environment: development
+        # Shared with the NotificationService extension. Used as a keychain
+        # access group so the extension can read per-DM E2EE keys to decrypt
+        # message previews. MUST be registered as an App Group in the Apple
+        # Developer account and enabled on BOTH targets (see AppGroupConfig.swift).
+        com.apple.security.application-groups:
+          - group.com.zekktris.native
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native
@@ -75,6 +85,42 @@ targets:
         # Set your Apple Developer Team in Xcode (Signing & Capabilities)
         # or uncomment and fill in here:
         # DEVELOPMENT_TEAM: XXXXXXXXXX
+
+  # Notification Service Extension — decrypts E2EE DM message previews
+  # on-device. Reuses E2EE.swift + AppGroupConfig.swift (compiled directly, no
+  # LiveKit) and reads the per-DM key from the shared app-group keychain. The
+  # server ships the ciphertext with mutable-content so this runs before the
+  # notification is shown; see apps/api/src/routes/messages.ts.
+  NotificationService:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: NotificationService
+      - path: Zekktris/E2EE.swift
+      - path: Zekktris/AppGroupConfig.swift
+    info:
+      path: NotificationService/Info.plist
+      properties:
+        CFBundleDisplayName: Zekktris
+        # MUST match the app's version/build or App Store upload is rejected
+        # (ITMS). Bump alongside the app's CFBundleShortVersionString / the
+        # MARKETING_VERSION + CURRENT_PROJECT_VERSION base settings.
+        CFBundleShortVersionString: "0.1.4"
+        CFBundleVersion: "1"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+    entitlements:
+      path: NotificationService/NotificationService.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.zekktris.native
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.NotificationService
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
 
   # Host-less logic-test target. Compiles E2EE.swift directly (no app host,
   # no LiveKit) so the crypto / call-key interop contract can be tested fast.

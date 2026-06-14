@@ -182,6 +182,12 @@ export interface PushPayload {
       Used to carry the channel id so Accept/Decline can route
       back to the right call. */
   data?: Record<string, unknown>;
+  /** iOS only: set APNs `mutable-content` so a Notification Service
+      Extension runs and can rewrite the notification before it's shown.
+      Used to decrypt an E2EE message preview on-device — the server ships
+      the ciphertext in `data` (never the plaintext, which it can't read).
+      Ignored by Web Push (the service worker has no equivalent hook today). */
+  mutableContent?: boolean;
 }
 
 /**

@@ -391,7 +391,13 @@ final class AppStore: ObservableObject {
 
     /// In-memory key cache (channelId → raw 32-byte key); backed by Keychain.
     private var e2eeKeyCache: [String: Data] = [:]
+    /// Legacy default-group keychain — kept as the read/migrate fallback for
+    /// E2EE keys stored by builds before the app-group move (see below).
     private let keychain = KeychainStore()
+    /// App-group keychain: where E2EE keys now live so the Notification Service
+    /// Extension can read them to decrypt message previews on-device. Falls
+    /// back to `keychain` transparently when the App Group isn't provisioned.
+    private let e2eeKeychain = KeychainStore(accessGroup: AppGroupConfig.identifier)
 
     let api = APIClient.shared
     let gateway = Gateway()
@@ -438,6 +444,9 @@ final class AppStore: ObservableObject {
     func start(token: String, user: SelfUser?) {
         currentUserId = user?.id
         currentUser = user
+        // Move any pre-app-group E2EE keys into the shared keychain so the
+        // Notification Service Extension can decrypt previews (idempotent).
+        migrateE2EEKeysToAppGroupIfNeeded()
         gateway.onEvent = { [weak self] name, data in
             self?.handleEvent(name, data)
         }
@@ -3438,7 +3447,7 @@ final class AppStore: ObservableObject {
     /// Cached/stored key for a channel, or nil if locked on this device.
     func e2eeKey(for channelId: String) -> Data? {
         if let k = e2eeKeyCache[channelId] { return k }
-        guard let b64 = keychain.get(e2eeKeychainKey(channelId)),
+        guard let b64 = e2eeKeychainGet(e2eeKeychainKey(channelId)),
               let bytes = Data(base64Encoded: b64), bytes.count == E2EE.keyBytes else { return nil }
         e2eeKeyCache[channelId] = bytes
         return bytes
@@ -3557,7 +3566,7 @@ final class AppStore: ObservableObject {
     /// Forget the local key (re-locks this device).
     func relockE2EE(_ channelId: String) {
         e2eeKeyCache.removeValue(forKey: channelId)
-        keychain.delete(e2eeKeychainKey(channelId))
+        e2eeKeychainDelete(e2eeKeychainKey(channelId))
         for m in messages where m.channelId == channelId {
             decrypted.removeValue(forKey: m.id)
         }
@@ -3566,7 +3575,7 @@ final class AppStore: ObservableObject {
 
     private func storeKey(_ key: Data, for channelId: String) {
         e2eeKeyCache[channelId] = key
-        keychain.set(key.base64EncodedString(), for: e2eeKeychainKey(channelId))
+        e2eeKeychainSet(key.base64EncodedString(), for: e2eeKeychainKey(channelId))
         e2eeUnlockVersion += 1
     }
 
@@ -3575,6 +3584,64 @@ final class AppStore: ObservableObject {
     /// later signs in on the same device.
     private func e2eeKeychainKey(_ channelId: String) -> String {
         "e2ee.\(currentUserId ?? "anon").\(channelId)"
+    }
+
+    // MARK: App-group keychain routing (for the Notification Service Extension)
+    //
+    // E2EE keys live in the shared app-group keychain so the NSE can read them
+    // to decrypt message previews. These helpers prefer the app-group store and
+    // fall back to the legacy default-group store so neither an app update nor
+    // an unprovisioned App Group entitlement ever loses access to existing keys.
+
+    /// Read a key's base64, falling back to the legacy group (and migrating the
+    /// hit forward so the NSE can see it next time).
+    private func e2eeKeychainGet(_ account: String) -> String? {
+        if let v = e2eeKeychain.get(account) { return v }
+        guard let legacy = keychain.get(account) else { return nil }
+        _ = e2eeKeychain.set(legacy, for: account) // best-effort forward-migrate
+        return legacy
+    }
+
+    /// Write a key into the app-group store (NSE-visible). If the App Group
+    /// isn't provisioned, `set` returns an error and we keep it in the legacy
+    /// group so the app still works — only previews are degraded.
+    private func e2eeKeychainSet(_ value: String, for account: String) {
+        if e2eeKeychain.set(value, for: account) == errSecSuccess {
+            keychain.delete(account) // single source of truth once the group works
+        } else {
+            keychain.set(value, for: account)
+        }
+    }
+
+    private func e2eeKeychainDelete(_ account: String) {
+        e2eeKeychain.delete(account)
+        keychain.delete(account)
+    }
+
+    /// Union of both stores' entries for `prefix`; app-group wins on duplicates.
+    private func e2eeKeychainAll(prefix: String) -> [(account: String, value: String)] {
+        var map: [String: String] = [:]
+        for (a, v) in keychain.allValues(prefix: prefix) { map[a] = v }
+        for (a, v) in e2eeKeychain.allValues(prefix: prefix) { map[a] = v }
+        return map.map { (account: $0.key, value: $0.value) }
+    }
+
+    /// One-time sweep copying legacy default-group E2EE keys into the app-group
+    /// keychain, so the NSE can decrypt previews for conversations unlocked
+    /// before this build. Idempotent; only marks itself done once the app-group
+    /// write succeeds (entitlement provisioned), so it retries on a later launch
+    /// if the user provisions the App Group afterwards.
+    private func migrateE2EEKeysToAppGroupIfNeeded() {
+        let flag = "e2eeKeysMigratedToAppGroup.v1"
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: flag) else { return }
+        let legacy = keychain.allValues(prefix: "e2ee.")
+        if legacy.isEmpty { defaults.set(true, forKey: flag); return }
+        var allOK = true
+        for (account, value) in legacy where e2eeKeychain.get(account) == nil {
+            if e2eeKeychain.set(value, for: account) != errSecSuccess { allOK = false }
+        }
+        if allOK { defaults.set(true, forKey: flag) }
     }
 
     // MARK: E2EE key backup / restore (cross-client with web)
@@ -3586,7 +3653,7 @@ final class AppStore: ObservableObject {
     func exportE2EEKeysJSON() -> Data? {
         let prefix = "e2ee.\(currentUserId ?? "anon")."
         var keys: [String: Data] = [:]
-        for (account, b64) in keychain.allValues(prefix: prefix) {
+        for (account, b64) in e2eeKeychainAll(prefix: prefix) {
             let channelId = String(account.dropFirst(prefix.count))
             guard !channelId.isEmpty,
                   let bytes = Data(base64Encoded: b64), bytes.count == E2EE.keyBytes else { continue }

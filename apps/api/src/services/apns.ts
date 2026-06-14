@@ -225,6 +225,10 @@ function buildApnsPayload(payload: PushPayload): string {
     alert: { title: payload.title, body: payload.body },
     sound: 'default',
   };
+  // Mutable content lets the app's Notification Service Extension rewrite the
+  // notification before it's displayed — used to decrypt an E2EE message
+  // preview on-device (the ciphertext rides along in the custom data below).
+  if (payload.mutableContent) aps['mutable-content'] = 1;
   // Collapse rapid repeats (e.g. one channel) into a thread on the lock screen.
   if (payload.tag) aps['thread-id'] = payload.tag;
   // Call rings get the "call" category so the native client renders its

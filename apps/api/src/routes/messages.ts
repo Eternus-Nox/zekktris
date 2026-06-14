@@ -859,22 +859,38 @@ messagesRouter.post(
         if (isDM) {
           // Per-recipient preview preference. No explicit row → default:
           // E2EE generic, plaintext shows content (today's behavior). For an
-          // E2EE DM with "show content" opted in, the server can only reveal
-          // the SENDER (it holds ciphertext, not plaintext); a Notification
-          // Service Extension would decrypt the body on-device.
+          // E2EE DM where the recipient opted into content previews, the
+          // server can't render the body (it holds ciphertext, not plaintext),
+          // so it ships the ciphertext + channel id with `mutable-content`: the
+          // iOS Notification Service Extension decrypts on-device and rewrites
+          // the body. Clients without the extension (web, or iOS before the
+          // key is available) fall back to the "Encrypted message" body. The
+          // ciphertext is only attached when it fits APNs' ~4 KB payload budget
+          // with headroom; larger messages just show the fallback.
+          const E2EE_PUSH_MAX = 3500;
           const prefs = await dms.getDmNotificationPrefsForChannel(channelId, allowedTargets);
           await Promise.all(
             allowedTargets.map((target) => {
               const showContent = prefs.get(target) ?? !isE2EEContent;
-              const payload = showContent
-                ? {
-                    title: contentTitle,
-                    body: isE2EEContent ? 'Encrypted message' : contentBody,
-                    url,
-                    tag: channelId.toString(),
-                  }
-                : { title: genericTitle, body: genericBody, url, tag: channelId.toString() };
-              return sendToUser(target, payload);
+              const fits = payload.content.length <= E2EE_PUSH_MAX;
+              const push =
+                showContent && isE2EEContent
+                  ? {
+                      title: contentTitle,
+                      body: 'Encrypted message',
+                      url,
+                      tag: channelId.toString(),
+                      ...(fits
+                        ? {
+                            mutableContent: true,
+                            data: { e2ee: payload.content, channelId: channelId.toString() },
+                          }
+                        : {}),
+                    }
+                  : showContent
+                    ? { title: contentTitle, body: contentBody, url, tag: channelId.toString() }
+                    : { title: genericTitle, body: genericBody, url, tag: channelId.toString() };
+              return sendToUser(target, push);
             }),
           );
         } else {
