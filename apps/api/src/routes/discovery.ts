@@ -20,9 +20,12 @@ import { errors } from '../errors';
 import { requireAuth, requireUserId } from '../auth/middleware';
 import { validate } from '../lib/validate';
 import { snowflakeSchema } from '../lib/validation';
-import { toGuild } from '../lib/dto';
+import { toGuild, toGuildMember } from '../lib/dto';
 import * as discovery from '../services/discovery';
 import * as welcome from '../services/welcome';
+import * as guilds from '../services/guilds';
+import * as members from '../services/members';
+import * as permissions from '../services/permissions';
 import { db, schema } from '../db';
 import { and, eq, asc, isNull } from 'drizzle-orm';
 import * as dispatch from '../gateway/dispatch';
@@ -100,44 +103,43 @@ discoveryRouter.post(
     // list updates without a full reload. Every other member sees a
     // GUILD_MEMBER_ADD event for the new joiner.
     if (!result.alreadyMember) {
-      const guildRows = await db
-        .select()
-        .from(schema.guilds)
-        .where(eq(schema.guilds.id, guildId))
-        .limit(1);
-      const guild = guildRows[0];
-      if (guild) {
-        // The joining user's client refreshes its guild list via the
-        // REST response — we don't have a per-user guild-create event
-        // in v1, so the AppState reducer handles the join by reading
-        // the response payload and dispatching a local action.
-        // Other guild members get a member-add broadcast.
-        const userRows = await db
-          .select()
-          .from(schema.users)
-          .where(eq(schema.users.id, userId))
-          .limit(1);
-        const user = userRows[0];
-        if (user) {
-          dispatch.guildMemberAdd(
-            {
-              user: {
-                id: user.id.toString(),
-                username: user.username,
-                displayName: user.displayName,
-                avatarUrl: user.avatarUrl,
-              },
-              roleIds: [],
-              joinedAt: new Date().toISOString(),
-              nickname: null,
-            },
-            guildId,
-          );
-        }
+      // Announce the join through the SAME path as invite-accept and
+      // guild-create (dispatch.userJoinedGuild). It broadcasts a properly
+      // shaped GUILD_MEMBER_ADD — toGuildMember(), which carries the top-level
+      // guildId + userId + full member fields (GuildMemberDTO) — to the other
+      // members, AND seeds the joiner's gateway connection with this guild and
+      // its viewable channels so they get live events immediately instead of
+      // only after a reconnect.
+      //
+      // The earlier hand-built payload omitted the top-level userId and guildId,
+      // so strict clients couldn't use it: the iOS native client's Codable
+      // GuildMember decode failed (and its guildId fallback was also absent),
+      // and the web cached an undefined guildId — a member who joined via the
+      // discovery browser flashed "@user" in mentions and didn't appear in an
+      // open member list until a full guild refresh.
+      const guild = await guilds.getGuild(guildId);
+      const memberDetailed = await members.getMemberDetailed(guildId, userId);
+      if (guild && memberDetailed) {
+        const viewableChannelIds = await permissions.listViewableGuildChannelIds(
+          guildId,
+          userId,
+        );
+        dispatch.userJoinedGuild({
+          userId,
+          guildId,
+          guildDTO: toGuild(guild),
+          memberDTO: toGuildMember(
+            memberDetailed.member,
+            memberDetailed.user,
+            memberDetailed.roleIds,
+          ),
+          viewableChannelIds,
+        });
       }
-      // Post the welcome greeting if this guild has them enabled.
-      // Best-effort; failures are logged + swallowed inside the
-      // service so the response still succeeds.
+      // Post the welcome greeting if this guild has them enabled. Best-effort;
+      // failures are logged + swallowed inside the service so the response still
+      // succeeds. Posted AFTER userJoinedGuild so the joiner is subscribed to
+      // the guild's channels before their greeting's MESSAGE_CREATE dispatches.
       void welcome.postWelcomeMessage(guildId, userId);
     }
 

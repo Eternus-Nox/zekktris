@@ -468,6 +468,18 @@ struct ServerRailView: View {
                             Image(systemName: "bubble.left.and.bubble.right.fill")
                                 .font(.system(size: 19))
                         }
+                        // Unread dot when any DM has unread messages, so you
+                        // can tell from inside a server. Ringed in the rail's
+                        // background so it reads cleanly over the icon.
+                        .overlay(alignment: .topTrailing) {
+                            if store.hasUnreadDMs {
+                                Circle()
+                                    .fill(Theme.ink1)
+                                    .frame(width: 9, height: 9)
+                                    .overlay(Circle().strokeBorder(Theme.bg0, lineWidth: 1.5))
+                                    .offset(x: 2, y: -2)
+                            }
+                        }
                     }
                     .buttonStyle(.plain)
 

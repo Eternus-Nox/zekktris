@@ -64,7 +64,12 @@ final class PushManager: ObservableObject {
     ///    keyboard right on the notification; on a paired Apple Watch the same
     ///    action automatically offers dictation / scribble / canned replies —
     ///    no watchOS app needed. The typed reply is handled in `didReceive`.
-    private func registerCategories() {
+    ///
+    /// Registered at app LAUNCH (AppDelegate.didFinishLaunchingWithOptions), not
+    /// just at sign-in: a push can be delivered/presented on a cold launch
+    /// before the sign-in flow runs, and if the category isn't registered yet
+    /// iOS shows the notification with no actions (only "Dismiss"). Idempotent.
+    func registerCategories() {
         let answer = UNNotificationAction(
             identifier: "accept-call", title: "Answer", options: [.foreground])
         let decline = UNNotificationAction(
@@ -325,6 +330,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
+        // Register notification categories NOW, before any push can be
+        // presented — otherwise a cold-launch notification renders with no
+        // inline actions (the Reply field for messages, Answer/Decline for
+        // calls). Re-registered at sign-in too; idempotent.
+        PushManager.shared.registerCategories()
         // VoIP (PushKit) — full CallKit ringing with the app closed.
         VoipPushHandler.shared.start()
         // AsyncImage (avatars, banners, attachments, emoji) loads through

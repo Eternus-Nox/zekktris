@@ -214,11 +214,16 @@ final class VoiceManager: ObservableObject {
         return CameraCaptureOptions(position: .front, dimensions: dims, fps: fps)
     }
 
-    /// Publish with H.264 so Apple devices use the VideoToolbox HARDWARE
-    /// encoder/decoder. The old default (software VP8) degraded the image to
-    /// keep up under CPU/thermal pressure — that's the blur. H.264 is sharper
-    /// per bit and far cheaper. Simulcast stays on so the SFU can hand weaker
-    /// viewers a lower layer; bitrate scales with the chosen quality.
+    /// Publish the camera as VP8. We briefly used hardware H.264 (VideoToolbox)
+    /// for sharper video, but an iOS-published H.264 stream did NOT render for
+    /// WEB viewers in a guild voice channel — a well-known native→browser H.264
+    /// interop problem (profile / simulcast). Browsers claim generic H.264
+    /// support, so a VP8 *backup* codec wouldn't route to them either. VP8 is
+    /// the universally-decodable WebRTC codec (it's what worked before the H.264
+    /// change), so the camera shows everywhere — iOS↔iOS and iOS→web. Trade-off:
+    /// VP8 is software-encoded and can soften under heavy CPU/thermal load; a
+    /// visible camera beats a sharper invisible one. Simulcast stays on so the
+    /// SFU can hand weaker viewers a lower layer; bitrate scales with quality.
     private func cameraPublishOptions(_ q: CameraQuality) -> VideoPublishOptions {
         let bitrate: Int
         switch q {
@@ -230,7 +235,7 @@ final class VoiceManager: ObservableObject {
         return VideoPublishOptions(
             encoding: VideoEncoding(maxBitrate: bitrate, maxFps: q == .low ? 15 : 30),
             simulcast: true,
-            preferredCodec: .h264)
+            preferredCodec: .vp8)
     }
 
     /// Publish/unpublish the local camera (front camera, hardware H.264 at the

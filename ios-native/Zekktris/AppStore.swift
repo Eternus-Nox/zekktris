@@ -1036,6 +1036,13 @@ final class AppStore: ObservableObject {
         readStates[channelId]?.mentionCount ?? 0
     }
 
+    /// Any direct message conversation has unread messages — drives the unread
+    /// dot on the DMs rail tab (mirrors the per-row dot in DMRow). Uses the same
+    /// `isChannelUnread` rule the DM rows already use, so the two agree.
+    var hasUnreadDMs: Bool {
+        dms.contains { isChannelUnread($0) }
+    }
+
     /// Keep a channel/DM's lastMessageId current as messages arrive, so unread
     /// indicators react even for channels that aren't open.
     private func bumpChannelLastMessage(_ channelId: String, _ messageId: String) {
@@ -3321,7 +3328,20 @@ final class AppStore: ObservableObject {
         case "GUILD_CREATE", "GUILD_DELETE":
             // Joined/left/created/deleted a guild — refresh the rail.
             Task { await loadGuilds() }
-        case "GUILD_MEMBER_ADD", "GUILD_MEMBER_REMOVE":
+        case "GUILD_MEMBER_ADD":
+            // Cache the new member immediately so mentions of them resolve to
+            // their real name instead of flashing "@user" until the member list
+            // is opened. (Previously this only reloaded when the member list
+            // happened to be on screen, so a freshly-joined account showed as
+            // "@user" everywhere until then.) Mirrors GUILD_MEMBER_UPDATE.
+            if let m = try? JSONDecoder().decode(GuildMember.self, from: data),
+               m.guildId == nil || m.guildId == selectedGuild?.id {
+                members[m.userId] = m
+            } else if showMembers, let g = selectedGuild, let d = jsonDict(data),
+                      ((d["guildId"] as? String) ?? (d["guild_id"] as? String)) == g.id {
+                Task { await loadMembers(g) }
+            }
+        case "GUILD_MEMBER_REMOVE":
             // Refresh the member list if it's open for the affected guild.
             if showMembers, let g = selectedGuild, let d = jsonDict(data),
                ((d["guildId"] as? String) ?? (d["guild_id"] as? String)) == g.id {
