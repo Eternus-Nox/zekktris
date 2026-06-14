@@ -14,6 +14,26 @@ struct MainView: View {
 
     private var isWide: Bool { hSizeClass == .regular }
 
+    // Interactive swipe-back (compact only). The live finger-tracking offset is
+    // a @GestureState (`dragX`) so SwiftUI AUTO-RESETS it to 0 if the gesture is
+    // cancelled (an incoming call, a system edge gesture, …) — that guarantees
+    // the page can never be left stuck part-way off-screen with no onEnded to
+    // clean up. The follow-through / snap-back animation after the finger lifts
+    // is driven by `settleX` + `settling` (the gesture is over by then, so it
+    // needs plain @State); both are always cleared by a scheduled completion.
+    // `contentWidth` is the measured page width for the 66% threshold.
+    @GestureState private var dragX: CGFloat = 0
+    @State private var settleX: CGFloat = 0
+    @State private var settling = false
+    @State private var contentWidth: CGFloat = 0
+
+    /// Horizontal offset of the conversation during a back-swipe: the live drag
+    /// while the finger is down, then the settle animation after it lifts.
+    private var backOffset: CGFloat { settling ? settleX : dragX }
+    /// Whether a back-swipe is in progress (dragging or settling). Drives the
+    /// reveal of the screen behind and suppresses the cross-fade.
+    private var backActive: Bool { settling || dragX > 0 }
+
     var body: some View {
         shell
             // Root presenters. Environment objects are re-injected
@@ -89,14 +109,18 @@ struct MainView: View {
                     MinimizedCallBar()
                 }
                 ZStack {
-                    Group {
-                        if isWide { wideDetail } else { content }
+                    if isWide {
+                        wideDetail
+                            .id(routeKey)
+                            .transition(.opacity)
+                    } else {
+                        compactNav
                     }
-                    .id(routeKey)
-                    .transition(.opacity)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .animation(.easeInOut(duration: 0.2), value: routeKey)
+                // Cross-fade pushes/pops as before — but NOT during a back-swipe,
+                // where the slide drives the motion and a fade would fight it.
+                .animation(backActive ? nil : .easeInOut(duration: 0.2), value: routeKey)
             }
             }
         }
@@ -196,10 +220,91 @@ struct MainView: View {
         }
     }
 
-    /// The view for the top of the navigation stack, or the root list.
+    /// Compact (phone) navigation with an interactive **swipe-back**: drag the
+    /// conversation to the RIGHT and it follows your finger; release past 66%
+    /// of the width and it follows through — sliding the rest of the way off
+    /// and popping to the previous screen; release short of that (or push it
+    /// back left) and it snaps back and stays. Only the message screens (text
+    /// channels + DMs) opt in.
     @ViewBuilder
-    private var content: some View {
-        if let route = store.stack.last {
+    private var compactNav: some View {
+        ZStack {
+            // The screen we'd return to, revealed behind the dragged page.
+            // Only the root list (the common "back to the channel/DM list"
+            // case, i.e. a single-item stack) is rendered behind — it's
+            // side-effect-free. Deeper stacks just slide over the backdrop and
+            // pop, avoiding a previous conversation's onAppear firing mid-drag.
+            if backActive && belowRoute == nil {
+                rootContent
+                    .allowsHitTesting(false)
+            }
+            page(for: store.stack.last)
+                .id(routeKey)
+                .transition(.opacity)
+                .offset(x: backOffset)
+        }
+        .background(
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { contentWidth = geo.size.width }
+                    .onChange(of: geo.size.width) { contentWidth = $0 }
+            }
+        )
+        .simultaneousGesture(backSwipeGesture)
+    }
+
+    /// The interactive back-swipe. `simultaneousGesture` + a horizontal-
+    /// dominance check let it coexist with the message list's vertical scroll
+    /// without stealing it. The live offset lives in `@GestureState dragX`
+    /// (auto-reset on cancel); `onEnded` hands off to the settle animation.
+    private var backSwipeGesture: some Gesture {
+        DragGesture(minimumDistance: 12)
+            .updating($dragX) { value, state, _ in
+                // Track only a rightward, horizontally-dominant drag on a
+                // message screen; anything else leaves the offset at 0 so a
+                // vertical scroll is untouched.
+                guard isMessageRoute(store.stack.last),
+                      value.translation.width > 0,
+                      abs(value.translation.width) > abs(value.translation.height)
+                else { return }
+                state = value.translation.width
+            }
+            .onEnded { value in
+                guard isMessageRoute(store.stack.last),
+                      value.translation.width > 0,
+                      abs(value.translation.width) > abs(value.translation.height)
+                else { return }
+                let width = contentWidth > 0 ? contentWidth : 393
+                // Take over from the (now-resetting) live drag at the release
+                // position, then animate to the target. `settling`/`settleX`
+                // are always cleared by the scheduled completion below.
+                settleX = value.translation.width
+                settling = true
+                if value.translation.width > width * 0.66 {
+                    // Past the threshold: follow through — slide fully off,
+                    // then pop (un-animated so the fade doesn't double up).
+                    withAnimation(.easeOut(duration: 0.22)) { settleX = width }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+                        var txn = Transaction()
+                        txn.disablesAnimations = true
+                        withTransaction(txn) {
+                            store.pop()
+                            settling = false
+                            settleX = 0
+                        }
+                    }
+                } else {
+                    // Short of the threshold (or pushed back left): snap back.
+                    withAnimation(.easeOut(duration: 0.2)) { settleX = 0 }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { settling = false }
+                }
+            }
+    }
+
+    /// The view for a given stack route (or the root list when `nil`).
+    @ViewBuilder
+    private func page(for route: Route?) -> some View {
+        if let route {
             switch route {
             case .messages(let channel):
                 MessageListView(channel: channel)
@@ -210,19 +315,36 @@ struct MainView: View {
                 else { VoiceChannelView(channel: channel) }
             }
         } else {
-            switch store.railContent {
-            case .mentions:
-                MentionsView()
-            case .saved:
-                SavedView()
-            case .normal:
-                if store.inDMs {
-                    DMListView()
-                } else {
-                    ChannelListView()
-                }
+            rootContent
+        }
+    }
+
+    /// The root list (no route pushed): mentions / saved / DMs / channels.
+    @ViewBuilder
+    private var rootContent: some View {
+        switch store.railContent {
+        case .mentions:
+            MentionsView()
+        case .saved:
+            SavedView()
+        case .normal:
+            if store.inDMs {
+                DMListView()
+            } else {
+                ChannelListView()
             }
         }
+    }
+
+    /// The route directly beneath the top of the stack (the back target), or
+    /// `nil` when the top sits on the root list.
+    private var belowRoute: Route? {
+        store.stack.count >= 2 ? store.stack[store.stack.count - 2] : nil
+    }
+
+    private func isMessageRoute(_ route: Route?) -> Bool {
+        if case .messages = route { return true }
+        return false
     }
 
     /// Identity key so each pushed route renders a fresh view (firing onAppear,
