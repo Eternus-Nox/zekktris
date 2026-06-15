@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import UIKit
+import UserNotifications
 import os
 
 /// Diagnostic log for the 1:1 call ring path. Visible in Console.app
@@ -543,6 +544,9 @@ final class AppStore: ObservableObject {
         appActive = active
         if active { lastInteractionAt = Date() }
         evaluateAutoPresence()
+        // Re-sync the home-screen badge to true unread on every fg/bg flip (a
+        // push may have set a stale number while we were away).
+        updateAppBadge()
     }
 
     private func startAutoPresence() {
@@ -981,6 +985,7 @@ final class AppStore: ObservableObject {
         var map: [String: ReadState] = [:]
         for s in states { map[s.channelId] = s }
         readStates = map
+        updateAppBadge()
     }
 
     /// Pending coalesced server acks, keyed by channel id. Each MESSAGE_CREATE
@@ -996,6 +1001,7 @@ final class AppStore: ObservableObject {
         guard let last = newest, !last.isEmpty else { return }
         if let rs = readStates[channel.id], rs.lastMessageId == last, (rs.mentionCount ?? 0) == 0 { return }
         readStates[channel.id] = ReadState(channelId: channel.id, lastMessageId: last, mentionCount: 0)
+        updateAppBadge()
         // Trailing-debounce the server ack (1s). Cancelling the prior task
         // also removes the interleaved-response race: at most one ack per
         // channel is in flight, carrying the newest local marker.
@@ -1036,11 +1042,22 @@ final class AppStore: ObservableObject {
         readStates[channelId]?.mentionCount ?? 0
     }
 
-    /// Any direct message conversation has unread messages — drives the unread
-    /// dot on the DMs rail tab (mirrors the per-row dot in DMRow). Uses the same
-    /// `isChannelUnread` rule the DM rows already use, so the two agree.
-    var hasUnreadDMs: Bool {
-        dms.contains { isChannelUnread($0) }
+    /// iOS app-icon badge count: unread DM conversations + total mention count.
+    /// Matches the server's push-badge semantic (services/readStates.unreadBadge
+    /// Count) so the home-screen badge stays roughly in sync whether it was last
+    /// set by a push (app closed) or by the app itself (running).
+    var unreadBadgeCount: Int {
+        let dmUnread = dms.filter { isChannelUnread($0) }.count
+        let mentions = readStates.values.reduce(0) { $0 + ($1.mentionCount ?? 0) }
+        return dmUnread + mentions
+    }
+
+    /// Set the iOS app-icon badge to the current unread count (0 clears it).
+    /// Called on foreground, after loads/reads, and on realtime events that
+    /// change unread — so the badge tracks unread while the app runs, and the
+    /// push's aps.badge takes over while it's closed.
+    func updateAppBadge() {
+        UNUserNotificationCenter.current().setBadgeCount(unreadBadgeCount) { _ in }
     }
 
     /// Keep a channel/DM's lastMessageId current as messages arrive, so unread
@@ -3200,6 +3217,9 @@ final class AppStore: ObservableObject {
                 upsert(message)
                 if let c = selectedChannel { markChannelRead(c) }
             }
+            // Reflect the new unread on the home-screen badge (no-op while the
+            // message is in the open channel — markChannelRead already cleared it).
+            updateAppBadge()
         case "MESSAGE_UPDATE":
             // Payload is the full Message DTO (camelCase), e.g. edits/pins.
             if let m = try? JSONDecoder().decode(Message.self, from: data),
@@ -3324,6 +3344,7 @@ final class AppStore: ObservableObject {
             // Cross-device read-state sync: server echoes our ack to all our clients.
             if let rs = try? JSONDecoder().decode(ReadState.self, from: data) {
                 readStates[rs.channelId] = rs
+                updateAppBadge()
             }
         case "GUILD_CREATE", "GUILD_DELETE":
             // Joined/left/created/deleted a guild — refresh the rail.

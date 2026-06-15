@@ -188,6 +188,11 @@ export interface PushPayload {
       the ciphertext in `data` (never the plaintext, which it can't read).
       Ignored by Web Push (the service worker has no equivalent hook today). */
   mutableContent?: boolean;
+  /** iOS only: the app-icon badge number to display (APNs `aps.badge`). Set to
+      the recipient's total unread count so the home-screen icon reflects "you
+      have messages" even while the app is closed. 0 clears it. Ignored by Web
+      Push. */
+  badge?: number;
 }
 
 /**

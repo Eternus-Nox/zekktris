@@ -23,7 +23,7 @@
  * so the storage path is end-to-end ready for the increment to land later.
  */
 
-import { and, eq, gt, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, isNotNull, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors } from '../errors';
 
@@ -227,4 +227,63 @@ export async function isUnread(
     )
     .limit(1);
   return r.length === 0;
+}
+
+/**
+ * Total "unread" counts for the given users' iOS app-icon badges: per user,
+ * unread DM conversations + total pending mention count. A DM is unread when
+ * the channel's latest message is newer than the user's read marker (the same
+ * rule the clients use for the unread dot — DMs don't bump mention_count);
+ * guild pings accumulate in read_states.mention_count. Used to set APNs
+ * `aps.badge` on message pushes so the home-screen icon reflects unread while
+ * the app is closed.
+ *
+ * BULK by user id — the push fan-out resolves many recipients at once, so this
+ * mirrors the other per-recipient lookups there (resolveLevelsBulk,
+ * getDmNotificationPrefsForChannel): two grouped aggregates total, not two per
+ * recipient. A DM that's both unread AND carries an explicit @mention is
+ * counted in both (negligible; the client recomputes the exact number on next
+ * foreground). Users with no unread are simply absent from the map (caller
+ * defaults to 0).
+ */
+export async function unreadBadgeCounts(userIds: bigint[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (userIds.length === 0) return out;
+
+  const dmUnread = db
+    .select({ userId: schema.dmRecipients.userId, n: sql<number>`count(*)::int` })
+    .from(schema.dmRecipients)
+    .innerJoin(schema.channels, eq(schema.channels.id, schema.dmRecipients.channelId))
+    .leftJoin(
+      schema.readStates,
+      and(
+        eq(schema.readStates.channelId, schema.channels.id),
+        eq(schema.readStates.userId, schema.dmRecipients.userId),
+      ),
+    )
+    .where(
+      and(
+        inArray(schema.dmRecipients.userId, userIds),
+        isNotNull(schema.channels.lastMessageId),
+        isNull(schema.channels.deletedAt),
+        sql`(${schema.readStates.lastMessageId} IS NULL OR ${schema.channels.lastMessageId} > ${schema.readStates.lastMessageId})`,
+      ),
+    )
+    .groupBy(schema.dmRecipients.userId);
+
+  const mentionSum = db
+    .select({
+      userId: schema.readStates.userId,
+      n: sql<number>`coalesce(sum(${schema.readStates.mentionCount}), 0)::int`,
+    })
+    .from(schema.readStates)
+    .where(inArray(schema.readStates.userId, userIds))
+    .groupBy(schema.readStates.userId);
+
+  const [dmRows, mentionRows] = await Promise.all([dmUnread, mentionSum]);
+  for (const r of dmRows) out.set(r.userId.toString(), (out.get(r.userId.toString()) ?? 0) + (r.n ?? 0));
+  for (const r of mentionRows) {
+    out.set(r.userId.toString(), (out.get(r.userId.toString()) ?? 0) + (r.n ?? 0));
+  }
+  return out;
 }

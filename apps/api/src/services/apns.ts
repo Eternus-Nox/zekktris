@@ -229,6 +229,9 @@ function buildApnsPayload(payload: PushPayload): string {
   // notification before it's displayed — used to decrypt an E2EE message
   // preview on-device (the ciphertext rides along in the custom data below).
   if (payload.mutableContent) aps['mutable-content'] = 1;
+  // App-icon badge: the recipient's total unread count (0 clears it). Lets the
+  // home-screen icon show "you have messages" while the app is closed.
+  if (payload.badge !== undefined) aps.badge = payload.badge;
   // Collapse rapid repeats (e.g. one channel) into a thread on the lock screen.
   if (payload.tag) aps['thread-id'] = payload.tag;
   // The category selects which inline actions the native client renders

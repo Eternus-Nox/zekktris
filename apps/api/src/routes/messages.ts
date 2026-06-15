@@ -877,16 +877,22 @@ messagesRouter.post(
           // leaks nothing new.
           const replyData = { channelId: channelId.toString(), isE2EE: isE2EEContent };
           const common = { url, tag: channelId.toString(), kind: 'message' as const };
+          // App-icon badge = each recipient's total unread (so the iOS icon
+          // updates while the app is closed). Bulk lookup, mirroring the
+          // resolveLevelsBulk / getDmNotificationPrefsForChannel calls above.
+          const badges = await readStates.unreadBadgeCounts(allowedTargets);
           await Promise.all(
-            allowedTargets.map((target) => {
+            allowedTargets.map(async (target) => {
               const showContent = prefs.get(target) ?? !isE2EEContent;
               const fits = payload.content.length <= E2EE_PUSH_MAX;
+              const badge = badges.get(target.toString()) ?? 0;
               const push =
                 showContent && isE2EEContent
                   ? {
                       title: contentTitle,
                       body: 'Encrypted message',
                       ...common,
+                      badge,
                       // NSE decrypt payload (e2ee = ciphertext) only when it
                       // fits; either way the reply data rides along.
                       ...(fits
@@ -894,24 +900,29 @@ messagesRouter.post(
                         : { data: replyData }),
                     }
                   : showContent
-                    ? { title: contentTitle, body: contentBody, ...common, data: replyData }
-                    : { title: genericTitle, body: genericBody, ...common, data: replyData };
+                    ? { title: contentTitle, body: contentBody, ...common, badge, data: replyData }
+                    : { title: genericTitle, body: genericBody, ...common, badge, data: replyData };
               return sendToUser(target, push);
             }),
           );
         } else {
-          // Guild mentions: one shared payload (the per-DM preview pref
-          // doesn't apply, and guild messages are never E2EE). Inline reply is
-          // offered here too (kind 'message' + channel id in data).
-          const pushPayload = {
-            title,
-            body,
-            url,
-            tag: channelId.toString(),
-            kind: 'message' as const,
-            data: { channelId: channelId.toString(), isE2EE: false },
-          };
-          await Promise.all(allowedTargets.map((target) => sendToUser(target, pushPayload)));
+          // Guild mentions: each mentioned recipient gets their own app-icon
+          // badge count (the per-DM preview pref doesn't apply, and guild
+          // messages are never E2EE). Inline reply is offered here too.
+          const badges = await readStates.unreadBadgeCounts(allowedTargets);
+          await Promise.all(
+            allowedTargets.map((target) =>
+              sendToUser(target, {
+                title,
+                body,
+                url,
+                tag: channelId.toString(),
+                kind: 'message' as const,
+                badge: badges.get(target.toString()) ?? 0,
+                data: { channelId: channelId.toString(), isE2EE: false },
+              }),
+            ),
+          );
         }
       } catch {
         // Push is non-critical; failure here mustn't surface anywhere.
