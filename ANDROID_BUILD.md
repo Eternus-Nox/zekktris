@@ -134,6 +134,31 @@ app routes the path into the SPA — see `onAppUrlOpen` in
 [`lib/native.ts`](./apps/web/src/lib/native.ts) and `navigateToTarget` in
 [`useNativePush.ts`](./apps/web/src/app/useNativePush.ts) (path-only navigation,
 so a crafted link can't bounce the WebView off-app). Cold-start launch URLs are
-replayed once. HTTPS **App Links** (tapping `https://<your-host>/…` to open the
-app) are a further option — they need an `<intent-filter>` with
-`android:autoVerify` plus a hosted `/.well-known/assetlinks.json`.
+replayed once.
+
+**HTTPS App Links** (tapping `https://<your-host>/…` opens the app, not the
+browser) are also wired: an `autoVerify` intent-filter for `zekktris.com` is in
+the manifest, and the same `navigateToTarget()` routes the path. Two things to
+finish on your side:
+
+1. **Change the host** in the manifest's `https` intent-filter (and ideally
+   `capacitor.config.ts` `server.url`) to your deployment host.
+2. **Host the Digital Asset Links file** at
+   `https://<your-host>/.well-known/assetlinks.json` so Android verifies the
+   link and opens the app *without* a chooser:
+   ```json
+   [{
+     "relation": ["delegate_permission/common.handle_all_urls"],
+     "target": {
+       "namespace": "android_app",
+       "package_name": "com.zekktris.app",
+       "sha256_cert_fingerprints": ["<YOUR_APP_SHA256_FINGERPRINT>"]
+     }
+   }]
+   ```
+   Get the SHA-256 from `keytool -list -v -keystore <your.jks> -alias <alias>`,
+   or — if you use **Play App Signing** — from Play Console → Setup → App
+   integrity (use the *app signing* fingerprint, not just the upload one).
+
+Until the file is served + verified, the link just shows the app in the
+"open with" chooser rather than opening automatically.

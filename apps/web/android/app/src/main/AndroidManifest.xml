@@ -32,6 +32,20 @@
                 <data android:scheme="zekktris" />
             </intent-filter>
 
+            <!-- HTTPS App Links: tapping https://<host>/… opens the app instead
+                 of the browser. autoVerify requires a hosted
+                 /.well-known/assetlinks.json with this app's SHA-256 signing
+                 fingerprint (see ANDROID_BUILD.md) — until that's served +
+                 verified, Android just offers the app in the chooser. Change the
+                 host to match capacitor.config server.url before shipping. The
+                 same navigateToTarget() routes the https path into the SPA. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="zekktris.com" />
+            </intent-filter>
+
         </activity>
 
         <provider
