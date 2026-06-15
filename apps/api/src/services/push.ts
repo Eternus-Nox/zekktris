@@ -213,8 +213,13 @@ export async function sendToUser(
     skipApns?: boolean;
   },
 ): Promise<number> {
-  if (!configured && env.APNS_KEY_P8 === undefined) {
-    // Neither transport is configured at all — nothing to do.
+  if (
+    !configured &&
+    env.APNS_KEY_P8 === undefined &&
+    env.APNS_KEY_P8_FILE === undefined &&
+    env.FCM_PROJECT_ID === undefined
+  ) {
+    // No transport configured at all (Web Push / APNs / FCM) — nothing to do.
     return 0;
   }
 
@@ -273,6 +278,17 @@ export async function sendToUser(
     } catch {
       // APNs module/init failure is non-fatal; Web Push (if any) already ran.
     }
+  }
+
+  // Native Android (FCM) — independent of Web Push / APNs, like the APNs leg.
+  // NOT gated by skipApns: that flag suppresses the duplicate iOS alert when a
+  // VoIP/CallKit ring already fired, which is iOS-only — Android has no PushKit
+  // equivalent, so an Android call still needs its FCM (high-priority) push.
+  try {
+    const { sendToUserFcm } = await import('./fcm');
+    delivered += await sendToUserFcm(userId, payload);
+  } catch {
+    // FCM module/init failure is non-fatal.
   }
 
   return delivered;

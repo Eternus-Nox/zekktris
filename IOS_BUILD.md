@@ -28,10 +28,10 @@ device, and Run. Point it at your server by editing `ios-native/Zekktris/Config.
 
 ### Note on the web app's Capacitor dependencies
 
-`apps/web/package.json` still includes `@capacitor/*` packages and the web code
-has an optional native-bridge layer (`apps/web/src/lib/native.ts`) that uses
-them *when present*. This lets the web bundle run inside a Capacitor wrapper if
-one is ever built, but no such wrapper is part of this repository, and it is not
-required for the web app (which runs as a normal SPA/PWA) or for the native iOS
-app (which shares no code with the web bundle). The desktop client is a separate
-**Electron** shell — see [`desktop/`](./desktop).
+`apps/web/package.json` includes `@capacitor/*` packages and the web code has a
+native-bridge layer (`apps/web/src/lib/native.ts`) that uses them *when present*.
+This was **rejected for iOS** (which is native SwiftUI), but the same Capacitor
+wrapper **is** used for **Android** — see [`ANDROID_BUILD.md`](./ANDROID_BUILD.md)
+and the committed native project at `apps/web/android/`. On the web the bridge
+no-ops, so the web app still runs as a normal SPA/PWA. The desktop client is a
+separate **Electron** shell — see [`desktop/`](./desktop).

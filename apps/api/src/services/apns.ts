@@ -26,7 +26,7 @@
 
 import http2 from 'node:http2';
 import { importPKCS8, SignJWT } from 'jose';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { env } from '../env';
 import { errors } from '../errors';
@@ -351,13 +351,6 @@ export async function upsertDeviceToken(input: UpsertTokenInput) {
   return row;
 }
 
-export async function listDeviceTokens(userId: bigint) {
-  return db
-    .select()
-    .from(schema.apnsDeviceTokens)
-    .where(eq(schema.apnsDeviceTokens.userId, userId));
-}
-
 /** Delete by the token value (used by the send path on permanent failure
     and by the client unregister-on-logout flow). */
 export async function deleteDeviceTokenValue(token: string): Promise<void> {
@@ -375,7 +368,19 @@ export async function deleteDeviceTokenValue(token: string): Promise<void> {
 export async function sendToUserApns(userId: bigint, payload: PushPayload): Promise<number> {
   if (!configured && !(await initApns())) return 0;
 
-  const tokens = await listDeviceTokens(userId);
+  // APNs delivery tokens only — EXCLUDE 'android' (those are FCM registration
+  // tokens handled by services/fcm.ts). Sending an FCM token to Apple returns
+  // BadDeviceToken, which the cleanup below treats as permanent and would
+  // delete the row. (ios + ios_voip are kept as before.)
+  const tokens = await db
+    .select({ token: schema.apnsDeviceTokens.token })
+    .from(schema.apnsDeviceTokens)
+    .where(
+      and(
+        eq(schema.apnsDeviceTokens.userId, userId),
+        ne(schema.apnsDeviceTokens.platform, 'android'),
+      ),
+    );
   if (tokens.length === 0) return 0;
 
   let jwt: string;
@@ -416,7 +421,18 @@ export async function sendToUserApns(userId: bigint, payload: PushPayload): Prom
         res.reason === 'Unregistered' ||
         res.reason === 'DeviceTokenNotForTopic';
       if (permanent) {
-        void deleteDeviceTokenValue(row.token).catch(() => undefined);
+        // Defense-in-depth: prune by token AND guard platform != 'android', so
+        // the APNs cleanup can never delete an Android FCM row even if a future
+        // caller regresses the platform filter on the token query above.
+        void db
+          .delete(schema.apnsDeviceTokens)
+          .where(
+            and(
+              eq(schema.apnsDeviceTokens.token, row.token),
+              ne(schema.apnsDeviceTokens.platform, 'android'),
+            ),
+          )
+          .catch(() => undefined);
       }
       // eslint-disable-next-line no-console
       console.warn(

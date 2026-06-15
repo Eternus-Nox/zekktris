@@ -1191,17 +1191,19 @@ usersRouter.delete(
 // ── Native iOS push (APNs device tokens) ────────────────────────────────────
 
 const deviceTokenSchema = z.object({
-  /** Hex APNs device token from the iOS registration event. */
-  token: z.string().min(1).max(256),
-  platform: z.enum(['ios', 'ios_voip']).default('ios'),
+  /** APNs device token (iOS) or FCM registration token (Android) from the
+      native push-registration event. */
+  token: z.string().min(1).max(512),
+  platform: z.enum(['ios', 'ios_voip', 'android']).default('ios'),
   /** Optional device label for the manage-devices list. */
   label: z.string().max(120).optional(),
 });
 
 /**
- * Register (upsert) an APNs device token for the current user's iOS device.
- * Idempotent on token. Returns 503 if APNs isn't configured server-side so
- * the client can fail quietly rather than retry forever.
+ * Register (upsert) a native push token for the current user's device — an
+ * APNs token (platform 'ios'/'ios_voip') or an FCM token (platform 'android').
+ * Idempotent on token. Returns 503 if the matching transport isn't configured
+ * server-side so the client can fail quietly rather than retry forever.
  */
 usersRouter.post(
   '/@me/device-tokens',
@@ -1209,11 +1211,23 @@ usersRouter.post(
   validate('json', deviceTokenSchema),
   async (c) => {
     const userId = requireUserId(c);
-    const { initApns, upsertDeviceToken } = await import('../services/apns');
-    if (!(await initApns())) {
-      throw errors.serviceUnavailable('iOS push notifications are not configured on this server');
-    }
     const body = c.req.valid('json');
+    const { upsertDeviceToken } = await import('../services/apns');
+    if (body.platform === 'android') {
+      const { initFcm } = await import('../services/fcm');
+      if (!(await initFcm())) {
+        throw errors.serviceUnavailable(
+          'Android push notifications are not configured on this server',
+        );
+      }
+    } else {
+      const { initApns } = await import('../services/apns');
+      if (!(await initApns())) {
+        throw errors.serviceUnavailable(
+          'iOS push notifications are not configured on this server',
+        );
+      }
+    }
     const row = await upsertDeviceToken({
       userId,
       token: body.token,

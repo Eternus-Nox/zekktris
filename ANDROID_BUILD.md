@@ -1,0 +1,111 @@
+# Android build
+
+The Android client is a **Capacitor wrapper around the web app** — the same
+thin-shell pattern as the Electron desktop client. The native shell loads the
+live web app from the production origin (`server.url` in
+[`apps/web/capacitor.config.ts`](./apps/web/capacitor.config.ts)) and adds the
+native bits a browser can't do: FCM push, the system notification tray, and
+mic/camera access for LiveKit voice. Because it runs the exact same web bundle,
+it is **1:1 with the web app by construction** (which in turn mirrors the native
+iOS app).
+
+> Why a wrapper here but native on iOS? The Capacitor approach was explored and
+> *rejected* for iOS in favour of a from-scratch SwiftUI app (see
+> [`IOS_BUILD.md`](./IOS_BUILD.md)). For Android the wrapper **is** the chosen
+> approach: it reuses 100% of the web client and ships in a fraction of the time.
+> A native Kotlin/Compose rewrite remains an option later.
+
+The native project lives at [`apps/web/android/`](./apps/web/android) (generated
+by `npx cap add android`; the source is committed, build artifacts and the
+copied web assets are gitignored).
+
+## Prerequisites
+
+- **Android Studio** (bundles a JDK 17 — there is no system `java` on the build
+  machine, so the CLI gradle step is expected to defer to Studio).
+- **Android SDK** (Android Studio installs it; this machine has it at
+  `~/Library/Android/sdk`). Set `ANDROID_HOME` / create
+  `apps/web/android/local.properties` with `sdk.dir=…` if building from the CLI.
+
+## Build & run
+
+```bash
+pnpm -C apps/web build                    # 1. build the web app → apps/web/dist
+pnpm -C apps/web exec cap sync android     # 2. copy dist + plugins into android/
+pnpm -C apps/web exec cap open android     # 3. open in Android Studio → Run ▶
+```
+
+`cap sync` re-copies the web build and refreshes the plugin list every time the
+web app changes. In Android Studio, pick an emulator or a connected device and
+Run. (CLI alternative once a device is attached: `pnpm -C apps/web exec cap run
+android`.)
+
+## Pointing at your server
+
+`capacitor.config.ts` `server.url` defaults to `https://zekktris.com`. **Change
+it to your deployment before shipping.** The web app talks to a same-origin
+`/api/v1` and `wss://<host>/gateway`, so the WebView must be served from that
+origin. If you self-host over **plain HTTP**, also set `android.cleartext: true`
+in `capacitor.config.ts` (HTTPS is strongly preferred — WebRTC/`getUserMedia`
+and Web Push both require a secure origin).
+
+## Push notifications (FCM)
+
+Android push uses **Firebase Cloud Messaging**. Two halves:
+
+1. **Client (this app):**
+   - In the [Firebase console](https://console.firebase.google.com/), create a
+     project and add an **Android app** with package name `com.zekktris.app`.
+   - Download **`google-services.json`** and drop it into
+     [`apps/web/android/app/`](./apps/web/android/app). The gradle is already
+     wired: `app/build.gradle` applies the `com.google.gms.google-services`
+     plugin **only when that file is present**, so the app builds fine without
+     it (push just won't register).
+   - No client code change is needed — `@capacitor/push-notifications` yields an
+     FCM token on Android, and [`useNativePush.ts`](./apps/web/src/app/useNativePush.ts)
+     already registers it with the server tagged `platform: 'android'`.
+
+2. **Server (the API):** set the Firebase **service-account** credentials so the
+   API can send (Firebase console → Project settings → Service accounts →
+   *Generate new private key* → a JSON with these fields):
+   - `FCM_PROJECT_ID`
+   - `FCM_CLIENT_EMAIL`
+   - `FCM_PRIVATE_KEY` (raw PEM, or base64 of it to avoid env-newline issues)
+
+   See [`apps/api/src/services/fcm.ts`](./apps/api/src/services/fcm.ts). Without
+   these, an `android` device-token register returns 503 and no pushes are sent.
+   Android tokens are stored in the same `device_tokens` table as iOS with
+   `platform = 'android'`; the push dispatcher routes them to FCM (and never to
+   APNs).
+
+## Permissions
+
+Already declared in
+[`AndroidManifest.xml`](./apps/web/android/app/src/main/AndroidManifest.xml):
+`INTERNET`, `POST_NOTIFICATIONS` (Android 13+ push prompt), and
+`RECORD_AUDIO` / `MODIFY_AUDIO_SETTINGS` / `CAMERA` for LiveKit voice/video in
+the WebView. Capacitor's `WebChromeClient` grants the WebView's `getUserMedia`
+request from these.
+
+## Release (Play Store)
+
+1. Generate an upload keystore:
+   `keytool -genkey -v -keystore zekktris-upload.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload`
+2. Add a `signingConfigs` release block in `app/build.gradle` (or use Android
+   Studio → **Build → Generate Signed Bundle / APK**). Keep the keystore out of
+   git (the `.gitignore` has commented `*.jks` lines — uncomment them).
+3. Build an **AAB** (`Build → Generate Signed Bundle`) and upload to the Play
+   Console (internal testing → closed → production).
+4. Bump `versionCode` / `versionName` in `app/build.gradle` per release.
+
+## Known gaps vs. native iOS (follow-ups)
+
+- **E2EE notification previews:** iOS decrypts E2EE DM previews in a Notification
+  Service Extension. Android has no equivalent wired up, so E2EE DM pushes show
+  the generic body (same as Web Push) — text is never sent to the server either
+  way.
+- **System call UI:** iOS uses CallKit/PushKit (lock-screen answer, audio
+  persists when locked). Android calls currently ring via FCM + the in-app UI; a
+  Telecom `ConnectionService` integration would be the native equivalent.
+- **Deep links:** the `zekktris://` scheme isn't wired into an Android
+  intent-filter yet.

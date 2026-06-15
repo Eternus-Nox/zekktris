@@ -63,6 +63,17 @@ const config: CapacitorConfig = {
     // a separate Safari sheet).
     allowsLinkPreview: false,
   },
+  android: {
+    // Match the app's navy so the launch → WebView handoff has no white flash
+    // (same role as ios.backgroundColor).
+    backgroundColor: '#050a18',
+    // Production loads the live site over HTTPS (server.url above), so cleartext
+    // stays OFF. If you self-host the web app over PLAIN HTTP, set
+    // `cleartext: true` here AND point server.url at your http origin — without
+    // it the Android System WebView blocks the load. HTTPS is strongly
+    // preferred (WebRTC/getUserMedia and Web Push require a secure origin).
+    // cleartext: false,
+  },
   plugins: {
     SplashScreen: {
       // The launch screen is now a plain navy (#050a18) screen with no

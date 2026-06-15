@@ -3,16 +3,17 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import {
   isNative,
+  getPlatform,
   requestNotificationPermission,
   onPushToken,
   onPushTapped,
 } from '../lib/native';
 
 /**
- * Native iOS push bootstrap. On the Capacitor app, once the user is
- * authenticated, request notification permission, register with APNs, and
- * ship the device token to the server. Also routes notification taps to the
- * relevant in-app location.
+ * Native push bootstrap (iOS = APNs, Android = FCM). On the Capacitor app,
+ * once the user is authenticated, request notification permission, register for
+ * push, and ship the device token to the server tagged with the platform. Also
+ * routes notification taps to the relevant in-app location.
  *
  * No-op on the web build — browsers/PWAs use Web Push, wired separately in
  * Settings. Safe to mount once near the authenticated app root; it guards
@@ -36,14 +37,18 @@ export function useNativePush(): void {
       // Wire the token listener BEFORE requesting/registering so the
       // registration event can't fire before we're listening for it.
       const offToken = await onPushToken((deviceToken) => {
+        // Capacitor's push plugin yields an APNs token on iOS and an FCM
+        // registration token on Android; tag it so the server delivers via the
+        // right transport (services/apns.ts vs services/fcm.ts).
+        const platform = getPlatform() === 'android' ? 'android' : 'ios';
         void rest
           .registerDeviceToken({
             token: deviceToken,
-            platform: 'ios',
-            label: detectIosLabel(),
+            platform,
+            label: detectDeviceLabel(),
           })
           .catch(() => {
-            // Server may lack APNs config (503) or be briefly unreachable —
+            // Server may lack APNs/FCM config (503) or be briefly unreachable —
             // non-fatal; the token re-registers on the next launch.
           });
       });
@@ -107,8 +112,9 @@ function routeFromPush(
 }
 
 /** Best-effort device label for the manage-devices list. */
-function detectIosLabel(): string {
+function detectDeviceLabel(): string {
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+  if (getPlatform() === 'android' || /Android/.test(ua)) return 'Android device';
   if (/iPad/.test(ua)) return 'iPad';
   if (/iPhone/.test(ua)) return 'iPhone';
   return 'iOS device';

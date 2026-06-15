@@ -252,6 +252,23 @@ export const envSchema = z.object({
     return Boolean(v);
   }, z.boolean()),
 
+  // Firebase Cloud Messaging (FCM HTTP v1) for the native Android app — the
+  // Android Capacitor shell registers an FCM token (Web Push can't run in the
+  // Android System WebView). Supply a Firebase service account so the server
+  // can mint OAuth tokens and send. All three fields required to enable FCM;
+  // missing any disables it (send is a no-op, 'android' device-token register
+  // still succeeds so the column is filled, just never delivered).
+  // Get them from the Firebase console → Project settings → Service accounts →
+  // "Generate new private key" (a JSON file with these three fields):
+  //   FCM_PROJECT_ID    — the Firebase project id (== google-services project).
+  //   FCM_CLIENT_EMAIL  — service-account email (…@<project>.iam.gserviceaccount.com).
+  //   FCM_PRIVATE_KEY   — the service account's PEM private key. Use base64 of
+  //                       the PEM to avoid newline headaches in env files (the
+  //                       sender accepts raw PEM or base64).
+  FCM_PROJECT_ID: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
+  FCM_CLIENT_EMAIL: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
+  FCM_PRIVATE_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
+
   // ── First-install bootstrap ────────────────────────────────────────────
   // Optional email address. On startup, if no user has is_admin=true yet
   // AND a user exists with this email, that user is promoted to admin.

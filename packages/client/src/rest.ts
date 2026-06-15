@@ -862,15 +862,16 @@ export class RestClient {
     return this.request('DELETE', `/users/@me/push-subscriptions/${id}`);
   }
 
-  // ── Native iOS push (APNs device tokens) ────────────────────────────────
+  // ── Native push (APNs on iOS, FCM on Android) ───────────────────────────
   /**
-   * Register this device's APNs token for native iOS push. Idempotent on the
-   * token server-side. Rejects with 503 if the server has no APNs config —
+   * Register this device's native push token — an APNs token (platform 'ios')
+   * or an FCM registration token (platform 'android'). Idempotent on the token
+   * server-side. Rejects with 503 if the server has no matching push config —
    * callers should swallow that (push just won't be available).
    */
   registerDeviceToken(input: {
     token: string;
-    platform?: 'ios';
+    platform?: 'ios' | 'ios_voip' | 'android';
     label?: string;
   }): Promise<{
     deviceToken: { id: string; platform: string; label: string | null; createdAt: string };
