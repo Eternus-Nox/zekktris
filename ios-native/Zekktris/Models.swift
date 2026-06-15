@@ -213,6 +213,11 @@ struct MessageEmbed: Codable, Hashable {
     var faviconUrl: String?
 }
 
+/// Response of GET /unfurl?url= — a single client-resolved link preview (or
+/// null when it couldn't be resolved). Used to show previews for E2EE messages,
+/// which the server can't unfurl (it only holds ciphertext).
+struct UnfurlWrap: Codable { let embed: MessageEmbed? }
+
 struct Sticker: Codable, Identifiable, Hashable {
     let id: String
     var guildId: String?

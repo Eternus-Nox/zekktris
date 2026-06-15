@@ -268,6 +268,19 @@ final class APIClient {
         return wrap.messages
     }
 
+    /// Resolve a single link preview for a URL found in a DECRYPTED E2EE
+    /// message (the server can't unfurl ciphertext, so the client does it after
+    /// decryption). Returns nil when the server couldn't build a preview.
+    func unfurl(url: String) async throws -> MessageEmbed? {
+        // Percent-encode the URL as a query VALUE — keep its own &/=/?/+/#
+        // from being read as query structure.
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=?+#")
+        let q = url.addingPercentEncoding(withAllowedCharacters: allowed) ?? url
+        let wrap: UnfurlWrap = try await send("GET", "/unfurl?url=\(q)")
+        return wrap.embed
+    }
+
     func sendMessage(channelId: String, content: String, nonce: String, replyToId: String? = nil, forwardFromMessageId: String? = nil, stickerId: String? = nil) async throws -> Message {
         var body: [String: Any] = ["content": content, "nonce": nonce]
         if let rid = replyToId { body["replyToId"] = rid }

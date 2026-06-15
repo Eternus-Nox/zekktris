@@ -18,7 +18,7 @@
 import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import type { Channel, Message } from '@zekktris/client';
+import type { Channel, Message, MessageEmbed } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
 import { useAppStateSelector, isUserBlocked } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
@@ -59,6 +59,25 @@ interface Props {
       only). When false / unset, no receipt UI is rendered at all —
       the row is identical to a non-DM render. */
   showDmReceipt?: boolean;
+}
+
+// Extract http(s) URLs from text for client-side link-preview resolution on
+// E2EE messages. Mirrors the server's message extractor (services/embeds.ts):
+// same conservative regex + trailing-punctuation trim, deduped, capped.
+const URL_RE = /https?:\/\/[^\s<>"]+/gi;
+function extractUrls(text: string): string[] {
+  const matches = text.match(URL_RE) ?? [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (let m of matches) {
+    while (m.length > 0 && /[.,;!?)]$/.test(m)) m = m.slice(0, -1);
+    if (m && !seen.has(m)) {
+      seen.add(m);
+      out.push(m);
+    }
+    if (out.length >= 5) break;
+  }
+  return out;
 }
 
 function MessageItemBase({ message, continuation, selfId, onReply, channel, showDmReceipt }: Props) {
@@ -324,6 +343,51 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [message.content, channel, channel?.id, encMeta.isEncrypted, encMeta.noKey, keyVersion]);
+
+  // Client-side link previews for E2EE messages. The server can't unfurl
+  // ciphertext, so an E2EE message arrives with embeds: []; once we have the
+  // decrypted plaintext we extract URLs and resolve previews via /unfurl.
+  const [e2eeEmbeds, setE2eeEmbeds] = useState<MessageEmbed[]>([]);
+  useEffect(() => {
+    const plain = decResult.plaintext;
+    // Only for E2EE messages with no server-resolved embeds and a successful
+    // decryption.
+    if (!encMeta.isEncrypted || encMeta.noKey || !plain) {
+      setE2eeEmbeds([]);
+      return;
+    }
+    if (message.embeds && message.embeds.length > 0) {
+      setE2eeEmbeds([]);
+      return;
+    }
+    const urls = extractUrls(plain);
+    if (urls.length === 0) {
+      setE2eeEmbeds([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rest = await restForChannel(message.channelId);
+        const found: MessageEmbed[] = [];
+        for (const u of urls) {
+          try {
+            const { embed } = await rest.unfurl(u);
+            if (embed) found.push(embed);
+          } catch {
+            // best-effort per URL
+          }
+        }
+        if (!cancelled) setE2eeEmbeds(found);
+      } catch {
+        // couldn't get a rest client — leave previews empty
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [decResult.plaintext, encMeta.isEncrypted, encMeta.noKey, message.embeds, message.channelId]);
 
   // Combined view in the original shape the rest of the component consumes.
   const decryption: {
@@ -777,7 +841,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
             <p className="mt-1 text-sm italic text-ink-3">[sticker unavailable]</p>
           )
         )}
-        <MessageEmbeds embeds={message.embeds} />
+        <MessageEmbeds embeds={message.embeds && message.embeds.length > 0 ? message.embeds : e2eeEmbeds} />
         {message.forwardedFrom && <ForwardedMessageBlock source={message.forwardedFrom} />}
         {message.poll && (
           <PollMessage

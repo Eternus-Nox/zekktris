@@ -3737,7 +3737,10 @@ final class AppStore: ObservableObject {
     private func decryptVisible() {
         guard let ch = selectedChannel, let key = e2eeKey(for: ch) else { return }
         for m in messages where E2EE.isDecryptable(m.text) && decrypted[m.id] == nil {
-            if let pt = E2EE.decrypt(m.text, key: key) { decrypted[m.id] = pt }
+            if let pt = E2EE.decrypt(m.text, key: key) {
+                decrypted[m.id] = pt
+                resolveE2EEEmbeds(m.id, pt)
+            }
         }
     }
 
@@ -3747,7 +3750,62 @@ final class AppStore: ObservableObject {
             ? selectedChannel
             : dms.first(where: { $0.id == message.channelId })
         guard let channel, let key = e2eeKey(for: channel) else { return }
-        if let pt = E2EE.decrypt(message.text, key: key) { decrypted[message.id] = pt }
+        if let pt = E2EE.decrypt(message.text, key: key) {
+            decrypted[message.id] = pt
+            resolveE2EEEmbeds(message.id, pt)
+        }
+    }
+
+    // MARK: E2EE link previews (client-side unfurl)
+    //
+    // The server can't unfurl E2EE content (it only holds ciphertext), so an
+    // E2EE message always arrives with `embeds: []`. After decrypting on this
+    // device we extract any URLs from the plaintext and resolve previews via
+    // GET /unfurl, caching them by message id for the view to render. Plaintext
+    // never leaves the device — only the URL the user already shared is sent.
+
+    /// messageId → client-resolved link previews (empty array = "resolved, none").
+    @Published var e2eeEmbeds: [String: [MessageEmbed]] = [:]
+    /// In-flight guard so a message is only unfurled once.
+    private var e2eeEmbedResolving: Set<String> = []
+
+    /// Previews to render for an E2EE message (nil when there are none).
+    func localEmbeds(for messageId: String) -> [MessageEmbed]? {
+        guard let e = e2eeEmbeds[messageId], !e.isEmpty else { return nil }
+        return e
+    }
+
+    private func resolveE2EEEmbeds(_ messageId: String, _ plaintext: String) {
+        guard e2eeEmbeds[messageId] == nil, !e2eeEmbedResolving.contains(messageId) else { return }
+        let urls = Self.extractURLs(from: plaintext)
+        guard !urls.isEmpty else { return }
+        e2eeEmbedResolving.insert(messageId)
+        Task { @MainActor in
+            var found: [MessageEmbed] = []
+            for u in urls.prefix(5) {
+                if let e = try? await api.unfurl(url: u) { found.append(e) }
+            }
+            e2eeEmbedResolving.remove(messageId)
+            // Record the result even when empty so we don't re-fetch on every
+            // re-decrypt / re-render.
+            e2eeEmbeds[messageId] = found
+        }
+    }
+
+    /// Extract http(s) URLs from text via the system link detector (handles
+    /// trailing punctuation, etc.), deduped and in order.
+    private static func extractURLs(from text: String) -> [String] {
+        guard let detector = try? NSDataDetector(
+            types: NSTextCheckingResult.CheckingType.link.rawValue) else { return [] }
+        let range = NSRange(text.startIndex..., in: text)
+        var out: [String] = []
+        var seen = Set<String>()
+        for match in detector.matches(in: text, options: [], range: range) {
+            guard let url = match.url, url.scheme == "http" || url.scheme == "https" else { continue }
+            let s = url.absoluteString
+            if seen.insert(s).inserted { out.append(s) }
+        }
+        return out
     }
 
     private func applyE2EEState(channelId: String, enabled: Bool, salt: String?, verifier: String?) {

@@ -23,6 +23,7 @@ import { emojisRouter } from './routes/emojis';
 import { stickersRouter } from './routes/stickers';
 import { stageRouter } from './routes/stage';
 import { discoveryRouter } from './routes/discovery';
+import { unfurlRouter } from './routes/unfurl';
 import { adminRouter } from './routes/admin';
 import { messagesRouter } from './routes/messages';
 import { webhooksAdminRouter, webhooksExecuteRouter } from './routes/webhooks';
@@ -108,6 +109,9 @@ export function createApp() {
   v1.route('/channels', stageRouter);
   v1.route('/', discoveryRouter);
   v1.route('/invites', invitesRouter);
+  // Client-side link-preview resolution for E2EE messages (the server can't
+  // unfurl ciphertext). See routes/unfurl.ts.
+  v1.route('/unfurl', unfurlRouter);
   v1.route('/admin', adminRouter);
   // Webhook admin endpoints — auth-gated, registered under /api/v1.
   // The router itself has /channels/:channelId/webhooks and /webhooks/:id

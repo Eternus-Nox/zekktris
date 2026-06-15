@@ -1383,7 +1383,12 @@ struct MessageRow: View {
 
     @ViewBuilder
     private var embedsView: some View {
-        if let embeds = message.embeds, !embeds.isEmpty {
+        // Server-resolved embeds when present; otherwise the client-resolved
+        // ones for an E2EE message (the server can't unfurl ciphertext, so it
+        // sent embeds: [] and we unfurled locally after decrypting).
+        let serverEmbeds = message.embeds ?? []
+        let embeds = serverEmbeds.isEmpty ? (store.localEmbeds(for: message.id) ?? []) : serverEmbeds
+        if !embeds.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(embeds.enumerated()), id: \.offset) { _, e in
                     embedCard(e)

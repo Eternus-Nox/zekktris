@@ -24,6 +24,7 @@ import type {
   Invite,
   InvitePreview,
   Message,
+  MessageEmbed,
   PermissionOverride,
   PublicUser,
   Bot,
@@ -2051,6 +2052,17 @@ export class RestClient {
 
   deleteMessage(channelId: string, messageId: string): Promise<{ ok: boolean }> {
     return this.request('DELETE', `/channels/${channelId}/messages/${messageId}`);
+  }
+
+  /**
+   * Resolve a single link preview for a URL found in a DECRYPTED E2EE message.
+   * The server can't unfurl ciphertext, so the client decrypts, extracts URLs,
+   * and asks the server to resolve each one (the server reuses the same
+   * SSRF-protected fetcher as the normal embed pipeline). Returns
+   * `{ embed: null }` when no preview could be built.
+   */
+  unfurl(url: string): Promise<{ embed: MessageEmbed | null }> {
+    return this.request('GET', `/unfurl?url=${encodeURIComponent(url)}`);
   }
 
   /**
