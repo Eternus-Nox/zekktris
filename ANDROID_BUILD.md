@@ -27,7 +27,7 @@ copied web assets are gitignored).
   `~/Library/Android/sdk`). Set `ANDROID_HOME` / create
   `apps/web/android/local.properties` with `sdk.dir=…` if building from the CLI.
 
-## Build & run
+## Build & run (quick)
 
 ```bash
 pnpm -C apps/web build                    # 1. build the web app → apps/web/dist
@@ -36,9 +36,78 @@ pnpm -C apps/web exec cap open android     # 3. open in Android Studio → Run �
 ```
 
 `cap sync` re-copies the web build and refreshes the plugin list every time the
-web app changes. In Android Studio, pick an emulator or a connected device and
-Run. (CLI alternative once a device is attached: `pnpm -C apps/web exec cap run
-android`.)
+web app changes. The detailed walkthrough is below.
+
+## Compile & test in Android Studio (step by step)
+
+First time through, expect Gradle to download the Android Gradle Plugin and
+dependencies (a few minutes). None of this needs the repo's Node toolchain
+except step 2.
+
+1. **Install Android Studio** (latest stable). It bundles the JDK 17 the build
+   needs and can install the Android SDK + an emulator image. (This repo's build
+   machine has the SDK at `~/Library/Android/sdk` but **no system Java**, which
+   is why the CLI gradle step is skipped and the real build happens here.)
+
+2. **Build the web app + sync it into the native project:**
+   ```bash
+   pnpm -C apps/web build
+   pnpm -C apps/web exec cap sync android
+   ```
+   `sync` copies `dist/` into the app and regenerates the plugin config. Re-run
+   it whenever the web app or the installed Capacitor plugins change. *(At
+   runtime the app loads the live site via `server.url`, so the bundled `dist`
+   is mostly a fallback — but `sync` is still required so the native plugin
+   registry is correct.)*
+
+3. **Open the project:** `pnpm -C apps/web exec cap open android` (or in Android
+   Studio: *Open* → select the `apps/web/android` folder). Let the initial
+   **Gradle sync** finish. If it complains it can't find the SDK, create
+   `apps/web/android/local.properties` with `sdk.dir=/Users/<you>/Library/Android/sdk`
+   (Studio usually writes this for you).
+
+4. **Pick where to run:**
+   - **Emulator:** *Device Manager* → create a device (e.g. Pixel 7, API 34+) →
+     start it. Good for UI; **mic/camera/voice are unreliable on emulators**.
+   - **Physical device (recommended for voice/push):** enable *Developer
+     options* → *USB debugging*, plug it in, accept the prompt; it appears in the
+     device dropdown.
+
+5. **Run** the `app` configuration (▶). Studio builds a debug APK, installs, and
+   launches it. You should see the navy splash → the full Zekktris web UI; log
+   in and use it like the web app.
+
+6. **Watch logs** in the **Logcat** pane (filter by package `com.zekktris.app`).
+   The WebView's `console.log` and JS errors surface here, alongside native
+   Capacitor logs — this is your main debugging tool.
+
+7. **Test the key paths:**
+   - **Voice/video:** on a real device, join a voice channel → accept the
+     mic/camera prompts → confirm two-way audio/video.
+   - **Push:** needs `google-services.json` + the FCM server creds (below). With
+     the app backgrounded, send yourself a DM from another account → expect a
+     system notification; tapping it opens the conversation.
+   - **Deep links:** `adb shell am start -a android.intent.action.VIEW -d "zekktris://channels/@me" com.zekktris.app` should open the app on that screen.
+
+### Common errors & fixes
+- **"SDK location not found"** → add `local.properties` with `sdk.dir=…` (step 3).
+- **"google-services.json is missing"** at build → expected if you haven't added
+  Firebase; the gradle is guarded to skip it, so a plain build still works
+  (push just won't register). Add the file to enable push.
+- **Gradle sync fails downloading dependencies** → check network/proxy; *File →
+  Invalidate Caches / Restart* often clears a wedged sync.
+- **Blank screen / "net::ERR_CLEARTEXT_NOT_PERMITTED"** → your `server.url` is
+  plain HTTP; set `android.cleartext: true` in `capacitor.config.ts` (and prefer
+  HTTPS). A blank screen can also mean the server at `server.url` is unreachable.
+- **Stale UI after web changes** → you forgot to re-run `cap sync android`
+  (step 2).
+- **Mic/camera do nothing on an emulator** → use a physical device.
+
+### Optional: live reload during development
+Point `capacitor.config.ts` `server.url` at your Vite dev server (e.g.
+`http://192.168.1.x:5173`, with `android.cleartext: true`), run
+`pnpm -C apps/web dev`, then `cap sync android` and Run — the WebView hot-reloads
+as you edit the web app. Revert `server.url` before building a release.
 
 ## Pointing at your server
 
@@ -124,7 +193,10 @@ fresh clone still builds.
   way.
 - **System call UI:** iOS uses CallKit/PushKit (lock-screen answer, audio
   persists when locked). Android calls currently ring via FCM + the in-app UI; a
-  Telecom `ConnectionService` integration would be the native equivalent.
+  Telecom `ConnectionService` integration would be the native equivalent. See
+  the implementation spec in [`ANDROID_CALL_UI_PLAN.md`](./ANDROID_CALL_UI_PLAN.md)
+  (it reuses the existing `ZekktrisCalls` web bridge; recommends a full-screen-
+  intent MVP before full Telecom).
 
 ## Deep links
 
