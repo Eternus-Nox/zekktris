@@ -260,6 +260,35 @@ struct MainView: View {
             }
         )
         .simultaneousGesture(backSwipeGesture)
+        .simultaneousGesture(membersSwipeGesture)
+    }
+
+    /// Swipe LEFT (in a guild text channel) to bring up the members tab — the
+    /// mirror of the right-swipe-back. A simple fling (the member list is a
+    /// sheet, not a sliding panel, so there's nothing to track to the finger):
+    /// a clearly-leftward, horizontally-dominant drag sets `showMembers`, which
+    /// presents the same sheet the header's people button does. DM and voice
+    /// screens have no member list, so it's gated to guild text routes.
+    private var membersSwipeGesture: some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onEnded { value in
+                // `!backActive` so a leftward fling during a back-swipe's
+                // settle/pop window can't set showMembers as the page pops
+                // (which would auto-open the sheet on the next channel).
+                guard isGuildTextRoute(store.stack.last), !store.showMembers, !backActive
+                else { return }
+                if value.translation.width < -70,
+                   abs(value.translation.width) > abs(value.translation.height) * 1.5 {
+                    store.showMembers = true
+                }
+            }
+    }
+
+    /// True only for a guild (non-DM) text-channel message route — where a
+    /// member list exists.
+    private func isGuildTextRoute(_ route: Route?) -> Bool {
+        if case .messages(let c) = route { return !c.isDM }
+        return false
     }
 
     /// The interactive back-swipe. `simultaneousGesture` + a horizontal-
