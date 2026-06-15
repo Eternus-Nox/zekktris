@@ -140,10 +140,10 @@ fresh clone still builds.
   way.
 - **System call UI:** iOS uses CallKit/PushKit (lock-screen answer, audio
   persists when locked). Android calls currently ring via FCM + the in-app UI; a
-  Telecom `ConnectionService` integration would be the native equivalent. See
-  the implementation spec in [`ANDROID_CALL_UI_PLAN.md`](./ANDROID_CALL_UI_PLAN.md)
-  (it reuses the existing `ZekktrisCalls` web bridge; recommends a full-screen-
-  intent MVP before full Telecom).
+  Telecom `ConnectionService` integration would be the native equivalent. The
+  implementation plan lives in the Obsidian vault ("Android Call UI — Plan"): it
+  reuses the existing `ZekktrisCalls` web bridge (`apps/web/src/lib/native.ts`)
+  and recommends a full-screen-notification MVP before full Telecom.
 
 ## Deep links
 
