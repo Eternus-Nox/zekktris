@@ -107,5 +107,15 @@ request from these.
 - **System call UI:** iOS uses CallKit/PushKit (lock-screen answer, audio
   persists when locked). Android calls currently ring via FCM + the in-app UI; a
   Telecom `ConnectionService` integration would be the native equivalent.
-- **Deep links:** the `zekktris://` scheme isn't wired into an Android
-  intent-filter yet.
+
+## Deep links
+
+The `zekktris://` custom scheme is wired (intent-filter in `AndroidManifest.xml`,
+matching the iOS scheme). Capacitor's App plugin fires `appUrlOpen`, and the web
+app routes the path into the SPA — see `onAppUrlOpen` in
+[`lib/native.ts`](./apps/web/src/lib/native.ts) and `navigateToTarget` in
+[`useNativePush.ts`](./apps/web/src/app/useNativePush.ts) (path-only navigation,
+so a crafted link can't bounce the WebView off-app). Cold-start launch URLs are
+replayed once. HTTPS **App Links** (tapping `https://<your-host>/…` to open the
+app) are a further option — they need an `<intent-filter>` with
+`android:autoVerify` plus a hosted `/.well-known/assetlinks.json`.

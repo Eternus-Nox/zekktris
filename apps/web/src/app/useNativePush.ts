@@ -7,6 +7,7 @@ import {
   requestNotificationPermission,
   onPushToken,
   onPushTapped,
+  onAppUrlOpen,
 } from '../lib/native';
 
 /**
@@ -67,6 +68,17 @@ export function useNativePush(): void {
       }
       cleanups.push(offTap);
 
+      // Deep links: a zekktris:// link (or cold-start launch URL) routes into
+      // the SPA, same path-safety as a notification tap.
+      const offUrl = await onAppUrlOpen((url) => {
+        navigateToTarget(navigate, url);
+      });
+      if (!active) {
+        offUrl();
+        return;
+      }
+      cleanups.push(offUrl);
+
       // Requests permission (shows the iOS prompt only the first time) and,
       // when granted, registers with APNs → fires the token listener above.
       await requestNotificationPermission();
@@ -84,25 +96,39 @@ export function useNativePush(): void {
 
 /**
  * Pull a routing path out of a push data blob and navigate to it. The server
- * puts the in-app path on `data.url` (e.g. "/channels/123/456"). We route by
- * pathname only, so a malicious/absolute URL can't bounce the SPA off-app.
+ * puts the in-app path on `data.url` (e.g. "/channels/123/456").
  */
 function routeFromPush(
   navigate: (to: string) => void,
   data: Record<string, unknown>,
 ): void {
   const raw = typeof data.url === 'string' ? data.url : null;
+  if (raw) navigateToTarget(navigate, raw);
+}
+
+/**
+ * Map a raw target — an in-app path, an `https://<host>/path`, or a custom
+ * `zekktris://…` deep link — to a safe in-app route and navigate. We route by
+ * PATH only: a single-slash absolute path. Protocol-relative ("//host",
+ * "/\\host") and off-app values are rejected, so a crafted link can't bounce
+ * the WebView off-app. Mirrors the ?next= hardening in AuthScreens.tsx.
+ */
+function navigateToTarget(navigate: (to: string) => void, raw: string): void {
   if (!raw) return;
   try {
-    let path = raw;
+    let path: string;
     if (/^https?:\/\//i.test(raw)) {
       const u = new URL(raw);
       path = u.pathname + u.search;
+    } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+      // Custom scheme (zekktris://…): strip "scheme://" and treat the remainder
+      // as the in-app path, normalizing to exactly one leading slash. Handles
+      // both zekktris://channels/x and zekktris:///channels/x.
+      const afterScheme = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+      path = '/' + afterScheme.replace(/^\/+/, '');
+    } else {
+      path = raw; // already a path
     }
-    // Require a single-slash absolute path. Reject protocol-relative
-    // ("//host", "/\\host") and backslash-prefixed values, which some
-    // browsers treat as protocol-relative and would bounce the WKWebView
-    // off-app. Mirrors the ?next= hardening in AuthScreens.tsx.
     if (path.startsWith('/') && !path.startsWith('//') && !path.startsWith('/\\')) {
       navigate(path);
     }

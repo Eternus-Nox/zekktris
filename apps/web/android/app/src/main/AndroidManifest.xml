@@ -22,6 +22,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- Deep links: zekktris://… (matches the iOS URL scheme). Capacitor's
+                 App plugin fires appUrlOpen; the web app routes the path into the
+                 SPA (see useNativePush.ts navigateToTarget). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="zekktris" />
+            </intent-filter>
+
         </activity>
 
         <provider

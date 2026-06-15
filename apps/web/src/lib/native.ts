@@ -226,6 +226,47 @@ export async function onAppStateChange(
   }
 }
 
+/**
+ * Subscribe to deep-link opens — the custom `zekktris://…` scheme (registered
+ * in the iOS scheme / Android intent-filter). Fires when the OS hands the app a
+ * URL while it's running, and replays the launch URL once if the app was
+ * cold-started from a link. The callback gets the raw URL; the caller maps it
+ * to an in-app route. Returns an unsubscribe (no-op on web — browsers route
+ * via the address bar / React Router directly).
+ */
+/** Module-level so the cold-start launch URL is replayed at most once per app
+    launch, regardless of how many times onAppUrlOpen is (re)subscribed. */
+let launchUrlConsumed = false;
+
+export async function onAppUrlOpen(
+  callback: (url: string) => void,
+): Promise<() => void> {
+  if (!isNative()) return () => undefined;
+  try {
+    const { App } = await import('@capacitor/app');
+    const handle = await App.addListener('appUrlOpen', (event) => {
+      if (event?.url) callback(event.url);
+    });
+    // Cold start: if a link launched the app before this listener attached,
+    // replay it — but only ONCE per app process. The caller's effect can
+    // re-run (e.g. on a token refresh remount), and replaying the stale launch
+    // URL each time would yank the user back to the deep-linked screen.
+    if (!launchUrlConsumed) {
+      launchUrlConsumed = true;
+      void App.getLaunchUrl()
+        .then((res) => {
+          if (res?.url) callback(res.url);
+        })
+        .catch(() => undefined);
+    }
+    return () => {
+      void handle.remove();
+    };
+  } catch {
+    return () => undefined;
+  }
+}
+
 // ── CallKit (custom Swift plugin) ───────────────────────────────────────
 //
 // Capacitor has no first-party CallKit plugin. The iOS shell

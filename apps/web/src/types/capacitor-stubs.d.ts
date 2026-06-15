@@ -54,6 +54,11 @@ declare module '@capacitor/app' {
       event: 'appStateChange',
       cb: (state: { isActive: boolean }) => void,
     ): Promise<PluginListenerHandle>;
+    addListener(
+      event: 'appUrlOpen',
+      cb: (event: { url: string }) => void,
+    ): Promise<PluginListenerHandle>;
+    getLaunchUrl(): Promise<{ url: string } | null>;
   };
 }
 
@@ -78,6 +83,7 @@ declare module '@capacitor/cli' {
     webDir?: string;
     server?: { url?: string; cleartext?: boolean };
     ios?: Record<string, unknown>;
+    android?: Record<string, unknown>;
     plugins?: Record<string, unknown>;
   }
 }
