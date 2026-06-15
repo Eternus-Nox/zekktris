@@ -51,11 +51,18 @@ final class Session: ObservableObject {
     /// Called once at launch. Restores a persisted token and validates it by
     /// fetching the current user; falls back to the sign-in screen on failure.
     func bootstrap() async {
+        // Restore the long-lived refresh cookie BEFORE any network call. The
+        // cookie jar doesn't survive an app kill, so without this the (expired)
+        // access token below can't be renewed and we'd fall back to the login
+        // screen — the "doesn't stay logged in" bug.
+        RefreshCookieStore.restore()
         // Persist rotated access tokens (the APIClient auto-refreshes expired
         // ones via the /auth/refresh cookie) so the NEXT cold launch starts
-        // from the newest token instead of an already-expired one.
+        // from the newest token instead of an already-expired one. The refresh
+        // also rotates the cookie, so re-snapshot it for the next launch.
         api.onTokenRefresh = { [keychain, tokenKey] newToken in
             keychain.set(newToken, for: tokenKey)
+            RefreshCookieStore.capture()
         }
         guard let saved = keychain.get(tokenKey), !saved.isEmpty else {
             phase = .signedOut
@@ -127,6 +134,7 @@ final class Session: ObservableObject {
 
     func logout() {
         keychain.delete(tokenKey)
+        RefreshCookieStore.clear()
         currentUser = nil
         phase = .signedOut
         // Snapshot the token to revoke with, then drop it from the client
@@ -320,6 +328,9 @@ final class Session: ObservableObject {
         currentUser = session.user
         locked = false
         phase = .signedIn
+        // Snapshot the fresh refresh cookie login just set, so the session
+        // survives an app kill.
+        RefreshCookieStore.capture()
     }
 
     // MARK: Biometric lock
@@ -408,5 +419,56 @@ enum Biometrics {
                 }
             }
         }.value
+    }
+}
+
+/// Persists the server's long-lived refresh cookie across app launches.
+///
+/// The session is a short-lived (15-min) access token kept in the Keychain
+/// plus the 30-day httpOnly `zekktris_refresh` cookie that renews it. URLSession's
+/// shared cookie jar doesn't reliably keep that cookie after the app is killed,
+/// so on a cold launch the expired access token couldn't be renewed and the app
+/// fell back to the login screen. We snapshot the cookie to the Keychain after
+/// auth, after each refresh (the server rotates it), and when the app
+/// backgrounds, then restore it into the jar on launch BEFORE `bootstrap()`
+/// refreshes. The cookie never touches a response body (stays httpOnly), so its
+/// protection is preserved. Mirrors the Android "flush cookies on pause" fix.
+enum RefreshCookieStore {
+    private static let storageKey = "zk.refreshCookie"
+    private static let cookieName = "zekktris_refresh"
+    private static let keychain = KeychainStore()
+
+    /// Snapshot the current refresh cookie (if any) to the Keychain.
+    static func capture() {
+        guard let cookie = (HTTPCookieStorage.shared.cookies ?? [])
+                .first(where: { $0.name == cookieName }),
+              let props = cookie.properties
+        else { return }
+        let stringKeyed = Dictionary(uniqueKeysWithValues: props.map { ($0.key.rawValue, $0.value) })
+        guard let data = try? PropertyListSerialization.data(
+            fromPropertyList: stringKeyed, format: .binary, options: 0)
+        else { return }
+        keychain.set(data.base64EncodedString(), for: storageKey)
+    }
+
+    /// Restore the persisted refresh cookie into the jar on launch. An expired
+    /// snapshot (app closed > 30 days) restores an already-expired cookie that
+    /// URLSession simply won't send — correctly forcing a re-login.
+    static func restore() {
+        guard let b64 = keychain.get(storageKey),
+              let data = Data(base64Encoded: b64),
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+              let stringKeyed = plist as? [String: Any]
+        else { return }
+        let props = Dictionary(uniqueKeysWithValues: stringKeyed.map {
+            (HTTPCookiePropertyKey(rawValue: $0.key), $0.value)
+        })
+        if let cookie = HTTPCookie(properties: props) {
+            HTTPCookieStorage.shared.setCookie(cookie)
+        }
+    }
+
+    static func clear() {
+        keychain.delete(storageKey)
     }
 }

@@ -68,6 +68,12 @@ struct RootView: View {
             // Feed foreground/background into the auto-presence state machine
             // (foreground+activity → online; background → offline via disconnect).
             store.setAppActive(newPhase == .active)
+            // Leaving the foreground is our last reliable chance to persist the
+            // refresh cookie before the OS may kill the app — snapshot it so the
+            // session survives the next cold launch.
+            if newPhase != .active {
+                RefreshCookieStore.capture()
+            }
         }
         .onChange(of: session.phase) { phase in
             switch phase {
