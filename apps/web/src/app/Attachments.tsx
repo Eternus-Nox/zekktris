@@ -198,9 +198,13 @@ function EncryptedAttachment({
           className="max-w-[320px] max-h-[280px] rounded-lg border border-line object-cover"
         />
         <span
-          className="absolute top-1 right-1 rounded-full bg-bg-1/80 p-1"
+          className="absolute top-1 right-1 drop-shadow-[0_1px_2px_rgba(0,0,0,0.7)]"
           title="End-to-end encrypted"
         >
+          {/* Web-only: iOS shows no per-image lock at all (it relies on the
+              conversation-level E2EE badge by the DM avatar). Per request we
+              keep a lock here but with a transparent background — a drop-shadow
+              keeps it legible over bright images. */}
           <Lock size={11} className="text-accent" />
         </span>
       </span>
