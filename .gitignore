@@ -12,5 +12,10 @@ DerivedData/
 Pods/
 .build/
 
+# IDE metadata (Android Studio / JetBrains) — machine-specific, never committed.
+.idea/
+# TypeScript incremental build cache — a build artifact, not source.
+*.tsbuildinfo
+
 # Local appdata (APPDATA_PATH=./data): live Postgres volume, Caddy certs, uploads.
 /data/
