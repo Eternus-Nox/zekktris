@@ -89,14 +89,32 @@ request from these.
 
 ## Release (Play Store)
 
+Release signing is **already wired** in `app/build.gradle`: it reads
+`apps/web/android/keystore.properties` and signs the release build with it. That
+file (and `*.jks`/`*.keystore`) is gitignored, so keys and passwords never enter
+git. When the file is absent the release build falls back to debug signing, so a
+fresh clone still builds.
+
 1. Generate an upload keystore:
-   `keytool -genkey -v -keystore zekktris-upload.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload`
-2. Add a `signingConfigs` release block in `app/build.gradle` (or use Android
-   Studio → **Build → Generate Signed Bundle / APK**). Keep the keystore out of
-   git (the `.gitignore` has commented `*.jks` lines — uncomment them).
-3. Build an **AAB** (`Build → Generate Signed Bundle`) and upload to the Play
-   Console (internal testing → closed → production).
-4. Bump `versionCode` / `versionName` in `app/build.gradle` per release.
+   ```bash
+   keytool -genkey -v -keystore zekktris-upload.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+   ```
+2. Create `apps/web/android/keystore.properties` (do **not** commit it):
+   ```properties
+   storeFile=/absolute/path/to/zekktris-upload.jks
+   storePassword=your-store-password
+   keyAlias=upload
+   keyPassword=your-key-password
+   ```
+3. Build a signed **AAB**: Android Studio → **Build → Generate Signed Bundle /
+   APK → Android App Bundle**, or from `apps/web/android`:
+   `./gradlew :app:bundleRelease` (output under `app/build/outputs/bundle/release/`).
+   Upload to the Play Console (internal → closed → production).
+4. Bump `versionCode` / `versionName` in `app/build.gradle` each release.
+
+> With **Play App Signing** (recommended) your upload key signs the AAB and
+> Google re-signs with the app key — the SHA-256 fingerprint you'd need for
+> HTTPS App Links or FCM comes from the Play Console, not your local keystore.
 
 ## Known gaps vs. native iOS (follow-ups)
 
