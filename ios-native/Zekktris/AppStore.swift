@@ -672,7 +672,19 @@ final class AppStore: ObservableObject {
         if dms.isEmpty { Task { await loadDMs() } }
     }
 
-    func showMentions() { railPage = nil; railContent = .mentions; resetStack() }
+    func showMentions() {
+        // Wide (iPad/Mac): fill the whole sidebar+detail area via railPage, like
+        // Join/Create-server. Compact (iPhone): keep the existing in-rail content
+        // view, which already works as intended.
+        if isWideLayout {
+            railPage = .mentions
+            railContent = .normal
+        } else {
+            railPage = nil
+            railContent = .mentions
+        }
+        resetStack()
+    }
     func showSaved() { railPage = nil; railContent = .saved; resetStack() }
 
     // MARK: Navigation stack
@@ -694,8 +706,11 @@ final class AppStore: ObservableObject {
         if isWideLayout {
             // Navigating to content always exits the mentions/saved inbox in
             // the wide layout (there's no back affordance to return through;
-            // the rail highlight should track the visible pane).
+            // the rail highlight should track the visible pane). railPage is the
+            // full-page host for Mentions on wide — clear it too, or the opened
+            // channel never shows (the host keeps covering the detail pane).
             railContent = .normal
+            railPage = nil
             switch stack.last {
             case nil, .messages?, .voice?:
                 stack = [route]

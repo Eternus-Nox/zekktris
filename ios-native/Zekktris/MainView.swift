@@ -64,6 +64,16 @@ struct MainView: View {
                    let top = store.stack.last {
                     store.stack = [top]
                 }
+                // Keep Mentions on the right presentation for the new size
+                // class: wide fills via railPage; compact uses the in-rail
+                // content view (never a back-button-less full-screen cover).
+                if store.railPage == .mentions || store.railContent == .mentions {
+                    if newValue == .regular {
+                        store.railPage = .mentions; store.railContent = .normal
+                    } else {
+                        store.railPage = nil; store.railContent = .mentions
+                    }
+                }
             }
     }
 
@@ -118,9 +128,19 @@ struct MainView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Cross-fade pushes/pops as before — but NOT during a back-swipe,
-                // where the slide drives the motion and a fade would fight it.
-                .animation(backActive ? nil : .easeInOut(duration: 0.2), value: routeKey)
+                // Cross-fade pushes/pops as before — but NOT during a back-swipe
+                // (the slide drives the motion and a fade would fight it), and
+                // NOT when landing on the root (stack empty). On compact the
+                // server rail is a sibling that only exists at root; cross-fading
+                // the outgoing full-width conversation while the rail is inserted
+                // leaves a still-hit-testable fading view OVER the rail for ~0.2s,
+                // eating its taps (the "rail unresponsive after going back" bug).
+                // The < button, swipe-back, and any showDMs/showMentions/
+                // selectGuild that returns to root all funnel through here.
+                .animation(
+                    (backActive || (store.stack.isEmpty && !isWide)) ? nil : .easeInOut(duration: 0.2),
+                    value: routeKey
+                )
             }
             }
         }
@@ -185,6 +205,7 @@ struct MainView: View {
             case .joinInvite: JoinByInviteSheet()
             case .admin: AdminView()
             case .family: FamilyView()
+            case .mentions: MentionsView()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -432,7 +453,7 @@ private struct WideEmptyDetail: View {
 /// Settings). Hosted inline next to the rail on iPad/Mac, full screen on
 /// iPhone — NOT sheets.
 enum RailPage: String, Identifiable, CaseIterable {
-    case settings, discover, createServer, joinInvite, admin, family
+    case settings, discover, createServer, joinInvite, admin, family, mentions
     var id: String { rawValue }
 }
 
@@ -506,7 +527,7 @@ struct ServerRailView: View {
                     .buttonStyle(.plain)
 
                     Button { store.showMentions() } label: {
-                        RailTile(active: store.railContent == .mentions) {
+                        RailTile(active: store.railContent == .mentions || store.railPage == .mentions) {
                             Image(systemName: "at")
                                 .font(.system(size: 19, weight: .semibold))
                         }
@@ -3112,6 +3133,10 @@ struct MentionsView: View {
             }
             .navigationTitle("Mentions")
             .navigationBarTitleDisplayMode(.inline)
+            // Back affordance for the compact full-screen-cover presentation
+            // (matches every other rail-page host). Self-hides on wide, where
+            // Mentions fills the detail pane and is exited via the rail.
+            .toolbar { ToolbarItem(placement: .navigationBarLeading) { PageBackButton() } }
             .task { await store.loadMentions() }
         }
     }
