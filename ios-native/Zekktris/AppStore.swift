@@ -74,6 +74,9 @@ final class AppStore: ObservableObject {
     /// Open a rail page; tapping its icon again closes it (the wide
     /// layout's exit affordance — the back chevron is phone-only).
     func toggleRailPage(_ page: RailPage) {
+        // Close the members drawer too (this rail path bypasses resetStack),
+        // so every rail action consistently dismisses it.
+        showMembers = false
         railPage = (railPage == page) ? nil : page
     }
 
@@ -728,7 +731,7 @@ final class AppStore: ObservableObject {
         stack.append(route)
     }
     func pop() { if !stack.isEmpty { stack.removeLast() } }
-    private func resetStack() { stack = []; threadList = [] }
+    private func resetStack() { stack = []; threadList = []; showMembers = false }
 
     /// Called by MessageListView.onAppear to load the channel it shows.
     /// Guarded by id so a re-appear (keyboard etc.) doesn't reload.

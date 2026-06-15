@@ -300,7 +300,15 @@ struct MessageListView: View {
         .sheet(isPresented: $showSearch) {
             SearchSheet(channel: channel)
         }
-        .sheet(isPresented: $store.showMembers) {
+        .sheet(isPresented: Binding(
+            get: { store.isWideLayout && store.showMembers },
+            set: { if !$0 { store.showMembers = false } }
+        )) {
+            // WIDE (iPad/Mac) only: members as a sheet. On compact (phone) the
+            // member list is a right-edge drawer driven by the same
+            // `store.showMembers` flag (see MainView.membersDrawer) — swipe left
+            // to open, swipe right to close — so the sheet is gated to wide to
+            // avoid double-presenting.
             // Re-inject env objects: the sheet host doesn't inherit them on
             // "Designed for iPad on Mac", which crashed the Members sheet
             // ("No ObservableObject of type AppStore found").
@@ -2858,7 +2866,10 @@ struct MemberListView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+                    // Works for both presentations: dismiss() closes the sheet
+                    // (wide / guild-settings), and clearing showMembers closes
+                    // the compact right-edge drawer.
+                    Button("Done") { dismiss(); store.showMembers = false }
                 }
             }
         }

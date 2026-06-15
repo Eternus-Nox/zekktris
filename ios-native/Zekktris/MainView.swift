@@ -287,34 +287,73 @@ struct MainView: View {
         )
         .simultaneousGesture(backSwipeGesture)
         .simultaneousGesture(membersSwipeGesture)
+        .overlay { membersDrawer }
     }
 
-    /// Swipe LEFT (in a guild text channel) to bring up the members tab — the
-    /// mirror of the right-swipe-back. A simple fling (the member list is a
-    /// sheet, not a sliding panel, so there's nothing to track to the finger):
-    /// a clearly-leftward, horizontally-dominant drag sets `showMembers`, which
-    /// presents the same sheet the header's people button does. DM and voice
-    /// screens have no member list, so it's gated to guild text routes.
+    /// The members panel is a right-edge drawer (compact/phone): swipe LEFT to
+    /// slide it in from the right, swipe RIGHT (or tap the dimmed backdrop, or
+    /// Done) to slide it back out. Available both in a guild's channel list and
+    /// in one of its text channels — but not DMs/voice/threads, which have no
+    /// member list. A clearly-horizontal fling drives a smooth slide.
     private var membersSwipeGesture: some Gesture {
         DragGesture(minimumDistance: 24)
             .onEnded { value in
-                // `!backActive` so a leftward fling during a back-swipe's
-                // settle/pop window can't set showMembers as the page pops
-                // (which would auto-open the sheet on the next channel).
-                guard isGuildTextRoute(store.stack.last), !store.showMembers, !backActive
+                guard !backActive,
+                      abs(value.translation.width) > abs(value.translation.height) * 1.5
                 else { return }
-                if value.translation.width < -70,
-                   abs(value.translation.width) > abs(value.translation.height) * 1.5 {
-                    store.showMembers = true
+                if store.showMembers {
+                    // Open → swipe RIGHT to close.
+                    if value.translation.width > 60 {
+                        withAnimation(.easeOut(duration: 0.25)) { store.showMembers = false }
+                    }
+                } else if canShowMembers {
+                    // Closed → swipe LEFT to open.
+                    if value.translation.width < -60 {
+                        withAnimation(.easeOut(duration: 0.25)) { store.showMembers = true }
+                    }
                 }
             }
     }
 
-    /// True only for a guild (non-DM) text-channel message route — where a
-    /// member list exists.
-    private func isGuildTextRoute(_ route: Route?) -> Bool {
-        if case .messages(let c) = route { return !c.isDM }
-        return false
+    /// Whether the member list applies right now: in a guild (not DMs), on the
+    /// channel list (root) or one of its text channels — not voice/threads.
+    private var canShowMembers: Bool {
+        guard store.selectedGuild != nil, !store.inDMs else { return false }
+        switch store.stack.last {
+        case nil: return true                  // guild channel list (root)
+        case .messages(let c): return !c.isDM  // a guild text channel
+        default: return false                  // voice / thread list
+        }
+    }
+
+    /// The right-edge member drawer overlaid on the compact content. Mounted
+    /// only where members apply; off-screen (and non-interactive) when closed so
+    /// it never intercepts taps on the content beneath. Driven by the same
+    /// `store.showMembers` flag as the wide sheet + the header people button.
+    @ViewBuilder
+    private var membersDrawer: some View {
+        if canShowMembers {
+            let base = contentWidth > 0 ? contentWidth : 393
+            let w = min(base * 0.82, 360)
+            ZStack(alignment: .trailing) {
+                if store.showMembers {
+                    Color.black.opacity(0.35)
+                        .ignoresSafeArea()
+                        .transition(.opacity)
+                        .onTapGesture {
+                            withAnimation(.easeOut(duration: 0.25)) { store.showMembers = false }
+                        }
+                }
+                MemberListView()
+                    .frame(width: w)
+                    .background(Theme.bg1)
+                    .shadow(color: .black.opacity(0.25), radius: 14, x: -6, y: 0)
+                    .offset(x: store.showMembers ? 0 : w + 16)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            .animation(.easeOut(duration: 0.25), value: store.showMembers)
+            .allowsHitTesting(store.showMembers)
+        }
     }
 
     /// The interactive back-swipe. `simultaneousGesture` + a horizontal-
@@ -326,15 +365,19 @@ struct MainView: View {
             .updating($dragX) { value, state, _ in
                 // Track only a rightward, horizontally-dominant drag on a
                 // message screen; anything else leaves the offset at 0 so a
-                // vertical scroll is untouched.
-                guard isMessageRoute(store.stack.last),
+                // vertical scroll is untouched. Not while the members drawer is
+                // open — there a rightward swipe CLOSES the drawer instead of
+                // popping the page.
+                guard !store.showMembers,
+                      isMessageRoute(store.stack.last),
                       value.translation.width > 0,
                       abs(value.translation.width) > abs(value.translation.height)
                 else { return }
                 state = value.translation.width
             }
             .onEnded { value in
-                guard isMessageRoute(store.stack.last),
+                guard !store.showMembers,
+                      isMessageRoute(store.stack.last),
                       value.translation.width > 0,
                       abs(value.translation.width) > abs(value.translation.height)
                 else { return }
