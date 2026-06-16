@@ -326,39 +326,31 @@ struct MainView: View {
         }
     }
 
-    /// The right-edge member drawer overlaid on the compact content. Mounted
-    /// only where members apply; off-screen (and non-interactive) when closed so
-    /// it never intercepts taps on the content beneath. Driven by the same
-    /// `store.showMembers` flag as the wide sheet + the header people button.
+    /// The right-edge member drawer overlaid on the compact content. It fills
+    /// the whole content column — i.e. UP TO the 72pt server rail — so the rail
+    /// stays visible AND tappable beside it (you can hop to DMs/Mentions while
+    /// it's open; that also clears `showMembers`). Close it by swiping right.
+    ///
+    /// Deliberately NO dimming scrim: a full-bleed `Color.ignoresSafeArea()`
+    /// scrim bled past the content column and over the rail, eating the rail
+    /// buttons' taps (they "didn't work" while the drawer was open). The panel
+    /// is opaque and full-width, so there's nothing to dim anyway. Off-screen +
+    /// non-interactive when closed so it never intercepts the content beneath.
     @ViewBuilder
     private var membersDrawer: some View {
         if canShowMembers {
-            // Size from the FULL screen width, not the content column, so the
-            // drawer is the same width whether the 72pt server rail is showing
-            // (channel list) or not (inside a text channel). At the channel list
-            // `contentWidth` is screen−rail; add the rail back to recover the
-            // full width. (Rail = 72 + 1pt divider, shown only at root on compact.)
-            let railWidth: CGFloat = store.stack.isEmpty ? 73 : 0
-            let full = (contentWidth > 0 ? contentWidth : 393) + railWidth
-            let w = min(full * 0.82, 360)
-            ZStack(alignment: .trailing) {
-                if store.showMembers {
-                    Color.black.opacity(0.35)
-                        .ignoresSafeArea()
-                        .transition(.opacity)
-                        .onTapGesture {
-                            withAnimation(.easeOut(duration: 0.25)) { store.showMembers = false }
-                        }
-                }
-                MemberListView(showsDoneButton: false)
-                    .frame(width: w)
-                    .background(Theme.bg1)
-                    .shadow(color: .black.opacity(0.25), radius: 14, x: -6, y: 0)
-                    .offset(x: store.showMembers ? 0 : w + 16)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-            .animation(.easeOut(duration: 0.25), value: store.showMembers)
-            .allowsHitTesting(store.showMembers)
+            // Full content-column width: the overlay lives on `compactNav`, which
+            // already starts to the RIGHT of the rail, so filling it reaches
+            // exactly up to the rail without ever covering it.
+            let w = contentWidth > 0 ? contentWidth : 393
+            MemberListView(showsDoneButton: false)
+                .frame(width: w)
+                .background(Theme.bg1)
+                .shadow(color: .black.opacity(0.25), radius: 14, x: -6, y: 0)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                .offset(x: store.showMembers ? 0 : w + 16)
+                .animation(.easeOut(duration: 0.25), value: store.showMembers)
+                .allowsHitTesting(store.showMembers)
         }
     }
 
