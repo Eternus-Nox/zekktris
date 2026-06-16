@@ -7,8 +7,12 @@
  * never read, so E2EE conversations participate fully.
  */
 
-import { eq } from 'drizzle-orm';
+import { and, eq, gt, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
+import { createSystemMessage } from './messages';
+import { toMessage } from '../lib/dto';
+import * as dispatch from '../gateway/dispatch';
+import { log } from '../log';
 
 const CAP = 10_000;
 
@@ -114,4 +118,97 @@ export async function bestStreakForUser(userId: bigint): Promise<number> {
     .from(schema.dmStreaks)
     .where(or(eqOp(schema.dmStreaks.userAId, userId), eqOp(schema.dmStreaks.userBId, userId)));
   return rows.reduce((m, r) => Math.max(m, r.best), 0);
+}
+
+/**
+ * Warn DMs whose streak is about to reset. A streak resets at the next UTC
+ * midnight once it isn't credited "today" (see streaksForChannels: alive iff
+ * lastCountedDay is today-or-yesterday). So ~6h before that — when the caller
+ * runs this at/after 18:00 UTC — post a ONE-TIME notice into every DM whose
+ * streak is alive but credited only YESTERDAY (i.e. not refreshed today).
+ *
+ * Multi-replica + repeat safe: the claim is a single atomic UPDATE that stamps
+ * `streak_warned_for_day = today` AND excludes rows already stamped for today,
+ * so only the instance whose UPDATE actually flips a row gets it back. The
+ * watermark self-resets the next UTC day. Per-row posting is best-effort.
+ * Returns the number of warnings sent.
+ */
+export async function sweepStreakWarnings(): Promise<number> {
+  const today = utcDay();
+  const yesterday = prevUtcDay(today);
+
+  const claimed = await db
+    .update(schema.dmStreaks)
+    .set({ streakWarnedForDay: today })
+    .where(
+      and(
+        gt(schema.dmStreaks.streak, 0),
+        eq(schema.dmStreaks.lastCountedDay, yesterday),
+        sql`${schema.dmStreaks.streakWarnedForDay} IS DISTINCT FROM ${today}`,
+      ),
+    )
+    .returning({
+      channelId: schema.dmStreaks.channelId,
+      userAId: schema.dmStreaks.userAId,
+      streak: schema.dmStreaks.streak,
+    });
+
+  let sent = 0;
+  for (const row of claimed) {
+    try {
+      // Time-to-reset is (next UTC midnight − now), so derive it instead of a
+      // fixed "6 hours" — the sweep can run anywhere in the window, and the
+      // operator can retune STREAK_WARN_HOURS_BEFORE.
+      const hoursLeft = Math.max(1, 24 - new Date().getUTCHours());
+      const content =
+        `🔥 Your ${row.streak}-day streak ends in about ${hoursLeft} ` +
+        `hour${hoursLeft === 1 ? '' : 's'} — send a message to keep it alive!`;
+      // type 'default' + a metadata marker the clients render as a quiet notice
+      // (no message_type enum migration). Authored by one participant to satisfy
+      // the author FK; clients render it from the metadata, not as that user's
+      // bubble.
+      const inserted = await createSystemMessage({
+        channelId: row.channelId,
+        guildId: null,
+        authorId: row.userAId,
+        content,
+        type: 'default',
+        mentionedUserIds: [],
+        metadata: { kind: 'streak_warning', streak: row.streak },
+      });
+      // Make it the channel's newest message so the DM marks unread + sorts up
+      // (the whole point of the warning is to draw the user back in).
+      await db
+        .update(schema.channels)
+        .set({
+          lastMessageId: sql`GREATEST(COALESCE(${schema.channels.lastMessageId}, 0), ${inserted.id})`,
+        })
+        .where(eq(schema.channels.id, row.channelId));
+      const [author] = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.id, row.userAId))
+        .limit(1);
+      const messageDTO = toMessage({
+        message: inserted,
+        author: author ?? null,
+        attachments: [],
+        reactions: [],
+        mentionedUserIds: [],
+        mentionedRoleIds: [],
+        poll: null,
+        sticker: null,
+        forwardedFrom: null,
+        selfId: row.userAId,
+      });
+      dispatch.messageCreate({ messageDTO, channelId: row.channelId, guildId: null });
+      sent++;
+    } catch (err) {
+      log.warn?.('streak warning failed', {
+        channelId: row.channelId.toString(),
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return sent;
 }

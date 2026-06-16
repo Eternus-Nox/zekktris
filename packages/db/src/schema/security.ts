@@ -1,4 +1,5 @@
 import { pgTable, bigint, text, boolean, integer, timestamp, index } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { users } from './users';
 import { guilds } from './guilds';
 
@@ -84,6 +85,11 @@ export const dmStreaks = pgTable(
     lastCountedDay: text('last_counted_day'),
     streak: integer('streak').notNull().default(0),
     bestStreak: integer('best_streak').notNull().default(0),
+    /** UTC day (YYYY-MM-DD) the "streak expires soon" warning was last sent for
+     *  this DM. A text watermark (not a bool) so it self-resets across days:
+     *  "already warned today" == (streakWarnedForDay === today). Set atomically
+     *  by the warning sweep so two ticks/replicas never double-send. */
+    streakWarnedForDay: text('streak_warned_for_day'),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
@@ -93,5 +99,10 @@ export const dmStreaks = pgTable(
     // `channelId` lookups used by the per-DM streak read.
     byUserA: index('dm_streaks_user_a_idx').on(t.userAId),
     byUserB: index('dm_streaks_user_b_idx').on(t.userBId),
+    // Hot path for the expiry-warning sweep: WHERE streak > 0 AND
+    // last_counted_day = :yesterday. Partial (live streaks only).
+    warnSweep: index('dm_streaks_warn_sweep_idx')
+      .on(t.lastCountedDay)
+      .where(sql`${t.streak} > 0`),
   }),
 );

@@ -22,6 +22,7 @@ import { setEventBus, closeEventBus } from './gateway/bus';
 import { sweepInactiveAccounts } from './services/inactivitySweep';
 import { purgeExpiredSessions } from './auth/sessions';
 import { sweepExpiredDmMessages } from './services/dms';
+import { sweepStreakWarnings } from './services/streaks';
 
 async function main(): Promise<void> {
   await runStartupChecks();
@@ -130,6 +131,37 @@ async function main(): Promise<void> {
     );
   }, 60_000);
   log.info('DM auto-delete sweep scheduled', { intervalSeconds: 60 });
+
+  // ── DM streak-expiry warning sweep ──────────────────────────────────────
+  // Post a one-time "your streak ends soon" notice into each at-risk DM in the
+  // ~6h before its UTC-midnight reset. Runs every 30 min but only ACTS at/after
+  // (24 - STREAK_WARN_HOURS_BEFORE):00 UTC; the per-row watermark in
+  // sweepStreakWarnings makes it warn once/day/channel and is multi-replica
+  // safe. Error-isolated like the other sweeps — a failure never crashes.
+  let streakWarnTimer: ReturnType<typeof setInterval> | null = null;
+  if (env.STREAK_WARN_ENABLED) {
+    const startHourUTC = 24 - env.STREAK_WARN_HOURS_BEFORE;
+    const runStreakWarnings = () => {
+      if (new Date().getUTCHours() < startHourUTC) return;
+      void sweepStreakWarnings()
+        .then((n) => {
+          if (n > 0) log.info('streak warnings sent', { count: n });
+        })
+        .catch((err) => log.error('streak warning sweep failed', { err }));
+    };
+    // Leading run shortly after boot (like the other sweeps) — runStreakWarnings
+    // self-guards on the UTC hour and the per-row watermark makes it idempotent,
+    // so a process that boots/restarts INSIDE the 18:00–24:00 UTC window still
+    // warns that day instead of waiting up to a full 30-min interval (which,
+    // under deploy churn, could skip the whole day).
+    setTimeout(runStreakWarnings, 30_000);
+    streakWarnTimer = setInterval(runStreakWarnings, 30 * 60_000);
+    log.info('streak-warning sweep scheduled', {
+      hoursBefore: env.STREAK_WARN_HOURS_BEFORE,
+    });
+  } else {
+    log.info('streak-warning sweep disabled (STREAK_WARN_ENABLED=false)');
+  }
 
   // ── Image compression sweep timer ──────────────────────────────────────
   // Re-encodes image attachments older than COMPRESS_AFTER_DAYS at a
@@ -517,6 +549,7 @@ async function main(): Promise<void> {
     // delete query mid-shutdown.
     if (sweepTimer) clearInterval(sweepTimer);
     clearInterval(dmSweepTimer);
+    if (streakWarnTimer) clearInterval(streakWarnTimer);
     if (compressTimer) clearInterval(compressTimer);
     clearInterval(eventSweepTimer);
     clearInterval(pollSweepTimer);

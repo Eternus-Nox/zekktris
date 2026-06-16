@@ -163,7 +163,12 @@ struct MessageListView: View {
         guard channel.type == "dm", let selfId = store.currentUserId else { return (nil, nil) }
         var latest: Message? = nil
         var lastRead: Message? = nil
-        for m in store.messages where (m.authorId ?? m.author?.id) == selfId && m.sendState == nil {
+        for m in store.messages
+        where (m.authorId ?? m.author?.id) == selfId
+            && m.sendState == nil
+            && m.metadata?.kind != "streak_warning" {
+            // ^ the streak-expiry notice is authored by a participant but is a
+            //   system-style row — it must not become the read-receipt anchor.
             latest = m
             if m.viewedAt != nil { lastRead = m }
         }
@@ -862,7 +867,9 @@ struct MessageRow: View {
         // Other system messages (system_join welcomes, pins, …) render
         // as a regular row — the joiner's avatar on the left, name, and
         // the welcome text, as if they sent it.
-        if message.type == "system_call" {
+        if message.metadata?.kind == "streak_warning" {
+            streakWarningRow
+        } else if message.type == "system_call" {
             systemRow
         } else {
         rowContent
@@ -908,6 +915,25 @@ struct MessageRow: View {
         }
         .padding(.vertical, 4)
         .padding(.leading, gutter)
+    }
+
+    /// "Your streak ends soon" warning — a quiet centered notice (not a bubble
+    /// from the author), mirroring the system_call notice style. Content comes
+    /// straight from the server message; the flame keys off the metadata.
+    private var streakWarningRow: some View {
+        HStack(spacing: 7) {
+            Spacer(minLength: 0)
+            Image(systemName: "flame.fill")
+                .font(.system(size: 11))
+                .foregroundColor(Theme.accent)
+            Text(message.text)
+                .font(.zkSans(12))
+                .foregroundColor(Theme.ink2)
+                .multilineTextAlignment(.center)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 5)
+        .padding(.horizontal, gutter)
     }
 
     private var callSummary: String {

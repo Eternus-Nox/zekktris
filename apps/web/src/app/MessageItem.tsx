@@ -585,6 +585,20 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
     );
   }
 
+  // DM streak-expiry warning — a 'default'-type row carrying a metadata
+  // marker. Render as a quiet centered notice (not a bubble that looks like a
+  // participant sent it). The content (with its 🔥) is authored server-side.
+  if (message.metadata?.kind === 'streak_warning') {
+    return (
+      <div
+        data-message-id={message.id}
+        className="group relative flex items-center justify-center gap-2 py-1.5 px-4 text-center text-xs text-ink-2"
+      >
+        <span>{message.content}</span>
+      </div>
+    );
+  }
+
   // System call messages — render as a compact inline notice rather
   // than the regular message bubble. The metadata payload carries the
   // call summary (missed flag + duration); the rendered string is

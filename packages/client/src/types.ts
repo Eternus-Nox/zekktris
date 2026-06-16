@@ -324,16 +324,24 @@ export interface ReactionAggregate {
  * Future system message types should add a new union variant here
  * rather than introducing a new typed field on Message.
  */
-export type MessageMetadata = {
-  kind: 'call';
-  /** True when the caller hung up before the callee answered. The
-   *  message renders as a missed call in that case. */
-  missed: boolean;
-  /** Answered-to-ended span in milliseconds. 0 when missed=true. */
-  durationMs: number;
-  /** Caller's user id (stringified BigInt). */
-  initiatorId: string;
-};
+export type MessageMetadata =
+  | {
+      kind: 'call';
+      /** True when the caller hung up before the callee answered. The
+       *  message renders as a missed call in that case. */
+      missed: boolean;
+      /** Answered-to-ended span in milliseconds. 0 when missed=true. */
+      durationMs: number;
+      /** Caller's user id (stringified BigInt). */
+      initiatorId: string;
+    }
+  | {
+      /** A "your DM streak expires soon" warning. The row is type 'default'
+       *  but renders as a quiet notice (not a bubble) when this is present. */
+      kind: 'streak_warning';
+      /** Streak day count at warning time. */
+      streak: number;
+    };
 
 export interface Message {
   id: string;

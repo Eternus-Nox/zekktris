@@ -400,4 +400,12 @@ export type MessageMetadataJson =
       durationMs: number;
       /** Caller's user id as a string (JSON can't carry BigInt). */
       initiatorId: string;
+    }
+  | {
+      /** A "your DM streak expires soon" warning. Rendered by clients as a
+       *  quiet notice line (like 'call'), NOT a normal bubble — even though the
+       *  message row itself is type 'default' (no enum migration needed). */
+      kind: 'streak_warning';
+      /** The streak day count at warning time. */
+      streak: number;
     };

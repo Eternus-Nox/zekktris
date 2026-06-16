@@ -1024,7 +1024,11 @@ function Scroller({
     let latest: string | null = null;
     let lastRead: string | null = null;
     for (const m of messages) {
+      // Skip own non-message rows: system_* types AND the streak-expiry notice
+      // (a 'default' row carrying a streak_warning marker) — neither should be
+      // the read-receipt anchor.
       if (m.authorId !== selfId || m.type.startsWith('system_')) continue;
+      if (m.metadata?.kind === 'streak_warning') continue;
       latest = m.id;
       if (m.viewedAt) lastRead = m.id;
     }

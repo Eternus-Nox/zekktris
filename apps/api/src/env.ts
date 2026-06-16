@@ -157,6 +157,16 @@ export const envSchema = z.object({
   /** How often the sweep runs, in hours. Default: once per day. */
   INACTIVITY_SWEEP_INTERVAL_HOURS: z.coerce.number().min(0.25).default(24),
 
+  // ── DM streak-expiry warning ───────────────────────────────────────────
+  /** Post a "your DM streak ends soon" notice this many hours before a streak
+   *  resets (streaks reset at UTC midnight). Default 6 → warns at/after
+   *  18:00 UTC. Set STREAK_WARN_ENABLED=false to disable the sweep entirely. */
+  STREAK_WARN_ENABLED: z
+    .string()
+    .default('true')
+    .transform((v) => v !== 'false' && v !== '0'),
+  STREAK_WARN_HOURS_BEFORE: z.coerce.number().int().min(1).max(23).default(6),
+
   // ── Uploads ────────────────────────────────────────────────────────────
   UPLOAD_DIR: z.string().default('/data/uploads'),
   MAX_UPLOAD_SIZE_MB: z.coerce.number().int().min(1).max(10_000).default(100),

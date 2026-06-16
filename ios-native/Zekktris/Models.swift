@@ -180,6 +180,8 @@ struct MessageMetadata: Codable, Hashable {
     var missed: Bool?
     var durationMs: Int?
     var initiatorId: String?
+    /// kind == "streak_warning": the streak day count at warning time.
+    var streak: Int?
 }
 
 extension Message {

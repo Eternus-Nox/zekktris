@@ -412,7 +412,10 @@ export async function createSystemMessage(input: {
   guildId: bigint | null;
   authorId: bigint;
   content: string;
-  type: 'system_join' | 'system_call';
+  // 'default' is allowed so an automated notice (e.g. the DM streak-expiry
+  // warning) can ride a normal-type row + a metadata marker the clients render
+  // specially — avoiding a message_type enum migration.
+  type: 'system_join' | 'system_call' | 'default';
   mentionedUserIds: bigint[];
   /** Structured metadata for system messages that need it. Currently
    *  used by system_call to carry { missed, durationMs, initiatorId }.
