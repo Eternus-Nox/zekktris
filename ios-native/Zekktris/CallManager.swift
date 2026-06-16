@@ -180,10 +180,13 @@ extension CallManager: CXProviderDelegate {
         // Match LiveKit's playAndRecordSpeaker config (.videoChat + these
         // options) so the engine's later re-config in didActivate is a no-op,
         // not a category change on an already-active CallKit session.
+        // `allowBluetoothHFP` is the current name (the old `allowBluetooth` is
+        // deprecated/renamed); it's available since iOS 8.0, so it's safe at our
+        // iOS 16 deployment target with no runtime gate.
         try? AVAudioSession.sharedInstance().setCategory(
             .playAndRecord,
             mode: .videoChat,
-            options: [.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay]
+            options: [.allowBluetoothHFP, .allowBluetoothA2DP, .allowAirPlay]
         )
         Task { @MainActor in
             if let channelId = channelByUUID[action.callUUID] {
