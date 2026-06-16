@@ -267,7 +267,21 @@ final class AppStore: ObservableObject {
         if let ch = channels.first(where: { $0.id == channelId }) { open(ch); return }
         Task {
             await loadDMs()
-            if let dm = dms.first(where: { $0.id == channelId }) { open(dm) }
+            if let dm = dms.first(where: { $0.id == channelId }) { open(dm); return }
+            if let ch = channels.first(where: { $0.id == channelId }) { open(ch); return }
+            // Guild text channel not in memory yet (cold launch, before any guild
+            // is selected — `channels` only holds the current guild's). Fetch the
+            // channel to learn its owning guild, switch to that guild, then open
+            // it. Without this, a tapped guild-channel notification fell through
+            // to the default landing instead of opening the channel.
+            guard let ch = try? await api.channel(id: channelId) else { return }
+            if let gid = ch.guildId, !gid.isEmpty {
+                if guilds.isEmpty { await loadGuilds() }
+                if let guild = guilds.first(where: { $0.id == gid }) {
+                    selectGuild(guild)
+                }
+            }
+            open(ch)
         }
     }
 
@@ -799,7 +813,21 @@ final class AppStore: ObservableObject {
 
     // MARK: Loading
 
+    private var guildsLoadTask: Task<Void, Never>?
+    /// Single-flight: concurrent callers (start() + a deep-link's openFromPush)
+    /// share ONE GET /guilds and ALL await its completion. An early-return guard
+    /// would let the second caller return before `guilds` was populated, so a
+    /// deep-link's guild resolution could silently no-op; awaiting the shared
+    /// task fixes that and still avoids the double-fetch.
     func loadGuilds() async {
+        if let existing = guildsLoadTask { await existing.value; return }
+        let task = Task { await self.performLoadGuilds() }
+        guildsLoadTask = task
+        await task.value
+        guildsLoadTask = nil
+    }
+
+    private func performLoadGuilds() async {
         loadingGuilds = true; errorText = nil
         defer { loadingGuilds = false }
         do {
@@ -815,11 +843,21 @@ final class AppStore: ObservableObject {
         }
     }
 
+    private var dmsLoadTask: Task<Void, Never>?
+    /// Single-flight (see loadGuilds): start(), the DMs landing, and a DM
+    /// deep-link can all request a load; they share ONE GET /dms and await its
+    /// real completion — so openFromPush reliably sees the loaded `dms` (an
+    /// early-return guard could leave `dms` empty when it's checked) and we
+    /// don't double-fetch.
     func loadDMs() async {
-        // In-flight guard: start() and the DMs landing (showDMs) can both kick
-        // off a load on cold launch — without this they'd fire two concurrent
-        // GET /dms. A load already running has the freshest result.
-        if loadingDMs { return }
+        if let existing = dmsLoadTask { await existing.value; return }
+        let task = Task { await self.performLoadDMs() }
+        dmsLoadTask = task
+        await task.value
+        dmsLoadTask = nil
+    }
+
+    private func performLoadDMs() async {
         loadingDMs = true
         defer { loadingDMs = false }
         // Snapshot presence BEFORE the network call suspends. Any gateway

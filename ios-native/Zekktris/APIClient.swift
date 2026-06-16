@@ -260,6 +260,16 @@ final class APIClient {
         return wrap.channels
     }
 
+    /// Fetch a single channel by id (carries its `guildId`). Used to resolve a
+    /// notification/deep-link target that isn't in memory yet — e.g. a guild
+    /// text channel tapped from a cold launch before its guild is selected.
+    /// The server endpoint serves guild channels (VIEW_CHANNEL gated); DMs 404
+    /// here and are resolved via the DM list instead.
+    func channel(id: String) async throws -> Channel {
+        let wrap: ChannelWrap = try await send("GET", "/channels/\(id)")
+        return wrap.channel
+    }
+
     func messages(channelId: String, limit: Int = 50, before: String? = nil, after: String? = nil) async throws -> [Message] {
         var path = "/channels/\(channelId)/messages?limit=\(limit)"
         if let before { path += "&before=\(before)" }
