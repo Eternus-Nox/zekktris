@@ -333,8 +333,14 @@ struct MainView: View {
     @ViewBuilder
     private var membersDrawer: some View {
         if canShowMembers {
-            let base = contentWidth > 0 ? contentWidth : 393
-            let w = min(base * 0.82, 360)
+            // Size from the FULL screen width, not the content column, so the
+            // drawer is the same width whether the 72pt server rail is showing
+            // (channel list) or not (inside a text channel). At the channel list
+            // `contentWidth` is screen−rail; add the rail back to recover the
+            // full width. (Rail = 72 + 1pt divider, shown only at root on compact.)
+            let railWidth: CGFloat = store.stack.isEmpty ? 73 : 0
+            let full = (contentWidth > 0 ? contentWidth : 393) + railWidth
+            let w = min(full * 0.82, 360)
             ZStack(alignment: .trailing) {
                 if store.showMembers {
                     Color.black.opacity(0.35)
@@ -344,7 +350,7 @@ struct MainView: View {
                             withAnimation(.easeOut(duration: 0.25)) { store.showMembers = false }
                         }
                 }
-                MemberListView()
+                MemberListView(showsDoneButton: false)
                     .frame(width: w)
                     .background(Theme.bg1)
                     .shadow(color: .black.opacity(0.25), radius: 14, x: -6, y: 0)

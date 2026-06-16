@@ -337,10 +337,25 @@ final class AppStore: ObservableObject {
     @Published var savedIds: Set<String> = []
     /// Live presence map: userId → status ("online"/"idle"/"dnd"/"offline").
     @Published var presence: [String: String] = [:]
+    /// Coalescing buffer for live PRESENCE_UPDATE events. On a cold-launch READY
+    /// burst (and on busy instances) presence is by far the most frequent event;
+    /// writing `presence` per-event re-ran the whole MainView body (incl. the
+    /// swipe-gesture container) on nearly every frame, dropping the first taps
+    /// ("tap 3x to navigate"). We buffer here and flush into `presence` in ONE
+    /// mutation on a short debounce — collapsing dozens of rebuilds into a few.
+    /// Safe vs the loadDMs presence-merge: the flush applies live state LAST, so
+    /// a live event still wins over the REST baseline (see performLoadDMs).
+    private var pendingPresence: [String: String] = [:]
+    private var presenceFlushScheduled = false
     /// Per-user typing expiry for the *selected* channel (userId → when it lapses).
     @Published var typing: [String: Date] = [:]
     /// True when the DMs surface (rather than a guild) is selected.
-    @Published var inDMs = false
+    // Default TRUE: DMs is the home screen, so the very first render after
+    // launch is already "root-dms". Otherwise the initial inDMs=false →
+    // showDMs() flip changed routeKey once at launch, re-identifying the
+    // content column (.id(routeKey)) and dropping a tap that landed during the
+    // swap. start()/openFromPush/selectGuild still set it as needed.
+    @Published var inDMs = true
     @Published var railContent: RailContent = .normal
 
     /// Navigation drill-down beyond the root list (message views, thread lists).
@@ -646,7 +661,13 @@ final class AppStore: ObservableObject {
         saved = []
         savedIds = []
         presence = [:]
-        inDMs = false
+        // Clear the presence coalescing buffer too, or an in-flight flush
+        // scheduled before logout could write prior-session statuses back into
+        // the just-cleared map (~200ms window). Empty buffer → the flush
+        // early-returns.
+        pendingPresence.removeAll()
+        presenceFlushScheduled = false
+        inDMs = true   // DMs home (matches the default) so a re-login also lands clean
         stack = []
         threadList = []
         voiceChannelId = nil
@@ -857,9 +878,42 @@ final class AppStore: ObservableObject {
         dmsLoadTask = nil
     }
 
+    /// Apply any buffered PRESENCE_UPDATE events to `presence` in a single
+    /// @Published mutation (only when something actually changed, to avoid a
+    /// no-op render).
+    private func flushPendingPresence() {
+        guard !pendingPresence.isEmpty else { return }
+        var next = presence
+        var changed = false
+        for (uid, status) in pendingPresence where next[uid] != status {
+            next[uid] = status
+            changed = true
+        }
+        pendingPresence.removeAll()
+        if changed { presence = next }
+    }
+
+    /// Debounce a flush of `pendingPresence` (~200ms). Coalesces a burst of
+    /// presence events into one `presence` write. `presenceFlushScheduled`
+    /// ensures only one timer is in flight.
+    private func schedulePresenceFlush() {
+        guard !presenceFlushScheduled else { return }
+        presenceFlushScheduled = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            presenceFlushScheduled = false
+            flushPendingPresence()
+        }
+    }
+
     private func performLoadDMs() async {
         loadingDMs = true
         defer { loadingDMs = false }
+        // Fold any buffered presence into `presence` first, so the
+        // pre-suspend snapshot (presenceBefore, below) reflects known live
+        // state; events arriving DURING the fetch stay buffered and the
+        // debounced flush applies them after — so a live event still wins.
+        flushPendingPresence()
         // Snapshot presence BEFORE the network call suspends. Any gateway
         // PRESENCE_UPDATE applied while we're awaiting mutates `presence`
         // (same MainActor, so it's serialized, not a data race) — diffing
@@ -3325,14 +3379,16 @@ final class AppStore: ObservableObject {
             }
         case "PRESENCE_UPDATE":
             // Server payload is snake_case: { user_id, guild_id, status }.
-            // Skip the write when nothing changed — every @Published mutation
-            // re-renders all observing views, and presence echoes are the
-            // single most frequent event on a busy instance.
+            // Buffer + debounce (see pendingPresence) instead of writing the
+            // @Published `presence` per event — one batched write per ~200ms
+            // keeps the cold-launch burst from re-rendering the gesture/nav
+            // container on every frame. The buffer holds the latest status per
+            // user, so the flush applies the freshest value.
             if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let uid = obj["user_id"] as? String,
-               let status = obj["status"] as? String,
-               presence[uid] != status {
-                presence[uid] = status
+               let status = obj["status"] as? String {
+                pendingPresence[uid] = status
+                schedulePresenceFlush()
             }
         case "TYPING_START":
             // Server payload is snake_case: { channel_id, user_id }.

@@ -2786,6 +2786,10 @@ struct MemberListView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedProfile: PublicUser?
     @State private var reportTarget: PublicUser?
+    /// The sheet presentations (wide iPad/Mac, guild settings) need an explicit
+    /// "Done" close button; the compact right-edge DRAWER does not — you close
+    /// it by swiping right — so it passes `false` to hide the toolbar button.
+    var showsDoneButton: Bool = true
 
     private struct MemberSection: Identifiable {
         let id: String
@@ -2865,11 +2869,13 @@ struct MemberListView: View {
             .navigationTitle("Members — \(store.members.count)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    // Works for both presentations: dismiss() closes the sheet
-                    // (wide / guild-settings), and clearing showMembers closes
-                    // the compact right-edge drawer.
-                    Button("Done") { dismiss(); store.showMembers = false }
+                if showsDoneButton {
+                    ToolbarItem(placement: .cancellationAction) {
+                        // Sheet presentations only (wide / guild-settings):
+                        // dismiss() closes the sheet. The drawer hides this and
+                        // closes via swipe-right.
+                        Button("Done") { dismiss(); store.showMembers = false }
+                    }
                 }
             }
         }
