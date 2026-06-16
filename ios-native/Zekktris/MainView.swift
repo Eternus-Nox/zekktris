@@ -26,6 +26,12 @@ struct MainView: View {
     @State private var settleX: CGFloat = 0
     @State private var settling = false
     @State private var contentWidth: CGFloat = 0
+    /// Live rightward drag on the OPEN members drawer — the panel follows the
+    /// finger and closes past a threshold. @GestureState so it auto-resets on
+    /// cancel; tracking live (not just onEnded) keeps the recognizer alive over
+    /// the member list's ScrollView, which otherwise dropped a slow/diagonal
+    /// swipe-to-close.
+    @GestureState private var memberCloseDrag: CGFloat = 0
 
     /// Horizontal offset of the conversation during a back-swipe: the live drag
     /// while the finger is down, then the settle animation after it lifts.
@@ -290,27 +296,48 @@ struct MainView: View {
         .overlay { membersDrawer }
     }
 
-    /// The members panel is a right-edge drawer (compact/phone): swipe LEFT to
-    /// slide it in from the right, swipe RIGHT (or tap the dimmed backdrop, or
-    /// Done) to slide it back out. Available both in a guild's channel list and
-    /// in one of its text channels — but not DMs/voice/threads, which have no
-    /// member list. A clearly-horizontal fling drives a smooth slide.
+    /// Swipe LEFT (on the content, drawer CLOSED) to OPEN the members drawer.
+    /// Attached to `compactNav`. Closing is a separate gesture on the panel
+    /// itself (`membersCloseGesture`): once open, the full-width panel covers
+    /// compactNav and is layered ABOVE this gesture (it's added by `.overlay`
+    /// after this `.simultaneousGesture`), so a swipe on the open panel never
+    /// reaches here — which is exactly why swipe-to-close wasn't working.
+    /// Available in a guild's channel list or a text channel; not DMs/voice.
     private var membersSwipeGesture: some Gesture {
         DragGesture(minimumDistance: 24)
             .onEnded { value in
-                guard !backActive,
+                guard !backActive, !store.showMembers, canShowMembers,
+                      value.translation.width < -60,
                       abs(value.translation.width) > abs(value.translation.height) * 1.5
                 else { return }
-                if store.showMembers {
-                    // Open → swipe RIGHT to close.
-                    if value.translation.width > 60 {
-                        withAnimation(.easeOut(duration: 0.25)) { store.showMembers = false }
-                    }
-                } else if canShowMembers {
-                    // Closed → swipe LEFT to open.
-                    if value.translation.width < -60 {
-                        withAnimation(.easeOut(duration: 0.25)) { store.showMembers = true }
-                    }
+                withAnimation(.easeOut(duration: 0.25)) { store.showMembers = true }
+            }
+    }
+
+    /// Swipe RIGHT on the OPEN panel to close it. Attached directly to the panel
+    /// (the touch target), `.simultaneousGesture` so the member list's vertical
+    /// scroll still works. `.updating` tracks the drag LIVE — the panel follows
+    /// the finger (via `memberCloseDrag`) AND, crucially, keeping the recognizer
+    /// active stops the underlying ScrollView from stealing a slow/diagonal swipe
+    /// and dropping `onEnded` (the reason swipe-to-close was unreliable). Past
+    /// ~30% of the width on release it closes; otherwise it snaps back.
+    private var membersCloseGesture: some Gesture {
+        DragGesture(minimumDistance: 10)
+            .updating($memberCloseDrag) { value, state, _ in
+                guard store.showMembers,
+                      value.translation.width > 0,
+                      abs(value.translation.width) > abs(value.translation.height)
+                else { return }
+                state = value.translation.width
+            }
+            .onEnded { value in
+                guard store.showMembers,
+                      value.translation.width > 0,
+                      abs(value.translation.width) > abs(value.translation.height)
+                else { return }
+                let w = contentWidth > 0 ? contentWidth : 393
+                if value.translation.width > max(80, w * 0.3) {
+                    withAnimation(.easeOut(duration: 0.25)) { store.showMembers = false }
                 }
             }
     }
@@ -346,9 +373,14 @@ struct MainView: View {
             MemberListView(showsDoneButton: false)
                 .frame(width: w)
                 .background(Theme.bg1)
+                // Swipe RIGHT on the panel to close it (the gesture lives HERE,
+                // on the panel, because the panel is what the swipe lands on).
+                .simultaneousGesture(membersCloseGesture)
                 .shadow(color: .black.opacity(0.25), radius: 14, x: -6, y: 0)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-                .offset(x: store.showMembers ? 0 : w + 16)
+                // Open: follow a rightward close-drag (max(0,…) so it can't drag
+                // left past flush). Closed: parked off-screen right.
+                .offset(x: store.showMembers ? max(0, memberCloseDrag) : w + 16)
                 .animation(.easeOut(duration: 0.25), value: store.showMembers)
                 .allowsHitTesting(store.showMembers)
         }
