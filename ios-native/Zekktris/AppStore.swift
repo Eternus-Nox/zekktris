@@ -440,6 +440,9 @@ final class AppStore: ObservableObject {
     /// reconnected after a drop, so we re-sync state (events were missed while
     /// disconnected) — mirroring the web client re-bootstrapping on reconnect.
     private var didInitialReady = false
+    /// One-shot: land on the DMs page on the first launch of a session — not on
+    /// reconnect, and not over a notification/deep-link that already navigated.
+    private var didLandInitialScreen = false
 
     var gatewayStatus: Gateway.Status { gateway.status }
 
@@ -461,6 +464,15 @@ final class AppStore: ObservableObject {
         // Load relationships up front so friend-aware UI (e.g. hiding "Report"
         // for friends) is correct anywhere, not just after visiting DMs.
         Task { await loadRelationships() }
+        // Default landing: open to the Direct Messages page on a fresh launch
+        // (once). Skipped when a notification/deep-link has already navigated
+        // somewhere (a pushed route, an open channel, or a rail page), and never
+        // re-fires on reconnect (start() runs on sign-in / cold VoIP launch, not
+        // foreground reconnect). showDMs() lazily loads the DM list.
+        if !didLandInitialScreen, stack.isEmpty, selectedChannel == nil, railPage == nil {
+            didLandInitialScreen = true
+            showDMs()
+        }
         startAutoPresence()
     }
 
@@ -594,6 +606,7 @@ final class AppStore: ObservableObject {
         currentUserId = nil
         currentUser = nil
         didInitialReady = false
+        didLandInitialScreen = false
         readStates = [:]
         unreadBoundaryId = nil
         guilds = []
@@ -791,8 +804,10 @@ final class AppStore: ObservableObject {
         defer { loadingGuilds = false }
         do {
             guilds = try await api.guilds()
-            // Auto-select the first guild for a faster first paint.
-            if selectedGuild == nil, let first = guilds.first {
+            // Auto-select the first guild for a faster first paint — but NOT
+            // when we've intentionally landed on DMs (the default launch view),
+            // or this late guilds response would stomp the DMs landing.
+            if selectedGuild == nil, !inDMs, let first = guilds.first {
                 selectGuild(first)
             }
         } catch {
@@ -801,6 +816,10 @@ final class AppStore: ObservableObject {
     }
 
     func loadDMs() async {
+        // In-flight guard: start() and the DMs landing (showDMs) can both kick
+        // off a load on cold launch — without this they'd fire two concurrent
+        // GET /dms. A load already running has the freshest result.
+        if loadingDMs { return }
         loadingDMs = true
         defer { loadingDMs = false }
         // Snapshot presence BEFORE the network call suspends. Any gateway
