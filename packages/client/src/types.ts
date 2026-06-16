@@ -722,15 +722,30 @@ export interface ForwardSource {
 
 // ── Link preview embeds ──────────────────────────────────────────────────
 
+export interface MessageEmbedField {
+  name: string;
+  value: string;
+  inline: boolean;
+}
+
 export interface MessageEmbed {
-  /** Originally-extracted URL. */
+  /** Originally-extracted URL (empty for a rich webhook embed with no url). */
   url: string;
-  kind: 'link' | 'image' | 'video';
+  kind: 'link' | 'image' | 'video' | 'rich';
   title: string | null;
   description: string | null;
   imageUrl: string | null;
   siteName: string | null;
   faviconUrl: string | null;
+  // Rich (webhook) embed fields — null for auto-resolved link/image previews.
+  color: number | null;
+  authorName: string | null;
+  authorIconUrl: string | null;
+  thumbnailUrl: string | null;
+  fields: MessageEmbedField[] | null;
+  footerText: string | null;
+  footerIconUrl: string | null;
+  timestamp: string | null;
 }
 
 // ── Stickers ─────────────────────────────────────────────────────────────

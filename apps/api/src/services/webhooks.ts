@@ -314,6 +314,8 @@ export interface ExecuteWebhookInput {
   username?: string | null;
   /** Per-message override for the webhook's avatar. */
   avatarUrl?: string | null;
+  /** Pre-parsed rich embed cards (Discord-style) to store on the message. */
+  embeds?: schema.MessageEmbedJson[] | null;
 }
 
 export async function executeWebhook(input: ExecuteWebhookInput): Promise<schema.Message> {
@@ -400,6 +402,7 @@ export async function executeWebhook(input: ExecuteWebhookInput): Promise<schema
     webhookId: wh.id,
     authorOverrideName: personaName,
     authorOverrideAvatar: personaAvatar,
+    embeds: input.embeds && input.embeds.length > 0 ? input.embeds : undefined,
   });
 
   // Broadcast through the normal gateway path so connected clients see

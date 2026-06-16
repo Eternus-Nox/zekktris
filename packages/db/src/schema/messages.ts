@@ -365,9 +365,10 @@ export type MessageRoleMention = typeof messageRoleMentions.$inferSelect;
  */
 export interface MessageEmbedJson {
   /** Originally-extracted URL the embed was generated from. Stable
-      anchor for client-side dedup + "open" actions. */
+      anchor for client-side dedup + "open" actions. Empty string for a
+      rich webhook embed that didn't supply a `url`. */
   url: string;
-  kind: 'link' | 'image' | 'video';
+  kind: 'link' | 'image' | 'video' | 'rich';
   /** OG title or HTML <title> fallback. */
   title?: string | null;
   /** OG description. */
@@ -380,6 +381,26 @@ export interface MessageEmbedJson {
   /** Page favicon (resolved absolute URL). Used as a small icon next
       to the site name. */
   faviconUrl?: string | null;
+
+  // ── Rich (Discord-style) webhook embed fields ──────────────────────────
+  // Only populated for kind: 'rich' (webhook-supplied embeds). Auto-resolved
+  // link/image/video previews leave these undefined.
+  /** Accent colour as an sRGB integer (Discord's `color`); rendered as the
+      left bar / title tint. */
+  color?: number | null;
+  /** Author line shown above the title. */
+  authorName?: string | null;
+  authorIconUrl?: string | null;
+  /** Small image shown beside the card (Discord `thumbnail`), distinct from
+      the large `imageUrl`. */
+  thumbnailUrl?: string | null;
+  /** Name/value rows (Discord `fields`), optionally inline. */
+  fields?: Array<{ name: string; value: string; inline?: boolean }> | null;
+  /** Footer line at the bottom of the card. */
+  footerText?: string | null;
+  footerIconUrl?: string | null;
+  /** ISO timestamp shown in the footer. */
+  timestamp?: string | null;
 }
 
 /**

@@ -24,6 +24,7 @@ import { snowflakeSchema, webhookUsernameSchema } from '../lib/validation';
 import { toWebhook } from '../lib/dto';
 import { RateLimiter } from '../lib/rateLimit';
 import * as webhooks from '../services/webhooks';
+import type { MessageEmbedJson } from '@zekktris/db';
 
 // ── Execute-endpoint rate limiters ─────────────────────────────────────────
 //
@@ -167,20 +168,120 @@ webhooksAdminRouter.post(
 
 export const webhooksExecuteRouter = new Hono();
 
-// Embed shape we accept from Discord-compatible senders. We don't
-// fully render embeds yet — we extract title + description into a
-// fallback content string so the message at least shows up. This
-// keeps Uptime Kuma's default Discord webhook integration working
-// out of the box (its status-change notifications post embeds with
-// no top-level `content` field; the test-message DOES include
-// content, which is why test worked but real alerts didn't).
+// Embed shape we accept from Discord-compatible senders. We now store + render
+// these as rich cards (color, author, fields, image, thumbnail, footer) rather
+// than flattening to text — see parseWebhookEmbeds below. Field caps mirror
+// Discord's so an oversized payload can't bloat a row. icon/image keys accept
+// both snake_case (Discord) and camelCase.
 const embedSchema = z
   .object({
-    title: z.string().nullish(),
-    description: z.string().nullish(),
-    url: z.string().nullish(),
+    title: z.string().max(256).nullish(),
+    description: z.string().max(4096).nullish(),
+    url: z.string().max(2048).nullish(),
+    color: z.number().int().nullish(),
+    timestamp: z.string().max(64).nullish(),
+    author: z
+      .object({
+        name: z.string().max(256).nullish(),
+        icon_url: z.string().max(2048).nullish(),
+        iconUrl: z.string().max(2048).nullish(),
+      })
+      .passthrough()
+      .nullish(),
+    footer: z
+      .object({
+        text: z.string().max(2048).nullish(),
+        icon_url: z.string().max(2048).nullish(),
+        iconUrl: z.string().max(2048).nullish(),
+      })
+      .passthrough()
+      .nullish(),
+    image: z.object({ url: z.string().max(2048).nullish() }).passthrough().nullish(),
+    thumbnail: z.object({ url: z.string().max(2048).nullish() }).passthrough().nullish(),
+    fields: z
+      .array(
+        z.object({
+          name: z.string().max(256),
+          value: z.string().max(1024),
+          inline: z.boolean().nullish(),
+        }),
+      )
+      .max(25)
+      .nullish(),
   })
-  .passthrough(); // tolerate extra fields (color, fields[], thumbnail, footer, etc.)
+  .passthrough(); // tolerate extra fields (provider, video, etc.)
+
+/** Accept only http(s) URLs. Image/icon URLs are rendered directly as
+ *  <img>/AsyncImage and the embed `url` becomes a clickable link, so rejecting
+ *  javascript:/data:/relative here (the trust boundary for untrusted webhook
+ *  input) is what stops a `javascript:` href or non-image scheme being stored. */
+function safeHttpUrl(u: unknown): string | null {
+  if (typeof u !== 'string') return null;
+  const s = u.trim();
+  if (s.length === 0 || s.length > 2048) return null;
+  return /^https?:\/\//i.test(s) ? s : null;
+}
+
+/** Total stored embed text budget per message. Per-field caps alone allow
+ *  ~0.5MB of JSONB across 10 maxed embeds; this bounds row bloat. Generous vs
+ *  Discord's ~6000-char per-message total, so real payloads are unaffected —
+ *  once exceeded, remaining embeds are dropped. */
+const MAX_EMBED_TOTAL_CHARS = 50_000;
+
+/** Convert incoming Discord-style embeds into stored rich embed cards. Skips
+ *  embeds with no renderable content so an empty `{}` doesn't render a blank
+ *  card, and stops once the per-message text budget is exceeded. */
+function parseWebhookEmbeds(embeds: ExecuteBody['embeds']): MessageEmbedJson[] {
+  if (!embeds || embeds.length === 0) return [];
+  const out: MessageEmbedJson[] = [];
+  let totalChars = 0;
+  for (const e of embeds.slice(0, 10)) {
+    const authorName = e.author?.name?.trim() || null;
+    const footerText = e.footer?.text?.trim() || null;
+    const fields = (e.fields ?? [])
+      .slice(0, 25)
+      .map((f) => ({ name: f.name, value: f.value, inline: !!f.inline }));
+    const imageUrl = safeHttpUrl(e.image?.url);
+    const thumbnailUrl = safeHttpUrl(e.thumbnail?.url);
+    const title = e.title?.trim() || null;
+    const description = e.description?.trim() || null;
+    // Drop embeds with nothing to show.
+    if (!title && !description && !imageUrl && !thumbnailUrl && !authorName && !footerText && fields.length === 0) {
+      continue;
+    }
+    // Aggregate-size guard: stop adding embeds once the message text budget is
+    // exceeded (the per-field caps don't bound the cross-embed total).
+    const size =
+      (title?.length ?? 0) +
+      (description?.length ?? 0) +
+      (authorName?.length ?? 0) +
+      (footerText?.length ?? 0) +
+      fields.reduce((n, f) => n + f.name.length + f.value.length, 0);
+    if (totalChars + size > MAX_EMBED_TOTAL_CHARS) break;
+    totalChars += size;
+    out.push({
+      kind: 'rich',
+      // Scheme-validated: a `javascript:`/`data:` url would otherwise be
+      // rendered as a clickable href (stored XSS on web — React doesn't
+      // sanitize hrefs). Empty string => "no link", which both clients honor.
+      url: safeHttpUrl(e.url) ?? '',
+      title,
+      description,
+      color: typeof e.color === 'number' ? e.color : null,
+      imageUrl,
+      thumbnailUrl,
+      authorName,
+      authorIconUrl: authorName ? safeHttpUrl(e.author?.icon_url ?? e.author?.iconUrl) : null,
+      footerText,
+      footerIconUrl: footerText ? safeHttpUrl(e.footer?.icon_url ?? e.footer?.iconUrl) : null,
+      fields: fields.length > 0 ? fields : null,
+      timestamp: e.timestamp ?? null,
+      siteName: null,
+      faviconUrl: null,
+    });
+  }
+  return out;
+}
 
 const executeSchema = z.object({
   /** Discord-compatible: most senders post `content`. Senders that
@@ -196,9 +297,8 @@ const executeSchema = z.object({
       about which one we use. */
   avatar_url: z.string().max(1024).nullish(),
   avatarUrl: z.string().max(1024).nullish(),
-  /** Discord-style embeds. We don't render rich cards yet; we
-      flatten to a text content string when no top-level content is
-      provided. Cap to 10 — Discord's limit, more than enough. */
+  /** Discord-style embeds — stored + rendered as rich cards (color, author,
+      fields, image, thumbnail, footer). Cap to 10, Discord's limit. */
   embeds: z.array(embedSchema).max(10).nullish(),
   /** Uptime Kuma's generic "Webhook" notification posts
       { heartbeat, monitor, msg } — no content/embeds at all. `msg`
@@ -217,6 +317,8 @@ const executeSchema = z.object({
     .passthrough()
     .nullish(),
 });
+
+type ExecuteBody = z.infer<typeof executeSchema>;
 
 webhooksExecuteRouter.post(
   '/:webhookId/:token',
@@ -249,41 +351,35 @@ webhooksExecuteRouter.post(
         : body.avatarUrl !== undefined
           ? body.avatarUrl
           : undefined;
-    // Resolve a content string. If the sender provided `content`,
-    // use it directly. Otherwise synthesize from embeds — title +
-    // description per embed, joined with newlines. This keeps
-    // Discord-compatible senders (Uptime Kuma, GitHub Actions, etc)
-    // working when they only ship embed cards.
+    // Parse Discord-style embeds into rich cards we store + render (color,
+    // author, fields, image, thumbnail, footer). These no longer get flattened
+    // into the content string — they ride along as embeds, so an embed-only
+    // payload posts a card with no text body.
+    const richEmbeds = parseWebhookEmbeds(body.embeds);
+    // Resolve a content string. Use `content` directly when provided. The
+    // msg/text/title and Kuma monitor/heartbeat fallbacks only kick in when
+    // there's neither content NOR an embed to show, so a bare Kuma status ping
+    // still lands as readable text.
     let content = body.content?.trim();
-    if (!content && body.embeds && body.embeds.length > 0) {
-      const parts: string[] = [];
-      for (const e of body.embeds) {
-        const seg: string[] = [];
-        if (e.title) seg.push(`**${e.title}**`);
-        if (e.description) seg.push(e.description);
-        if (seg.length > 0) parts.push(seg.join('\n'));
-      }
-      content = parts.join('\n\n').slice(0, 2000);
-    }
-    // Uptime Kuma ("Webhook" type) / Slack-style fallbacks: msg or text,
-    // optionally prefixed by a title.
-    if (!content) {
+    if (!content && richEmbeds.length === 0) {
+      // Uptime Kuma ("Webhook" type) / Slack-style fallbacks: msg or text,
+      // optionally prefixed by a title.
       const bodyText = body.msg?.trim() || body.text?.trim() || '';
       const title = body.title?.trim();
       if (bodyText) {
         content = (title ? `**${title}**\n${bodyText}` : bodyText).slice(0, 2000);
       }
     }
-    // Last resort: synthesize from Kuma's monitor/heartbeat metadata so a
-    // bare status ping still lands as something readable.
-    if (!content && (body.monitor || body.heartbeat)) {
+    if (!content && richEmbeds.length === 0 && (body.monitor || body.heartbeat)) {
+      // Last resort: synthesize from Kuma's monitor/heartbeat metadata so a
+      // bare status ping still lands as something readable.
       const name = body.monitor?.name ?? 'Monitor';
       const hb = body.heartbeat;
       const status =
         hb?.status === 1 ? '✅ Up' : hb?.status === 0 ? '❌ Down' : 'status update';
       content = `**${name}** ${status}${hb?.msg ? ` — ${hb.msg}` : ''}`.slice(0, 2000);
     }
-    if (!content) {
+    if (!content && richEmbeds.length === 0) {
       throw errors.badRequest(
         'Webhook payload must include `content`, `embeds`, `msg`, or `text`',
       );
@@ -292,9 +388,10 @@ webhooksExecuteRouter.post(
       await webhooks.executeWebhook({
         webhookId: BigInt(webhookId),
         token,
-        content,
+        content: content ?? '',
         username: body.username ?? undefined,
         avatarUrl: avatarOverride === undefined ? undefined : (avatarOverride ?? null),
+        embeds: richEmbeds.length > 0 ? richEmbeds : undefined,
       });
     } catch (e) {
       // Re-throw — the central error handler converts AppError to a

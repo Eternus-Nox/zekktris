@@ -1434,7 +1434,9 @@ struct MessageRow: View {
 
     @ViewBuilder
     private func embedCard(_ e: MessageEmbed) -> some View {
-        if e.kind == "image", let img = assetURL(e.imageUrl) {
+        if e.kind == "rich" {
+            richEmbedCard(e)
+        } else if e.kind == "image", let img = assetURL(e.imageUrl) {
             // Pure image unfurl — just the picture.
             AsyncImage(url: img) { phase in
                 if case .success(let image) = phase {
@@ -1487,6 +1489,110 @@ struct MessageRow: View {
             .contentShape(Rectangle())
             .onTapGesture { if let u = URL(string: e.url) { openURL(u) } }
         }
+    }
+
+    /// Rich (Discord-style) webhook embed: accent bar, author, title/desc,
+    /// name/value fields, image, thumbnail, footer + timestamp. Mirrors the web
+    /// RichEmbedCard.
+    @ViewBuilder
+    private func richEmbedCard(_ e: MessageEmbed) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            RoundedRectangle(cornerRadius: 2).fill(embedAccent(e.color)).frame(width: 3)
+            VStack(alignment: .leading, spacing: 6) {
+                if let author = e.authorName, !author.isEmpty {
+                    HStack(spacing: 6) {
+                        if let icon = assetURL(e.authorIconUrl) {
+                            AsyncImage(url: icon) { img in img.resizable() } placeholder: { Color.clear }
+                                .frame(width: 18, height: 18).clipShape(Circle())
+                        }
+                        Text(author).font(.zkSans(12, weight: .semibold))
+                            .foregroundColor(Theme.ink2).lineLimit(1)
+                    }
+                }
+                if let title = e.title, !title.isEmpty {
+                    Text(title).font(.zkSans(14, weight: .semibold))
+                        .foregroundColor(e.url.isEmpty ? Theme.ink1 : Theme.accent)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let desc = e.description, !desc.isEmpty {
+                    Text(desc).font(.zkSans(13)).foregroundColor(Theme.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let fields = e.fields, !fields.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(fields.enumerated()), id: \.offset) { _, f in
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(f.name).font(.zkSans(12, weight: .semibold)).foregroundColor(Theme.ink1)
+                                Text(f.value).font(.zkSans(13)).foregroundColor(Theme.ink2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                }
+                if let img = assetURL(e.imageUrl) {
+                    AsyncImage(url: img) { phase in
+                        if case .success(let image) = phase {
+                            image.resizable().scaledToFit()
+                                .onTapGesture { store.openLightbox(img) }
+                        }
+                    }
+                    .frame(maxWidth: 280, maxHeight: 200, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                let footer = embedFooter(e)
+                if !footer.isEmpty {
+                    HStack(spacing: 6) {
+                        if let icon = assetURL(e.footerIconUrl) {
+                            AsyncImage(url: icon) { img in img.resizable() } placeholder: { Color.clear }
+                                .frame(width: 16, height: 16).clipShape(Circle())
+                        }
+                        Text(footer).font(.zkSans(11)).foregroundColor(Theme.ink3).lineLimit(2)
+                    }
+                }
+            }
+            .padding(10)
+            if let thumb = assetURL(e.thumbnailUrl) {
+                AsyncImage(url: thumb) { phase in
+                    if case .success(let image) = phase { image.resizable().scaledToFill() }
+                }
+                .frame(width: 64, height: 64)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .padding([.top, .trailing], 10)
+            }
+        }
+        .frame(maxWidth: 340, alignment: .leading)
+        .background(Theme.bg2)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // http(s) only — the server scheme-validates webhook embed urls, but
+            // guard here too so a non-web scheme can't trigger an unintended
+            // deep link from untrusted embed input.
+            if let u = URL(string: e.url), u.scheme == "http" || u.scheme == "https" {
+                openURL(u)
+            }
+        }
+    }
+
+    /// Accent colour from a Discord sRGB int; falls back to the theme accent.
+    private func embedAccent(_ color: Int?) -> Color {
+        guard let c = color else { return Theme.accent }
+        return Color(
+            red: Double((c >> 16) & 0xff) / 255,
+            green: Double((c >> 8) & 0xff) / 255,
+            blue: Double(c & 0xff) / 255)
+    }
+
+    /// Footer line: footer text joined with a short formatted timestamp.
+    private func embedFooter(_ e: MessageEmbed) -> String {
+        var parts: [String] = []
+        if let f = e.footerText, !f.isEmpty { parts.append(f) }
+        if let ts = e.timestamp, !ts.isEmpty, let d = ISO8601DateFormatter().date(from: ts) {
+            let fmt = DateFormatter()
+            fmt.dateFormat = "MMM d, h:mm a"
+            parts.append(fmt.string(from: d))
+        }
+        return parts.joined(separator: " • ")
     }
 
     /// Snapshot of a forwarded message: an attribution line + the source

@@ -654,7 +654,7 @@ export function toSticker(s: import('@zekktris/db/schema').Sticker): StickerDTO 
 // Message / Attachment / Reaction DTOs
 // ───────────────────────────────────────────────────────────────────────────
 
-import type { Message, Attachment, Reaction } from '@zekktris/db';
+import type { Message, Attachment, Reaction, MessageEmbedJson } from '@zekktris/db';
 
 export interface AttachmentDTO {
   id: string;
@@ -812,7 +812,7 @@ export function toMessage(args: {
     })),
     embeds: m.embeds === null
       ? null
-      : (m.embeds as Array<{ url: string; kind: 'link' | 'image' | 'video'; title?: string | null; description?: string | null; imageUrl?: string | null; siteName?: string | null; faviconUrl?: string | null }>).map(
+      : (m.embeds as MessageEmbedJson[]).map(
           (e): MessageEmbedDTO => ({
             url: e.url,
             kind: e.kind,
@@ -821,6 +821,16 @@ export function toMessage(args: {
             imageUrl: e.imageUrl ?? null,
             siteName: e.siteName ?? null,
             faviconUrl: e.faviconUrl ?? null,
+            color: e.color ?? null,
+            authorName: e.authorName ?? null,
+            authorIconUrl: e.authorIconUrl ?? null,
+            thumbnailUrl: e.thumbnailUrl ?? null,
+            fields: e.fields
+              ? e.fields.map((f) => ({ name: f.name, value: f.value, inline: !!f.inline }))
+              : null,
+            footerText: e.footerText ?? null,
+            footerIconUrl: e.footerIconUrl ?? null,
+            timestamp: e.timestamp ?? null,
           }),
         ),
     poll,
@@ -1154,16 +1164,32 @@ export function toForwardSource(args: {
 // Link preview embeds
 // ───────────────────────────────────────────────────────────────────────────
 
+export interface MessageEmbedFieldDTO {
+  name: string;
+  value: string;
+  inline: boolean;
+}
+
 export interface MessageEmbedDTO {
-  /** The originally-extracted URL the embed was generated from. */
+  /** The originally-extracted URL the embed was generated from (empty for a
+      rich webhook embed with no url). */
   url: string;
   /** Discriminator for the renderer. */
-  kind: 'link' | 'image' | 'video';
+  kind: 'link' | 'image' | 'video' | 'rich';
   title: string | null;
   description: string | null;
   imageUrl: string | null;
   siteName: string | null;
   faviconUrl: string | null;
+  // Rich (webhook) embed fields — null for auto-resolved previews.
+  color: number | null;
+  authorName: string | null;
+  authorIconUrl: string | null;
+  thumbnailUrl: string | null;
+  fields: MessageEmbedFieldDTO[] | null;
+  footerText: string | null;
+  footerIconUrl: string | null;
+  timestamp: string | null;
 }
 
 // ───────────────────────────────────────────────────────────────────────────

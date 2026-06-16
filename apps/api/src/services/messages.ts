@@ -22,7 +22,7 @@ import { nextSnowflake } from '../snowflake';
 import { parseMentions, resolveMentions, writeMessageMentions } from './mentions';
 import { listViewableGuildChannelIds } from './permissions';
 import { deleteStorageItem } from './uploads';
-import type { Database } from '@zekktris/db';
+import type { Database, MessageEmbedJson } from '@zekktris/db';
 
 type DbHandle = Omit<Database, '$client'>;
 
@@ -192,6 +192,13 @@ export interface CreateMessageInput {
   webhookId?: bigint | null;
   authorOverrideName?: string | null;
   authorOverrideAvatar?: string | null;
+  /**
+   * Pre-built embed cards to store on the message (webhook-supplied rich
+   * embeds). When set, an embed-only message (empty content, no attachments)
+   * is valid. Auto-resolved link previews do NOT use this — they're written
+   * later by services/embeds; this is for content the caller already has.
+   */
+  embeds?: MessageEmbedJson[] | null;
 }
 
 export interface NewAttachmentInput {
@@ -237,7 +244,8 @@ export async function createMessage(input: CreateMessageInput): Promise<MessageW
     !input.attachments?.length &&
     !input.hasAttachedPoll &&
     !input.forwardedFromMessageId &&
-    !input.stickerId
+    !input.stickerId &&
+    !input.embeds?.length
   ) {
     throw errors.badRequest('Message must have content or attachments');
   }
@@ -285,6 +293,7 @@ export async function createMessage(input: CreateMessageInput): Promise<MessageW
         authorOverrideAvatar: input.authorOverrideAvatar ?? null,
         forwardedFromMessageId: input.forwardedFromMessageId ?? null,
         stickerId: input.stickerId ?? null,
+        embeds: input.embeds ?? null,
       })
       .returning();
     if (!inserted) throw errors.internal('Message insert returned no row');

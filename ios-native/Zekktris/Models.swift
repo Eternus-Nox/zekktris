@@ -205,6 +205,12 @@ extension Message {
     }
 }
 
+struct EmbedField: Codable, Hashable {
+    var name: String
+    var value: String
+    var inline: Bool?
+}
+
 struct MessageEmbed: Codable, Hashable {
     var url: String
     var kind: String?
@@ -213,6 +219,15 @@ struct MessageEmbed: Codable, Hashable {
     var imageUrl: String?
     var siteName: String?
     var faviconUrl: String?
+    // Rich (Discord-style webhook) embed fields. Null for link/image previews.
+    var color: Int?
+    var authorName: String?
+    var authorIconUrl: String?
+    var thumbnailUrl: String?
+    var fields: [EmbedField]?
+    var footerText: String?
+    var footerIconUrl: String?
+    var timestamp: String?
 }
 
 /// Response of GET /unfurl?url= — a single client-resolved link preview (or
