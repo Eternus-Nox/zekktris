@@ -160,16 +160,31 @@ extension CallManager: CXProviderDelegate {
     nonisolated func providerDidReset(_ provider: CXProvider) {}
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-        // Keep LiveKit's audio engine AVAILABLE and let it manage its own
-        // AVAudioSession — exactly like the IN-APP answer path, which has
-        // working two-way audio. We used to gate the engine OFF here
-        // (setEngineAvailability(.none)) and wait for CallKit's
-        // provider(_:didActivate:) to flip it back. But that deadlocked on a
-        // lock-screen answer: with the engine gated, LiveKit never configured/
-        // activated the session, so CallKit's didActivate never fired, the gate
-        // never lifted, and the call was silent BOTH ways. Mirroring the in-app
-        // path (no gate, LiveKit auto-manages .playAndRecord) restores audio.
-        try? AudioManager.shared.setEngineAvailability(.default)
+        // CallKit answer audio handoff. Two failures bracket this path:
+        //   - Keeping the engine AVAILABLE (the previous attempt) let LiveKit
+        //     call setActive(true) itself, racing CallKit's own activation —
+        //     which threw "Audio Session Error (Failed to configure audio
+        //     session)" and broke audio on every lock-screen/background answer.
+        //   - Gating the engine OFF *alone* (the attempt before that) deadlocked
+        //     silent-both-ways: with the engine gated, LiveKit never set the
+        //     session CATEGORY, so CallKit couldn't activate a call session,
+        //     didActivate never fired, and the gate never lifted.
+        // Fix both: gate the engine OFF so LiveKit doesn't activate the session,
+        // but set the .playAndRecord category OURSELVES so CallKit CAN activate
+        // it. CallKit then fires provider(_:didActivate:), which flips the gate
+        // back to .default; LiveKit's engine starts on the already-active
+        // session (its setActive(true) becomes a harmless no-op). voiceChat mode
+        // + the speaker preference match what LiveKit configures, so the later
+        // re-config doesn't fight this one.
+        try? AudioManager.shared.setEngineAvailability(.none)
+        // Match LiveKit's playAndRecordSpeaker config (.videoChat + these
+        // options) so the engine's later re-config in didActivate is a no-op,
+        // not a category change on an already-active CallKit session.
+        try? AVAudioSession.sharedInstance().setCategory(
+            .playAndRecord,
+            mode: .videoChat,
+            options: [.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay]
+        )
         Task { @MainActor in
             if let channelId = channelByUUID[action.callUUID] {
                 ringing.remove(action.callUUID)
