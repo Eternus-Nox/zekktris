@@ -10,6 +10,7 @@
 import { and, eq, gt, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { createSystemMessage } from './messages';
+import { unreadBadgeCounts } from './readStates';
 import { toMessage } from '../lib/dto';
 import * as dispatch from '../gateway/dispatch';
 import { log } from '../log';
@@ -150,6 +151,7 @@ export async function sweepStreakWarnings(): Promise<number> {
     .returning({
       channelId: schema.dmStreaks.channelId,
       userAId: schema.dmStreaks.userAId,
+      userBId: schema.dmStreaks.userBId,
       streak: schema.dmStreaks.streak,
     });
 
@@ -202,6 +204,14 @@ export async function sweepStreakWarnings(): Promise<number> {
         selfId: row.userAId,
       });
       dispatch.messageCreate({ messageDTO, channelId: row.channelId, guildId: null });
+
+      // Push BOTH participants so the warning reaches a fully-closed app — the
+      // in-chat message + unread only nudges someone who reopens. Unlike a
+      // normal message we DON'T exclude the author: the streak needs both to
+      // message, this is a system notice (not "from" anyone), and pushing the
+      // author also covers the case where their own client self-clears the
+      // unread. Each recipient still honors their own mute level. Best-effort.
+      await pushStreakWarning(row.channelId, [row.userAId, row.userBId], content);
       sent++;
     } catch (err) {
       log.warn?.('streak warning failed', {
@@ -211,4 +221,50 @@ export async function sweepStreakWarnings(): Promise<number> {
     }
   }
   return sent;
+}
+
+/**
+ * Push a streak-expiry warning to the given DM participants (out-of-app
+ * signal). Mirrors the DM push fan-out in routes/messages.ts — mute level via
+ * resolveLevelsBulk ('nothing' = skip), app-icon badge via unreadBadgeCounts —
+ * but as a system notice (custom title/body, not "from" the FK author) and
+ * without excluding anyone. Dynamic imports avoid a service import cycle
+ * (matching the route's `await import('./notifications')`). Best-effort.
+ */
+async function pushStreakWarning(
+  channelId: bigint,
+  recipients: bigint[],
+  body: string,
+): Promise<void> {
+  try {
+    const { resolveLevelsBulk } = await import('./notifications');
+    const { sendToUser } = await import('./push');
+    const levels = await resolveLevelsBulk(recipients, channelId, null);
+    const allowed = recipients.filter(
+      (id) => (levels.get(id.toString()) ?? 'all') !== 'nothing',
+    );
+    if (allowed.length === 0) return;
+    const badges = await unreadBadgeCounts(allowed);
+    const url = `/channels/@me/${channelId.toString()}`;
+    await Promise.all(
+      allowed.map((id) =>
+        sendToUser(id, {
+          // kind:'message' gives it the Reply action — replying refreshes the
+          // streak. The body already carries the 🔥 + details.
+          title: 'Streak about to expire',
+          body,
+          url,
+          tag: channelId.toString(),
+          kind: 'message',
+          badge: badges.get(id.toString()) ?? 0,
+          data: { channelId: channelId.toString(), isE2EE: false },
+        }),
+      ),
+    );
+  } catch (err) {
+    log.warn?.('streak warning push failed', {
+      channelId: channelId.toString(),
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
