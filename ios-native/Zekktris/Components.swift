@@ -579,7 +579,7 @@ struct EmojiPickerSheet: View {
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search emoji")
             .navigationTitle("Add Reaction")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
             .task { await store.loadEmojis() }
         }
     }

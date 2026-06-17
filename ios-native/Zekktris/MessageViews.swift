@@ -2264,7 +2264,7 @@ struct SearchSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { store.clearSearch(); dismiss() }
+                    Button { store.clearSearch(); dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close")
                 }
             }
         }
@@ -2357,7 +2357,7 @@ struct DMSearchSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { store.clearDMSearch(); dismiss() }
+                    Button { store.clearDMSearch(); dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close")
                 }
             }
             .onDisappear { store.clearDMSearch() }
@@ -3167,7 +3167,7 @@ struct PinPanelView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+                    Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close")
                 }
             }
         }
@@ -3494,7 +3494,7 @@ struct EmojiStickerPicker: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle(tab == 0 ? "Emoji" : "Stickers").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
             .task { await store.loadEmojis(); await store.loadStickers() }
         }
     }
@@ -3629,7 +3629,7 @@ struct ScheduleSheet: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Scheduled").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
             .task { await store.loadScheduled() }
         }
     }
@@ -3788,7 +3788,7 @@ struct DmSettingsSheet: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle(channel.dmTitle).navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
             .task { await store.loadDmSettings(channel.id) }
             .sheet(isPresented: $showEnableE2EE) {
                 EnableE2EESheet(channel: liveChannel)
