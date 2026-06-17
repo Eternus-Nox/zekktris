@@ -76,6 +76,15 @@ struct MainView: View {
                     .environmentObject(store)
                     .environmentObject(session)
                     .environmentObject(store.voice)
+                    // Close ONLY via the "<" (programmatic dismiss), not a
+                    // swipe-down. This sheet hosts a NavigationStack, and SwiftUI
+                    // corrupts the presenter's hit-testing when such a sheet is
+                    // INTERACTIVELY (drag) dismissed — that's what left the 72pt
+                    // server rail dead after swiping the members pop-up closed.
+                    // Programmatic dismiss avoids the bug. (Apple forums 131404 /
+                    // 718495: drag-dismiss of a NavigationView-in-sheet breaks
+                    // taps behind it; fix = dismiss via button, not gesture.)
+                    .interactiveDismissDisabled()
             }
             .onAppear { store.isWideLayout = isWide }
             .onChange(of: hSizeClass) { newValue in
