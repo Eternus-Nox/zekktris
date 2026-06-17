@@ -344,13 +344,13 @@ struct MainView: View {
 
     /// Whether the member list applies right now: in a guild (not DMs), on the
     /// channel list (root) or one of its text channels — not voice/threads.
+    /// The swipe DRAWER applies only at the guild channel-list ROOT. Inside a
+    /// text channel the member list is a pop-up sheet instead (opened by the
+    /// header people icon — see MessageViews), so swiping there doesn't fight
+    /// the back-swipe / reading.
     private var canShowMembers: Bool {
         guard store.selectedGuild != nil, !store.inDMs else { return false }
-        switch store.stack.last {
-        case nil: return true                  // guild channel list (root)
-        case .messages(let c): return !c.isDM  // a guild text channel
-        default: return false                  // voice / thread list
-        }
+        return store.stack.last == nil
     }
 
     /// The right-edge member drawer overlaid on the compact content. It fills

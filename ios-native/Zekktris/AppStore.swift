@@ -750,6 +750,10 @@ final class AppStore: ObservableObject {
     func clearChannel() { pop() }
 
     func push(_ route: Route) {
+        // Any forward navigation closes the members view, so a drawer left open
+        // at the channel-list root can't carry over and auto-open the sheet in
+        // the channel you navigate into (e.g. via a notification tap).
+        showMembers = false
         // Wide layout: sidebar selections REPLACE the detail pane instead of
         // stacking. Drill-downs within the detail (forum post -> its thread)
         // still stack so "back to posts" works: we only replace when the
@@ -778,7 +782,32 @@ final class AppStore: ObservableObject {
         }
         stack.append(route)
     }
-    func pop() { if !stack.isEmpty { stack.removeLast() } }
+    func pop() {
+        if !stack.isEmpty { stack.removeLast() }
+        // Leaving ANY conversation closes the members view. Must run on every
+        // pop (not just to root): a thread's people-icon tap sets showMembers
+        // but can't present there; without clearing it on the way out it would
+        // carry back to the parent text channel and auto-open the sheet.
+        showMembers = false
+        // Returning to the ROOT channel/DM list: drop the (potentially large)
+        // message subtree NOW so the outgoing MessageListView collapses on the
+        // SAME frame the 72pt server rail is re-inserted. Otherwise a populated
+        // ScrollView/LazyVStack tears down a frame late and its still-full-width
+        // layer covers the rail, eating its taps — the "rail dead after leaving
+        // a channel that has messages" bug (an empty channel never hit it:
+        // trivial subtree). openChannel() repopulates on the next open. Gated on
+        // stack.isEmpty so popping a thread back to its parent channel (deeper
+        // stack) doesn't wipe the parent's still-visible messages.
+        if stack.isEmpty {
+            messages = []
+            selectedChannel = nil
+            typing = [:]
+            replyingTo = nil
+            pins = []
+            decrypted = [:]
+            unreadBoundaryId = nil
+        }
+    }
     private func resetStack() { stack = []; threadList = []; showMembers = false }
 
     /// Called by MessageListView.onAppear to load the channel it shows.

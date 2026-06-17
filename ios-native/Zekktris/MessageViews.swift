@@ -306,14 +306,17 @@ struct MessageListView: View {
             SearchSheet(channel: channel)
         }
         .sheet(isPresented: Binding(
-            get: { store.isWideLayout && store.showMembers },
+            get: { store.showMembers && (store.isWideLayout || (!channel.isDM && (channel.isText || channel.isThread))) },
             set: { if !$0 { store.showMembers = false } }
         )) {
-            // WIDE (iPad/Mac) only: members as a sheet. On compact (phone) the
-            // member list is a right-edge drawer driven by the same
-            // `store.showMembers` flag (see MainView.membersDrawer) — swipe left
-            // to open, swipe right to close — so the sheet is gated to wide to
-            // avoid double-presenting.
+            // Members as a SHEET (pop-up) when in a text channel or thread — on
+            // WIDE (iPad/Mac, any route) and on COMPACT inside a text channel or
+            // thread (where the people icon opens it; no swipe there). Threads
+            // are .messages routes but not isText, so they need their own clause
+            // here or the people icon is dead. The compact channel-LIST
+            // root uses the right-edge swipe drawer instead (MainView.membersDrawer,
+            // gated to the root via canShowMembers) — the header that hosts this
+            // sheet only exists inside an open channel, so the two never collide.
             // Re-inject env objects: the sheet host doesn't inherit them on
             // "Designed for iPad on Mac", which crashed the Members sheet
             // ("No ObservableObject of type AppStore found").
@@ -773,12 +776,30 @@ struct MessageListView: View {
 
     /// Show the author header row when this message starts a new author group
     /// (or sits just under a date divider).
+    /// Re-show the author header (avatar + name) at least this often within an
+    /// uninterrupted run from the same sender, so a long run (person, bot, or
+    /// webhook) doesn't lose its label and you don't have to scroll up to see
+    /// who's talking.
+    private let headerEveryNInRun = 6
+
     private func showHeader(at index: Int) -> Bool {
         if shouldShowDateDivider(at: index) { return true }
         guard index > 0 else { return true }
         let current = store.messages[index]
-        let previous = store.messages[index - 1]
-        return current.authorId != previous.authorId
+        if current.authorId != store.messages[index - 1].authorId { return true }
+        // Same-author continuation: count how far back this uninterrupted run
+        // goes (stopping at a date divider, which already forces a header), and
+        // re-show the header on every Nth message of the run. Cheap: only the
+        // handful of LazyVStack-visible rows call this, and it's integer compares.
+        var runLength = 1
+        var i = index
+        while i > 0,
+              store.messages[i - 1].authorId == current.authorId,
+              !shouldShowDateDivider(at: i) {
+            runLength += 1
+            i -= 1
+        }
+        return runLength % headerEveryNInRun == 1
     }
 
     /// Show a date divider above the first message and whenever the calendar
@@ -3002,11 +3023,17 @@ struct MemberListView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if showsDoneButton {
-                    ToolbarItem(placement: .cancellationAction) {
-                        // Sheet presentations only (wide / guild-settings):
-                        // dismiss() closes the sheet. The drawer hides this and
-                        // closes via swipe-right.
-                        Button("Done") { dismiss(); store.showMembers = false }
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        // Sheet presentations (wide / guild-settings / compact
+                        // text-channel pop-up): a leading "<" closes it. dismiss()
+                        // handles the sheet; clearing showMembers covers the
+                        // store-driven presentations. (The compact channel-list
+                        // drawer hides this and closes via swipe-right.)
+                        Button { dismiss(); store.showMembers = false } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 16, weight: .semibold))
+                        }
+                        .accessibilityLabel("Close members")
                     }
                 }
             }

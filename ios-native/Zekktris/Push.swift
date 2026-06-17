@@ -337,13 +337,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         PushManager.shared.registerCategories()
         // VoIP (PushKit) — full CallKit ringing with the app closed.
         VoipPushHandler.shared.start()
-        // AsyncImage (avatars, banners, attachments, emoji) loads through
-        // URLSession.shared, whose default URLCache is tiny. A bigger cache
-        // means scrollback and the member list stop re-fetching the same
-        // avatars over and over.
+        // AsyncImage + RetryingImage (avatars, banners, attachments, emoji) all
+        // load through URLSession.shared / URLCache.shared. The server marks CDN
+        // images `Cache-Control: public, max-age=1yr, immutable`, so this disk
+        // cache persists them across launches (no re-fetch). A bigger DISK tier
+        // means banners + attachments don't evict avatars and recent images
+        // survive longer; memory is volatile (resets each cold launch) so only
+        // the disk tier provides cross-launch persistence.
+        // NOTE: this only helps if whatever serves /cdn in production (e.g. Caddy
+        // serving the files directly, bypassing the API's /cdn route) ALSO sends
+        // those cache headers — otherwise responses aren't stored and images
+        // reload every launch regardless of this cache size.
         URLCache.shared = URLCache(
-            memoryCapacity: 32 * 1024 * 1024,   // 32 MB
-            diskCapacity: 256 * 1024 * 1024     // 256 MB
+            memoryCapacity: 32 * 1024 * 1024,    // 32 MB
+            diskCapacity: 512 * 1024 * 1024      // 512 MB (cross-launch persistence)
         )
         return true
     }
