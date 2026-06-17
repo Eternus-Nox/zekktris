@@ -248,9 +248,11 @@ export function StageChannelView({ channel }: { channel: Channel }) {
   // ── Render ─────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col bg-bg-1">
-      {/* Header / topic banner. */}
-      <header className="px-4 sm:px-6 py-3 sm:py-4 border-b border-line shrink-0 bg-bg-2 pl-14 xl:pl-6">
+    <div className="flex-1 min-h-0 flex flex-col">
+      {/* Header / topic banner. Translucent (not opaque bg-bg-2) so the shell's
+          .abyss nebula glows through like every other channel view — an opaque
+          fill here made the stage look flat/off-theme next to voice channels. */}
+      <header className="px-4 sm:px-6 py-3 sm:py-4 border-b border-line shrink-0 bg-bg-2/80 backdrop-blur-sm pl-14 xl:pl-6">
         <div className="flex items-center gap-2 mb-1 text-xs text-ink-3 uppercase tracking-wider">
           <Volume2 size={12} />
           <span>Stage</span>
@@ -419,8 +421,9 @@ export function StageChannelView({ channel }: { channel: Channel }) {
         </Section>
       </div>
 
-      {/* Self controls. */}
-      <footer className="border-t border-line px-3 py-3 sm:px-6 shrink-0 bg-bg-2">
+      {/* Self controls. Translucent bar so the nebula shows through (matches the
+          rest of the app's bars), instead of an opaque slab. */}
+      <footer className="border-t border-line px-3 py-3 sm:px-6 shrink-0 bg-bg-2/80 backdrop-blur-sm">
         {!inStage ? (
           <button
             onClick={() => void joinAsAudience()}
