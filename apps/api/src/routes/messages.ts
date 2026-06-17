@@ -1007,11 +1007,21 @@ messagesRouter.get(
     }
 
     const q = c.req.valid('query');
+    // Clamp guild scrollback to messages sent since the caller joined: new
+    // members don't load old history, and it bounds the (channel_id, id) index
+    // scan so opening a busy channel doesn't page through the whole backlog.
+    // DMs have no join → no clamp. Pins / search / single-message jump-to use
+    // other routes and are intentionally NOT clamped (explicit navigation).
+    let sinceId: bigint | undefined;
+    if (!ctx.isDM && ctx.channel.guildId) {
+      sinceId = await messages.memberHistoryFloor(ctx.channel.guildId, userId);
+    }
     const rows = await messages.listMessages(channelId, {
       before: q.before ? BigInt(q.before) : undefined,
       after: q.after ? BigInt(q.after) : undefined,
       around: q.around ? BigInt(q.around) : undefined,
       limit: q.limit ?? 50,
+      sinceId,
     });
 
     // DM viewed-at stamping. Stamps `viewed_at` on each non-self

@@ -81,3 +81,17 @@ export function nextSnowflake(): bigint {
   const workerPart = workerId << WORKER_SHIFT;
   return tsPart | workerPart | sequence;
 }
+
+/**
+ * The smallest snowflake that could have been generated at `date` (worker and
+ * sequence bits zeroed). Any id created at/after `date` is >= this value, so
+ * `id >= minSnowflakeForDate(joinedAt)` is an index-friendly lower bound for
+ * "messages since the member joined" — no created_at scan, and it bounds the
+ * (channel_id, id) index range so a new member's channel load doesn't page
+ * through the whole backlog. Clamped at the epoch so a pre-epoch date (can't
+ * happen in practice) yields 0 (matches everything) rather than a negative id.
+ */
+export function minSnowflakeForDate(date: Date): bigint {
+  const ms = Math.max(date.getTime(), SNOWFLAKE_EPOCH_MS);
+  return (BigInt(ms) - BigInt(SNOWFLAKE_EPOCH_MS)) << TIMESTAMP_SHIFT;
+}

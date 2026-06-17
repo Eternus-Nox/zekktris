@@ -15,10 +15,10 @@
  * in the route layer; this service trusts its caller.
  */
 
-import { and, asc, desc, eq, exists, gt, inArray, isNull, lt, lte, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, exists, gt, gte, inArray, isNull, lt, lte, sql, type SQL } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors } from '../errors';
-import { nextSnowflake } from '../snowflake';
+import { nextSnowflake, minSnowflakeForDate } from '../snowflake';
 import { parseMentions, resolveMentions, writeMessageMentions } from './mentions';
 import { listViewableGuildChannelIds } from './permissions';
 import { deleteStorageItem } from './uploads';
@@ -478,6 +478,12 @@ export interface ListMessagesOptions {
       supervision reader sets this — normal clients never see deleted
       rows. The caller is responsible for labelling them as deleted. */
   includeDeleted?: boolean;
+  /** Lower-bound id: only return messages with id >= sinceId. Set by the
+      route to the member's join floor (see memberHistoryFloor) so a guild
+      member only sees messages sent since they joined — both a visibility
+      rule and a perf bound (the scan stops at the join point). Undefined for
+      DMs and for the bypass paths (pins/search/single-message). */
+  sinceId?: bigint;
 }
 
 /**
@@ -498,6 +504,7 @@ export async function listMessages(channelId: bigint, opts: ListMessagesOptions)
       eq(schema.messages.channelId, channelId),
       isNull(schema.messages.deletedAt),
     ];
+    if (opts.sinceId !== undefined) baseConditions.push(gte(schema.messages.id, opts.sinceId));
     // The anchor is fetched explicitly so it doesn't consume one of the
     // "older" slots (which skewed the context window) — and so the page
     // always fills `limit` rows: half older, the anchor, and the
@@ -534,6 +541,7 @@ export async function listMessages(channelId: bigint, opts: ListMessagesOptions)
   if (!opts.includeDeleted) conditions.push(isNull(schema.messages.deletedAt));
   if (opts.before !== undefined) conditions.push(lt(schema.messages.id, opts.before));
   if (opts.after !== undefined) conditions.push(gt(schema.messages.id, opts.after));
+  if (opts.sinceId !== undefined) conditions.push(gte(schema.messages.id, opts.sinceId));
 
   return db
     .select()
@@ -541,6 +549,29 @@ export async function listMessages(channelId: bigint, opts: ListMessagesOptions)
     .where(and(...conditions))
     .orderBy(useAsc ? asc(schema.messages.id) : desc(schema.messages.id))
     .limit(opts.limit);
+}
+
+/**
+ * The scrollback floor for a guild member: the smallest message id they may
+ * load, derived from guild_members.joined_at (messages sent since they joined).
+ * Pass as listMessages' `sinceId`. Returns undefined when there's no member row
+ * (no clamp — fail open; the VIEW_CHANNEL check already gates access). Only the
+ * default scrollback uses this — pins / search / single-message GET do not, so
+ * explicit navigation to an older message still works.
+ */
+export async function memberHistoryFloor(
+  guildId: bigint,
+  userId: bigint,
+): Promise<bigint | undefined> {
+  const [m] = await db
+    .select({ joinedAt: schema.guildMembers.joinedAt })
+    .from(schema.guildMembers)
+    .where(
+      and(eq(schema.guildMembers.guildId, guildId), eq(schema.guildMembers.userId, userId)),
+    )
+    .limit(1);
+  if (!m?.joinedAt) return undefined;
+  return minSnowflakeForDate(m.joinedAt);
 }
 
 export async function getMessage(channelId: bigint, messageId: bigint) {
