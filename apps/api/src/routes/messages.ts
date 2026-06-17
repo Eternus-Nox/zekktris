@@ -1312,9 +1312,13 @@ messagesRouter.get(
     const m = await messages.getMessage(channelId, messageId);
     if (!m) throw errors.notFound('Message');
 
-    const author = m.authorId ? await loadUser(m.authorId) : null;
-    const attachmentMap = await messages.loadAttachments([m.id]);
-    const reactionAgg = await reactions.aggregateReactions(m.id);
+    // These three hydration queries are independent — run them in parallel
+    // instead of serially (3 round-trips → 1).
+    const [author, attachmentMap, reactionAgg] = await Promise.all([
+      m.authorId ? loadUser(m.authorId) : Promise.resolve(null),
+      messages.loadAttachments([m.id]),
+      reactions.aggregateReactions(m.id),
+    ]);
 
     return c.json({
       message: toMessage({

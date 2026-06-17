@@ -21,8 +21,13 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useAppState } from '../state/AppState';
+import { useAppStateSelector } from '../state/AppState';
 import { Search, X, Smile } from '../lib/icons';
+import type { GuildEmoji } from '@zekktris/client';
+
+// Stable empty reference so the per-guild emoji selector doesn't churn for
+// guilds with no custom emoji (a fresh [] each render would defeat the memo).
+const EMPTY_EMOJIS: GuildEmoji[] = [];
 
 /**
  * Curated standard emoji with searchable names. Names are intentionally
@@ -129,7 +134,11 @@ interface PickerProps {
 }
 
 export function EmojiPicker({ guildId, onSelect, onClose, className }: PickerProps) {
-  const { state } = useAppState();
+  // Subscribe ONLY to this guild's emoji slice — not the whole app state, which
+  // re-rendered the picker on every unrelated dispatch (typing, presence, …).
+  const guildEmojis =
+    useAppStateSelector((v) => (guildId ? v.state.emojisByGuild[guildId] : undefined)) ??
+    EMPTY_EMOJIS;
   const [query, setQuery] = useState('');
   const containerRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -164,8 +173,6 @@ export function EmojiPicker({ guildId, onSelect, onClose, className }: PickerPro
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
-
-  const guildEmojis = guildId ? state.emojisByGuild[guildId] ?? [] : [];
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

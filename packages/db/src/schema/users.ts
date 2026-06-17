@@ -560,6 +560,10 @@ export const notificationOverrides = pgTable(
   (t) => ({
     pk: primaryKey({ columns: [t.userId, t.targetType, t.targetId] }),
     targetIdx: index('notification_overrides_target_idx').on(t.targetType, t.targetId),
+    // Backs resolveLevelsBulk's hot path (every mentioned message): filters
+    // (user_id, target_id) skipping target_type, so the PK's user_id prefix
+    // alone can't seek target_id. This composite covers it directly.
+    userTargetIdx: index('notification_overrides_user_target_idx').on(t.userId, t.targetId),
   }),
 );
 

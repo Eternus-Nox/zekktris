@@ -110,7 +110,16 @@ final class AppStore: ObservableObject {
     @Published var loadingAdminStorage = false
     @Published var storageGcResult: String?
     @Published var guildStickers: [Sticker] = []
-    @Published var guildEmojis: [GuildEmoji] = []
+    @Published var guildEmojis: [GuildEmoji] = [] {
+        // Keep the name→emoji lookup in sync here (cheap, only when the emoji
+        // list actually changes) instead of rebuilding the dictionary on every
+        // read — emojiByName is hit per message + per reaction during render.
+        didSet {
+            emojiByName = Dictionary(
+                guildEmojis.map { ($0.name, $0) }, uniquingKeysWith: { _, latest in latest }
+            )
+        }
+    }
     @Published var emojiImages: [String: UIImage] = [:]
     private var emojiInFlight: Set<String> = []
     @Published var channelWebhooks: [Webhook] = []
@@ -132,12 +141,9 @@ final class AppStore: ObservableObject {
     @Published var switcherChannels: [Channel] = []
     @Published var loadingSwitcher = false
 
-    /// Resolve a `:name:` token to a guild emoji.
-    var emojiByName: [String: GuildEmoji] {
-        var m: [String: GuildEmoji] = [:]
-        for e in guildEmojis { m[e.name] = e }
-        return m
-    }
+    /// Resolve a `:name:` token to a guild emoji. Cached from `guildEmojis`
+    /// (kept current by its didSet) rather than rebuilt on each access.
+    @Published private(set) var emojiByName: [String: GuildEmoji] = [:]
 
     /// Active theme id (matches the web `THEMES` ids). Persisted in
     /// UserDefaults; setting it via `setTheme` re-renders the UI.
