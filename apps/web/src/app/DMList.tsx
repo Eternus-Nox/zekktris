@@ -390,7 +390,7 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
             // the DM's profile picture) from the per-message + header
             // positions, so it's a single quiet badge per conversation.
             <span
-              className="absolute -top-1 -right-1 rounded-full bg-bg-2 p-px flex items-center justify-center"
+              className="absolute -top-1 -right-1 rounded-full p-px flex items-center justify-center drop-shadow-[0_1px_1px_rgba(0,0,0,0.6)]"
               title="End-to-end encrypted"
               aria-label="End-to-end encrypted"
             >
@@ -403,18 +403,20 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
           // Messaging streak: consecutive UTC days both parties messaged.
           // Mirrors the iOS flame chip (amber tint, mono count).
           <span
-            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/40 text-ink-1 font-mono text-[10px] leading-none shrink-0"
+            className="inline-block whitespace-nowrap px-1.5 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/40 text-ink-1 font-mono text-[10px] leading-none shrink-0"
             title={`${channel.streak}-day messaging streak`}
           >
             {/* iOS (StreakChip): amber flame + ink-white count, soft-cornered
-                rectangle. viewBox min-y tuned (-0.7) to optically center the
-                flame's drawn extent against the mono digit. */}
+                rectangle. The flame is an inline icon centered against the digit
+                via vertical-align:middle — the standard icon/text alignment. (It
+                used to live in an inline-flex, where vertical-align is a no-op, so
+                the flame sat low and looked off-center next to the number.) */}
             <svg
               width="9"
               height="9"
-              viewBox="0 -0.7 24 24"
+              viewBox="0 0 24 24"
               fill="currentColor"
-              className="text-amber-400"
+              className="text-amber-400 inline-block align-middle mr-0.5"
               aria-hidden
             >
               <path d="M13.5 0.67s0.74 2.65 0.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l0.03-0.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5 0.67zM11.71 19c-1.78 0-3.22-1.4-3.22-3.14 0-1.62 1.05-2.76 2.81-3.12 1.77-0.36 3.6-1.21 4.62-2.58 0.39 1.29 0.59 2.65 0.59 4.04 0 2.65-2.15 4.8-4.8 4.8z" />

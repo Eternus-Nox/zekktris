@@ -29,6 +29,7 @@ import { useToasts } from '../state/Toasts';
 import { useProfileCard } from '../lib/useProfileCard';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
+import { AvatarDecoration } from '../lib/avatarDecorations';
 import { MessageSquare, UserPlus, UserMinus, Shield, X, Users as UsersIcon, Phone, ChevronLeft } from '../lib/icons';
 import { connectToVoice, VoiceError, prepareVoiceAudio } from '../lib/voice';
 
@@ -440,6 +441,9 @@ function FriendRow({
           {initials}
         </span>
         <AvatarImage src={user.avatarUrl} />
+        {/* Custom avatar frame/decoration, if the user picked one. Sits above
+            the image but below the status dot (rendered after). */}
+        <AvatarDecoration decoration={user.avatarDecoration} />
         {/* Status dot — for blocked rows we don't show it (you opted out
             of seeing their presence). */}
         {relType !== 'blocked' && (

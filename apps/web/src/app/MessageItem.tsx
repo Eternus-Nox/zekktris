@@ -618,16 +618,24 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
       message.author?.username ??
       'Someone';
     const durationLabel = formatCallDuration(durationMs);
+    // The caller (initiator === author === isOwn) shouldn't read "Missed call
+    // from <self>". For them an unanswered call is simply "No answer"; the
+    // callee still sees "Missed call from <caller>". Red "missed" styling is
+    // reserved for the callee — the caller's own unanswered call is a quiet,
+    // neutral notice, not an alert.
+    const alert = missed && !isOwn;
     const summary = missed
-      ? `Missed call from ${callerName}`
+      ? isOwn
+        ? 'No answer'
+        : `Missed call from ${callerName}`
       : `Call ended · ${durationLabel}`;
     return (
       <div
         data-message-id={message.id}
         className="group relative flex items-center gap-2 py-1.5 px-4 text-xs text-ink-3"
       >
-        <Phone size={12} className={missed ? 'text-red-400/80 shrink-0' : 'text-ink-3 shrink-0'} />
-        <span className={missed ? 'text-red-300/90' : 'text-ink-2'}>{summary}</span>
+        <Phone size={12} className={alert ? 'text-red-400/80 shrink-0' : 'text-ink-3 shrink-0'} />
+        <span className={alert ? 'text-red-300/90' : 'text-ink-2'}>{summary}</span>
         <span className="text-ink-3/70">·</span>
         <time
           dateTime={message.createdAt}
