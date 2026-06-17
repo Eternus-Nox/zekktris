@@ -2781,6 +2781,13 @@ final class AppStore: ObservableObject {
         if g.ownerId == currentUserId { return true }
         return iHavePermission(Permissions.MODERATE_MEMBERS)
     }
+    /// MANAGE_INVITES (bit 22) — list + revoke a guild's invites. Distinct from
+    /// CREATE_INVITE (bit 11, which only lets you mint one). Owner short-circuits.
+    var canManageInvites: Bool {
+        guard let g = selectedGuild, !isViewingDM else { return false }
+        if g.ownerId == currentUserId { return true }
+        return iHavePermission(Permissions.MANAGE_INVITES)
+    }
 
     // MARK: Member moderation
 
@@ -2925,6 +2932,17 @@ final class AppStore: ObservableObject {
     func createInvite(channel: Channel, maxUses: Int?, ttlSeconds: Int?) async -> Invite? {
         do { return try await api.createInvite(channelId: channel.id, maxUses: maxUses, ttlSeconds: ttlSeconds) }
         catch { errorText = (error as? APIError)?.message ?? error.localizedDescription; return nil }
+    }
+    /// Fetch the selected guild's invites for the management view. Returns nil
+    /// on failure (the view shows a retry); empty array is a valid "none yet".
+    func listGuildInvites() async -> [Invite]? {
+        guard let g = selectedGuild else { return nil }
+        do { return try await api.listGuildInvites(guildId: g.id) }
+        catch { errorText = (error as? APIError)?.message ?? error.localizedDescription; return nil }
+    }
+    func revokeInvite(_ code: String) async -> Bool {
+        do { try await api.revokeInvite(code: code); return true }
+        catch { errorText = (error as? APIError)?.message ?? error.localizedDescription; return false }
     }
 
     func createChannel(type: String, name: String, parentId: String?,

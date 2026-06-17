@@ -468,6 +468,7 @@ struct Invite: Codable, Identifiable {
     var id: String { code }
 }
 struct InviteWrap: Codable { let invite: Invite }
+struct InvitesWrap: Codable { let invites: [Invite] }
 
 struct AdminUser: Codable, Identifiable {
     let id: String
@@ -845,6 +846,7 @@ enum Permissions {
     static let VIEW_AUDIT_LOG = 19
     static let MANAGE_WEBHOOKS = 20
     static let MANAGE_EMOJIS = 21
+    static let MANAGE_INVITES = 22
     static let MANAGE_EVENTS = 32
 
     static let all: [PermissionDef] = [

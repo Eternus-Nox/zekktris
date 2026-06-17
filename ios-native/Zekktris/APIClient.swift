@@ -1163,6 +1163,16 @@ extension APIClient {
         let wrap: InviteWrap = try await send("POST", "/channels/\(channelId)/invites", bodyData: data)
         return wrap.invite
     }
+    /// All invites for a guild (requires MANAGE_INVITES); includes expired/spent
+    /// rows so the manager can see + clean them up.
+    func listGuildInvites(guildId: String) async throws -> [Invite] {
+        let wrap: InvitesWrap = try await send("GET", "/guilds/\(guildId)/invites")
+        return wrap.invites
+    }
+    /// Revoke (hard-delete) an invite by code; the code stops working at once.
+    func revokeInvite(code: String) async throws {
+        try await sendVoid("DELETE", "/invites/\(code)")
+    }
 
     func changePassword(currentPassword: String, newPassword: String) async throws {
         let body: [String: Any] = ["currentPassword": currentPassword, "newPassword": newPassword]

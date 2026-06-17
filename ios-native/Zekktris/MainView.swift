@@ -4879,6 +4879,7 @@ struct GuildSettingsView: View {
     @State private var showRoles = false
     @State private var showMembers = false
     @State private var showInvite = false
+    @State private var showManageInvites = false
     @State private var showGetRoles = false
     @State private var showEvents = false
     @State private var showReactionRoles = false
@@ -4942,7 +4943,8 @@ struct GuildSettingsView: View {
                     .environmentObject(session)
                     .environmentObject(store.voice)
             }
-            .sheet(isPresented: $showInvite) { CreateInviteSheet() }
+            .sheet(isPresented: $showInvite) { CreateInviteSheet().environmentObject(store) }
+            .sheet(isPresented: $showManageInvites) { ManageInvitesView().environmentObject(store) }
             .sheet(isPresented: $showGetRoles) { BrowseRolesView() }
             .sheet(isPresented: $showEvents) { EventsView() }
             .sheet(isPresented: $showReactionRoles) { ReactionRolesView() }
@@ -5163,6 +5165,11 @@ struct GuildSettingsView: View {
             }
             settingsRow("Members", icon: "person.2.fill") { showMembers = true }
             settingsRow("Create Invite", icon: "person.badge.plus") { showInvite = true }
+            // Manage existing invites (see expiry/uses, copy, revoke) — needs
+            // MANAGE_INVITES, which "Create Invite" (CREATE_INVITE) doesn't imply.
+            if store.canManageInvites {
+                settingsRow("Manage Invites", icon: "link") { showManageInvites = true }
+            }
         }
     }
 
@@ -5355,6 +5362,148 @@ struct CreateInviteSheet: View {
             }
             busy = false
         }
+    }
+}
+
+/// List a server's invites with their expiry + usage, and copy or revoke each.
+/// Mirrors the web GuildSettingsModal Invites tab. There's no "edit an invite"
+/// (the API has no update endpoint — invites are immutable), so changing
+/// settings = revoke + create a new one via the "+" button (same as web).
+struct ManageInvitesView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var invites: [Invite] = []
+    @State private var loading = true
+    @State private var loadFailed = false
+    @State private var showCreate = false
+    @State private var revoking: Set<String> = []
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if loading {
+                    ProgressView().tint(Theme.accent)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if loadFailed {
+                    VStack(spacing: 10) {
+                        Text("Couldn't load invites.").font(.zkSans(14)).foregroundColor(Theme.ink2)
+                        Button("Retry") { Task { await load() } }
+                            .font(.zkSans(14, weight: .semibold)).foregroundColor(Theme.accent)
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if invites.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "link").font(.system(size: 30)).foregroundColor(Theme.ink4)
+                        Text("No invites yet").font(.zkSans(15, weight: .semibold)).foregroundColor(Theme.ink2)
+                        Text("Tap + to create one.").font(.zkSans(13)).foregroundColor(Theme.ink3)
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 8) {
+                            ForEach(invites) { inviteRow($0) }
+                        }.padding(16)
+                    }
+                }
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Invites")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button { showCreate = true } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("New invite")
+                }
+            }
+            // Creating mints a new invite; reload the list when that sheet closes
+            // so the new code shows up (and "edit" = revoke-then-create works).
+            .sheet(isPresented: $showCreate, onDismiss: { Task { await load() } }) {
+                CreateInviteSheet().environmentObject(store)
+            }
+            .task { await load() }
+        }
+    }
+
+    private func inviteRow(_ inv: Invite) -> some View {
+        let expired = isExpired(inv)
+        let busy = revoking.contains(inv.code)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Text(inv.code)
+                    .font(.zkMono(16, weight: .bold))
+                    .foregroundColor(expired ? Theme.ink3 : Theme.ink1)
+                    .strikethrough(expired, color: Theme.ink4)
+                Spacer()
+                Button { UIPasteboard.general.string = "https://zekktris.com/invite/\(inv.code)" } label: {
+                    Image(systemName: "doc.on.doc").font(.system(size: 15)).foregroundColor(Theme.accent)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Copy invite link")
+                Button { Task { await revoke(inv) } } label: {
+                    if busy {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "trash").font(.system(size: 15)).foregroundColor(Theme.danger)
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(busy)
+                .accessibilityLabel("Revoke invite")
+            }
+            HStack(spacing: 6) {
+                Image(systemName: expired ? "clock.badge.xmark" : "clock")
+                    .font(.system(size: 11))
+                    .foregroundColor(expired ? Theme.dangerSoft : Theme.ink3)
+                Text(statusLabel(inv))
+                    .font(.zkSans(12))
+                    .foregroundColor(expired ? Theme.dangerSoft : Theme.ink3)
+            }
+        }
+        .padding(12)
+        .background(Theme.bg2)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .opacity(expired ? 0.65 : 1)
+    }
+
+    /// An invite is dead if it hit its max uses OR its expiry has passed.
+    private func isExpired(_ inv: Invite) -> Bool {
+        if let m = inv.maxUses, (inv.uses ?? 0) >= m { return true }
+        if let exp = inv.expiresAt, let d = messageDate(exp) { return d <= Date() }
+        return false
+    }
+
+    /// "Expires in 3d · 2/10 uses" / "Expired · 10/10 uses" / "Never expires · 4 uses".
+    private func statusLabel(_ inv: Invite) -> String {
+        "\(expiryPart(inv)) · \(usesPart(inv))"
+    }
+    private func expiryPart(_ inv: Invite) -> String {
+        if let m = inv.maxUses, (inv.uses ?? 0) >= m { return "No uses left" }
+        guard let exp = inv.expiresAt, let d = messageDate(exp) else { return "Never expires" }
+        let secs = Int(d.timeIntervalSince(Date()))
+        if secs <= 0 { return "Expired" }
+        if secs >= 86400 { return "Expires in \(secs / 86400)d" }
+        if secs >= 3600 { return "Expires in \(secs / 3600)h" }
+        if secs >= 60 { return "Expires in \(secs / 60)m" }
+        return "Expires in <1m"
+    }
+    private func usesPart(_ inv: Invite) -> String {
+        let u = inv.uses ?? 0
+        if let m = inv.maxUses { return "\(u)/\(m) uses" }
+        return u == 1 ? "1 use" : "\(u) uses"
+    }
+
+    private func load() async {
+        loading = true; loadFailed = false
+        if let list = await store.listGuildInvites() { invites = list }
+        else { loadFailed = true }
+        loading = false
+    }
+    private func revoke(_ inv: Invite) async {
+        revoking.insert(inv.code)
+        if await store.revokeInvite(inv.code) {
+            invites.removeAll { $0.code == inv.code }
+        }
+        revoking.remove(inv.code)
     }
 }
 
@@ -6937,7 +7086,7 @@ struct GuildInfoCard: View {
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Server Info").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
-            .sheet(isPresented: $showInvite) { CreateInviteSheet() }
+            .sheet(isPresented: $showInvite) { CreateInviteSheet().environmentObject(store) }
         }
     }
 
