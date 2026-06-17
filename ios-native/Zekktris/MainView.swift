@@ -1022,7 +1022,9 @@ struct ChannelListView: View {
                 .buttonStyle(.plain)
             } else if channel.isStage {
                 Button { store.openVoice(channel) } label: {
-                    ChannelRowLabel(symbol: "dot.radiowaves.left.and.right", iconTint: .tertiary,
+                    // Theme accent like every other channel icon (text/voice/
+                    // forum/link) — was the only one using the muted tertiary tint.
+                    ChannelRowLabel(symbol: "dot.radiowaves.left.and.right", iconTint: .accent,
                                     name: channel.name ?? "stage",
                                     restricted: channel.restricted == true,
                                     trailingCount: store.voiceParticipants(in: channel.id).count)

@@ -905,7 +905,9 @@ function StageChannelRow({
         }`}
       >
         <span className="relative shrink-0">
-          <Radio size={14} className="text-ink-3" />
+          {/* Theme accent like the other channel icons (#/voice/forum/link) —
+              was the only one using the muted ink-3 tint. */}
+          <Radio size={14} className="text-accent" />
           {channel.restricted && (
             <Lock
               size={8}
