@@ -1434,14 +1434,19 @@ function groupMessages(msgs: Message[]): Message[][] {
   for (const m of msgs) {
     const last = out[out.length - 1];
     const lastMsg = last?.[last.length - 1];
-    // System messages (system_call, system_join, system_pin, etc.)
-    // never chain with anything. They render as standalone notices
-    // — not as a "message from author X" — so chaining them with
-    // surrounding messages would suppress the avatar/name on the
-    // adjacent regular message even though it's effectively starting
-    // a new conversation. Force a group break on either side.
-    const currentIsSystem = m.type.startsWith('system_');
-    const lastIsSystem = lastMsg ? lastMsg.type.startsWith('system_') : false;
+    // System messages (system_call, system_join, system_pin, etc.) and the
+    // streak-warning notice never chain with anything. They render as
+    // standalone notices — not as a "message from author X" — so chaining them
+    // with surrounding messages would suppress the avatar/name on the adjacent
+    // regular message even though it's effectively starting a new conversation.
+    // Force a group break on either side. NOTE the streak warning is a 'default'
+    // row carrying metadata.kind === 'streak_warning' (not a system_ type), so
+    // it must be detected separately or it would chain (it's posted under a
+    // participant's authorId) and swallow the next message's avatar.
+    const isNotice = (x: Message) =>
+      x.type.startsWith('system_') || x.metadata?.kind === 'streak_warning';
+    const currentIsSystem = isNotice(m);
+    const lastIsSystem = lastMsg ? isNotice(lastMsg) : false;
     if (
       lastMsg &&
       !currentIsSystem &&

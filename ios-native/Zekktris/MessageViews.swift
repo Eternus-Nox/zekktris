@@ -305,26 +305,10 @@ struct MessageListView: View {
         .sheet(isPresented: $showSearch) {
             SearchSheet(channel: channel)
         }
-        .sheet(isPresented: Binding(
-            get: { store.showMembers && (store.isWideLayout || (!channel.isDM && (channel.isText || channel.isThread))) },
-            set: { if !$0 { store.showMembers = false } }
-        )) {
-            // Members as a SHEET (pop-up) when in a text channel or thread — on
-            // WIDE (iPad/Mac, any route) and on COMPACT inside a text channel or
-            // thread (where the people icon opens it; no swipe there). Threads
-            // are .messages routes but not isText, so they need their own clause
-            // here or the people icon is dead. The compact channel-LIST
-            // root uses the right-edge swipe drawer instead (MainView.membersDrawer,
-            // gated to the root via canShowMembers) — the header that hosts this
-            // sheet only exists inside an open channel, so the two never collide.
-            // Re-inject env objects: the sheet host doesn't inherit them on
-            // "Designed for iPad on Mac", which crashed the Members sheet
-            // ("No ObservableObject of type AppStore found").
-            MemberListView()
-                .environmentObject(store)
-                .environmentObject(session)
-                .environmentObject(store.voice)
-        }
+        // The members pop-up is hosted ONCE at the shell root (MainView), driven
+        // by store.showMembers — the people icon below just sets the flag. One
+        // sheet now serves the channel list, text channels, and threads, so it's
+        // no longer presented per-MessageListView (which would double-present).
         .sheet(isPresented: $showPins) {
             PinPanelView(channel: channel)
         }
@@ -782,20 +766,36 @@ struct MessageListView: View {
     /// who's talking.
     private let headerEveryNInRun = 6
 
+    /// A system/server NOTICE — a streak warning or a call summary — renders as
+    /// a centered line with NO avatar (see streakWarningRow / systemRow), so it
+    /// breaks the author grouping: the next real message must re-show its header
+    /// and a same-author run can't be "continued" across one.
+    private func isNoticeRow(_ m: Message) -> Bool {
+        m.metadata?.kind == "streak_warning" || m.type == "system_call"
+    }
+
     private func showHeader(at index: Int) -> Bool {
         if shouldShowDateDivider(at: index) { return true }
         guard index > 0 else { return true }
         let current = store.messages[index]
-        if current.authorId != store.messages[index - 1].authorId { return true }
+        let previous = store.messages[index - 1]
+        // A notice (streak/call) just above broke the visual run, so re-show the
+        // author header even if the notice was posted under the SAME authorId
+        // (streak warnings are authored by a participant) — that's the "show the
+        // profile picture again after a server message" case.
+        if isNoticeRow(previous) { return true }
+        if current.authorId != previous.authorId { return true }
         // Same-author continuation: count how far back this uninterrupted run
-        // goes (stopping at a date divider, which already forces a header), and
-        // re-show the header on every Nth message of the run. Cheap: only the
-        // handful of LazyVStack-visible rows call this, and it's integer compares.
+        // goes (stopping at a date divider OR a notice — both break the run; a
+        // divider already forces a header), and re-show the header on every Nth
+        // message of the run. Cheap: only the handful of LazyVStack-visible rows
+        // call this, and it's integer compares.
         var runLength = 1
         var i = index
         while i > 0,
               store.messages[i - 1].authorId == current.authorId,
-              !shouldShowDateDivider(at: i) {
+              !shouldShowDateDivider(at: i),
+              !isNoticeRow(store.messages[i - 1]) {
             runLength += 1
             i -= 1
         }
@@ -940,13 +940,11 @@ struct MessageRow: View {
 
     /// "Your streak ends soon" warning — a quiet centered notice (not a bubble
     /// from the author), mirroring the system_call notice style. Content comes
-    /// straight from the server message; the flame keys off the metadata.
+    /// straight from the server message, which already leads with a 🔥 emoji —
+    /// so no separate (blue, accent-tinted) flame icon here.
     private var streakWarningRow: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 0) {
             Spacer(minLength: 0)
-            Image(systemName: "flame.fill")
-                .font(.system(size: 11))
-                .foregroundColor(Theme.accent)
             Text(message.text)
                 .font(.zkSans(12))
                 .foregroundColor(Theme.ink2)
@@ -2939,10 +2937,6 @@ struct MemberListView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedProfile: PublicUser?
     @State private var reportTarget: PublicUser?
-    /// The sheet presentations (wide iPad/Mac, guild settings) need an explicit
-    /// "Done" close button; the compact right-edge DRAWER does not — you close
-    /// it by swiping right — so it passes `false` to hide the toolbar button.
-    var showsDoneButton: Bool = true
 
     private struct MemberSection: Identifiable {
         let id: String
@@ -3022,19 +3016,16 @@ struct MemberListView: View {
             .navigationTitle("Members — \(store.members.count)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if showsDoneButton {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        // Sheet presentations (wide / guild-settings / compact
-                        // text-channel pop-up): a leading "<" closes it. dismiss()
-                        // handles the sheet; clearing showMembers covers the
-                        // store-driven presentations. (The compact channel-list
-                        // drawer hides this and closes via swipe-right.)
-                        Button { dismiss(); store.showMembers = false } label: {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 16, weight: .semibold))
-                        }
-                        .accessibilityLabel("Close members")
+                ToolbarItem(placement: .navigationBarLeading) {
+                    // Every presentation is now a sheet (channel list, text
+                    // channel, thread, wide, guild-settings): a leading "<"
+                    // closes it. dismiss() handles the sheet; clearing
+                    // showMembers covers the store-driven presentations.
+                    Button { dismiss(); store.showMembers = false } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 16, weight: .semibold))
                     }
+                    .accessibilityLabel("Close members")
                 }
             }
         }

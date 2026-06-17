@@ -26,12 +26,6 @@ struct MainView: View {
     @State private var settleX: CGFloat = 0
     @State private var settling = false
     @State private var contentWidth: CGFloat = 0
-    /// Live rightward drag on the OPEN members drawer — the panel follows the
-    /// finger and closes past a threshold. @GestureState so it auto-resets on
-    /// cancel; tracking live (not just onEnded) keeps the recognizer alive over
-    /// the member list's ScrollView, which otherwise dropped a slow/diagonal
-    /// swipe-to-close.
-    @GestureState private var memberCloseDrag: CGFloat = 0
 
     /// Horizontal offset of the conversation during a back-swipe: the live drag
     /// while the finger is down, then the settle animation after it lifts.
@@ -182,6 +176,27 @@ struct MainView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: store.errorText)
+        // The guild member list is a POP-UP SHEET everywhere now (compact +
+        // wide), driven by store.showMembers. Opened by the people-icon button
+        // in the channel-list header (root) and the one in a text-channel/thread
+        // header (see ChannelListView / MessageViews); closed by the leading "<"
+        // (or swipe-down). Hosted once here at the shell root so the same single
+        // sheet covers the channel list, text channels, and threads — no swipe
+        // drawer, no double-present. Gated to a guild context (members are
+        // meaningless in DMs / with no guild selected). The GuildSettings
+        // "Members" row uses a SEPARATE local @State sheet, not this flag.
+        .sheet(isPresented: Binding(
+            get: { store.showMembers && !store.inDMs && store.selectedGuild != nil },
+            set: { if !$0 { store.showMembers = false } }
+        )) {
+            // Re-inject env objects: the sheet host doesn't inherit them on
+            // "Designed for iPad on Mac" (crashed with "No ObservableObject of
+            // type AppStore found").
+            MemberListView()
+                .environmentObject(store)
+                .environmentObject(session)
+                .environmentObject(store.voice)
+        }
     }
 
     /// Sidebar width: the web's 15rem (225pt), with extra room on Mac
@@ -292,98 +307,6 @@ struct MainView: View {
             }
         )
         .simultaneousGesture(backSwipeGesture)
-        .simultaneousGesture(membersSwipeGesture)
-        .overlay { membersDrawer }
-    }
-
-    /// Swipe LEFT (on the content, drawer CLOSED) to OPEN the members drawer.
-    /// Attached to `compactNav`. Closing is a separate gesture on the panel
-    /// itself (`membersCloseGesture`): once open, the full-width panel covers
-    /// compactNav and is layered ABOVE this gesture (it's added by `.overlay`
-    /// after this `.simultaneousGesture`), so a swipe on the open panel never
-    /// reaches here — which is exactly why swipe-to-close wasn't working.
-    /// Available in a guild's channel list or a text channel; not DMs/voice.
-    private var membersSwipeGesture: some Gesture {
-        DragGesture(minimumDistance: 24)
-            .onEnded { value in
-                guard !backActive, !store.showMembers, canShowMembers,
-                      value.translation.width < -60,
-                      abs(value.translation.width) > abs(value.translation.height) * 1.5
-                else { return }
-                withAnimation(.easeOut(duration: 0.25)) { store.showMembers = true }
-            }
-    }
-
-    /// Swipe RIGHT on the OPEN panel to close it. Attached directly to the panel
-    /// (the touch target), `.simultaneousGesture` so the member list's vertical
-    /// scroll still works. `.updating` tracks the drag LIVE — the panel follows
-    /// the finger (via `memberCloseDrag`) AND, crucially, keeping the recognizer
-    /// active stops the underlying ScrollView from stealing a slow/diagonal swipe
-    /// and dropping `onEnded` (the reason swipe-to-close was unreliable). Past
-    /// ~30% of the width on release it closes; otherwise it snaps back.
-    private var membersCloseGesture: some Gesture {
-        DragGesture(minimumDistance: 10)
-            .updating($memberCloseDrag) { value, state, _ in
-                guard store.showMembers,
-                      value.translation.width > 0,
-                      abs(value.translation.width) > abs(value.translation.height)
-                else { return }
-                state = value.translation.width
-            }
-            .onEnded { value in
-                guard store.showMembers,
-                      value.translation.width > 0,
-                      abs(value.translation.width) > abs(value.translation.height)
-                else { return }
-                let w = contentWidth > 0 ? contentWidth : 393
-                if value.translation.width > max(80, w * 0.3) {
-                    withAnimation(.easeOut(duration: 0.25)) { store.showMembers = false }
-                }
-            }
-    }
-
-    /// Whether the member list applies right now: in a guild (not DMs), on the
-    /// channel list (root) or one of its text channels — not voice/threads.
-    /// The swipe DRAWER applies only at the guild channel-list ROOT. Inside a
-    /// text channel the member list is a pop-up sheet instead (opened by the
-    /// header people icon — see MessageViews), so swiping there doesn't fight
-    /// the back-swipe / reading.
-    private var canShowMembers: Bool {
-        guard store.selectedGuild != nil, !store.inDMs else { return false }
-        return store.stack.last == nil
-    }
-
-    /// The right-edge member drawer overlaid on the compact content. It fills
-    /// the whole content column — i.e. UP TO the 72pt server rail — so the rail
-    /// stays visible AND tappable beside it (you can hop to DMs/Mentions while
-    /// it's open; that also clears `showMembers`). Close it by swiping right.
-    ///
-    /// Deliberately NO dimming scrim: a full-bleed `Color.ignoresSafeArea()`
-    /// scrim bled past the content column and over the rail, eating the rail
-    /// buttons' taps (they "didn't work" while the drawer was open). The panel
-    /// is opaque and full-width, so there's nothing to dim anyway. Off-screen +
-    /// non-interactive when closed so it never intercepts the content beneath.
-    @ViewBuilder
-    private var membersDrawer: some View {
-        if canShowMembers {
-            // Full content-column width: the overlay lives on `compactNav`, which
-            // already starts to the RIGHT of the rail, so filling it reaches
-            // exactly up to the rail without ever covering it.
-            let w = contentWidth > 0 ? contentWidth : 393
-            MemberListView(showsDoneButton: false)
-                .frame(width: w)
-                .background(Theme.bg1)
-                // Swipe RIGHT on the panel to close it (the gesture lives HERE,
-                // on the panel, because the panel is what the swipe lands on).
-                .simultaneousGesture(membersCloseGesture)
-                .shadow(color: .black.opacity(0.25), radius: 14, x: -6, y: 0)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-                // Open: follow a rightward close-drag (max(0,…) so it can't drag
-                // left past flush). Closed: parked off-screen right.
-                .offset(x: store.showMembers ? max(0, memberCloseDrag) : w + 16)
-                .animation(.easeOut(duration: 0.25), value: store.showMembers)
-                .allowsHitTesting(store.showMembers)
-        }
     }
 
     /// The interactive back-swipe. `simultaneousGesture` + a horizontal-
@@ -395,9 +318,9 @@ struct MainView: View {
             .updating($dragX) { value, state, _ in
                 // Track only a rightward, horizontally-dominant drag on a
                 // message screen; anything else leaves the offset at 0 so a
-                // vertical scroll is untouched. Not while the members drawer is
-                // open — there a rightward swipe CLOSES the drawer instead of
-                // popping the page.
+                // vertical scroll is untouched. Not while the members sheet is
+                // open (the modal already blocks touches here; the guard is
+                // belt-and-suspenders).
                 guard !store.showMembers,
                       isMessageRoute(store.stack.last),
                       value.translation.width > 0,
@@ -897,6 +820,16 @@ struct ChannelListView: View {
                             .frame(width: 24, height: 24)
                     }
                 }
+                // Members: opens the member-list pop-up (replaces the old swipe
+                // drawer). Visible to everyone, not just channel managers.
+                Button { store.showMembers = true } label: {
+                    Image(systemName: "person.2.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(Theme.ink2)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Members")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)

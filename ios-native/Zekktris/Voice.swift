@@ -1378,10 +1378,13 @@ struct StageChannelView: View {
         HStack(spacing: 12) {
             if amSpeaker {
                 Button { Task { await store.toggleVoiceMute() } } label: {
+                    // Match VoiceChannelView's mute button: keep the dark bg3
+                    // button and redden the ICON when muted (don't flood the
+                    // whole button Theme.danger — that was the off-theme look).
                     Image(systemName: voice.isMuted ? "mic.slash.fill" : "mic.fill")
-                        .font(.system(size: 18)).foregroundColor(voice.isMuted ? .white : Theme.ink1)
+                        .font(.system(size: 18)).foregroundColor(voice.isMuted ? Theme.danger : Theme.ink1)
                         .frame(width: 52, height: 44)
-                        .background(voice.isMuted ? Theme.danger : Theme.bg3)
+                        .background(Theme.bg3)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
             } else {
@@ -1411,7 +1414,8 @@ struct StageChannelView: View {
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
         .frame(maxWidth: .infinity)
-        .background(Theme.bg1)
+        // Match VoiceChannelView's control bar (was Theme.bg1).
+        .background(Theme.bg2)
         .overlay(Rectangle().fill(Theme.line).frame(height: 1), alignment: .top)
     }
 }
