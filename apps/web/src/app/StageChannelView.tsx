@@ -432,8 +432,11 @@ export function StageChannelView({ channel }: { channel: Channel }) {
           <div className="flex items-center justify-center gap-3">
             <button
               onClick={toggleMic}
+              // Match VoiceView's ControlButton muted state: a subtle red tint
+              // with a red icon, NOT a solid-red flood + white icon (the
+              // off-theme look). Unmuted stays the neutral bg-3 button.
               className={`w-11 h-11 rounded-full flex items-center justify-center transition-colors ${
-                micMuted ? 'bg-red-500/80 hover:bg-red-500 text-white' : 'bg-bg-3 hover:bg-bg-3/70 text-ink-1'
+                micMuted ? 'bg-red-500/20 hover:bg-red-500/30 text-red-400' : 'bg-bg-3 hover:bg-bg-3/70 text-ink-1'
               }`}
               title={micMuted ? 'Unmute' : 'Mute'}
               aria-label={micMuted ? 'Unmute microphone' : 'Mute microphone'}
