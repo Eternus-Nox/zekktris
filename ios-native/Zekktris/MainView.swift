@@ -18,10 +18,11 @@ struct MainView: View {
     // a @GestureState (`dragX`) so SwiftUI AUTO-RESETS it to 0 if the gesture is
     // cancelled (an incoming call, a system edge gesture, …) — that guarantees
     // the page can never be left stuck part-way off-screen with no onEnded to
-    // clean up. The follow-through / snap-back animation after the finger lifts
-    // is driven by `settleX` + `settling` (the gesture is over by then, so it
-    // needs plain @State); both are always cleared by a scheduled completion.
-    // `contentWidth` is the measured page width for the 66% threshold.
+    // clean up. The follow-through animation after the finger lifts is driven by
+    // `settleX` + `settling` (the gesture is over by then, so it needs plain
+    // @State); both are always cleared by a scheduled completion.
+    // `contentWidth` is the measured page width — the distance the page slides
+    // off on release (there is no distance threshold; any rightward swipe pops).
     @GestureState private var dragX: CGFloat = 0
     @State private var settleX: CGFloat = 0
     @State private var settling = false
@@ -356,28 +357,24 @@ struct MainView: View {
                       abs(value.translation.width) > abs(value.translation.height)
                 else { return }
                 let width = contentWidth > 0 ? contentWidth : 393
+                // ANY rightward, horizontally-dominant swipe goes back — no
+                // distance threshold (the 12pt minimumDistance is the only floor).
                 // Take over from the (now-resetting) live drag at the release
-                // position, then animate to the target. `settling`/`settleX`
-                // are always cleared by the scheduled completion below.
+                // position, slide the rest of the way off, then pop (un-animated
+                // so the fade doesn't double up). To cancel, drag back left past
+                // the start (translation.width <= 0) — the guard above fails and
+                // @GestureState dragX auto-resets to rest.
                 settleX = value.translation.width
                 settling = true
-                if value.translation.width > width * 0.45 {
-                    // Past the threshold: follow through — slide fully off,
-                    // then pop (un-animated so the fade doesn't double up).
-                    withAnimation(.easeOut(duration: 0.22)) { settleX = width }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
-                        var txn = Transaction()
-                        txn.disablesAnimations = true
-                        withTransaction(txn) {
-                            store.pop()
-                            settling = false
-                            settleX = 0
-                        }
+                withAnimation(.easeOut(duration: 0.22)) { settleX = width }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+                    var txn = Transaction()
+                    txn.disablesAnimations = true
+                    withTransaction(txn) {
+                        store.pop()
+                        settling = false
+                        settleX = 0
                     }
-                } else {
-                    // Short of the threshold (or pushed back left): snap back.
-                    withAnimation(.easeOut(duration: 0.2)) { settleX = 0 }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { settling = false }
                 }
             }
     }
