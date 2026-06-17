@@ -376,14 +376,14 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
               : 'text-ink-2 hover:text-ink-1 hover:bg-bg-3/50'
         }`}
       >
-        <span className="relative w-7 h-7 shrink-0">
-          <span className={`absolute inset-0 rounded-full text-xs flex items-center justify-center font-medium ${tone}`}>
+        <span className="relative w-9 h-9 shrink-0">
+          <span className={`absolute inset-0 rounded-full text-sm flex items-center justify-center font-medium ${tone}`}>
             {initials || '?'}
           </span>
           <AvatarImage src={recipient?.avatarUrl} />
           <span
             aria-hidden
-            className={`absolute bottom-0 right-0 w-2 h-2 rounded-full border-2 border-bg-2 ${dot}`}
+            className={`absolute bottom-0 right-0 w-[11px] h-[11px] rounded-full border-2 border-bg-2 ${dot}`}
           />
           {channel.e2eeEnabled && (
             // End-to-end encrypted indicator — moved here (upper-right of
@@ -398,7 +398,7 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
             </span>
           )}
         </span>
-        <span className="truncate flex-1">{displayName}</span>
+        <span className="truncate flex-1 text-[15px]">{displayName}</span>
         {typeof channel.streak === 'number' && channel.streak > 0 && (
           // Messaging streak: consecutive UTC days both parties messaged.
           // Mirrors the iOS flame chip (amber tint, mono count).
