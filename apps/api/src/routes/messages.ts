@@ -601,6 +601,30 @@ messagesRouter.post(
       selfId: userId,
     });
 
+    // Before fanning out a DM message, (re)subscribe every recipient's LIVE
+    // gateway connections to this channel. A connection's dmChannelIds set can
+    // drift out of sync with reality — RESUME inherits the prior (possibly
+    // stale) snapshot instead of reloading it, and a closed-then-reopened DM
+    // isn't re-registered — which silently drops the live MESSAGE_CREATE for an
+    // OPEN conversation (the recipient fails conn.dmChannelIds.has(channelId) in
+    // the gateway's channel-audience filter) even though the push still fires.
+    // addDMToUser only touches currently-connected sockets and is idempotent
+    // (Set.add + index guard), so this is a cheap no-op once a connection is
+    // correctly registered — but it guarantees live delivery to anyone with the
+    // DM open. Guild channels don't need this (membership/viewability is fixed
+    // at IDENTIFY and on join). Must run BEFORE the dispatch so THIS message is
+    // delivered, not just future ones.
+    if (ctx.isDM) {
+      try {
+        for (const rid of await dms.listAllRecipients(channelId)) {
+          registry.addDMToUser(rid, channelId);
+        }
+      } catch {
+        // Best-effort: a failed re-subscribe just falls back to whatever the
+        // connection already had; the push + REST refetch still cover it.
+      }
+    }
+
     // Fan out over the gateway. The sender's nonce rides along ONLY on
     // this broadcast so their client can replace its optimistic
     // placeholder in place; other recipients just ignore it.
