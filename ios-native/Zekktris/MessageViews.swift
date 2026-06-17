@@ -1534,7 +1534,10 @@ struct MessageRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let desc = e.description, !desc.isEmpty {
-                    Text(desc).font(.zkSans(13)).foregroundColor(Theme.ink2)
+                    // Discord renders markdown (bold/italic/code/links) in embed
+                    // descriptions — route through the same renderer as message
+                    // bodies instead of plain Text.
+                    Text(richContent(desc)).font(.zkSans(13)).foregroundColor(Theme.ink2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let fields = e.fields, !fields.isEmpty {
@@ -1542,7 +1545,7 @@ struct MessageRow: View {
                         ForEach(Array(fields.enumerated()), id: \.offset) { _, f in
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(f.name).font(.zkSans(12, weight: .semibold)).foregroundColor(Theme.ink1)
-                                Text(f.value).font(.zkSans(13)).foregroundColor(Theme.ink2)
+                                Text(richContent(f.value)).font(.zkSans(13)).foregroundColor(Theme.ink2)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }

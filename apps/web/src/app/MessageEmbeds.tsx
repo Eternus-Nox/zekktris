@@ -20,10 +20,21 @@
 
 import { useState, type SyntheticEvent } from 'react';
 import type { MessageEmbed } from '@zekktris/client';
+import { renderMessageContent } from '../lib/markdown';
 
 interface Props {
   embeds: MessageEmbed[] | null;
 }
+
+// Webhook embed description + field values render markdown (bold/italic/code/
+// links) just like message bodies. Embeds carry no mention/emoji context, so
+// the lookups are no-ops — any <@id>/:emoji: tokens degrade to plain text
+// (rare in webhook embeds) while the markdown still renders.
+const embedMarkdownCtx = {
+  lookupUser: (_id: string) => undefined,
+  lookupChannel: (_id: string) => undefined,
+  selfUserId: undefined,
+};
 
 export function MessageEmbeds({ embeds }: Props) {
   if (!embeds || embeds.length === 0) return null;
@@ -200,14 +211,18 @@ function RichEmbedCard({ embed }: { embed: MessageEmbed }) {
             <div className="font-semibold text-ink-1 break-words">{embed.title}</div>
           ))}
         {embed.description && (
-          <p className="text-sm text-ink-2 whitespace-pre-wrap break-words">{embed.description}</p>
+          <div className="text-sm text-ink-2 whitespace-pre-wrap break-words">
+            {renderMessageContent(embed.description, embedMarkdownCtx)}
+          </div>
         )}
         {embed.fields && embed.fields.length > 0 && (
           <div className="grid grid-cols-2 gap-x-3 gap-y-2 pt-0.5">
             {embed.fields.map((f, i) => (
               <div key={i} className={f.inline ? '' : 'col-span-2'}>
                 <div className="text-xs font-semibold text-ink-1 break-words">{f.name}</div>
-                <div className="text-sm text-ink-2 whitespace-pre-wrap break-words">{f.value}</div>
+                <div className="text-sm text-ink-2 whitespace-pre-wrap break-words">
+                  {renderMessageContent(f.value, embedMarkdownCtx)}
+                </div>
               </div>
             ))}
           </div>
