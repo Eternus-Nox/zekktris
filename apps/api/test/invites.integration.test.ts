@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, schema } from '../src/db';
-import { createInvite, previewInvite } from '../src/services/invites';
+import { createInvite, previewInvite, pruneDeadInvites } from '../src/services/invites';
 import { nextSnowflake } from '../src/snowflake';
 import { INVITE_CODE_LENGTH } from '@zekktris/shared/constants';
 import { probeDb, closeDb } from './db-available';
@@ -41,7 +41,7 @@ describe.runIf(dbReady)('invites (integration)', () => {
 
   // Insert a raw invite row directly (bypassing createInvite) so preview tests
   // can pin expiry / uses precisely.
-  async function seedInvite(opts: { expiresAt?: Date | null; maxUses?: number | null; uses?: number } = {}) {
+  async function seedInvite(opts: { expiresAt?: Date | null; maxUses?: number | null; uses?: number; createdAt?: Date } = {}) {
     const code = `test-${nextSnowflake()}`;
     await db.insert(schema.invites).values({
       code,
@@ -51,6 +51,7 @@ describe.runIf(dbReady)('invites (integration)', () => {
       expiresAt: opts.expiresAt ?? null,
       maxUses: opts.maxUses ?? null,
       uses: opts.uses ?? 0,
+      ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
     });
     return code;
   }
@@ -94,5 +95,38 @@ describe.runIf(dbReady)('invites (integration)', () => {
   it('previewInvite treats a spent (maxUses reached) invite as not-found', async () => {
     const code = await seedInvite({ maxUses: 1, uses: 1 });
     await expect(previewInvite(code)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('pruneDeadInvites deletes only invites dead longer than the grace window', async () => {
+    const graceMs = 24 * 60 * 60 * 1000; // 1-day grace
+    const now = Date.now();
+    const old = new Date(now - 3 * 24 * 60 * 60 * 1000); // 3 days ago (beyond grace)
+    const recent = new Date(now - 60 * 1000); // 1 min ago (within grace)
+
+    const expiredOld = await seedInvite({ expiresAt: old }); // dead, beyond grace → prune
+    const expiredRecent = await seedInvite({ expiresAt: recent }); // dead, within grace → keep
+    const alive = await seedInvite({ expiresAt: new Date(now + 3_600_000) }); // not dead → keep
+    const neverExpires = await seedInvite({}); // can't die → keep
+    const spentOld = await seedInvite({ maxUses: 1, uses: 1, createdAt: old }); // spent + old → prune
+    const spentRecent = await seedInvite({ maxUses: 1, uses: 1, createdAt: recent }); // spent + recent → keep
+
+    await pruneDeadInvites(graceMs);
+
+    // Assert on THIS guild's rows only — pruneDeadInvites is a global DELETE, so
+    // checking our own seeded codes keeps the test parallel-safe.
+    const remaining = new Set(
+      (
+        await db
+          .select({ code: schema.invites.code })
+          .from(schema.invites)
+          .where(eq(schema.invites.guildId, guildId))
+      ).map((r) => r.code),
+    );
+    expect(remaining.has(expiredOld)).toBe(false);
+    expect(remaining.has(spentOld)).toBe(false);
+    expect(remaining.has(expiredRecent)).toBe(true);
+    expect(remaining.has(alive)).toBe(true);
+    expect(remaining.has(neverExpires)).toBe(true);
+    expect(remaining.has(spentRecent)).toBe(true);
   });
 });

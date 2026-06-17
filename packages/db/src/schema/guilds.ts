@@ -292,6 +292,10 @@ export const invites = pgTable(
   },
   (t) => ({
     guildIdx: index('invites_guild_idx').on(t.guildId),
+    // Backs the periodic dead-invite prune sweep (pruneDeadInvites), which
+    // scans expires_at < cutoff. Most invites carry a TTL, so this covers the
+    // dominant prune branch; the spent-but-unexpired branch is a minor seq-scan.
+    expiresAtIdx: index('invites_expires_at_idx').on(t.expiresAt),
   }),
 );
 

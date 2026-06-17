@@ -14,7 +14,7 @@
  */
 
 import { customAlphabet } from 'nanoid';
-import { and, asc, eq, gt, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors, AppError } from '../errors';
 import { writeAudit } from './audit';
@@ -142,6 +142,41 @@ export async function deleteInvite(code: string, actorId: bigint): Promise<void>
     targetType: 'invite',
     changes: { code },
   });
+}
+
+/**
+ * Hard-delete invites that are permanently DEAD — expired, or spent their max
+ * uses — AND have been dead longer than `graceMs`. Nearly every invite carries
+ * a TTL (24h default), so without this the table grows without bound. The grace
+ * window keeps recently-dead codes visible in the invite manager (which lists
+ * expired/spent invites so admins can see what lapsed) before they're swept.
+ *
+ * Idempotent + multi-replica safe: a single bulk DELETE on a fixed predicate,
+ * so concurrent runs just delete the same rows once (the second deletes none).
+ * Death timestamp: `expiresAt` for expired codes; `createdAt` as the age proxy
+ * for spent ones (the schema has no spent-at column). Returns rows removed.
+ */
+export async function pruneDeadInvites(graceMs: number): Promise<number> {
+  const cutoff = new Date(Date.now() - graceMs);
+  const deleted = await db
+    .delete(schema.invites)
+    .where(
+      or(
+        // Expired more than `graceMs` ago.
+        and(
+          isNotNull(schema.invites.expiresAt),
+          lt(schema.invites.expiresAt, cutoff),
+        ),
+        // Spent (hit max uses) and created more than `graceMs` ago.
+        and(
+          isNotNull(schema.invites.maxUses),
+          sql`${schema.invites.uses} >= ${schema.invites.maxUses}`,
+          lt(schema.invites.createdAt, cutoff),
+        ),
+      ),
+    )
+    .returning({ code: schema.invites.code });
+  return deleted.length;
 }
 
 /**

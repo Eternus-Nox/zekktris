@@ -167,6 +167,20 @@ export const envSchema = z.object({
     .transform((v) => v !== 'false' && v !== '0'),
   STREAK_WARN_HOURS_BEFORE: z.coerce.number().int().min(1).max(23).default(6),
 
+  // ── Invite cleanup ─────────────────────────────────────────────────────
+  /** Periodically hard-delete invites that are permanently dead (expired, or
+   *  spent their max uses) and have been dead longer than the grace window.
+   *  Recently-dead invites stay visible in the invite manager; this just keeps
+   *  the table from growing without bound (most invites carry a 24h TTL). Set
+   *  INVITE_PRUNE_ENABLED=false to disable the sweep. */
+  INVITE_PRUNE_ENABLED: z
+    .string()
+    .default('true')
+    .transform((v) => v !== 'false' && v !== '0'),
+  /** Days a dead invite is retained (still listed in the manager) before it's
+   *  swept. 0 = delete on the next sweep with no retention. */
+  INVITE_PRUNE_GRACE_DAYS: z.coerce.number().int().min(0).max(365).default(7),
+
   // ── Uploads ────────────────────────────────────────────────────────────
   UPLOAD_DIR: z.string().default('/data/uploads'),
   MAX_UPLOAD_SIZE_MB: z.coerce.number().int().min(1).max(10_000).default(100),

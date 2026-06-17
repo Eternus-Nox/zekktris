@@ -23,6 +23,7 @@ import { sweepInactiveAccounts } from './services/inactivitySweep';
 import { purgeExpiredSessions } from './auth/sessions';
 import { sweepExpiredDmMessages } from './services/dms';
 import { sweepStreakWarnings } from './services/streaks';
+import { pruneDeadInvites } from './services/invites';
 
 async function main(): Promise<void> {
   await runStartupChecks();
@@ -205,6 +206,30 @@ async function main(): Promise<void> {
     });
   } else {
     log.info('image compression sweep disabled (IMAGE_COMPRESS_ENABLED=false)');
+  }
+
+  // ── Expired-invite prune sweep ─────────────────────────────────────────
+  // Hard-delete invites that have been dead (expired / spent) longer than the
+  // grace window so the table doesn't grow without bound — nearly every invite
+  // carries a 24h TTL. Runs every 6h; the DELETE is idempotent + multi-replica
+  // safe (concurrent runs delete the same rows once). Leading run 60 s after
+  // boot. Error-isolated like the other sweeps — a failure never crashes.
+  let invitePruneTimer: ReturnType<typeof setInterval> | null = null;
+  if (env.INVITE_PRUNE_ENABLED) {
+    const graceMs = env.INVITE_PRUNE_GRACE_DAYS * 24 * 60 * 60 * 1000;
+    const runInvitePrune = () =>
+      void pruneDeadInvites(graceMs)
+        .then((n) => {
+          if (n > 0) log.info('expired invites pruned', { count: n });
+        })
+        .catch((err) => log.error('invite prune sweep failed', { err }));
+    setTimeout(runInvitePrune, 60_000);
+    invitePruneTimer = setInterval(runInvitePrune, 6 * 60 * 60 * 1000); // 6h
+    log.info('invite prune sweep scheduled', {
+      graceDays: env.INVITE_PRUNE_GRACE_DAYS,
+    });
+  } else {
+    log.info('invite prune sweep disabled (INVITE_PRUNE_ENABLED=false)');
   }
 
   // ── Event status sweep ────────────────────────────────────────────────
@@ -551,6 +576,7 @@ async function main(): Promise<void> {
     clearInterval(dmSweepTimer);
     if (streakWarnTimer) clearInterval(streakWarnTimer);
     if (compressTimer) clearInterval(compressTimer);
+    if (invitePruneTimer) clearInterval(invitePruneTimer);
     clearInterval(eventSweepTimer);
     clearInterval(pollSweepTimer);
     clearInterval(afkSweepTimer);
