@@ -197,7 +197,7 @@ export function CreateServerView() {
                 onClick={() => bannerInputRef.current?.click()}
                 disabled={busy}
                 aria-label="Add server banner (optional)"
-                className="block w-full h-28 rounded-xl overflow-hidden ring-1 ring-line/50 hover:ring-accent transition-all disabled:opacity-60"
+                className="block w-full h-[151px] rounded-xl overflow-hidden ring-1 ring-line/50 hover:ring-accent transition-all disabled:opacity-60"
               >
                 {bannerPreview ? (
                   <img src={bannerPreview} alt="" className="w-full h-full object-cover" />

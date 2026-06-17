@@ -888,16 +888,17 @@ function GuildsTab({ onObserve }: { onObserve: (guildId: string, guildName: stri
                     {/* Guild ID under the meta line on mobile — was
                         previously next to the action buttons where it
                         ate space the name needed. Hidden on desktop
-                        since it lives at the end of the action row
-                        there. */}
+                        since it lives at the start of the action row
+                        (left of Observe) there. */}
                     <div className="sm:hidden text-[0.65rem] text-ink-3 font-mono mt-1 truncate">
-                      id {g.id}
+                      Server ID: {g.id}
                     </div>
                   </div>
                 </div>
                 {/* Action row on mobile (full width below the meta),
                     or trailing column on desktop. */}
                 <div className="flex items-center gap-1 shrink-0 sm:gap-2 sm:ml-auto">
+                  <span className="hidden sm:inline mr-2 text-xs text-ink-3 font-mono">Server ID: {g.id}</span>
                   <button
                     onClick={() => onObserve(g.id, g.name)}
                     disabled={pending === g.id}
@@ -914,7 +915,6 @@ function GuildsTab({ onObserve }: { onObserve: (guildId: string, guildName: stri
                   >
                     Delete
                   </button>
-                  <span className="hidden sm:inline ml-2 text-xs text-ink-3 font-mono">{g.id}</span>
                 </div>
               </li>
             );
