@@ -922,12 +922,16 @@ struct MessageRow: View {
     private var systemRow: some View {
         HStack(spacing: 7) {
             let missed = message.metadata?.missed ?? false
-            Image(systemName: missed ? "phone.arrow.down.left" : "phone")
+            // Red "missed" styling only when the viewer actually missed a call —
+            // i.e. they're the callee. The caller's own unanswered call ("No
+            // answer") reads as a quiet, neutral notice, not an alert.
+            let alert = missed && message.metadata?.initiatorId != store.currentUserId
+            Image(systemName: alert ? "phone.arrow.down.left" : "phone")
                 .font(.system(size: 11))
-                .foregroundColor(missed ? Theme.dangerSoft.opacity(0.85) : Theme.ink3)
+                .foregroundColor(alert ? Theme.dangerSoft.opacity(0.85) : Theme.ink3)
             Text(callSummary)
                 .font(.zkSans(12))
-                .foregroundColor(missed ? Theme.dangerSoft.opacity(0.9) : Theme.ink2)
+                .foregroundColor(alert ? Theme.dangerSoft.opacity(0.9) : Theme.ink2)
             Text("·").foregroundColor(Theme.ink4)
             Text(shortTime(message.createdAt))
                 .font(.zkSans(11))
@@ -958,7 +962,13 @@ struct MessageRow: View {
     private var callSummary: String {
         let missed = message.metadata?.missed ?? false
         let caller = message.author?.name ?? "Someone"
-        if missed { return "Missed call from \(caller)" }
+        if missed {
+            // The caller (initiator) shouldn't read "Missed call from <self>".
+            // For them an unanswered call is simply "No answer"; the callee
+            // still sees "Missed call from <caller>".
+            if message.metadata?.initiatorId == store.currentUserId { return "No answer" }
+            return "Missed call from \(caller)"
+        }
         let ms = message.metadata?.durationMs ?? 0
         let total = ms / 1000
         let label: String

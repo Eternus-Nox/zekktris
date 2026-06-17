@@ -154,7 +154,13 @@ struct MainView: View {
                     if isWide {
                         wideDetail
                             .id(routeKey)
-                            .transition(.opacity)
+                            // Instant swap (no cross-fade) on wide. A content-heavy
+                            // server's detail pane is expensive to build, and an
+                            // .opacity transition keeps BOTH the outgoing and incoming
+                            // trees alive for ~0.2s — doubling that work and leaving a
+                            // still-hit-testable fading view that made the server rail
+                            // feel unresponsive right after opening a filled server.
+                            .transition(.identity)
                     } else {
                         // No `.id` rebuild here anymore. That was a workaround for
                         // the back-swipe gesture lingering at the root; now the
@@ -538,7 +544,7 @@ struct ServerRailView: View {
                     Button {
                         store.showDMs()
                     } label: {
-                        RailTile(active: store.inDMs && store.railContent == .normal) {
+                        RailTile(active: store.inDMs && store.railContent == .normal && store.railPage == nil) {
                             Image(systemName: "bubble.left.and.bubble.right.fill")
                                 .font(.system(size: 19))
                         }
@@ -697,7 +703,12 @@ struct ServerRailView: View {
 
     @ViewBuilder
     private func guildButton(_ guild: Guild, inFolder: Bool) -> some View {
-        let isSelected = !store.inDMs && store.railContent == .normal && guild.id == store.selectedGuild?.id
+        // `railPage == nil`: when a full-page rail destination (Mentions,
+        // Discover, Settings…) is up, no root tile is "current", so neither
+        // DMs nor any guild should read as selected — only the rail page's
+        // own icon highlights. Without this, opening Mentions on wide left
+        // the previously-active DMs/guild tile lit up too.
+        let isSelected = !store.inDMs && store.railContent == .normal && guild.id == store.selectedGuild?.id && store.railPage == nil
         Button {
             store.selectGuild(guild)
         } label: {
@@ -791,12 +802,15 @@ struct ChannelListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Guild banner — one shared 250pt height across server header,
-            // server settings, profile settings, and profile view.
+            // Guild banner — wide aspect (~1.6:1) instead of a fixed height, so it
+            // stays banner-shaped in the narrow iPad/Mac sidebar (a fixed 250pt there
+            // rendered as a near-square). On iPhone's full-width sidebar this lands at
+            // ~the same height as the old 250pt. (Settings / profile banners keep their
+            // own fixed height — they live in full-width panes, not the slim sidebar.)
             if let banner = assetURL(store.selectedGuild?.bannerUrl) {
                 Color.clear
-                    .frame(height: 250)
                     .frame(maxWidth: .infinity)
+                    .aspectRatio(1.6, contentMode: .fit)
                     .background(Theme.bg3)
                     .overlay {
                         AsyncImage(url: banner) { phase in
@@ -1529,7 +1543,7 @@ struct FriendsView: View {
                 .foregroundColor(Theme.ink3)
             ForEach(incoming) { rel in
                 HStack(spacing: 10) {
-                    Avatar(url: rel.user.avatarUrl, name: rel.user.name, size: 36)
+                    Avatar(url: rel.user.avatarUrl, name: rel.user.name, size: 36, decoration: rel.user.avatarDecoration)
                     Text(rel.user.name)
                         .font(.zkSans(15))
                         .foregroundColor(Theme.ink1)
@@ -1569,7 +1583,7 @@ struct FriendsView: View {
                         }
                     } label: {
                         HStack(spacing: 10) {
-                            Avatar(url: rel.user.avatarUrl, name: rel.user.name, size: 36, status: store.presence[rel.user.id])
+                            Avatar(url: rel.user.avatarUrl, name: rel.user.name, size: 36, status: store.presence[rel.user.id], decoration: rel.user.avatarDecoration)
                             Text(rel.user.name)
                                 .font(.zkSans(15))
                                 .foregroundColor(Theme.ink1)
@@ -1604,7 +1618,7 @@ struct FriendsView: View {
                 .foregroundColor(Theme.ink3)
             ForEach(outgoing) { rel in
                 HStack(spacing: 10) {
-                    Avatar(url: rel.user.avatarUrl, name: rel.user.name, size: 36)
+                    Avatar(url: rel.user.avatarUrl, name: rel.user.name, size: 36, decoration: rel.user.avatarDecoration)
                     Text(rel.user.name)
                         .font(.zkSans(15))
                         .foregroundColor(Theme.ink1)
@@ -1626,7 +1640,7 @@ struct FriendsView: View {
                 .foregroundColor(Theme.ink3)
             ForEach(blocked) { rel in
                 HStack(spacing: 10) {
-                    Avatar(url: rel.user.avatarUrl, name: rel.user.name, size: 36)
+                    Avatar(url: rel.user.avatarUrl, name: rel.user.name, size: 36, decoration: rel.user.avatarDecoration)
                     Text(rel.user.name)
                         .font(.zkSans(15))
                         .foregroundColor(Theme.ink2)
