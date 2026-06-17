@@ -886,8 +886,10 @@ export function ShieldE2ee({ size = 16, className }: IconProps) {
         </linearGradient>
       </defs>
       {/* Padlock — matches the iOS lock badge (accent-tinted) so the
-          E2EE indicator reads identically on both platforms. */}
-      <rect x="4" y="10.5" width="16" height="10.5" rx="2.5" fillOpacity="0.18" />
+          E2EE indicator reads identically on both platforms. The body is a
+          solid accent fill (not see-through) so the lock reads clearly over
+          any avatar. */}
+      <rect x="4" y="10.5" width="16" height="10.5" rx="2.5" />
       <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5" fill="none" />
     </svg>
   );
