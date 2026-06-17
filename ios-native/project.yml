@@ -11,8 +11,8 @@ settings:
     # Keep in sync with Info.plist CFBundleShortVersionString / pbxproj
     # MARKETING_VERSION so a future `xcodegen generate` doesn't regress the
     # shipping version. Bump all three together on release.
-    MARKETING_VERSION: "0.1.4"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "0.1.5"
+    CURRENT_PROJECT_VERSION: "2"
 
 packages:
   LiveKit:
@@ -36,8 +36,8 @@ targets:
       path: Zekktris/Info.plist
       properties:
         CFBundleDisplayName: Zekktris
-        CFBundleShortVersionString: "0.1.4"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "0.1.5"
+        CFBundleVersion: "2"
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -106,8 +106,8 @@ targets:
         # MUST match the app's version/build or App Store upload is rejected
         # (ITMS). Bump alongside the app's CFBundleShortVersionString / the
         # MARKETING_VERSION + CURRENT_PROJECT_VERSION base settings.
-        CFBundleShortVersionString: "0.1.4"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "0.1.5"
+        CFBundleVersion: "2"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
