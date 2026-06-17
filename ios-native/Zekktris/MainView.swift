@@ -3329,7 +3329,7 @@ struct CreateServerSheet: View {
                             }
                     }
                 }
-                .frame(height: 110).frame(maxWidth: .infinity).clipped()
+                .frame(height: 149).frame(maxWidth: .infinity).clipped()
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .buttonStyle(.plain)
@@ -4078,7 +4078,11 @@ struct AdminView: View {
                 }
                 Text("\(g.memberCount ?? 0) members").font(.zkSans(12)).foregroundColor(Theme.ink3)
             }
-            Spacer()
+            Spacer(minLength: 8)
+            // Server ID just left of the Observe button (web admin parity).
+            Text("Server ID: \(g.id)")
+                .font(.zkMono(11)).foregroundColor(Theme.ink3)
+                .lineLimit(1).truncationMode(.middle)
             // Ghost-mode review without joining (web Observe parity).
             Button { observingGuild = g } label: {
                 Image(systemName: "eye").font(.system(size: 14)).foregroundColor(Theme.accent).frame(width: 32, height: 32)
