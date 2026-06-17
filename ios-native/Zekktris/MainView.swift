@@ -155,7 +155,18 @@ struct MainView: View {
                             .id(routeKey)
                             .transition(.opacity)
                     } else {
+                        // Rebuild compactNav on the root↔channel boundary. The
+                        // custom swipe-back leaves its DragGesture recognizer +
+                        // hit-test state lingering when it lands on root, which
+                        // kept the 72pt server rail (an HStack sibling) dead to
+                        // taps even though nothing visibly covers it. A fresh
+                        // identity here forces SwiftUI to re-establish the
+                        // gesture/hit-test tree. It's INSTANT at root (the
+                        // animation above is gated to nil there), so there's no
+                        // fade-over-rail. Only flips at the rail appear/disappear
+                        // boundary, so channel↔channel nav is unaffected.
                         compactNav
+                            .id(store.stack.isEmpty)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
