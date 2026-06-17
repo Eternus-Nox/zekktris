@@ -3133,6 +3133,12 @@ struct ChangeEmailSheet: View {
 struct MentionsView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
+    // Set ONLY when this view is hosted in a rail-page cover (railPageHost). On
+    // compact, Mentions is in-rail `railContent` at the root with the 72pt rail
+    // visible beside it — no cover, so this is nil and we show NO back button
+    // (the rail is the way out). It's never a cover on iPhone (showMentions uses
+    // railContent on compact), so the back button was always spurious here.
+    @Environment(\.zkDismissPage) private var dismissPage
 
     var body: some View {
         NavigationStack {
@@ -3172,10 +3178,14 @@ struct MentionsView: View {
             }
             .navigationTitle("Mentions")
             .navigationBarTitleDisplayMode(.inline)
-            // Back affordance for the compact full-screen-cover presentation
-            // (matches every other rail-page host). Self-hides on wide, where
-            // Mentions fills the detail pane and is exited via the rail.
-            .toolbar { ToolbarItem(placement: .navigationBarLeading) { PageBackButton() } }
+            // Only a real rail-page COVER (wide) gets a back affordance; the
+            // compact in-rail presentation has the rail right there, so no back
+            // button. Gated on the cover's dismiss action being present.
+            .toolbar {
+                if dismissPage != nil {
+                    ToolbarItem(placement: .navigationBarLeading) { PageBackButton() }
+                }
+            }
             .task { await store.loadMentions() }
         }
     }
