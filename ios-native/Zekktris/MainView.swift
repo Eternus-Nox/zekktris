@@ -155,18 +155,13 @@ struct MainView: View {
                             .id(routeKey)
                             .transition(.opacity)
                     } else {
-                        // Rebuild compactNav on the root↔channel boundary. The
-                        // custom swipe-back leaves its DragGesture recognizer +
-                        // hit-test state lingering when it lands on root, which
-                        // kept the 72pt server rail (an HStack sibling) dead to
-                        // taps even though nothing visibly covers it. A fresh
-                        // identity here forces SwiftUI to re-establish the
-                        // gesture/hit-test tree. It's INSTANT at root (the
-                        // animation above is gated to nil there), so there's no
-                        // fade-over-rail. Only flips at the rail appear/disappear
-                        // boundary, so channel↔channel nav is unaffected.
+                        // No `.id` rebuild here anymore. That was a workaround for
+                        // the back-swipe gesture lingering at the root; now the
+                        // gesture is attached only to the message-route page (see
+                        // page(for:)), so it never touches the root and the rail's
+                        // hit-testing stays clean without rebuilding compactNav
+                        // (which also avoids resetting the channel list's scroll).
                         compactNav
-                            .id(store.stack.isEmpty)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -327,17 +322,12 @@ struct MainView: View {
                     .onChange(of: geo.size.width) { contentWidth = $0 }
             }
         )
-        // Only ARM the back-swipe on a message route. Its onEnded/updating
-        // already no-op off a .messages route, but leaving the recognizer
-        // attached at the root keeps it in SwiftUI's gesture arbitration after a
-        // swipe completes, which can swallow the first taps on the just-revealed
-        // root (the "rail/list dead after swiping back" bug). `.subviews`
-        // disables THIS gesture while leaving the channel-list's own button
-        // gestures working.
-        .simultaneousGesture(
-            backSwipeGesture,
-            including: isMessageRoute(store.stack.last) ? .all : .subviews
-        )
+        // NOTE: the back-swipe gesture is attached to the message-route page in
+        // page(for:), NOT here on compactNav. Keeping the DragGesture recognizer
+        // OFF the root means it can never linger in the server rail's gesture/
+        // hit-test arbitration after a swipe completes — which was randomly
+        // swallowing taps on the rail. (Masking it at root via `including:` did
+        // NOT remove it from arbitration; only not attaching it does.)
     }
 
     /// The interactive back-swipe. `simultaneousGesture` + a horizontal-
@@ -398,7 +388,12 @@ struct MainView: View {
         if let route {
             switch route {
             case .messages(let channel):
+                // The interactive swipe-back lives HERE, only on message routes —
+                // never on the outer compactNav/root — so its recognizer can't
+                // linger in the rail's gesture arbitration and swallow taps after
+                // a swipe. (Threads/voice don't opt into swipe-back.)
                 MessageListView(channel: channel)
+                    .simultaneousGesture(backSwipeGesture)
             case .threadList(let parent):
                 ThreadListView(parent: parent)
             case .voice(let channel):
