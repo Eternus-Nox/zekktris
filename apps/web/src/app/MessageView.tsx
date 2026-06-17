@@ -1398,6 +1398,11 @@ function formatDateDivider(iso: string): string {
 }
 
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
+// Re-show the author header (avatar + name) at least every N messages within an
+// uninterrupted same-author run, so a long monologue doesn't lose its label and
+// you can tell who's talking without scrolling up. Mirrors the iOS client's
+// headerEveryNInRun. Implemented by capping each author block at N messages.
+const MESSAGES_PER_HEADER_RUN = 6;
 
 /** Per-row width classes for the loading skeleton — picked to look
     irregular (not all identical), so the placeholder doesn't read as a
@@ -1453,6 +1458,8 @@ function groupMessages(msgs: Message[]): Message[][] {
       !lastIsSystem &&
       lastMsg.authorId === m.authorId &&
       lastMsg.authorId !== null &&
+      // Cap the run so the header re-appears every N messages (iOS parity).
+      last.length < MESSAGES_PER_HEADER_RUN &&
       Date.parse(m.createdAt) - Date.parse(lastMsg.createdAt) < GROUP_WINDOW_MS
     ) {
       last.push(m);
