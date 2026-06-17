@@ -55,6 +55,28 @@ struct MainView: View {
             .fullScreenCover(item: compactRailPageBinding) { page in
                 railPageHost(page)
             }
+            // Guild member list — a POP-UP SHEET (compact + wide) driven by
+            // store.showMembers; opened from the channel-list / channel-header
+            // people icons, closed by the leading "<" or a swipe-down. Hosted
+            // HERE at the body level as a PEER of the other root presenters
+            // (profile / lightbox / rail-page) — NOT nested at the end of
+            // `shell`. A sheet nested *underneath* sibling presentation
+            // modifiers could leave a full-screen hit-test shield over the 72pt
+            // server rail after a swipe-down dismiss, making the rail buttons
+            // dead. Peer placement lets SwiftUI's presentation coordinator tear
+            // it down cleanly. Gated to a guild (not DMs / no guild selected).
+            .sheet(isPresented: Binding(
+                get: { store.showMembers && !store.inDMs && store.selectedGuild != nil },
+                set: { if !$0 { store.showMembers = false } }
+            )) {
+                // Re-inject env objects: the sheet host doesn't inherit them on
+                // "Designed for iPad on Mac" (crashed with "No ObservableObject
+                // of type AppStore found").
+                MemberListView()
+                    .environmentObject(store)
+                    .environmentObject(session)
+                    .environmentObject(store.voice)
+            }
             .onAppear { store.isWideLayout = isWide }
             .onChange(of: hSizeClass) { newValue in
                 store.isWideLayout = (newValue == .regular)
@@ -176,27 +198,6 @@ struct MainView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: store.errorText)
-        // The guild member list is a POP-UP SHEET everywhere now (compact +
-        // wide), driven by store.showMembers. Opened by the people-icon button
-        // in the channel-list header (root) and the one in a text-channel/thread
-        // header (see ChannelListView / MessageViews); closed by the leading "<"
-        // (or swipe-down). Hosted once here at the shell root so the same single
-        // sheet covers the channel list, text channels, and threads — no swipe
-        // drawer, no double-present. Gated to a guild context (members are
-        // meaningless in DMs / with no guild selected). The GuildSettings
-        // "Members" row uses a SEPARATE local @State sheet, not this flag.
-        .sheet(isPresented: Binding(
-            get: { store.showMembers && !store.inDMs && store.selectedGuild != nil },
-            set: { if !$0 { store.showMembers = false } }
-        )) {
-            // Re-inject env objects: the sheet host doesn't inherit them on
-            // "Designed for iPad on Mac" (crashed with "No ObservableObject of
-            // type AppStore found").
-            MemberListView()
-                .environmentObject(store)
-                .environmentObject(session)
-                .environmentObject(store.voice)
-        }
     }
 
     /// Sidebar width: the web's 15rem (225pt), with extra room on Mac
@@ -306,7 +307,17 @@ struct MainView: View {
                     .onChange(of: geo.size.width) { contentWidth = $0 }
             }
         )
-        .simultaneousGesture(backSwipeGesture)
+        // Only ARM the back-swipe on a message route. Its onEnded/updating
+        // already no-op off a .messages route, but leaving the recognizer
+        // attached at the root keeps it in SwiftUI's gesture arbitration after a
+        // swipe completes, which can swallow the first taps on the just-revealed
+        // root (the "rail/list dead after swiping back" bug). `.subviews`
+        // disables THIS gesture while leaving the channel-list's own button
+        // gestures working.
+        .simultaneousGesture(
+            backSwipeGesture,
+            including: isMessageRoute(store.stack.last) ? .all : .subviews
+        )
     }
 
     /// The interactive back-swipe. `simultaneousGesture` + a horizontal-
