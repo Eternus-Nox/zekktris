@@ -86,7 +86,22 @@ final class AppStore: ObservableObject {
         if collapsedCategories.contains(id) { collapsedCategories.remove(id) } else { collapsedCategories.insert(id) }
         UserDefaults.standard.set(Array(collapsedCategories), forKey: "zk.collapsedCategories")
     }
-    @Published var channels: [Channel] = []
+    @Published var channels: [Channel] = [] {
+        // Memoize the position-sorted order so the channel list doesn't re-sort
+        // on every SwiftUI render. The list derives categories + per-category
+        // rows from `sortedChannels`, each of which used to re-run this O(n log n)
+        // sort — so a content-heavy server re-sorted ~once per category on every
+        // state change (presence churn included), the Mac slowdown. Recomputed
+        // only when `channels` actually changes.
+        didSet {
+            sortedChannels = channels.sorted { a, b in
+                let pa = a.position ?? 0, pb = b.position ?? 0
+                return pa != pb ? pa < pb : a.id < b.id
+            }
+        }
+    }
+    /// `channels` pre-sorted by (position, id) — see the didSet on `channels`.
+    @Published private(set) var sortedChannels: [Channel] = []
     @Published var messages: [Message] = []
 
     @Published var selectedGuild: Guild?

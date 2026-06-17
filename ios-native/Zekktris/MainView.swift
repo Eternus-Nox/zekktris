@@ -930,12 +930,10 @@ struct ChannelListView: View {
 
     // Channels sorted by position (id tiebreak), then grouped under their
     // category — mirrors the web's groupByCategory so the sidebar matches.
-    private var sortedChannels: [Channel] {
-        store.channels.sorted { a, b in
-            let pa = a.position ?? 0, pb = b.position ?? 0
-            return pa != pb ? pa < pb : a.id < b.id
-        }
-    }
+    // Memoized in AppStore (recomputed only when channels change), so the
+    // category/row derivations below filter a pre-sorted array instead of
+    // re-sorting on every render.
+    private var sortedChannels: [Channel] { store.sortedChannels }
     private var sortedCategories: [Channel] {
         sortedChannels.filter { $0.isCategory }
     }
