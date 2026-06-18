@@ -851,46 +851,26 @@ export function ShareSquare(props: IconProps) {
   );
 }
 
-/** Shield filled with the brand blue→violet gradient — used for
- *  E2EE indicators so encryption status reads visually distinct
- *  from the regular Shield (Block button, etc). The gradient
- *  stops are the same `accent` (electric cyan) and `accent-2`
- *  (violet) the rest of the brand uses on multi-stop highlights;
- *  this composes naturally with the surrounding chrome instead
- *  of introducing a new color.
- *
- *  Note: this icon does NOT use the shared Svg() wrapper because
- *  it needs an explicit <defs> + the path must reference the
- *  gradient by url(#…) instead of inheriting currentColor. We
- *  reuse the same id on every instance — multiple identical
- *  <defs> entries are harmless (browser uses the first defined
- *  one) and avoid the runtime-id complications. */
+/** Filled padlock for the E2EE indicator (matches the iOS DM lock badge,
+ *  SF Symbol lock.fill). Tinted via `currentColor` so callers choose the
+ *  color — the DM list renders it `text-accent` on a `bg-2` circle with a
+ *  faint accent ring, exactly like iOS. Kept outside the shared Svg()
+ *  wrapper because that wrapper is stroke-based; this glyph is filled. */
 export function ShieldE2ee({ size = 16, className }: IconProps) {
   return (
     <svg
       width={size}
       height={size}
       viewBox="0 0 24 24"
-      fill="url(#zk-shield-grad)"
-      stroke="url(#zk-shield-grad)"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
+      fill="currentColor"
+      fillRule="evenodd"
       aria-hidden="true"
       className={className}
     >
-      <defs>
-        <linearGradient id="zk-shield-grad" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="var(--accent)" />
-          <stop offset="100%" stopColor="var(--accent-2)" />
-        </linearGradient>
-      </defs>
-      {/* Padlock — matches the iOS lock badge (accent-tinted) so the
-          E2EE indicator reads identically on both platforms. The body is a
-          solid accent fill (not see-through) so the lock reads clearly over
-          any avatar. */}
-      <rect x="4" y="10.5" width="16" height="10.5" rx="2.5" />
-      <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5" fill="none" />
+      {/* Solid filled padlock (SF Symbol lock.fill look), tinted via
+          currentColor. The DM badge renders it accent on a bg-2 circle so
+          the web E2EE lock matches the iOS one exactly. */}
+      <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z" />
     </svg>
   );
 }
