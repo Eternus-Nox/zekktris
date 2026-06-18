@@ -416,6 +416,10 @@ final class AppStore: ObservableObject {
     /// After prepending an older page, set to the previously-oldest message id
     /// so the message list can restore the scroll position (avoid a jump).
     @Published var pendingScrollAnchorId: String?
+    /// When set, the next channel load fetches messages AROUND this id (instead
+    /// of the most recent page) and then scrolls to it — used by "jump to
+    /// mention". Consumed by loadMessages.
+    var pendingJumpMessageId: String?
     /// Per-channel read markers (channelId → ReadState), driving unread dots
     /// and mention badges on channels and DMs.
     @Published var readStates: [String: ReadState] = [:]
@@ -1070,8 +1074,13 @@ final class AppStore: ObservableObject {
     func loadMessages(_ channel: Channel) async {
         loadingMessages = true
         defer { loadingMessages = false }
+        // "Jump to mention": load a window centered on the target id (instead of
+        // the most recent page) and scroll to it once merged. Consumed up front
+        // so it can't leak into a later, unrelated load.
+        let jumpId = pendingJumpMessageId
+        pendingJumpMessageId = nil
         do {
-            let fetched = try await api.messages(channelId: channel.id, limit: 50)
+            let fetched = try await api.messages(channelId: channel.id, limit: 50, around: jumpId)
             // The API returns newest-first; show oldest-first (bottom = newest).
             guard channel.id == selectedChannel?.id else { return }
             var merged = fetched.sorted { $0.createdAt < $1.createdAt }
@@ -1090,6 +1099,8 @@ final class AppStore: ObservableObject {
             // A full page implies there may be older history to page back into.
             hasMoreMessages = fetched.count >= 50
             decryptVisible()
+            // Jumped-to message is now loaded — scroll to it.
+            if let jumpId { pendingScrollAnchorId = jumpId }
         } catch {
             // Access to the open channel was revoked (made private / deleted)
             // out from under us — the server denies the read. Pop out so its
@@ -2439,8 +2450,14 @@ final class AppStore: ObservableObject {
     /// Best-effort navigation to a mention's channel (works when it's already
     /// loaded among the current guild's channels or the DM list).
     func openMention(_ mention: Mention) {
-        if let ch = channels.first(where: { $0.id == mention.channelId })
-            ?? dms.first(where: { $0.id == mention.channelId }) {
+        guard let ch = channels.first(where: { $0.id == mention.channelId })
+            ?? dms.first(where: { $0.id == mention.channelId }) else { return }
+        if selectedChannel?.id == ch.id {
+            // Already in the channel — just scroll to the message if it's loaded.
+            pendingScrollAnchorId = mention.id
+        } else {
+            // Land ON the mentioned message: load a window around it, then scroll.
+            pendingJumpMessageId = mention.id
             selectChannel(ch)
         }
     }

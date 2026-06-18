@@ -3196,31 +3196,55 @@ struct MentionsView: View {
 }
 
 private struct MentionRow: View {
+    @EnvironmentObject private var store: AppStore
     let mention: Mention
 
+    /// "Server · #channel" — where the mention came from (guild name resolved
+    /// from the id we have loaded). Falls back gracefully for DMs.
+    private var sourceLabel: String {
+        let guildName = mention.guildId.flatMap { gid in
+            store.guilds.first(where: { $0.id == gid })?.name
+        }
+        let parts = [mention.channelName.map { "#\($0)" }, guildName].compactMap { $0 }
+        return parts.isEmpty ? "Direct message" : parts.joined(separator: " · ")
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Text(mention.author?.name ?? "Unknown")
-                    .font(.zkSans(13, weight: .semibold))
-                    .foregroundColor(Theme.ink2)
-                if let channelName = mention.channelName {
-                    Text("#\(channelName)")
-                        .font(.zkSans(12))
+        HStack(alignment: .top, spacing: 10) {
+            Avatar(url: mention.author?.avatarUrl,
+                   name: mention.author?.name ?? "?",
+                   size: 38,
+                   decoration: mention.author?.avatarDecoration)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(mention.author?.name ?? "Unknown")
+                        .font(.zkSans(14, weight: .semibold))
+                        .foregroundColor(Theme.ink1)
+                    Spacer(minLength: 4)
+                    Text(shortTime(mention.createdAt))
+                        .font(.zkSans(11))
                         .foregroundColor(Theme.ink3)
                 }
-                Spacer()
-                Text(shortTime(mention.createdAt))
-                    .font(.zkSans(11))
-                    .foregroundColor(Theme.ink3)
+                // Where it's from: server · #channel.
+                HStack(spacing: 4) {
+                    Image(systemName: "at")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(Theme.accent)
+                    Text(sourceLabel)
+                        .font(.zkSans(11, weight: .medium))
+                        .foregroundColor(Theme.ink3)
+                        .lineLimit(1)
+                }
+                Text(mention.text.isEmpty ? "(no text)" : mention.text)
+                    .font(.zkSans(14))
+                    .foregroundColor(Theme.ink2)
+                    .lineLimit(3)
+                    .padding(.top, 1)
             }
-            Text(mention.text.isEmpty ? "(no text)" : mention.text)
-                .font(.zkSans(14))
-                .foregroundColor(Theme.ink1)
-                .lineLimit(3)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 10)
+        .padding(.vertical, 11)
+        .contentShape(Rectangle())
     }
 }
 
