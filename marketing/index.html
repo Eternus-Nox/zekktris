@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Zekktris — your community, your server, your rules</title>
-<meta name="description" content="Zekktris is an open-source chat platform — voice, video, and communities, with no ads and no lock-in." />
+<title>Zekktris — your community, your rules</title>
+<meta name="description" content="Zekktris is a private, full-featured chat platform — voice, video, and communities, with end-to-end-encrypted DMs, no ads, and no tracking." />
 <meta name="theme-color" content="#0a0f1c" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -149,31 +149,6 @@
   .partial { color:var(--violet); }
   .cmp-note { font-size:.78rem; color:var(--ink-3); margin-top:1rem; text-align:center; font-family:var(--mono); }
 
-  /* Self-host guide */
-  #host { background:linear-gradient(180deg,transparent, rgba(14,20,34,.5), transparent); }
-  .steps { display:grid; grid-template-columns:1fr; gap:1.1rem; max-width:660px; margin:0 auto; }
-  .step { background:var(--bg-1); border:1px solid var(--line); border-radius:16px; padding:1.6rem; position:relative; text-align:center; min-width:0; }
-  .step .num { font-family:var(--display); font-weight:800; font-size:.8rem; color:#06101c;
-    width:30px; height:30px; border-radius:9px; display:grid; place-items:center;
-    background:linear-gradient(135deg,var(--cyan),var(--violet)); margin:0 auto 1rem; }
-  .step h4 { font-family:var(--display); font-weight:700; color:var(--ink-1); font-size:1.1rem; margin-bottom:.5rem; }
-  .step p { font-size:.92rem; margin-bottom:.9rem; }
-  .step.full { grid-column:1/-1; }
-  /* Terminal keeps its code left-aligned even though the card centers text. */
-  .term { background:#06090f; border:1px solid var(--line); border-radius:11px; overflow:hidden; margin-top:auto; text-align:left; }
-  .term-bar { display:flex; align-items:center; justify-content:space-between; padding:.4rem .55rem .4rem .7rem; border-bottom:1px solid var(--line); background:rgba(255,255,255,.025); }
-  .term-dots { display:flex; gap:.32rem; }
-  .term-dots i { width:9px; height:9px; border-radius:50%; background:var(--bg-3); display:inline-block; }
-  .term pre { margin:0; padding:.85rem 1rem; font-family:var(--mono); font-size:.82rem; color:#cfe9ef; overflow-x:auto; line-height:1.7; }
-  .term pre .cmd::before { content:"$ "; color:var(--cyan); }
-  .term pre .c { color:var(--ink-3); }
-  .copy { background:rgba(255,255,255,.05); border:1px solid var(--line);
-    color:var(--ink-2); font-family:var(--body); font-size:.7rem; border-radius:7px; padding:.22rem .6rem; cursor:pointer; transition:.2s; line-height:1.2; }
-  .copy:hover { color:var(--ink-1); border-color:var(--cyan); }
-  .req { display:flex; gap:1rem; flex-wrap:wrap; justify-content:center; margin-bottom:2.5rem; }
-  .req span { font-family:var(--mono); font-size:.78rem; color:var(--ink-2); border:1px dashed var(--line); border-radius:9px; padding:.45rem .8rem; }
-  .req span b { color:var(--cyan); font-weight:500; }
-
   /* Download */
   #download { text-align:center; }
   .dl-grid { display:flex; gap:1rem; justify-content:center; flex-wrap:wrap; margin-top:.5rem; }
@@ -211,7 +186,6 @@
     .nav-toggle { display:block; }
     .pillars { grid-template-columns:1fr; }
     .mguide-cols { grid-template-columns:1fr; }
-    .steps { grid-template-columns:1fr; }
     .hero-mock .body { grid-template-columns:54px 1fr; }
     .mock-side { display:none; }
     /* Comparison table: the desktop min-width forces a horizontal scroll
@@ -256,11 +230,11 @@
 <!-- HERO -->
 <section class="hero">
   <div class="wrap">
-    <div class="eyebrow reveal">Open-source · Community-first · No ads</div>
+    <div class="eyebrow reveal">Private by design · No ads · Every feature free</div>
     <h1 class="reveal">Your community.<br><span class="grad-text">Your space. Your rules.</span></h1>
-    <p class="lead reveal">Zekktris is a full-featured chat platform — voice, video, communities — built to be <b style="color:var(--ink-1)">yours</b>. No ads. No lock-in. No surprises.</p>
+    <p class="lead reveal">Zekktris is a full-featured chat platform — voice, video, and communities, with <b style="color:var(--ink-1)">end-to-end-encrypted DMs</b>. No ads. No tracking. No paywalls.</p>
     <div class="pill-row reveal">
-      <span class="pill"><b>✦</b> Own your data</span>
+      <span class="pill"><b>✦</b> End-to-end encrypted DMs</span>
       <span class="pill"><b>✦</b> No ads, ever</span>
     </div>
     <div class="cta reveal">
@@ -292,29 +266,29 @@
   <div class="wrap">
     <div class="sec-head reveal">
       <div class="eyebrow">Why we're different</div>
-      <h2>Built to be yours, not rented.</h2>
-      <p>Most chat apps are someone else's servers running someone else's rules. Zekktris flips that — the software is open, and your community comes first.</p>
+      <h2>Everything built in. Nothing held back.</h2>
+      <p>Voice, video, real privacy, and the controls families actually need — every feature ships to everyone. No ads, no upsells, no "boost to unlock."</p>
     </div>
     <div class="pillars">
       <div class="card reveal">
         <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="8" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 8h.01M7 17h.01"/></svg></div>
         <h3>Communities, your way</h3>
-        <p>Spin up servers with text, voice, roles, and permissions — organize your people exactly how you like, with the controls to keep things running smoothly.</p>
+        <p>Servers with text &amp; voice channels, threads, forums, roles, and fine-grained permissions — organize your people exactly how you like, with the tools to keep things running.</p>
       </div>
       <div class="card reveal">
         <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg></div>
-        <h3>Voice &amp; video built in</h3>
-        <p>Crystal-clear voice channels, video, and screen share come standard — hop into a call with a click, no add-ons or upsells.</p>
+        <h3>Voice, video &amp; stage</h3>
+        <p>Crystal-clear voice channels, 1:1 calls, stage channels, and screen share come standard — hop in with a click, no add-ons or upsells.</p>
       </div>
       <div class="card reveal">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg></div>
-        <h3>Open source</h3>
-        <p>Every line is inspectable. Audit it, fork it, extend it, or run it unchanged. No black boxes deciding what you see or who you reach.</p>
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0"/><path d="M17.5 8.5l1.8 1.8L23 7"/></svg></div>
+        <h3>Parental controls</h3>
+        <p>Link a child account and stay in the loop — restrict servers, DMs, and calls, set watch-words, and review a flagged-message feed. Built in, not bolted on.</p>
       </div>
       <div class="card reveal">
         <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/></svg></div>
-        <h3>Privacy-first</h3>
-        <p>Encrypted-channel signalling, friend-gated DMs and calls, and no behavioural profiling. People you don't know can't ring you unless you opt in.</p>
+        <h3>Private by design</h3>
+        <p>End-to-end-encrypted DMs and calls (AES-256), friend-gated DMs and calls, and zero behavioural profiling. People you don't know can't ring you unless you opt in.</p>
       </div>
       <div class="card reveal">
         <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21v-4a4 4 0 014-4h10a4 4 0 014 4v4"/><circle cx="12" cy="7" r="4"/></svg></div>
@@ -323,8 +297,8 @@
       </div>
       <div class="card reveal">
         <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="10.5" r="2.5"/><circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12.5" r="2.5"/><path d="M12 22a10 10 0 110-20"/></svg></div>
-        <h3>Yours to theme</h3>
-        <p>Voice, video, screen-share, roles, communities, parental controls — plus six full app-wide themes (with OLED) that re-skin everything down to the tray and app icon.</p>
+        <h3>Yours to personalize</h3>
+        <p>Six full app-wide themes (with OLED), custom avatar frames, profile banners, and custom statuses — your space re-skinned right down to the tray and app icon.</p>
       </div>
     </div>
   </div>
@@ -336,7 +310,7 @@
     <div class="sec-head reveal">
       <div class="eyebrow">How it stacks up</div>
       <h2>Zekktris vs. the alternatives</h2>
-      <p>The fundamentals most chat platforms can't offer — because they're built to keep you on their servers.</p>
+      <p>The fundamentals most chat platforms gate, upsell, or skip entirely.</p>
     </div>
     <div class="cmp-scroll reveal">
       <table class="cmp">
@@ -349,7 +323,7 @@
         </thead>
         <tbody>
           <tr><th>Open source</th><td class="col-zk yes">Yes</td><td class="no">No</td></tr>
-          <tr><th>You own &amp; control your data</th><td class="col-zk yes">Yes</td><td class="no">No</td></tr>
+          <tr><th>End-to-end-encrypted DMs</th><td class="col-zk yes">Yes</td><td class="no">No</td></tr>
           <tr><th>No ads or promoted content</th><td class="col-zk yes">Yes</td><td class="partial">Limited</td></tr>
           <tr><th>Friend-gated DMs &amp; calls</th><td class="col-zk yes">Yes</td><td class="partial">Limited</td></tr>
           <tr><th>Built-in parental controls</th><td class="col-zk yes">Yes</td><td class="partial">Limited</td></tr>
@@ -427,7 +401,7 @@
       <a href="#compare">Compare</a>
       <a href="#download">Download</a>
     </div>
-    <small>Open-source · Federated · No ads. © Zekktris.</small>
+    <small>Open source · No ads · Private by design. © Zekktris.</small>
   </div>
 </footer>
 
@@ -448,18 +422,6 @@
     });
   }, { threshold:.12 });
   document.querySelectorAll('.reveal').forEach(el => io.observe(el));
-
-  // Copy buttons on terminal blocks
-  // Copy buttons — read the command from the sibling <pre>, not the title bar.
-  document.querySelectorAll('.term .copy').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const pre = btn.closest('.term').querySelector('pre');
-      const text = (pre ? pre.innerText : '').replace(/\s*#.*$/gm, '').trim();
-      navigator.clipboard?.writeText(text);
-      const old = btn.textContent; btn.textContent = 'Copied!';
-      setTimeout(() => btn.textContent = old, 1400);
-    });
-  });
 </script>
 </body>
 </html>
