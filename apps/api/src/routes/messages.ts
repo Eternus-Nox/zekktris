@@ -57,6 +57,11 @@ import { MESSAGE_CONTENT_MAX_LENGTH } from '@zekktris/shared/constants';
 export const messagesRouter = new Hono();
 messagesRouter.use('*', requireAuth);
 
+// How long after posting an author may still edit or delete their own message.
+// A moderator with MANAGE_MESSAGES can delete past this window; edits stay
+// author-only either way.
+const MESSAGE_MUTATE_WINDOW_MS = 60_000;
+
 // ── Internal helper: load an authorized channel context ────────────────────
 //
 // Returns the channel + the caller's effective channel permissions (or the
@@ -1381,6 +1386,10 @@ messagesRouter.patch(
     if (existing.authorId !== userId) {
       throw errors.forbidden('You can only edit your own messages');
     }
+    // Edits are only allowed within a short grace window after posting.
+    if (Date.now() - existing.createdAt.getTime() > MESSAGE_MUTATE_WINDOW_MS) {
+      throw errors.forbidden('Messages can only be edited within a minute of posting');
+    }
     // Timeout enforcement — a timed-out user could otherwise edit an
     // old message into new content, bypassing the send-message gate.
     // Same check as send/react. Bypassed for DMs (no guild context).
@@ -1518,6 +1527,11 @@ messagesRouter.delete(
       if (!hasPermission(ctx.channelPerms, Permissions.MANAGE_MESSAGES)) {
         throw errors.missingPermissions(['MANAGE_MESSAGES']);
       }
+    }
+    // Authors can only delete their OWN message within a short grace window;
+    // a moderator (MANAGE_MESSAGES, handled above) can still delete anytime.
+    if (isOwn && Date.now() - existing.createdAt.getTime() > MESSAGE_MUTATE_WINDOW_MS) {
+      throw errors.forbidden('Messages can only be deleted within a minute of posting');
     }
 
     await messages.deleteMessage(messageId);

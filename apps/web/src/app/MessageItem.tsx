@@ -169,6 +169,9 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   }, [actionsOpen]);
 
   const isOwn = selfId !== undefined && message.authorId === selfId;
+  // Authors can edit/delete their own message only within a minute of posting
+  // (the server enforces this; here we hide the controls to match).
+  const withinMutateWindow = Date.now() - new Date(message.createdAt).getTime() <= 60_000;
   const author = message.author;
   // Webhook persona: when message.webhookId is set, the message was
   // posted via an incoming webhook. The author embedded in the DTO is
@@ -1005,7 +1008,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
               from text-channel messages; existing threads anchored to
               messages remain navigable via the badge below the body
               (see existingThread block above). */}
-          {isOwn && (
+          {isOwn && withinMutateWindow && (
             <>
               <button
                 onClick={() => {

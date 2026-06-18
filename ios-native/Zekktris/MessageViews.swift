@@ -1037,7 +1037,7 @@ struct MessageRow: View {
         // so editing/deleting it PATCHes /messages/<UUID> → 400 and the
         // edit is silently lost — which read as "I can't edit the message I
         // just sent." Failed rows have their own inline Retry/Delete.
-        if isOwn && message.sendState == nil {
+        if isOwn && message.sendState == nil && withinMutateWindow {
             Button { beginEdit() } label: {
                 Label("Edit", systemImage: "pencil")
             }
@@ -1050,6 +1050,14 @@ struct MessageRow: View {
     private var isOwn: Bool {
         let authorId = message.authorId ?? message.author?.id
         return authorId != nil && authorId == store.currentUserId
+    }
+
+    /// Authors can edit/delete their own message only within a minute of
+    /// posting (matches the server). After that the menu hides both actions.
+    /// Re-evaluated each time the menu opens, so it locks once the minute is up.
+    private var withinMutateWindow: Bool {
+        guard let d = messageDate(message.createdAt) else { return true }
+        return Date().timeIntervalSince(d) <= 60
     }
 
     private func beginEdit() {
