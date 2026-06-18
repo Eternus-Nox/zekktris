@@ -187,7 +187,18 @@ export function CreateServerView() {
 
       <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin">
         <div className="max-w-lg mx-auto px-4 sm:px-6 py-8 sm:py-12">
-          <div className="mb-8">
+          <div className="mb-12">
+            {/* Description first, then the banner/picture area below it. */}
+            <div className="text-center mb-8">
+              <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight">
+                Create your server
+              </h2>
+              <p className="mt-2 text-sm text-ink-2 max-w-sm mx-auto leading-relaxed">
+                A server is where you and your community hang out — text, voice,
+                and everything in between. Pick a name to get started; you can
+                change it any time.
+              </p>
+            </div>
             {/* Optional server banner + picture. The picture overhangs the
                 banner's bottom-left (mirrors the profile/guild header). Both
                 optional; the picture falls back to the live initials preview. */}
@@ -225,16 +236,6 @@ export function CreateServerView() {
                   </div>
                 )}
               </button>
-            </div>
-            <div className="text-center mt-10">
-              <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-                Create your server
-              </h2>
-              <p className="mt-2 text-sm text-ink-2 max-w-sm mx-auto leading-relaxed">
-                A server is where you and your community hang out — text, voice,
-                and everything in between. Pick a name to get started; you can
-                change it any time.
-              </p>
             </div>
           </div>
 
