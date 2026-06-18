@@ -785,6 +785,12 @@ struct MessageListView: View {
         // profile picture again after a server message" case.
         if isNoticeRow(previous) { return true }
         if current.authorId != previous.authorId { return true }
+        // A message YOU sent that someone else has reacted to re-shows your
+        // avatar once it's "settled" — already seen, or older than 5 minutes —
+        // so a reacted message is clearly attributed. Gated on settled so a
+        // just-sent message in an active run doesn't reflow the instant a
+        // reaction lands.
+        if reactedOwnSettled(current) { return true }
         // Same-author continuation: count how far back this uninterrupted run
         // goes (stopping at a date divider OR a notice — both break the run; a
         // divider already forces a header), and re-show the header on every Nth
@@ -800,6 +806,21 @@ struct MessageListView: View {
             i -= 1
         }
         return runLength % headerEveryNInRun == 1
+    }
+
+    /// True for one of YOUR OWN messages that another person has reacted to and
+    /// that has "settled": been seen (DM read receipt) OR is older than 5
+    /// minutes. Used to re-show the author header/avatar on an otherwise-grouped
+    /// reacted message so the reaction is clearly attributed to it.
+    private func reactedOwnSettled(_ m: Message) -> Bool {
+        guard let me = store.currentUserId, m.authorId == me else { return false }
+        // A reaction from someone other than me (my own counts as 1 when `me`).
+        let othersReacted = (m.reactions ?? []).contains { $0.count > ($0.me ? 1 : 0) }
+        guard othersReacted else { return false }
+        if m.viewedAt != nil { return true }                          // seen
+        if let d = messageDate(m.createdAt),
+           Date().timeIntervalSince(d) > 300 { return true }          // >5 min old
+        return false
     }
 
     /// Show a date divider above the first message and whenever the calendar
