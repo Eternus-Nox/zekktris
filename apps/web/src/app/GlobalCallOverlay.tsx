@@ -30,7 +30,7 @@
  * one automatically.
  */
 
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { useAppStateSelector, voiceStatesForChannel, selfVoiceState } from '../state/AppState';
 import { IncomingCallModal } from './IncomingCallModal';
@@ -45,6 +45,39 @@ export function GlobalCallOverlay() {
   const { user } = useAuth();
   const selfId = user?.id;
   const myVoice = selfVoiceState(voiceStatesByUser, selfId);
+
+  // ── Teardown-flash guard ──────────────────────────────────────────────
+  //
+  // A ring-out is "I'm in voice and the partner has never picked up yet."
+  // But `myVoice && !otherInThis` is ALSO transiently true while a call is
+  // ENDING: when either side hangs up, the partner's voice state clears
+  // (via the gateway) a beat before our own does, so for the ~1s teardown
+  // window we look exactly like a fresh ring-out. Without a guard, a normal
+  // hang-up briefly re-shows the "Calling…" modal (with ringback) before
+  // our own state clears — reads as "it called them again for a second then
+  // ended."
+  //
+  // So we remember whether the partner was EVER present during THIS call.
+  // Once they have been, `!otherInThis` means "call ending", not "ringing
+  // out", and we suppress the outgoing modal. Derived purely from the
+  // current voice snapshot and updated idempotently during render (a ref,
+  // not state — it must not trigger a re-render). Mirrors the Shell DM-call
+  // auto-end's partnerWasHereRef.
+  const partnerSeenRef = useRef<{ channelId: string; seen: boolean } | null>(null);
+  const myVoiceChannelId = myVoice?.channelId ?? null;
+  if (!myVoiceChannelId || !selfId) {
+    // Not in voice → reset so the next call starts with a clean flag.
+    partnerSeenRef.current = null;
+  } else {
+    if (partnerSeenRef.current?.channelId !== myVoiceChannelId) {
+      partnerSeenRef.current = { channelId: myVoiceChannelId, seen: false };
+    }
+    const otherHere = voiceStatesForChannel(voiceStatesByUser, myVoiceChannelId).some(
+      (v) => v.userId !== selfId,
+    );
+    if (otherHere) partnerSeenRef.current.seen = true;
+  }
+  const partnerEverSeen = partnerSeenRef.current?.seen ?? false;
 
   // Resolve incoming and outgoing channels in one pass. useMemo
   // gates the work on the inputs the scan actually reads — voice
@@ -67,7 +100,16 @@ export function GlobalCallOverlay() {
         const inThis = voiceStatesForChannel(voiceStatesByUser, ch.id);
         const otherInThis = inThis.some((v) => v.userId !== selfId);
         if (!otherInThis) {
-          // Ring-out state. No incoming can fire simultaneously
+          // `myVoice && !otherInThis` is a ring-out ONLY if the partner
+          // has never been here. If they HAD been, this is the call
+          // tearing down (partner left, our own state not cleared yet) —
+          // showing "Calling…" then would flash a phantom outgoing call
+          // for the teardown window. Suppress it; the Shell auto-end takes
+          // over and shows "Call ended".
+          if (partnerEverSeen) {
+            return { incomingChannel: null, outgoingChannel: null };
+          }
+          // Genuine ring-out. No incoming can fire simultaneously
           // because incoming requires !myVoice.
           return { incomingChannel: null, outgoingChannel: ch };
         }
@@ -91,7 +133,7 @@ export function GlobalCallOverlay() {
       }
     }
     return { incomingChannel: null, outgoingChannel: null };
-  }, [selfId, myVoice, dmChannels, voiceStatesByUser]);
+  }, [selfId, myVoice, dmChannels, voiceStatesByUser, partnerEverSeen]);
 
   return (
     <>
