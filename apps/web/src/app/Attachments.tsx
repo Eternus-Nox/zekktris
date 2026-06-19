@@ -81,7 +81,7 @@ export function Attachments({
                 height={img.height ?? undefined}
                 loading="lazy"
                 decoding="async"
-                className="rounded-md max-w-sm max-h-80 border border-line group-hover/img:border-accent/60 transition-colors object-cover cursor-zoom-in"
+                className="rounded-md max-w-sm max-h-80 border border-line group-hover/img:border-accent/60 transition-colors object-contain cursor-zoom-in"
               />
             </button>
           ))}
@@ -151,6 +151,7 @@ function EncryptedAttachment({
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [state, setState] = useState<'loading' | 'locked' | 'failed' | 'ready'>('loading');
   const [keyVersion, setKeyVersion] = useState(getKeyVersion());
+  const [lightboxOpen, setLightboxOpen] = useState(false);
 
   useEffect(() => subscribeToKeyChanges(() => setKeyVersion(getKeyVersion())), []);
 
@@ -190,24 +191,29 @@ function EncryptedAttachment({
   }, [attachment.url, channelId, keyVersion]);
 
   if (state === 'ready' && objectUrl && looksImage) {
+    // No per-image E2EE lock — like iOS, the decrypted image shows no badge;
+    // the conversation-level lock by the DM (DMList) is the only E2EE signal.
+    // Clicking opens the same full-screen lightbox as a normal image — it just
+    // takes the decrypted object URL.
     return (
-      <span className="relative inline-block">
-        <img
-          src={objectUrl}
-          alt={realName}
-          className="max-w-[320px] max-h-[280px] rounded-lg border border-line object-cover"
-        />
-        <span
-          className="absolute top-1 right-1 drop-shadow-[0_1px_2px_rgba(0,0,0,0.7)]"
-          title="End-to-end encrypted"
+      <>
+        <button
+          type="button"
+          onClick={() => setLightboxOpen(true)}
+          className="block group/img"
+          title={realName}
+          aria-label={`Open ${realName}`}
         >
-          {/* Web-only: iOS shows no per-image lock at all (it relies on the
-              conversation-level E2EE badge by the DM avatar). Per request we
-              keep a lock here but with a transparent background — a drop-shadow
-              keeps it legible over bright images. */}
-          <Lock size={11} className="text-accent" />
-        </span>
-      </span>
+          <img
+            src={objectUrl}
+            alt={realName}
+            className="max-w-[320px] max-h-[280px] rounded-lg border border-line object-contain group-hover/img:border-accent/60 transition-colors cursor-zoom-in"
+          />
+        </button>
+        {lightboxOpen && (
+          <ImageLightbox src={objectUrl} filename={realName} onClose={() => setLightboxOpen(false)} />
+        )}
+      </>
     );
   }
 
