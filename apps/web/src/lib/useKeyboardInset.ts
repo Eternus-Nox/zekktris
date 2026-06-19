@@ -59,12 +59,48 @@ export function useKeyboardInset(): void {
       document.documentElement.style.setProperty('--kb-inset', `${inset}px`);
     }
 
+    // iOS Safari frequently fails to fire visualViewport `resize`/`scroll`
+    // when the keyboard DISMISSES (it fires reliably on open, not on close).
+    // The inset then stays frozen at the keyboard height and the layout grid
+    // is left permanently squeezed upward until something else forces a
+    // recompute — exactly the "screen pushed up and never recovers" report.
+    //
+    // The focused field losing focus is the one reliable "keyboard is
+    // closing" signal, so we use `focusout` as a fallback. We defer one tick
+    // because `focusout` fires before the next field's `focusin`; if focus is
+    // just moving to another text field the keyboard stays up and we leave the
+    // inset alone. Otherwise we snap the inset to 0 immediately (instant
+    // visual recovery) and re-measure once the viewport has settled, which
+    // corrects either direction without trusting the flaky resize event.
+    let settleTimer: ReturnType<typeof setTimeout> | undefined;
+    function isEditable(el: Element | null): boolean {
+      if (!el) return false;
+      const tag = el.tagName;
+      return (
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        (el as HTMLElement).isContentEditable
+      );
+    }
+    function onFocusOut() {
+      settleTimer = setTimeout(() => {
+        if (isEditable(document.activeElement)) return; // moved to another field
+        document.documentElement.style.setProperty('--kb-inset', '0px');
+        settleTimer = setTimeout(() => {
+          if (!isEditable(document.activeElement)) apply();
+        }, 250);
+      }, 0);
+    }
+
     apply();
     viewport.addEventListener('resize', apply);
     viewport.addEventListener('scroll', apply);
+    document.addEventListener('focusout', onFocusOut);
     return () => {
       viewport.removeEventListener('resize', apply);
       viewport.removeEventListener('scroll', apply);
+      document.removeEventListener('focusout', onFocusOut);
+      if (settleTimer) clearTimeout(settleTimer);
       document.documentElement.style.removeProperty('--kb-inset');
     };
   }, []);
