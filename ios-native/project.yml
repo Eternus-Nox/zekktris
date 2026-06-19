@@ -16,6 +16,16 @@ settings:
     # Apple Developer Team — set here (not only in Xcode) so `xcodegen generate`
     # doesn't drop code signing and break the archive. Applies to all targets.
     DEVELOPMENT_TEAM: "4QF34MB8R3"
+  configs:
+    # APNs environment per build config, substituted into aps-environment in
+    # Zekktris.entitlements via $(APS_ENVIRONMENT). Release/Archive (TestFlight +
+    # App Store) = production to match the server (APNS_PRODUCTION=true) so the
+    # CallKit VoIP push + notifications actually arrive; Debug (Xcode Run) =
+    # development/sandbox.
+    Debug:
+      APS_ENVIRONMENT: development
+    Release:
+      APS_ENVIRONMENT: production
 
 packages:
   LiveKit:
@@ -70,7 +80,12 @@ targets:
     entitlements:
       path: Zekktris/Zekktris.entitlements
       properties:
-        aps-environment: development
+        # Per-config via $(APS_ENVIRONMENT) (see settings.configs below): Debug
+        # = development/sandbox, Release/Archive = production. TestFlight + App
+        # Store builds MUST be production to match the server's APNs
+        # (APNS_PRODUCTION=true) — otherwise PushKit VoIP (CallKit ringing) and
+        # notifications never arrive on the beta.
+        aps-environment: $(APS_ENVIRONMENT)
         # Shared with the NotificationService extension. Used as a keychain
         # access group so the extension can read per-DM E2EE keys to decrypt
         # message previews. MUST be registered as an App Group in the Apple
