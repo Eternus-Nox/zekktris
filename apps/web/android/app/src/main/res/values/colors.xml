@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App launch / splash background. Matches the WebView + capacitor.config
+         backgroundColor (#050a18) so the cold-start splash is the brand navy
+         instead of a white flash, and there's no jump when the web app paints. -->
+    <color name="splash_background">#050a18</color>
+</resources>

@@ -17,6 +17,18 @@
 
 
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
-        <item name="android:background">@drawable/splash</item>
+        <!-- Android 12+ system splash (and the AndroidX core-splashscreen
+             backport) draw the app icon on THIS color; left unset it defaults
+             to white — the "icon on a white background" flash on launch. Set it
+             to the app navy (matches capacitor.config backgroundColor) so the
+             cold-start splash blends into the web app with no white flash.
+             Both spellings: the no-prefix one is the AndroidX library attr
+             (used when installSplashScreen() runs); the android: one is the
+             platform attr the system reads automatically on API 31+. -->
+        <item name="windowSplashScreenBackground">@color/splash_background</item>
+        <item name="android:windowSplashScreenBackground">@color/splash_background</item>
+        <!-- Pre-12 / fallback launch window background: a flat navy, not the
+             old logo-on-white splash.png image. -->
+        <item name="android:background">@color/splash_background</item>
     </style>
 </resources>
