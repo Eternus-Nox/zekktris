@@ -171,7 +171,18 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   const isOwn = selfId !== undefined && message.authorId === selfId;
   // Authors can edit/delete their own message only within a minute of posting
   // (the server enforces this; here we hide the controls to match).
+  const [, recheckMutateWindow] = useState(0);
   const withinMutateWindow = Date.now() - new Date(message.createdAt).getTime() <= 60_000;
+  // React.memo would otherwise leave Edit/Delete shown past 60s until some
+  // unrelated re-render; arm a one-shot timer (only for your own, still-mutable
+  // message) to re-render right when the window closes so they disappear on time.
+  useEffect(() => {
+    if (!isOwn) return;
+    const msLeft = 60_000 - (Date.now() - new Date(message.createdAt).getTime());
+    if (msLeft <= 0) return;
+    const t = setTimeout(() => recheckMutateWindow((n) => n + 1), msLeft + 50);
+    return () => clearTimeout(t);
+  }, [isOwn, message.createdAt]);
   const author = message.author;
   // Webhook persona: when message.webhookId is set, the message was
   // posted via an incoming webhook. The author embedded in the DTO is
