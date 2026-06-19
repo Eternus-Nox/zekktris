@@ -775,6 +775,10 @@ struct MessageListView: View {
     }
 
     private func showHeader(at index: Int) -> Bool {
+        // The ForEach iterates an enumerated snapshot, so a lazily-rendered row
+        // can call this with a stale index after `messages` shrank (e.g. a
+        // channel switch clears it) — guard the live array before subscripting.
+        guard index < store.messages.count else { return false }
         if shouldShowDateDivider(at: index) { return true }
         guard index > 0 else { return true }
         let current = store.messages[index]

@@ -809,6 +809,9 @@ final class AppStore: ObservableObject {
     }
     func pop() {
         if !stack.isEmpty { stack.removeLast() }
+        // Leaving a channel cancels any not-yet-consumed "jump to mention"
+        // target, so it can't apply to the next channel we open.
+        pendingJumpMessageId = nil
         // Leaving ANY conversation closes the members view. Must run on every
         // pop (not just to root): a thread's people-icon tap sets showMembers
         // but can't present there; without clearing it on the way out it would
@@ -833,7 +836,7 @@ final class AppStore: ObservableObject {
             unreadBoundaryId = nil
         }
     }
-    private func resetStack() { stack = []; threadList = []; showMembers = false }
+    private func resetStack() { stack = []; threadList = []; showMembers = false; pendingJumpMessageId = nil }
 
     /// Called by MessageListView.onAppear to load the channel it shows.
     /// Guarded by id so a re-appear (keyboard etc.) doesn't reload.
