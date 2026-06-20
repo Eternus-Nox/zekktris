@@ -9,7 +9,6 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 contextBridge.exposeInMainWorld('zekktris', {
   isDesktop: true,
-  platform: process.platform,
   /** Screen-share picker: list capturable sources. */
   getScreenSources: (): Promise<
     Array<{ id: string; name: string; thumbnail: string; isScreen: boolean }>

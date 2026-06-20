@@ -7,7 +7,7 @@
  */
 
 import { app } from 'electron';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 export interface WindowBounds {
@@ -94,7 +94,3 @@ export function setZoomLevel(v: number): void {
   loadConfig().zoomLevel = v;
   persist();
 }
-
-// existsSync retained for potential future use; reference to avoid
-// an unused-import error.
-void existsSync;
