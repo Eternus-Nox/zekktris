@@ -15,7 +15,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ApiError, type Channel, type Guild } from '@zekktris/client';
+import { ApiError, type Guild } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
@@ -362,7 +362,3 @@ function TypeButton({
     </button>
   );
 }
-
-// Force the import to be useful — placeholder for future channel-typed
-// configuration (slowmode defaults, etc.) that other call sites may want.
-export type _ChannelDraft = Partial<Channel>;

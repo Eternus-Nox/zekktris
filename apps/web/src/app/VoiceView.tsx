@@ -1285,12 +1285,10 @@ function ParticipantTile({
     setPopoverAnchor({ x: rect.left + rect.width / 2, y: rect.top });
   }
 
-  // Speaking visual: a wavy alien ring overlays the avatar via the
-  // AlienRing component (absolute-positioned in the JSX below). The
-  // ring's three colored layers and scrolling dashes provide the
-  // "alien wavelength" speaking signal. The avatar div itself stays
-  // visually plain (no static ring color, no shadow) so the ring
-  // does all the work and clicking still works through it (pointer-
+  // Speaking visual: a ring overlays the avatar via the SpeakingRing
+  // component (absolute-positioned in the JSX below). The avatar div
+  // itself stays visually plain (no static ring color, no shadow) so the
+  // ring does all the work and clicking still works through it (pointer-
   // events: none on the SVG overlay).
 
   const tileContent = compact ? (

@@ -64,11 +64,6 @@ export const AVATAR_DECORATIONS: DecoKind[] = [
 
 const BY_ID = new Map(AVATAR_DECORATIONS.map((d) => [d.id, d]));
 
-/** True for a real, renderable decoration id (not 'none'/null/unknown). */
-export function isDecoration(id: string | null | undefined): boolean {
-  return !!id && id !== 'none' && BY_ID.has(id);
-}
-
 /**
  * Overlay ring for an avatar. Returns null when there's no decoration. Place
  * it as the last child of the avatar's relative, rounded-full container.

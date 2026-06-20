@@ -55,10 +55,6 @@ const GCM_IV_BYTES = 12; // 96-bit IV — the AES-GCM standard
 const SALT_BYTES = 16;
 const PBKDF2_ITERATIONS = 250_000;
 
-// Latest wire/cipher version. The KEY scheme is unchanged (still the shared
-// PBKDF2 key), so stored keys / backups stay on their v2 layout.
-export const LATEST_VERSION = '3';
-
 const cache = new Map<string, Uint8Array>();
 
 // Cache of imported AES-GCM CryptoKeys, keyed by base64 of the raw key bytes.

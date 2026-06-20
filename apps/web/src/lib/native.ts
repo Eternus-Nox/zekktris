@@ -197,36 +197,6 @@ export async function onPushTapped(
 // ── App lifecycle ───────────────────────────────────────────────────────
 
 /**
- * Subscribe to foreground/background transitions. iOS fires
- * this when the user switches apps, the screen locks, or the
- * app is killed. The callback receives `true` for active,
- * `false` for inactive.
- */
-export async function onAppStateChange(
-  callback: (active: boolean) => void,
-): Promise<() => void> {
-  if (!isNative()) {
-    // Web fallback: use the visibility API.
-    const handler = () => {
-      callback(document.visibilityState === 'visible');
-    };
-    document.addEventListener('visibilitychange', handler);
-    return () => document.removeEventListener('visibilitychange', handler);
-  }
-  try {
-    const { App } = await import('@capacitor/app');
-    const handle = await App.addListener('appStateChange', (state) => {
-      callback(state.isActive);
-    });
-    return () => {
-      void handle.remove();
-    };
-  } catch {
-    return () => undefined;
-  }
-}
-
-/**
  * Subscribe to deep-link opens — the custom `zekktris://…` scheme (registered
  * in the iOS scheme / Android intent-filter). Fires when the OS hands the app a
  * URL while it's running, and replays the launch URL once if the app was

@@ -82,8 +82,3 @@ export async function compressImage(
     return file;
   }
 }
-
-/** Compress a batch, preserving order. Failures fall back per-file. */
-export async function compressImages(files: File[]): Promise<File[]> {
-  return Promise.all(files.map((f) => compressImage(f)));
-}

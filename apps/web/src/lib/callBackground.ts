@@ -259,16 +259,3 @@ export async function exitCallBackgroundMode(): Promise<void> {
   await releaseWakeLock();
   clearMediaSessionMetadata();
 }
-
-/**
- * Update the title shown on the lock-screen / media controls
- * mid-call (e.g. when the user switches between DMs while voice
- * stays connected to a different channel — though in this app
- * the voice always tracks the active DM). Safe to call when not
- * in call mode (no-op).
- */
-export function updateCallTitle(title: string, artist?: string): void {
-  if (!active) return;
-  lastMeta = { title, artist };
-  setMediaSessionMetadata(title, artist);
-}

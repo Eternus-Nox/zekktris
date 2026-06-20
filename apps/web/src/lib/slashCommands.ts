@@ -107,36 +107,3 @@ export function transformSlashCommand(
       return { content: input, matched: false };
   }
 }
-
-/**
- * Catalog of known commands, for autocomplete hint UI (not yet
- * wired). Exported so a future composer hint popup can iterate it
- * without duplicating the list.
- */
-export const SLASH_COMMANDS = [
-  {
-    name: 'me',
-    usage: '/me <action>',
-    description: 'Send an action message — "*alice waves*"',
-  },
-  {
-    name: 'shrug',
-    usage: '/shrug [text]',
-    description: 'Appends ¯\\_(ツ)_/¯',
-  },
-  {
-    name: 'tableflip',
-    usage: '/tableflip [text]',
-    description: 'Appends (╯°□°)╯︵ ┻━┻',
-  },
-  {
-    name: 'unflip',
-    usage: '/unflip [text]',
-    description: 'Appends ┬─┬ ノ( ゜-゜ノ)',
-  },
-  {
-    name: 'spoiler',
-    usage: '/spoiler <text>',
-    description: 'Hides the text behind a spoiler tag',
-  },
-] as const;

@@ -311,11 +311,8 @@
             mask-composite: exclude;
   }
 
-  /* Hex + squircle clips — used by Zekktris's guild glyphs (hex) and
-     server-rail brand tile (squircle). Components opt in by class. */
-  .zk-hex {
-    clip-path: polygon(25% 5%, 75% 5%, 100% 50%, 75% 95%, 25% 95%, 0% 50%);
-  }
+  /* Squircle clip — used by Zekktris's server-rail brand tile.
+     Components opt in by class. */
   .zk-squircle {
     border-radius: 30%;
   }
@@ -332,14 +329,6 @@
     border-radius: 14px;
   }
 
-  /* Monospace chrome — channel timestamps, code chips, the small
-     all-caps "SCENES" label on the scene switcher. Slight letter-
-     spacing makes JetBrains Mono read better at the tiny sizes
-     used here. */
-  .zk-mono {
-    font-family: theme('fontFamily.mono');
-    letter-spacing: 0.01em;
-  }
   .zk-cap {
     text-transform: uppercase;
     letter-spacing: 0.14em;
@@ -360,18 +349,8 @@
 
 /* ════════════════════════════════════════════════════════════════════
    ZEKKTRIS — KEYFRAMES (live indicators)
-   ════════════════════════════════════════════════════════════════════
-   `.zk-orb-pulse` is the soft halo around a presence dot when a user
-   is actively in voice. Wave-bar drives the speaking visualizer
-   that appears next to mic-on participants in voice channels. */
+   ════════════════════════════════════════════════════════════════════ */
 @layer utilities {
-  @keyframes zk-orb-pulse {
-    0%   { box-shadow: 0 0 0 0 var(--accent-glow), 0 0 0 1px var(--zk-shell); }
-    70%  { box-shadow: 0 0 0 6px oklch(from var(--accent) l c h / 0), 0 0 0 1px var(--zk-shell); }
-    100% { box-shadow: 0 0 0 0 oklch(from var(--accent) l c h / 0),     0 0 0 1px var(--zk-shell); }
-  }
-  .zk-orb-pulse { animation: zk-orb-pulse 2.4s ease-out infinite; }
-
   /* Alien-wavelength pulse for the "is speaking" indicator. Replaces
    * the Discord-style flat emerald ring with a multi-layer sonar
    * ripple in the Zekktris cyan + violet accent colors — three
@@ -406,56 +385,6 @@
   .zk-alien-pulse {
     animation: zk-alien-pulse 1.4s ease-out infinite;
     will-change: box-shadow;
-  }
-
-  /* Horizontal scroll for the single-line AlienWave. The path
-   * extends one full wave cycle past each edge of the viewBox; this
-   * keyframe translates the path by exactly one cycle (-6 viewBox
-   * units) over 0.9s and loops, which wraps seamlessly because the
-   * sine pattern is periodic and the extension covers the edges
-   * that would otherwise expose a gap during translation. */
-  @keyframes zk-alien-wave-scroll {
-    from { transform: translateX(0); }
-    to   { transform: translateX(-6px); }
-  }
-  /* Animate the single solid path. translate operates in SVG user-
-   * space units, so the -6 viewBox-unit translation matches the
-   * 6-unit cycle width regardless of the SVG's rendered pixel size. */
-  .zk-alien-wave path {
-    animation: zk-alien-wave-scroll 0.9s linear infinite;
-    transform-box: fill-box;
-  }
-
-  /* AlienRing rotation. The wavy ring around the avatar spins
-   * slowly around its center — the wave peaks orbit the speaker's
-   * head like a transmission cycling. transform-box: fill-box +
-   * transform-origin: center pin the rotation to the path's own
-   * geometric center (50,50 in the viewBox). 8s/revolution is
-   * gentle: noticeable motion without strobing.
-   *
-   * Distinct keyframe from zk-alien-wave's translateX so they
-   * don't share behavior — earlier the ring inherited the wave's
-   * horizontal scroll and slid sideways instead of rotating. */
-  @keyframes zk-alien-ring-rotate {
-    from { transform: rotate(0deg); }
-    to   { transform: rotate(360deg); }
-  }
-  .zk-alien-ring path {
-    animation: zk-alien-ring-rotate 8s linear infinite;
-    transform-box: fill-box;
-    transform-origin: center;
-  }
-
-  @keyframes zk-wave {
-    0%, 100% { transform: scaleY(0.30); }
-    50%      { transform: scaleY(1.0); }
-  }
-  .zk-wave-bar {
-    display: inline-block;
-    width: 2px;
-    background: currentColor;
-    border-radius: 1px;
-    animation: zk-wave 1.3s ease-in-out infinite;
   }
 
   /* Spatial voice arena drift. The Zekktris mockup runs a JS tick
@@ -799,12 +728,6 @@
  * 2. Elevated surfaces: modals and popovers get a soft shadow so they
  *    visually float above the chrome instead of sitting flush. The
  *    .elevation-pop and .elevation-modal utilities are opt-in.
- * 3. Subtle hover ramp on interactive rows: the existing hover:bg-bg-3
- *    pattern is fine but feels abrupt; a 120ms transition softens it
- *    everywhere we use the .row-hover utility.
- * 4. Borders: most internal dividers use `border-line` which is the
- *    same as bg-3. We add `.border-soft` as a dimmer alternative for
- *    places where the standard divider looks too heavy.
  */
 @layer base {
   body {
@@ -834,16 +757,6 @@
     box-shadow:
       0 4px 6px rgba(0, 0, 0, 0.25),
       0 24px 48px rgba(0, 0, 0, 0.5);
-  }
-
-  .row-hover {
-    transition: background-color 120ms ease-out, color 120ms ease-out;
-  }
-
-  /* Replacement border color for places where the default `border-line`
-   * (which equals bg-3) feels too punchy. Use sparingly. */
-  .border-soft {
-    border-color: rgba(255, 255, 255, 0.06);
   }
 
   /* Selected/active row indicator. Zekktris idiom: a 2px cyan rail-pin
@@ -983,15 +896,6 @@ body.zk-keyboard-open .zk-rail-actions {
   padding-left: var(--safe-left);
   padding-right: var(--safe-right);
   box-sizing: border-box;
-}
-
-/* Disable text selection on UI chrome (sidebars, headers, buttons). Long-
- * press on iOS otherwise selects text in nav labels — annoying and offers
- * no value. The chat content area itself (.select-text or default body
- * text) keeps normal selection. */
-.no-select {
-  -webkit-user-select: none;
-  user-select: none;
 }
 
 /* Global selection policy. By default NOTHING in the app is selectable
