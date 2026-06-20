@@ -64,6 +64,18 @@ struct RootView: View {
             // is fully closed. We only refresh the gateway when returning.
             if newPhase == .active {
                 store.foregroundReconnect()
+                // Self-heal push registration on every foreground. If the APNs
+                // or PushKit VoIP token rotated while the app was closed, the
+                // cold-launch register paths can race (the token may arrive
+                // before the session is restored, or vice-versa), leaving the
+                // server with a stale token that silently fails to ring. Re-
+                // asserting here — once both the token and session exist —
+                // guarantees the server has the current tokens. (PushManager
+                // self-latches; the VoIP POST is an idempotent upsert.) This
+                // recovers by the next foreground; it can't save the in-flight
+                // ring of a backgrounded VoIP relaunch.
+                PushManager.shared.registerWithServerIfPossible()
+                VoipPushHandler.shared.registerWithServerIfPossible()
             }
             // Feed foreground/background into the auto-presence state machine
             // (foreground+activity → online; background → offline via disconnect).

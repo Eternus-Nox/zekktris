@@ -287,7 +287,12 @@ export async function sendVoipToUser(
   if (rows.length === 0) return;
   const jwt = await providerToken();
   const payload = JSON.stringify({ kind: 'call', ...data });
-  const expiration = Math.floor(Date.now() / 1000) + 40;
+  // How long APNs holds the VoIP push if it can't be delivered immediately.
+  // A phone that's been closed a long time is often deep-asleep / on poor
+  // connectivity; 40s was short enough to drop the ring before the device
+  // woke. 120s gives APNs a longer window to wake it. (0 would mean "discard
+  // if not instantly deliverable" — worse for exactly this case.)
+  const expiration = Math.floor(Date.now() / 1000) + 120;
   await Promise.all(
     rows.map(async (r) => {
       const res = await sendOne(r.token, payload, jwt, {
@@ -300,12 +305,19 @@ export async function sendVoipToUser(
         console.warn(
           `APNs: voip send failed (status ${res.status}${res.reason ? `, ${res.reason}` : ''})`,
         );
-        if (
+        const permanentFailure =
           res.status === 410 ||
           res.reason === 'BadDeviceToken' ||
           res.reason === 'Unregistered' ||
-          res.reason === 'DeviceTokenNotForTopic'
-        ) {
+          res.reason === 'DeviceTokenNotForTopic';
+        // Prune genuinely-dead tokens — but NEVER delete the user's LAST voip
+        // token on a single failure. A transient/over-eager 410 would
+        // otherwise strand the account at zero voip tokens, so the phone never
+        // rings again until the user reopens the app (the client re-registers
+        // on foreground). With ≥2 tokens, pruning a dead one is safe — the
+        // others still ring; the last dead one is cleaned up once a fresh
+        // token re-registers alongside it.
+        if (permanentFailure && rows.length > 1) {
           await db
             .delete(schema.apnsDeviceTokens)
             .where(eq(schema.apnsDeviceTokens.token, r.token));
