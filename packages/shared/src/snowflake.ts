@@ -50,11 +50,6 @@ export function decodeSnowflake(id: string | bigint): DecodedSnowflake {
   return { timestamp, workerId, sequence };
 }
 
-/** Convenience: get the creation time of an ID without decoding the rest. */
-export function snowflakeTimestamp(id: string | bigint): Date {
-  return new Date(decodeSnowflake(id).timestamp);
-}
-
 /** True if the string looks like a valid snowflake. Used in input validation. */
 export function isSnowflake(value: string): boolean {
   if (!/^\d{1,20}$/.test(value)) return false;
