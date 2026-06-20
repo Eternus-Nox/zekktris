@@ -232,8 +232,15 @@ extension CallManager: CXProviderDelegate {
         // is near-silent until the user fiddles with routing. Agrees with
         // LiveKit's own session config (isSpeakerOutputPreferred), so they
         // don't fight — this just guarantees it on the CallKit-activated path.
+        // Symmetric: when the user has chosen earpiece (preference false), CLEAR
+        // any prior .speaker pin (.none) instead of leaving it stuck on the
+        // loudspeaker — otherwise an answer/reactivation re-pins speaker over
+        // their earpiece choice. .none restores the default route (earpiece, or
+        // a connected Bluetooth/AirPlay device).
         if AudioManager.shared.isSpeakerOutputPreferred {
             try? audioSession.overrideOutputAudioPort(.speaker)
+        } else {
+            try? audioSession.overrideOutputAudioPort(.none)
         }
         // The mic was published while the engine was gated; re-assert it now
         // that the session is live so the peer actually hears us.

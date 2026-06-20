@@ -1,6 +1,7 @@
 import SwiftUI
 import LiveKit
 import AudioToolbox
+import AVFAudio
 
 /// Wraps a single LiveKit `Room` for guild voice channels. The server's
 /// `joinVoice` returns a token + wsUrl; we connect, publish the mic, and let
@@ -48,6 +49,16 @@ final class VoiceManager: ObservableObject {
     func setSpeaker(_ on: Bool) {
         isSpeakerOn = on
         AudioManager.shared.isSpeakerOutputPreferred = on
+        // LiveKit only swaps the session category/mode (speaker→.videoChat /
+        // receiver→.voiceChat) on this preference and NEVER issues a port
+        // override — so a previously-applied overrideOutputAudioPort(.speaker)
+        // (set by CallKit's didActivate for the default-loud DM call) stays
+        // sticky and the route is stuck on the loudspeaker. Apply the override
+        // ourselves so the toggle actually moves the route: .speaker forces the
+        // loudspeaker; .none clears that pin and restores the default route
+        // (earpiece, or a connected Bluetooth/AirPlay device — .none does NOT
+        // force the earpiece, it just releases the manual speaker pin).
+        try? AVAudioSession.sharedInstance().overrideOutputAudioPort(on ? .speaker : .none)
     }
     /// Whether the local camera is publishing.
     @Published private(set) var isCameraOn = false
