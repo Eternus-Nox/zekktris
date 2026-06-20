@@ -86,6 +86,21 @@ export function useKeyboardInset(): void {
       settleTimer = setTimeout(() => {
         if (isEditable(document.activeElement)) return; // moved to another field
         document.documentElement.style.setProperty('--kb-inset', '0px');
+        // iOS scrolls the DOCUMENT up to keep the focused composer above the
+        // keyboard and does NOT restore that scroll on dismiss. In a PWA /
+        // plain tab there's no Capacitor Keyboard plugin doing this for us
+        // (native.ts configureKeyboard is native-only), so the composer stays
+        // lifted. The document should never hold a scroll offset (only inner
+        // containers scroll), so snap it back to 0. No-op where iOS didn't
+        // scroll the document (desktop, or the document was already at 0).
+        try {
+          window.scrollTo(0, 0);
+          if (document.scrollingElement) document.scrollingElement.scrollTop = 0;
+          document.documentElement.scrollTop = 0;
+          document.body.scrollTop = 0;
+        } catch {
+          // ignore — scroll reset is best-effort
+        }
         settleTimer = setTimeout(() => {
           if (!isEditable(document.activeElement)) apply();
         }, 250);
