@@ -915,21 +915,38 @@
  * notches. The `top: max(...)` ensures we always reserve at least 0px
  * (defensive against unexpected env() resolution).
  *
- * The body becomes the canvas. We use min-height: 100dvh so iOS Safari's
- * dynamic toolbar resize doesn't make the bottom of the chat suddenly
- * unreachable. dvh = dynamic viewport height, finally lands the "address
- * bar shrinks the page" issue iOS has had since 2015.
+ * The body becomes the canvas. We size it to 100svh (small viewport height —
+ * the height WITH the browser toolbars expanded). The document itself never
+ * scrolls (overflow:hidden + inner-only scrollers), so iOS never retracts the
+ * bottom toolbar — yet `dvh` resolves to the toolbar-RETRACTED (large) height,
+ * which clipped the bottom-pinned composer behind the toolbar in a plain
+ * mobile browser tab. `svh` is the always-visible minimum, so the composer is
+ * always reachable. PWA / native / desktop have no browser chrome, so there
+ * svh == dvh == full screen (no-op). See the rule below.
  */
 :root {
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
+  /* Height of the Electron frameless title bar. 0 everywhere except the
+   * desktop shell, where the preload injects its own 32px bar at the very
+   * top with the MAX z-index and a drag region. Portal-rendered full-screen
+   * overlays (e.g. the image lightbox) sit UNDER that bar, so their top
+   * controls must offset by this. The preload adds `html.zk-frame`. */
+  --zk-frame-titlebar: 0px;
+}
+html.zk-frame {
+  --zk-frame-titlebar: 32px;
 }
 
 html, body {
-  /* dvh respects iOS's collapsing/expanding URL bar. */
-  height: 100dvh;
+  /* svh sizes to the always-visible viewport (toolbars expanded). The
+   * document can't scroll, so the mobile toolbar never retracts; dvh would
+   * size to the retracted height and clip the bottom composer. vh is the
+   * pre-svh fallback for old engines. */
+  height: 100vh;
+  height: 100svh;
   /* Disable rubber-band overscroll on iOS so pull-down doesn't dim the app
    * with a white background. Important for chat — overscroll on the
    * messages list is fine because that's a scrollable child container,

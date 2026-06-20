@@ -94,7 +94,13 @@ export function ImageLightbox({
         aria-label={current.filename ?? 'Image preview'}
       >
         <div
-          className="absolute top-0 inset-x-0 flex items-center gap-2 px-4 py-3 bg-gradient-to-b from-black/80 to-transparent z-10"
+          className="absolute inset-x-0 flex items-center gap-2 px-4 py-3 bg-gradient-to-b from-black/80 to-transparent z-10"
+          // Clear the Electron title bar (desktop) and the iOS notch/status
+          // bar (PWA) so the filename + Close button are never hidden under
+          // either. Both vars are 0 in a normal browser tab, so top: 0 there.
+          style={{
+            top: 'calc(var(--zk-frame-titlebar, 0px) + env(safe-area-inset-top, 0px))',
+          }}
           onClick={(e) => e.stopPropagation()}
         >
           <span className="text-white/90 text-sm truncate flex-1">
