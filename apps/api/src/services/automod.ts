@@ -86,15 +86,6 @@ export async function listGuildRules(guildId: bigint): Promise<schema.AutomodRul
     .where(eq(schema.automodRules.guildId, guildId));
 }
 
-export async function getRule(ruleId: bigint): Promise<schema.AutomodRule | null> {
-  const [row] = await db
-    .select()
-    .from(schema.automodRules)
-    .where(eq(schema.automodRules.id, ruleId))
-    .limit(1);
-  return row ?? null;
-}
-
 export async function createRule(input: CreateRuleInput): Promise<schema.AutomodRule> {
   const id = nextSnowflake();
   const [row] = await db

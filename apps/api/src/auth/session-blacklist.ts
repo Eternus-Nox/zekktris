@@ -154,11 +154,6 @@ export async function isSessionBlacklisted(sessionId: bigint): Promise<boolean> 
 
 // ── Test seams ───────────────────────────────────────────────────────────────
 
-/** Swap the backing store (tests). */
-export function __setBlacklistStore(s: BlacklistStore | null): void {
-  store = s;
-}
-
 /** Reset to a fresh in-memory store (tests). Returns it for direct assertions. */
 export function __resetBlacklistStoreToMemory(now?: () => number): MemoryBlacklistStore {
   const mem = new MemoryBlacklistStore(now);

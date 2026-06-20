@@ -120,10 +120,6 @@ export async function initApns(): Promise<boolean> {
   return true;
 }
 
-export function isApnsConfigured(): boolean {
-  return configured;
-}
-
 /** Mint (or reuse a cached) ES256 provider JWT for the bearer header. */
 async function providerToken(): Promise<string> {
   const now = Date.now();

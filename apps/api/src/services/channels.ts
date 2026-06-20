@@ -16,7 +16,7 @@
  * category as parent or be top-level.
  */
 
-import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors } from '../errors';
 import { nextSnowflake } from '../snowflake';
@@ -654,26 +654,4 @@ export async function createThread(input: CreateThreadInput) {
     .returning();
   if (!created) throw errors.internal('Failed to create thread');
   return created;
-}
-
-/**
- * List active (non-archived) threads under a parent channel. Used to
- * render the thread list inside the parent channel's UI. Bounded — a
- * channel with thousands of active threads needs a separate "browse
- * archived threads" UI which is out of v1 scope.
- */
-export async function listThreadsByChannel(parentChannelId: bigint) {
-  return db
-    .select()
-    .from(schema.channels)
-    .where(
-      and(
-        eq(schema.channels.parentId, parentChannelId),
-        eq(schema.channels.type, 'public_thread'),
-        isNull(schema.channels.threadArchivedAt),
-        isNull(schema.channels.deletedAt),
-      ),
-    )
-    .orderBy(desc(schema.channels.id))
-    .limit(50);
 }

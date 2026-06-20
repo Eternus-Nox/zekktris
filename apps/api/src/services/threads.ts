@@ -235,27 +235,6 @@ export async function listThreadsForChannel(parentChannelId: bigint) {
 }
 
 /**
- * Look up a thread by its anchor message. Used when the client wants to
- * navigate from "I see a 'continued in thread' indicator on this message"
- * to "open that thread in the right pane" without already knowing the
- * thread's id.
- */
-export async function getThreadByMessage(parentMessageId: bigint) {
-  const rows = await db
-    .select()
-    .from(schema.channels)
-    .where(
-      and(
-        eq(schema.channels.parentMessageId, parentMessageId),
-        eq(schema.channels.type, 'public_thread'),
-        isNull(schema.channels.deletedAt),
-      ),
-    )
-    .limit(1);
-  return rows[0] ?? null;
-}
-
-/**
  * Bump a thread's last_activity_at to now. Called from messages.createMessage
  * when posting into a thread. The auto-archive sweep starts its countdown
  * from this stamp, so each new message resets the idle timer.

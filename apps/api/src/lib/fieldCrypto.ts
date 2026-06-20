@@ -222,16 +222,6 @@ export function reencryptToPrimary(stored: string): string | null {
   return encryptField(plaintext); // fresh IV under the primary key
 }
 
-/** Nullable convenience wrapper for nullable columns. */
-export function encryptNullable(plaintext: string | null | undefined): string | null {
-  return plaintext == null ? null : encryptField(plaintext);
-}
-
-/** Nullable convenience wrapper for nullable columns. */
-export function decryptNullable(stored: string | null | undefined): string | null {
-  return stored == null ? null : decryptField(stored);
-}
-
 // ── Test seams ───────────────────────────────────────────────────────────────
 // env is validated at import, so process.env changes can't re-drive the caches.
 // These let tests inject key material directly (Buffers via decodeFieldKey).

@@ -12,7 +12,7 @@
  * UI that bounces back) without worrying about 409 noise.
  */
 
-import { and, desc, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, or } from 'drizzle-orm';
 import { db, schema } from '../db';
 
 const PAGE_SIZE = 25;
@@ -162,16 +162,4 @@ export async function listSavedMessages(
     hasMore && last ? `${last.savedAt.toISOString()}_${last.message.id.toString()}` : null;
 
   return { items, nextCursor };
-}
-
-/**
- * Total count of saved messages for the user. Cheap (indexed
- * scan). Used by the sidebar badge if we want to show "12 saved."
- */
-export async function countSaved(userId: bigint): Promise<number> {
-  const row = await db
-    .select({ n: sql<number>`count(*)::int` })
-    .from(schema.savedMessages)
-    .where(eq(schema.savedMessages.userId, userId));
-  return row[0]?.n ?? 0;
 }

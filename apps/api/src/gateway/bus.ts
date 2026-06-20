@@ -19,7 +19,7 @@
  * unraid scale that's fine; at Discord scale you'd partition by shard id.
  */
 
-import type { GatewayEventName, GatewayFrame } from '@zekktris/shared/events';
+import type { GatewayEventName } from '@zekktris/shared/events';
 import type { Audience } from './types';
 
 export interface PublishedEvent {
@@ -86,20 +86,4 @@ export async function closeEventBus(): Promise<void> {
   if (typeof closable.close === 'function') {
     await closable.close();
   }
-}
-
-/** For tests. */
-export function _resetEventBus(): void {
-  bus = new InMemoryEventBus();
-}
-
-// Helper: assemble a PublishedEvent from a frame plus an audience.
-export function asPublished(
-  frame: GatewayFrame,
-  audience: Audience,
-): PublishedEvent {
-  if (frame.t === undefined) {
-    throw new Error('publish requires a DISPATCH frame (t must be set)');
-  }
-  return { t: frame.t, d: frame.d, audience };
 }

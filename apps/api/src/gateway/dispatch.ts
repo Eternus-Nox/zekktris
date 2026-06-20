@@ -256,10 +256,6 @@ export function guildUpdate(guildDTO: unknown, guildId: bigint): void {
 
 // ── Member events ──────────────────────────────────────────────────────────
 
-export function guildMemberAdd(memberDTO: unknown, guildId: bigint): void {
-  publish(GatewayEvent.GUILD_MEMBER_ADD, memberDTO, { kind: 'guild', guildId });
-}
-
 export function guildMemberUpdate(memberDTO: unknown, guildId: bigint): void {
   publish(GatewayEvent.GUILD_MEMBER_UPDATE, memberDTO, { kind: 'guild', guildId });
 }

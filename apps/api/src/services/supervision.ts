@@ -225,10 +225,6 @@ export async function getActiveChildIds(parentId: bigint): Promise<bigint[]> {
   return rows.map((r) => r.childId);
 }
 
-export async function isSupervised(childId: bigint): Promise<boolean> {
-  return (await getActiveParentIds(childId)).length > 0;
-}
-
 /** Throw unless the caller actively supervises the given child. */
 export async function assertParentOf(parentId: bigint, childId: bigint): Promise<void> {
   const parents = await getActiveParentIds(childId);

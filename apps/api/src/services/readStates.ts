@@ -23,7 +23,7 @@
  * so the storage path is end-to-end ready for the increment to land later.
  */
 
-import { and, eq, gt, inArray, isNull, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, isNotNull, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors } from '../errors';
 
@@ -203,30 +203,6 @@ export async function clearAllMentions(
   ]);
 
   return updated;
-}
-
-/**
- * Convenience: is `messageId` strictly newer than the user's marker for the
- * channel? Used by tests; the actual unread computation in the client is
- * channel.lastMessageId > readState.lastMessageId.
- */
-export async function isUnread(
-  userId: bigint,
-  channelId: bigint,
-  messageId: bigint,
-): Promise<boolean> {
-  const r = await db
-    .select({ lastMessageId: schema.readStates.lastMessageId })
-    .from(schema.readStates)
-    .where(
-      and(
-        eq(schema.readStates.userId, userId),
-        eq(schema.readStates.channelId, channelId),
-        gt(schema.readStates.lastMessageId, messageId),
-      ),
-    )
-    .limit(1);
-  return r.length === 0;
 }
 
 /**

@@ -67,10 +67,6 @@ export async function initFcm(): Promise<boolean> {
   return true;
 }
 
-export function isFcmConfigured(): boolean {
-  return configured;
-}
-
 /** Mint (or reuse a cached) OAuth access token for the FCM REST API. */
 async function accessToken(): Promise<string> {
   const now = Date.now();

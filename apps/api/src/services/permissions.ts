@@ -450,25 +450,6 @@ function reconcileCategoryVisibility(
 }
 
 /**
- * The all-guilds version: returns every viewable channel id across all the
- * user's guilds, flattened. Called once at IDENTIFY by the gateway.
- *
- * We parallelize the per-guild calls — each is independent, and IDENTIFY
- * is a one-shot at connection time. Not in the hot path.
- */
-export async function listAllViewableGuildChannelIds(
-  guildIds: Iterable<bigint>,
-  userId: bigint,
-): Promise<bigint[]> {
-  const ids = Array.from(guildIds);
-  if (ids.length === 0) return [];
-  const lists = await Promise.all(
-    ids.map((gid) => listViewableGuildChannelIds(gid, userId)),
-  );
-  return lists.flat();
-}
-
-/**
  * BATCHED version of listViewableGuildChannelIds — computes the
  * viewable-channel set for MANY users in one round of queries.
  *

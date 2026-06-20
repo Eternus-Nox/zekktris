@@ -338,55 +338,6 @@ export async function loadRecipientsForChannels(
   return out;
 }
 
-/**
- * Load per-DM E2EE public keys for a list of channels. Returns a
- * map of channelId → (userId → publicKey base64). Includes ALL
- * users for each channel (not just "others") — the client needs to
- * see its own entry to detect whether E2EE is enabled for this
- * conversation on this device.
- *
- * Users with NULL public_key on dm_recipients are omitted from the
- * inner map. So `e2eeKeys[userId]` exists iff that user has
- * enabled E2EE on this DM.
- */
-export async function loadE2eeKeysForChannels(
-  channelIds: bigint[],
-): Promise<Map<string, Record<string, string>>> {
-  const out = new Map<string, Record<string, string>>();
-  if (channelIds.length === 0) return out;
-  const rows = await db
-    .select({
-      channelId: schema.dmRecipients.channelId,
-      userId: schema.dmRecipients.userId,
-      publicKey: schema.dmRecipients.publicKey,
-    })
-    .from(schema.dmRecipients)
-    .where(inArray(schema.dmRecipients.channelId, channelIds));
-  for (const r of rows) {
-    if (!r.publicKey) continue;
-    const key = r.channelId.toString();
-    let bucket = out.get(key);
-    if (!bucket) {
-      bucket = {};
-      out.set(key, bucket);
-    }
-    bucket[r.userId.toString()] = r.publicKey;
-  }
-  return out;
-}
-
-/**
- * Per-channel variant of `loadE2eeKeysForChannels` — returns just
- * the userId → publicKey map for one channel. Convenient for routes
- * that operate on a single DM.
- */
-export async function loadE2eeKeys(
-  channelId: bigint,
-): Promise<Record<string, string>> {
-  const map = await loadE2eeKeysForChannels([channelId]);
-  return map.get(channelId.toString()) ?? {};
-}
-
 export type EnableE2eeResult =
   /** This caller flipped the DM OFF -> ON; their salt/verifier are stored. */
   | { status: 'enabled' }

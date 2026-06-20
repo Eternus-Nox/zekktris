@@ -5,8 +5,8 @@
  * is intentionally small — most of the value of "mute server" is felt
  * inside the push pipeline (skip muted targets) and on the client
  * (skip badge increments). This file provides the storage primitives;
- * the push service consumes `resolveLevel` to decide whether to fan
- * out a notification.
+ * the push service consumes `resolveLevelsBulk` to decide whether to
+ * fan out a notification.
  *
  * Resolution order for a (user, channel-in-guild) pair:
  *   1. Per-channel override, if any
@@ -81,43 +81,6 @@ export async function listOverrides(
     targetId: r.targetId.toString(),
     level: r.level as NotificationLevel,
   }));
-}
-
-/**
- * Resolve the effective level for a (user, channel-in-guild) pair via
- * the two-tier rule. Returns the level that should govern badge / push
- * decisions for the next message in that channel.
- *
- * `guildId` is optional — DM channels don't have one, in which case
- * only the channel-level override is consulted.
- */
-export async function resolveLevel(
-  userId: bigint,
-  channelId: bigint,
-  guildId: bigint | null,
-): Promise<NotificationLevel> {
-  const targets: bigint[] = guildId !== null ? [channelId, guildId] : [channelId];
-  const rows = await db
-    .select({
-      targetType: schema.notificationOverrides.targetType,
-      targetId: schema.notificationOverrides.targetId,
-      level: schema.notificationOverrides.level,
-    })
-    .from(schema.notificationOverrides)
-    .where(
-      and(
-        eq(schema.notificationOverrides.userId, userId),
-        inArray(schema.notificationOverrides.targetId, targets),
-      ),
-    );
-  // Channel override wins.
-  const channel = rows.find((r) => r.targetType === 'channel' && r.targetId === channelId);
-  if (channel) return channel.level as NotificationLevel;
-  if (guildId !== null) {
-    const guild = rows.find((r) => r.targetType === 'guild' && r.targetId === guildId);
-    if (guild) return guild.level as NotificationLevel;
-  }
-  return 'all';
 }
 
 /**

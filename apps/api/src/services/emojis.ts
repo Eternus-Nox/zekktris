@@ -49,15 +49,6 @@ export async function listGuildEmojis(guildId: bigint) {
     .where(eq(schema.guildEmojis.guildId, guildId));
 }
 
-export async function getGuildEmoji(emojiId: bigint) {
-  const r = await db
-    .select()
-    .from(schema.guildEmojis)
-    .where(eq(schema.guildEmojis.id, emojiId))
-    .limit(1);
-  return r[0] ?? null;
-}
-
 /**
  * Look up an emoji by URL. Used by the CDN handler's fall-through
  * branch — when we get a `/cdn/<id>/<file>` request that doesn't
