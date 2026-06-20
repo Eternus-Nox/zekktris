@@ -131,23 +131,6 @@ final class CallManager: NSObject, ObservableObject {
         }
     }
 
-    // MARK: Outgoing
-
-    /// We started ringing someone: report the outgoing call so the system
-    /// shows call status and routes audio like a phone call.
-    func startOutgoing(channelId: String, calleeName: String) {
-        let u = uuid(for: channelId)
-        let action = CXStartCallAction(call: u, handle: CXHandle(type: .generic, value: calleeName))
-        action.isVideo = false
-        controller.request(CXTransaction(action: action)) { _ in }
-    }
-
-    /// The callee picked up — flip the system call state to connected.
-    func outgoingConnected(channelId: String) {
-        guard let u = uuidByChannel[channelId] else { return }
-        provider.reportOutgoingCall(with: u, connectedAt: nil)
-    }
-
     /// The call is over (we hung up, the peer left, or it was declined).
     func callEnded(channelId: String, remoteEnded: Bool) {
         guard let u = uuidByChannel[channelId] else { return }

@@ -172,7 +172,6 @@ struct Message: Codable, Identifiable, Hashable {
     var sendState: String?
 
     var text: String { content ?? "" }
-    var isSystem: Bool { type?.hasPrefix("system_") == true }
 }
 
 struct MessageMetadata: Codable, Hashable {
@@ -600,11 +599,6 @@ struct RegisterBody: Codable {
     let username: String
     let displayName: String
     let password: String
-}
-struct SendBody: Codable {
-    let content: String
-    let nonce: String
-    var replyToId: String? = nil
 }
 struct OpenDMBody: Codable { let recipientId: String }
 struct E2EEEnableBody: Codable { let salt: String; let verifier: String }

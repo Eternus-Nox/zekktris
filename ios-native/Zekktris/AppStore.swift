@@ -761,7 +761,6 @@ final class AppStore: ObservableObject {
         }
         resetStack()
     }
-    func showSaved() { railPage = nil; railContent = .saved; resetStack() }
 
     // MARK: Navigation stack
 

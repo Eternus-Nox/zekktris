@@ -347,10 +347,6 @@ final class Session: ObservableObject {
         let ok = await Biometrics.authenticate(reason: "Unlock Zekktris")
         if ok { locked = false }
     }
-    /// Re-lock when leaving the app, if biometric lock is on.
-    func lockIfEnabled() {
-        if faceIDEnabled && phase == .signedIn { locked = true }
-    }
     /// Toggle the biometric lock. Enabling first verifies the user can pass a
     /// biometric check (so they don't lock themselves out). Returns an error
     /// string on failure, nil on success.

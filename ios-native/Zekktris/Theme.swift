@@ -194,24 +194,7 @@ enum Theme {
     static let jumpFlash = Color(hex: 0xF59E0B, alpha: 0.25)
 }
 
-// ── Elevation shadows (web .elevation-pop / .elevation-modal) ───────────────
-// Two-layer drop shadows. SwiftUI composes them by chaining .shadow()
-// modifiers, so the helpers below apply both layers in web order.
 extension View {
-    /// Web `.elevation-pop`: 0 1px 2px rgba(0,0,0,.25), 0 8px 24px rgba(0,0,0,.35)
-    func elevationPop() -> some View {
-        self
-            .shadow(color: .black.opacity(0.25), radius: 1, x: 0, y: 1)
-            .shadow(color: .black.opacity(0.35), radius: 12, x: 0, y: 8)
-    }
-
-    /// Web `.elevation-modal`: 0 4px 6px rgba(0,0,0,.25), 0 24px 48px rgba(0,0,0,.5)
-    func elevationModal() -> some View {
-        self
-            .shadow(color: .black.opacity(0.25), radius: 3, x: 0, y: 4)
-            .shadow(color: .black.opacity(0.5), radius: 24, x: 0, y: 24)
-    }
-
     /// Web `.row-active`: accent-tinted background, 2px leading accent
     /// rail-pin, and a soft outer glow. Apply to selected list rows
     /// (channels, DMs) on top of their base shape.
