@@ -1103,6 +1103,28 @@ final class AppStore: ObservableObject {
             decryptVisible()
             // Jumped-to message is now loaded — scroll to it.
             if let jumpId { pendingScrollAnchorId = jumpId }
+            // Self-heal a stale open: a MESSAGE_CREATE that arrived in the gap
+            // between tap and openChannel was dropped from `messages` (it only
+            // bumped the channel's lastMessageId), and/or this page read a
+            // replica lagging the just-arrived message — so the newest message
+            // is missing until you back out and re-enter. If the store knows of a
+            // newer id than the newest row we loaded, pull the gap in once via
+            // the `after` cursor. Skipped during a jump-to-mention load (that
+            // wants the centered window, not the latest page). upsert is
+            // dedup-safe and the fetch is best-effort + guarded on still being
+            // the open channel, so the common (page-already-current) case is a
+            // no-op with zero extra network calls.
+            if jumpId == nil,
+               let after = merged.last(where: { $0.id.allSatisfy(\.isNumber) })?.id,
+               let knownLatest = dms.first(where: { $0.id == channel.id })?.lastMessageId
+                   ?? channels.first(where: { $0.id == channel.id })?.lastMessageId,
+               knownLatest.allSatisfy(\.isNumber),
+               snowflakeGreater(knownLatest, than: after),
+               let newer = try? await api.messages(channelId: channel.id, limit: 50, after: after),
+               channel.id == selectedChannel?.id {
+                for m in newer.sorted(by: { $0.createdAt < $1.createdAt }) { upsert(m) }
+                decryptVisible()
+            }
         } catch {
             // Access to the open channel was revoked (made private / deleted)
             // out from under us — the server denies the read. Pop out so its
