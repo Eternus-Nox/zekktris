@@ -31,6 +31,20 @@ struct MessageListView: View {
     /// Set shortly after the initial scroll-to-bottom so the load-older trigger
     /// can't fire during first layout (which would yank the user into history).
     @State private var didInitialScroll = false
+    /// True for a short settle window after opening a channel. While set, the
+    /// list re-pins to the bottom whenever its content GROWS — webhook embeds,
+    /// async-loading photos/attachments, and E2EE messages all finish sizing
+    /// AFTER the initial scroll, pushing the newest content below the fold. The
+    /// window is bounded so it can't fight a user who scrolls up later.
+    @State private var stickToBottomOnGrow = false
+
+    /// Reports the message list's laid-out content height, so a late growth
+    /// (image load / embed render / E2EE decrypt) can re-pin us to the bottom
+    /// during the open settle window.
+    private struct ContentHeightKey: PreferenceKey {
+        static var defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -84,6 +98,24 @@ struct MessageListView: View {
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
+                        .background(GeometryReader { gp in
+                            Color.clear.preference(key: ContentHeightKey.self, value: gp.size.height)
+                        })
+                    }
+                    .onPreferenceChange(ContentHeightKey.self) { _ in
+                        // Late-sizing content (webhook embeds, photos/attachments
+                        // loading, E2EE text decrypting) grows the rows AFTER the
+                        // initial scroll, pushing the newest below the fold. While
+                        // the open settle window is active, re-pin to the bottom on
+                        // each growth so the open stays landed on the latest.
+                        // Yields to a jump anchor / unread divider (they own the
+                        // position) and stops after the window so it can't fight a
+                        // user who has since scrolled up.
+                        guard stickToBottomOnGrow,
+                              store.pendingScrollAnchorId == nil,
+                              store.unreadBoundaryId == nil,
+                              store.messages.last != nil else { return }
+                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
                     }
                     .onChange(of: store.messages.count) { _ in
                         // Only auto-scroll to the bottom when the newest message
@@ -137,6 +169,9 @@ struct MessageListView: View {
                         // which would poison the wasEmpty gate above and skip the
                         // land-on-newest branch — leaving the open mid-history.
                         lastBottomId = nil
+                        // Re-pin to the bottom as late-sizing content settles
+                        // (see stickToBottomOnGrow + the height preference above).
+                        stickToBottomOnGrow = true
                         // If rows are already present (e.g. an iPad sidebar
                         // switch), land on the newest after layout — unless a
                         // jump anchor or unread divider owns the position.
@@ -149,6 +184,12 @@ struct MessageListView: View {
                         }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                             didInitialScroll = true
+                        }
+                        // Close the stick-to-bottom window. Long enough to cover
+                        // an embed/E2EE decrypt and a typical photo load, short
+                        // enough not to fight deliberate scrolling.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            stickToBottomOnGrow = false
                         }
                     }
                     .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
