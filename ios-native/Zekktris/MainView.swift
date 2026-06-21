@@ -27,6 +27,10 @@ struct MainView: View {
     @State private var settleX: CGFloat = 0
     @State private var settling = false
     @State private var contentWidth: CGFloat = 0
+    /// True while the software keyboard is up (composer focused). Gates the
+    /// back-swipe so typing or dismissing the keyboard can't pop the
+    /// conversation out from under the user.
+    @State private var keyboardVisible = false
 
     /// Horizontal offset of the conversation during a back-swipe: the live drag
     /// while the finger is down, then the settle animation after it lifts.
@@ -220,6 +224,14 @@ struct MainView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: store.errorText)
+        // Track keyboard visibility to gate the back-swipe (see keyboardVisible).
+        // keyboardWillShow (not DidShow) blocks the swipe the instant it begins.
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            keyboardVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardVisible = false
+        }
     }
 
     /// Sidebar width: the web's 15rem (225pt), with extra room on Mac
@@ -348,8 +360,10 @@ struct MainView: View {
                 // message screen; anything else leaves the offset at 0 so a
                 // vertical scroll is untouched. Not while the members sheet is
                 // open (the modal already blocks touches here; the guard is
-                // belt-and-suspenders).
-                guard !store.showMembers,
+                // belt-and-suspenders). Not while the keyboard is up — a swipe
+                // to dismiss/type must not pop the conversation.
+                guard !keyboardVisible,
+                      !store.showMembers,
                       isMessageRoute(store.stack.last),
                       value.translation.width > 0,
                       abs(value.translation.width) > abs(value.translation.height)
@@ -357,7 +371,8 @@ struct MainView: View {
                 state = value.translation.width
             }
             .onEnded { value in
-                guard !store.showMembers,
+                guard !keyboardVisible,
+                      !store.showMembers,
                       isMessageRoute(store.stack.last),
                       value.translation.width > 0,
                       abs(value.translation.width) > abs(value.translation.height)
@@ -813,11 +828,10 @@ struct ChannelListView: View {
                     .aspectRatio(1.6, contentMode: .fit)
                     .background(Theme.bg3)
                     .overlay {
-                        AsyncImage(url: banner) { phase in
-                            if case .success(let image) = phase {
-                                image.resizable().scaledToFill()
-                            }
-                        }
+                        // RetryingImage's decoded cache stops the banner from
+                        // flashing/re-fetching when this sidebar is rebuilt on
+                        // navigating in/out of a conversation.
+                        RetryingImage(url: banner)
                     }
                     .clipped()
                     .overlay(Rectangle().fill(Theme.line).frame(height: 1), alignment: .bottom)

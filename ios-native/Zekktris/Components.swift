@@ -10,6 +10,24 @@ import Foundation
 /// This loads through URLSession.shared (hitting the enlarged URLCache
 /// from AppDelegate), retries with backoff, and re-attempts whenever the
 /// view reappears or the URL changes.
+/// Process-lifetime decoded-image cache keyed by the asset URL. CDN assets are
+/// content-addressed (/cdn/<unique-id>/<file>), so a byte-identical URL always
+/// means byte-identical pixels — keying on the URL makes "did it change?" a pure
+/// string compare. This survives view recreation (navigating in/out of a
+/// conversation destroys + rebuilds the server rail), unlike AsyncImage's
+/// internal @State, so an already-seen icon/banner paints on the FIRST frame
+/// instead of flashing Color.clear and re-decoding. A genuinely changed image
+/// gets a new URL ⇒ new key ⇒ fresh load, so it never serves stale pixels.
+/// Volatile (clears on cold launch); it only kills the in-session
+/// navigate-out-and-back flicker, which is the reported symptom.
+enum DecodedImageCache {
+    static let shared: NSCache<NSURL, UIImage> = {
+        let c = NSCache<NSURL, UIImage>()
+        c.countLimit = 256
+        return c
+    }()
+}
+
 struct RetryingImage: View {
     let url: URL
     @State private var image: UIImage?
@@ -19,6 +37,15 @@ struct RetryingImage: View {
     /// reload and the PREVIOUS row's image (someone else's avatar) stayed
     /// on screen permanently.
     @State private var loadedURL: URL?
+
+    init(url: URL) {
+        self.url = url
+        // Seed synchronously from the decoded cache so a recreated view paints
+        // an already-seen image on its first frame (no Color.clear flash).
+        let cached = DecodedImageCache.shared.object(forKey: url as NSURL)
+        _image = State(initialValue: cached)
+        _loadedURL = State(initialValue: cached != nil ? url : nil)
+    }
 
     var body: some View {
         Group {
@@ -30,10 +57,16 @@ struct RetryingImage: View {
         }
         .task(id: url) {
             if loadedURL != url {
-                image = nil // drop the stale image while the right one loads
+                // Rebind to a different url: drop the stale image, but adopt a
+                // cached decode for the new url immediately if we have one.
+                image = DecodedImageCache.shared.object(forKey: url as NSURL)
                 loadedURL = url
             }
-            if image == nil { image = await Self.load(url) }
+            if image == nil {
+                let loaded = await Self.load(url)
+                if let loaded { DecodedImageCache.shared.setObject(loaded, forKey: url as NSURL) }
+                image = loaded
+            }
         }
     }
 
@@ -297,14 +330,12 @@ struct GuildIcon: View {
     var body: some View {
         Group {
             if let resolved = assetURL(guild.iconUrl) {
-                AsyncImage(url: resolved) { phase in
-                    switch phase {
-                    case .success(let image): image.resizable().scaledToFill()
-                    default: Color.clear
-                    }
-                }
-                .frame(width: size, height: size)
-                .background(Theme.bg2)
+                // RetryingImage (not AsyncImage): its decoded-image cache keeps
+                // the rail icon from flashing/re-fetching when the rail is
+                // destroyed + rebuilt on navigating in/out of a conversation.
+                RetryingImage(url: resolved)
+                    .frame(width: size, height: size)
+                    .background(Theme.bg2)
             } else if isSelected {
                 LinearGradient(colors: [Theme.accent, Theme.accent2],
                                startPoint: .topLeading, endPoint: .bottomTrailing)
