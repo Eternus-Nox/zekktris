@@ -186,7 +186,10 @@ struct MainView: View {
                 // The < button, swipe-back, and any showDMs/showMentions/
                 // selectGuild that returns to root all funnel through here.
                 .animation(
-                    (backActive || (store.stack.isEmpty && !isWide)) ? nil : .easeInOut(duration: 0.2),
+                    // No cross-fade when opening a CACHED channel (its rows paint
+                    // synchronously, so it should POP, not fade in).
+                    (backActive || (store.stack.isEmpty && !isWide) || store.openingCachedChannel)
+                        ? nil : .easeInOut(duration: 0.2),
                     value: routeKey
                 )
             }
@@ -231,6 +234,16 @@ struct MainView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             keyboardVisible = false
+        }
+        // Watchdog: every route change clears the back-swipe guards so a dropped
+        // keyboardWillHide (UIKit doesn't guarantee one per willShow) or a stuck
+        // settle can never permanently disable the next screen's swipe — the
+        // intermittent "swipe randomly stops working" bug. The destination starts
+        // with the keyboard down and the gesture armed; a real focus re-fires
+        // keyboardWillShow, so swipe-lock-while-keyboard is preserved.
+        .onChange(of: routeKey) { _ in
+            keyboardVisible = false
+            if settling { settling = false; settleX = 0 }
         }
     }
 
@@ -326,6 +339,17 @@ struct MainView: View {
             }
             page(for: store.stack.last)
                 .id(routeKey)
+                // While a back-swipe is in flight, back the sliding page with an
+                // OPAQUE fill. The page's own surface is Theme.bg1.opacity(0.9)
+                // (translucent so the abyss nebula glows through at rest); during
+                // the drag that 10% gap let the page composite OVER the revealed
+                // root layer AND the shared nebula, double-stacking two
+                // semi-transparent fills in the overlap — the muddy/"blurry"
+                // smear that looked like the screen was being pulled apart.
+                // Opaque only while backActive, so the at-rest translucent look
+                // (nebula glow) is untouched. Placed BEFORE .offset so the
+                // backing travels with the page as it slides.
+                .background(backActive ? Theme.bg1 : Color.clear)
                 // No explicit .transition here: the parent ZStack's
                 // .animation(value: routeKey) still cross-fades normal
                 // push/pop. An explicit .transition(.opacity) made the
