@@ -130,9 +130,12 @@ struct MainView: View {
                 Rectangle().fill(Theme.line).frame(width: 1)
             }
 
-            if isWide, let page = store.railPage {
+            if store.isWideLayout, let page = store.railPage {
                 // Full-page rail destination: takes the sidebar + detail
-                // area while the server rail stays visible.
+                // area while the server rail stays visible. Gated on the stable
+                // isWideLayout (matching compactRailPageBinding) so cover↔inline
+                // stay mutually exclusive and a transient `isWide` flip can't
+                // make the page vanish.
                 railPageHost(page)
             } else {
             if isWide {
@@ -257,7 +260,15 @@ struct MainView: View {
     /// never while the wide layout hosts the page inline.
     private var compactRailPageBinding: Binding<RailPage?> {
         Binding(
-            get: { isWide ? nil : store.railPage },
+            // Gate on the STABLE store.isWideLayout (only updated on a committed
+            // size-class change), NOT the per-render `isWide` computed value.
+            // `isWide` (hSizeClass == .regular) is re-read on every body pass,
+            // including the off-screen passes iOS does for app-switcher snapshots
+            // / return-from-background, where the size class can transiently flip.
+            // That made this getter briefly return nil and DISMISS the cover —
+            // admin / parental-controls / settings "vanished" on returning from
+            // background. The stable flag can't be flipped by a transient pass.
+            get: { store.isWideLayout ? nil : store.railPage },
             set: { store.railPage = $0 }
         )
     }
