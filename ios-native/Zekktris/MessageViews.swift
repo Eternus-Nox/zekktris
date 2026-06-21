@@ -130,10 +130,39 @@ struct MessageListView: View {
                         }
                     }
                     .onAppear {
-                        lastBottomId = store.messages.last?.id
-                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                        // Treat the next messages-count change as the initial
+                        // fill: do NOT seed lastBottomId from the previous
+                        // channel's still-resident rows (a wide-layout / same-
+                        // stack switch doesn't clear them before this fires),
+                        // which would poison the wasEmpty gate above and skip the
+                        // land-on-newest branch — leaving the open mid-history.
+                        lastBottomId = nil
+                        // If rows are already present (e.g. an iPad sidebar
+                        // switch), land on the newest after layout — unless a
+                        // jump anchor or unread divider owns the position.
+                        DispatchQueue.main.async {
+                            if store.pendingScrollAnchorId == nil,
+                               store.unreadBoundaryId == nil,
+                               store.messages.last != nil {
+                                proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                            }
+                        }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                             didInitialScroll = true
+                        }
+                    }
+                    .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+                        // The keyboard grows the bottom safe area, shrinking the
+                        // ScrollView from the bottom; SwiftUI keeps the old offset,
+                        // hiding the newest messages behind the keyboard. Re-pin to
+                        // the bottom so the latest stays visible above it. Skip
+                        // while replying to a (possibly scrolled-up) message — the
+                        // "Replying to" bar keeps the user in place by design.
+                        guard composerFocused, store.replyingTo == nil else { return }
+                        DispatchQueue.main.async {
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                            }
                         }
                     }
                 }
@@ -921,7 +950,7 @@ struct MessageRow: View {
         rowContent
             .contextMenu { menuItems }
             .sheet(isPresented: $showEdit) {
-                EditMessageSheet(message: message, initialText: editText)
+                EditMessageSheet(message: message, text: $editText)
             }
             .sheet(isPresented: $showForward) {
                 ForwardSheet(message: message)
@@ -2032,12 +2061,11 @@ struct EditMessageSheet: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
     let message: Message
-    @State private var text: String
-
-    init(message: Message, initialText: String) {
-        self.message = message
-        _text = State(initialValue: initialText)
-    }
+    // Bound to the parent row's @State editText, which beginEdit() fills with
+    // the message's current (E2EE-decrypted) content right before presenting —
+    // so the field is pre-filled, and re-edits aren't stale (a re-seeded private
+    // @State was ignored when SwiftUI reused the sheet's view identity).
+    @Binding var text: String
 
     var body: some View {
         NavigationStack {
