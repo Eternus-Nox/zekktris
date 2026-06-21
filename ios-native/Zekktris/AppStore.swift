@@ -103,6 +103,15 @@ final class AppStore: ObservableObject {
     /// `channels` pre-sorted by (position, id) — see the didSet on `channels`.
     @Published private(set) var sortedChannels: [Channel] = []
     @Published var messages: [Message] = []
+    /// Per-channel snapshot of the last-viewed message list, keyed by channel id.
+    /// Seeds `messages` synchronously on reopen so a revisited conversation paints
+    /// instantly while loadMessages refreshes in the background. Not @Published
+    /// (views read `messages`, never this); per-session, cleared on stop().
+    private var messageCache: [String: [Message]] = [:]
+    /// True for the single render in which we open a channel we already have
+    /// cached — lets MainView skip the route cross-fade so a cached open POPS
+    /// instead of fading. Set in selectChannel before the push, reset in openChannel.
+    @Published var openingCachedChannel = false
 
     @Published var selectedGuild: Guild?
     @Published var selectedChannel: Channel?
@@ -666,6 +675,7 @@ final class AppStore: ObservableObject {
         guilds = []
         channels = []
         messages = []
+        messageCache = [:]
         dms = []
         relationships = []
         typing = [:]
@@ -769,7 +779,13 @@ final class AppStore: ObservableObject {
     /// (drill-down) to replace (master-detail) and hides back buttons.
     @Published var isWideLayout = false
 
-    func selectChannel(_ channel: Channel) { noteInteraction(); push(.messages(channel)) }
+    func selectChannel(_ channel: Channel) {
+        noteInteraction()
+        // Tell MainView this open is a cache hit (so it paints instantly) — it
+        // then skips the route cross-fade and the conversation pops into place.
+        openingCachedChannel = messageCache[channel.id] != nil
+        push(.messages(channel))
+    }
     func openThreads(_ parent: Channel) { push(.threadList(parent)) }
     func clearChannel() { pop() }
 
@@ -826,6 +842,7 @@ final class AppStore: ObservableObject {
         // stack.isEmpty so popping a thread back to its parent channel (deeper
         // stack) doesn't wipe the parent's still-visible messages.
         if stack.isEmpty {
+            snapshotCurrentChannel()
             messages = []
             selectedChannel = nil
             typing = [:]
@@ -841,14 +858,24 @@ final class AppStore: ObservableObject {
     /// Guarded by id so a re-appear (keyboard etc.) doesn't reload.
     func openChannel(_ channel: Channel) {
         guard selectedChannel?.id != channel.id else { return }
+        // The route animation has already consumed the cache-hit hint; clear it
+        // so later non-cached navigations cross-fade normally.
+        openingCachedChannel = false
         selectedChannel = channel
-        messages = []
+        // Snapshot the channel we're leaving, then seed the new one from cache so
+        // a revisited conversation paints on THIS frame (no empty→spinner→fade).
+        // loadMessages still runs below to refresh + merge server truth.
+        snapshotCurrentChannel()
+        messages = messageCache[channel.id] ?? []
         // Drop decrypted E2EE plaintext from the channel we're leaving —
         // it otherwise stayed resident for the whole session (only relock/
         // sign-out cleared it), defeating the "plaintext doesn't linger in
         // memory" intent and growing unbounded. decryptVisible() repopulates
         // for the new channel right after loadMessages.
         decrypted = [:]
+        // Re-derive plaintext for any seeded rows immediately so a cached E2EE
+        // convo isn't briefly shown as undecryptable (selectedChannel is set above).
+        if !messages.isEmpty { decryptVisible() }
         typing = [:]
         replyingTo = nil
         pins = []
@@ -1090,8 +1117,16 @@ final class AppStore: ObservableObject {
             // in flight (it's in `messages` but not in the page) — replacing
             // the array outright dropped those rows.
             let fetchedIds = Set(merged.map { $0.id })
+            // Keep ONLY genuinely concurrent gateway arrivals — rows NEWER than
+            // the newest fetched message. With the per-channel cache now seeding
+            // `messages`, older seed rows must not be re-merged here, or a message
+            // deleted while the channel was closed (the delete event only mutates
+            // an OPEN channel) would resurrect. The seed paints instantly; this
+            // refresh replaces it with server truth for the latest window.
+            let cutoff = merged.last?.createdAt
             let live = messages.filter {
                 $0.channelId == channel.id && !fetchedIds.contains($0.id)
+                    && (cutoff == nil || $0.createdAt > cutoff!)
             }
             if !live.isEmpty {
                 merged.append(contentsOf: live)
@@ -1132,6 +1167,9 @@ final class AppStore: ObservableObject {
             // top of the CHANNEL_DELETE pop and the reconnect re-validate.)
             if let status = (error as? APIError)?.status, status == 403 || status == 404,
                channel.id == selectedChannel?.id {
+                // Drop any cached history so a revoked/private channel can't
+                // repaint it from cache on a later reopen.
+                messageCache.removeValue(forKey: channel.id)
                 clearChannel()
             } else {
                 errorText = (error as? APIError)?.message ?? error.localizedDescription
@@ -2250,6 +2288,15 @@ final class AppStore: ObservableObject {
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
         }
+    }
+
+    /// Persist the open channel's current rows so reopening it paints instantly.
+    /// Caches only server-confirmed rows (drops optimistic placeholders, whose
+    /// ids are send-nonces) so a sending/failed message can't resurrect on reopen.
+    private func snapshotCurrentChannel() {
+        guard let id = selectedChannel?.id, !messages.isEmpty else { return }
+        let confirmed = messages.filter { $0.sendState == nil }
+        if !confirmed.isEmpty { messageCache[id] = confirmed }
     }
 
     private func removeMessage(id: String) {
@@ -3559,6 +3606,9 @@ final class AppStore: ObservableObject {
             // real deletion — so pop out of it if we're inside, otherwise we'd
             // keep reading the already-loaded history of a now-private channel.
             if let ch = try? JSONDecoder().decode(Channel.self, from: data) {
+                // A deleted / made-private channel must not keep cached history
+                // that could flash on a later reopen.
+                if name == "CHANNEL_DELETE" { messageCache.removeValue(forKey: ch.id) }
                 if let gid = ch.guildId {
                     // Immediate pop for the direct match (the common case).
                     if name == "CHANNEL_DELETE", ch.id == selectedChannel?.id { clearChannel() }
@@ -3572,6 +3622,7 @@ final class AppStore: ObservableObject {
                             // guildId so a stale-guild event never pops a DM.
                             if let sel = selectedChannel, sel.guildId == gid,
                                !channels.contains(where: { $0.id == sel.id }) {
+                                messageCache.removeValue(forKey: sel.id)
                                 clearChannel()
                             }
                         }
