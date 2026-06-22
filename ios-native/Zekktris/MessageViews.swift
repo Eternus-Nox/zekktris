@@ -1771,17 +1771,31 @@ struct MessageRow: View {
                     } else if att.isVoiceMessage == true {
                         VoiceMessageView(attachment: att)
                     } else if att.isImage, let url = assetURL(att.url) {
+                        // Reserve the image's final on-screen size UP FRONT from
+                        // its known width/height, so the image loading in doesn't
+                        // grow the row and push later content (and the bottom)
+                        // down — which made channels look like they didn't open at
+                        // the bottom. The placeholder fills the same reserved box,
+                        // so load is a swap with no reflow. (Encrypted images have
+                        // no known dimensions; the open-settle re-pin covers those.)
+                        let dim = imageDisplaySize(att)
                         AsyncImage(url: url) { phase in
                             switch phase {
                             case .success(let image):
                                 image.resizable().scaledToFit()
                                     .onTapGesture { store.openLightbox(url) }
                             case .empty:
-                                ProgressView().frame(width: 140, height: 90)
+                                if dim != nil {
+                                    Rectangle().fill(Theme.bg3)
+                                        .overlay(ProgressView().tint(Theme.accent))
+                                } else {
+                                    ProgressView().frame(width: 140, height: 90)
+                                }
                             default:
                                 fileChip(att)
                             }
                         }
+                        .frame(width: dim?.width, height: dim?.height)
                         .frame(maxWidth: 240, maxHeight: 240, alignment: .leading)
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                         // Long-press → Save to Photos / Copy / Share. Loads the
@@ -1794,6 +1808,19 @@ struct MessageRow: View {
             }
             .padding(.top, 2)
         }
+    }
+
+    /// The on-screen size a message image will occupy, derived from its known
+    /// pixel dimensions fit into the 240×240 bound (the same box the loaded
+    /// image lands in). Returned so the placeholder can reserve EXACTLY that
+    /// space and the image loads in without reflowing the row. nil when the
+    /// dimensions are unknown (e.g. encrypted attachments) — caller falls back
+    /// to the flexible layout.
+    private func imageDisplaySize(_ att: Attachment) -> CGSize? {
+        guard let w = att.width, let h = att.height, w > 0, h > 0 else { return nil }
+        let bound: CGFloat = 240
+        let scale = min(bound / CGFloat(w), bound / CGFloat(h))
+        return CGSize(width: CGFloat(w) * scale, height: CGFloat(h) * scale)
     }
 
     private func fileChip(_ att: Attachment) -> some View {
