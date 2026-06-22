@@ -35,7 +35,7 @@
  * see what they typed.
  */
 
-import type { ReactNode } from 'react';
+import type { MouseEvent, ReactNode } from 'react';
 import type { Channel, GuildEmoji, PublicUser } from '@zekktris/client';
 
 interface RenderContext {
@@ -44,6 +44,8 @@ interface RenderContext {
   /** Used to highlight mentions of the current user. */
   selfUserId: string | undefined;
   onChannelClick?: (channelId: string) => void;
+  /** Open a user's profile when their @mention is clicked (view/add them). */
+  onUserClick?: (user: PublicUser, e: MouseEvent) => void;
   /** Resolve a `:name:` token to a guild emoji DTO. Called for every
       potential emoji match in the inline pass. Return undefined to
       leave the token as plain text (graceful degradation when the
@@ -219,18 +221,30 @@ function RenderInline({
       const user = ctx.lookupUser(id);
       const isSelf = id === ctx.selfUserId;
       const label = user ? `@${user.displayName}` : '@unknown';
+      const userClassName = isSelf
+        ? 'inline-block bg-amber-900/40 text-amber-200 px-1 rounded font-medium'
+        : 'inline-block bg-accent/20 text-accent-soft hover:bg-accent/30 px-1 rounded font-medium';
       out.push(
-        <span
-          key={key++}
-          className={
-            isSelf
-              ? 'inline-block bg-amber-900/40 text-amber-200 px-1 rounded font-medium'
-              : 'inline-block bg-accent/20 text-accent-soft hover:bg-accent/30 px-1 rounded font-medium'
-          }
-          title={user ? user.username : `user ${id}`}
-        >
-          {label}
-        </span>,
+        user && ctx.onUserClick ? (
+          // Tappable → opens the user's profile (view/add them). Anchored at
+          // the click point via the real DOM event.
+          <button
+            key={key++}
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              ctx.onUserClick!(user, e);
+            }}
+            className={userClassName}
+            title={user.username}
+          >
+            {label}
+          </button>
+        ) : (
+          <span key={key++} className={userClassName} title={user ? user.username : `user ${id}`}>
+            {label}
+          </span>
+        ),
       );
     } else if (m[7]) {
       const id = m[7].replace(/[<@&>]/g, '');

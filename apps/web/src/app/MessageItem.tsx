@@ -282,12 +282,13 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
             }
           }
         },
+        onUserClick: onAvatarClick,
         lookupEmoji: guildEmojis
           ? (name: string) => guildEmojis.find((e) => e.name === name)
           : undefined,
       };
     },
-    [usersById, channelsByGuild, emojisByGuild, selfId, nav, message.channelId],
+    [usersById, channelsByGuild, emojisByGuild, selfId, nav, message.channelId, onAvatarClick],
   );
 
   // ── E2EE decryption ─────────────────────────────────────────────────────
