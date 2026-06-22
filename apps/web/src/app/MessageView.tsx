@@ -936,6 +936,16 @@ export function MessageView({
                     toasts.push('Encryption failed — message not scheduled.', 'error');
                     return;
                   }
+                  // Ciphertext is ~34% larger than plaintext; if it exceeds the
+                  // server's content cap, fail clearly here rather than letting
+                  // the server reject it with a cryptic length error.
+                  if (encrypted.length > 4000) {
+                    toasts.push(
+                      'This message is too long to schedule in an encrypted DM. Shorten it and try again.',
+                      'error',
+                    );
+                    return;
+                  }
                   scheduledContent = encrypted;
                 }
                 try {
