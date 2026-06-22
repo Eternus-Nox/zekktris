@@ -90,6 +90,30 @@ function formatScheduledFor(iso: string): { relative: string; absolute: string }
   return { relative, absolute };
 }
 
+/** Renders a scheduled message's body, transparently decrypting it when
+    it's E2EE ciphertext (scheduled E2EE messages are stored encrypted and
+    fired verbatim). Falls back to a lock note if this device can't decrypt
+    (DM locked / no key). */
+function ScheduledContent({ content, channelId }: { content: string; channelId: string }) {
+  const [text, setText] = useState(content);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const { isEncryptedWireFormat, decryptForDm } = await import('../lib/e2ee');
+      if (!isEncryptedWireFormat(content)) {
+        if (!cancelled) setText(content);
+        return;
+      }
+      const plain = await decryptForDm(content, channelId);
+      if (!cancelled) setText(plain ?? '🔒 Encrypted — unlock this conversation to preview');
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [content, channelId]);
+  return <>{text}</>;
+}
+
 export function ScheduledMessagesView() {
   const { rest } = useAuth();
   const toasts = useToasts();
@@ -252,7 +276,7 @@ export function ScheduledMessagesView() {
                     )}
                   </div>
                   <div className="mt-1.5 text-sm text-ink-1 whitespace-pre-wrap break-words line-clamp-3">
-                    {it.content}
+                    <ScheduledContent content={it.content} channelId={it.channelId} />
                   </div>
                   {failed && it.lastError && (
                     <div className="mt-1.5 text-[0.7rem] text-red-300/80 italic">

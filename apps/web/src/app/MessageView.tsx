@@ -895,21 +895,6 @@ export function MessageView({
                 setReplyTo(null);
               }}
               onScheduleSend={async (content, scheduledForIso) => {
-                // Block scheduling in E2EE'd DMs. The encryption key
-                // lives only on the client; the server-side worker
-                // couldn't decrypt at send time even if we wanted it
-                // to. Storing the encrypted ciphertext would mean the
-                // recipient never sees the message (it'd be encrypted
-                // under a key that has since rotated by send time),
-                // and storing plaintext would silently break the
-                // E2EE contract the user opted into.
-                if (channel.e2eeEnabled) {
-                  toasts.push(
-                    'Scheduling is not available in end-to-end encrypted DMs.',
-                    'error',
-                  );
-                  return;
-                }
                 // Run slash commands so a "/me waves" scheduled for
                 // tomorrow still renders as the action when it fires.
                 let processedContent = content;
@@ -923,9 +908,42 @@ export function MessageView({
                   });
                   processedContent = slash.content;
                 }
+                // E2EE: pre-encrypt under the conversation key. The server
+                // stores and later fires the ciphertext verbatim (it never
+                // needs the plaintext); the recipient decrypts on receipt
+                // like any encrypted message. The passphrase-derived key is
+                // stable, so it's still valid when the message fires —
+                // re-keying the DM before then invalidates pending sends.
+                let scheduledContent = processedContent;
+                if (
+                  isDM1to1 &&
+                  processedContent &&
+                  processedContent.trim().length > 0 &&
+                  channel.e2eeEnabled &&
+                  !dmE2eeSuppressed(supervision, channel)
+                ) {
+                  const { encryptForDm, hasLocalKey } = await import('../lib/e2ee');
+                  if (!hasLocalKey(channel.id)) {
+                    toasts.push(
+                      'Enter the conversation password to schedule encrypted messages.',
+                      'error',
+                    );
+                    return;
+                  }
+                  const encrypted = await encryptForDm(
+                    processedContent,
+                    channel.id,
+                    channel.e2eeVerifier,
+                  );
+                  if (!encrypted) {
+                    toasts.push('Encryption failed — message not scheduled.', 'error');
+                    return;
+                  }
+                  scheduledContent = encrypted;
+                }
                 try {
                   await rest.scheduleMessage(channel.id, {
-                    content: processedContent,
+                    content: scheduledContent,
                     scheduledFor: scheduledForIso,
                     replyToMessageId: replyTo?.id ?? null,
                   });
