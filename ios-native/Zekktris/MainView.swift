@@ -9139,6 +9139,99 @@ private struct FlowWords: View {
 // Achievements — badge grid for profiles.
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Roman numeral (1→I … 4→IV; covers our max 4 tiers, handles more if needed).
+func zkRoman(_ n: Int) -> String {
+    guard n > 0 else { return "" }
+    let vals: [(Int, String)] = [(10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]
+    var n = n, s = ""
+    for (v, sym) in vals { while n >= v { s += sym; n -= v } }
+    return s
+}
+
+/// Roman numeral per achievement id for any FAMILY (same `name`) that has more
+/// than one tier — so duplicates like Chatterbox / Social Circle are
+/// distinguishable (Chatterbox I…IV, ordered by goal). Single-tier families
+/// (Night Owl, Marathon, …) get no numeral.
+func zkTierNumerals(_ all: [Achievement]) -> [String: String] {
+    var byName: [String: [Achievement]] = [:]
+    for a in all { byName[a.name, default: []].append(a) }
+    var out: [String: String] = [:]
+    for (_, group) in byName where group.count > 1 {
+        let sorted = group.sorted { ($0.goal ?? 0) < ($1.goal ?? 0) }
+        for (i, a) in sorted.enumerated() { out[a.id] = zkRoman(i + 1) }
+    }
+    return out
+}
+
+/// Tap-to-open detail for an achievement: what it is, how to earn it (the
+/// server's description), and earned/progress state. The numeral distinguishes
+/// the tier within a family.
+struct AchievementDetailView: View {
+    @Environment(\.dismiss) private var dismiss
+    let achievement: Achievement
+    var numeral: String?
+
+    private var titleText: String {
+        numeral.map { "\(achievement.name) \($0)" } ?? achievement.name
+    }
+
+    var body: some View {
+        let earned = achievement.isEarned
+        VStack(spacing: 16) {
+            ZStack {
+                Circle()
+                    .fill(earned
+                          ? AnyShapeStyle(LinearGradient(colors: [Theme.accent.opacity(0.35), Theme.accent2.opacity(0.25)],
+                                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                          : AnyShapeStyle(Theme.bg3))
+                    .frame(width: 72, height: 72)
+                Image(systemName: earned ? achievement.sfSymbol : "lock.fill")
+                    .font(.system(size: 30))
+                    .foregroundColor(earned ? Theme.accent : Theme.ink4)
+            }
+            .padding(.top, 8)
+            Text(titleText)
+                .font(.zkSans(20, weight: .bold)).foregroundColor(Theme.ink1)
+                .multilineTextAlignment(.center)
+            Text(achievement.description)
+                .font(.zkSans(14)).foregroundColor(Theme.ink2)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            if earned {
+                Label("Earned", systemImage: "checkmark.seal.fill")
+                    .font(.zkSans(13, weight: .semibold)).foregroundColor(Theme.accent)
+            } else if let goal = achievement.goal, goal > 0 {
+                VStack(spacing: 6) {
+                    let frac = min(1, Double(achievement.value) / Double(goal))
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Theme.bg3).frame(height: 6)
+                            Capsule().fill(Theme.accent.opacity(0.7))
+                                .frame(width: max(0, frac) * geo.size.width, height: 6)
+                        }
+                    }
+                    .frame(height: 6)
+                    Text("\(min(achievement.value, goal))/\(goal)")
+                        .font(.zkMono(12, weight: .semibold)).foregroundColor(Theme.ink3)
+                }
+                .frame(maxWidth: 220)
+            }
+            Spacer()
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity)
+        .presentationDetents([.height(300)])
+        .background(Theme.bg1.ignoresSafeArea())
+        .overlay(alignment: .topTrailing) {
+            Button { dismiss() } label: {
+                Image(systemName: "xmark").font(.system(size: 14, weight: .semibold)).foregroundColor(Theme.ink3)
+            }
+            .padding(14)
+            .accessibilityLabel("Close")
+        }
+    }
+}
+
 struct AchievementsSection: View {
     /// The VIEWED user's id (always — including the signed-in user). Routing
     /// self through GET /users/<id>/achievements returns the owner their full
@@ -9151,9 +9244,12 @@ struct AchievementsSection: View {
     @State private var achievements: [Achievement] = []
     @State private var loaded = false
     @State private var loadError: String?
+    @State private var detail: Achievement?
 
     private var earned: [Achievement] { achievements.filter { $0.isEarned } }
     private var locked: [Achievement] { achievements.filter { !$0.isEarned } }
+    /// Roman numerals for multi-tier families (Chatterbox I…IV, etc.).
+    private var numerals: [String: String] { zkTierNumerals(achievements) }
 
     var body: some View {
         Group {
@@ -9163,7 +9259,12 @@ struct AchievementsSection: View {
                         Text("ACHIEVEMENTS")
                             .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
-                            ForEach(earned) { AchievementBadge(achievement: $0) }
+                            ForEach(earned) { a in
+                                Button { detail = a } label: {
+                                    AchievementBadge(achievement: a, numeral: numerals[a.id])
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
                     }
                     // In-progress badges only outside earnedOnly (Settings gallery).
@@ -9172,7 +9273,12 @@ struct AchievementsSection: View {
                             .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
                             .padding(.top, earned.isEmpty ? 0 : 4)
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
-                            ForEach(locked) { AchievementBadge(achievement: $0) }
+                            ForEach(locked) { a in
+                                Button { detail = a } label: {
+                                    AchievementBadge(achievement: a, numeral: numerals[a.id])
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
                     }
                 }
@@ -9208,11 +9314,15 @@ struct AchievementsSection: View {
             }
             loaded = true
         }
+        .sheet(item: $detail) { a in
+            AchievementDetailView(achievement: a, numeral: numerals[a.id])
+        }
     }
 }
 
 struct AchievementBadge: View {
     let achievement: Achievement
+    var numeral: String?
 
     private var symbol: String { achievement.sfSymbol }
 
@@ -9240,7 +9350,7 @@ struct AchievementBadge: View {
                         .offset(x: 13, y: 14)
                 }
             }
-            Text(achievement.name)
+            Text(numeral.map { "\(achievement.name) \($0)" } ?? achievement.name)
                 .font(.zkSans(10, weight: .medium))
                 .foregroundColor(earned ? Theme.ink2 : Theme.ink4)
                 .lineLimit(1)
@@ -9274,6 +9384,7 @@ struct AchievementsGallerySheet: View {
 
     private var earned: [Achievement] { achievements.filter { $0.isEarned } }
     private var locked: [Achievement] { achievements.filter { !$0.isEarned } }
+    private var numerals: [String: String] { zkTierNumerals(achievements) }
 
     var body: some View {
         NavigationStack {
@@ -9318,7 +9429,7 @@ struct AchievementsGallerySheet: View {
             Text(title).font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
             VStack(spacing: 0) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { i, a in
-                    AchievementGalleryRow(achievement: a)
+                    AchievementGalleryRow(achievement: a, numeral: numerals[a.id])
                     if i < items.count - 1 { Divider().overlay(Theme.line).padding(.leading, 56) }
                 }
             }
@@ -9332,6 +9443,7 @@ struct AchievementsGallerySheet: View {
 /// earned check (with marker) or a value/goal progress bar for locked entries.
 struct AchievementGalleryRow: View {
     let achievement: Achievement
+    var numeral: String?
 
     var body: some View {
         let earned = achievement.isEarned
@@ -9349,7 +9461,7 @@ struct AchievementGalleryRow: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(achievement.name)
+                    Text(numeral.map { "\(achievement.name) \($0)" } ?? achievement.name)
                         .font(.zkSans(14, weight: .semibold))
                         .foregroundColor(earned ? Theme.ink1 : Theme.ink3)
                     if earned, !achievement.marker.isEmpty {
