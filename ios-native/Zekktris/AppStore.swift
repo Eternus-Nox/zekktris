@@ -458,6 +458,18 @@ final class AppStore: ObservableObject {
 
     /// In-memory key cache (channelId → raw 32-byte key); backed by Keychain.
     private var e2eeKeyCache: [String: Data] = [:]
+    /// In-memory cache of DECRYPTED E2EE attachment bytes, keyed by attachment
+    /// id, so a photo that scrolls out and back (or is reopened in the media
+    /// gallery) doesn't re-fetch + re-decrypt every time. In-memory ONLY — never
+    /// written to disk and cleared on quit; also cleared on relock / sign-out so
+    /// plaintext never outlives the key. NSCache auto-evicts under memory
+    /// pressure and is bounded below.
+    private let decryptedMediaCache: NSCache<NSString, NSData> = {
+        let c = NSCache<NSString, NSData>()
+        c.countLimit = 200
+        c.totalCostLimit = 64 * 1024 * 1024 // 64 MB
+        return c
+    }()
     /// Legacy default-group keychain — kept as the read/migrate fallback for
     /// E2EE keys stored by builds before the app-group move (see below).
     private let keychain = KeychainStore()
@@ -720,6 +732,7 @@ final class AppStore: ObservableObject {
         selectedChannel = nil
         decrypted = [:]
         e2eeKeyCache = [:]
+        decryptedMediaCache.removeAllObjects()
         e2eeError = nil
     }
 
@@ -2223,10 +2236,19 @@ final class AppStore: ObservableObject {
     /// Fetch + decrypt an encrypted attachment (.zke) with the channel key.
     /// Returns nil when the key isn't unlocked or the blob doesn't verify.
     func decryptedAttachmentData(_ attachment: Attachment, in channel: Channel) async -> Data? {
+        // Return cached plaintext if we've already decrypted this attachment this
+        // session — avoids re-fetching the .zke blob and re-running crypto every
+        // time the row reappears. The cache is cleared on relock/sign-out, so a
+        // hit always means the conversation is still unlocked.
+        if let cached = decryptedMediaCache.object(forKey: attachment.id as NSString) {
+            return cached as Data
+        }
         guard channel.isE2EE, let key = e2eeKey(for: channel),
               let url = assetURL(attachment.url) else { return nil }
         guard let (blob, _) = try? await URLSession.shared.data(from: url) else { return nil }
-        return E2EE.decryptData(blob, key: key)
+        guard let plain = E2EE.decryptData(blob, key: key) else { return nil }
+        decryptedMediaCache.setObject(plain as NSData, forKey: attachment.id as NSString, cost: plain.count)
+        return plain
     }
 
     /// Send a recorded voice message: the audio file plus its duration and
@@ -3936,6 +3958,10 @@ final class AppStore: ObservableObject {
         for m in messages where m.channelId == channelId {
             decrypted.removeValue(forKey: m.id)
         }
+        // Drop any decrypted attachment plaintext too — relocking must not leave
+        // viewable media behind. (Clear all: the cache is keyed by attachment id,
+        // not channel, and decrypted bytes are cheap to re-derive while unlocked.)
+        decryptedMediaCache.removeAllObjects()
         e2eeUnlockVersion += 1
     }
 
