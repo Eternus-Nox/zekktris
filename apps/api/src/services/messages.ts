@@ -605,6 +605,61 @@ export async function loadAttachments(messageIds: bigint[]) {
   return map;
 }
 
+export interface ChannelAttachmentRow {
+  attachment: schema.Attachment;
+  messageId: bigint;
+  authorId: bigint | null;
+  createdAt: Date;
+}
+
+/**
+ * List a channel's attachments newest-first for the "all media / documents"
+ * gallery. Paginated by attachment id (`before` cursor). Excludes deleted
+ * messages and inline voice messages. `kind`:
+ *   'media' — image/* or video/* by content type
+ *   'files' — everything else
+ *   undefined — all (the client buckets; needed for E2EE channels where the
+ *               real type is hidden inside the encrypted `.zke` blob).
+ */
+export async function listChannelAttachments(
+  channelId: bigint,
+  opts: { before?: bigint; limit: number; kind?: 'media' | 'files' },
+): Promise<ChannelAttachmentRow[]> {
+  const conds: SQL[] = [
+    eq(schema.messages.channelId, channelId),
+    isNull(schema.messages.deletedAt),
+    eq(schema.attachments.isVoiceMessage, false),
+  ];
+  if (opts.before !== undefined) conds.push(lt(schema.attachments.id, opts.before));
+  if (opts.kind === 'media') {
+    conds.push(
+      sql`(${schema.attachments.contentType} LIKE 'image/%' OR ${schema.attachments.contentType} LIKE 'video/%')`,
+    );
+  } else if (opts.kind === 'files') {
+    conds.push(
+      sql`(${schema.attachments.contentType} NOT LIKE 'image/%' AND ${schema.attachments.contentType} NOT LIKE 'video/%')`,
+    );
+  }
+  const rows = await db
+    .select({
+      attachment: schema.attachments,
+      messageId: schema.messages.id,
+      authorId: schema.messages.authorId,
+      createdAt: schema.messages.createdAt,
+    })
+    .from(schema.attachments)
+    .innerJoin(schema.messages, eq(schema.messages.id, schema.attachments.messageId))
+    .where(and(...conds))
+    .orderBy(desc(schema.attachments.id))
+    .limit(Math.min(Math.max(opts.limit, 1), 100));
+  return rows.map((r) => ({
+    attachment: r.attachment,
+    messageId: r.messageId,
+    authorId: r.authorId,
+    createdAt: r.createdAt,
+  }));
+}
+
 /**
  * Load sticker rows for a batch of messages. Returns a map keyed by
  * sticker id so callers index by the message's `stickerId` field.

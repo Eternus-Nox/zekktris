@@ -24,7 +24,7 @@ import {
   messagePageLimitSchema,
   emojiSchema,
 } from '../lib/validation';
-import { toMessage, toPublicUser, toReadState, toChannel, toPoll, toForwardSource, toSticker, toGuildMember, type PollDTO, type ForwardSourceDTO, type StickerDTO } from '../lib/dto';
+import { toMessage, toPublicUser, toReadState, toChannel, toPoll, toForwardSource, toSticker, toGuildMember, toAttachment, type PollDTO, type ForwardSourceDTO, type StickerDTO } from '../lib/dto';
 import * as messages from '../services/messages';
 import * as polls from '../services/polls';
 import * as embeds from '../services/embeds';
@@ -139,6 +139,47 @@ const sendMessageSchema = z.object({
       the REST 201 response. */
   nonce: z.string().max(64).optional(),
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /:channelId/attachments — the "all media / documents" gallery
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Lists a channel's attachments newest-first, paginated by attachment id
+// (`before` cursor). `kind=media|files` filters server-side by content type;
+// E2EE channels omit it (the real type is hidden in the encrypted blob) and the
+// client buckets by the inner filename. Access is gated exactly like reading
+// the channel's messages (loadChannelContext throws otherwise).
+messagesRouter.get(
+  '/:channelId/attachments',
+  validate('param', z.object({ channelId: snowflakeSchema })),
+  validate(
+    'query',
+    z.object({
+      before: snowflakeSchema.optional(),
+      limit: z.coerce.number().int().min(1).max(100).optional().default(50),
+      kind: z.enum(['media', 'files']).optional(),
+    }),
+  ),
+  async (c) => {
+    const userId = requireUserId(c);
+    const channelId = BigInt(c.req.valid('param').channelId);
+    await loadChannelContext(channelId, userId);
+    const q = c.req.valid('query');
+    const rows = await messages.listChannelAttachments(channelId, {
+      before: q.before ? BigInt(q.before) : undefined,
+      limit: q.limit,
+      kind: q.kind,
+    });
+    return c.json({
+      attachments: rows.map((r) => ({
+        ...toAttachment(r.attachment),
+        messageId: r.messageId.toString(),
+        authorId: r.authorId !== null ? r.authorId.toString() : null,
+        createdAt: r.createdAt.toISOString(),
+      })),
+    });
+  },
+);
 
 messagesRouter.post(
   '/:channelId/messages',
