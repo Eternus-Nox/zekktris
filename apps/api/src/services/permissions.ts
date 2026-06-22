@@ -475,6 +475,27 @@ function reconcileCategoryVisibility(
  * keyed by userId; users with no membership row simply get an empty
  * set (matches listViewableGuildChannelIds returning []).
  */
+/**
+ * Snowflake ids of guild members who can VIEW a channel — the audience for an
+ * @everyone mention. Loads the guild's member ids then filters by the batched
+ * viewability resolver, so members who can't see the channel (private/mod
+ * channels) are never notified. Permission-gated + rare, so the per-mention
+ * cost is acceptable.
+ */
+export async function listChannelViewerIds(
+  guildId: bigint,
+  channelId: bigint,
+): Promise<bigint[]> {
+  const members = await db
+    .select({ id: schema.guildMembers.userId })
+    .from(schema.guildMembers)
+    .where(eq(schema.guildMembers.guildId, guildId));
+  const ids = members.map((m) => m.id);
+  if (ids.length === 0) return [];
+  const viewable = await listViewableGuildChannelIdsForUsers(guildId, ids);
+  return ids.filter((id) => viewable.get(id)?.has(channelId));
+}
+
 export async function listViewableGuildChannelIdsForUsers(
   guildId: bigint,
   userIds: bigint[],

@@ -46,6 +46,7 @@ import {
   Permissions,
   computeMemberChannelPermissions,
   hasPermission,
+  listChannelViewerIds,
   assertChannelPermission,
 } from '../services/permissions';
 import { db, schema } from '../db';
@@ -893,6 +894,17 @@ messagesRouter.post(
         if (isDM) {
           const recipients = await dms.listAllRecipients(channelId);
           targetUserIds = recipients.filter((id) => id !== userId);
+        } else if (result.mentionsEveryone && ctx.channel.guildId) {
+          // @everyone: the audience is every guild member who can VIEW this
+          // channel (private/mod channels stay private). The sender already
+          // passed the MENTION_EVERYONE gate in createMessage. Bump their
+          // mention badge unconditionally (same as direct @mentions, which are
+          // badged inline in createMessage), then push below honoring mute.
+          const viewers = (await listChannelViewerIds(ctx.channel.guildId, channelId)).filter(
+            (id) => id !== userId,
+          );
+          await readStates.bumpMentions(channelId, viewers);
+          targetUserIds = viewers;
         } else if (result.mentionedUserIds.length > 0) {
           targetUserIds = result.mentionedUserIds.filter((id) => id !== userId);
         }

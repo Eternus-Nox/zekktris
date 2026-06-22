@@ -34,6 +34,34 @@ export interface ReadStateRow {
 }
 
 /**
+ * Increment the mention badge for a set of users in a channel — used for
+ * @everyone fan-out (direct @user mentions are bumped inline in
+ * messages.createMessage). Upsert because a recipient may have no read_state
+ * row yet (INSERT with mentionCount=1 + NULL marker = "all unread"). The caller
+ * is responsible for excluding the author and scoping to the channel audience.
+ */
+export async function bumpMentions(channelId: bigint, userIds: bigint[]): Promise<void> {
+  if (userIds.length === 0) return;
+  await db
+    .insert(schema.readStates)
+    .values(
+      userIds.map((userId) => ({
+        userId,
+        channelId,
+        lastMessageId: null,
+        mentionCount: 1,
+      })),
+    )
+    .onConflictDoUpdate({
+      target: [schema.readStates.userId, schema.readStates.channelId],
+      set: {
+        mentionCount: sql`${schema.readStates.mentionCount} + 1`,
+        updatedAt: new Date(),
+      },
+    });
+}
+
+/**
  * Upsert the user's read marker for a channel. The new marker is only
  * persisted if it's >= the previous one; older acks are silently no-ops
  * (we still reset mention_count, since "I clicked into this channel" is
