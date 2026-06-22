@@ -543,6 +543,10 @@ struct StorageGcResult: Codable { let scanned: Int; let deleted: Int }
 struct ChannelsWrap: Codable { let channels: [Channel] }
 struct ChannelWrap: Codable { let channel: Channel }
 struct MessagesWrap: Codable { let messages: [Message] }
+/// Shared-media gallery page. The server adds messageId/authorId/createdAt to
+/// each item; Attachment's Codable ignores those extra keys (we only need the
+/// attachment fields + id cursor for the gallery).
+struct ChannelAttachmentsWrap: Codable { let attachments: [Attachment] }
 struct MessageWrap: Codable { let message: Message }
 
 /// Per-channel read marker: the last message the user has acked, plus the

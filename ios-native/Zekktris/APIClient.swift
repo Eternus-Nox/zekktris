@@ -279,6 +279,17 @@ final class APIClient {
         return wrap.messages
     }
 
+    /// All attachments in a channel, newest-first, for the shared-media gallery.
+    /// `before` is the previous page's last attachment id (cursor). We fetch
+    /// unfiltered (no `kind`) and let the gallery bucket Media vs Files, so
+    /// encrypted (.zke) attachments are classified by their inner filename.
+    func channelAttachments(channelId: String, limit: Int = 60, before: String? = nil) async throws -> [Attachment] {
+        var path = "/channels/\(channelId)/attachments?limit=\(limit)"
+        if let before { path += "&before=\(before)" }
+        let wrap: ChannelAttachmentsWrap = try await send("GET", path)
+        return wrap.attachments
+    }
+
     /// Resolve a single link preview for a URL found in a DECRYPTED E2EE
     /// message (the server can't unfurl ciphertext, so the client does it after
     /// decryption). Returns nil when the server couldn't build a preview.

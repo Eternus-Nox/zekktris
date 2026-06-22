@@ -3891,6 +3891,27 @@ struct DmSettingsSheet: View {
 
                     Divider().overlay(Theme.line)
 
+                    Text("SHARED MEDIA")
+                        .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                    NavigationLink {
+                        MediaGalleryView(channel: liveChannel)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "photo.on.rectangle.angled")
+                                .font(.system(size: 13)).foregroundColor(Theme.accent)
+                            Text("Photos & Files")
+                                .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.ink3)
+                        }
+                        .padding(12)
+                        .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+
+                    Divider().overlay(Theme.line)
+
                     Text("AUTO-DELETE MESSAGES")
                         .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
                     if store.loadingDmSettings {
@@ -4233,6 +4254,165 @@ struct EncryptedAttachmentView: View {
             image = UIImage(data: data)
             loading = false
             failed = (image == nil && !data.isEmpty) ? false : failed
+        }
+    }
+}
+
+// MARK: - Shared media gallery
+
+/// All photos & documents shared in a DM / channel, in two tabs. Reads
+/// GET /channels/:id/attachments (newest-first, paginated) and buckets
+/// client-side, so encrypted (.zke) attachments are classified by their inner
+/// filename and decrypted for display. Photos open in the lightbox.
+struct MediaGalleryView: View {
+    let channel: Channel
+    @EnvironmentObject private var store: AppStore
+    private enum Tab: String, CaseIterable { case media = "Photos", files = "Files" }
+    @State private var tab: Tab = .media
+    @State private var items: [Attachment] = []
+    @State private var loading = false
+    @State private var hasMore = true
+
+    private func realName(_ a: Attachment) -> String {
+        let n = a.filename ?? ""
+        return n.hasSuffix(".zke") ? String(n.dropLast(4)) : n
+    }
+    private func isImage(_ a: Attachment) -> Bool {
+        if a.isImage { return true }
+        let ext = (realName(a) as NSString).pathExtension.lowercased()
+        return ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tiff"].contains(ext)
+    }
+    private var media: [Attachment] { items.filter { isImage($0) && $0.isVoiceMessage != true } }
+    private var files: [Attachment] { items.filter { !isImage($0) && $0.isVoiceMessage != true } }
+    private var current: [Attachment] { tab == .media ? media : files }
+
+    private let cols = [GridItem(.adaptive(minimum: 108), spacing: 3)]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $tab) {
+                ForEach(Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .padding(12)
+
+            ScrollView {
+                if tab == .media {
+                    LazyVGrid(columns: cols, spacing: 3) {
+                        ForEach(media) { GalleryThumb(attachment: $0, channel: channel) }
+                    }
+                    .padding(.horizontal, 3)
+                } else {
+                    LazyVStack(spacing: 0) {
+                        ForEach(files) { a in
+                            GalleryFileRow(attachment: a, displayName: realName(a))
+                            Divider().overlay(Theme.line).padding(.leading, 52)
+                        }
+                    }
+                }
+
+                if loading {
+                    ProgressView().tint(Theme.accent).padding(.vertical, 18)
+                } else if hasMore && !items.isEmpty {
+                    // Bottom sentinel: paginates the underlying stream (both tabs
+                    // re-filter as `items` grows).
+                    Color.clear.frame(height: 1)
+                        .onAppear { Task { await loadMore() } }
+                } else if current.isEmpty {
+                    Text(tab == .media ? "No photos shared yet." : "No files shared yet.")
+                        .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                        .frame(maxWidth: .infinity).padding(.vertical, 44)
+                }
+            }
+        }
+        .background(Theme.bg1.ignoresSafeArea())
+        .navigationTitle("Shared Media").navigationBarTitleDisplayMode(.inline)
+        .task { if items.isEmpty { await loadMore() } }
+    }
+
+    private func loadMore() async {
+        guard !loading, hasMore else { return }
+        loading = true
+        defer { loading = false }
+        do {
+            let page = try await APIClient.shared.channelAttachments(channelId: channel.id, before: items.last?.id)
+            let seen = Set(items.map { $0.id })
+            items.append(contentsOf: page.filter { !seen.contains($0.id) })
+            hasMore = page.count >= 60
+        } catch {
+            hasMore = false
+        }
+    }
+}
+
+/// One square photo cell — plain (RetryingImage) or E2EE (decrypted in-place).
+private struct GalleryThumb: View {
+    let attachment: Attachment
+    let channel: Channel
+    @EnvironmentObject private var store: AppStore
+    @State private var decrypted: UIImage?
+    @State private var tried = false
+    private var isEncrypted: Bool { attachment.filename?.hasSuffix(".zke") == true }
+
+    var body: some View {
+        Color.clear
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                if isEncrypted {
+                    if let img = decrypted {
+                        Image(uiImage: img).resizable().scaledToFill()
+                    } else {
+                        ZStack {
+                            Theme.bg3
+                            Image(systemName: tried ? "lock.slash" : "lock.fill")
+                                .foregroundColor(Theme.ink3)
+                        }
+                    }
+                } else if let url = assetURL(attachment.url) {
+                    RetryingImage(url: url)
+                }
+            }
+            .clipped()
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if let img = decrypted { store.openLightbox(image: img) }
+                else if !isEncrypted, let url = assetURL(attachment.url) { store.openLightbox(url) }
+            }
+            .task(id: store.e2eeUnlockVersion) {
+                guard isEncrypted, decrypted == nil else { return }
+                if let data = await store.decryptedAttachmentData(attachment, in: channel) {
+                    decrypted = UIImage(data: data)
+                }
+                tried = true
+            }
+    }
+}
+
+/// One document row in the Files tab. Plain files open via the system; encrypted
+/// files show their name (decrypt-to-open is a future add).
+private struct GalleryFileRow: View {
+    let attachment: Attachment
+    let displayName: String
+    @Environment(\.openURL) private var openURL
+    private var isEncrypted: Bool { attachment.filename?.hasSuffix(".zke") == true }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: isEncrypted ? "lock.doc.fill" : "doc.fill")
+                .foregroundColor(Theme.accent).frame(width: 28)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(displayName).font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1).lineLimit(1)
+                if let size = attachment.size {
+                    Text(byteString(size)).font(.zkSans(11)).foregroundColor(Theme.ink3)
+                }
+            }
+            Spacer()
+            if !isEncrypted { Image(systemName: "arrow.down.circle").foregroundColor(Theme.ink3) }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if !isEncrypted, let url = assetURL(attachment.url) { openURL(url) }
         }
     }
 }
