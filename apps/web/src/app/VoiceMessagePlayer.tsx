@@ -18,10 +18,25 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Attachment } from '@zekktris/client';
+import { decryptBytesForDm } from '../lib/e2ee';
 import { Play, Pause } from '../lib/icons';
 
 interface Props {
   attachment: Attachment;
+  /** Needed to decrypt a `.zke` (E2EE) voice note before playback. */
+  channelId?: string;
+}
+
+/** Map a (decrypted) voice filename's extension to an audio MIME so the
+    blob URL plays. The encrypted attachment's own contentType is
+    octet-stream, so we recover the type from the inner filename. */
+function voiceMimeFromName(name: string): string {
+  const real = name.replace(/\.zke$/, '');
+  const ext = real.split('.').pop()?.toLowerCase();
+  if (ext === 'webm') return 'audio/webm';
+  if (ext === 'ogg') return 'audio/ogg';
+  if (ext === 'mp3') return 'audio/mpeg';
+  return 'audio/mp4'; // m4a / default
 }
 
 // Render exactly this many bars regardless of how many samples the
@@ -31,10 +46,47 @@ interface Props {
 // bar + 2px gap), close to Discord's voice-message visual weight.
 const BAR_COUNT = 32;
 
-export function VoiceMessagePlayer({ attachment }: Props) {
+export function VoiceMessagePlayer({ attachment, channelId }: Props) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [currentSec, setCurrentSec] = useState(0);
+  // The URL the <audio> element plays. For a plaintext voice note this is
+  // the CDN URL directly; for an encrypted (.zke) note we fetch + decrypt
+  // the bytes and play a local blob URL instead (null until ready).
+  const encrypted = attachment.filename.endsWith('.zke');
+  const [srcUrl, setSrcUrl] = useState<string | null>(encrypted ? null : attachment.url);
+
+  useEffect(() => {
+    if (!encrypted) {
+      setSrcUrl(attachment.url);
+      return;
+    }
+    if (!channelId) {
+      setSrcUrl(null); // can't decrypt without the channel key
+      return;
+    }
+    let cancelled = false;
+    let url: string | null = null;
+    void (async () => {
+      try {
+        const res = await fetch(attachment.url);
+        if (!res.ok) return;
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        const pt = await decryptBytesForDm(bytes, channelId);
+        if (cancelled || !pt) return;
+        url = URL.createObjectURL(
+          new Blob([pt as BlobPart], { type: voiceMimeFromName(attachment.filename) }),
+        );
+        setSrcUrl(url);
+      } catch {
+        /* leave srcUrl null → play stays disabled */
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [attachment.url, attachment.filename, channelId, encrypted]);
   // Browsers can take a moment after play() before they report
   // currentTime > 0; we drive a stable progress fraction via an rAF
   // loop while playing rather than only on `timeupdate` events
@@ -68,9 +120,10 @@ export function VoiceMessagePlayer({ attachment }: Props) {
   }, [rawSamples]);
   const playedFrac = totalSec > 0 ? Math.min(1, currentSec / totalSec) : 0;
 
-  function ensureAudio(): HTMLAudioElement {
+  function ensureAudio(): HTMLAudioElement | null {
     if (audioRef.current) return audioRef.current;
-    const a = new Audio(attachment.url);
+    if (!srcUrl) return null; // still decrypting / locked
+    const a = new Audio(srcUrl);
     a.preload = 'metadata';
     a.addEventListener('ended', () => {
       setPlaying(false);
@@ -113,6 +166,7 @@ export function VoiceMessagePlayer({ attachment }: Props) {
 
   function toggle() {
     const a = ensureAudio();
+    if (!a) return; // encrypted note still decrypting (or locked)
     if (a.paused) {
       void a.play().catch(() => {
         // Autoplay/permission errors — leave the UI in paused state.
@@ -125,6 +179,7 @@ export function VoiceMessagePlayer({ attachment }: Props) {
 
   function seekFromEvent(e: React.MouseEvent<HTMLDivElement>) {
     const a = ensureAudio();
+    if (!a) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     if (totalSec > 0) {
@@ -147,8 +202,18 @@ export function VoiceMessagePlayer({ attachment }: Props) {
       <button
         type="button"
         onClick={toggle}
-        className="w-9 h-9 rounded-full flex items-center justify-center bg-accent text-white hover:bg-accent/90 shrink-0"
-        aria-label={playing ? 'Pause voice message' : 'Play voice message'}
+        disabled={!srcUrl}
+        className="w-9 h-9 rounded-full flex items-center justify-center bg-accent text-white hover:bg-accent/90 disabled:opacity-50 shrink-0"
+        aria-label={
+          !srcUrl
+            ? encrypted
+              ? 'Decrypting voice message…'
+              : 'Voice message unavailable'
+            : playing
+              ? 'Pause voice message'
+              : 'Play voice message'
+        }
+        title={!srcUrl && encrypted ? 'Decrypting…' : undefined}
       >
         {playing ? <Pause size={14} /> : <Play size={14} />}
       </button>

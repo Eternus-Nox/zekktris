@@ -850,18 +850,15 @@ export function MessageView({
                   }
                 }
 
-                // E2EE: attachments must be encrypted too. Guard the key
-                // for ANY attachment-bearing message — the text guard above
-                // only fires when there's text, so an attachment-only send
-                // would otherwise slip through and leak plaintext to the
-                // server. Voice messages are deferred to the E2EE phase-2
-                // work (the player can't yet decrypt .zke audio), so they're
-                // excluded here.
+                // E2EE: attachments must be encrypted too — including voice
+                // notes (the player decrypts .zke audio for playback). Guard
+                // the key for ANY attachment-bearing message: the text guard
+                // above only fires when there's text, so an attachment-only
+                // send would otherwise slip through and leak plaintext.
                 let encryptAttachmentsForDm: string | undefined;
                 if (
                   isDM1to1 &&
                   files.length > 0 &&
-                  !voiceMessage &&
                   channel.e2eeEnabled &&
                   !dmE2eeSuppressed(supervision, channel)
                 ) {

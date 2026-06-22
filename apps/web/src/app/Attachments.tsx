@@ -33,19 +33,18 @@ export function Attachments({
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   if (attachments.length === 0) return null;
 
+  // Voice messages get their own custom player FIRST, regardless of
+  // encryption: an encrypted voice note (.zke) must route to the player
+  // (which decrypts) rather than the generic encrypted-file card.
+  const voices = attachments.filter((a) => a.isVoiceMessage);
+  const nonVoice = attachments.filter((a) => !a.isVoiceMessage);
+
   // E2EE attachments (.zke suffix; iOS + web encrypt as iv||ct||tag with
   // the shared channel key) render through a decrypting card.
-  const encrypted = attachments.filter((a) => a.filename.endsWith('.zke'));
-  const plain = attachments.filter((a) => !a.filename.endsWith('.zke'));
-
-  // Voice messages get their own custom player, separate from the
-  // image grid + file-chip path. They're always at most one per
-  // message (server enforces) but we filter generically in case that
-  // ever loosens.
-  const voices = plain.filter((a) => a.isVoiceMessage);
-  const remaining = plain.filter((a) => !a.isVoiceMessage);
-  const images = remaining.filter((a) => IMAGE_TYPES.test(a.contentType));
-  const others = remaining.filter((a) => !IMAGE_TYPES.test(a.contentType));
+  const encrypted = nonVoice.filter((a) => a.filename.endsWith('.zke'));
+  const plain = nonVoice.filter((a) => !a.filename.endsWith('.zke'));
+  const images = plain.filter((a) => IMAGE_TYPES.test(a.contentType));
+  const others = plain.filter((a) => !IMAGE_TYPES.test(a.contentType));
 
   return (
     <div className="mt-1 space-y-1">
@@ -59,7 +58,7 @@ export function Attachments({
       {voices.length > 0 && (
         <div className="flex flex-col gap-1">
           {voices.map((v) => (
-            <VoiceMessagePlayer key={v.id} attachment={v} />
+            <VoiceMessagePlayer key={v.id} attachment={v} channelId={channelId} />
           ))}
         </div>
       )}
