@@ -229,6 +229,9 @@ struct VoiceMessageView: View {
     // Encrypted clips aren't playable until their audio is fetched +
     // decrypted to a temp file; plaintext clips are ready immediately.
     @State private var ready: Bool
+    // The decrypted-audio temp file (encrypted clips only) — deleted on
+    // disappear so it doesn't linger in tmp.
+    @State private var tempAudioURL: URL?
 
     init(attachment: Attachment, channel: Channel) {
         self.attachment = attachment
@@ -282,12 +285,16 @@ struct VoiceMessageView: View {
                 let tmp = FileManager.default.temporaryDirectory
                     .appendingPathComponent(UUID().uuidString + ".m4a")
                 if (try? data.write(to: tmp)) != nil {
+                    tempAudioURL = tmp
                     player.setSource(tmp)
                     ready = true
                 }
             }
         }
-        .onDisappear { player.cleanup() }
+        .onDisappear {
+            player.cleanup()
+            if let tempAudioURL { try? FileManager.default.removeItem(at: tempAudioURL) }
+        }
     }
 }
 

@@ -2150,6 +2150,12 @@ final class AppStore: ObservableObject {
             guard let key = e2eeKey(for: channel), let enc = E2EE.encrypt(content, key: key) else {
                 return "Unlock this conversation to schedule encrypted messages."
             }
+            // Ciphertext is ~34% larger than plaintext; reject clearly here if
+            // it would exceed the server's content cap rather than failing the
+            // request with a cryptic length error.
+            if enc.count > 4000 {
+                return "This message is too long to schedule in an encrypted DM."
+            }
             wireContent = enc
         }
         do {
@@ -2170,11 +2176,13 @@ final class AppStore: ObservableObject {
     func scheduledDisplayContent(_ sm: ScheduledMessage) -> String {
         guard let content = sm.content, !content.isEmpty else { return "" }
         guard content.hasPrefix(E2EE.wirePrefixV3) else { return content }
-        if let channel = channels.first(where: { $0.id == sm.channelId })
-            ?? dms.first(where: { $0.id == sm.channelId }),
-           let key = e2eeKey(for: channel),
-           let plain = E2EE.decrypt(content, key: key) {
-            return plain
+        // A DM normally lives in `dms`, but search both lists and use whichever
+        // candidate yields a working key (avoids picking a keyless duplicate).
+        let candidates = channels.filter { $0.id == sm.channelId } + dms.filter { $0.id == sm.channelId }
+        for channel in candidates {
+            if let key = e2eeKey(for: channel), let plain = E2EE.decrypt(content, key: key) {
+                return plain
+            }
         }
         return "🔒 Encrypted — unlock this conversation to preview"
     }
@@ -2296,6 +2304,9 @@ final class AppStore: ObservableObject {
     /// attachment; the duration + waveform stay plaintext metadata (no
     /// content leak) so the player can draw the bars before decrypting.
     func sendVoiceMessage(fileURL: URL, duration: Int, waveform: String) async {
+        // The recording is a temp file from VoiceRecorder — remove it once we've
+        // read + uploaded it (on every path) so recordings don't pile up in tmp.
+        defer { try? FileManager.default.removeItem(at: fileURL) }
         guard let channel = selectedChannel else { return }
         guard let data = try? Data(contentsOf: fileURL) else { errorText = "Couldn't read recording."; return }
         let nonce = UUID().uuidString

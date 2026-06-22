@@ -4505,6 +4505,11 @@ struct EncryptedAttachmentView: View {
             }
         }
         .fullScreenCover(item: $playingVideo) { VideoLightboxView(url: $0.url) }
+        .onDisappear {
+            // Decrypted video is written to a temp file (iOS doesn't auto-purge
+            // NSTemporaryDirectory); remove it when the row goes away.
+            if let videoURL { try? FileManager.default.removeItem(at: videoURL) }
+        }
         .task(id: store.e2eeUnlockVersion) {
             loading = true
             failed = false
