@@ -1707,6 +1707,11 @@ interface AppStateValue {
       stickerId?: string;
       /** When set, the FIRST file is treated as a voice message. */
       voiceMessage?: { durationSeconds: number; waveform: string };
+      /** When set, attachments are encrypted with this DM's shared key
+          before upload (the optimistic preview still uses the plaintext
+          originals). The caller must have already confirmed the local key
+          exists. */
+      encryptAttachmentsForDm?: string;
     },
   ) => Promise<string>;
   /** Retry a previously-failed optimistic send. */
@@ -2231,6 +2236,11 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         stickerId?: string;
         /** When set, the FIRST file is treated as a voice message. */
         voiceMessage?: { durationSeconds: number; waveform: string };
+        /** When set, attachments are encrypted with this DM's shared key
+            before upload (the optimistic preview still uses the plaintext
+            originals). The caller must have already confirmed the local
+            key exists. */
+        encryptAttachmentsForDm?: string;
       },
     ): Promise<string> => {
       // Build a temp id distinct from any server-issued snowflake (those
@@ -2238,7 +2248,6 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       // is unsigned-int-incompatible so it never accidentally matches.
       const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const files = input.files ?? [];
-      pendingFilesRef.current.set(localId, files);
       pendingInputsRef.current.set(localId, {
         content: input.content,
         replyToId: input.replyToId ?? null,
@@ -2323,12 +2332,44 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       };
       dispatch({ type: 'MESSAGE_APPEND', channelId, message: placeholder });
 
+      // E2EE: encrypt attachments before they leave the device. The
+      // optimistic placeholder above already used the plaintext originals
+      // for an instant local preview; only the uploaded bytes are
+      // encrypted. We store the ciphertext files in pendingFilesRef so a
+      // Retry re-uploads ciphertext too — never plaintext. Each encrypted
+      // file gets the `.zke` suffix the renderer/gallery use to detect it.
+      let uploadFiles = files;
+      if (input.encryptAttachmentsForDm && files.length > 0) {
+        try {
+          const { encryptBytesForDm } = await import('../lib/e2ee');
+          const cid = input.encryptAttachmentsForDm;
+          const out: File[] = [];
+          for (const f of files) {
+            const bytes = new Uint8Array(await f.arrayBuffer());
+            const enc = await encryptBytesForDm(bytes, cid);
+            if (!enc) throw new Error('attachment-encryption-failed');
+            out.push(
+              new File([enc as BlobPart], `${f.name}.zke`, {
+                type: 'application/octet-stream',
+              }),
+            );
+          }
+          uploadFiles = out;
+        } catch {
+          // Never fall back to plaintext under E2EE — fail the bubble.
+          dispatch({ type: 'MESSAGE_MARK_FAILED', channelId, localId });
+          toasts.push('Could not encrypt attachment — message not sent.', 'error');
+          return localId;
+        }
+      }
+      pendingFilesRef.current.set(localId, uploadFiles);
+
       // Fire the actual REST call in the background.
       try {
         const r = await (await restForChannel(channelId)).sendMessage(channelId, {
           content: input.content,
           replyToId: input.replyToId,
-          files,
+          files: uploadFiles,
           nonce: localId,
           ...(input.poll ? { poll: input.poll } : {}),
           ...(input.forwardFromMessageId ? { forwardFromMessageId: input.forwardFromMessageId } : {}),

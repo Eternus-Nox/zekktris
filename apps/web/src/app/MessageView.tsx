@@ -850,6 +850,32 @@ export function MessageView({
                   }
                 }
 
+                // E2EE: attachments must be encrypted too. Guard the key
+                // for ANY attachment-bearing message — the text guard above
+                // only fires when there's text, so an attachment-only send
+                // would otherwise slip through and leak plaintext to the
+                // server. Voice messages are deferred to the E2EE phase-2
+                // work (the player can't yet decrypt .zke audio), so they're
+                // excluded here.
+                let encryptAttachmentsForDm: string | undefined;
+                if (
+                  isDM1to1 &&
+                  files.length > 0 &&
+                  !voiceMessage &&
+                  channel.e2eeEnabled &&
+                  !dmE2eeSuppressed(supervision, channel)
+                ) {
+                  const { hasLocalKey } = await import('../lib/e2ee');
+                  if (!hasLocalKey(channel.id)) {
+                    toasts.push(
+                      'Enter the conversation password to send encrypted attachments.',
+                      'error',
+                    );
+                    return;
+                  }
+                  encryptAttachmentsForDm = channel.id;
+                }
+
                 // Optimistic insertion — bubble appears immediately, with
                 // upload progress and a retry affordance on failure. The
                 // promise resolves once the REST call settles either way
@@ -864,6 +890,7 @@ export function MessageView({
                   ...(poll ? { poll } : {}),
                   ...(stickerId ? { stickerId } : {}),
                   ...(voiceMessage ? { voiceMessage } : {}),
+                  ...(encryptAttachmentsForDm ? { encryptAttachmentsForDm } : {}),
                 });
                 setReplyTo(null);
               }}
