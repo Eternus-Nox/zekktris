@@ -650,16 +650,25 @@ struct MessageListView: View {
         composerFocused = false
         if !pendingAttachments.isEmpty {
             // All picked photos/videos go out as ONE message (the server
-            // accepts up to 10 attachments per message).
+            // accepts up to 10 attachments per message). Clear the composer
+            // optimistically for responsiveness, but keep a copy so a failed
+            // upload restores the picks instead of silently losing them.
+            let saved = pendingAttachments
             let caption = draft
-            let items = pendingAttachments.map {
-                (data: $0.data, filename: $0.filename, contentType: $0.mime)
-            }
             draft = ""
             pendingAttachments = []
             pickerItems = []
             Task {
-                await store.sendAttachments(items, caption: caption)
+                let ok = await store.sendAttachments(
+                    saved.map { (data: $0.data, filename: $0.filename, contentType: $0.mime) },
+                    caption: caption
+                )
+                if !ok {
+                    await MainActor.run {
+                        pendingAttachments = saved
+                        if draft.isEmpty { draft = caption }
+                    }
+                }
             }
         } else {
             let content = applySlashTransform(draft).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2299,7 +2308,10 @@ private struct VideoLightboxView: View {
             player = p
             p.play()
         }
-        .onDisappear { player?.pause() }
+        .onDisappear {
+            player?.pause()
+            player = nil
+        }
     }
 }
 

@@ -2190,12 +2190,16 @@ final class AppStore: ObservableObject {
     /// accepts up to 10 attachments). In an E2EE DM every attachment is
     /// encrypted with the channel key (.zke suffix) so the server only ever
     /// sees ciphertext — same scheme as the message text.
+    /// Returns true on a successful send. The composer uses this to restore
+    /// the picked attachments if the upload fails, so the user can retry
+    /// without re-selecting everything.
+    @discardableResult
     func sendAttachments(
         _ attachments: [(data: Data, filename: String, contentType: String)],
         caption: String
-    ) async {
-        guard let channel = selectedChannel else { return }
-        guard !attachments.isEmpty else { return }
+    ) async -> Bool {
+        guard let channel = selectedChannel else { return false }
+        guard !attachments.isEmpty else { return false }
         let nonce = UUID().uuidString
         uploading = true
         defer { uploading = false }
@@ -2205,12 +2209,12 @@ final class AppStore: ObservableObject {
             if channel.isE2EE {
                 guard let key = e2eeKey(for: channel) else {
                     e2eeError = "Unlock this conversation to send."
-                    return
+                    return false
                 }
                 for att in attachments {
                     guard let enc = E2EE.encryptData(att.data, key: key) else {
                         errorText = "Encryption failed."
-                        return
+                        return false
                     }
                     files.append(UploadFile(
                         data: enc,
@@ -2221,7 +2225,7 @@ final class AppStore: ObservableObject {
                 if !caption.isEmpty {
                     guard let encCaption = E2EE.encrypt(caption, key: key) else {
                         errorText = "Encryption failed."
-                        return
+                        return false
                     }
                     wireCaption = encCaption
                 }
@@ -2238,8 +2242,10 @@ final class AppStore: ObservableObject {
                 if channel.isE2EE, !caption.isEmpty { decrypted[message.id] = caption }
                 replyingTo = nil
             }
+            return true
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
+            return false
         }
     }
 
