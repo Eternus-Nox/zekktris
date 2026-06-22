@@ -1416,6 +1416,7 @@ struct MessageRow: View {
                 .foregroundColor(Theme.ink1)
                 .tint(Theme.accent)
                 .fixedSize(horizontal: false, vertical: true)
+                .environment(\.openURL, mentionOpenURL())
         case .code(let cc):
             codeBlockView(cc)
         }
@@ -1498,10 +1499,19 @@ struct MessageRow: View {
             if m.range.location > last {
                 result.append(markdownAttributed(ns.substring(with: NSRange(location: last, length: m.range.location - last))))
             }
-            var chip = AttributedString(mentionLabel(ns.substring(with: m.range)))
+            let token = ns.substring(with: m.range)
+            var chip = AttributedString(mentionLabel(token))
             chip.foregroundColor = Theme.accentSoft
             chip.backgroundColor = Theme.accent.opacity(0.2)
             chip.font = .zkSans(15, weight: .medium)
+            // A USER mention (<@id> / <@!id>, NOT a role <@&id>, channel <#id>,
+            // or @everyone/@here) becomes a tappable link → opens the profile.
+            // Routed through a zk://user/<id> link intercepted by the openURL
+            // handler on each richContent render site.
+            if token.hasPrefix("<@"), !token.hasPrefix("<@&") {
+                let uid = token.filter { $0.isNumber }
+                if !uid.isEmpty { chip.link = URL(string: "zk://user/\(uid)") }
+            }
             result.append(chip)
             last = m.range.location + m.range.length
         }
@@ -1509,6 +1519,19 @@ struct MessageRow: View {
             result.append(markdownAttributed(ns.substring(with: NSRange(location: last, length: ns.length - last))))
         }
         return result
+    }
+
+    /// openURL handler for richContent: routes a tapped user-mention chip
+    /// (zk://user/<id>) to that user's profile; every other URL (markdown/http
+    /// links, embed link taps) falls through to the system unchanged.
+    private func mentionOpenURL() -> OpenURLAction {
+        OpenURLAction { url in
+            if url.scheme == "zk", url.host == "user" {
+                store.openProfile(byId: url.lastPathComponent)
+                return .handled
+            }
+            return .systemAction
+        }
     }
 
     private func mentionLabel(_ token: String) -> String {
@@ -1681,6 +1704,7 @@ struct MessageRow: View {
                     // descriptions — route through the same renderer as message
                     // bodies instead of plain Text.
                     Text(richContent(desc)).font(.zkSans(13)).foregroundColor(Theme.ink2)
+                        .environment(\.openURL, mentionOpenURL())
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let fields = e.fields, !fields.isEmpty {
@@ -1689,6 +1713,7 @@ struct MessageRow: View {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(f.name).font(.zkSans(12, weight: .semibold)).foregroundColor(Theme.ink1)
                                 Text(richContent(f.value)).font(.zkSans(13)).foregroundColor(Theme.ink2)
+                                    .environment(\.openURL, mentionOpenURL())
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }
@@ -4302,6 +4327,7 @@ struct MediaGalleryView: View {
     @State private var items: [Attachment] = []
     @State private var loading = false
     @State private var hasMore = true
+    @State private var lightbox: LightboxImage?
 
     private func realName(_ a: Attachment) -> String {
         let n = a.filename ?? ""
@@ -4329,7 +4355,7 @@ struct MediaGalleryView: View {
             ScrollView {
                 if tab == .media {
                     LazyVGrid(columns: cols, spacing: 3) {
-                        ForEach(media) { GalleryThumb(attachment: $0, channel: channel) }
+                        ForEach(media) { GalleryThumb(attachment: $0, channel: channel, onOpen: { lightbox = $0 }) }
                     }
                     .padding(.horizontal, 3)
                 } else {
@@ -4358,6 +4384,11 @@ struct MediaGalleryView: View {
         .background(Theme.bg1.ignoresSafeArea())
         .navigationTitle("Shared Media").navigationBarTitleDisplayMode(.inline)
         .task { if items.isEmpty { await loadMore() } }
+        // Present the lightbox from WITHIN the gallery (which lives inside the
+        // DM-settings sheet) so a tapped photo pops OVER it. The app-root
+        // store.lightbox cover sits behind the sheet and wouldn't appear until
+        // the sheet was closed.
+        .fullScreenCover(item: $lightbox) { ImageLightboxView(item: $0) }
     }
 
     private func loadMore() async {
@@ -4379,6 +4410,7 @@ struct MediaGalleryView: View {
 private struct GalleryThumb: View {
     let attachment: Attachment
     let channel: Channel
+    let onOpen: (LightboxImage) -> Void
     @EnvironmentObject private var store: AppStore
     @State private var decrypted: UIImage?
     @State private var tried = false
@@ -4405,8 +4437,8 @@ private struct GalleryThumb: View {
             .clipped()
             .contentShape(Rectangle())
             .onTapGesture {
-                if let img = decrypted { store.openLightbox(image: img) }
-                else if !isEncrypted, let url = assetURL(attachment.url) { store.openLightbox(url) }
+                if let img = decrypted { onOpen(LightboxImage(image: img)) }
+                else if !isEncrypted, let url = assetURL(attachment.url) { onOpen(LightboxImage(url: url)) }
             }
             .task(id: store.e2eeUnlockVersion) {
                 guard isEncrypted, decrypted == nil else { return }

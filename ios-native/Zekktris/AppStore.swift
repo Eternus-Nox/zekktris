@@ -3344,6 +3344,15 @@ final class AppStore: ObservableObject {
     // MARK: Profile cards
 
     func openProfile(_ user: PublicUser) { profileUser = user }
+    /// Open a profile from a mention id. Guild members resolve instantly from
+    /// the cached member list; anyone else (e.g. the other person in a DM) is
+    /// fetched. Used by tappable @user mention chips.
+    func openProfile(byId userId: String) {
+        if let u = memberUser(userId) { openProfile(u); return }
+        Task {
+            if let u = try? await api.getUserProfile(userId: userId) { openProfile(u) }
+        }
+    }
 
     func openLightbox(_ url: URL) { lightbox = LightboxImage(url: url) }
     /// Open the full-screen viewer for an already-decoded image (E2EE images,
