@@ -35,6 +35,7 @@ export function ImageLightbox({
   onClose,
   images,
   initialIndex,
+  overlayZClassName = 'z-[80]',
 }: {
   /** Backwards-compatible single-image entry point. */
   src?: string;
@@ -44,6 +45,12 @@ export function ImageLightbox({
       prev/next navigation appears when length > 1. */
   images?: LightboxImage[];
   initialIndex?: number;
+  /** Tailwind z-index class for the full-screen overlay. Defaults to
+      `z-[80]`, which sits above normal app chrome. Raise it when the
+      lightbox is opened from a host that itself uses a high z-index —
+      e.g. the Shared-media gallery is a body-portaled `z-[110]` modal,
+      so its lightbox must be higher or it renders *behind* the gallery. */
+  overlayZClassName?: string;
 }) {
   const list: LightboxImage[] =
     images && images.length > 0
@@ -87,7 +94,7 @@ export function ImageLightbox({
   return (
     <Portal>
       <div
-        className="fixed inset-0 z-[80] bg-black/90 flex items-center justify-center"
+        className={`fixed inset-0 ${overlayZClassName} bg-black/90 flex items-center justify-center`}
         onClick={onClose}
         role="dialog"
         aria-modal="true"

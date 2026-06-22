@@ -125,7 +125,14 @@ export function MediaGalleryModal({ channel, onClose }: { channel: Channel; onCl
       </div>
 
       {lightbox && (
-        <ImageLightbox src={lightbox.src} filename={lightbox.filename} onClose={() => setLightbox(null)} />
+        // Above the gallery's own z-[110] — the lightbox portals to <body>,
+        // so without a higher z it would open *behind* this modal.
+        <ImageLightbox
+          src={lightbox.src}
+          filename={lightbox.filename}
+          onClose={() => setLightbox(null)}
+          overlayZClassName="z-[120]"
+        />
       )}
     </div>
     </Portal>
