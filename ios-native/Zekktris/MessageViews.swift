@@ -501,30 +501,29 @@ struct MessageListView: View {
                 // web's paperclip), emoji opens the unified picker, send
                 // trails.
                 HStack(alignment: .center, spacing: 4) {
-                    if channel.isE2EE {
-                        // Encrypted DMs: photos only — the bytes are sealed
-                        // with the same channel key as the messages.
+                    // One shared attach menu. Encrypted DMs get the same
+                    // options (photo, voice, schedule) — each is sealed with
+                    // the channel key — EXCEPT polls, which can't be E2EE
+                    // (the server must read options + tally votes). Video in
+                    // the picker is still gated to plaintext for now (encrypted
+                    // video playback is a follow-up).
+                    Menu {
                         Button { showPhotoPicker = true } label: {
-                            Image(systemName: "paperclip")
-                                .font(.system(size: 17))
-                                .foregroundColor(Theme.ink2)
-                                .frame(width: 28, height: 32)
+                            Label(channel.isE2EE ? "Photo" : "Photo or video", systemImage: "photo")
                         }
-                    } else {
-                        Menu {
-                            Button { showPhotoPicker = true } label: { Label("Photo or video", systemImage: "photo") }
+                        if !channel.isE2EE {
                             Button { showPollSheet = true } label: { Label("Poll", systemImage: "chart.bar.xaxis") }
-                            if store.selectedGuild != nil {
-                                Button { showStickers = true } label: { Label("Sticker", systemImage: "face.smiling") }
-                            }
-                            Button { recorder.start() } label: { Label("Voice message", systemImage: "mic.fill") }
-                            Button { showSchedule = true } label: { Label("Schedule message", systemImage: "clock") }
-                        } label: {
-                            Image(systemName: "paperclip")
-                                .font(.system(size: 17))
-                                .foregroundColor(Theme.ink2)
-                                .frame(width: 28, height: 32)
                         }
+                        if store.selectedGuild != nil {
+                            Button { showStickers = true } label: { Label("Sticker", systemImage: "face.smiling") }
+                        }
+                        Button { recorder.start() } label: { Label("Voice message", systemImage: "mic.fill") }
+                        Button { showSchedule = true } label: { Label("Schedule message", systemImage: "clock") }
+                    } label: {
+                        Image(systemName: "paperclip")
+                            .font(.system(size: 17))
+                            .foregroundColor(Theme.ink2)
+                            .frame(width: 28, height: 32)
                     }
 
                     TextField(composerPlaceholder, text: $draft, axis: .vertical)
@@ -1878,10 +1877,13 @@ struct MessageRow: View {
         if let attachments = message.attachments, !attachments.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(attachments) { att in
-                    if channel.isE2EE, att.filename?.hasSuffix(".zke") == true {
+                    if att.isVoiceMessage == true {
+                        // Voice FIRST — an encrypted (.zke) voice note must
+                        // play in the voice view (which decrypts), not fall to
+                        // the generic encrypted-file card.
+                        VoiceMessageView(attachment: att, channel: channel)
+                    } else if channel.isE2EE, att.filename?.hasSuffix(".zke") == true {
                         EncryptedAttachmentView(attachment: att, channel: channel)
-                    } else if att.isVoiceMessage == true {
-                        VoiceMessageView(attachment: att)
                     } else if att.isImage, let url = assetURL(att.url) {
                         // Reserve the image's final on-screen size UP FRONT from
                         // its known width/height, so the image loading in doesn't
@@ -3970,7 +3972,7 @@ struct ScheduleSheet: View {
     private func scheduledRow(_ sm: ScheduledMessage) -> some View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(sm.content ?? "").font(.zkSans(14)).foregroundColor(Theme.ink1).lineLimit(3)
+                Text(store.scheduledDisplayContent(sm)).font(.zkSans(14)).foregroundColor(Theme.ink1).lineLimit(3)
                 Text(Self.whenText(sm.scheduledFor)).font(.zkSans(11)).foregroundColor(Theme.accent)
                 if let err = sm.lastError, !err.isEmpty {
                     Text("Failed: \(err)").font(.zkSans(11)).foregroundColor(Theme.danger).lineLimit(1)

@@ -126,17 +126,26 @@ final class VoiceClipPlayer: ObservableObject {
 
     private var player: AVPlayer?
     private var observer: Any?
-    private let url: URL
+    // Optional so an encrypted clip can be created before its decrypted
+    // temp-file URL is ready; set via setSource(_:) once decryption finishes.
+    private var url: URL?
     private let duration: Double
 
-    init(url: URL, duration: Double) {
+    init(url: URL?, duration: Double) {
         self.url = url
         self.duration = max(0.1, duration)
+    }
+
+    /// Supply the playable URL after construction (e.g. a decrypted E2EE
+    /// voice note written to a temp file). No-op once the player exists.
+    func setSource(_ newURL: URL) {
+        if player == nil { url = newURL }
     }
 
     func toggle() { playing ? pause() : play() }
 
     func play() {
+        guard let url else { return } // encrypted clip not yet decrypted
         if player == nil {
             let p = AVPlayer(url: url)
             observer = p.addPeriodicTimeObserver(
@@ -213,13 +222,26 @@ struct WaveformBars: View {
 // MARK: - Playback view (in messages)
 
 struct VoiceMessageView: View {
+    @EnvironmentObject private var store: AppStore
     let attachment: Attachment
+    let channel: Channel
     @StateObject private var player: VoiceClipPlayer
+    // Encrypted clips aren't playable until their audio is fetched +
+    // decrypted to a temp file; plaintext clips are ready immediately.
+    @State private var ready: Bool
 
-    init(attachment: Attachment) {
+    init(attachment: Attachment, channel: Channel) {
         self.attachment = attachment
-        let url = assetURL(attachment.url) ?? URL(string: Config.assetOrigin)!
-        _player = StateObject(wrappedValue: VoiceClipPlayer(url: url, duration: Double(attachment.durationSeconds ?? 1)))
+        self.channel = channel
+        let encrypted = attachment.filename?.hasSuffix(".zke") == true
+        if encrypted {
+            _player = StateObject(wrappedValue: VoiceClipPlayer(url: nil, duration: Double(attachment.durationSeconds ?? 1)))
+            _ready = State(initialValue: false)
+        } else {
+            let url = assetURL(attachment.url) ?? URL(string: Config.assetOrigin)!
+            _player = StateObject(wrappedValue: VoiceClipPlayer(url: url, duration: Double(attachment.durationSeconds ?? 1)))
+            _ready = State(initialValue: true)
+        }
     }
 
     private var bars: [CGFloat] {
@@ -238,9 +260,10 @@ struct VoiceMessageView: View {
         HStack(spacing: 10) {
             Button { player.toggle() } label: {
                 Image(systemName: player.playing ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 30)).foregroundColor(Theme.accent)
+                    .font(.system(size: 30)).foregroundColor(ready ? Theme.accent : Theme.ink4)
             }
             .buttonStyle(.plain)
+            .disabled(!ready)
             WaveformBars(levels: bars, progress: player.progress)
                 .frame(height: 28)
             Text(durationText)
@@ -250,6 +273,20 @@ struct VoiceMessageView: View {
         .frame(maxWidth: 260)
         .background(Theme.bg2)
         .clipShape(RoundedRectangle(cornerRadius: 12))
+        .task {
+            // Encrypted voice note: fetch + decrypt the audio, write it to a
+            // temp file, and hand that URL to the player. Plaintext clips are
+            // already ready (set in init) and skip this.
+            guard !ready, attachment.filename?.hasSuffix(".zke") == true else { return }
+            if let data = await store.decryptedAttachmentData(attachment, in: channel) {
+                let tmp = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString + ".m4a")
+                if (try? data.write(to: tmp)) != nil {
+                    player.setSource(tmp)
+                    ready = true
+                }
+            }
+        }
         .onDisappear { player.cleanup() }
     }
 }

@@ -1430,7 +1430,7 @@ struct ScheduledMessagesSheet: View {
                         .font(.system(size: 12)).foregroundColor(Theme.dangerSoft)
                 }
             }
-            Text(sm.content ?? "")
+            Text(store.scheduledDisplayContent(sm))
                 .font(.zkSans(14)).foregroundColor(Theme.ink1)
                 .lineLimit(3)
         }

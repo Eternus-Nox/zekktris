@@ -2141,10 +2141,19 @@ final class AppStore: ObservableObject {
     }
     func scheduleMessage(content: String, at date: Date) async -> String? {
         guard let channel = selectedChannel else { return "No channel selected." }
-        if channel.isE2EE { return "Scheduling isn't available in encrypted channels." }
         let iso = ISO8601DateFormatter().string(from: date)
+        var wireContent = content
+        if channel.isE2EE {
+            // Pre-encrypt: the server stores + fires the ciphertext verbatim
+            // (it never needs the plaintext) and the recipient decrypts on
+            // receipt like any encrypted message. Requires the conversation key.
+            guard let key = e2eeKey(for: channel), let enc = E2EE.encrypt(content, key: key) else {
+                return "Unlock this conversation to schedule encrypted messages."
+            }
+            wireContent = enc
+        }
         do {
-            let sm = try await api.scheduleMessage(channelId: channel.id, content: content, scheduledFor: iso)
+            let sm = try await api.scheduleMessage(channelId: channel.id, content: wireContent, scheduledFor: iso)
             scheduledMessages.append(sm)
             scheduledMessages.sort { $0.scheduledFor < $1.scheduledFor }
             return nil
@@ -2153,6 +2162,21 @@ final class AppStore: ObservableObject {
     func cancelScheduled(_ sm: ScheduledMessage) async {
         do { try await api.cancelScheduledMessage(id: sm.id); scheduledMessages.removeAll { $0.id == sm.id } }
         catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
+    }
+
+    /// Display text for a scheduled message in the sender's pending list.
+    /// E2EE scheduled messages are stored as ciphertext; decrypt with the
+    /// conversation key when available, else show a lock note.
+    func scheduledDisplayContent(_ sm: ScheduledMessage) -> String {
+        guard let content = sm.content, !content.isEmpty else { return "" }
+        guard content.hasPrefix(E2EE.wirePrefixV3) else { return content }
+        if let channel = channels.first(where: { $0.id == sm.channelId })
+            ?? dms.first(where: { $0.id == sm.channelId }),
+           let key = e2eeKey(for: channel),
+           let plain = E2EE.decrypt(content, key: key) {
+            return plain
+        }
+        return "🔒 Encrypted — unlock this conversation to preview"
     }
 
     // MARK: Channel permission overrides
@@ -2268,16 +2292,29 @@ final class AppStore: ObservableObject {
     }
 
     /// Send a recorded voice message: the audio file plus its duration and
-    /// waveform. Not available in E2EE channels.
+    /// waveform. In E2EE DMs the audio is encrypted (.zke) like any other
+    /// attachment; the duration + waveform stay plaintext metadata (no
+    /// content leak) so the player can draw the bars before decrypting.
     func sendVoiceMessage(fileURL: URL, duration: Int, waveform: String) async {
         guard let channel = selectedChannel else { return }
-        if channel.isE2EE { errorText = "Voice messages aren't available in encrypted channels."; return }
         guard let data = try? Data(contentsOf: fileURL) else { errorText = "Couldn't read recording."; return }
         let nonce = UUID().uuidString
         uploading = true
         defer { uploading = false }
         do {
-            let file = UploadFile(data: data, filename: "voice-message.m4a", contentType: "audio/mp4")
+            var sendData = data
+            var sendName = "voice-message.m4a"
+            var sendType = "audio/mp4"
+            if channel.isE2EE {
+                guard let key = e2eeKey(for: channel), let enc = E2EE.encryptData(data, key: key) else {
+                    e2eeError = "Unlock this conversation to send."
+                    return
+                }
+                sendData = enc
+                sendName = "voice-message.m4a.zke"
+                sendType = "application/octet-stream"
+            }
+            let file = UploadFile(data: sendData, filename: sendName, contentType: sendType)
             let message = try await api.sendMessageMultipart(
                 channelId: channel.id, content: "", nonce: nonce, files: [file],
                 replyToId: replyingTo?.id,
