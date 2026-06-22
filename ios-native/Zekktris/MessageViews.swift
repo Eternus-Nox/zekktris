@@ -502,14 +502,12 @@ struct MessageListView: View {
                 // trails.
                 HStack(alignment: .center, spacing: 4) {
                     // One shared attach menu. Encrypted DMs get the same
-                    // options (photo, voice, schedule) — each is sealed with
-                    // the channel key — EXCEPT polls, which can't be E2EE
-                    // (the server must read options + tally votes). Video in
-                    // the picker is still gated to plaintext for now (encrypted
-                    // video playback is a follow-up).
+                    // options (photo/video, voice, schedule) — each is sealed
+                    // with the channel key — EXCEPT polls, which can't be E2EE
+                    // (the server must read options + tally votes).
                     Menu {
                         Button { showPhotoPicker = true } label: {
-                            Label(channel.isE2EE ? "Photo" : "Photo or video", systemImage: "photo")
+                            Label("Photo or video", systemImage: "photo")
                         }
                         if !channel.isE2EE {
                             Button { showPollSheet = true } label: { Label("Poll", systemImage: "chart.bar.xaxis") }
@@ -609,9 +607,9 @@ struct MessageListView: View {
             isPresented: $showPhotoPicker,
             selection: $pickerItems,
             maxSelectionCount: 10,
-            // E2EE DMs stay photos-only for now — encrypted video playback is
-            // a follow-up; plaintext channels allow photos + videos.
-            matching: channel.isE2EE ? .images : .any(of: [.images, .videos])
+            // Photos + videos everywhere — E2EE videos are encrypted on send
+            // and decrypted for playback like any other attachment.
+            matching: .any(of: [.images, .videos])
         )
     }
 
@@ -4423,6 +4421,8 @@ struct EncryptedAttachmentView: View {
     let channel: Channel
     @EnvironmentObject private var store: AppStore
     @State private var image: UIImage?
+    @State private var videoURL: URL?
+    @State private var playingVideo: VideoItem?
     @State private var failed = false
     @State private var loading = true
 
@@ -4430,6 +4430,11 @@ struct EncryptedAttachmentView: View {
     private var displayName: String {
         let n = attachment.filename ?? "file"
         return n.hasSuffix(".zke") ? String(n.dropLast(4)) : n
+    }
+
+    private var isVideo: Bool {
+        let ext = (displayName as NSString).pathExtension.lowercased()
+        return ["mp4", "mov", "m4v", "qt", "webm", "avi", "mkv"].contains(ext)
     }
 
     var body: some View {
@@ -4446,6 +4451,37 @@ struct EncryptedAttachmentView: View {
                     .imageActions { image }
                     // Per-image E2EE lock badge removed — the lock by the DM
                     // header already signals the whole conversation is encrypted.
+            } else if let videoURL {
+                // Decrypted video → tappable chip → full-screen player. The
+                // bytes were written to a temp file (AVPlayer needs a URL).
+                Button { playingVideo = VideoItem(url: videoURL) } label: {
+                    HStack(spacing: 8) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 6).fill(Theme.bg1)
+                                .frame(width: 40, height: 40)
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 15))
+                                .foregroundColor(Theme.accent)
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(displayName)
+                                .font(.zkSans(13, weight: .medium))
+                                .foregroundColor(Theme.ink1)
+                                .lineLimit(1)
+                            if let size = attachment.size {
+                                Text(byteString(size))
+                                    .font(.zkSans(11))
+                                    .foregroundColor(Theme.ink3)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: 240, alignment: .leading)
+                    .background(Theme.bg3)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
             } else {
                 HStack(spacing: 8) {
                     Image(systemName: failed ? "lock.slash" : "lock.doc")
@@ -4468,6 +4504,7 @@ struct EncryptedAttachmentView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }
         }
+        .fullScreenCover(item: $playingVideo) { VideoLightboxView(url: $0.url) }
         .task(id: store.e2eeUnlockVersion) {
             loading = true
             failed = false
@@ -4476,9 +4513,22 @@ struct EncryptedAttachmentView: View {
                 failed = true
                 return
             }
-            image = UIImage(data: data)
-            loading = false
-            failed = (image == nil && !data.isEmpty) ? false : failed
+            if isVideo {
+                let ext = (displayName as NSString).pathExtension.lowercased()
+                let tmp = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString + "." + (ext.isEmpty ? "mp4" : ext))
+                if (try? data.write(to: tmp)) != nil {
+                    videoURL = tmp
+                    loading = false
+                } else {
+                    loading = false
+                    failed = true
+                }
+            } else {
+                image = UIImage(data: data)
+                loading = false
+                failed = (image == nil && !data.isEmpty) ? false : failed
+            }
         }
     }
 }
