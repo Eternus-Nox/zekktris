@@ -3043,6 +3043,17 @@ final class AppStore: ObservableObject {
         do { try await api.setDmNotificationPreview(channelId: channelId, showContent: value) }
         catch { dmNotifShowContent = fallback; errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
+    /// Persist the per-user DM read-receipts preference (mirrors web's
+    /// ReadReceiptsToggle). Optimistic: the caller flips
+    /// currentUser?.dmReadReceiptsEnabled first; on failure we roll back to
+    /// `fallback`, on success we adopt the canonical server response.
+    func persistDmReadReceiptsEnabled(_ value: Bool, fallback: Bool?) async {
+        do { currentUser = try await api.updateProfile(["dmReadReceiptsEnabled": value]) }
+        catch {
+            currentUser?.dmReadReceiptsEnabled = fallback
+            errorText = (error as? APIError)?.message ?? error.localizedDescription
+        }
+    }
     func closeDM(_ channel: Channel) async {
         do {
             try await api.closeDM(channelId: channel.id)

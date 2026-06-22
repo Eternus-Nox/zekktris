@@ -55,6 +55,10 @@ struct SelfUser: Codable, Identifiable, Hashable {
     /// Settings toggle reads/writes it through the same durable, launch-
     /// hydrated path as every other profile setting.
     var achievementsPublic: Bool?
+    /// Per-user DM read-receipts preference (mirrors web SelfUser.dmReadReceiptsEnabled).
+    /// Optional for back-compat with sessions hydrated before the column existed;
+    /// nil is treated as the server default `true`.
+    var dmReadReceiptsEnabled: Bool?
 
     var name: String { displayName ?? username ?? "You" }
 }

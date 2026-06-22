@@ -3904,6 +3904,61 @@ struct DmSettingsSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    // Order (top→bottom): Shared media, Notifications, Read
+                    // receipts, Auto-delete, End-to-end encryption, Close DM.
+                    Text("SHARED MEDIA")
+                        .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                    NavigationLink {
+                        MediaGalleryView(channel: liveChannel)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "photo.on.rectangle.angled")
+                                .font(.system(size: 13)).foregroundColor(Theme.accent)
+                            Text("Photos & Files")
+                                .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.ink3)
+                        }
+                        .padding(12)
+                        .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+
+                    Divider().overlay(Theme.line)
+
+                    Text("NOTIFICATIONS")
+                        .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                    notificationPreviewToggle
+                    Text(notifPreviewFootnote)
+                        .font(.zkSans(12)).foregroundColor(Theme.ink3)
+
+                    Divider().overlay(Theme.line)
+
+                    Text("READ RECEIPTS")
+                        .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                    readReceiptsToggle
+
+                    Divider().overlay(Theme.line)
+
+                    Text("AUTO-DELETE MESSAGES")
+                        .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                    if store.loadingDmSettings {
+                        ProgressView().tint(Theme.accent).frame(maxWidth: .infinity).padding(.vertical, 12)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(options.indices, id: \.self) { i in
+                                ttlRow(options[i])
+                                if i < options.count - 1 { Divider().overlay(Theme.line) }
+                            }
+                        }
+                        .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    Text("When on, each message disappears this long after the other person reads it. This applies to both of you.")
+                        .font(.zkSans(12)).foregroundColor(Theme.ink3)
+
+                    Divider().overlay(Theme.line)
+
                     Text("END-TO-END ENCRYPTION")
                         .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
                     if liveChannel.isE2EE {
@@ -3943,53 +3998,6 @@ struct DmSettingsSheet: View {
                         Text("Encrypts this conversation with a password you both share. Only devices that know it can read messages.")
                             .font(.zkSans(12)).foregroundColor(Theme.ink3)
                     }
-
-                    Divider().overlay(Theme.line)
-
-                    Text("SHARED MEDIA")
-                        .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
-                    NavigationLink {
-                        MediaGalleryView(channel: liveChannel)
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "photo.on.rectangle.angled")
-                                .font(.system(size: 13)).foregroundColor(Theme.accent)
-                            Text("Photos & Files")
-                                .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.ink3)
-                        }
-                        .padding(12)
-                        .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                    .buttonStyle(.plain)
-
-                    Divider().overlay(Theme.line)
-
-                    Text("AUTO-DELETE MESSAGES")
-                        .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
-                    if store.loadingDmSettings {
-                        ProgressView().tint(Theme.accent).frame(maxWidth: .infinity).padding(.vertical, 12)
-                    } else {
-                        VStack(spacing: 0) {
-                            ForEach(options.indices, id: \.self) { i in
-                                ttlRow(options[i])
-                                if i < options.count - 1 { Divider().overlay(Theme.line) }
-                            }
-                        }
-                        .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                    Text("When on, each message disappears this long after the other person reads it. This applies to both of you.")
-                        .font(.zkSans(12)).foregroundColor(Theme.ink3)
-
-                    Divider().overlay(Theme.line)
-
-                    Text("NOTIFICATIONS")
-                        .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
-                    notificationPreviewToggle
-                    Text(notifPreviewFootnote)
-                        .font(.zkSans(12)).foregroundColor(Theme.ink3)
 
                     Divider().overlay(Theme.line)
 
@@ -4078,6 +4086,30 @@ struct DmSettingsSheet: View {
         }
         .tint(Theme.accent)
         .disabled(store.loadingDmSettings)
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    // Per-USER read-receipts preference (mirrors web's ReadReceiptsToggle).
+    // Scope is the whole account, not just this DM. nil = server default `true`.
+    private var readReceiptsToggle: some View {
+        Toggle(isOn: Binding(
+            get: { store.currentUser?.dmReadReceiptsEnabled ?? true },
+            set: { newValue in
+                let prev = store.currentUser?.dmReadReceiptsEnabled
+                store.currentUser?.dmReadReceiptsEnabled = newValue
+                Task { await store.persistDmReadReceiptsEnabled(newValue, fallback: prev) }
+            }
+        )) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Send read receipts")
+                    .font(.zkSans(15)).foregroundColor(Theme.ink1)
+                Text("Let people you DM see Delivered and Read on their messages. When off, you won't see receipts on messages sent to you either.")
+                    .font(.zkSans(11)).foregroundColor(Theme.ink4)
+            }
+        }
+        .tint(Theme.accent)
+        .disabled(store.currentUser == nil)
         .padding(.horizontal, 12).padding(.vertical, 10)
         .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
     }
