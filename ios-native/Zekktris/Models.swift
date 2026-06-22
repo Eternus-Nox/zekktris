@@ -400,6 +400,7 @@ struct Attachment: Codable, Identifiable, Hashable {
     var waveform: String?
 
     var isImage: Bool { (contentType ?? "").hasPrefix("image/") }
+    var isVideo: Bool { (contentType ?? "").hasPrefix("video/") }
 }
 
 struct PollOption: Codable, Identifiable, Hashable {

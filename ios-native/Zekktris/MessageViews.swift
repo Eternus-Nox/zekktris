@@ -2,6 +2,7 @@ import SwiftUI
 import PhotosUI
 import UIKit
 import UniformTypeIdentifiers
+import AVKit
 
 /// A channel's message timeline plus the composer. Auto-scrolls to the newest
 /// message and keeps the composer pinned above the keyboard.
@@ -14,9 +15,9 @@ struct MessageListView: View {
     @FocusState private var composerFocused: Bool
     @State private var showEnableSheet = false
     @State private var showDmSettings = false
-    @State private var pickerItem: PhotosPickerItem?
+    @State private var pickerItems: [PhotosPickerItem] = []
     @State private var showPhotoPicker = false
-    @State private var pendingImage: PendingImage?
+    @State private var pendingAttachments: [PendingAttachment] = []
     @State private var showPollSheet = false
     @State private var showStickers = false
     @State private var showSchedule = false
@@ -443,28 +444,44 @@ struct MessageListView: View {
                 }
                 .padding(.horizontal, 4)
             }
-            if let pending = pendingImage {
-                HStack(spacing: 10) {
-                    Image(uiImage: pending.uiImage)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: 52, height: 52)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                    Text(pending.filename)
-                        .font(.zkSans(12))
-                        .foregroundColor(Theme.ink2)
-                        .lineLimit(1)
-                    Spacer()
-                    Button {
-                        pendingImage = nil
-                        pickerItem = nil
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 20))
-                            .foregroundColor(Theme.ink3)
+            if !pendingAttachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(pendingAttachments) { att in
+                            ZStack(alignment: .topTrailing) {
+                                if let preview = att.preview {
+                                    Image(uiImage: preview)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 56, height: 56)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                } else {
+                                    // Video / non-image: icon placeholder (we
+                                    // don't decode a video frame for the chip).
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 8).fill(Theme.bg3)
+                                        Image(systemName: att.isVideo ? "video.fill" : "doc.fill")
+                                            .font(.system(size: 18))
+                                            .foregroundColor(Theme.ink2)
+                                    }
+                                    .frame(width: 56, height: 56)
+                                }
+                                Button {
+                                    pendingAttachments.removeAll { $0.id == att.id }
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 18))
+                                        .symbolRenderingMode(.palette)
+                                        .foregroundStyle(.white, .black.opacity(0.55))
+                                }
+                                .offset(x: 6, y: -6)
+                            }
+                            .frame(width: 56, height: 56)
+                        }
                     }
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
                 }
-                .padding(.horizontal, 4)
             }
 
             if recorder.recording {
@@ -495,7 +512,7 @@ struct MessageListView: View {
                         }
                     } else {
                         Menu {
-                            Button { showPhotoPicker = true } label: { Label("Photo", systemImage: "photo") }
+                            Button { showPhotoPicker = true } label: { Label("Photo or video", systemImage: "photo") }
                             Button { showPollSheet = true } label: { Label("Poll", systemImage: "chart.bar.xaxis") }
                             if store.selectedGuild != nil {
                                 Button { showStickers = true } label: { Label("Sticker", systemImage: "face.smiling") }
@@ -557,8 +574,8 @@ struct MessageListView: View {
                 draft += draft.isEmpty || draft.hasSuffix(" ") ? emoji : " " + emoji
             }
         }
-        .onChange(of: pickerItem) { newItem in
-            loadPickedItem(newItem)
+        .onChange(of: pickerItems) { newItems in
+            loadPickedItems(newItems)
         }
         .onChange(of: draft) { newValue in
             // Return key sends (the multi-line field inserts a newline
@@ -566,7 +583,7 @@ struct MessageListView: View {
             // keyboard then dismisses inside send().
             if newValue.hasSuffix("\n") {
                 draft = String(newValue.dropLast())
-                if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || pendingImage != nil {
+                if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingAttachments.isEmpty {
                     send()
                 }
                 return
@@ -589,11 +606,18 @@ struct MessageListView: View {
         .sheet(isPresented: $showSchedule) {
             ScheduleSheet(draft: $draft)
         }
-        .photosPicker(isPresented: $showPhotoPicker, selection: $pickerItem, matching: .images)
+        .photosPicker(
+            isPresented: $showPhotoPicker,
+            selection: $pickerItems,
+            maxSelectionCount: 10,
+            // E2EE DMs stay photos-only for now — encrypted video playback is
+            // a follow-up; plaintext channels allow photos + videos.
+            matching: channel.isE2EE ? .images : .any(of: [.images, .videos])
+        )
     }
 
     private var canSend: Bool {
-        pendingImage != nil || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !pendingAttachments.isEmpty || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var composerPlaceholder: String {
@@ -624,18 +648,18 @@ struct MessageListView: View {
     private func send() {
         // Sending dismisses the keyboard (mirrors iMessage/Discord).
         composerFocused = false
-        if let pending = pendingImage {
+        if !pendingAttachments.isEmpty {
+            // All picked photos/videos go out as ONE message (the server
+            // accepts up to 10 attachments per message).
             let caption = draft
+            let items = pendingAttachments.map {
+                (data: $0.data, filename: $0.filename, contentType: $0.mime)
+            }
             draft = ""
-            pendingImage = nil
-            pickerItem = nil
+            pendingAttachments = []
+            pickerItems = []
             Task {
-                await store.sendImage(
-                    data: pending.data,
-                    filename: pending.filename,
-                    contentType: pending.mime,
-                    caption: caption
-                )
+                await store.sendAttachments(items, caption: caption)
             }
         } else {
             let content = applySlashTransform(draft).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -839,21 +863,37 @@ struct MessageListView: View {
         }
     }
 
-    private func loadPickedItem(_ item: PhotosPickerItem?) {
-        guard let item else { return }
+    private func loadPickedItems(_ items: [PhotosPickerItem]) {
+        guard !items.isEmpty else { return }
         Task {
-            guard let data = try? await item.loadTransferable(type: Data.self),
-                  let uiImage = UIImage(data: data) else { return }
-            let type = item.supportedContentTypes.first
-            let ext = type?.preferredFilenameExtension ?? "jpg"
-            let mime = type?.preferredMIMEType ?? "image/jpeg"
-            await MainActor.run {
-                pendingImage = PendingImage(
+            var loaded: [PendingAttachment] = []
+            for item in items {
+                guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
+                let type = item.supportedContentTypes.first
+                let isVideo = type?.conforms(to: .movie) ?? false
+                let ext = type?.preferredFilenameExtension ?? (isVideo ? "mov" : "jpg")
+                let mime = type?.preferredMIMEType ?? (isVideo ? "video/quicktime" : "image/jpeg")
+                // Images get a thumbnail preview; videos use an icon (decoding
+                // a frame is expensive and not worth it for a 56pt chip). Skip
+                // anything that's neither a decodable image nor a video.
+                let preview = isVideo ? nil : UIImage(data: data)
+                if !isVideo && preview == nil { continue }
+                loaded.append(PendingAttachment(
                     data: data,
-                    filename: "image.\(ext)",
+                    filename: isVideo ? "video.\(ext)" : "image.\(ext)",
                     mime: mime,
-                    uiImage: uiImage
-                )
+                    isVideo: isVideo,
+                    preview: preview
+                ))
+            }
+            let toAdd = loaded
+            await MainActor.run {
+                // Cap at the server's MAX_FILES_PER_MESSAGE (10).
+                let room = max(0, 10 - pendingAttachments.count)
+                if room > 0 { pendingAttachments.append(contentsOf: toAdd.prefix(room)) }
+                // Reset the selection so re-picking the same asset re-fires
+                // onChange (and the empty value is ignored by the guard above).
+                pickerItems = []
             }
         }
     }
@@ -1009,6 +1049,7 @@ struct MessageRow: View {
     @State private var showForward = false
     @State private var showReactionPicker = false
     @State private var editText = ""
+    @State private var videoToPlay: VideoItem?
 
     var body: some View {
         // Web parity: ONLY system_call renders as a quiet notice line.
@@ -1039,6 +1080,9 @@ struct MessageRow: View {
                     Task { await store.deleteMessage(message) }
                 }
                 Button("Cancel", role: .cancel) {}
+            }
+            .fullScreenCover(item: $videoToPlay) { item in
+                VideoLightboxView(url: item.url)
             }
         }
     }
@@ -1860,6 +1904,8 @@ struct MessageRow: View {
                         // Long-press → Save to Photos / Copy / Share. Loads the
                         // image bytes on demand via the native retrying loader.
                         .imageActions { await RetryingImage.load(url) }
+                    } else if att.isVideo, let url = assetURL(att.url) {
+                        videoChip(att, url: url)
                     } else {
                         fileChip(att)
                     }
@@ -1900,6 +1946,40 @@ struct MessageRow: View {
         .padding(8)
         .background(Theme.bg3)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Tappable video attachment chip → opens the full-screen player.
+    private func videoChip(_ att: Attachment, url: URL) -> some View {
+        Button {
+            videoToPlay = VideoItem(url: url)
+        } label: {
+            HStack(spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6).fill(Theme.bg1)
+                        .frame(width: 40, height: 40)
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 15))
+                        .foregroundColor(Theme.accent)
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(att.filename ?? "video")
+                        .font(.zkSans(13, weight: .medium))
+                        .foregroundColor(Theme.ink1)
+                        .lineLimit(1)
+                    if let size = att.size {
+                        Text(byteString(size))
+                            .font(.zkSans(11))
+                            .foregroundColor(Theme.ink3)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(8)
+            .frame(maxWidth: 240, alignment: .leading)
+            .background(Theme.bg3)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -2175,12 +2255,52 @@ private struct EnableE2EESheet: View {
     }
 }
 
-/// A picked-but-not-yet-sent image held by the composer.
-private struct PendingImage {
+/// A picked-but-not-yet-sent attachment held by the composer. `preview` is
+/// a thumbnail for images; nil for video (the chip shows a film icon
+/// instead of decoding a frame).
+private struct PendingAttachment: Identifiable {
+    let id = UUID()
     let data: Data
     let filename: String
     let mime: String
-    let uiImage: UIImage
+    let isVideo: Bool
+    let preview: UIImage?
+}
+
+/// Wrapper so a video URL can drive a `.fullScreenCover(item:)`.
+private struct VideoItem: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+/// Full-screen player shown when a video attachment is tapped.
+private struct VideoLightboxView: View {
+    let url: URL
+    @Environment(\.dismiss) private var dismiss
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+            if let player {
+                VideoPlayer(player: player).ignoresSafeArea()
+            }
+            Button { dismiss() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(10)
+                    .background(Circle().fill(.black.opacity(0.5)))
+            }
+            .padding()
+        }
+        .onAppear {
+            let p = AVPlayer(url: url)
+            player = p
+            p.play()
+        }
+        .onDisappear { player?.pause() }
+    }
 }
 
 /// Sheet for editing one of the current user's messages.

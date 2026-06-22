@@ -2186,31 +2186,38 @@ final class AppStore: ObservableObject {
     /// Send an image (or file) attachment via multipart, with an optional
     /// caption. Not used for E2EE channels (the composer hides the picker
     /// there, since attachment encryption isn't implemented).
-    func sendImage(data: Data, filename: String, contentType: String, caption: String) async {
+    /// Send one or more picked photos/videos as a SINGLE message (the server
+    /// accepts up to 10 attachments). In an E2EE DM every attachment is
+    /// encrypted with the channel key (.zke suffix) so the server only ever
+    /// sees ciphertext — same scheme as the message text.
+    func sendAttachments(
+        _ attachments: [(data: Data, filename: String, contentType: String)],
+        caption: String
+    ) async {
         guard let channel = selectedChannel else { return }
+        guard !attachments.isEmpty else { return }
         let nonce = UUID().uuidString
         uploading = true
         defer { uploading = false }
         do {
-            var sendData = data
-            var sendName = filename
-            var sendType = contentType
+            var files: [UploadFile] = []
             var wireCaption = caption
             if channel.isE2EE {
-                // Same key + AES-GCM as the message text; the .zke suffix
-                // tells recipients to decrypt before rendering. The server
-                // only ever sees ciphertext.
                 guard let key = e2eeKey(for: channel) else {
                     e2eeError = "Unlock this conversation to send."
                     return
                 }
-                guard let enc = E2EE.encryptData(data, key: key) else {
-                    errorText = "Encryption failed."
-                    return
+                for att in attachments {
+                    guard let enc = E2EE.encryptData(att.data, key: key) else {
+                        errorText = "Encryption failed."
+                        return
+                    }
+                    files.append(UploadFile(
+                        data: enc,
+                        filename: att.filename + ".zke",
+                        contentType: "application/octet-stream"
+                    ))
                 }
-                sendData = enc
-                sendName = filename + ".zke"
-                sendType = "application/octet-stream"
                 if !caption.isEmpty {
                     guard let encCaption = E2EE.encrypt(caption, key: key) else {
                         errorText = "Encryption failed."
@@ -2218,10 +2225,13 @@ final class AppStore: ObservableObject {
                     }
                     wireCaption = encCaption
                 }
+            } else {
+                files = attachments.map {
+                    UploadFile(data: $0.data, filename: $0.filename, contentType: $0.contentType)
+                }
             }
-            let file = UploadFile(data: sendData, filename: sendName, contentType: sendType)
             let message = try await api.sendMessageMultipart(
-                channelId: channel.id, content: wireCaption, nonce: nonce, files: [file], replyToId: replyingTo?.id
+                channelId: channel.id, content: wireCaption, nonce: nonce, files: files, replyToId: replyingTo?.id
             )
             if channel.id == selectedChannel?.id {
                 upsert(message)
