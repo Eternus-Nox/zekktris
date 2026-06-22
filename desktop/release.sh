@@ -7,8 +7,10 @@
 # place the website download buttons AND the Electron auto-updater read from.
 # So one run ships an update to every desktop platform at once.
 #
-#   ./release.sh                 # bump patch, build all 3, publish
-#   ./release.sh --mac-only      # just macOS (fast local iteration)
+#   ./release.sh                 # interactive: pick (1) macOS only, or
+#                                #   (2) Linux + Windows via Docker (wine image)
+#   ./release.sh --mac-only      # just macOS (fast local iteration; no prompt)
+#   ./release.sh --cross docker  # all 3 incl. mac, Win+Linux in Docker (no prompt)
 #   ./release.sh --no-bump       # rebuild + republish without bumping the version
 #   ./release.sh --set-version 2.1.0
 #   ./release.sh --dry-run       # show what it WOULD build/publish, do nothing
@@ -39,6 +41,8 @@ CROSS="docker"        # docker | wine | skip  (how to build win+linux)
 MAC_ARCH="universal"  # universal | arm64 | x64  (universal runs on Intel + Apple Silicon)
 MAC_SIGN="0"          # 1 to code-sign+notarize macOS (needs identity set up); 0 = unsigned
 ONLY_MAC="0"
+DO_MAC="1"            # 0 to skip the macOS build (Linux+Windows-only run)
+EXPLICIT_TARGET="0"   # set when --mac-only/--cross is passed → skip the menu
 DRYRUN="0"
 ZK_PUBLISH_SSH="${ZK_PUBLISH_SSH:-}"
 ZK_PUBLISH_DIR="${ZK_PUBLISH_DIR:-}"
@@ -53,8 +57,8 @@ while [ $# -gt 0 ]; do
     --bump) BUMP="${2:?}"; shift 2 ;;
     --no-bump) BUMP="none"; shift ;;
     --set-version) SETVER="${2:?}"; BUMP="none"; shift 2 ;;
-    --cross) CROSS="${2:?}"; shift 2 ;;
-    --mac-only) ONLY_MAC="1"; shift ;;
+    --cross) CROSS="${2:?}"; EXPLICIT_TARGET="1"; shift 2 ;;
+    --mac-only) ONLY_MAC="1"; EXPLICIT_TARGET="1"; shift ;;
     --mac-arch) MAC_ARCH="${2:?}"; shift 2 ;;
     --sign) MAC_SIGN="1"; shift ;;
     --publish-ssh) ZK_PUBLISH_SSH="${2:?}"; shift 2 ;;
@@ -71,6 +75,26 @@ die() { printf '\033[31mxx \033[0m %s\n' "$*" >&2; exit 1; }
 run() { if [ "$DRYRUN" = "1" ]; then echo "  [dry-run] $*"; else eval "$@"; fi; }
 
 [ "$(uname -s)" = "Darwin" ] || warn "This script is meant to run on macOS (you're on $(uname -s)). Continuing anyway."
+
+# ── Interactive build-target menu ────────────────────────────────────────────
+# When run from a terminal without an explicit target flag (--mac-only /
+# --cross), ask what to build. Flags still bypass this for automated runs.
+#   1) macOS only       — native dmg + zip; skips Windows + Linux.
+#   2) Linux + Windows  — built in the electron-builder Docker image (bundles
+#                         wine); skips mac. Needs the Docker daemon (colima) up.
+if [ "$EXPLICIT_TARGET" = "0" ] && [ -t 0 ]; then
+  echo
+  say "What do you want to build?"
+  printf '    1) macOS only\n'
+  printf '    2) Linux + Windows (Docker wine image)\n'
+  printf '\033[36m==>\033[0m Choose [1/2]: '
+  read -r _choice || die "No selection — aborted."
+  case "$_choice" in
+    1) ONLY_MAC="1" ;;
+    2) DO_MAC="0"; ONLY_MAC="0"; CROSS="docker" ;;
+    *) die "Invalid choice: '$_choice' (pick 1 or 2)." ;;
+  esac
+fi
 
 # ── 1. Version ──────────────────────────────────────────────────────────────
 # electron-updater only offers an update when the PUBLISHED version is higher
@@ -95,15 +119,19 @@ run "npm install"
 run "npm run build"
 
 # ── 3. macOS (native) ───────────────────────────────────────────────────────
-MAC_ENV=""
-if [ "$MAC_SIGN" != "1" ]; then
-  # Disable auto-discovery of a signing identity so an unsigned local build
-  # doesn't fail trying to sign. (Unsigned mac apps download + run via
-  # right-click→Open, but macOS auto-update requires a SIGNED build.)
-  MAC_ENV="CSC_IDENTITY_AUTO_DISCOVERY=false"
+if [ "$DO_MAC" = "1" ]; then
+  MAC_ENV=""
+  if [ "$MAC_SIGN" != "1" ]; then
+    # Disable auto-discovery of a signing identity so an unsigned local build
+    # doesn't fail trying to sign. (Unsigned mac apps download + run via
+    # right-click→Open, but macOS auto-update requires a SIGNED build.)
+    MAC_ENV="CSC_IDENTITY_AUTO_DISCOVERY=false"
+  fi
+  say "Building macOS ($MAC_ARCH) dmg + zip"
+  run "$MAC_ENV npx electron-builder --mac --$MAC_ARCH --publish never"
+else
+  warn "Skipping macOS build."
 fi
-say "Building macOS ($MAC_ARCH) dmg + zip"
-run "$MAC_ENV npx electron-builder --mac --$MAC_ARCH --publish never"
 
 # ── 4. Windows + Linux ──────────────────────────────────────────────────────
 if [ "$ONLY_MAC" = "1" ] || [ "$CROSS" = "skip" ]; then
