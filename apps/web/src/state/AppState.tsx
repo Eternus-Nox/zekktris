@@ -2602,7 +2602,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         }
 
         const fresh = stateRef.current;
-        const isMention = m.mentionedUserIds.includes(selfId);
+        // @everyone/@here counts as a mention too (own messages already
+        // returned above, so this can't self-badge). mentionsEveryone is only
+        // ever true on guild messages the recipient can see.
+        const isMention = m.mentionedUserIds.includes(selfId) || m.mentionsEveryone;
 
         // Look up the channel to decide if this is a DM. We check the
         // dmChannels list first (fast O(n) over <50 channels in
