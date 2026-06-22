@@ -332,12 +332,16 @@ struct MessageListView: View {
                 .padding(.trailing, 2)
             }
 
-            Button { showPins = true } label: {
-                Image(systemName: "pin.fill")
-                    .font(.system(size: 13))
-                    .foregroundColor(store.pins.isEmpty ? Theme.ink3 : Theme.accent)
+            // Pins are hidden in DMs (pinning 403s there anyway, and saved
+            // messages cover the "keep this" need); kept in guild channels.
+            if !channel.isDM {
+                Button { showPins = true } label: {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(store.pins.isEmpty ? Theme.ink3 : Theme.accent)
+                }
+                .padding(.trailing, 2)
             }
-            .padding(.trailing, 2)
 
             if !channel.isDM {
                 Button { store.showMembers = true } label: {

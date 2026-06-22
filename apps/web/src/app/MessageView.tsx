@@ -529,9 +529,10 @@ export function MessageView({
             )}
           </>
         )}
-        {/* Header actions on the right. Pins + Search are visible everywhere
-            including DMs; the actual server route 403s pin attempts in DMs
-            but reading pins is fine (always empty list). */}
+        {/* Header actions on the right. Search is visible everywhere. The
+            Pins button is hidden in DMs — pinning 403s there anyway, and
+            saved (bookmarked) messages cover the "keep this" need — but
+            stays in guild channels, where pins are a shared feature. */}
         <div className="ml-auto flex items-center gap-1 shrink-0">
           {isDM1to1 && (
             <DmHeaderCallButton channel={channel} />
@@ -598,19 +599,21 @@ export function MessageView({
               <Trash size={16} />
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => setOverlay(overlay === 'pins' ? null : 'pins')}
-            className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${
-              overlay === 'pins'
-                ? 'bg-bg-3 text-ink-1'
-                : 'text-ink-3 hover:text-ink-1 hover:bg-bg-3'
-            }`}
-            aria-label="View pinned messages"
-            title="Pinned messages"
-          >
-            <Pin size={16} />
-          </button>
+          {!isDM && (
+            <button
+              type="button"
+              onClick={() => setOverlay(overlay === 'pins' ? null : 'pins')}
+              className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${
+                overlay === 'pins'
+                  ? 'bg-bg-3 text-ink-1'
+                  : 'text-ink-3 hover:text-ink-1 hover:bg-bg-3'
+              }`}
+              aria-label="View pinned messages"
+              title="Pinned messages"
+            >
+              <Pin size={16} />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setOverlay(overlay === 'search' ? null : 'search')}
