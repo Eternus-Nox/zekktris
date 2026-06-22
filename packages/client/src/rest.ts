@@ -12,6 +12,7 @@
 
 import type {
   AchievementsResponse,
+  Attachment,
   AuthSession,
   AuditLogEntry,
   AutomodRule,
@@ -2595,6 +2596,19 @@ export class RestClient {
 
   userAchievements(userId: string): Promise<AchievementsResponse> {
     return this.request('GET', `/users/${userId}/achievements`);
+  }
+
+  /** A channel's attachments newest-first for the shared-media gallery,
+      paginated by attachment id (`before` cursor). Fetched unfiltered; the
+      caller buckets Media vs Files (so E2EE `.zke` items classify by their
+      inner filename). */
+  channelAttachments(
+    channelId: string,
+    before?: string,
+  ): Promise<{ attachments: Attachment[] }> {
+    const q = new URLSearchParams({ limit: '60' });
+    if (before) q.set('before', before);
+    return this.request('GET', `/channels/${channelId}/attachments?${q.toString()}`);
   }
 
   adminListUsers(opts: {

@@ -29,7 +29,8 @@ import { useEffect, useRef, useState, type RefObject } from 'react';
 import { ApiError, type Channel } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useToasts } from '../state/Toasts';
-import { Shield } from '../lib/icons';
+import { Paperclip, Shield } from '../lib/icons';
+import { MediaGalleryModal } from './MediaGalleryModal';
 
 const OPTIONS: { value: number | null; label: string; sublabel?: string }[] = [
   { value: null, label: 'Off', sublabel: 'Messages stay forever' },
@@ -65,6 +66,7 @@ export function DmSettingsPanel({
   const [notifShowContent, setNotifShowContent] = useState<boolean | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [pending, setPending] = useState(false);
+  const [showMedia, setShowMedia] = useState(false);
 
   // Initial fetch. Best-effort — if it fails the user sees the
   // default ("Off") selected and any subsequent write still works.
@@ -194,6 +196,18 @@ export function DmSettingsPanel({
         onChange={setNotifShowContent}
       />
       <E2eeToggle channel={channel} selfId={selfId} />
+      <button
+        type="button"
+        onClick={() => setShowMedia(true)}
+        className="w-full border-t border-line px-3 py-2.5 flex items-center gap-2.5 text-left text-sm text-ink-2 hover:bg-bg-3"
+      >
+        <Paperclip size={15} className="text-accent shrink-0" />
+        <span className="flex-1">Shared media</span>
+        <span className="text-ink-3">›</span>
+      </button>
+      {showMedia && (
+        <MediaGalleryModal channel={channel} onClose={() => setShowMedia(false)} />
+      )}
     </div>
   );
 }
