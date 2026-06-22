@@ -30,7 +30,6 @@ import { ApiError, type Channel } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useToasts } from '../state/Toasts';
 import { Paperclip, Shield } from '../lib/icons';
-import { MediaGalleryModal } from './MediaGalleryModal';
 
 const OPTIONS: { value: number | null; label: string; sublabel?: string }[] = [
   { value: null, label: 'Off', sublabel: 'Messages stay forever' },
@@ -43,11 +42,19 @@ export function DmSettingsPanel({
   channel,
   selfId,
   onClose,
+  onOpenMedia,
   toggleButtonRef,
 }: {
   channel: Channel;
   selfId: string;
   onClose: () => void;
+  /** Open the Shared-media gallery. The gallery is a full-screen,
+      body-portaled modal, so it must be hosted by MessageView (a stable
+      parent) rather than rendered inside this panel: a child portaled
+      out of the panel's DOM subtree trips the panel's own outside-click
+      handler (every click in the gallery looks "outside" the panel and
+      closes it, unmounting the gallery). */
+  onOpenMedia: () => void;
   /** Ref to the cog button that opens/closes this panel. The
       outside-click handler ignores clicks inside this element so
       that clicking the cog to close doesn't fire onClose + the
@@ -66,7 +73,6 @@ export function DmSettingsPanel({
   const [notifShowContent, setNotifShowContent] = useState<boolean | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [pending, setPending] = useState(false);
-  const [showMedia, setShowMedia] = useState(false);
 
   // Initial fetch. Best-effort — if it fails the user sees the
   // default ("Off") selected and any subsequent write still works.
@@ -149,7 +155,24 @@ export function DmSettingsPanel({
       ref={panelRef}
       className="absolute right-0 top-10 z-30 w-72 bg-bg-2 border border-line rounded-lg shadow-xl overflow-hidden"
     >
-      <header className="px-3 py-2 border-b border-line">
+      {/* Section order mirrors iOS DmSettingsSheet:
+          Shared media → Notifications → Read receipts → Auto-delete → E2EE. */}
+      <button
+        type="button"
+        onClick={onOpenMedia}
+        className="w-full px-3 py-2.5 flex items-center gap-2.5 text-left text-sm text-ink-2 hover:bg-bg-3"
+      >
+        <Paperclip size={15} className="text-accent shrink-0" />
+        <span className="flex-1">Shared media</span>
+        <span className="text-ink-3">›</span>
+      </button>
+      <NotificationPreviewToggle
+        channel={channel}
+        explicit={notifShowContent}
+        onChange={setNotifShowContent}
+      />
+      <ReadReceiptsToggle />
+      <header className="px-3 py-2 border-t border-b border-line">
         <h3 className="text-sm font-semibold text-ink-1">Auto-delete messages</h3>
         <p className="text-xs text-ink-3 mt-0.5 leading-snug">
           Messages will be removed after this delay <span className="text-ink-2 font-medium">once the other person reads them</span>.
@@ -189,25 +212,7 @@ export function DmSettingsPanel({
           );
         })}
       </ul>
-      <ReadReceiptsToggle />
-      <NotificationPreviewToggle
-        channel={channel}
-        explicit={notifShowContent}
-        onChange={setNotifShowContent}
-      />
       <E2eeToggle channel={channel} selfId={selfId} />
-      <button
-        type="button"
-        onClick={() => setShowMedia(true)}
-        className="w-full border-t border-line px-3 py-2.5 flex items-center gap-2.5 text-left text-sm text-ink-2 hover:bg-bg-3"
-      >
-        <Paperclip size={15} className="text-accent shrink-0" />
-        <span className="flex-1">Shared media</span>
-        <span className="text-ink-3">›</span>
-      </button>
-      {showMedia && (
-        <MediaGalleryModal channel={channel} onClose={() => setShowMedia(false)} />
-      )}
     </div>
   );
 }

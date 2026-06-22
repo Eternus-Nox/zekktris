@@ -33,6 +33,12 @@ import { SchedulePickerModal } from './SchedulePickerModal';
 const DmSettingsPanel = lazy(() =>
   import('./DmSettingsPanel').then((m) => ({ default: m.DmSettingsPanel })),
 );
+// Lazy-loaded: the shared-media gallery (full-screen, body-portaled) only
+// mounts when opened. Hosted here — NOT inside DmSettingsPanel — because a
+// body-portaled child of the panel trips the panel's outside-click handler.
+const MediaGalleryModal = lazy(() =>
+  import('./MediaGalleryModal').then((m) => ({ default: m.MediaGalleryModal })),
+);
 import { connectToVoice, disconnectVoice, VoiceError, prepareVoiceAudio } from '../lib/voice';
 import { PollComposerModal, type PollDraft } from './PollComposerModal';
 import { StickerPicker } from './StickerPicker';
@@ -347,6 +353,10 @@ export function MessageView({
   // hold off until we have a clearer mental model. The cog button is
   // hidden in that case via the isDM1to1 gate below.
   const [dmSettingsOpen, setDmSettingsOpen] = useState(false);
+  // Shared-media gallery visibility. Hosted at the MessageView level (a
+  // stable parent) so the full-screen, body-portaled modal isn't a child of
+  // the click-outside-trapped DmSettingsPanel.
+  const [mediaGalleryOpen, setMediaGalleryOpen] = useState(false);
   // Reactive E2EE key availability so the locked-DM banner appears/disappears
   // live the moment the conversation is unlocked (mirrors MessageItem).
   const keyVersion = useSyncExternalStore(subscribeToKeyChanges, getKeyVersion, getKeyVersion);
@@ -621,7 +631,22 @@ export function MessageView({
               channel={channel}
               selfId={user.id}
               onClose={() => setDmSettingsOpen(false)}
+              onOpenMedia={() => {
+                // Close the popover so it isn't stranded behind the
+                // full-screen gallery, then open the gallery (hosted below,
+                // outside the panel's DOM subtree).
+                setDmSettingsOpen(false);
+                setMediaGalleryOpen(true);
+              }}
               toggleButtonRef={dmSettingsToggleRef}
+            />
+          </Suspense>
+        )}
+        {isDM1to1 && mediaGalleryOpen && (
+          <Suspense fallback={null}>
+            <MediaGalleryModal
+              channel={channel}
+              onClose={() => setMediaGalleryOpen(false)}
             />
           </Suspense>
         )}
