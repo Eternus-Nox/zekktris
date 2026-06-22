@@ -673,6 +673,14 @@ struct MessageListView: View {
         }
         return Array(filtered.sorted { ($0.nickname ?? $0.user.name).lowercased() < ($1.nickname ?? $1.user.name).lowercased() }.prefix(6))
     }
+    /// @everyone / @here suggestions — guild channels only (DMs have no audience
+    /// to mass-mention). The server enforces the Mention-Everyone permission on
+    /// send, so a member without it gets a clear error rather than a silent drop.
+    private var mentionLiterals: [String] {
+        guard channel.guildId != nil, let q = mentionQuery else { return [] }
+        let ql = q.lowercased()
+        return ["everyone", "here"].filter { ql.isEmpty || $0.hasPrefix(ql) }
+    }
     private var emojiMatches: [GuildEmoji] {
         guard let q = emojiQuery else { return [] }
         let ql = q.lowercased()
@@ -681,8 +689,9 @@ struct MessageListView: View {
 
     @ViewBuilder
     private var autocompleteBar: some View {
-        if !mentionMatches.isEmpty {
+        if !mentionMatches.isEmpty || !mentionLiterals.isEmpty {
             VStack(spacing: 0) {
+                ForEach(mentionLiterals, id: \.self) { lit in literalMentionRow(lit) }
                 ForEach(mentionMatches) { m in mentionRow(m) }
             }
             .background(Theme.bg3).clipShape(RoundedRectangle(cornerRadius: 12))
@@ -736,6 +745,25 @@ struct MessageListView: View {
 
     private func applyMention(_ m: GuildMember) {
         draft = String(draft.dropLast(trailingWord.count)) + "<@\(m.userId)> "
+    }
+    private func applyLiteralMention(_ literal: String) {
+        draft = String(draft.dropLast(trailingWord.count)) + "@\(literal) "
+    }
+    private func literalMentionRow(_ literal: String) -> some View {
+        Button { applyLiteralMention(literal) } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "at")
+                    .font(.system(size: 13, weight: .bold)).foregroundColor(Theme.accent)
+                    .frame(width: 24, height: 24)
+                    .background(Theme.accent.opacity(0.15)).clipShape(Circle())
+                Text("@\(literal)").font(.zkSans(14, weight: .semibold)).foregroundColor(Theme.ink1)
+                Text(literal == "everyone" ? "Notify everyone in this channel" : "Notify those online")
+                    .font(.zkSans(12)).foregroundColor(Theme.ink4)
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle()).padding(.horizontal, 12).padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
     }
     private func applyEmoji(_ e: GuildEmoji) {
         draft = String(draft.dropLast(trailingWord.count)) + ":\(e.name): "
@@ -1414,7 +1442,7 @@ struct MessageRow: View {
     // splitter and the mention-token matcher. NSRegularExpression compilation
     // is the expensive part — matching against a short message body is cheap.
     private static let codeBlockRegex = try! NSRegularExpression(pattern: "```[^\\n]*\\n?([\\s\\S]*?)```")
-    private static let mentionRegex = try! NSRegularExpression(pattern: "<@!?\\d+>|<@&\\d+>|<#\\d+>")
+    private static let mentionRegex = try! NSRegularExpression(pattern: "<@!?\\d+>|<@&\\d+>|<#\\d+>|@everyone\\b|@here\\b")
 
     private func parseSegments(_ s: String) -> [ContentSeg] {
         let map = store.emojiByName
@@ -1458,7 +1486,8 @@ struct MessageRow: View {
     /// into readable, accent-colored labels; everything else is markdown-parsed.
     /// Mirrors the web markdown renderer's mention chips.
     private func richContent(_ s: String) -> AttributedString {
-        guard s.contains("<@") || s.contains("<#") else { return markdownAttributed(s) }
+        guard s.contains("<@") || s.contains("<#") || s.contains("@everyone") || s.contains("@here")
+        else { return markdownAttributed(s) }
         let re = MessageRow.mentionRegex
         let ns = s as NSString
         let matches = re.matches(in: s, range: NSRange(location: 0, length: ns.length))
@@ -1483,6 +1512,7 @@ struct MessageRow: View {
     }
 
     private func mentionLabel(_ token: String) -> String {
+        if token == "@everyone" || token == "@here" { return token }
         let digits = token.filter { $0.isNumber }
         if token.hasPrefix("<#") {
             return "#\(store.channels.first(where: { $0.id == digits })?.name ?? "channel")"
