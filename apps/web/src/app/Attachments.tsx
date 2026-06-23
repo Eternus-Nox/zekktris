@@ -20,6 +20,9 @@ import { VoiceMessagePlayer } from './VoiceMessagePlayer';
 
 const IMAGE_TYPES = /^image\/(png|jpeg|jpg|gif|webp|avif|svg\+xml)$/i;
 const VIDEO_TYPES = /^video\//i;
+/** Inner-filename (post-.zke-strip) extensions treated as images for the
+    encrypted gallery. */
+const ENC_IMAGE_EXT = /\.(png|jpe?g|gif|webp|avif|heic|heif)$/i;
 const VIDEO_EXT = /\.(mp4|mov|m4v|webm|ogv|qt)$/i;
 
 /** Recover a video MIME from a (decrypted) filename so a blob URL plays in
@@ -53,8 +56,12 @@ export function Attachments({
   const nonVoice = attachments.filter((a) => !a.isVoiceMessage);
 
   // E2EE attachments (.zke suffix; iOS + web encrypt as iv||ct||tag with
-  // the shared channel key) render through a decrypting card.
+  // the shared channel key) render through a decrypting card. Encrypted
+  // IMAGES are grouped into a decrypting gallery (grid + swipeable lightbox),
+  // mirroring plain images; encrypted videos/files stay as individual cards.
   const encrypted = nonVoice.filter((a) => a.filename.endsWith('.zke'));
+  const encImages = encrypted.filter((a) => ENC_IMAGE_EXT.test(a.filename.replace(/\.zke$/, '')));
+  const encOther = encrypted.filter((a) => !ENC_IMAGE_EXT.test(a.filename.replace(/\.zke$/, '')));
   const plain = nonVoice.filter((a) => !a.filename.endsWith('.zke'));
   const images = plain.filter((a) => IMAGE_TYPES.test(a.contentType));
   const videos = plain.filter(
@@ -66,9 +73,12 @@ export function Attachments({
 
   return (
     <div className="mt-1 space-y-1">
-      {encrypted.length > 0 && (
+      {encImages.length > 0 && (
+        <EncryptedImageGallery attachments={encImages} channelId={channelId} />
+      )}
+      {encOther.length > 0 && (
         <div className="flex flex-col gap-1">
-          {encrypted.map((a) => (
+          {encOther.map((a) => (
             <EncryptedAttachment key={a.id} attachment={a} channelId={channelId} />
           ))}
         </div>
@@ -132,6 +142,119 @@ export function Attachments({
         />
       )}
     </div>
+  );
+}
+
+/**
+ * EncryptedImageGallery — decrypts a message's encrypted (.zke) images and
+ * renders them grouped (same flex-wrap as plain images), opening the shared
+ * ImageLightbox across the WHOLE decrypted set so you can page/swipe between
+ * them. Mirrors the plain-image grouping; the decrypted bytes only ever live
+ * in local blob URLs (revoked on unmount).
+ */
+function EncryptedImageGallery({
+  attachments,
+  channelId,
+}: {
+  attachments: Attachment[];
+  channelId?: string;
+}) {
+  const [urls, setUrls] = useState<(string | null)[]>(() => attachments.map(() => null));
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [keyVersion, setKeyVersion] = useState(getKeyVersion());
+
+  useEffect(() => subscribeToKeyChanges(() => setKeyVersion(getKeyVersion())), []);
+
+  // Key the decrypt effect on the concrete attachment URLs (stable across
+  // re-renders) + the channel key version, not the array identity.
+  const urlKey = attachments.map((a) => a.url).join('|');
+  useEffect(() => {
+    if (!channelId) {
+      setUrls(attachments.map(() => null));
+      return;
+    }
+    let cancelled = false;
+    const created: string[] = [];
+    void (async () => {
+      const out = await Promise.all(
+        attachments.map(async (a) => {
+          try {
+            const res = await fetch(a.url);
+            if (!res.ok) return null;
+            const bytes = new Uint8Array(await res.arrayBuffer());
+            const pt = await decryptBytesForDm(bytes, channelId);
+            if (!pt) return null;
+            const u = URL.createObjectURL(new Blob([pt as BlobPart]));
+            created.push(u);
+            return u;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      if (cancelled) {
+        created.forEach((u) => URL.revokeObjectURL(u));
+        return;
+      }
+      setUrls(out);
+    })();
+    return () => {
+      cancelled = true;
+      created.forEach((u) => URL.revokeObjectURL(u));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlKey, channelId, keyVersion]);
+
+  // The lightbox set is the successfully-decrypted images (with real names).
+  const ready = attachments
+    .map((a, i) => ({ a, url: urls[i] }))
+    .filter((x): x is { a: Attachment; url: string } => !!x.url);
+
+  return (
+    <>
+      <div className="flex flex-wrap gap-2">
+        {attachments.map((a, i) => {
+          const url = urls[i];
+          const realName = a.filename.replace(/\.zke$/, '');
+          if (!url) {
+            return (
+              <span
+                key={a.id}
+                className="w-40 h-40 rounded-md border border-line bg-bg-2 flex items-center justify-center text-ink-3"
+                title="Encrypted image"
+              >
+                <Lock size={16} />
+              </span>
+            );
+          }
+          const readyIdx = ready.findIndex((x) => x.a.id === a.id);
+          return (
+            <button
+              key={a.id}
+              type="button"
+              onClick={() => setLightboxIndex(readyIdx)}
+              className="block group/img"
+              title={realName}
+              aria-label={`Open ${realName}`}
+            >
+              <img
+                src={url}
+                alt={realName}
+                loading="lazy"
+                className="rounded-md max-w-sm max-h-80 border border-line group-hover/img:border-accent/60 transition-colors object-contain cursor-zoom-in"
+              />
+            </button>
+          );
+        })}
+      </div>
+      {lightboxIndex !== null && lightboxIndex >= 0 && (
+        <ImageLightbox
+          images={ready.map((x) => ({ src: x.url, filename: x.a.filename.replace(/\.zke$/, '') }))}
+          initialIndex={lightboxIndex}
+          onClose={() => setLightboxIndex(null)}
+        />
+      )}
+    </>
   );
 }
 
