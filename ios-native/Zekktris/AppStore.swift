@@ -490,16 +490,21 @@ final class AppStore: ObservableObject {
     private var e2eeKeyCache: [String: Data] = [:]
     /// In-memory cache of DECRYPTED E2EE attachment bytes, keyed by attachment
     /// id, so a photo that scrolls out and back (or is reopened in the media
-    /// gallery) doesn't re-fetch + re-decrypt every time. In-memory ONLY — never
-    /// written to disk and cleared on quit; also cleared on relock / sign-out so
-    /// plaintext never outlives the key. NSCache auto-evicts under memory
-    /// pressure and is bounded below.
-    private let decryptedMediaCache: NSCache<NSString, NSData> = {
-        let c = NSCache<NSString, NSData>()
-        c.countLimit = 200
-        c.totalCostLimit = 64 * 1024 * 1024 // 64 MB
-        return c
-    }()
+    /// gallery / lightbox) doesn't re-fetch + re-decrypt every time. In-memory
+    /// ONLY — never written to disk; cleared on relock / sign-out so plaintext
+    /// never outlives the key.
+    ///
+    /// This is a manual LRU rather than NSCache on purpose: NSCache auto-evicts
+    /// under system memory pressure, which made decrypted media silently
+    /// vanish and re-decrypt mid-session. Decrypted media should STAY viewable
+    /// for the whole logged-in session (as long as the key is held), so we only
+    /// evict the least-recently-used entries when we exceed an explicit budget.
+    private var decryptedMedia: [String: Data] = [:]
+    /// Recency queue for `decryptedMedia` (oldest first), kept in sync with it.
+    private var decryptedMediaLRU: [String] = []
+    private var decryptedMediaBytes = 0
+    private let decryptedMediaMaxBytes = 256 * 1024 * 1024 // 256 MB
+    private let decryptedMediaMaxCount = 256
     /// Legacy default-group keychain — kept as the read/migrate fallback for
     /// E2EE keys stored by builds before the app-group move (see below).
     private let keychain = KeychainStore()
@@ -762,7 +767,7 @@ final class AppStore: ObservableObject {
         selectedChannel = nil
         decrypted = [:]
         e2eeKeyCache = [:]
-        decryptedMediaCache.removeAllObjects()
+        clearDecryptedMedia()
         e2eeError = nil
     }
 
@@ -2336,15 +2341,54 @@ final class AppStore: ObservableObject {
         // session — avoids re-fetching the .zke blob and re-running crypto every
         // time the row reappears. The cache is cleared on relock/sign-out, so a
         // hit always means the conversation is still unlocked.
-        if let cached = decryptedMediaCache.object(forKey: attachment.id as NSString) {
-            return cached as Data
+        if let cached = cachedMedia(attachment.id) {
+            return cached
         }
         guard channel.isE2EE, let key = e2eeKey(for: channel),
               let url = assetURL(attachment.url) else { return nil }
         guard let (blob, _) = try? await URLSession.shared.data(from: url) else { return nil }
         guard let plain = E2EE.decryptData(blob, key: key) else { return nil }
-        decryptedMediaCache.setObject(plain as NSData, forKey: attachment.id as NSString, cost: plain.count)
+        cacheMedia(attachment.id, plain)
         return plain
+    }
+
+    /// LRU read: returns the cached plaintext for an attachment and marks it
+    /// most-recently-used, or nil on a miss.
+    private func cachedMedia(_ id: String) -> Data? {
+        guard let data = decryptedMedia[id] else { return nil }
+        if let i = decryptedMediaLRU.firstIndex(of: id) {
+            decryptedMediaLRU.remove(at: i)
+            decryptedMediaLRU.append(id)
+        }
+        return data
+    }
+
+    /// LRU write: stores plaintext, then evicts the least-recently-used entries
+    /// until back within the count/byte budget (never evicting the just-stored
+    /// one). No eviction happens on memory pressure — only on budget overflow.
+    private func cacheMedia(_ id: String, _ data: Data) {
+        if let existing = decryptedMedia[id] {
+            decryptedMediaBytes -= existing.count
+            if let i = decryptedMediaLRU.firstIndex(of: id) { decryptedMediaLRU.remove(at: i) }
+        }
+        decryptedMedia[id] = data
+        decryptedMediaLRU.append(id)
+        decryptedMediaBytes += data.count
+        while (decryptedMediaBytes > decryptedMediaMaxBytes || decryptedMedia.count > decryptedMediaMaxCount),
+              decryptedMediaLRU.count > 1 {
+            let evict = decryptedMediaLRU.removeFirst()
+            if let removed = decryptedMedia.removeValue(forKey: evict) {
+                decryptedMediaBytes -= removed.count
+            }
+        }
+    }
+
+    /// Drop all decrypted plaintext (relock / sign-out): plaintext must not
+    /// outlive the key.
+    private func clearDecryptedMedia() {
+        decryptedMedia = [:]
+        decryptedMediaLRU = []
+        decryptedMediaBytes = 0
     }
 
     /// Send a recorded voice message: the audio file plus its duration and
@@ -4287,7 +4331,7 @@ final class AppStore: ObservableObject {
         // Drop any decrypted attachment plaintext too — relocking must not leave
         // viewable media behind. (Clear all: the cache is keyed by attachment id,
         // not channel, and decrypted bytes are cheap to re-derive while unlocked.)
-        decryptedMediaCache.removeAllObjects()
+        clearDecryptedMedia()
         e2eeUnlockVersion += 1
     }
 
