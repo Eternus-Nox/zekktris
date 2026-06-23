@@ -1213,6 +1213,24 @@ export interface ListUserMentionsOptions {
   limit: number;
 }
 
+/**
+ * Dismiss a single mention from the caller's inbox by deleting the
+ * (messageId, userId) row from message_user_mentions. The per-channel
+ * mention_count is intentionally NOT decremented — that resets when the
+ * channel is acked; this is purely a one-row inbox dismissal (the
+ * single-item counterpart to Clear all). Idempotent.
+ */
+export async function deleteUserMention(userId: bigint, messageId: bigint): Promise<void> {
+  await db
+    .delete(schema.messageUserMentions)
+    .where(
+      and(
+        eq(schema.messageUserMentions.userId, userId),
+        eq(schema.messageUserMentions.messageId, messageId),
+      ),
+    );
+}
+
 export async function listUserMentions(
   userId: bigint,
   opts: ListUserMentionsOptions,

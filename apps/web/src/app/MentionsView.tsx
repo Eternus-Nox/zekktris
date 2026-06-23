@@ -26,7 +26,7 @@ import { ApiError, type Message } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
-import { AtSign, Hash } from '../lib/icons';
+import { AtSign, Hash, X } from '../lib/icons';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
 
@@ -172,6 +172,23 @@ export function MentionsView() {
     nav(`/channels/${guildSeg}/${m.channelId}/${m.id}`);
   }
 
+  // Permanently dismiss ONE mention (server deletes the row, so unlike the
+  // click-dismiss above it stays gone across reloads). Optimistic with
+  // rollback on failure.
+  async function onDelete(id: string) {
+    const prev = items;
+    setItems((arr) => arr.filter((x) => x.id !== id));
+    try {
+      await rest.deleteMention(id);
+    } catch (e) {
+      setItems(prev);
+      toasts.push(
+        e instanceof ApiError ? e.message : 'Could not remove mention',
+        'error',
+      );
+    }
+  }
+
   return (
     <div className="h-full flex flex-col bg-bg-1">
       <header
@@ -228,6 +245,7 @@ export function MentionsView() {
               channelName={m.channelName}
               guildName={m.guildId ? state.guildsById[m.guildId]?.name ?? null : null}
               onClick={() => goTo(m)}
+              onDelete={() => void onDelete(m.id)}
             />
           ))}
         </ul>
@@ -254,11 +272,13 @@ function MentionRow({
   channelName,
   guildName,
   onClick,
+  onDelete,
 }: {
   message: Message;
   channelName: string | null;
   guildName: string | null;
   onClick: () => void;
+  onDelete: () => void;
 }) {
   // Author resolution with two layers of fallback:
   //   1. message.author (embedded by hydrateMessages server-side)
@@ -303,11 +323,25 @@ function MentionRow({
   })();
 
   return (
-    <li>
+    <li className="group relative">
+      {/* Remove-one button — sibling (not nested) so it's valid HTML; shows
+          on hover. Stops propagation so it doesn't also navigate. */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+        className="absolute top-2 right-2 z-10 w-7 h-7 flex items-center justify-center rounded text-ink-3 hover:text-red-300 hover:bg-red-950/30 opacity-0 group-hover:opacity-100 transition-opacity"
+        title="Remove this mention"
+        aria-label="Remove this mention"
+      >
+        <X size={14} />
+      </button>
       <button
         type="button"
         onClick={onClick}
-        className="w-full text-left px-3 py-2.5 hover:bg-bg-3/50 transition-colors flex gap-3"
+        className="w-full text-left px-3 py-2.5 pr-10 hover:bg-bg-3/50 transition-colors flex gap-3"
       >
         <span className="relative w-9 h-9 shrink-0">
           <span

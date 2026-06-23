@@ -632,6 +632,28 @@ usersRouter.post('/@me/mentions/clear', requireAuth, async (c) => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────
+// DELETE /@me/mentions/:messageId
+// ───────────────────────────────────────────────────────────────────────────
+//
+// Dismiss ONE mention from the inbox (the single-row counterpart to
+// "Clear all"). Removes the (messageId, userId) row from
+// message_user_mentions so it no longer appears in the list. The
+// per-channel mention_count is left alone (it resets on channel ack) —
+// this is an inbox-list dismissal, not a read-receipt. Idempotent.
+
+usersRouter.delete(
+  '/@me/mentions/:messageId',
+  requireAuth,
+  validate('param', z.object({ messageId: z.string().regex(/^\d+$/) })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const { messageId } = c.req.valid('param');
+    await messages.deleteUserMention(userId, BigInt(messageId));
+    return c.json({ ok: true });
+  },
+);
+
+// ───────────────────────────────────────────────────────────────────────────
 // POST /@me/password
 // ───────────────────────────────────────────────────────────────────────────
 

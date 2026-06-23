@@ -374,6 +374,12 @@ export class RestClient {
     return this.request('POST', '/users/@me/mentions/clear');
   }
 
+  /** Dismiss a single mention from the inbox (the one-row counterpart to
+      clearMentions). Removes the (message, user) row; idempotent. */
+  deleteMention(messageId: string): Promise<{ ok: boolean }> {
+    return this.request('DELETE', `/users/@me/mentions/${messageId}`);
+  }
+
   /**
    * Upload an image to use as the current user's avatar. The server
    * stores the file via the same uploads pipeline used for chat
