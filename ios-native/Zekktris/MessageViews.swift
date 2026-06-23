@@ -2987,13 +2987,17 @@ func markdownAttributed(_ string: String) -> AttributedString {
 /// renders as a form-sheet that does NOT grow to the `.large` detent, so the
 /// content under the avatar was squeezed into a small scrolling strip. There we
 /// give the card an explicit generous size so it fits without an inner scroll
-/// bar; on iPhone/iPad we keep draggable detents (large first so it opens tall).
+/// bar; on iPhone/iPad it opens at 75% of the screen (so it reads as a card,
+/// not a full takeover) and can still be dragged up to full height. The
+/// `selection` binding pins the INITIAL detent to 0.75 (a detent Set is
+/// unordered, so order alone wouldn't guarantee where it opens).
 private struct ProfileCardPresentation: ViewModifier {
+    @State private var detent: PresentationDetent = .fraction(0.75)
     func body(content: Content) -> some View {
         if ProcessInfo.processInfo.isiOSAppOnMac {
             content.frame(minWidth: 600, idealWidth: 620, minHeight: 880, idealHeight: 920)
         } else {
-            content.presentationDetents([.large, .medium])
+            content.presentationDetents([.fraction(0.75), .large], selection: $detent)
         }
     }
 }
