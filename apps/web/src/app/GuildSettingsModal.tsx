@@ -1049,22 +1049,47 @@ function MembersTab({ guild }: { guild: Guild }) {
   const [allRoles, setAllRoles] = useState<Role[] | null>(null);
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  const [done, setDone] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const MEMBERS_PAGE = 100;
 
   const isOwner = !!user && user.id === guild.ownerId;
 
   async function refresh() {
     try {
       const [membersR, rolesR] = await Promise.all([
-        rest.listMembers(guild.id, { limit: 100 }),
+        rest.listMembers(guild.id, { limit: MEMBERS_PAGE }),
         rest.listRoles(guild.id),
       ]);
       setRows(membersR.members);
+      setDone(membersR.members.length < MEMBERS_PAGE);
       setAllRoles(rolesR.roles);
     } catch (e) {
       toasts.push(
         e instanceof ApiError ? e.message : 'Failed to load members',
         'error',
       );
+    }
+  }
+
+  // Cursor pagination: large guilds have >100 members, so the first page
+  // alone hid the rest (and the search bar misleadingly claimed to cover
+  // everyone). "Load more" pages by the last loaded member id.
+  async function loadMore() {
+    if (loadingMore || done || !rows || rows.length === 0) return;
+    setLoadingMore(true);
+    try {
+      const after = rows[rows.length - 1]!.userId;
+      const r = await rest.listMembers(guild.id, { limit: MEMBERS_PAGE, after });
+      setRows((prev) => [...(prev ?? []), ...r.members]);
+      setDone(r.members.length < MEMBERS_PAGE);
+    } catch (e) {
+      toasts.push(
+        e instanceof ApiError ? e.message : 'Failed to load more members',
+        'error',
+      );
+    } finally {
+      setLoadingMore(false);
     }
   }
 
@@ -1101,7 +1126,7 @@ function MembersTab({ guild }: { guild: Guild }) {
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder={`Search ${rows.length} member${rows.length === 1 ? '' : 's'}…`}
+          placeholder={`Search ${rows.length}${done ? '' : '+'} member${rows.length === 1 ? '' : 's'}…`}
           className="w-full pl-9 pr-3 py-2 bg-bg-2 border border-line rounded-md text-sm text-ink-1"
         />
         {query && (
@@ -1195,6 +1220,21 @@ function MembersTab({ guild }: { guild: Guild }) {
         );
       })}
         </ul>
+      )}
+
+      {!done && (
+        <button
+          onClick={() => void loadMore()}
+          disabled={loadingMore}
+          className="w-full px-3 py-2 rounded-md border border-line border-dashed hover:bg-bg-2 text-sm text-ink-2 transition-colors disabled:opacity-60"
+        >
+          {loadingMore ? 'Loading…' : 'Load more members'}
+        </button>
+      )}
+      {!done && query.trim() !== '' && (
+        <p className="text-xs text-ink-3 text-center">
+          Search only covers loaded members — load more to search the rest.
+        </p>
       )}
     </div>
   );
