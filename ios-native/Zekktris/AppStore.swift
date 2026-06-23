@@ -1995,6 +1995,12 @@ final class AppStore: ObservableObject {
                 errorText = "Encryption failed."
                 return
             }
+            // Consistency with send()/scheduleMessage(): ciphertext is ~34%
+            // larger than plaintext, so reject over-long messages clearly.
+            if enc.count > 4000 {
+                errorText = "This message is too long to send in an encrypted DM."
+                return
+            }
             wire = enc
         }
         messages[idx].sendState = "sending"
