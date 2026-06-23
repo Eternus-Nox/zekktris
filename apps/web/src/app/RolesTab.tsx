@@ -55,14 +55,11 @@ export function RolesTab({ guild }: { guild: Guild }) {
       // Other views (member list color, message author color, settings
       // gating) read from there and stay in sync without their own
       // listRoles call.
-      await loadRoles(guild.id);
-      // Re-derive the local sorted list from the freshly-cached payload
-      // by issuing one more REST call. We could avoid this by reading
-      // AppState directly, but the local `roles` state shape (sorted,
-      // editor-friendly) differs from the canonical store shape — and
-      // listRoles caches at the HTTP layer so the cost is negligible.
-      const r = await rest.listRoles(guild.id);
-      const sorted = [...r.roles].sort((a, b) => {
+      // loadRoles fetches + dispatches ROLES_SET (single source of truth
+      // other views read) AND returns the roles, so we sort that payload
+      // directly — no second listRoles round-trip.
+      const fetched = await loadRoles(guild.id);
+      const sorted = [...fetched].sort((a, b) => {
         if (a.id === guild.id) return 1;
         if (b.id === guild.id) return -1;
         return b.position - a.position;

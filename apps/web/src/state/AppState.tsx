@@ -1753,7 +1753,7 @@ interface AppStateValue {
    * + message rendering to compute display colors, and by permission
    * checks that need full role data.
    */
-  loadRoles: (guildId: string) => Promise<void>;
+  loadRoles: (guildId: string) => Promise<Role[]>;
   /**
    * Load a guild's scheduled events (excluding completed/canceled
    * by default). Used by the EventsModal mount. Idempotent — the
@@ -2105,9 +2105,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   );
 
   const loadRoles = useCallback(
-    async (guildId: string) => {
+    async (guildId: string): Promise<Role[]> => {
       const r = await (await restForGuild(guildId)).listRoles(guildId);
       dispatch({ type: 'ROLES_SET', guildId, roles: r.roles });
+      return r.roles;
     },
     [restForGuild],
   );
