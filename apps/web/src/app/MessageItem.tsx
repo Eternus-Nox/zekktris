@@ -261,7 +261,14 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
           : undefined;
 
       return {
-        lookupUser: (id: string) => usersById[id],
+        // usersById is seeded only from message authors, so a DM mention of
+        // someone who hasn't sent a loaded message would miss → "@unknown".
+        // Fall back to the DM recipients and this message's author so DM
+        // mentions resolve to the real name.
+        lookupUser: (id: string) =>
+          usersById[id] ??
+          channel?.recipients?.find((r) => r.id === id) ??
+          (message.author?.id === id ? message.author : undefined),
         lookupChannel: (id: string) => {
           // Search every guild's channel list. This is O(guilds) which is
           // small in practice; worth the simplicity over building a global
@@ -288,7 +295,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
           : undefined,
       };
     },
-    [usersById, channelsByGuild, emojisByGuild, selfId, nav, message.channelId, onAvatarClick],
+    [usersById, channelsByGuild, emojisByGuild, selfId, nav, message.channelId, message.author, channel?.recipients, onAvatarClick],
   );
 
   // ── E2EE decryption ─────────────────────────────────────────────────────

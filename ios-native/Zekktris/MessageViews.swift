@@ -1597,7 +1597,13 @@ struct MessageRow: View {
         if token.hasPrefix("<@&") {
             return "@\(store.roles.first(where: { $0.id == digits })?.name ?? "role")"
         }
-        return "@\(store.memberName(digits) ?? "user")"
+        // User mention. memberName covers guild members; in a DM that map is
+        // empty, so fall back to the DM recipients and this message's author so
+        // the name resolves instead of showing the literal "@user".
+        if let name = store.memberName(digits) { return "@\(name)" }
+        if let r = channel.recipients?.first(where: { $0.id == digits }) { return "@\(r.name)" }
+        if let a = message.author, a.id == digits { return "@\(a.name)" }
+        return "@user"
     }
 
     private func inlineText(_ s: String) -> Text {
