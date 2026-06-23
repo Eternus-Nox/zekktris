@@ -327,6 +327,9 @@ final class VoiceManager: ObservableObject {
         func sameTracks(_ a: [String: VideoTrack], _ b: [String: VideoTrack]) -> Bool {
             a.count == b.count && a.allSatisfy { b[$0.key] === $0.value }
         }
+        func sameAudio(_ a: [String: RemoteTrackPublication], _ b: [String: RemoteTrackPublication]) -> Bool {
+            a.count == b.count && a.allSatisfy { b[$0.key] === $0.value }
+        }
         if !sameTracks(remoteVideoTracks, video) { remoteVideoTracks = video }
         if !sameTracks(screenTracks, screens) { screenTracks = screens }
         // Preserve deafen/mute-for-me on newly discovered audio pubs.
@@ -336,8 +339,13 @@ final class VoiceManager: ObservableObject {
                 Task { try? await pub.set(enabled: false) }
             }
         }
-        audioPubs = audioPubs.filter { audio[$0.key] != nil }
-
+        // Same skip-no-op guard as the track maps above: prune stale pubs but
+        // only reassign when the set actually changed (pubs are reference
+        // types, so === identity is exact). Newly discovered pubs are added in
+        // the loop above, so this only ever removes — but reassigning an
+        // unchanged dict still re-renders every audioPubs observer.
+        let prunedAudio = audioPubs.filter { audio[$0.key] != nil }
+        if !sameAudio(audioPubs, prunedAudio) { audioPubs = prunedAudio }
     }
 
     func disconnect() async {
