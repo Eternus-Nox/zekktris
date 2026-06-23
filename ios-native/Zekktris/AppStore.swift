@@ -2039,9 +2039,14 @@ final class AppStore: ObservableObject {
         )
     }
 
+    /// Shared ISO-8601 formatter (default options). Allocating one per call
+    /// is needless work on hot paths (isoNow on every send, etc.); AppStore is
+    /// @MainActor so single-threaded reuse is safe.
+    private static let iso8601 = ISO8601DateFormatter()
+
     /// Current time as an ISO-8601 string for optimistic placeholders.
     private func isoNow() -> String {
-        ISO8601DateFormatter().string(from: Date())
+        Self.iso8601.string(from: Date())
     }
 
     /// Send a sticker as its own message. Not available in E2EE channels
@@ -2155,7 +2160,7 @@ final class AppStore: ObservableObject {
     }
     func scheduleMessage(content: String, at date: Date) async -> String? {
         guard let channel = selectedChannel else { return "No channel selected." }
-        let iso = ISO8601DateFormatter().string(from: date)
+        let iso = Self.iso8601.string(from: date)
         var wireContent = content
         if channel.isE2EE {
             // Pre-encrypt: the server stores + fires the ciphertext verbatim
@@ -2796,7 +2801,7 @@ final class AppStore: ObservableObject {
     }
     func adminBan(_ u: AdminUser) async {
         do { try await api.adminBanUser(userId: u.id)
-             patchAdminUser(u.id) { $0.bannedAt = ISO8601DateFormatter().string(from: Date()) } }
+             patchAdminUser(u.id) { $0.bannedAt = Self.iso8601.string(from: Date()) } }
         catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
     func adminUnban(_ u: AdminUser) async {
@@ -3050,7 +3055,7 @@ final class AppStore: ObservableObject {
     func timeoutMember(_ userId: String, minutes: Int) async {
         guard let g = selectedGuild else { return }
         let until = minutes > 0
-            ? ISO8601DateFormatter().string(from: Date().addingTimeInterval(Double(minutes) * 60))
+            ? Self.iso8601.string(from: Date().addingTimeInterval(Double(minutes) * 60))
             : nil
         do {
             let updated = try await api.timeoutMember(guildId: g.id, userId: userId, until: until)
@@ -3342,7 +3347,7 @@ final class AppStore: ObservableObject {
     }
     func createEvent(name: String, description: String?, startAt: Date, endAt: Date?, locationKind: String, channelId: String?, locationText: String?) async -> String? {
         guard let g = selectedGuild else { return "No server selected." }
-        let iso = ISO8601DateFormatter()
+        let iso = Self.iso8601
         var body: [String: Any] = ["name": name, "startAt": iso.string(from: startAt), "locationKind": locationKind]
         if let d = description, !d.isEmpty { body["description"] = d }
         if let e = endAt { body["endAt"] = iso.string(from: e) }
@@ -3356,7 +3361,7 @@ final class AppStore: ObservableObject {
     }
     func updateEvent(_ ev: ScheduledEvent, name: String, description: String?, startAt: Date, endAt: Date?, locationKind: String, channelId: String?, locationText: String?) async -> String? {
         guard let g = selectedGuild else { return "No server selected." }
-        let iso = ISO8601DateFormatter()
+        let iso = Self.iso8601
         var patch: [String: Any] = ["name": name, "startAt": iso.string(from: startAt), "locationKind": locationKind]
         patch["description"] = (description?.isEmpty == false) ? description! : NSNull()
         patch["endAt"] = endAt.map { iso.string(from: $0) } ?? NSNull()
@@ -4255,7 +4260,7 @@ final class AppStore: ObservableObject {
             keys[channelId] = bytes
         }
         guard !keys.isEmpty else { return nil }
-        let exportedAt = ISO8601DateFormatter().string(from: Date())
+        let exportedAt = Self.iso8601.string(from: Date())
         return E2EE.encodeKeyBackup(keys: keys, exportedAt: exportedAt)
     }
 
