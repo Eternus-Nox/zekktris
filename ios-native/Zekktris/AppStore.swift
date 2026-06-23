@@ -3476,12 +3476,49 @@ final class AppStore: ObservableObject {
         lightbox = LightboxImage(items: items, startIndex: startIndex)
     }
 
-    /// Save every plain photo/video in a message to the Photos library; returns
-    /// how many were saved. Used by the multi-media grid's "Save all" button.
-    /// (Plain media only — the grid that calls this excludes E2EE attachments.)
-    func saveMediaToPhotos(_ media: [Attachment]) async -> Int {
+    /// Open the paged lightbox across a message's photos — handling BOTH plain
+    /// (by URL) and encrypted (decrypted to an in-memory image) — starting on
+    /// the tapped one. Encrypted decryption is cached, so repeat opens are fast.
+    func openImageLightbox(images: [Attachment], tapped: String, in channel: Channel) async {
+        var items: [LightboxItem] = []
+        var startIndex = 0
+        for att in images {
+            let item: LightboxItem?
+            if channel.isE2EE, att.filename?.hasSuffix(".zke") == true {
+                if let data = await decryptedAttachmentData(att, in: channel),
+                   let img = UIImage(data: data) {
+                    item = LightboxItem(image: img)
+                } else {
+                    item = nil
+                }
+            } else if let url = assetURL(att.url) {
+                item = LightboxItem(url: url)
+            } else {
+                item = nil
+            }
+            if let item {
+                if att.id == tapped { startIndex = items.count }
+                items.append(item)
+            }
+        }
+        guard !items.isEmpty else { return }
+        lightbox = LightboxImage(items: items, startIndex: startIndex)
+    }
+
+    /// Save every photo/video in a message to the Photos library; returns how
+    /// many were saved. Handles encrypted photos (decrypt then save) too.
+    func saveMediaToPhotos(_ media: [Attachment], in channel: Channel) async -> Int {
         var saved = 0
         for att in media {
+            if channel.isE2EE, att.filename?.hasSuffix(".zke") == true {
+                // Grid only groups encrypted IMAGES, so decrypt → save image.
+                if let data = await decryptedAttachmentData(att, in: channel),
+                   let img = UIImage(data: data) {
+                    UIImageWriteToSavedPhotosAlbum(img, nil, nil, nil)
+                    saved += 1
+                }
+                continue
+            }
             guard let url = assetURL(att.url) else { continue }
             if att.isVideo {
                 if await saveVideoToPhotos(from: url) { saved += 1 }

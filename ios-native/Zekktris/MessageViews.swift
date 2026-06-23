@@ -1881,37 +1881,64 @@ struct MessageRow: View {
         .padding(.vertical, 2)
     }
 
+    /// Is this an E2EE (.zke) attachment in this (encrypted) channel?
+    private func isEncrypted(_ att: Attachment) -> Bool {
+        channel.isE2EE && (att.filename?.hasSuffix(".zke") == true)
+    }
+
+    /// For an encrypted attachment, does its INNER filename look like an image?
+    private func encryptedInnerIsImage(_ att: Attachment) -> Bool {
+        guard let n = att.filename, n.hasSuffix(".zke") else { return false }
+        let ext = (String(n.dropLast(4)) as NSString).pathExtension.lowercased()
+        return ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tiff"].contains(ext)
+    }
+
+    /// Is this a groupable photo (plain image OR encrypted image)?
+    private func isGridImage(_ att: Attachment) -> Bool {
+        isEncrypted(att) ? encryptedInnerIsImage(att) : att.isImage
+    }
+
     @ViewBuilder
     private var attachmentsView: some View {
         if let attachments = message.attachments, !attachments.isEmpty {
-            // Voice first (decrypts in its own view), then encrypted, then a
-            // GRID of plain photos/videos (2+ group into a tidy 2-col grid
-            // instead of a messy stack), then any plain files.
+            // Voice first (own decrypting view), then a GRID of photos/videos —
+            // including ENCRYPTED photos — so 2+ group into a tidy 2-col grid
+            // instead of a messy stack. Encrypted videos/files (and plain
+            // files) render individually after.
             let voice = attachments.filter { $0.isVoiceMessage == true }
             let rest = attachments.filter { $0.isVoiceMessage != true }
-            let e2ee = rest.filter { channel.isE2EE && ($0.filename?.hasSuffix(".zke") == true) }
-            let plain = rest.filter { !(channel.isE2EE && ($0.filename?.hasSuffix(".zke") == true)) }
-            let media = plain.filter { $0.isImage || $0.isVideo }
-            let files = plain.filter { !$0.isImage && !$0.isVideo }
+            // Groupable media: plain image/video, or encrypted image. (Encrypted
+            // video/file decrypt-and-render in EncryptedAttachmentView below.)
+            let media = rest.filter { att in
+                isEncrypted(att) ? encryptedInnerIsImage(att) : (att.isImage || att.isVideo)
+            }
+            let mediaIds = Set(media.map { $0.id })
+            let leftover = rest.filter { !mediaIds.contains($0.id) }
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(voice) { VoiceMessageView(attachment: $0, channel: channel) }
-                ForEach(e2ee) { EncryptedAttachmentView(attachment: $0, channel: channel) }
                 if media.count >= 2 {
                     mediaGrid(media)
                 } else {
                     ForEach(media) { singleMedia($0) }
                 }
-                ForEach(files) { fileChip($0) }
+                ForEach(leftover) { att in
+                    if isEncrypted(att) {
+                        EncryptedAttachmentView(attachment: att, channel: channel)
+                    } else {
+                        fileChip(att)
+                    }
+                }
             }
             .padding(.top, 2)
         }
     }
 
-    /// A single plain photo/video (the original full-size rendering, used when
-    /// a message has just one media attachment).
+    /// A single photo/video when a message has just one media attachment.
     @ViewBuilder
     private func singleMedia(_ att: Attachment) -> some View {
-        if att.isImage, let url = assetURL(att.url) {
+        if isEncrypted(att) {
+            EncryptedAttachmentView(attachment: att, channel: channel)
+        } else if att.isImage, let url = assetURL(att.url) {
             // Reserve the image's final on-screen size UP FRONT from its known
             // width/height so loading doesn't reflow the row (and the bottom).
             let dim = imageDisplaySize(att)
@@ -1948,20 +1975,27 @@ struct MessageRow: View {
     /// message's photos; tapping a video opens the full-screen player.
     @ViewBuilder
     private func mediaGrid(_ media: [Attachment]) -> some View {
-        let images = media.filter { $0.isImage }
+        // Images for the paged lightbox = plain images AND encrypted images.
+        let images = media.filter { isGridImage($0) }
         let cols = [GridItem(.flexible(), spacing: 4), GridItem(.flexible(), spacing: 4)]
         VStack(alignment: .leading, spacing: 6) {
             LazyVGrid(columns: cols, spacing: 4) {
                 ForEach(media) { att in gridCell(att, images: images) }
             }
             .frame(maxWidth: 260)
-            SaveAllButton(media: media)
+            SaveAllButton(media: media, channel: channel)
         }
     }
 
     @ViewBuilder
     private func gridCell(_ att: Attachment, images: [Attachment]) -> some View {
-        if att.isImage, let url = assetURL(att.url) {
+        if isEncrypted(att) {
+            // Encrypted photo: decrypting square thumbnail. Tap → paged
+            // lightbox across the message's photos (plain + decrypted E2EE).
+            EncryptedThumb(attachment: att, channel: channel) {
+                Task { await store.openImageLightbox(images: images, tapped: att.id, in: channel) }
+            }
+        } else if att.isImage, let url = assetURL(att.url) {
             Rectangle()
                 .fill(Theme.bg3)
                 .aspectRatio(1, contentMode: .fit)
@@ -1977,13 +2011,7 @@ struct MessageRow: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    // Filter to images with a usable URL, then index into that
-                    // SAME filtered set so the opening page is always correct
-                    // even if an earlier image's URL didn't resolve.
-                    let valid = images.filter { assetURL($0.url) != nil }
-                    let items = valid.map { LightboxItem(url: assetURL($0.url)!) }
-                    let start = valid.firstIndex(where: { $0.id == att.id }) ?? 0
-                    store.openLightbox(items: items, startIndex: start)
+                    Task { await store.openImageLightbox(images: images, tapped: att.id, in: channel) }
                 }
         } else if att.isVideo, let url = assetURL(att.url) {
             Rectangle()
@@ -3755,11 +3783,46 @@ private struct LightboxPage: View {
     }
 }
 
+/// Decrypting square thumbnail for an encrypted photo in the media grid.
+private struct EncryptedThumb: View {
+    @EnvironmentObject private var store: AppStore
+    let attachment: Attachment
+    let channel: Channel
+    let onTap: () -> Void
+    @State private var image: UIImage?
+
+    var body: some View {
+        Rectangle()
+            .fill(Theme.bg3)
+            .aspectRatio(1, contentMode: .fit)
+            .overlay(
+                Group {
+                    if let image {
+                        Image(uiImage: image).resizable().scaledToFill()
+                    } else {
+                        Image(systemName: "lock.doc")
+                            .font(.system(size: 18))
+                            .foregroundColor(Theme.accent)
+                    }
+                }
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+            .onTapGesture { if image != nil { onTap() } }
+            .task(id: store.e2eeUnlockVersion) {
+                if image == nil, let data = await store.decryptedAttachmentData(attachment, in: channel) {
+                    image = UIImage(data: data)
+                }
+            }
+    }
+}
+
 /// "Save all to Photos" for a multi-media message. Keeps its own status so it
 /// gives feedback (Saving… → Saved N) without app-wide toast plumbing.
 private struct SaveAllButton: View {
     @EnvironmentObject private var store: AppStore
     let media: [Attachment]
+    let channel: Channel
     @State private var label = "Save all to Photos"
     @State private var busy = false
 
@@ -3769,7 +3832,7 @@ private struct SaveAllButton: View {
             busy = true
             label = "Saving…"
             Task {
-                let n = await store.saveMediaToPhotos(media)
+                let n = await store.saveMediaToPhotos(media, in: channel)
                 await MainActor.run {
                     label = n > 0 ? "Saved \(n) to Photos" : "Couldn't save"
                     busy = false
