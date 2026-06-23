@@ -580,6 +580,7 @@ async function main(): Promise<void> {
     clearInterval(eventSweepTimer);
     clearInterval(pollSweepTimer);
     clearInterval(afkSweepTimer);
+    clearInterval(scheduledMsgTimer);
     clearInterval(threadArchiveSweepTimer);
     if (attachmentGcTimer) clearInterval(attachmentGcTimer);
 

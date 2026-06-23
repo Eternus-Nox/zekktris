@@ -10,7 +10,7 @@
 import { Hono } from 'hono';
 import { validate } from '../lib/validate';
 import { z } from 'zod';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, gt, isNull } from 'drizzle-orm';
 import { db, schema, isUniqueViolation } from '../db';
 import { errors } from '../errors';
 import { log } from '../log';
@@ -862,40 +862,45 @@ authRouter.get('/email-verification-required', async (c) => {
 
 // Consume a verification token and mark the account verified. Public
 // (the link is clicked from an email, possibly logged-out).
+const verifyEmailByIp = new RateLimiter(50, 60 * 60_000, 'verify-email-ip');
 authRouter.post(
   '/verify-email',
   validate('json', z.object({ token: z.string().min(1).max(512) })),
   async (c) => {
+    const ip = getClientIp(c) ?? 'unknown';
+    {
+      const r = await verifyEmailByIp.consume(ip);
+      if (!r.ok) throw errors.rateLimited(Math.ceil(r.retryAfterMs / 1000));
+    }
+
     const { token } = c.req.valid('json');
     const { createHash } = await import('node:crypto');
     const tokenHash = createHash('sha256').update(token).digest('hex');
 
-    const [row] = await db
-      .select({
-        id: schema.emailVerifications.id,
-        userId: schema.emailVerifications.userId,
-        expiresAt: schema.emailVerifications.expiresAt,
-      })
-      .from(schema.emailVerifications)
+    // Atomically claim the token: a single UPDATE that requires it be unused
+    // AND unexpired. This makes the single-use guarantee deterministic under
+    // concurrency (two requests can't both pass a separate SELECT check) and,
+    // by putting the expiry in the WHERE, an expired token isn't burned.
+    const now = new Date();
+    const claimed = await db
+      .update(schema.emailVerifications)
+      .set({ usedAt: now })
       .where(
         and(
           eq(schema.emailVerifications.tokenHash, tokenHash),
           isNull(schema.emailVerifications.usedAt),
+          gt(schema.emailVerifications.expiresAt, now),
         ),
       )
-      .limit(1);
-    if (!row || row.expiresAt.getTime() < Date.now()) {
+      .returning({ userId: schema.emailVerifications.userId });
+    if (claimed.length === 0) {
       throw errors.badRequest('This verification link is invalid or has expired');
     }
 
     await db
-      .update(schema.emailVerifications)
-      .set({ usedAt: new Date() })
-      .where(eq(schema.emailVerifications.id, row.id));
-    await db
       .update(schema.users)
       .set({ emailVerified: true })
-      .where(eq(schema.users.id, row.userId));
+      .where(eq(schema.users.id, claimed[0]!.userId));
 
     return c.json({ ok: true });
   },
