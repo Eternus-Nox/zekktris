@@ -45,7 +45,8 @@ type WireAudience =
   | { kind: 'guild'; guildId: string }
   | { kind: 'channel'; channelId: string; guildId: string | null }
   | { kind: 'users'; userIds: string[] }
-  | { kind: 'presence'; guildIds: string[]; dmChannelIds: string[] };
+  | { kind: 'presence'; guildIds: string[]; dmChannelIds: string[] }
+  | { kind: 'multiUser'; guildIds: string[]; userIds: string[] };
 
 export function encodeAudience(a: Audience): WireAudience {
   switch (a.kind) {
@@ -66,6 +67,12 @@ export function encodeAudience(a: Audience): WireAudience {
         kind: 'presence',
         guildIds: a.guildIds.map((id) => id.toString()),
         dmChannelIds: a.dmChannelIds.map((id) => id.toString()),
+      };
+    case 'multiUser':
+      return {
+        kind: 'multiUser',
+        guildIds: a.guildIds.map((id) => id.toString()),
+        userIds: a.userIds.map((id) => id.toString()),
       };
   }
 }
@@ -89,6 +96,12 @@ export function decodeAudience(a: WireAudience): Audience {
         kind: 'presence',
         guildIds: a.guildIds.map((id) => BigInt(id)),
         dmChannelIds: a.dmChannelIds.map((id) => BigInt(id)),
+      };
+    case 'multiUser':
+      return {
+        kind: 'multiUser',
+        guildIds: a.guildIds.map((id) => BigInt(id)),
+        userIds: a.userIds.map((id) => BigInt(id)),
       };
     default:
       throw new Error(`unknown audience kind: ${JSON.stringify(a)}`);

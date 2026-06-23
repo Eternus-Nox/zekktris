@@ -464,23 +464,30 @@ export function userUpdate(payload: {
       status: payload.user.status,
     },
   };
-  // Dispatch to each guild — same fan-out pattern as presence. Also
-  // route to self directly (so a user with NO guilds still gets their
-  // own update on other tabs), and to any explicit user-id targets
-  // (typically DM peers — see callers in routes/users.ts).
-  for (const guildId of payload.guildIds) {
-    publish(GatewayEvent.USER_UPDATE, wire, { kind: 'guild', guildId });
-  }
-  publish(GatewayEvent.USER_UPDATE, wire, { kind: 'user', userId: payload.userId });
-  if (payload.userIds && payload.userIds.length > 0) {
+  // Recipients: the subject's guild co-members + the subject themselves (so a
+  // guild-less user still syncs across their own tabs) + any explicit user
+  // targets (typically DM peers, who share no guild). Assemble the explicit
+  // user list as self + deduped extras; the `multiUser` audience expands at
+  // delivery into the deduped union of (guild members ∪ these users).
+  const userIds: bigint[] = [payload.userId];
+  if (payload.userIds) {
     for (const otherId of payload.userIds) {
-      // Skip self (already published above) and skip duplicates the
-      // caller might have included by mistake. Cheap dedup at this
-      // depth; expensive callers should dedup before invoking.
-      if (otherId === payload.userId) continue;
-      publish(GatewayEvent.USER_UPDATE, wire, { kind: 'user', userId: otherId });
+      // Skip self (already present) and any caller-supplied duplicates.
+      if (otherId !== payload.userId && !userIds.includes(otherId)) {
+        userIds.push(otherId);
+      }
     }
   }
+  // ONE bus publish (was O(guilds) + 1 for self + 1 per DM peer) — a single
+  // cross-replica round-trip under the Redis bus. The frame is identical for
+  // every recipient (USER_UPDATE carries no per-recipient guild_id), so this
+  // rides the generic pre-serialize-once delivery path and each connection
+  // gets exactly one frame even when it sits in several of these guilds.
+  publish(GatewayEvent.USER_UPDATE, wire, {
+    kind: 'multiUser',
+    guildIds: payload.guildIds,
+    userIds,
+  });
 }
 
 // ── Lifecycle helpers ──────────────────────────────────────────────────────

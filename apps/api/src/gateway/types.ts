@@ -49,7 +49,24 @@ export type Audience =
    * the membership lists. The payload `d` carries `{ user_id, status }`; the
    * per-frame `guild_id` is injected at delivery time.
    */
-  | { kind: 'presence'; guildIds: bigint[]; dmChannelIds: bigint[] };
+  | { kind: 'presence'; guildIds: bigint[]; dmChannelIds: bigint[] }
+  /**
+   * A profile change (USER_UPDATE) for one user, destined for every guild
+   * they're in PLUS explicit extra recipients (their DM peers + themselves
+   * for multi-tab sync). Like `presence`, this collapses what used to be N
+   * separate publishes (one `guild` audience per guild + one `user` audience
+   * for self + one per DM peer) into a SINGLE bus publish — one cross-replica
+   * round-trip under the Redis bus instead of O(guilds).
+   *
+   * Unlike `presence`, the delivered frame is IDENTICAL for every recipient
+   * (the USER_UPDATE wire carries no per-recipient `guild_id` — clients key
+   * the upsert on `user.id` and patch every guild/DM that references it). So
+   * this flows through the generic pre-serialize-once delivery path: the
+   * registry only has to resolve the deduped union of (guild members ∪ listed
+   * users) as the candidate set. A connection in several of the subject's
+   * guilds — or in a guild AND the user list — receives exactly one frame.
+   */
+  | { kind: 'multiUser'; guildIds: bigint[]; userIds: bigint[] };
 
 // ── Frame helpers ──────────────────────────────────────────────────────────
 

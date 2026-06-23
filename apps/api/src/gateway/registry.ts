@@ -542,51 +542,48 @@ class Registry {
     event: PublishedEvent,
     audience: Extract<Audience, { kind: 'presence' }>,
   ): void {
-    // Deduped union of connections in any shared guild or DM channel. A
-    // connection in multiple shared guilds appears once here and receives
-    // one frame per shared guild in the loop below.
-    const candidates = new Set<Connection>();
+    const base = event.d as Record<string, unknown>;
+
+    // Guild frames: iterate the subject's guilds and pull each guild's
+    // connections straight from the byGuild index, instead of scanning every
+    // candidate connection and probing conn.guildIds.has() per guild (the old
+    // O(connections × guilds) shape). Each guild's index set is already the
+    // exact recipient set for that guild, so every connection still gets
+    // exactly one frame per shared guild — a connection in N shared guilds is
+    // visited once under each of those N guild sets. The frame is serialized
+    // once per guild (lazily, so an all-unauthenticated guild costs nothing)
+    // and reused across that guild's connections.
     for (const guildId of audience.guildIds) {
       const set = this.byGuild.get(guildId);
-      if (set) for (const c of set) candidates.add(c);
-    }
-    for (const channelId of audience.dmChannelIds) {
-      const set = this.byDMChannel.get(channelId);
-      if (set) for (const c of set) candidates.add(c);
-    }
-    if (candidates.size === 0) return;
-
-    const base = event.d as Record<string, unknown>;
-    const guildFrameCache = new Map<bigint, string>();
-    let nullFrame: string | null = null;
-
-    for (const conn of candidates) {
-      if (!conn.isAuthenticated() || conn.userId === null) continue;
-      // One frame per guild this connection shares with the subject. The
-      // .has guard mirrors the old shouldReceive('guild') check.
-      for (const guildId of audience.guildIds) {
-        if (!conn.guildIds.has(guildId)) continue;
-        let frame = guildFrameCache.get(guildId);
+      if (!set) continue;
+      let frame: string | undefined;
+      for (const conn of set) {
+        if (!conn.isAuthenticated() || conn.userId === null) continue;
         if (frame === undefined) {
           frame = JSON.stringify(
             { op: GatewayOp.DISPATCH, t: event.t, d: { ...base, guild_id: guildId.toString() } },
             jsonReplacer,
           );
-          guildFrameCache.set(guildId, frame);
         }
         conn.sendPreparedDispatch(frame);
       }
-      // One null-guild frame if this connection is a recipient of any of the
-      // subject's DM channels (mirrors the old shouldReceive('channel', null)
-      // check). Idempotent, so a single frame covers all shared DMs.
-      let isDmPeer = false;
+    }
+
+    // DM frames: a single guild_id=null frame per DM peer. A peer can share
+    // more than one DM channel with the subject (a 1:1 plus a group DM), so
+    // dedup the peers across all the subject's DM channels into one set and
+    // send each exactly one null frame. The null-guild handler is idempotent
+    // (patches usersById + all DM recipients), matching the old behavior of
+    // one null frame per peer.
+    if (audience.dmChannelIds.length > 0) {
+      const dmPeers = new Set<Connection>();
       for (const channelId of audience.dmChannelIds) {
-        if (conn.dmChannelIds.has(channelId)) {
-          isDmPeer = true;
-          break;
-        }
+        const set = this.byDMChannel.get(channelId);
+        if (set) for (const c of set) dmPeers.add(c);
       }
-      if (isDmPeer) {
+      let nullFrame: string | null = null;
+      for (const conn of dmPeers) {
+        if (!conn.isAuthenticated() || conn.userId === null) continue;
         if (nullFrame === null) {
           nullFrame = JSON.stringify(
             { op: GatewayOp.DISPATCH, t: event.t, d: { ...base, guild_id: null } },
@@ -612,11 +609,34 @@ class Registry {
         // every message event used to pay an Array.from allocation here.
         return this.byUser.get(audience.userId) ?? EMPTY_CONNECTION_SET;
       case 'users': {
-        // A genuine merge — the one case that still builds an array.
+        // A genuine merge — the one case that still builds an array. No dedup
+        // needed: byUser sets are disjoint across distinct user ids (a
+        // connection belongs to exactly one user).
         const out: Connection[] = [];
         for (const uid of audience.userIds) {
           const conns = this.byUser.get(uid);
           if (conns) for (const c of conns) out.push(c);
+        }
+        return out;
+      }
+      case 'multiUser': {
+        // Union of (every connection in any of the subject's guilds) ∪ (every
+        // connection of any listed user). These index sets OVERLAP — a
+        // connection can be in two of the guilds, or in a guild AND belong to
+        // a listed user — so we MUST dedup, or the generic delivery path would
+        // send that connection the identical USER_UPDATE frame twice. The
+        // frame is the same for everyone (no per-guild guild_id), so the
+        // generic pre-serialize-once path handles it; we just supply the exact
+        // recipient set here.
+        const seen = new Set<Connection>();
+        const out: Connection[] = [];
+        for (const guildId of audience.guildIds) {
+          const conns = this.byGuild.get(guildId);
+          if (conns) for (const c of conns) if (!seen.has(c)) { seen.add(c); out.push(c); }
+        }
+        for (const uid of audience.userIds) {
+          const conns = this.byUser.get(uid);
+          if (conns) for (const c of conns) if (!seen.has(c)) { seen.add(c); out.push(c); }
         }
         return out;
       }
@@ -651,6 +671,11 @@ class Registry {
         return conn.userId === audience.userId;
       case 'users':
         return audience.userIds.includes(conn.userId);
+      case 'multiUser':
+        // candidateConnections already resolved the exact recipient union
+        // (deduped guild members ∪ listed users); every candidate should
+        // receive. The auth/userId guard at the top of this method still runs.
+        return true;
       case 'guild':
         return conn.guildIds.has(audience.guildId);
       case 'channel':
