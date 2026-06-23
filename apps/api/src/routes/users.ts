@@ -1277,9 +1277,9 @@ usersRouter.delete(
   requireAuth,
   validate('param', z.object({ token: z.string().min(1).max(256) })),
   async (c) => {
-    requireUserId(c);
+    const userId = requireUserId(c);
     const { deleteDeviceTokenValue } = await import('../services/apns');
-    await deleteDeviceTokenValue(c.req.valid('param').token);
+    await deleteDeviceTokenValue(c.req.valid('param').token, userId);
     return c.json({ ok: true });
   },
 );

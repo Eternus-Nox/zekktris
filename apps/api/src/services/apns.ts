@@ -359,10 +359,14 @@ export async function upsertDeviceToken(input: UpsertTokenInput) {
   return row;
 }
 
-/** Delete by the token value (used by the send path on permanent failure
-    and by the client unregister-on-logout flow). */
-export async function deleteDeviceTokenValue(token: string): Promise<void> {
-  await db.delete(schema.apnsDeviceTokens).where(eq(schema.apnsDeviceTokens.token, token));
+/** Unregister a device token for a SPECIFIC user (the unregister-on-logout
+    flow). Scoped to userId so a caller can only remove their own token —
+    deleting by token alone would let any authenticated user revoke another
+    user's push token if they learned the value (IDOR). */
+export async function deleteDeviceTokenValue(token: string, userId: bigint): Promise<void> {
+  await db
+    .delete(schema.apnsDeviceTokens)
+    .where(and(eq(schema.apnsDeviceTokens.token, token), eq(schema.apnsDeviceTokens.userId, userId)));
 }
 
 // ── Send ───────────────────────────────────────────────────────────────────
