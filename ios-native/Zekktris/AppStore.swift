@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import UIKit
 import UserNotifications
+import Photos
 import os
 
 /// Diagnostic log for the 1:1 call ring path. Visible in Console.app
@@ -3493,13 +3494,22 @@ final class AppStore: ObservableObject {
     }
 
     private func saveVideoToPhotos(from url: URL) async -> Bool {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".mp4")
+        // performChanges copies the file into the library before it returns, so
+        // deleting the temp afterward (defer) is safe and leaves nothing behind.
+        defer { try? FileManager.default.removeItem(at: tmp) }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
-            let tmp = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString + ".mp4")
             try data.write(to: tmp)
-            guard UIVideoAtPathIsCompatibleWithSavedPhotosAlbum(tmp.path) else { return false }
-            UISaveVideoAtPathToSavedPhotosAlbum(tmp.path, nil, nil, nil)
+            if PHPhotoLibrary.authorizationStatus(for: .addOnly) == .notDetermined {
+                _ = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+            }
+            let auth = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+            guard auth == .authorized || auth == .limited else { return false }
+            try await PHPhotoLibrary.shared().performChanges {
+                PHAssetCreationRequest.creationRequestForAssetFromVideo(atFileURL: tmp)
+            }
             return true
         } catch {
             return false
