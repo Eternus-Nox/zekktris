@@ -3770,6 +3770,26 @@ struct ImageLightboxView: View {
             .tabViewStyle(.page(indexDisplayMode: .never))
             .ignoresSafeArea()
 
+            // Left/right paging arrows for a multi-image group (web parity:
+            // the web lightbox has ‹ › + arrow keys). Swipe still works — these
+            // are just the explicit affordance. Dimmed + disabled at the ends.
+            if item.items.count > 1 {
+                HStack {
+                    navButton("chevron.left") {
+                        withAnimation { index = max(0, index - 1) }
+                    }
+                    .opacity(index > 0 ? 1 : 0.3)
+                    .disabled(index == 0)
+                    Spacer()
+                    navButton("chevron.right") {
+                        withAnimation { index = min(item.items.count - 1, index + 1) }
+                    }
+                    .opacity(index < item.items.count - 1 ? 1 : 0.3)
+                    .disabled(index == item.items.count - 1)
+                }
+                .padding(.horizontal, 12)
+            }
+
             VStack {
                 HStack {
                     if item.items.count > 1 {
@@ -3794,6 +3814,18 @@ struct ImageLightboxView: View {
                 Spacer()
             }
             .padding(16)
+        }
+    }
+
+    /// A circular translucent paging arrow, matching the close button's style.
+    private func navButton(_ system: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: system)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundColor(.white)
+                .padding(12)
+                .background(Color.white.opacity(0.18))
+                .clipShape(Circle())
         }
     }
 }
