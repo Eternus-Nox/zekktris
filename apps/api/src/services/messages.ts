@@ -158,6 +158,13 @@ export interface CreateMessageInput {
   replyToId?: bigint | null;
   /** Guild id of the channel — null for DMs. Used for role-mention scoping. */
   guildId: bigint | null;
+  /**
+   * When > 0, enforce slowmode atomically INSIDE the create transaction
+   * (advisory-lock + re-check), closing the TOCTOU race where two
+   * simultaneous sends both pass the route's pre-check. The route passes
+   * the channel's rateLimitPerUser (0 when the caller bypasses, e.g. mods).
+   */
+  slowmodeSeconds?: number;
   /** Pre-validated attachment rows to insert alongside the message. */
   attachments?: NewAttachmentInput[];
   /** True when the caller has MENTION_EVERYONE — clears the everyone flag if false. */
@@ -262,6 +269,35 @@ export async function createMessage(input: CreateMessageInput): Promise<MessageW
   const messageId = nextSnowflake();
 
   const message = await db.transaction(async (tx) => {
+    // Slowmode (atomic): serialize concurrent sends from this (channel,user)
+    // with a transaction-scoped advisory lock, then re-check the window
+    // INSIDE the lock so two simultaneous requests can't both slip past the
+    // route's pre-check (TOCTOU). The lock auto-releases at commit/rollback.
+    if (input.slowmodeSeconds && input.slowmodeSeconds > 0) {
+      const chKey = Number(BigInt.asIntN(32, input.channelId));
+      const userKey = Number(BigInt.asIntN(32, input.authorId));
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${chKey}, ${userKey})`);
+      const last = await tx
+        .select({ createdAt: schema.messages.createdAt })
+        .from(schema.messages)
+        .where(
+          and(
+            eq(schema.messages.channelId, input.channelId),
+            eq(schema.messages.authorId, input.authorId),
+            isNull(schema.messages.deletedAt),
+          ),
+        )
+        .orderBy(desc(schema.messages.id))
+        .limit(1);
+      if (last[0]) {
+        const elapsedMs = Date.now() - last[0].createdAt.getTime();
+        const requiredMs = input.slowmodeSeconds * 1000;
+        if (elapsedMs < requiredMs) {
+          throw errors.rateLimited(Math.ceil((requiredMs - elapsedMs) / 1000));
+        }
+      }
+    }
+
     // Validate replyTo if given.
     if (input.replyToId) {
       const ref = await tx

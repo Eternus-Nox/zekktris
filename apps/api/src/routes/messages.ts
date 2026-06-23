@@ -526,6 +526,15 @@ messagesRouter.post(
         content: payload.content,
         replyToId: payload.replyToId ? BigInt(payload.replyToId) : null,
         guildId: ctx.channel.guildId ?? null,
+        // Atomic slowmode re-check inside the create tx (0 = bypass). Only
+        // guild channels (channelPerms != null) where the caller isn't a mod;
+        // DMs have no slowmode. The enforceSlowmode pre-check above stays for
+        // the fast early reject.
+        slowmodeSeconds:
+          ctx.channelPerms !== null &&
+          !hasPermission(ctx.channelPerms, Permissions.MANAGE_MESSAGES)
+            ? ctx.channel.rateLimitPerUser
+            : 0,
         allowEveryoneMention: allowEveryone,
         hasAttachedPoll: !!payload.poll,
         forwardedFromMessageId,
