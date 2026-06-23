@@ -18,7 +18,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Attachment } from '@zekktris/client';
-import { decryptBytesForDm } from '../lib/e2ee';
+import { decryptedMediaURL } from '../lib/e2ee';
 import { Play, Pause } from '../lib/icons';
 
 interface Props {
@@ -66,17 +66,15 @@ export function VoiceMessagePlayer({ attachment, channelId }: Props) {
       return;
     }
     let cancelled = false;
-    let url: string | null = null;
     void (async () => {
       try {
-        const res = await fetch(attachment.url);
-        if (!res.ok) return;
-        const bytes = new Uint8Array(await res.arrayBuffer());
-        const pt = await decryptBytesForDm(bytes, channelId);
-        if (cancelled || !pt) return;
-        url = URL.createObjectURL(
-          new Blob([pt as BlobPart], { type: voiceMimeFromName(attachment.filename) }),
+        // Cached + owned by the shared decrypted-media cache — do not revoke.
+        const url = await decryptedMediaURL(
+          attachment.url,
+          channelId,
+          voiceMimeFromName(attachment.filename),
         );
+        if (cancelled || !url) return;
         setSrcUrl(url);
       } catch {
         /* leave srcUrl null → play stays disabled */
@@ -84,7 +82,6 @@ export function VoiceMessagePlayer({ attachment, channelId }: Props) {
     })();
     return () => {
       cancelled = true;
-      if (url) URL.revokeObjectURL(url);
     };
   }, [attachment.url, attachment.filename, channelId, encrypted]);
   // Browsers can take a moment after play() before they report

@@ -415,6 +415,126 @@ export function isEncryptedWireFormat(s: string): boolean {
   );
 }
 
+// ── Decrypted-media cache (in-memory, whole session) ───────────────────────
+//
+// Decrypting an E2EE attachment = fetch(.zke) + AES-GCM decrypt + a Blob
+// object URL. Components used to redo all of that on every mount and revoke
+// the URL on unmount, so scrolling a photo out and back — or reopening it in
+// the gallery/lightbox — re-fetched and re-decrypted every time. Cache the
+// resulting object URL IN MEMORY for the whole session, keyed by channel+url,
+// so repeat views are instant. Plaintext lives ONLY as an in-memory Blob —
+// never written to disk; the page reload that ends a session drops it.
+// Entries are invalidated when the channel key changes (relock/unlock) and
+// evicted least-recently-used past a byte/count budget. Mirrors the iOS
+// decryptedMedia LRU.
+type DecryptedMediaEntry = { url: string; bytes: number; keyVersion: number };
+const decryptedMedia = new Map<string, DecryptedMediaEntry>();
+const decryptedMediaLRU: string[] = []; // oldest first
+let decryptedMediaBytes = 0;
+const DECRYPTED_MEDIA_MAX_BYTES = 256 * 1024 * 1024; // 256 MB
+const DECRYPTED_MEDIA_MAX_COUNT = 256;
+const decryptedMediaInFlight = new Map<string, Promise<string | null>>();
+
+function decryptedMediaCacheKey(channelId: string, url: string): string {
+  return `${channelId} ${url}`;
+}
+
+function revokeDecryptedMedia(key: string): void {
+  const e = decryptedMedia.get(key);
+  if (!e) return;
+  URL.revokeObjectURL(e.url);
+  decryptedMediaBytes -= e.bytes;
+  decryptedMedia.delete(key);
+  const i = decryptedMediaLRU.indexOf(key);
+  if (i >= 0) decryptedMediaLRU.splice(i, 1);
+}
+
+/**
+ * Decrypt an E2EE (`.zke`) attachment to a Blob object URL, cached in memory
+ * for the session. The cache OWNS the returned URL — callers must NOT revoke
+ * it (revocation happens on LRU eviction and on key change). Returns null when
+ * the channel is locked or decryption fails. Concurrent callers for the same
+ * attachment share one fetch+decrypt.
+ */
+export async function decryptedMediaURL(
+  attachmentUrl: string,
+  channelId: string,
+  mimeType?: string,
+): Promise<string | null> {
+  const key = decryptedMediaCacheKey(channelId, attachmentUrl);
+  const hit = decryptedMedia.get(key);
+  if (hit) {
+    if (hit.keyVersion === getKeyVersion()) {
+      // Mark most-recently-used.
+      const i = decryptedMediaLRU.indexOf(key);
+      if (i >= 0) {
+        decryptedMediaLRU.splice(i, 1);
+        decryptedMediaLRU.push(key);
+      }
+      return hit.url;
+    }
+    revokeDecryptedMedia(key); // key changed → stale plaintext
+  }
+  const inflight = decryptedMediaInFlight.get(key);
+  if (inflight) return inflight;
+  // Version captured BEFORE the async fetch/decrypt. If a relock bumps the
+  // version mid-flight, the key-change purge ran before this entry existed, so
+  // we must refuse to cache the now-stale plaintext ourselves (otherwise it
+  // would be stamped with the new version and escape the purge).
+  const kvAtStart = getKeyVersion();
+  const p = (async (): Promise<string | null> => {
+    try {
+      const res = await fetch(attachmentUrl);
+      if (!res.ok) return null;
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      const pt = await decryptBytesForDm(bytes, channelId);
+      if (!pt) return null;
+      // Relock landed while we were fetching/decrypting → drop the plaintext
+      // (don't even create a Blob) so nothing viewable outlives the key.
+      if (getKeyVersion() !== kvAtStart) return null;
+      const url = URL.createObjectURL(
+        new Blob([pt as BlobPart], mimeType ? { type: mimeType } : {}),
+      );
+      decryptedMedia.set(key, { url, bytes: pt.byteLength, keyVersion: kvAtStart });
+      decryptedMediaLRU.push(key);
+      decryptedMediaBytes += pt.byteLength;
+      while (
+        (decryptedMediaBytes > DECRYPTED_MEDIA_MAX_BYTES ||
+          decryptedMedia.size > DECRYPTED_MEDIA_MAX_COUNT) &&
+        decryptedMediaLRU.length > 1
+      ) {
+        revokeDecryptedMedia(decryptedMediaLRU[0]!);
+      }
+      return url;
+    } catch {
+      return null;
+    } finally {
+      decryptedMediaInFlight.delete(key);
+    }
+  })();
+  decryptedMediaInFlight.set(key, p);
+  return p;
+}
+
+/** Drop all cached decrypted media (revoking every object URL). */
+export function clearDecryptedMediaCache(): void {
+  for (const e of decryptedMedia.values()) URL.revokeObjectURL(e.url);
+  decryptedMedia.clear();
+  decryptedMediaLRU.length = 0;
+  decryptedMediaBytes = 0;
+  decryptedMediaInFlight.clear();
+}
+
+// A channel key change (unlock/relock/rotate) supersedes any plaintext cached
+// under the old key version — eagerly revoke stale entries; the next access
+// re-decrypts against the current key.
+subscribeToKeyChanges(() => {
+  const kv = getKeyVersion();
+  for (const [k, e] of [...decryptedMedia]) {
+    if (e.keyVersion !== kv) revokeDecryptedMedia(k);
+  }
+});
+
 // ── Voice/video call key material ─────────────────────────────────────────
 
 /**

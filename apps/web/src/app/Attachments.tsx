@@ -14,7 +14,7 @@
 import { useEffect, useState } from 'react';
 import type { Attachment } from '@zekktris/client';
 import { Lock, Paperclip } from '../lib/icons';
-import { decryptBytesForDm, getKeyVersion, subscribeToKeyChanges } from '../lib/e2ee';
+import { decryptedMediaURL, getKeyVersion, subscribeToKeyChanges } from '../lib/e2ee';
 import { ImageLightbox } from './ImageLightbox';
 import { VoiceMessagePlayer } from './VoiceMessagePlayer';
 
@@ -174,33 +174,19 @@ function EncryptedImageGallery({
       return;
     }
     let cancelled = false;
-    const created: string[] = [];
     void (async () => {
+      // Object URLs are owned + cached by the shared decrypted-media cache
+      // (keyed by channel+url, invalidated on key change) — do NOT revoke
+      // them here, or a sibling/gallery view reusing the same cached URL
+      // would break.
       const out = await Promise.all(
-        attachments.map(async (a) => {
-          try {
-            const res = await fetch(a.url);
-            if (!res.ok) return null;
-            const bytes = new Uint8Array(await res.arrayBuffer());
-            const pt = await decryptBytesForDm(bytes, channelId);
-            if (!pt) return null;
-            const u = URL.createObjectURL(new Blob([pt as BlobPart]));
-            created.push(u);
-            return u;
-          } catch {
-            return null;
-          }
-        }),
+        attachments.map((a) => decryptedMediaURL(a.url, channelId)),
       );
-      if (cancelled) {
-        created.forEach((u) => URL.revokeObjectURL(u));
-        return;
-      }
+      if (cancelled) return;
       setUrls(out);
     })();
     return () => {
       cancelled = true;
-      created.forEach((u) => URL.revokeObjectURL(u));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlKey, channelId, keyVersion]);
@@ -314,7 +300,6 @@ function EncryptedAttachment({
 
   useEffect(() => {
     let cancelled = false;
-    let url: string | null = null;
     (async () => {
       if (!channelId) {
         setState('locked');
@@ -322,18 +307,17 @@ function EncryptedAttachment({
       }
       setState('loading');
       try {
-        const res = await fetch(attachment.url);
-        if (!res.ok) throw new Error(String(res.status));
-        const bytes = new Uint8Array(await res.arrayBuffer());
-        const pt = await decryptBytesForDm(bytes, channelId);
+        // Cached + owned by the shared decrypted-media cache — do not revoke.
+        const url = await decryptedMediaURL(
+          attachment.url,
+          channelId,
+          looksVideo ? videoMimeFromName(realName) : undefined,
+        );
         if (cancelled) return;
-        if (!pt) {
+        if (!url) {
           setState('locked');
           return;
         }
-        url = URL.createObjectURL(
-          new Blob([pt as BlobPart], looksVideo ? { type: videoMimeFromName(realName) } : {}),
-        );
         setObjectUrl(url);
         setState('ready');
       } catch {
@@ -342,7 +326,6 @@ function EncryptedAttachment({
     })();
     return () => {
       cancelled = true;
-      if (url) URL.revokeObjectURL(url);
     };
   }, [attachment.url, channelId, keyVersion]);
 

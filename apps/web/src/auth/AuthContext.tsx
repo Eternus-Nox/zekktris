@@ -27,6 +27,7 @@ import {
   type ReactNode,
 } from 'react';
 import { GatewayClient, RestClient, type SelfUser } from '@zekktris/client';
+import { clearDecryptedMediaCache } from '../lib/e2ee';
 
 const TOKEN_STORAGE_KEY = 'zekktris.accessToken';
 const USER_STORAGE_KEY = 'zekktris.user';
@@ -98,6 +99,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           tokenRef.current = null;
           safeRemove(TOKEN_STORAGE_KEY);
           safeRemove(USER_STORAGE_KEY);
+          // Session ended — drop decrypted E2EE media blobs so plaintext
+          // doesn't outlive the session in this (non-reloading) SPA.
+          clearDecryptedMediaCache();
           setState({ token: null, user: null, hydrating: false });
         },
       }),
@@ -278,6 +282,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       // Logout on a dead token is fine; we proceed with local cleanup.
     }
+    // Drop decrypted E2EE media blobs — the SPA doesn't reload on logout, so
+    // plaintext would otherwise linger in memory for the page lifetime.
+    clearDecryptedMediaCache();
     setToken(null, null);
   }, [rest, setToken]);
 

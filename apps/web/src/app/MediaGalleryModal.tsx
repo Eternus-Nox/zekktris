@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Attachment, Channel } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
-import { decryptBytesForDm, getKeyVersion, subscribeToKeyChanges } from '../lib/e2ee';
+import { decryptedMediaURL, getKeyVersion, subscribeToKeyChanges } from '../lib/e2ee';
 import { ImageLightbox } from './ImageLightbox';
 import { Portal } from '../lib/Portal';
 import { Lock, Paperclip, X } from '../lib/icons';
@@ -157,15 +157,11 @@ function GalleryPhoto({
   useEffect(() => {
     if (!encrypted) return;
     let cancelled = false;
-    let url: string | null = null;
     (async () => {
       try {
-        const res = await fetch(a.url);
-        if (!res.ok) return;
-        const bytes = new Uint8Array(await res.arrayBuffer());
-        const pt = await decryptBytesForDm(bytes, channelId);
-        if (cancelled || !pt) return;
-        url = URL.createObjectURL(new Blob([pt as BlobPart]));
+        // Cached + owned by the shared decrypted-media cache — do not revoke.
+        const url = await decryptedMediaURL(a.url, channelId);
+        if (cancelled || !url) return;
         setSrc(url);
       } catch {
         /* leave locked */
@@ -173,7 +169,6 @@ function GalleryPhoto({
     })();
     return () => {
       cancelled = true;
-      if (url) URL.revokeObjectURL(url);
     };
   }, [a.url, channelId, encrypted, keyVersion]);
 
