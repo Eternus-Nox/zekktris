@@ -19,6 +19,19 @@ import { ImageLightbox } from './ImageLightbox';
 import { VoiceMessagePlayer } from './VoiceMessagePlayer';
 
 const IMAGE_TYPES = /^image\/(png|jpeg|jpg|gif|webp|avif|svg\+xml)$/i;
+const VIDEO_TYPES = /^video\//i;
+const VIDEO_EXT = /\.(mp4|mov|m4v|webm|ogv|qt)$/i;
+
+/** Recover a video MIME from a (decrypted) filename so a blob URL plays in
+    a <video> element — the encrypted attachment's own type is octet-stream. */
+function videoMimeFromName(name: string): string {
+  const ext = name.split('.').pop()?.toLowerCase();
+  if (ext === 'webm') return 'video/webm';
+  if (ext === 'ogv') return 'video/ogg';
+  if (ext === 'mov' || ext === 'qt') return 'video/quicktime';
+  if (ext === 'm4v') return 'video/x-m4v';
+  return 'video/mp4';
+}
 
 export function Attachments({
   attachments,
@@ -44,7 +57,12 @@ export function Attachments({
   const encrypted = nonVoice.filter((a) => a.filename.endsWith('.zke'));
   const plain = nonVoice.filter((a) => !a.filename.endsWith('.zke'));
   const images = plain.filter((a) => IMAGE_TYPES.test(a.contentType));
-  const others = plain.filter((a) => !IMAGE_TYPES.test(a.contentType));
+  const videos = plain.filter(
+    (a) => !IMAGE_TYPES.test(a.contentType) && VIDEO_TYPES.test(a.contentType),
+  );
+  const others = plain.filter(
+    (a) => !IMAGE_TYPES.test(a.contentType) && !VIDEO_TYPES.test(a.contentType),
+  );
 
   return (
     <div className="mt-1 space-y-1">
@@ -83,6 +101,19 @@ export function Attachments({
                 className="rounded-md max-w-sm max-h-80 border border-line group-hover/img:border-accent/60 transition-colors object-contain cursor-zoom-in"
               />
             </button>
+          ))}
+        </div>
+      )}
+      {videos.length > 0 && (
+        <div className="flex flex-col gap-1">
+          {videos.map((v) => (
+            <video
+              key={v.id}
+              src={v.url}
+              controls
+              preload="metadata"
+              className="rounded-md max-w-sm max-h-80 border border-line bg-black"
+            />
           ))}
         </div>
       )}
@@ -156,6 +187,7 @@ function EncryptedAttachment({
 
   const realName = attachment.filename.replace(/\.zke$/, '');
   const looksImage = /\.(png|jpe?g|gif|webp|avif)$/i.test(realName);
+  const looksVideo = VIDEO_EXT.test(realName);
 
   useEffect(() => {
     let cancelled = false;
@@ -176,7 +208,9 @@ function EncryptedAttachment({
           setState('locked');
           return;
         }
-        url = URL.createObjectURL(new Blob([pt as BlobPart]));
+        url = URL.createObjectURL(
+          new Blob([pt as BlobPart], looksVideo ? { type: videoMimeFromName(realName) } : {}),
+        );
         setObjectUrl(url);
         setState('ready');
       } catch {
@@ -213,6 +247,19 @@ function EncryptedAttachment({
           <ImageLightbox src={objectUrl} filename={realName} onClose={() => setLightboxOpen(false)} />
         )}
       </>
+    );
+  }
+
+  if (state === 'ready' && objectUrl && looksVideo) {
+    // Decrypted video plays inline from the local object URL — the plaintext
+    // bytes never round-trip through a server-hosted URL.
+    return (
+      <video
+        src={objectUrl}
+        controls
+        preload="metadata"
+        className="rounded-lg max-w-[320px] max-h-[280px] border border-line bg-black"
+      />
     );
   }
 
