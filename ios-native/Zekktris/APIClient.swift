@@ -587,6 +587,16 @@ final class APIClient {
         return wrap.mentions
     }
 
+    /// Dismiss one mention from the inbox (deletes the row server-side).
+    func deleteMention(messageId: String) async throws {
+        try await sendVoid("DELETE", "/users/@me/mentions/\(messageId)")
+    }
+
+    /// Clear every mention from the inbox.
+    func clearMentions() async throws {
+        try await sendVoid("POST", "/users/@me/mentions/clear")
+    }
+
     /// Enable shared-key E2EE on a DM. salt + verifier are derived client-side;
     /// the server never sees the password or key.
     func enableDmE2EE(channelId: String, salt: String, verifier: String) async throws {

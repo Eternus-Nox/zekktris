@@ -1947,6 +1947,13 @@ final class AppStore: ObservableObject {
                 errorText = "Encryption failed."
                 return
             }
+            // Ciphertext is ~34% larger than plaintext; reject clearly if it
+            // would exceed the server's content cap rather than failing the
+            // request with a cryptic length error.
+            if enc.count > 4000 {
+                errorText = "This message is too long to send in an encrypted DM."
+                return
+            }
             wire = enc
         }
 
@@ -2600,6 +2607,28 @@ final class AppStore: ObservableObject {
         do {
             mentions = try await api.listMentions()
         } catch {
+            errorText = (error as? APIError)?.message ?? error.localizedDescription
+        }
+    }
+
+    /// Dismiss one mention from the inbox. Optimistic with rollback.
+    func deleteMention(_ id: String) async {
+        let prev = mentions
+        mentions.removeAll { $0.id == id }
+        do { try await api.deleteMention(messageId: id) }
+        catch {
+            mentions = prev
+            errorText = (error as? APIError)?.message ?? error.localizedDescription
+        }
+    }
+
+    /// Clear every mention from the inbox. Optimistic with rollback.
+    func clearMentions() async {
+        let prev = mentions
+        mentions = []
+        do { try await api.clearMentions() }
+        catch {
+            mentions = prev
             errorText = (error as? APIError)?.message ?? error.localizedDescription
         }
     }

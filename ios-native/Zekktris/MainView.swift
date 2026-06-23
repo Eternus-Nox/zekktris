@@ -3217,6 +3217,13 @@ struct MentionsView: View {
                                     MentionRow(mention: m)
                                 }
                                 .buttonStyle(.plain)
+                                .contextMenu {
+                                    Button(role: .destructive) {
+                                        Task { await store.deleteMention(m.id) }
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
                                 Divider().overlay(Theme.line)
                             }
                         }
@@ -3237,6 +3244,11 @@ struct MentionsView: View {
             .toolbar {
                 if dismissPage != nil {
                     ToolbarItem(placement: .navigationBarLeading) { PageBackButton() }
+                }
+                if !store.mentions.isEmpty {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button("Clear") { Task { await store.clearMentions() } }
+                    }
                 }
             }
             .task { await store.loadMentions() }
