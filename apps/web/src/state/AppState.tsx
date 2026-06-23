@@ -589,6 +589,27 @@ function reducer(state: State, action: Action): State {
         rolesByGuild = rest;
       }
 
+      // Sticker + scheduled-event lists and the member-loaded flag are
+      // guild-scoped too — drop them so they don't leak after the guild goes.
+      let stickersByGuild = state.stickersByGuild;
+      if (stickersByGuild[action.guildId]) {
+        const { [action.guildId]: _s, ...rest } = stickersByGuild;
+        void _s;
+        stickersByGuild = rest;
+      }
+      let eventsByGuild = state.eventsByGuild;
+      if (eventsByGuild[action.guildId]) {
+        const { [action.guildId]: _e, ...rest } = eventsByGuild;
+        void _e;
+        eventsByGuild = rest;
+      }
+      let loadedMembers = state.loadedMembers;
+      if (loadedMembers.has(action.guildId)) {
+        const next = new Set(loadedMembers);
+        next.delete(action.guildId);
+        loadedMembers = next;
+      }
+
       // Scrub channel-keyed slices. Only allocate new refs when there's
       // something to drop — most channel-keyed entries belong to other
       // guilds or DMs and shouldn't be touched.
@@ -596,6 +617,9 @@ function reducer(state: State, action: Action): State {
       let readStateByChannel = state.readStateByChannel;
       let loadingOlder = state.loadingOlder;
       let olderExhausted = state.olderExhausted;
+      let loadedChannels = state.loadedChannels;
+      let stageParticipantsByChannel = state.stageParticipantsByChannel;
+      let channelPinUpdateAt = state.channelPinUpdateAt;
       if (removedChannelIds.size > 0) {
         // messagesByChannel + readStateByChannel: filter out removed
         // channels from the dict.
@@ -649,6 +673,37 @@ function reducer(state: State, action: Action): State {
           for (const cid of removedChannelIds) next.delete(cid);
           olderExhausted = next;
         }
+
+        // loadedChannels (Set of channel ids).
+        let loadedChChanged = false;
+        for (const cid of removedChannelIds) {
+          if (loadedChannels.has(cid)) {
+            loadedChChanged = true;
+            break;
+          }
+        }
+        if (loadedChChanged) {
+          const next = new Set(loadedChannels);
+          for (const cid of removedChannelIds) next.delete(cid);
+          loadedChannels = next;
+        }
+
+        // stageParticipantsByChannel + channelPinUpdateAt (channel-keyed dicts).
+        let stageChanged = false;
+        const nextStage: Record<string, (typeof stageParticipantsByChannel)[string]> = {};
+        for (const [cid, v] of Object.entries(stageParticipantsByChannel)) {
+          if (removedChannelIds.has(cid)) stageChanged = true;
+          else nextStage[cid] = v;
+        }
+        if (stageChanged) stageParticipantsByChannel = nextStage;
+
+        let pinChanged = false;
+        const nextPin: Record<string, number> = {};
+        for (const [cid, v] of Object.entries(channelPinUpdateAt)) {
+          if (removedChannelIds.has(cid)) pinChanged = true;
+          else nextPin[cid] = v;
+        }
+        if (pinChanged) channelPinUpdateAt = nextPin;
       }
 
       return {
@@ -659,10 +714,16 @@ function reducer(state: State, action: Action): State {
         membersByGuild,
         emojisByGuild,
         rolesByGuild,
+        stickersByGuild,
+        eventsByGuild,
+        loadedMembers,
         messagesByChannel,
         readStateByChannel,
         loadingOlder,
         olderExhausted,
+        loadedChannels,
+        stageParticipantsByChannel,
+        channelPinUpdateAt,
       };
     }
 
@@ -717,12 +778,38 @@ function reducer(state: State, action: Action): State {
       if (action.guildId) {
         const existing = state.channelsByGuild[action.guildId];
         if (!existing) return state;
+        // Scrub every per-channel cache for the removed channel — the guild
+        // path previously only updated channelsByGuild and leaked the rest
+        // (messages, read state, paginator flags, stage participants, pin
+        // timestamps, loaded flag), same as the DM path below already does.
+        const cid = action.channelId;
+        const nextMessages = { ...state.messagesByChannel };
+        delete nextMessages[cid];
+        const nextRead = { ...state.readStateByChannel };
+        delete nextRead[cid];
+        const nextStage = { ...state.stageParticipantsByChannel };
+        delete nextStage[cid];
+        const nextPin = { ...state.channelPinUpdateAt };
+        delete nextPin[cid];
+        const loadedChannels = new Set(state.loadedChannels);
+        loadedChannels.delete(cid);
+        const loadingOlder = new Set(state.loadingOlder);
+        loadingOlder.delete(cid);
+        const olderExhausted = new Set(state.olderExhausted);
+        olderExhausted.delete(cid);
         return {
           ...state,
           channelsByGuild: {
             ...state.channelsByGuild,
-            [action.guildId]: existing.filter((c) => c.id !== action.channelId),
+            [action.guildId]: existing.filter((c) => c.id !== cid),
           },
+          messagesByChannel: nextMessages,
+          readStateByChannel: nextRead,
+          stageParticipantsByChannel: nextStage,
+          channelPinUpdateAt: nextPin,
+          loadedChannels,
+          loadingOlder,
+          olderExhausted,
         };
       }
       // DM channel — purge from dmChannels and from any per-channel
