@@ -392,17 +392,30 @@ async function main(): Promise<void> {
         // cost, and per-row loops keep the failure-isolation logic
         // simple.
         const { db, schema } = await import('./db');
-        const { eq } = await import('drizzle-orm');
+        const { inArray } = await import('drizzle-orm');
         const dispatch = await import('./gateway/dispatch');
         const { toMessage } = await import('./lib/dto');
 
+        // Batch-load channels + authors for the whole due-batch up front
+        // (was a per-row SELECT each — up to 2×BATCH extra round-trips/tick).
+        const channelIds = Array.from(new Set(due.map((r) => r.channelId)));
+        const authorIds = Array.from(new Set(due.map((r) => r.authorId)));
+        const channelById = new Map(
+          (channelIds.length
+            ? await db.select().from(schema.channels).where(inArray(schema.channels.id, channelIds))
+            : []
+          ).map((c) => [c.id.toString(), c]),
+        );
+        const authorById = new Map(
+          (authorIds.length
+            ? await db.select().from(schema.users).where(inArray(schema.users.id, authorIds))
+            : []
+          ).map((u) => [u.id.toString(), u]),
+        );
+
         for (const row of due) {
           try {
-            const [channel] = await db
-              .select()
-              .from(schema.channels)
-              .where(eq(schema.channels.id, row.channelId))
-              .limit(1);
+            const channel = channelById.get(row.channelId.toString());
             if (!channel) {
               throw new Error('Channel no longer exists');
             }
@@ -437,14 +450,9 @@ async function main(): Promise<void> {
               allowEveryoneMention: false,
             });
 
-            // Dispatch the messageCreate over the gateway so live
-            // clients pick it up. The DTO build needs the author —
-            // load it once here.
-            const [author] = await db
-              .select()
-              .from(schema.users)
-              .where(eq(schema.users.id, row.authorId))
-              .limit(1);
+            // Dispatch the messageCreate over the gateway so live clients
+            // pick it up. Author comes from the pre-batched map.
+            const author = authorById.get(row.authorId.toString());
             if (author) {
               const dto = toMessage({
                 message: created.message,
