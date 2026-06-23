@@ -191,6 +191,11 @@ export async function openAttachmentForRead(
   filename: string,
 ): Promise<{ stream: NodeJS.ReadableStream; size: number } | null> {
   const diskPath = path.join(env.UPLOAD_DIR, attachmentId.toString(), filename);
+  // Defense-in-depth: filenames are sanitized at upload and callers validate
+  // against DB-stored values, but refuse any resolved path that escapes the
+  // upload root regardless — guards against a future unsanitized DB write.
+  const root = path.resolve(env.UPLOAD_DIR);
+  if (!path.resolve(diskPath).startsWith(root + path.sep)) return null;
   try {
     const stat = await fs.stat(diskPath);
     if (!stat.isFile()) return null;

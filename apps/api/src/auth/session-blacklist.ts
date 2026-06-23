@@ -47,15 +47,27 @@ export interface BlacklistStore {
 
 /**
  * In-memory TTL map. The clock is injectable so expiry is testable without
- * real time. Lazy expiry on read keeps it allocation-light; a periodic sweep
- * isn't worth it for the small, short-lived working set.
+ * real time. Lazy expiry on read keeps it allocation-light; add() also runs a
+ * cheap periodic sweep so a burst of revocations (mass-ban, or a password
+ * reset revoking many sessions) that are never read back can't grow the map
+ * unbounded.
  */
 export class MemoryBlacklistStore implements BlacklistStore {
   private readonly map = new Map<string, number>(); // key -> expiry epoch ms
+  private lastSweep = 0;
   constructor(private readonly now: () => number = Date.now) {}
 
   async add(key: string, ttlSeconds: number): Promise<void> {
-    this.map.set(key, this.now() + Math.max(1, ttlSeconds) * 1000);
+    const now = this.now();
+    this.map.set(key, now + Math.max(1, ttlSeconds) * 1000);
+    // At most once a minute, drop expired entries (cheap; prevents a leak
+    // under heavy revocation churn that's never read back).
+    if (now - this.lastSweep > 60_000) {
+      this.lastSweep = now;
+      for (const [k, exp] of this.map) {
+        if (exp <= now) this.map.delete(k);
+      }
+    }
   }
 
   async has(key: string): Promise<boolean> {
