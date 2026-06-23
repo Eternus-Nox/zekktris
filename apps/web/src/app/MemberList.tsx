@@ -18,7 +18,8 @@
  * avatar + name + display-name, sorted by display name.
  */
 
-import { memo, useEffect, useMemo } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
+import { Virtualizer, type VirtualizerHandle } from 'virtua';
 import { useAppStateSelector } from '../state/AppState';
 import { useAuth } from '../auth/AuthContext';
 import { avatarColor, avatarInitials } from '../lib/avatar';
@@ -50,6 +51,10 @@ export function MemberList({
   const state = { membersByGuild, rolesByGuild, loadedMembers };
   const { user } = useAuth();
   const { onAvatarClick, cardElement } = useProfileCard({ guildId });
+  // virtua scroll plumbing — the scroll viewport is the existing
+  // overflow-y-auto div; vref is reserved for future programmatic scrolls.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const vref = useRef<VirtualizerHandle>(null);
   const members = guildId ? state.membersByGuild[guildId] : undefined;
   const loaded = guildId ? state.loadedMembers.has(guildId) : false;
   // Roles drive the per-member display color (highest hoisted role
@@ -146,6 +151,27 @@ export function MemberList({
     return out;
   }, [members, guildRoles, guildId]);
 
+  // Flatten the grouped sections into a single ordered list so virtua can
+  // virtualize at ROW granularity (a 500-member guild renders ~visible rows,
+  // not all 500). Each header and each member becomes its own virtual item;
+  // order is preserved exactly (hoisted roles, Online, Offline). This holds
+  // data only — JSX is built in render so MemberRow keeps its fresh
+  // callbacks and stays memoized.
+  type VirtualItem =
+    | { kind: 'header'; section: Section }
+    | { kind: 'member'; member: GuildMember; isOffline: boolean };
+  const virtualItems = useMemo<VirtualItem[]>(() => {
+    const items: VirtualItem[] = [];
+    for (const section of sections) {
+      items.push({ kind: 'header', section });
+      const isOffline = section.id === 'offline';
+      for (const member of section.members) {
+        items.push({ kind: 'member', member, isOffline });
+      }
+    }
+    return items;
+  }, [sections]);
+
   if (!guildId) return null;
 
   const totalCount = members?.length ?? 0;
@@ -176,44 +202,45 @@ export function MemberList({
           </button>
         )}
       </div>
-      <div className="flex-1 overflow-y-auto scrollbar-thin py-2">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-thin py-2">
         {!loaded ? (
           <div className="px-4 text-ink-3 text-sm">Loading…</div>
         ) : totalCount === 0 ? (
           <div className="px-4 text-ink-3 text-sm">No members yet</div>
         ) : (
-          sections.map((section) => (
-            <div key={section.id} className="mb-3">
-              {/* Section header: role name + member count, colored to
-                  the role's color when it has one. Tracks Discord's
-                  "Moderators — 3" format. */}
-              <div
-                className="px-3 pt-1 pb-0.5 text-[0.7rem] uppercase tracking-wider font-semibold flex items-center gap-1.5"
-                style={section.color ? { color: section.color } : undefined}
-              >
-                <span className={section.color ? '' : 'text-ink-3'}>{section.label}</span>
-                <span className="text-ink-3 font-normal" aria-hidden>
-                  ━
-                </span>
-                <span className="text-ink-3 font-normal tabular-nums">
-                  {section.members.length}
-                </span>
-              </div>
-              <ul>
-                {section.members.map((m) => (
-                  <MemberRow
-                    key={m.userId}
-                    member={m}
-                    isSelf={user?.id === m.userId}
-                    isOffline={section.id === 'offline'}
-                    guildId={guildId}
-                    guildRoles={guildRoles}
-                    onAvatarClick={onAvatarClick}
-                  />
-                ))}
-              </ul>
-            </div>
-          ))
+          <Virtualizer ref={vref} scrollRef={scrollRef}>
+            {virtualItems.map((item, i) =>
+              item.kind === 'header' ? (
+                // Section header: role name + member count, colored to the
+                // role's color when it has one. Tracks Discord's
+                // "Moderators — 3" format. mt above every header except the
+                // first replaces the old per-section mb-3 gap.
+                <div
+                  key={`header-${item.section.id}`}
+                  className={`px-3 pb-0.5 text-[0.7rem] uppercase tracking-wider font-semibold flex items-center gap-1.5 ${i === 0 ? 'pt-1' : 'pt-4'}`}
+                  style={item.section.color ? { color: item.section.color } : undefined}
+                >
+                  <span className={item.section.color ? '' : 'text-ink-3'}>{item.section.label}</span>
+                  <span className="text-ink-3 font-normal" aria-hidden>
+                    ━
+                  </span>
+                  <span className="text-ink-3 font-normal tabular-nums">
+                    {item.section.members.length}
+                  </span>
+                </div>
+              ) : (
+                <MemberRow
+                  key={`member-${item.member.userId}`}
+                  member={item.member}
+                  isSelf={user?.id === item.member.userId}
+                  isOffline={item.isOffline}
+                  guildId={guildId}
+                  guildRoles={guildRoles}
+                  onAvatarClick={onAvatarClick}
+                />
+              ),
+            )}
+          </Virtualizer>
         )}
       </div>
       {cardElement}
@@ -292,7 +319,7 @@ const MemberRow = memo(function MemberRow({
       })}`
     : undefined;
   return (
-    <li className={`px-1 ${isOffline ? 'opacity-60' : ''}`}>
+    <div className={`px-1 ${isOffline ? 'opacity-60' : ''}`}>
       <button
         type="button"
         onClick={(e) => onAvatarClick(m.user, e)}
@@ -341,6 +368,6 @@ const MemberRow = memo(function MemberRow({
           </span>
         )}
       </button>
-    </li>
+    </div>
   );
 });
