@@ -222,7 +222,7 @@ struct WaveformBars: View {
 // MARK: - Playback view (in messages)
 
 struct VoiceMessageView: View {
-    @EnvironmentObject private var store: AppStore
+    let store: AppStore
     let attachment: Attachment
     let channel: Channel
     @StateObject private var player: VoiceClipPlayer
@@ -233,7 +233,8 @@ struct VoiceMessageView: View {
     // disappear so it doesn't linger in tmp.
     @State private var tempAudioURL: URL?
 
-    init(attachment: Attachment, channel: Channel) {
+    init(store: AppStore, attachment: Attachment, channel: Channel) {
+        self.store = store
         self.attachment = attachment
         self.channel = channel
         let encrypted = attachment.filename?.hasSuffix(".zke") == true

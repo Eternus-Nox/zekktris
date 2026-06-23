@@ -99,6 +99,8 @@ final class AppStore: ObservableObject {
                 let pa = a.position ?? 0, pb = b.position ?? 0
                 return pa != pb ? pa < pb : a.id < b.id
             }
+            // Channel renames feed <#channel> mention labels in message rows.
+            mentionContextVersion &+= 1
         }
     }
     /// `channels` pre-sorted by (position, id) — see the didSet on `channels`.
@@ -143,9 +145,17 @@ final class AppStore: ObservableObject {
             emojiByName = Dictionary(
                 guildEmojis.map { ($0.name, $0) }, uniquingKeysWith: { _, latest in latest }
             )
+            emojiCatalogVersion &+= 1
         }
     }
-    @Published var emojiImages: [String: UIImage] = [:]
+    @Published var emojiImages: [String: UIImage] = [:] {
+        // Custom-emoji renders fill this dict ASYNCHRONOUSLY after first use.
+        // Bump the catalog version so value-type message rows (which read
+        // emojiImage(for:) through a non-observing plain store ref) re-render
+        // when an image finally arrives — otherwise a row that doesn't
+        // otherwise change would keep showing the literal `:name:` text.
+        didSet { emojiCatalogVersion &+= 1 }
+    }
     private var emojiInFlight: Set<String> = []
     @Published var channelWebhooks: [Webhook] = []
     @Published var loadingWebhooks = false
@@ -169,6 +179,16 @@ final class AppStore: ObservableObject {
     /// Resolve a `:name:` token to a guild emoji. Cached from `guildEmojis`
     /// (kept current by its didSet) rather than rebuilt on each access.
     @Published private(set) var emojiByName: [String: GuildEmoji] = [:]
+
+    /// Monotonic change signals for state that value-type message rows resolve
+    /// at RENDER time (through a non-observing plain store ref) rather than
+    /// snapshotting field-by-field. MessageRow reads the emoji catalog
+    /// (emojiByName/emojiImage) and the mention name maps (channels/roles/
+    /// members) lazily; bumping these in the relevant didSet lets a row's
+    /// Equatable data differ so it re-renders when those maps change, without
+    /// the row having to observe the whole store. See MessageRowData.
+    @Published private(set) var emojiCatalogVersion = 0
+    @Published private(set) var mentionContextVersion = 0
 
     /// Active theme id (matches the web `THEMES` ids). Persisted in
     /// UserDefaults; setting it via `setTheme` re-renders the UI.
@@ -348,9 +368,18 @@ final class AppStore: ObservableObject {
     /// Per-child restriction settings (childId → restrictions), loaded when a
     /// parent opens a child's controls.
     @Published var childRestrictions: [String: ChildRestrictions] = [:]
-    @Published var members: [String: GuildMember] = [:]
+    @Published var members: [String: GuildMember] = [:] {
+        // Member names feed <@user> mention labels in message rows. (Presence
+        // does NOT live here — it's in `presence` — so this didSet does not
+        // fire on per-second status churn, only on real member changes.)
+        didSet { mentionContextVersion &+= 1 }
+    }
     /// Roles for the selected guild (drives name colors + hoisted sections).
-    @Published var roles: [Role] = []
+    @Published var roles: [Role] = [] {
+        // Role renames feed <@&role> mention labels, and role colors feed name
+        // colors, in message rows.
+        didSet { mentionContextVersion &+= 1 }
+    }
     /// When non-nil, a ProfileCard sheet is shown for this user.
     @Published var profileUser: PublicUser?
     /// Drives the guild member-list sheet.
@@ -3234,7 +3263,7 @@ final class AppStore: ObservableObject {
         catch { roles = [] }
     }
 
-    private func color(fromRGB rgb: Int) -> Color {
+    func color(fromRGB rgb: Int) -> Color {
         Color(hex: UInt32(max(0, min(0xFFFFFF, rgb))))
     }
 
@@ -3256,6 +3285,23 @@ final class AppStore: ObservableObject {
         }
         guard let b = best else { return nil }
         return color(fromRGB: b.color)
+    }
+
+    /// The raw RGB Int a member's name should paint in (the same role pick as
+    /// `memberColor`), or nil for none. Value-type message rows snapshot this
+    /// Int — not a `Color` — into their Equatable data, because SwiftUI's
+    /// synthesized `Color` equality isn't a reliable change signal; the Int is
+    /// resolved back via `color(fromRGB:)` at render. See MessageRowData.
+    func memberColorRGB(_ userId: String) -> Int? {
+        guard let rids = members[userId]?.roleIds, !rids.isEmpty else { return nil }
+        let assigned = Set(rids)
+        var best: Role?
+        for r in roles {
+            if r.id == selectedGuild?.id { continue }
+            guard assigned.contains(r.id), r.color != 0 else { continue }
+            if best == nil || r.position > best!.position { best = r }
+        }
+        return best?.color
     }
 
     func memberHasRole(_ userId: String, _ roleId: String) -> Bool {
@@ -4095,7 +4141,7 @@ final class AppStore: ObservableObject {
 
     // MARK: E2EE
 
-    enum MessageDisplay {
+    enum MessageDisplay: Equatable {
         case text(String)
         case locked        // encrypted, no key on this device
         case undecryptable // key present but couldn't decrypt (legacy/wrong key)

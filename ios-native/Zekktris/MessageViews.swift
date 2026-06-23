@@ -85,14 +85,15 @@ struct MessageListView: View {
                                 if shouldShowUnreadDivider(at: index) {
                                     UnreadDividerView()
                                 }
-                                MessageRow(
-                                    message: message,
-                                    channel: channel,
-                                    showHeader: showHeader(at: index),
-                                    dmReceipt: dmReceipt(for: message, anchors: receiptAnchors)
-                                )
-                                .id(message.id)
-                                .padding(.top, showHeader(at: index) ? 10 : 0)
+                                let header = showHeader(at: index)
+                                // .equatable() lets SwiftUI skip a row whose
+                                // MessageRowData is unchanged — so per-row edits
+                                // and presence/typing churn no longer re-render
+                                // every visible row (O5).
+                                MessageRow(store: store, data: rowData(for: message, showHeader: header, anchors: receiptAnchors))
+                                    .equatable()
+                                    .id(message.id)
+                                    .padding(.top, header ? 10 : 0)
                             }
 
                             Color.clear.frame(height: 1).id(bottomAnchor)
@@ -254,6 +255,36 @@ struct MessageListView: View {
             return "Read \(shortTime(viewedAt))"
         }
         return message.deliveredAt != nil ? "Delivered" : "Sent"
+    }
+
+    /// Build a row's Equatable snapshot by resolving, ONCE here in the
+    /// (observing) parent, every store-derived value the row would otherwise
+    /// read off the store directly. MessageRow then holds a non-observing plain
+    /// store ref, so a store mutation re-renders THIS view, recomputes each
+    /// visible row's data, and only rows whose data actually changed re-render
+    /// (the rest are skipped by .equatable()). Runs lazily per realized row
+    /// inside the LazyVStack's ForEach.
+    private func rowData(for message: Message,
+                         showHeader: Bool,
+                         anchors: (latest: Message?, lastRead: Message?)) -> MessageRowData {
+        let replied = message.replyToId != nil ? store.repliedMessage(for: message) : nil
+        return MessageRowData(
+            message: message,
+            channel: channel,
+            showHeader: showHeader,
+            dmReceipt: dmReceipt(for: message, anchors: anchors),
+            currentUserId: store.currentUserId,
+            authorStatus: store.status(for: message.authorId, fallback: message.author?.status),
+            authorColorRGB: store.memberColorRGB(message.authorId ?? message.author?.id ?? ""),
+            display: store.display(for: message, in: channel),
+            repliedMessage: replied,
+            repliedDisplay: replied.map { store.display(for: $0, in: channel) },
+            localEmbeds: store.localEmbeds(for: message.id) ?? [],
+            isSaved: store.isSaved(message.id),
+            emojiCatalogVersion: store.emojiCatalogVersion,
+            mentionContextVersion: store.mentionContextVersion,
+            e2eeUnlockVersion: store.e2eeUnlockVersion
+        )
     }
 
     /// Encrypted DM with no key on this device → show the unlock panel.
@@ -1042,16 +1073,66 @@ struct UnreadDividerView: View {
     }
 }
 
+/// Immutable per-row snapshot computed once by MessageListView so MessageRow
+/// can be `Equatable` and SKIP re-rendering when unrelated store churn fires
+/// (a presence/typing burst, a reaction on another row, a sibling message
+/// edit). It captures every value the row reads off the store that can change
+/// INDEPENDENTLY of the message itself — so == over this struct is a complete
+/// "did anything this row shows change?" test. Per-message mutable state
+/// (reactions, pinned, editedAt, sendState, attachments, poll, embeds) lives
+/// inside `message`, which is compared whole. The three version Ints stand in
+/// for the rarely-changing name/emoji maps the row resolves at render time
+/// through MessageRow's non-observing plain `store` ref.
+struct MessageRowData: Equatable {
+    var message: Message
+    var channel: Channel
+    var showHeader: Bool
+    /// 1:1 DM read receipt ("Sent"/"Delivered"/"Read"); set only on the anchor
+    /// messages, mirroring the web.
+    var dmReceipt: String?
+    var currentUserId: String?
+    /// Resolved author presence ("online"/"idle"/…) — precomputed so presence
+    /// churn that doesn't change THIS author's status is a no-op for the row.
+    var authorStatus: String
+    /// Author name color as raw RGB (nil = none); see AppStore.memberColorRGB.
+    var authorColorRGB: Int?
+    /// Decrypted/locked content state (drives the body text vs lock label).
+    var display: AppStore.MessageDisplay
+    /// The message this one replies to (for the reply preview), if loaded.
+    var repliedMessage: Message?
+    /// Display state of `repliedMessage` (so the preview text needs no second
+    /// store call at render).
+    var repliedDisplay: AppStore.MessageDisplay?
+    /// Client-resolved embeds for an E2EE message (server can't unfurl it).
+    var localEmbeds: [MessageEmbed]
+    /// Save/Unsave menu label state.
+    var isSaved: Bool
+    var emojiCatalogVersion: Int
+    var mentionContextVersion: Int
+    var e2eeUnlockVersion: Int
+}
+
 /// follow-ups render just the content indented to align under the name.
-struct MessageRow: View {
-    @EnvironmentObject private var store: AppStore
+struct MessageRow: View, Equatable {
+    /// Plain (NON-observing) store reference: used only to INVOKE actions and
+    /// for pure render-time lookups (emoji/mention maps). Holding it as a plain
+    /// `let` — not @EnvironmentObject — means store mutations do NOT invalidate
+    /// this row; only a change to `data` (compared in ==) re-renders it.
+    let store: AppStore
+    let data: MessageRowData
     @Environment(\.openURL) private var openURL
-    let message: Message
-    let channel: Channel
-    let showHeader: Bool
-    /// 1:1 DM read receipt rendered under this row ("Sent" / "Delivered" /
-    /// "Read") — set only on the anchor messages, mirroring the web.
-    var dmReceipt: String? = nil
+
+    // Convenience accessors so the body reads exactly as before.
+    private var message: Message { data.message }
+    private var channel: Channel { data.channel }
+    private var showHeader: Bool { data.showHeader }
+    private var dmReceipt: String? { data.dmReceipt }
+
+    /// Equality over the value snapshot only — never the store (same singleton
+    /// for every row) and never closures (the row stores none; menu/sheet
+    /// actions call `store` directly). `.equatable()` at the ForEach site makes
+    /// SwiftUI consult this before re-running the body.
+    static func == (lhs: MessageRow, rhs: MessageRow) -> Bool { lhs.data == rhs.data }
 
     private let gutter: CGFloat = 52
 
@@ -1107,7 +1188,7 @@ struct MessageRow: View {
             // Red "missed" styling only when the viewer actually missed a call —
             // i.e. they're the callee. The caller's own unanswered call ("No
             // answer") reads as a quiet, neutral notice, not an alert.
-            let alert = missed && message.metadata?.initiatorId != store.currentUserId
+            let alert = missed && message.metadata?.initiatorId != data.currentUserId
             Image(systemName: alert ? "phone.arrow.down.left" : "phone")
                 .font(.system(size: 11))
                 .foregroundColor(alert ? Theme.dangerSoft.opacity(0.85) : Theme.ink3)
@@ -1148,7 +1229,7 @@ struct MessageRow: View {
             // The caller (initiator) shouldn't read "Missed call from <self>".
             // For them an unanswered call is simply "No answer"; the callee
             // still sees "Missed call from <caller>".
-            if message.metadata?.initiatorId == store.currentUserId { return "No answer" }
+            if message.metadata?.initiatorId == data.currentUserId { return "No answer" }
             return "Missed call from \(caller)"
         }
         let ms = message.metadata?.durationMs ?? 0
@@ -1190,8 +1271,8 @@ struct MessageRow: View {
             Label("Forward", systemImage: "arrowshape.turn.up.right")
         }
         Button { Task { await store.toggleSave(message) } } label: {
-            Label(store.isSaved(message.id) ? "Unsave" : "Save",
-                  systemImage: store.isSaved(message.id) ? "bookmark.slash" : "bookmark")
+            Label(data.isSaved ? "Unsave" : "Save",
+                  systemImage: data.isSaved ? "bookmark.slash" : "bookmark")
         }
         // Only CONFIRMED own messages get Edit/Delete. An optimistic
         // placeholder (sendState "sending"/"failed") has a client-UUID id,
@@ -1210,7 +1291,7 @@ struct MessageRow: View {
 
     private var isOwn: Bool {
         let authorId = message.authorId ?? message.author?.id
-        return authorId != nil && authorId == store.currentUserId
+        return authorId != nil && authorId == data.currentUserId
     }
 
     /// Authors can edit/delete their own message only within a minute of
@@ -1222,7 +1303,7 @@ struct MessageRow: View {
     }
 
     private func beginEdit() {
-        switch store.display(for: message, in: channel) {
+        switch data.display {
         case .text(let t): editText = t
         default: editText = message.text
         }
@@ -1239,13 +1320,13 @@ struct MessageRow: View {
             Image(systemName: "arrowshape.turn.up.left.fill")
                 .font(.system(size: 10))
                 .foregroundColor(Theme.ink3)
-            if let replied = store.repliedMessage(for: message) {
+            if let replied = data.repliedMessage {
                 Avatar(url: replied.author?.avatarUrl, name: replied.author?.name ?? "?",
                        size: 16, ringColor: Theme.bg1)
                 Text(replied.author?.name ?? "Unknown")
                     .font(.zkSans(12, weight: .semibold))
                     .foregroundColor(Theme.ink2)
-                Text(replyPreviewText(replied))
+                Text(replyPreviewText(replied, display: data.repliedDisplay ?? .text(replied.text)))
                     .font(.zkSans(12))
                     .foregroundColor(Theme.ink3)
                     .lineLimit(1)
@@ -1259,8 +1340,8 @@ struct MessageRow: View {
         .padding(.bottom, 1)
     }
 
-    private func replyPreviewText(_ m: Message) -> String {
-        switch store.display(for: m, in: channel) {
+    private func replyPreviewText(_ m: Message, display: AppStore.MessageDisplay) -> String {
+        switch display {
         case .text(let t):
             if !t.isEmpty { return t }
             if m.sticker != nil { return "🏷️ Sticker" }
@@ -1292,7 +1373,7 @@ struct MessageRow: View {
                     url: displayAvatarUrl,
                     name: displayName,
                     size: 40,
-                    status: isWebhook ? nil : store.status(for: message.authorId, fallback: message.author?.status),
+                    status: isWebhook ? nil : data.authorStatus,
                     ringColor: Theme.bg1,
                     decoration: isWebhook ? nil : message.author?.avatarDecoration,
                     toneId: isWebhook ? message.webhookId : (message.authorId ?? message.author?.id)
@@ -1311,7 +1392,7 @@ struct MessageRow: View {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(displayName)
                             .font(.zkSans(15, weight: .medium))
-                            .foregroundColor(isWebhook ? Theme.ink1 : (store.memberColor(message.authorId ?? message.author?.id ?? "") ?? Theme.ink1))
+                            .foregroundColor(isWebhook ? Theme.ink1 : (data.authorColorRGB.map { store.color(fromRGB: $0) } ?? Theme.ink1))
                             .onTapGesture { if !isWebhook, let a = message.author { store.openProfile(a) } }
                         if isWebhook {
                             Text("WEBHOOK")
@@ -1402,7 +1483,7 @@ struct MessageRow: View {
 
     @ViewBuilder
     private var content: some View {
-        switch store.display(for: message, in: channel) {
+        switch data.display {
         case .text(let t):
             if !t.isEmpty {
                 if let jumbo = emojiOnly(t) {
@@ -1671,7 +1752,7 @@ struct MessageRow: View {
         // ones for an E2EE message (the server can't unfurl ciphertext, so it
         // sent embeds: [] and we unfurled locally after decrypting).
         let serverEmbeds = message.embeds ?? []
-        let embeds = serverEmbeds.isEmpty ? (store.localEmbeds(for: message.id) ?? []) : serverEmbeds
+        let embeds = serverEmbeds.isEmpty ? data.localEmbeds : serverEmbeds
         if !embeds.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(embeds.enumerated()), id: \.offset) { _, e in
@@ -1915,7 +1996,7 @@ struct MessageRow: View {
             let mediaIds = Set(media.map { $0.id })
             let leftover = rest.filter { !mediaIds.contains($0.id) }
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(voice) { VoiceMessageView(attachment: $0, channel: channel) }
+                ForEach(voice) { VoiceMessageView(store: store, attachment: $0, channel: channel) }
                 if media.count >= 2 {
                     mediaGrid(media)
                 } else {
@@ -1923,7 +2004,7 @@ struct MessageRow: View {
                 }
                 ForEach(leftover) { att in
                     if isEncrypted(att) {
-                        EncryptedAttachmentView(attachment: att, channel: channel)
+                        EncryptedAttachmentView(store: store, attachment: att, channel: channel, e2eeUnlockVersion: data.e2eeUnlockVersion)
                     } else {
                         fileChip(att)
                     }
@@ -1937,7 +2018,7 @@ struct MessageRow: View {
     @ViewBuilder
     private func singleMedia(_ att: Attachment) -> some View {
         if isEncrypted(att) {
-            EncryptedAttachmentView(attachment: att, channel: channel)
+            EncryptedAttachmentView(store: store, attachment: att, channel: channel, e2eeUnlockVersion: data.e2eeUnlockVersion)
         } else if att.isImage, let url = assetURL(att.url) {
             // Reserve the image's final on-screen size UP FRONT from its known
             // width/height so loading doesn't reflow the row (and the bottom).
@@ -1983,7 +2064,7 @@ struct MessageRow: View {
                 ForEach(media) { att in gridCell(att, images: images) }
             }
             .frame(maxWidth: 260)
-            SaveAllButton(media: media, channel: channel)
+            SaveAllButton(store: store, media: media, channel: channel)
         }
     }
 
@@ -1992,7 +2073,7 @@ struct MessageRow: View {
         if isEncrypted(att) {
             // Encrypted photo: decrypting square thumbnail. Tap → paged
             // lightbox across the message's photos (plain + decrypted E2EE).
-            EncryptedThumb(attachment: att, channel: channel) {
+            EncryptedThumb(store: store, attachment: att, channel: channel, e2eeUnlockVersion: data.e2eeUnlockVersion) {
                 Task { await store.openImageLightbox(images: images, tapped: att.id, in: channel) }
             }
         } else if att.isImage, let url = assetURL(att.url) {
@@ -2103,7 +2184,7 @@ struct MessageRow: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     ForEach(reactions, id: \.emoji) { r in
-                        ReactionPill(reaction: r) { react(r.emoji) }
+                        ReactionPill(store: store, reaction: r) { react(r.emoji) }
                     }
                     // Web parity: trailing "+" pill opens the emoji picker.
                     Button { showReactionPicker = true } label: {
@@ -2133,7 +2214,10 @@ private func byteString(_ bytes: Int) -> String {
 }
 
 struct ReactionPill: View {
-    @EnvironmentObject private var store: AppStore
+    // Plain (non-observing) ref — only used for emoji-glyph lookups at render.
+    // The parent row's emojiCatalogVersion (in its ==) re-renders the row, and
+    // thus its pills, when the custom-emoji catalog/images change.
+    let store: AppStore
     let reaction: ReactionAggregate
     let onTap: () -> Void
 
@@ -3785,9 +3869,12 @@ private struct LightboxPage: View {
 
 /// Decrypting square thumbnail for an encrypted photo in the media grid.
 private struct EncryptedThumb: View {
-    @EnvironmentObject private var store: AppStore
+    let store: AppStore
     let attachment: Attachment
     let channel: Channel
+    /// Fed from the row's MessageRowData so the decrypt task re-runs on E2EE
+    /// unlock without this view observing the store.
+    let e2eeUnlockVersion: Int
     let onTap: () -> Void
     @State private var image: UIImage?
 
@@ -3809,7 +3896,7 @@ private struct EncryptedThumb: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
             .onTapGesture { if image != nil { onTap() } }
-            .task(id: store.e2eeUnlockVersion) {
+            .task(id: e2eeUnlockVersion) {
                 if image == nil, let data = await store.decryptedAttachmentData(attachment, in: channel) {
                     image = UIImage(data: data)
                 }
@@ -3820,7 +3907,7 @@ private struct EncryptedThumb: View {
 /// "Save all to Photos" for a multi-media message. Keeps its own status so it
 /// gives feedback (Saving… → Saved N) without app-wide toast plumbing.
 private struct SaveAllButton: View {
-    @EnvironmentObject private var store: AppStore
+    let store: AppStore
     let media: [Attachment]
     let channel: Channel
     @State private var label = "Save all to Photos"
@@ -4622,9 +4709,12 @@ extension View {
 /// else as a sealed-file chip. Shows a lock placeholder until the key is
 /// unlocked on this device.
 struct EncryptedAttachmentView: View {
+    let store: AppStore
     let attachment: Attachment
     let channel: Channel
-    @EnvironmentObject private var store: AppStore
+    /// Fed from the row's MessageRowData so the decrypt task re-runs on E2EE
+    /// unlock without this view observing the store.
+    let e2eeUnlockVersion: Int
     @State private var image: UIImage?
     @State private var videoURL: URL?
     @State private var playingVideo: VideoItem?
@@ -4715,7 +4805,7 @@ struct EncryptedAttachmentView: View {
             // NSTemporaryDirectory); remove it when the row goes away.
             if let videoURL { try? FileManager.default.removeItem(at: videoURL) }
         }
-        .task(id: store.e2eeUnlockVersion) {
+        .task(id: e2eeUnlockVersion) {
             loading = true
             failed = false
             guard let data = await store.decryptedAttachmentData(attachment, in: channel) else {
