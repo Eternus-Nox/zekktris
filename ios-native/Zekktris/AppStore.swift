@@ -3822,9 +3822,20 @@ final class AppStore: ObservableObject {
                 messages[idx].reactions = []
             }
         case "MESSAGE_POLL_UPDATE":
-            // Poll closed/updated (payload carries channel_id, message_id).
+            // Poll closed/updated (payload: { channel_id, message_id, closed_at }).
+            // Patch the one message's poll.closedAt in place rather than
+            // refetching the whole channel. myVotes/options/totalVoters are kept
+            // from the local row — this focused delta carries no poll body and
+            // no per-recipient state (myVotes would arrive empty on a refetch's
+            // broadcast anyway).
             if let d = jsonDict(data), (d["channel_id"] as? String) == selectedChannel?.id,
-               let c = selectedChannel { Task { await loadMessages(c) } }
+               let messageId = d["message_id"] as? String,
+               let closedAt = d["closed_at"] as? String,
+               let idx = messages.firstIndex(where: { $0.id == messageId }),
+               var poll = messages[idx].poll, poll.closedAt != closedAt {
+                poll.closedAt = closedAt
+                messages[idx].poll = poll
+            }
         case "CHANNEL_PINS_UPDATE":
             // Pins changed (payload: { channel_id, last_pin_timestamp }).
             if let d = jsonDict(data), (d["channel_id"] as? String) == selectedChannel?.id,
@@ -3890,9 +3901,36 @@ final class AppStore: ObservableObject {
                 Task { await loadMembers(g) }
             }
         case "USER_UPDATE":
-            // A user's name/avatar/status changed. Coarser than the web's
-            // in-place patch: refresh the open member list so rows update.
-            if showMembers, let g = selectedGuild { Task { await loadMembers(g) } }
+            // A user's name/avatar/status/bio changed. Wire payload is the
+            // full PublicUser nested under `user` (snake_case). Patch in place
+            // instead of a member-list network refetch — mirrors the web's
+            // USER_REPLACE: update every open-channel message author for this
+            // user AND their cached member row, touching only the fields the
+            // wire carries (so banner/emoji/role data the event omits survive).
+            if let d = jsonDict(data), let u = d["user"] as? [String: Any],
+               let uid = u["id"] as? String {
+                // Batch the message-author patches into a single array
+                // republish: mutating messages[i] in a loop would re-render on
+                // every element. Skip the assignment entirely when nothing
+                // changed (a user shared across N guilds fans out N identical
+                // events until the gateway consolidates them).
+                var newMessages = messages
+                var changed = false
+                for i in newMessages.indices where newMessages[i].authorId == uid {
+                    if var author = newMessages[i].author,
+                       patchPublicUser(&author, from: u) {
+                        newMessages[i].author = author
+                        changed = true
+                    }
+                }
+                if changed { messages = newMessages }
+                // Keep the cached member row's embedded user snapshot aligned
+                // so the MemberList doesn't show a stale avatar until the next
+                // loadMembers().
+                if var member = members[uid], patchPublicUser(&member.user, from: u) {
+                    members[uid] = member
+                }
+            }
         case "GUILD_EMOJIS_UPDATE":
             if let d = jsonDict(data), (d["guild_id"] as? String) == selectedGuild?.id {
                 Task { await loadEmojis() }
@@ -3981,6 +4019,40 @@ final class AppStore: ObservableObject {
     /// events that aren't full model DTOs.
     private func jsonDict(_ data: Data) -> [String: Any]? {
         try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    /// Apply the fields carried by a USER_UPDATE wire `user` object (snake_case)
+    /// onto an existing PublicUser, IN PLACE, returning whether anything
+    /// changed. Only the fields the event actually carries are touched; fields
+    /// the wire omits (banner, customStatusEmoji/expiresAt, isBot,
+    /// avatarDecoration, canMessage) are left as-is so a partial profile event
+    /// can't blank them. Nullable fields are set authoritatively (a JSON null
+    /// clears them) by checking key presence rather than value-castability.
+    @discardableResult
+    private func patchPublicUser(_ user: inout PublicUser, from u: [String: Any]) -> Bool {
+        var changed = false
+        if let v = u["username"] as? String, v != user.username {
+            user.username = v; changed = true
+        }
+        if let v = u["display_name"] as? String, v != user.displayName {
+            user.displayName = v; changed = true
+        }
+        if u.keys.contains("avatar_url") {
+            let v = u["avatar_url"] as? String  // nil for JSON null → clears it
+            if v != user.avatarUrl { user.avatarUrl = v; changed = true }
+        }
+        if u.keys.contains("bio") {
+            let v = u["bio"] as? String
+            if v != user.bio { user.bio = v; changed = true }
+        }
+        if u.keys.contains("custom_status") {
+            let v = u["custom_status"] as? String
+            if v != user.customStatus { user.customStatus = v; changed = true }
+        }
+        if let v = u["status"] as? String, v != user.status {
+            user.status = v; changed = true
+        }
+        return changed
     }
 
     /// Insert a message keeping the list sorted, replacing any existing row
