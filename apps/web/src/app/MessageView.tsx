@@ -833,6 +833,17 @@ export function MessageView({
                       channel.e2eeVerifier,
                     );
                     if (encrypted) {
+                      // Ciphertext is ~34% larger than plaintext; if it would
+                      // exceed the server's content cap, fail clearly here
+                      // rather than letting the server reject it with a cryptic
+                      // length error.
+                      if (encrypted.length > 4000) {
+                        toasts.push(
+                          'This message is too long to send in an encrypted DM. Shorten it and try again.',
+                          'error',
+                        );
+                        return;
+                      }
                       outgoingContent = encrypted;
                     } else {
                       // null here also covers a stale key dropped by the
