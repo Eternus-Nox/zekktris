@@ -171,6 +171,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [rest, setToken]);
 
+  // ── Cross-tab auth sync ───────────────────────────────────────────────
+  // The `storage` event fires only in OTHER tabs. If another tab logs out
+  // (removes the token) we'd otherwise keep the stale in-memory tokenRef and
+  // send it until a 401; clear it here instead. If another tab logs in /
+  // rotates the token, adopt the fresh value so our requests use it (user
+  // state reconciles on the next getMe/refresh).
+  useEffect(() => {
+    function onStorage(e: StorageEvent) {
+      if (e.key !== TOKEN_STORAGE_KEY) return;
+      if (e.newValue === null) {
+        if (tokenRef.current !== null) setToken(null, null);
+      } else if (e.newValue !== tokenRef.current) {
+        tokenRef.current = e.newValue;
+      }
+    }
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [setToken]);
+
   // ── Gateway lifecycle: only run when authenticated ────────────────────
 
   // The socket must open on login, close on logout, and reconnect on a
