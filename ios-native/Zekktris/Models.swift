@@ -813,14 +813,31 @@ struct SavedMessageItem: Codable, Identifiable {
 struct SavedListWrap: Codable { let items: [SavedMessageItem]; let nextCursor: String? }
 struct SavedMembershipWrap: Codable { let savedIds: [String] }
 
-/// A full-screen image presentation request.
+/// One image in a lightbox: a remote URL (plain attachments) or an
+/// in-memory UIImage (E2EE attachments, already decrypted — so plaintext
+/// never round-trips through a URL).
+struct LightboxItem: Identifiable {
+    let id = UUID()
+    var url: URL? = nil
+    var image: UIImage? = nil
+}
+
+/// A full-screen image presentation request — one or more images, paged
+/// (swipe left/right between them).
 struct LightboxImage: Identifiable {
     let id = UUID()
-    /// Remote image (plain attachments) — loaded by URL.
-    var url: URL? = nil
-    /// In-memory image (E2EE attachments, already decrypted) — shown directly
-    /// so encrypted media is previewed without ever exposing a plaintext URL.
-    var image: UIImage? = nil
+    var items: [LightboxItem]
+    var startIndex: Int
+
+    /// Back-compat: a single remote image.
+    init(url: URL) { items = [LightboxItem(url: url)]; startIndex = 0 }
+    /// Back-compat: a single in-memory (decrypted) image.
+    init(image: UIImage) { items = [LightboxItem(image: image)]; startIndex = 0 }
+    /// A set of images to page through, opening at startIndex.
+    init(items: [LightboxItem], startIndex: Int = 0) {
+        self.items = items
+        self.startIndex = items.isEmpty ? 0 : max(0, min(startIndex, items.count - 1))
+    }
 }
 
 // MARK: - Permissions

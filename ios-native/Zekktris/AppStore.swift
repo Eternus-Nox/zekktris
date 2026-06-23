@@ -3468,6 +3468,43 @@ final class AppStore: ObservableObject {
     /// Open the full-screen viewer for an already-decoded image (E2EE images,
     /// which have no plaintext URL).
     func openLightbox(image: UIImage) { lightbox = LightboxImage(image: image) }
+    /// Open the viewer on a SET of images (a message's gallery), paged from
+    /// startIndex — swipe left/right between them.
+    func openLightbox(items: [LightboxItem], startIndex: Int) {
+        guard !items.isEmpty else { return }
+        lightbox = LightboxImage(items: items, startIndex: startIndex)
+    }
+
+    /// Save every plain photo/video in a message to the Photos library; returns
+    /// how many were saved. Used by the multi-media grid's "Save all" button.
+    /// (Plain media only — the grid that calls this excludes E2EE attachments.)
+    func saveMediaToPhotos(_ media: [Attachment]) async -> Int {
+        var saved = 0
+        for att in media {
+            guard let url = assetURL(att.url) else { continue }
+            if att.isVideo {
+                if await saveVideoToPhotos(from: url) { saved += 1 }
+            } else if att.isImage, let img = await RetryingImage.load(url) {
+                UIImageWriteToSavedPhotosAlbum(img, nil, nil, nil)
+                saved += 1
+            }
+        }
+        return saved
+    }
+
+    private func saveVideoToPhotos(from url: URL) async -> Bool {
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + ".mp4")
+            try data.write(to: tmp)
+            guard UIVideoAtPathIsCompatibleWithSavedPhotosAlbum(tmp.path) else { return false }
+            UISaveVideoAtPathToSavedPhotosAlbum(tmp.path, nil, nil, nil)
+            return true
+        } catch {
+            return false
+        }
+    }
 
     // MARK: Forwarding
 

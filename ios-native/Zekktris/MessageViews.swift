@@ -563,7 +563,12 @@ struct MessageListView: View {
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .padding(.bottom, 8)
-        .background(Theme.bg1.opacity(0.9))
+        // Opaque (not .opacity(0.9)): the attach Menu applies a system dim to
+        // the nebula behind the composer, and a translucent bar let that dim
+        // bleed through → the bar appeared to change color when the menu opened
+        // with the keyboard up. Opaque keeps it stable; visually ~identical at
+        // rest since the composer sits at the bottom over little nebula.
+        .background(Theme.bg1)
         .overlay(Rectangle().fill(Theme.lineSoft).frame(height: 1), alignment: .top)
         .sheet(isPresented: $showEmojiPicker) {
             EmojiPickerSheet { emoji in
@@ -1879,54 +1884,121 @@ struct MessageRow: View {
     @ViewBuilder
     private var attachmentsView: some View {
         if let attachments = message.attachments, !attachments.isEmpty {
+            // Voice first (decrypts in its own view), then encrypted, then a
+            // GRID of plain photos/videos (2+ group into a tidy 2-col grid
+            // instead of a messy stack), then any plain files.
+            let voice = attachments.filter { $0.isVoiceMessage == true }
+            let rest = attachments.filter { $0.isVoiceMessage != true }
+            let e2ee = rest.filter { channel.isE2EE && ($0.filename?.hasSuffix(".zke") == true) }
+            let plain = rest.filter { !(channel.isE2EE && ($0.filename?.hasSuffix(".zke") == true)) }
+            let media = plain.filter { $0.isImage || $0.isVideo }
+            let files = plain.filter { !$0.isImage && !$0.isVideo }
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(attachments) { att in
-                    if att.isVoiceMessage == true {
-                        // Voice FIRST — an encrypted (.zke) voice note must
-                        // play in the voice view (which decrypts), not fall to
-                        // the generic encrypted-file card.
-                        VoiceMessageView(attachment: att, channel: channel)
-                    } else if channel.isE2EE, att.filename?.hasSuffix(".zke") == true {
-                        EncryptedAttachmentView(attachment: att, channel: channel)
-                    } else if att.isImage, let url = assetURL(att.url) {
-                        // Reserve the image's final on-screen size UP FRONT from
-                        // its known width/height, so the image loading in doesn't
-                        // grow the row and push later content (and the bottom)
-                        // down — which made channels look like they didn't open at
-                        // the bottom. The placeholder fills the same reserved box,
-                        // so load is a swap with no reflow. (Encrypted images have
-                        // no known dimensions; the open-settle re-pin covers those.)
-                        let dim = imageDisplaySize(att)
-                        AsyncImage(url: url) { phase in
-                            switch phase {
-                            case .success(let image):
-                                image.resizable().scaledToFit()
-                                    .onTapGesture { store.openLightbox(url) }
-                            case .empty:
-                                if dim != nil {
-                                    Rectangle().fill(Theme.bg3)
-                                        .overlay(ProgressView().tint(Theme.accent))
-                                } else {
-                                    ProgressView().frame(width: 140, height: 90)
-                                }
-                            default:
-                                fileChip(att)
-                            }
-                        }
-                        .frame(width: dim?.width, height: dim?.height)
-                        .frame(maxWidth: 240, maxHeight: 240, alignment: .leading)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        // Long-press → Save to Photos / Copy / Share. Loads the
-                        // image bytes on demand via the native retrying loader.
-                        .imageActions { await RetryingImage.load(url) }
-                    } else if att.isVideo, let url = assetURL(att.url) {
-                        videoChip(att, url: url)
-                    } else {
-                        fileChip(att)
-                    }
+                ForEach(voice) { VoiceMessageView(attachment: $0, channel: channel) }
+                ForEach(e2ee) { EncryptedAttachmentView(attachment: $0, channel: channel) }
+                if media.count >= 2 {
+                    mediaGrid(media)
+                } else {
+                    ForEach(media) { singleMedia($0) }
                 }
+                ForEach(files) { fileChip($0) }
             }
             .padding(.top, 2)
+        }
+    }
+
+    /// A single plain photo/video (the original full-size rendering, used when
+    /// a message has just one media attachment).
+    @ViewBuilder
+    private func singleMedia(_ att: Attachment) -> some View {
+        if att.isImage, let url = assetURL(att.url) {
+            // Reserve the image's final on-screen size UP FRONT from its known
+            // width/height so loading doesn't reflow the row (and the bottom).
+            let dim = imageDisplaySize(att)
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFit()
+                        .onTapGesture { store.openLightbox(url) }
+                case .empty:
+                    if dim != nil {
+                        Rectangle().fill(Theme.bg3)
+                            .overlay(ProgressView().tint(Theme.accent))
+                    } else {
+                        ProgressView().frame(width: 140, height: 90)
+                    }
+                default:
+                    fileChip(att)
+                }
+            }
+            .frame(width: dim?.width, height: dim?.height)
+            .frame(maxWidth: 240, maxHeight: 240, alignment: .leading)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            // Long-press → Save to Photos / Copy / Share.
+            .imageActions { await RetryingImage.load(url) }
+        } else if att.isVideo, let url = assetURL(att.url) {
+            videoChip(att, url: url)
+        } else {
+            fileChip(att)
+        }
+    }
+
+    /// 2-column grid for a message with 2+ photos/videos, plus a Save-all
+    /// affordance. Tapping a photo opens the swipeable lightbox across all the
+    /// message's photos; tapping a video opens the full-screen player.
+    @ViewBuilder
+    private func mediaGrid(_ media: [Attachment]) -> some View {
+        let images = media.filter { $0.isImage }
+        let cols = [GridItem(.flexible(), spacing: 4), GridItem(.flexible(), spacing: 4)]
+        VStack(alignment: .leading, spacing: 6) {
+            LazyVGrid(columns: cols, spacing: 4) {
+                ForEach(media) { att in gridCell(att, images: images) }
+            }
+            .frame(maxWidth: 260)
+            SaveAllButton(media: media)
+        }
+    }
+
+    @ViewBuilder
+    private func gridCell(_ att: Attachment, images: [Attachment]) -> some View {
+        if att.isImage, let url = assetURL(att.url) {
+            Rectangle()
+                .fill(Theme.bg3)
+                .aspectRatio(1, contentMode: .fit)
+                .overlay(
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let image): image.resizable().scaledToFill()
+                        case .empty: ProgressView().tint(Theme.accent)
+                        default: Image(systemName: "photo").foregroundColor(Theme.ink3)
+                        }
+                    }
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    // Filter to images with a usable URL, then index into that
+                    // SAME filtered set so the opening page is always correct
+                    // even if an earlier image's URL didn't resolve.
+                    let valid = images.filter { assetURL($0.url) != nil }
+                    let items = valid.map { LightboxItem(url: assetURL($0.url)!) }
+                    let start = valid.firstIndex(where: { $0.id == att.id }) ?? 0
+                    store.openLightbox(items: items, startIndex: start)
+                }
+        } else if att.isVideo, let url = assetURL(att.url) {
+            Rectangle()
+                .fill(Color.black)
+                .aspectRatio(1, contentMode: .fit)
+                .overlay(
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 30))
+                        .foregroundColor(.white.opacity(0.9))
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .contentShape(Rectangle())
+                .onTapGesture { videoToPlay = VideoItem(url: url) }
+        } else {
+            fileChip(att)
         }
     }
 
@@ -3564,36 +3636,39 @@ struct PinPanelView: View {
 struct ImageLightboxView: View {
     let item: LightboxImage
     @Environment(\.dismiss) private var dismiss
-    @State private var scale: CGFloat = 1
-    @State private var lastScale: CGFloat = 1
-    @State private var offset: CGSize = .zero
-    @State private var lastOffset: CGSize = .zero
+    @State private var index: Int
+
+    init(item: LightboxImage) {
+        self.item = item
+        _index = State(initialValue: item.startIndex)
+    }
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            // E2EE images arrive as an in-memory UIImage (no plaintext URL);
-            // plain attachments load by URL. Both get the same zoom/pan.
-            if let image = item.image {
-                zoomable(Image(uiImage: image).resizable().scaledToFit())
-            } else if let url = item.url {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        zoomable(image.resizable().scaledToFit())
-                    case .empty:
-                        ProgressView().tint(.white)
-                    default:
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.system(size: 28))
-                            .foregroundColor(.white)
-                    }
+            // Paged: swipe left/right between a message's images. Each page
+            // owns its own zoom/pan state (LightboxPage) so zoom doesn't leak
+            // across swipes.
+            TabView(selection: $index) {
+                ForEach(Array(item.items.enumerated()), id: \.offset) { i, it in
+                    LightboxPage(item: it).tag(i)
                 }
             }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .ignoresSafeArea()
 
             VStack {
                 HStack {
+                    if item.items.count > 1 {
+                        Text("\(index + 1) / \(item.items.count)")
+                            .font(.zkSans(13, weight: .medium))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.white.opacity(0.18))
+                            .clipShape(Capsule())
+                    }
                     Spacer()
                     Button { dismiss() } label: {
                         Image(systemName: "xmark")
@@ -3609,9 +3684,39 @@ struct ImageLightboxView: View {
             .padding(16)
         }
     }
+}
 
-    /// Apply pinch-zoom, drag-pan (when zoomed), and double-tap-to-toggle to
-    /// the supplied image view. Shared by the URL and in-memory paths.
+/// One zoom/pannable page in the lightbox.
+private struct LightboxPage: View {
+    let item: LightboxItem
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+
+    var body: some View {
+        // E2EE images arrive as an in-memory UIImage (no plaintext URL);
+        // plain attachments load by URL. Both get the same zoom/pan.
+        if let image = item.image {
+            zoomable(Image(uiImage: image).resizable().scaledToFit())
+        } else if let url = item.url {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    zoomable(image.resizable().scaledToFit())
+                case .empty:
+                    ProgressView().tint(.white)
+                default:
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 28))
+                        .foregroundColor(.white)
+                }
+            }
+        }
+    }
+
+    /// Pinch-zoom, drag-pan (only when zoomed, so the TabView still pages at
+    /// scale 1), and double-tap-to-toggle.
     @ViewBuilder
     private func zoomable<V: View>(_ content: V) -> some View {
         content
@@ -3647,6 +3752,37 @@ struct ImageLightboxView: View {
                     }
                 }
             }
+    }
+}
+
+/// "Save all to Photos" for a multi-media message. Keeps its own status so it
+/// gives feedback (Saving… → Saved N) without app-wide toast plumbing.
+private struct SaveAllButton: View {
+    @EnvironmentObject private var store: AppStore
+    let media: [Attachment]
+    @State private var label = "Save all to Photos"
+    @State private var busy = false
+
+    var body: some View {
+        Button {
+            guard !busy else { return }
+            busy = true
+            label = "Saving…"
+            Task {
+                let n = await store.saveMediaToPhotos(media)
+                await MainActor.run {
+                    label = n > 0 ? "Saved \(n) to Photos" : "Couldn't save"
+                    busy = false
+                }
+            }
+        } label: {
+            Label(label, systemImage: "square.and.arrow.down")
+                .font(.zkSans(12, weight: .medium))
+                .foregroundColor(Theme.accent)
+                .padding(.vertical, 2)
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
     }
 }
 
