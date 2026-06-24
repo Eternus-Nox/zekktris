@@ -469,6 +469,8 @@ final class AppStore: ObservableObject {
     @Published var notificationOverrides: [String: String] = [:]
     /// Last time an incoming poke fired a haptic — debounces rapid pokes.
     private var lastPokeHapticAt = Date.distantPast
+    /// One-shot guard so the token-refresh→watch-resync observer is added once.
+    private var watchTokenObserverInstalled = false
     /// Frozen last-read message id for the open channel, captured before acking,
     /// so the "New messages" divider stays put where the user left off.
     @Published var unreadBoundaryId: String?
@@ -571,6 +573,18 @@ final class AppStore: ObservableObject {
         // Move any pre-app-group E2EE keys into the shared keychain so the
         // Notification Service Extension can decrypt previews (idempotent).
         migrateE2EEKeysToAppGroupIfNeeded()
+        // Apple Watch poke app: activate the WCSession and re-push the token to
+        // the watch whenever it refreshes (so a watch poke never uses a stale,
+        // expired token). The targets ride along on each DM (re)load.
+        WatchSync.shared.start()
+        if !watchTokenObserverInstalled {
+            watchTokenObserverInstalled = true
+            NotificationCenter.default.addObserver(
+                forName: APIClient.tokenRefreshedNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.syncWatch() }
+            }
+        }
         gateway.onEvent = { [weak self] name, data in
             self?.handleEvent(name, data)
         }
@@ -628,6 +642,8 @@ final class AppStore: ObservableObject {
         // backgrounded, and RESUMED skips the READY full-resync. Reconcile the
         // open channel directly so new messages always appear on return.
         Task { await reconcileOpenChannel() }
+        // Refresh the watch with the freshest token + targets on foreground.
+        syncWatch()
     }
 
     // MARK: Automatic presence state machine
@@ -1114,6 +1130,19 @@ final class AppStore: ObservableObject {
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
         }
+        // The watch poke app's target list comes from the DM list — refresh it
+        // whenever the DMs (re)load.
+        syncWatch()
+    }
+
+    /// Push the current auth token + recent 1:1 DM peers to the Apple Watch
+    /// poke app over WatchConnectivity. Cheap + coalesced (latest-wins).
+    func syncWatch() {
+        let targets = dms
+            .filter { $0.type == "dm" }
+            .prefix(12)
+            .map { (id: $0.id, name: $0.dmTitle) }
+        WatchSync.shared.sync(token: api.token, targets: Array(targets))
     }
 
     /// Reorder sibling channels within a group (a category, or the
