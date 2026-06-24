@@ -9,6 +9,10 @@ import AVFoundation
 @MainActor
 final class VoiceRecorder: ObservableObject {
     @Published var recording = false
+    /// True after the user taps STOP but before they send or discard — the
+    /// recording is finalized and waiting in the composer for review. Lets the
+    /// bar swap its STOP button for a SEND button without leaving the recorder.
+    @Published var recordingComplete = false
     @Published var elapsed: TimeInterval = 0
     @Published var levels: [CGFloat] = []   // recent live levels, 0…1
 
@@ -16,6 +20,10 @@ final class VoiceRecorder: ObservableObject {
     private var timer: Timer?
     private var fileURL: URL?
     private var powerSamples: [Float] = []
+    // Captured at stopRecording() time so finalize() can hand them to onSend
+    // (the AVAudioRecorder is torn down on stop, so currentTime is gone).
+    private var finalDuration = 0
+    private var finalWaveform: String?
 
     func start() {
         // Never seize the shared audio session from a live call — recording
@@ -80,11 +88,36 @@ final class VoiceRecorder: ObservableObject {
         return (url, dur, waveform)
     }
 
+    /// Stop recording WITHOUT sending: finalize the duration + waveform and
+    /// hold the file so the composer can show a SEND button for review. Idempotent.
+    func stopRecording() {
+        guard recording, let rec = recorder else { return }
+        timer?.invalidate(); timer = nil
+        finalDuration = max(1, Int(rec.currentTime.rounded()))
+        rec.stop()
+        finalWaveform = Self.waveformBase64(from: powerSamples, buckets: 48)
+        recorder = nil
+        recording = false
+        recordingComplete = true
+        // Recording is done — release the session unless a call holds it (see stop()).
+        if !VoiceManager.callAudioActive { try? AVAudioSession.sharedInstance().setActive(false) }
+    }
+
+    /// Hand off a stopped-but-unsent recording for sending. Clears the
+    /// completed state; the caller owns the file from here.
+    func finalize() -> (URL, Int, String)? {
+        guard let url = fileURL, let wf = finalWaveform else { return nil }
+        recordingComplete = false
+        return (url, finalDuration, wf)
+    }
+
     func cancel() {
         timer?.invalidate(); timer = nil
         recorder?.stop()
         recorder = nil
         recording = false
+        recordingComplete = false
+        finalWaveform = nil
         if let url = fileURL { try? FileManager.default.removeItem(at: url) }
         fileURL = nil
         // See stop(): never deactivate the shared session out from under a call.
@@ -325,12 +358,22 @@ struct VoiceRecorderBar: View {
                 progress: 0, activeColor: Theme.accent2, inactiveColor: Theme.accent2
             )
             .frame(height: 24)
-            Button {
-                if let (url, dur, wf) = recorder.stop() { onSend(url, dur, wf) }
-            } label: {
-                Image(systemName: "arrow.up.circle.fill").font(.system(size: 28)).foregroundColor(Theme.accent)
+            if recorder.recording {
+                // STOP: end recording and hold it for review (the bar stays,
+                // now showing a SEND button) instead of sending immediately.
+                Button { recorder.stopRecording() } label: {
+                    Image(systemName: "stop.circle.fill").font(.system(size: 28)).foregroundColor(Theme.danger)
+                }
+                .buttonStyle(.plain)
+            } else {
+                // SEND the stopped recording.
+                Button {
+                    if let (url, dur, wf) = recorder.finalize() { onSend(url, dur, wf) }
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 28)).foregroundColor(Theme.accent)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(Theme.bg3)

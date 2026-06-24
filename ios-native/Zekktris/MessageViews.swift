@@ -515,7 +515,7 @@ struct MessageListView: View {
                 }
             }
 
-            if recorder.recording {
+            if recorder.recording || recorder.recordingComplete {
                 VoiceRecorderBar(
                     recorder: recorder,
                     onSend: { url, dur, wf in
