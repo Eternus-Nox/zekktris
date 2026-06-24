@@ -1739,6 +1739,9 @@ interface AppStateValue {
    * whether the message was found in the loaded window.
    */
   loadMessagesAround: (channelId: string, messageId: string) => Promise<{ found: boolean }>;
+  /** Append any messages newer than what we hold for an already-loaded
+      channel (web analog of the native open-channel self-heal). */
+  reconcileChannel: (channelId: string) => Promise<void>;
   /**
    * Load the page of messages immediately older than what's currently
    * in state. Returns the number of messages added (0 = no new
@@ -2045,6 +2048,54 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       return { found };
     },
     [rest, restForChannel],
+  );
+
+  /**
+   * Reconcile an ALREADY-loaded channel against the server: fetch anything
+   * newer than the newest message we hold and append it. This is the web
+   * analog of the native openChannel self-heal — the open effect only calls
+   * loadMessages when a channel is first opened (loadedChannels guard), so a
+   * DM the user opened earlier in the session can go stale if a live
+   * MESSAGE_CREATE was ever missed (tab/laptop asleep, a silent socket drop, a
+   * resume-buffer gap). Without this, re-opening that DM shows the old list
+   * until a full page refresh — exactly the reported bug.
+   *
+   * Append-only via the `after` cursor: never replaces the array, so loaded
+   * older history and scroll position survive. MESSAGE_APPEND dedups by id, so
+   * a no-gap channel is a cheap no-op fetch. The GET also stamps viewed_at +
+   * fires MESSAGE_VIEWED server-side, so opening a DM marks it read promptly.
+   */
+  const reconcileChannel = useCallback(
+    async (channelId: string) => {
+      const existing = stateRef.current.messagesByChannel[channelId];
+      if (!existing || existing.length === 0) {
+        // Nothing loaded yet → a normal first load is correct.
+        await loadMessages(channelId);
+        return;
+      }
+      // Newest message with a real (server snowflake) id — skip optimistic
+      // `local-` placeholders, which the server cursor wouldn't understand.
+      let after: string | undefined;
+      for (let i = existing.length - 1; i >= 0; i--) {
+        if (/^\d+$/.test(existing[i]!.id)) {
+          after = existing[i]!.id;
+          break;
+        }
+      }
+      if (!after) {
+        await loadMessages(channelId);
+        return;
+      }
+      const r = await (await restForChannel(channelId)).listMessages(channelId, {
+        after,
+        limit: 50,
+      });
+      // REST returns newest-first; append oldest-first so order is preserved.
+      for (const m of [...r.messages].reverse()) {
+        dispatch({ type: 'MESSAGE_APPEND', channelId, message: m });
+      }
+    },
+    [loadMessages, restForChannel],
   );
 
   /**
@@ -3265,6 +3316,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       applyChannelReorder,
       loadMessages,
       loadMessagesAround,
+      reconcileChannel,
       loadOlderMessages,
       loadMembers,
       loadRoles,
@@ -3295,6 +3347,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       applyChannelReorder,
       loadMessages,
       loadMessagesAround,
+      reconcileChannel,
       loadOlderMessages,
       loadMembers,
       loadRoles,

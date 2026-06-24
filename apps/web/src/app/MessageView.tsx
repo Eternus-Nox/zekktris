@@ -79,6 +79,7 @@ export function MessageView({
   // BACKGROUND channel doesn't re-render the open conversation.
   const loadMessages = useAppStateSelector((v) => v.loadMessages);
   const loadMessagesAround = useAppStateSelector((v) => v.loadMessagesAround);
+  const reconcileChannel = useAppStateSelector((v) => v.reconcileChannel);
   const ackChannel = useAppStateSelector((v) => v.ackChannel);
   const sendMessageOptimistic = useAppStateSelector((v) => v.sendMessageOptimistic);
   const messages = useAppStateSelector((v) => v.state.messagesByChannel[channel.id]);
@@ -132,8 +133,34 @@ export function MessageView({
     }
     if (!loaded) {
       void loadMessages(channel.id).catch(() => undefined);
+    } else {
+      // Already loaded this session — reconcile against the server so any
+      // messages missed while this channel was closed (a missed live event,
+      // a suspended socket, a resume-buffer gap) appear on re-open instead of
+      // only after a full page refresh. Append-only; cheap no-op when current.
+      void reconcileChannel(channel.id).catch(() => undefined);
     }
-  }, [channel.id, loaded, loadMessages, loadMessagesAround, jumpToMessageId, toasts]);
+  }, [channel.id, loaded, loadMessages, loadMessagesAround, reconcileChannel, jumpToMessageId, toasts]);
+
+  // Browsers (especially laptops) silently kill or stall a backgrounded
+  // tab's WebSocket with no close event, so live MESSAGE_CREATE events stop
+  // arriving while the tab is hidden. When the tab regains focus/visibility,
+  // reconcile the open channel so messages that landed while we were away
+  // appear immediately — instead of the user having to refresh the page.
+  // Append-only + cheap (a no-op `after` fetch when already current).
+  useEffect(() => {
+    const reconcileIfVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void reconcileChannel(channel.id).catch(() => undefined);
+      }
+    };
+    document.addEventListener('visibilitychange', reconcileIfVisible);
+    window.addEventListener('focus', reconcileIfVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', reconcileIfVisible);
+      window.removeEventListener('focus', reconcileIfVisible);
+    };
+  }, [channel.id, reconcileChannel]);
 
   // Scroll-into-view + flash highlight for the jump target. We wait
   // for the message to appear in state (load above) then in the DOM
