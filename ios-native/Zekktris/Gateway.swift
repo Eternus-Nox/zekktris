@@ -251,12 +251,14 @@ final class Gateway: ObservableObject {
                     sessionId = sid
                 }
             }
-            // RESUMED only signals "you're caught up"; the missed events already
-            // arrived ahead of it as their own DISPATCH frames and were applied
-            // by the normal handlers. Do NOT forward RESUMED — that keeps the
-            // READY full-resync (loadGuilds/loadDMs/… in AppStore) from firing on
-            // a successful resume, which is the whole point of resuming.
-            if t == "RESUMED" { return }
+            // RESUMED signals "you're caught up": the missed events normally
+            // arrive ahead of it as their own DISPATCH frames. We still FORWARD
+            // it (as a distinct `t`, so it never hits the READY full-resync —
+            // that stays keyed on "READY") so AppStore can defensively reconcile
+            // the OPEN conversation: a resume replay that's incomplete at the
+            // edge would otherwise leave the visible chat missing a message
+            // until the user backs out and re-enters. The reconcile is a cheap
+            // `after`-cursor fetch (usually a no-op), NOT the heavy re-bootstrap.
             let payload = obj["d"]
             if let payload, JSONSerialization.isValidJSONObject(payload),
                let dData = try? JSONSerialization.data(withJSONObject: payload) {

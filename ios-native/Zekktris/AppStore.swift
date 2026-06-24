@@ -3784,6 +3784,16 @@ final class AppStore: ObservableObject {
 
     private func handleEvent(_ name: String, _ data: Data) {
         switch name {
+        case "RESUMED":
+            // The socket resumed (replay caught us up) WITHOUT a fresh READY,
+            // so the READY re-sync above never runs. A resume replay can be
+            // incomplete at the edge — and a zombie-socket reconnect that
+            // resumes while we're actively in the app (no foreground
+            // transition, so foregroundReconnect's reconcile never fired) would
+            // otherwise leave the open conversation missing a message until the
+            // user backs out and re-enters. Defensively reconcile the open
+            // channel (cheap after-cursor fetch, dedup-safe via upsert).
+            Task { await reconcileOpenChannel() }
         case "READY":
             // Consume the voice_states snapshot the server ships in READY.
             // Without this, two things broke after a reconnect: (a) a stale
