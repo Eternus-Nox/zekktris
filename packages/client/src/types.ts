@@ -341,6 +341,16 @@ export type MessageMetadata =
       kind: 'streak_warning';
       /** Streak day count at warning time. */
       streak: number;
+    }
+  | {
+      /** A poke / nudge. Row is type 'default'; rendered as a centered notice
+       *  ("👉 poked you") + a buzz on the recipient. */
+      kind: 'poke';
+      /** Variant — drives the emoji + verb shown:
+       *  poke | heart | wave | like | fire. */
+      pokeType: string;
+      /** The poker's user id (stringified BigInt). */
+      initiatorId: string;
     };
 
 export interface Message {

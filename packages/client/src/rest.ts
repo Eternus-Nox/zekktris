@@ -1963,6 +1963,15 @@ export class RestClient {
   }
 
   /**
+   * Poke/nudge the other party in a 1:1 DM. Creates a lightweight system
+   * message (which buzzes them + leaves a note in the chat); `pokeType` is
+   * one of poke | heart | wave | like | fire. Returns the created message.
+   */
+  poke(channelId: string, pokeType: string): Promise<{ message: Message }> {
+    return this.request('POST', `/channels/${channelId}/poke`, { pokeType });
+  }
+
+  /**
    * Send a message. With `files` present, switches to multipart/form-data
    * with a `payload_json` field plus `files[N]` parts — the same shape the
    * Discord protocol uses, and what the API expects in `routes/messages.ts`

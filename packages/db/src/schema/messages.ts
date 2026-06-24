@@ -429,4 +429,29 @@ export type MessageMetadataJson =
       kind: 'streak_warning';
       /** The streak day count at warning time. */
       streak: number;
+    }
+  | {
+      /** A poke / nudge. Like 'streak_warning', the row is type 'default' +
+       *  this metadata marker (no enum migration); clients render it as a
+       *  centered notice ("👉 poked you") and buzz the recipient. */
+      kind: 'poke';
+      /** Which variant was sent — drives the emoji + verb the clients show. */
+      pokeType: PokeMetaType;
+      /** The poker's user id (stringified BigInt). */
+      initiatorId: string;
     };
+
+/** Poke/nudge variants. Keep IN SYNC with the client `MessageMetadata`,
+ *  the web POKE_VARIANTS table, and the iOS `PokeVariant` enum. */
+export type PokeMetaType = 'poke' | 'heart' | 'wave' | 'like' | 'fire';
+
+/** Canonical poke variant → emoji + verb. Single source of truth for the
+ *  server (push body) and any TS consumer; the web + iOS each keep a mirror
+ *  (web doesn't import @zekktris/db; iOS is Swift). Keep all three in sync. */
+export const POKE_VARIANTS: Record<PokeMetaType, { emoji: string; verb: string }> = {
+  poke: { emoji: '👉', verb: 'poked you' },
+  heart: { emoji: '❤️', verb: 'sent you a heart' },
+  wave: { emoji: '👋', verb: 'waved at you' },
+  like: { emoji: '👍', verb: 'liked you' },
+  fire: { emoji: '🔥', verb: 'sent you fire' },
+};

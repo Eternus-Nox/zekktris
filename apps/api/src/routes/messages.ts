@@ -50,10 +50,17 @@ import {
   assertChannelPermission,
 } from '../services/permissions';
 import { db, schema } from '../db';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { env } from '../env';
 import type { User } from '@zekktris/db';
+import { POKE_VARIANTS } from '@zekktris/db';
+import { RateLimiter } from '../lib/rateLimit';
+import { sendToUser } from '../services/push';
 import { MESSAGE_CONTENT_MAX_LENGTH } from '@zekktris/shared/constants';
+
+// Per-poker throttle for the nudge/poke endpoint — pokes are lightweight, so
+// a generous 10/min keeps it playful without enabling buzz-spam.
+const pokeLimiter = new RateLimiter(10, 60_000, 'poke-user');
 
 export const messagesRouter = new Hono();
 messagesRouter.use('*', requireAuth);
@@ -140,6 +147,111 @@ const sendMessageSchema = z.object({
       the REST 201 response. */
   nonce: z.string().max(64).optional(),
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /:channelId/poke — nudge the other party in a 1:1 DM
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// A poke is a lightweight SYSTEM message (type 'default' + metadata
+// {kind:'poke', pokeType, initiatorId} — the same migration-free pattern as
+// streak warnings). It rides the normal MESSAGE_CREATE fan-out (so both parties
+// see the note live + the recipient's client buzzes) and gets a dedicated push
+// body ("👉 poked you") so it reaches a backgrounded recipient too. DM-1:1 only,
+// rate-limited per poker.
+const pokeSchema = z.object({
+  pokeType: z.enum(['poke', 'heart', 'wave', 'like', 'fire']),
+});
+
+messagesRouter.post(
+  '/:channelId/poke',
+  validate('param', z.object({ channelId: snowflakeSchema })),
+  validate('json', pokeSchema),
+  async (c) => {
+    const userId = requireUserId(c);
+    const channelId = BigInt(c.req.valid('param').channelId);
+    const { pokeType } = c.req.valid('json');
+
+    // loadChannelContext throws NOT_FOUND for channels the caller can't see
+    // (incl. non-recipient DMs). Restrict to 1:1 DMs — poking a group/guild
+    // channel isn't a thing.
+    const ctx = await loadChannelContext(channelId, userId);
+    if (!ctx.isDM || ctx.channel.type !== 'dm') {
+      throw errors.badRequest('Pokes are only available in direct messages');
+    }
+
+    const rl = await pokeLimiter.consume(userId.toString());
+    if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
+
+    const recipients = await dms.listAllRecipients(channelId);
+    const others = recipients.filter((r) => r !== userId);
+    if (others.length === 0) throw errors.badRequest("You can't poke yourself");
+
+    const variant = POKE_VARIANTS[pokeType];
+    const [poker] = await db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, userId))
+      .limit(1);
+
+    // System message: type 'default' + poke metadata (no enum migration).
+    // Non-empty content (the verb) is a graceful fallback for any renderer
+    // that doesn't yet special-case the poke metadata.
+    const inserted = await messages.createSystemMessage({
+      channelId,
+      guildId: null,
+      authorId: userId,
+      content: variant.verb,
+      type: 'default',
+      mentionedUserIds: [],
+      metadata: { kind: 'poke', pokeType, initiatorId: userId.toString() },
+    });
+    // Make it the channel's newest message so the DM sorts up + the note lands.
+    await db
+      .update(schema.channels)
+      .set({
+        lastMessageId: sql`GREATEST(COALESCE(${schema.channels.lastMessageId}, 0), ${inserted.id})`,
+      })
+      .where(eq(schema.channels.id, channelId));
+
+    const messageDTO = toMessage({
+      message: inserted,
+      author: poker ?? null,
+      attachments: [],
+      reactions: [],
+      mentionedUserIds: [],
+      mentionedRoleIds: [],
+      poll: null,
+      sticker: null,
+      forwardedFrom: null,
+      selfId: userId,
+    });
+    dispatch.messageCreate({ messageDTO, channelId, guildId: null });
+
+    // Push the OTHER party (best-effort, mute-aware). The in-chat note + buzz
+    // already reach a connected client via the gateway; this covers a closed
+    // app. A muted DM ('nothing') is skipped, same as a normal message.
+    const pokerName = poker?.displayName ?? poker?.username ?? 'Someone';
+    try {
+      const { resolveLevelsBulk } = await import('../services/notifications');
+      const levels = await resolveLevelsBulk(others, channelId, null);
+      await Promise.all(
+        others.map(async (target) => {
+          if (levels.get(target.toString()) === 'nothing') return;
+          await sendToUser(target, {
+            title: pokerName,
+            body: `${variant.emoji} ${variant.verb}`,
+            url: `/channels/@me/${channelId.toString()}`,
+            tag: `poke-${channelId.toString()}`,
+          }).catch(() => undefined);
+        }),
+      );
+    } catch {
+      // Push is best-effort — the gateway delivery already happened.
+    }
+
+    return c.json({ message: messageDTO }, 201);
+  },
+);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET /:channelId/attachments — the "all media / documents" gallery
