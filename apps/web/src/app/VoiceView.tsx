@@ -859,9 +859,12 @@ export function VoiceView({
              rotate slowly in opposite directions. Matches the
              Zekktris voice-scene mockup's "seats around a center
              beacon" composition. */
-          <div className="flex-1 min-h-0 relative overflow-hidden">
+          <div className="flex-1 min-h-0 relative overflow-hidden bg-black">
             {/* Deep-space starfield (native parity) — a faint, stable layer
-                behind everything so the arena reads as space, not flat dark. */}
+                behind everything so the arena reads as space, not flat dark.
+                Sits on a pitch-black base (bg-black) to match the native
+                voice arena's `Color.black`, so the app-wide aurora/abyss
+                doesn't tint the call screen. */}
             <ArenaStarfield />
 
             {/* Plasma core glow — soft radial bloom at center.
