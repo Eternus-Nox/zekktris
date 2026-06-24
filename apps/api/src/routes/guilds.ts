@@ -37,6 +37,7 @@ import {
   toPublicUser,
   toReport,
   toMessage,
+  toReadState,
 } from '../lib/dto';
 import * as guilds from '../services/guilds';
 import * as supervision from '../services/supervision';
@@ -49,6 +50,7 @@ import * as reports from '../services/reports';
 import * as messageSearch from '../services/messageSearch';
 import * as messages from '../services/messages';
 import * as permissions from '../services/permissions';
+import * as readStates from '../services/readStates';
 import * as voice from '../services/voice';
 import { writeAudit } from '../services/audit';
 import { leftVoiceStateDTO } from '../lib/dto';
@@ -788,6 +790,46 @@ guildsRouter.post(
 
     dispatch.userLeftGuild({ userId, guildId });
     return c.json({ ok: true });
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /guilds/:guildId/read  → mark every channel in the guild read
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Backs the rail's long-press "Mark as Read". Advances the caller's read
+// marker to each viewable channel's latest message and zeroes its mention
+// count, in one round-trip. Dispatches a CHANNEL_ACK per touched channel so
+// the user's OTHER devices reconcile their badges live; the JSON response
+// lets the calling device update without a refetch. listViewableGuildChannelIds
+// returns [] for a non-member, so that doubles as the membership gate.
+guildsRouter.post(
+  '/:guildId/read',
+  validate('param', z.object({ guildId: snowflakeSchema })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const guildId = BigInt(c.req.valid('param').guildId);
+    const viewable = await permissions.listViewableGuildChannelIds(guildId, userId);
+    const updated = await readStates.markGuildRead(userId, viewable);
+    for (const r of updated) {
+      dispatch.channelAck({
+        userId,
+        readState: toReadState({
+          channelId: r.channelId,
+          lastMessageId: r.lastMessageId,
+          mentionCount: r.mentionCount,
+        }),
+      });
+    }
+    return c.json({
+      readStates: updated.map((r) =>
+        toReadState({
+          channelId: r.channelId,
+          lastMessageId: r.lastMessageId,
+          mentionCount: r.mentionCount,
+        }),
+      ),
+    });
   },
 );
 

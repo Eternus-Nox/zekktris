@@ -139,6 +139,59 @@ export async function ack(
   return { lastMessageId: finalLast, mentionCount: finalMentions };
 }
 
+/**
+ * Mark an entire guild read: advance the user's read marker to each
+ * channel's current latest message and zero its mention count. The caller
+ * passes the channel ids the user may VIEW (so we never seed a read row for a
+ * hidden channel), and we only touch channels that actually have messages
+ * (last_message_id IS NOT NULL). GREATEST-guarded like ack() so a marker is
+ * never rolled backward. Returns the touched rows so the route can dispatch a
+ * CHANNEL_ACK per channel (multi-device badge reconcile) and the caller can
+ * update local state without a refetch.
+ */
+export async function markGuildRead(
+  userId: bigint,
+  viewableChannelIds: bigint[],
+): Promise<Array<{ channelId: bigint; lastMessageId: bigint | null; mentionCount: number }>> {
+  if (viewableChannelIds.length === 0) return [];
+  const channels = await db
+    .select({ id: schema.channels.id, lastMessageId: schema.channels.lastMessageId })
+    .from(schema.channels)
+    .where(
+      and(
+        inArray(schema.channels.id, viewableChannelIds),
+        isNotNull(schema.channels.lastMessageId),
+      ),
+    );
+  if (channels.length === 0) return [];
+  const updated = await db
+    .insert(schema.readStates)
+    .values(
+      channels.map((ch) => ({
+        userId,
+        channelId: ch.id,
+        lastMessageId: ch.lastMessageId,
+        mentionCount: 0,
+      })),
+    )
+    .onConflictDoUpdate({
+      target: [schema.readStates.userId, schema.readStates.channelId],
+      set: {
+        // Never roll a marker backward (a channel whose row is already at or
+        // past its current latest stays put); always clear the mention badge.
+        lastMessageId: sql`GREATEST(${schema.readStates.lastMessageId}, EXCLUDED.last_message_id)`,
+        mentionCount: 0,
+        updatedAt: new Date(),
+      },
+    })
+    .returning({
+      channelId: schema.readStates.channelId,
+      lastMessageId: schema.readStates.lastMessageId,
+      mentionCount: schema.readStates.mentionCount,
+    });
+  return updated;
+}
+
 /** All read states for a user. Used by READY hydration. */
 export async function listMy(userId: bigint): Promise<ReadStateRow[]> {
   const rows = await db
