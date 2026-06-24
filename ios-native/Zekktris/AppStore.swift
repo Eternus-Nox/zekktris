@@ -462,6 +462,11 @@ final class AppStore: ObservableObject {
     /// Per-channel read markers (channelId → ReadState), driving unread dots
     /// and mention badges on channels and DMs.
     @Published var readStates: [String: ReadState] = [:]
+    /// Notification mute levels keyed by target id (guild or channel id) →
+    /// "all" | "mentions" | "nothing". "nothing" == muted. Absence = default.
+    /// The server already gates push fan-out on these; the client holds them so
+    /// the rail menu can show Mute vs Unmute. Hydrated by loadNotificationOverrides().
+    @Published var notificationOverrides: [String: String] = [:]
     /// Frozen last-read message id for the open channel, captured before acking,
     /// so the "New messages" divider stays put where the user left off.
     @Published var unreadBoundaryId: String?
@@ -571,6 +576,9 @@ final class AppStore: ObservableObject {
         Task { await loadGuilds() }
         Task { await loadDMs() }
         Task { await loadReadStates() }
+        // Notification mute levels — so the rail long-press menu shows Mute vs
+        // Unmute correctly from the first interaction.
+        Task { await loadNotificationOverrides() }
         // Load relationships up front so friend-aware UI (e.g. hiding "Report"
         // for friends) is correct anywhere, not just after visiting DMs.
         Task { await loadRelationships() }
@@ -2716,6 +2724,45 @@ final class AppStore: ObservableObject {
             mentions = prev
             errorText = (error as? APIError)?.message ?? error.localizedDescription
         }
+    }
+
+    /// Hydrate the user's notification mute levels (rail menu shows Mute vs
+    /// Unmute). Best-effort — a failure just leaves the menu defaulting to Mute.
+    func loadNotificationOverrides() async {
+        guard let rows = try? await api.notificationOverrides() else { return }
+        var map: [String: String] = [:]
+        for r in rows { if let lvl = r.level { map[r.targetId] = lvl } }
+        notificationOverrides = map
+    }
+
+    func isGuildMuted(_ guildId: String) -> Bool {
+        notificationOverrides[guildId] == "nothing"
+    }
+
+    /// Mute/unmute a whole guild. Optimistic local update + PUT; the server's
+    /// push fan-out honors the override immediately.
+    func setGuildMuted(_ guildId: String, _ muted: Bool) async {
+        let prev = notificationOverrides[guildId]
+        if muted { notificationOverrides[guildId] = "nothing" }
+        else { notificationOverrides.removeValue(forKey: guildId) }
+        do {
+            try await api.setNotificationOverride(
+                targetType: "guild", targetId: guildId, level: muted ? "nothing" : nil)
+        } catch {
+            // Roll back on failure.
+            if let prev { notificationOverrides[guildId] = prev }
+            else { notificationOverrides.removeValue(forKey: guildId) }
+            errorText = (error as? APIError)?.message ?? error.localizedDescription
+        }
+    }
+
+    /// Mark every channel in a guild read (rail long-press). Applies the
+    /// server's returned read markers locally so unread dots + mention badges
+    /// clear without a refetch, then refreshes the app badge.
+    func markGuildRead(_ guildId: String) async {
+        guard let updated = try? await api.markGuildRead(guildId: guildId) else { return }
+        for rs in updated { readStates[rs.channelId] = rs }
+        updateAppBadge()
     }
 
     /// Best-effort navigation to a mention's channel (works when it's already

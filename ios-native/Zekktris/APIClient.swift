@@ -597,6 +597,31 @@ final class APIClient {
         try await sendVoid("POST", "/users/@me/mentions/clear")
     }
 
+    /// Mark every channel in a guild read; returns the updated read states.
+    func markGuildRead(guildId: String) async throws -> [ReadState] {
+        let wrap: ReadStatesWrap = try await send("POST", "/guilds/\(guildId)/read")
+        return wrap.readStates
+    }
+
+    /// The user's notification overrides (per-guild / per-channel mute levels).
+    func notificationOverrides() async throws -> [NotificationOverride] {
+        let wrap: NotificationOverridesWrap = try await send("GET", "/users/@me/notification-settings")
+        return wrap.overrides
+    }
+
+    /// Upsert a notification override. `level` nil deletes it (back to default).
+    /// The server requires the key present (nullable, not optional), so we send
+    /// an explicit JSON null when clearing.
+    func setNotificationOverride(targetType: String, targetId: String, level: String?) async throws {
+        let body: [String: Any] = [
+            "targetType": targetType,
+            "targetId": targetId,
+            "level": level ?? NSNull(),
+        ]
+        let data = try JSONSerialization.data(withJSONObject: body)
+        try await sendVoid("PUT", "/users/@me/notification-settings", bodyData: data)
+    }
+
     /// Enable shared-key E2EE on a DM. salt + verifier are derived client-side;
     /// the server never sees the password or key.
     func enableDmE2EE(channelId: String, salt: String, verifier: String) async throws {

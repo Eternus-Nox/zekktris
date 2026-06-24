@@ -562,6 +562,15 @@ struct ReadState: Codable {
     var mentionCount: Int?
 }
 struct ReadStatesWrap: Codable { let readStates: [ReadState] }
+
+/// A per-target notification preference ('all' | 'mentions' | 'nothing').
+/// 'nothing' == muted. Absence of an override means the default ('all').
+struct NotificationOverride: Codable {
+    let targetType: String   // "guild" | "channel"
+    let targetId: String
+    let level: String?
+}
+struct NotificationOverridesWrap: Codable { let overrides: [NotificationOverride] }
 struct AckWrap: Codable { let readState: ReadState }
 struct OkWrap: Codable { let ok: Bool }
 struct ThreadsWrap: Codable { let threads: [Channel] }

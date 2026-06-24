@@ -768,6 +768,19 @@ struct ServerRailView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
+            Button { Task { await store.markGuildRead(guild.id) } } label: {
+                Label("Mark as Read", systemImage: "checkmark.message")
+            }
+            if store.isGuildMuted(guild.id) {
+                Button { Task { await store.setGuildMuted(guild.id, false) } } label: {
+                    Label("Unmute Server", systemImage: "bell")
+                }
+            } else {
+                Button { Task { await store.setGuildMuted(guild.id, true) } } label: {
+                    Label("Mute Server", systemImage: "bell.slash")
+                }
+            }
+            Divider()
             if inFolder {
                 Button { Task { await session.removeGuildFromFolders(guild.id) } } label: {
                     Label("Remove from Folder", systemImage: "folder.badge.minus")
