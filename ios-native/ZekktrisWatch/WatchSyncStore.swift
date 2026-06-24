@@ -1,10 +1,17 @@
 import Foundation
 import WatchConnectivity
+import WatchKit
 
 /// A DM peer the watch can poke: the DM channel id + a display name.
 struct PokeTarget: Identifiable, Codable, Hashable {
     let id: String   // DM channel id
     let name: String
+}
+
+/// A transient incoming-poke flash — the enlarged emoji shown on top.
+struct PokeFlash: Identifiable, Equatable {
+    let id = UUID()
+    let emoji: String
 }
 
 /// Receives the auth token + API base URL + poke targets from the paired
@@ -16,6 +23,9 @@ final class WatchSyncStore: NSObject, ObservableObject {
     @Published var token: String?
     @Published var apiBaseURL: String?
     @Published var targets: [PokeTarget] = []
+    /// Set when the phone relays an incoming poke (only while the watch app is
+    /// reachable). Drives the on-top emoji flash + the haptic wave.
+    @Published var incomingPoke: PokeFlash?
 
     override init() {
         super.init()
@@ -30,6 +40,23 @@ final class WatchSyncStore: NSObject, ObservableObject {
         if let data = ctx["targets"] as? Data,
            let list = try? JSONDecoder().decode([PokeTarget].self, from: data) {
             targets = list
+        }
+    }
+
+    /// Flash the enlarged emoji on top + play a three-beat haptic wave when the
+    /// phone relays a poke. Auto-clears after the animation.
+    private func flashIncomingPoke(_ emoji: String) {
+        let flash = PokeFlash(emoji: emoji)
+        incomingPoke = flash
+        let device = WKInterfaceDevice.current()
+        for i in 0..<3 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.18) {
+                device.play(.notification)
+            }
+        }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_600_000_000)
+            if incomingPoke?.id == flash.id { incomingPoke = nil }
         }
     }
 }
@@ -51,5 +78,13 @@ extension WatchSyncStore: WCSessionDelegate {
         didReceiveApplicationContext applicationContext: [String: Any]
     ) {
         Task { @MainActor in self.apply(applicationContext) }
+    }
+
+    // Live poke relay from the phone (sent only while the watch app is
+    // reachable). Triggers the on-top flash + haptic wave.
+    nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+        guard message["kind"] as? String == "poke" else { return }
+        let emoji = message["emoji"] as? String ?? "👉"
+        Task { @MainActor in self.flashIncomingPoke(emoji) }
     }
 }

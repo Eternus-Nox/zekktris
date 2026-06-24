@@ -3917,10 +3917,16 @@ final class AppStore: ObservableObject {
                 upsert(message)
                 if let c = selectedChannel { markChannelRead(c) }
             }
-            // A received poke shows as the in-chat notice + the normal push;
-            // the enlarged-emoji flash / haptic wave is intentionally a WATCH-
-            // only experience (see WatchSync / the watch app), so the phone
-            // does nothing special here beyond rendering the note.
+            // A received poke shows as the in-chat notice + the normal push on
+            // the phone (no flash/haptic here — that's WATCH-only). Relay it to
+            // the watch so, if the watch app is up, it flashes the emoji on top
+            // + plays the haptic wave (otherwise the mirrored push taps the
+            // wrist). Skip our own echoed pokes.
+            if message.metadata?.kind == "poke",
+               (message.authorId ?? message.author?.id) != currentUserId {
+                let variant = PokeVariant(rawValue: message.metadata?.pokeType ?? "poke") ?? .poke
+                WatchSync.shared.sendPoke(emoji: variant.emoji)
+            }
             // Reflect the new unread on the home-screen badge (no-op while the
             // message is in the open channel — markChannelRead already cleared it).
             updateAppBadge()

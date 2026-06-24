@@ -40,6 +40,16 @@ final class WatchSync: NSObject {
         }
         try? session.updateApplicationContext(ctx)
     }
+
+    /// Relay an incoming poke to the watch so it can flash the emoji + buzz —
+    /// ONLY while the watch app is reachable (foreground). When it isn't, the
+    /// mirrored push notification taps the wrist instead, so we just skip.
+    func sendPoke(emoji: String) {
+        guard WCSession.isSupported() else { return }
+        let session = WCSession.default
+        guard session.activationState == .activated, session.isReachable else { return }
+        session.sendMessage(["kind": "poke", "emoji": emoji], replyHandler: nil, errorHandler: nil)
+    }
 }
 
 extension WatchSync: WCSessionDelegate {

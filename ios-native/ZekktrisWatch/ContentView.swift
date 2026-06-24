@@ -25,6 +25,21 @@ struct ContentView: View {
             .navigationTitle("Poke")
             .navigationDestination(for: PokeTarget.self) { PokePager(target: $0) }
         }
+        // Got poked: the enlarged emoji flashes ON TOP of whatever screen
+        // you're on (paired with the haptic wave in WatchSyncStore).
+        .overlay {
+            if let poke = sync.incomingPoke {
+                ZStack {
+                    Color.black.opacity(0.55).ignoresSafeArea()
+                    Text(poke.emoji)
+                        .font(.system(size: 90))
+                        .transition(.scale(scale: 0.4).combined(with: .opacity))
+                        .id(poke.id)
+                }
+                .allowsHitTesting(false)
+            }
+        }
+        .animation(.spring(response: 0.4, dampingFraction: 0.6), value: sync.incomingPoke?.id)
     }
 
     private func notice(systemImage: String, text: String) -> some View {
