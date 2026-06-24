@@ -238,8 +238,11 @@ messagesRouter.post(
         others.map(async (target) => {
           if (levels.get(target.toString()) === 'nothing') return;
           await sendToUser(target, {
+            // Emoji-only body (no "poked you" text) — the nudge IS the emoji;
+            // the sender's name in the title says who. tag replaces a prior
+            // poke from the same DM rather than stacking.
             title: pokerName,
-            body: `${variant.emoji} ${variant.verb}`,
+            body: variant.emoji,
             url: `/channels/@me/${channelId.toString()}`,
             tag: `poke-${channelId.toString()}`,
           }).catch(() => undefined);

@@ -443,6 +443,20 @@
     animation: zk-speaking-glow 1.6s ease-in-out infinite;
   }
 
+  /* "You got poked" flash — the enlarged emoji springs in big, holds, then
+   * fades. Centered, non-interactive overlay (PokeFlashOverlay). */
+  @keyframes zk-poke-flash {
+    0%   { transform: scale(0.4); opacity: 0; }
+    18%  { transform: scale(1.15); opacity: 1; }
+    32%  { transform: scale(1.0); opacity: 1; }
+    75%  { opacity: 1; }
+    100% { transform: scale(1.0); opacity: 0; }
+  }
+  .zk-poke-flash {
+    animation: zk-poke-flash 1.5s ease-out forwards;
+    filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.4));
+  }
+
   /* Swallow animation: pulls a participant tile from its last orbital
    * position into the central black hole. Custom properties supply
    * the starting position (set inline by the caller). The keyframes

@@ -7,6 +7,25 @@ import UniformTypeIdentifiers
 /// The signed-in shell. Mirrors the web mobile layout: a persistent 72pt
 /// server rail on the left, and a content column that shows the channel list
 /// or drills into a channel's messages.
+/// The transient "you got poked" flash: just the enlarged emoji (no text),
+/// springing in big then shrinking/fading out when the store clears it.
+private struct PokeFlashView: View {
+    let flash: PokeFlash?
+    var body: some View {
+        ZStack {
+            if let flash {
+                Text(flash.emoji)
+                    .font(.system(size: 150))
+                    .shadow(color: .black.opacity(0.35), radius: 20)
+                    .transition(.scale(scale: 0.4).combined(with: .opacity))
+                    .id(flash.id)
+            }
+        }
+        .allowsHitTesting(false)
+        .animation(.spring(response: 0.4, dampingFraction: 0.6), value: flash?.id)
+    }
+}
+
 struct MainView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var session: Session
@@ -41,6 +60,9 @@ struct MainView: View {
 
     var body: some View {
         shell
+            // "You got poked" flash — the enlarged emoji, no text, springs in
+            // then fades. Centered, non-interactive, above the whole shell.
+            .overlay { PokeFlashView(flash: store.pokeFlash) }
             // Root presenters. Environment objects are re-injected
             // explicitly: sheet/fullScreenCover content hosts have been
             // observed to lose inherited environment objects on Mac

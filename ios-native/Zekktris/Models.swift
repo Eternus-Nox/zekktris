@@ -189,6 +189,12 @@ struct MessageMetadata: Codable, Hashable {
     var pokeType: String?
 }
 
+/// A transient "you got poked" flash — just the enlarged emoji, no text.
+struct PokeFlash: Identifiable, Equatable {
+    let id = UUID()
+    let emoji: String
+}
+
 /// Poke/nudge variants — emoji + verb. Mirror of the server POKE_VARIANTS
 /// (@zekktris/db) and the web table; keep all three in sync.
 enum PokeVariant: String, CaseIterable, Identifiable {
