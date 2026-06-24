@@ -3753,6 +3753,7 @@ struct ImageLightboxView: View {
     let item: LightboxImage
     @Environment(\.dismiss) private var dismiss
     @State private var index: Int
+    @State private var savedFlash = false
 
     init(item: LightboxImage) {
         self.item = item
@@ -3806,6 +3807,17 @@ struct ImageLightboxView: View {
                             .clipShape(Capsule())
                     }
                     Spacer()
+                    // Save the current image to Photos (decrypted bytes for an
+                    // E2EE item — never the ciphertext).
+                    Button { saveCurrent() } label: {
+                        Image(systemName: savedFlash ? "checkmark" : "square.and.arrow.down")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(10)
+                            .background(Color.white.opacity(0.18))
+                            .clipShape(Circle())
+                    }
+                    .disabled(savedFlash)
                     Button { dismiss() } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 17, weight: .semibold))
@@ -3818,6 +3830,23 @@ struct ImageLightboxView: View {
                 Spacer()
             }
             .padding(16)
+        }
+    }
+
+    /// Save the currently-shown image to the Photos library. Uses the in-memory
+    /// UIImage when present (decrypted E2EE pages already hold it); otherwise
+    /// loads the plain image by URL. Briefly flips the icon to a checkmark.
+    private func saveCurrent() {
+        guard index >= 0, index < item.items.count else { return }
+        let it = item.items[index]
+        Task {
+            var img = it.image
+            if img == nil, let url = it.url { img = await RetryingImage.load(url) }
+            guard let img else { return }
+            UIImageWriteToSavedPhotosAlbum(img, nil, nil, nil)
+            savedFlash = true
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            savedFlash = false
         }
     }
 
@@ -4911,7 +4940,10 @@ struct MediaGalleryView: View {
             ScrollView {
                 if tab == .media {
                     LazyVGrid(columns: cols, spacing: 3) {
-                        ForEach(media) { GalleryThumb(attachment: $0, channel: channel, onOpen: { lightbox = $0 }) }
+                        ForEach(media) { att in
+                            GalleryThumb(attachment: att, channel: channel,
+                                         onOpen: { tappedId in Task { await openGalleryLightbox(tapped: tappedId) } })
+                        }
                     }
                     .padding(.horizontal, 3)
                 } else {
@@ -4960,13 +4992,48 @@ struct MediaGalleryView: View {
             hasMore = false
         }
     }
+
+    /// Build a paged lightbox across the WHOLE loaded photo set (so swiping
+    /// left/right scrolls through every shared photo, not just the tapped one),
+    /// opening on the tapped image. Mirrors AppStore.openImageLightbox but
+    /// targets this view's own cover (the app-root cover sits behind the
+    /// settings sheet this gallery lives in). Plain images stay lazy via their
+    /// URL; encrypted images decrypt through the session media cache (visible
+    /// thumbs are already cached from their on-appear decrypt).
+    private func openGalleryLightbox(tapped: String) async {
+        var lbItems: [LightboxItem] = []
+        var start = 0
+        for att in media {
+            let it: LightboxItem?
+            if att.filename?.hasSuffix(".zke") == true {
+                if let data = await store.decryptedAttachmentData(att, in: channel),
+                   let img = UIImage(data: data) {
+                    it = LightboxItem(image: img)
+                } else {
+                    it = nil
+                }
+            } else if let url = assetURL(att.url) {
+                it = LightboxItem(url: url)
+            } else {
+                it = nil
+            }
+            if let it {
+                if att.id == tapped { start = lbItems.count }
+                lbItems.append(it)
+            }
+        }
+        guard !lbItems.isEmpty else { return }
+        lightbox = LightboxImage(items: lbItems, startIndex: start)
+    }
 }
 
 /// One square photo cell — plain (RetryingImage) or E2EE (decrypted in-place).
 private struct GalleryThumb: View {
     let attachment: Attachment
     let channel: Channel
-    let onOpen: (LightboxImage) -> Void
+    /// Reports the tapped attachment id so the gallery can open a paged
+    /// lightbox across the whole photo set (not just this one image).
+    let onOpen: (String) -> Void
     @EnvironmentObject private var store: AppStore
     @State private var decrypted: UIImage?
     @State private var tried = false
@@ -4992,10 +5059,7 @@ private struct GalleryThumb: View {
             }
             .clipped()
             .contentShape(Rectangle())
-            .onTapGesture {
-                if let img = decrypted { onOpen(LightboxImage(image: img)) }
-                else if !isEncrypted, let url = assetURL(attachment.url) { onOpen(LightboxImage(url: url)) }
-            }
+            .onTapGesture { onOpen(attachment.id) }
             .task(id: store.e2eeUnlockVersion) {
                 guard isEncrypted, decrypted == nil else { return }
                 if let data = await store.decryptedAttachmentData(attachment, in: channel) {
