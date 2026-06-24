@@ -169,6 +169,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.watchkitapp
         TARGETED_DEVICE_FAMILY: "4"
         CODE_SIGN_STYLE: Automatic
+        # An app icon is REQUIRED for App Store / TestFlight upload — without an
+        # AppIcon asset the build omits CFBundleIconName and the upload is
+        # rejected (error 90713). Reuses the iOS 1024 marketing icon.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
   # Host-less logic-test target. Compiles E2EE.swift directly (no app host,
   # no LiveKit) so the crypto / call-key interop contract can be tested fast.
