@@ -146,6 +146,38 @@ function arenaScale(total: number): number {
   return MAX_RADIUS / outerRadius;
 }
 
+// Deterministic faint starfield for the voice arena — mirrors the native
+// StarfieldView (70 stars, generated ONCE so they never shimmer/reflow
+// between renders). Positions are percentages so they fill the responsive
+// arena; radius/opacity match the native ranges (0.4–1.7px, 0.15–0.65).
+const ARENA_STARS = (() => {
+  let s = 0x5deece66 >>> 0; // seed (mirrors the native StarfieldView seed)
+  const rnd = () => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+  return Array.from({ length: 70 }, () => ({
+    x: rnd() * 100,
+    y: rnd() * 100,
+    r: rnd() * 1.3 + 0.4,
+    o: rnd() * 0.5 + 0.15,
+  }));
+})();
+
+function ArenaStarfield() {
+  return (
+    <svg
+      className="absolute inset-0 h-full w-full pointer-events-none"
+      preserveAspectRatio="none"
+      aria-hidden
+    >
+      {ARENA_STARS.map((st, i) => (
+        <circle key={i} cx={`${st.x}%`} cy={`${st.y}%`} r={st.r} fill="white" opacity={st.o} />
+      ))}
+    </svg>
+  );
+}
+
 export function VoiceView({
   channel,
   displayName,
@@ -828,6 +860,10 @@ export function VoiceView({
              Zekktris voice-scene mockup's "seats around a center
              beacon" composition. */
           <div className="flex-1 min-h-0 relative overflow-hidden">
+            {/* Deep-space starfield (native parity) — a faint, stable layer
+                behind everything so the arena reads as space, not flat dark. */}
+            <ArenaStarfield />
+
             {/* Plasma core glow — soft radial bloom at center.
                 Sized as a square aspect via aspect-ratio so it
                 scales with viewport, not stretched. */}
@@ -871,20 +907,19 @@ export function VoiceView({
               />
             ))}
 
-            {/* Central black hole. Replaces the old accent-color
-                beacon dot — same anchor point for the orbit, but now
-                a small singularity that participants visibly fall
-                into when they leave the call. Composed layers: outer
-                halo radiating the disk's light, solar flares, the
-                accretion disk spinning fast on conic-gradient colors,
-                and the pitch-black event horizon at the core. */}
+            {/* Central black hole. Same anchor point for the orbit; a small
+                singularity participants visibly fall into when they leave.
+                Layers (native parity, VoiceView↔BlackHoleView): outer glow
+                halo, the accretion disk spinning on conic-gradient colors,
+                and the pitch-black event horizon at the core. 22px + 6s spin
+                to match the native BlackHoleView exactly. */}
             <div
               className="absolute pointer-events-none"
               style={{
                 top: '50%',
                 left: '50%',
-                width: 28,
-                height: 28,
+                width: 22,
+                height: 22,
                 transform: 'translate(-50%, -50%)',
               }}
               aria-hidden
@@ -899,77 +934,6 @@ export function VoiceView({
                     '0 0 24px 6px rgba(157, 123, 255, 0.55), 0 0 12px 3px rgba(61, 215, 236, 0.4)',
                 }}
               />
-              {/* Solar flares — five SVG plume paths radiating outward
-                  from the disk at irregular angles. Each is a teardrop
-                  shape (cubic Bezier curves widening at the base and
-                  tapering to a point) filled with a violet→cyan→
-                  transparent linear gradient and softened by a
-                  Gaussian blur, so each flame reads as glowing plasma.
-                  Sits BEHIND the spinning accretion disk so flares
-                  peek out past the disk edge as bright eruptions.
-                  Irregular angles + near-prime per-flare durations +
-                  negative delays keep the array from ever re-syncing,
-                  so it reads as random solar activity. */}
-              <svg
-                className="absolute pointer-events-none"
-                viewBox="-40 -40 80 80"
-                style={{
-                  top: '50%',
-                  left: '50%',
-                  width: 80,
-                  height: 80,
-                  transform: 'translate(-50%, -50%)',
-                  overflow: 'visible',
-                }}
-                aria-hidden
-              >
-                <defs>
-                  <linearGradient
-                    id="zk-blackhole-flare-grad"
-                    gradientUnits="userSpaceOnUse"
-                    x1="0"
-                    y1="-13"
-                    x2="0"
-                    y2="-32"
-                  >
-                    <stop offset="0%" stopColor="var(--accent-2)" stopOpacity="0.95" />
-                    <stop offset="35%" stopColor="var(--accent)" stopOpacity="0.8" />
-                    <stop offset="80%" stopColor="var(--accent-2)" stopOpacity="0.18" />
-                    <stop offset="100%" stopColor="var(--accent-2)" stopOpacity="0" />
-                  </linearGradient>
-                  <filter
-                    id="zk-blackhole-flare-blur"
-                    x="-50%"
-                    y="-50%"
-                    width="200%"
-                    height="200%"
-                  >
-                    <feGaussianBlur stdDeviation="0.7" />
-                  </filter>
-                </defs>
-                {[
-                  { angle: 17, duration: 5.3, delay: -1.2 },
-                  { angle: 82, duration: 6.7, delay: -3.4 },
-                  { angle: 154, duration: 7.1, delay: -0.8 },
-                  { angle: 221, duration: 8.3, delay: -5.1 },
-                  { angle: 293, duration: 4.9, delay: -2.7 },
-                ].map((f) => (
-                  <g key={f.angle} transform={`rotate(${f.angle})`}>
-                    <path
-                      className="zk-blackhole-flare"
-                      d="M-2.5,-13 C-5,-18 -4,-26 0,-32 C4,-26 5,-18 2.5,-13 Z"
-                      fill="url(#zk-blackhole-flare-grad)"
-                      filter="url(#zk-blackhole-flare-blur)"
-                      style={
-                        {
-                          animationDuration: `${f.duration}s`,
-                          animationDelay: `${f.delay}s`,
-                        } as React.CSSProperties
-                      }
-                    />
-                  </g>
-                ))}
-              </svg>
               {/* Accretion disk. Conic gradient swirls through cool
                   alien-tech tones (indigo → violet → blue → cyan →
                   light purple → indigo) and rotates fast via

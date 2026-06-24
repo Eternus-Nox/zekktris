@@ -412,14 +412,13 @@
    * cycles through orange→red→amber to mimic the spectral coloring of
    * a real accretion disk (heated dust emitting blackbody radiation).
    * Linear timing — any easing produces a stutter at this rotation
-   * speed. 4s/rev is energetic enough to read as "active" without
-   * being so fast it strobes. */
+   * speed. 6s/rev matches the native BlackHoleView exactly. */
   @keyframes zk-blackhole-disk {
     from { transform: rotate(0deg); }
     to   { transform: rotate(360deg); }
   }
   .zk-blackhole-disk {
-    animation: zk-blackhole-disk 4s linear infinite;
+    animation: zk-blackhole-disk 6s linear infinite;
     will-change: transform;
   }
 
@@ -442,49 +441,6 @@
   }
   .zk-speaking-glow {
     animation: zk-speaking-glow 1.6s ease-in-out infinite;
-  }
-
-  /* Solar flares — radial plume paths that pulse outward from the
-   * accretion disk. The flame SVG paths are positioned by their
-   * parent <g transform="rotate(N)"> (orientation around the
-   * center); this CSS controls the per-flame opacity + scale pulse.
-   *
-   * transform-box: fill-box + transform-origin 50% 100% pin the
-   * scale pivot to the BASE of the flame. In path coordinates the
-   * flame extends from y=-32 (tip) to y=-13 (base); in fill-box
-   * terms y=-13 is the bottom of the bbox (100%), so origin 50%
-   * 100% sits at the base. ScaleY > 1 elongates the flame outward
-   * (away from the disk surface). ScaleX at the peak adds a slight
-   * billowing bulge.
-   *
-   * Animation duration is set PER-FLARE inline (5.3s/6.7s/7.1s/
-   * 8.3s/4.9s) so the five flares never re-sync after their first
-   * cycle. The visible portion is brief (~14% of each cycle) so
-   * the flares feel like sporadic eruptions rather than a clockwork
-   * pulse — at any moment usually only 0-1 flares are bright. */
-  @keyframes zk-blackhole-flare {
-    0%, 100% {
-      opacity: 0;
-      transform: scaleY(0.5) scaleX(0.85);
-    }
-    38% {
-      opacity: 1;
-    }
-    45% {
-      transform: scaleY(1.4) scaleX(1.1);
-    }
-    52% {
-      opacity: 1;
-    }
-  }
-  .zk-blackhole-flare {
-    transform-box: fill-box;
-    transform-origin: 50% 100%;
-    opacity: 0;
-    animation-name: zk-blackhole-flare;
-    animation-timing-function: ease-in-out;
-    animation-iteration-count: infinite;
-    will-change: opacity, transform;
   }
 
   /* Swallow animation: pulls a participant tile from its last orbital
