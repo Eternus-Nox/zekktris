@@ -395,6 +395,22 @@ struct MessageListView: View {
                         .foregroundColor(Theme.ink3)
                 }
                 .padding(.trailing, 2)
+                // Poke / nudge — 1:1 DMs only. The menu is the variant palette
+                // (poke/heart/wave/like/fire); each sends that nudge.
+                if channel.type == "dm" {
+                    Menu {
+                        ForEach(PokeVariant.allCases) { v in
+                            Button("\(v.emoji)  \(v.label)") {
+                                Task { await store.poke(channel, variant: v) }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "hand.point.right.fill")
+                            .font(.system(size: 15))
+                            .foregroundColor(Theme.ink3)
+                    }
+                    .padding(.trailing, 2)
+                }
                 Button { showDmSettings = true } label: {
                     Image(systemName: "gearshape")
                         .font(.system(size: 15))
@@ -955,7 +971,7 @@ struct MessageListView: View {
     /// breaks the author grouping: the next real message must re-show its header
     /// and a same-author run can't be "continued" across one.
     private func isNoticeRow(_ m: Message) -> Bool {
-        m.metadata?.kind == "streak_warning" || m.type == "system_call"
+        m.metadata?.kind == "streak_warning" || m.metadata?.kind == "poke" || m.type == "system_call"
     }
 
     private func showHeader(at index: Int) -> Bool {
@@ -1150,6 +1166,8 @@ struct MessageRow: View, Equatable {
         // the welcome text, as if they sent it.
         if message.metadata?.kind == "streak_warning" {
             streakWarningRow
+        } else if message.metadata?.kind == "poke" {
+            pokeRow
         } else if message.type == "system_call" {
             systemRow
         } else {
@@ -1216,6 +1234,25 @@ struct MessageRow: View, Equatable {
                 .font(.zkSans(12))
                 .foregroundColor(Theme.ink2)
                 .multilineTextAlignment(.center)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 5)
+        .padding(.horizontal, gutter)
+    }
+
+    /// A poke / nudge — a centered notice ("👉 Alice poked you", or "👉 You
+    /// poked them" on your own). The recipient's device also buzzes on arrival
+    /// (AppStore MESSAGE_CREATE handler).
+    private var pokeRow: some View {
+        let variant = PokeVariant(rawValue: message.metadata?.pokeType ?? "poke") ?? .poke
+        let isMine = message.metadata?.initiatorId == data.currentUserId
+        let text = isMine
+            ? "You \(variant.sentVerb)"
+            : "\(message.author?.name ?? "Someone") \(variant.verb)"
+        return HStack(spacing: 6) {
+            Spacer(minLength: 0)
+            Text(variant.emoji).font(.system(size: 15))
+            Text(text).font(.zkSans(12)).foregroundColor(Theme.ink2)
             Spacer(minLength: 0)
         }
         .padding(.vertical, 5)

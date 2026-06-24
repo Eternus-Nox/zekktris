@@ -467,6 +467,8 @@ final class AppStore: ObservableObject {
     /// The server already gates push fan-out on these; the client holds them so
     /// the rail menu can show Mute vs Unmute. Hydrated by loadNotificationOverrides().
     @Published var notificationOverrides: [String: String] = [:]
+    /// Last time an incoming poke fired a haptic — debounces rapid pokes.
+    private var lastPokeHapticAt = Date.distantPast
     /// Frozen last-read message id for the open channel, captured before acking,
     /// so the "New messages" divider stays put where the user left off.
     @Published var unreadBoundaryId: String?
@@ -2765,6 +2767,14 @@ final class AppStore: ObservableObject {
         updateAppBadge()
     }
 
+    /// Poke/nudge the other party in a DM. The poke comes back over the
+    /// gateway as a system message (rendered in-chat + buzzes them), so we
+    /// just fire-and-forget the request and surface any error.
+    func poke(_ channel: Channel, variant: PokeVariant) async {
+        do { try await api.poke(channelId: channel.id, pokeType: variant.rawValue) }
+        catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
+    }
+
     /// Best-effort navigation to a mention's channel (works when it's already
     /// loaded among the current guild's channels or the DM list).
     func openMention(_ mention: Mention) {
@@ -3878,6 +3888,19 @@ final class AppStore: ObservableObject {
             if message.channelId == selectedChannel?.id {
                 upsert(message)
                 if let c = selectedChannel { markChannelRead(c) }
+            }
+            // Buzz on an incoming poke addressed to me (someone nudged me) —
+            // regardless of which screen I'm on, since the whole point is to
+            // get my attention. Debounced so a rapid burst can't machine-gun
+            // the haptics. (A poke that lands while the app is closed arrives
+            // as a push instead.)
+            if message.metadata?.kind == "poke",
+               (message.authorId ?? message.author?.id) != currentUserId {
+                let now = Date()
+                if now.timeIntervalSince(lastPokeHapticAt) > 0.4 {
+                    lastPokeHapticAt = now
+                    UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+                }
             }
             // Reflect the new unread on the home-screen badge (no-op while the
             // message is in the open channel — markChannelRead already cleared it).

@@ -185,6 +185,54 @@ struct MessageMetadata: Codable, Hashable {
     var initiatorId: String?
     /// kind == "streak_warning": the streak day count at warning time.
     var streak: Int?
+    /// kind == "poke": which variant (poke|heart|wave|like|fire).
+    var pokeType: String?
+}
+
+/// Poke/nudge variants — emoji + verb. Mirror of the server POKE_VARIANTS
+/// (@zekktris/db) and the web table; keep all three in sync.
+enum PokeVariant: String, CaseIterable, Identifiable {
+    case poke, heart, wave, like, fire
+    var id: String { rawValue }
+    var emoji: String {
+        switch self {
+        case .poke: return "👉"
+        case .heart: return "❤️"
+        case .wave: return "👋"
+        case .like: return "👍"
+        case .fire: return "🔥"
+        }
+    }
+    /// Verb shown to the RECIPIENT ("Alice 👉 poked you").
+    var verb: String {
+        switch self {
+        case .poke: return "poked you"
+        case .heart: return "sent you a heart"
+        case .wave: return "waved at you"
+        case .like: return "liked you"
+        case .fire: return "sent you fire"
+        }
+    }
+    /// Verb shown to the SENDER on their own poke ("You 👉 poked them").
+    var sentVerb: String {
+        switch self {
+        case .poke: return "poked them"
+        case .heart: return "sent a heart"
+        case .wave: return "waved"
+        case .like: return "liked them"
+        case .fire: return "sent fire"
+        }
+    }
+    /// Short menu label for the send palette.
+    var label: String {
+        switch self {
+        case .poke: return "Poke"
+        case .heart: return "Heart"
+        case .wave: return "Wave"
+        case .like: return "Like"
+        case .fire: return "Fire"
+        }
+    }
 }
 
 extension Message {

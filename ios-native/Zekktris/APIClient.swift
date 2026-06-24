@@ -603,6 +603,14 @@ final class APIClient {
         return wrap.readStates
     }
 
+    /// Poke/nudge the other party in a 1:1 DM with a variant
+    /// (poke|heart|wave|like|fire). The server creates the system message;
+    /// we don't need the response (the poke arrives back over the gateway).
+    func poke(channelId: String, pokeType: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["pokeType": pokeType])
+        try await sendVoid("POST", "/channels/\(channelId)/poke", bodyData: body)
+    }
+
     /// The user's notification overrides (per-guild / per-channel mute levels).
     func notificationOverrides() async throws -> [NotificationOverride] {
         let wrap: NotificationOverridesWrap = try await send("GET", "/users/@me/notification-settings")
