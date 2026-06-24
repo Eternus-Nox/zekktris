@@ -46,7 +46,6 @@ import { ChannelList } from './ChannelList';
 import { DMList } from './DMList';
 import { MessageView } from './MessageView';
 import { GlobalCallOverlay } from './GlobalCallOverlay';
-import { PokeFlashOverlay } from './PokeFlashOverlay';
 import { StageChannelView } from './StageChannelView';
 import { ForumView } from './ForumView';
 import { DiscoveryView } from './DiscoveryView';
@@ -470,8 +469,6 @@ export function Shell() {
           arrived. The component renders null when there's no call,
           so it's effectively free otherwise. */}
       <GlobalCallOverlay />
-      {/* Transient enlarged-emoji flash when someone pokes you. */}
-      <PokeFlashOverlay />
       <div
       style={{
         // Squeeze the layout by the keyboard inset (see useKeyboardInset).

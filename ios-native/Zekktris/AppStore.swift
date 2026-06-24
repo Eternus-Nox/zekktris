@@ -467,12 +467,6 @@ final class AppStore: ObservableObject {
     /// The server already gates push fan-out on these; the client holds them so
     /// the rail menu can show Mute vs Unmute. Hydrated by loadNotificationOverrides().
     @Published var notificationOverrides: [String: String] = [:]
-    /// Last time an incoming poke fired its effect — debounces rapid pokes.
-    private var lastPokeHapticAt = Date.distantPast
-    /// Drives the transient "you got poked" full-screen emoji flash (no text).
-    /// Set by flashPoke on an incoming poke; the root overlay animates + the
-    /// store clears it after the animation.
-    @Published var pokeFlash: PokeFlash?
     /// One-shot guard so the token-refresh→watch-resync observer is added once.
     private var watchTokenObserverInstalled = false
     /// Frozen last-read message id for the open channel, captured before acking,
@@ -2808,24 +2802,6 @@ final class AppStore: ObservableObject {
         catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
 
-    /// Show the enlarged-emoji flash + play a three-beat haptic wave when poked.
-    private func flashPoke(_ emoji: String) {
-        let flash = PokeFlash(emoji: emoji)
-        pokeFlash = flash
-        // Three quick heavy beats — a "wave" rather than one thud.
-        let gen = UIImpactFeedbackGenerator(style: .heavy)
-        gen.prepare()
-        for i in 0..<3 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.16) {
-                gen.impactOccurred(intensity: 1.0)
-            }
-        }
-        // Clear after the animation, unless a newer poke replaced it.
-        Task {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            if pokeFlash?.id == flash.id { pokeFlash = nil }
-        }
-    }
 
     /// Best-effort navigation to a mention's channel (works when it's already
     /// loaded among the current guild's channels or the DM list).
@@ -3941,19 +3917,10 @@ final class AppStore: ObservableObject {
                 upsert(message)
                 if let c = selectedChannel { markChannelRead(c) }
             }
-            // Got poked: flash the big emoji (no text) + a three-beat haptic
-            // wave, regardless of which screen I'm on. Debounced so a rapid
-            // burst can't machine-gun it. (A poke to a closed app arrives as a
-            // push instead.)
-            if message.metadata?.kind == "poke",
-               (message.authorId ?? message.author?.id) != currentUserId {
-                let now = Date()
-                if now.timeIntervalSince(lastPokeHapticAt) > 0.6 {
-                    lastPokeHapticAt = now
-                    let variant = PokeVariant(rawValue: message.metadata?.pokeType ?? "poke") ?? .poke
-                    flashPoke(variant.emoji)
-                }
-            }
+            // A received poke shows as the in-chat notice + the normal push;
+            // the enlarged-emoji flash / haptic wave is intentionally a WATCH-
+            // only experience (see WatchSync / the watch app), so the phone
+            // does nothing special here beyond rendering the note.
             // Reflect the new unread on the home-screen badge (no-op while the
             // message is in the open channel — markChannelRead already cleared it).
             updateAppBadge()

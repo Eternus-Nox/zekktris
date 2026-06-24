@@ -67,8 +67,6 @@ import { useToasts } from './Toasts';
 import { hydrateVoicePrefs, setVoicePrefsSyncer, getVoicePrefs } from '../lib/voicePrefs';
 import { playMessagePing } from '../lib/sounds';
 import { showDesktopNotification } from '../lib/desktopNotify';
-import { emitPokeFlash } from '../lib/pokeFlash';
-import { POKE_VARIANTS, type PokeType } from '../lib/poke';
 import { getNotifyPrefs } from '../lib/notifyPrefs';
 
 // ── Shape ──────────────────────────────────────────────────────────────────
@@ -2751,13 +2749,6 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     unsubs.push(
       gateway.on<Message>(GatewayEvent.MESSAGE_CREATE, (m) => {
         dispatch({ type: 'MESSAGE_APPEND', channelId: m.channelId, message: m });
-
-        // Got poked: flash the enlarged emoji (no text). The in-chat note +
-        // the existing DM ping/desktop-notification still fire below.
-        if (m.metadata?.kind === 'poke' && selfId && m.authorId !== selfId) {
-          const variant = POKE_VARIANTS[m.metadata.pokeType as PokeType] ?? POKE_VARIANTS.poke;
-          emitPokeFlash(variant.emoji);
-        }
 
         // ── Notification surfacing rules ────────────────────────────
         // Three signals can fire here:
