@@ -19,6 +19,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
 import type { Channel, Message } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
+import { POKE_TYPES, POKE_VARIANTS, type PokeType } from '../lib/poke';
 import { useAuth } from '../auth/AuthContext';
 import { useAppStateSelector, voiceStatesForChannel, dmE2eeSuppressed } from '../state/AppState';
 import { useTypingPing, useTypingUsers } from '../state/Typing';
@@ -563,6 +564,9 @@ export function MessageView({
         <div className="ml-auto flex items-center gap-1 shrink-0">
           {isDM1to1 && (
             <DmHeaderCallButton channel={channel} />
+          )}
+          {isDM1to1 && (
+            <DmHeaderPokeButton channel={channel} />
           )}
           {isDM1to1 && (
             <button
@@ -2702,5 +2706,68 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
     >
       <Phone size={16} />
     </button>
+  );
+}
+
+/**
+ * DM header poke/nudge button. Tapping opens a small palette (the swipeable
+ * variant set on iOS / the watch; a click-to-send row here); each emoji fires
+ * POST /channels/:id/poke. The poke comes back over the gateway as the system
+ * message that renders in-chat.
+ */
+function DmHeaderPokeButton({ channel }: { channel: Channel }) {
+  const restForChannel = useAppStateSelector((v) => v.restForChannel);
+  const toasts = useToasts();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const send = async (pokeType: PokeType) => {
+    if (busy) return;
+    setBusy(true);
+    setOpen(false);
+    try {
+      const rest = await restForChannel(channel.id);
+      await rest.poke(channel.id, pokeType);
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not send that poke', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        disabled={busy}
+        className="w-8 h-8 flex items-center justify-center rounded text-ink-3 hover:text-ink-1 hover:bg-bg-3 transition-colors disabled:opacity-50"
+        aria-label="Poke"
+        title="Poke / nudge"
+        aria-expanded={open}
+      >
+        <span aria-hidden className="text-[15px] leading-none">👉</span>
+      </button>
+      {open && (
+        <>
+          {/* Click-away backdrop (local, not a portal) */}
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden />
+          <div className="absolute right-0 top-9 z-20 flex items-center gap-0.5 rounded-lg border border-line bg-bg-2 p-1 shadow-lg">
+            {POKE_TYPES.map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => void send(t)}
+                className="w-8 h-8 flex items-center justify-center rounded hover:bg-bg-3 text-[17px] leading-none"
+                aria-label={POKE_VARIANTS[t].label}
+                title={POKE_VARIANTS[t].label}
+              >
+                <span aria-hidden>{POKE_VARIANTS[t].emoji}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
   );
 }

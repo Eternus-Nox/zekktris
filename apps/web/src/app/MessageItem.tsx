@@ -35,6 +35,7 @@ import { AvatarDecoration } from '../lib/avatarDecorations';
 import { useProfileCard } from '../lib/useProfileCard';
 import { Edit, Trash, Pin, CornerUpLeft, MessageSquare, Smile, Phone, Shield, Bookmark } from '../lib/icons';
 import { decryptForDm, encryptForDm, isEncryptedWireFormat, hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
+import { POKE_VARIANTS, type PokeType } from '../lib/poke';
 import { ForwardModal } from './ForwardModal';
 import { EmojiPicker } from './EmojiPicker';
 
@@ -617,6 +618,24 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
         className="group relative flex items-center justify-center gap-2 py-1.5 px-4 text-center text-xs text-ink-2"
       >
         <span>{message.content}</span>
+      </div>
+    );
+  }
+
+  // Poke / nudge — a 'default'-type row with a poke metadata marker. Render
+  // as a centered notice ("👉 Alice poked you" / "👉 You poked them"), never a
+  // bubble. The recipient's client also pings/animates on arrival.
+  if (message.metadata?.kind === 'poke') {
+    const variant = POKE_VARIANTS[message.metadata.pokeType as PokeType] ?? POKE_VARIANTS.poke;
+    const pokerName = message.author?.displayName ?? message.author?.username ?? 'Someone';
+    const text = isOwn ? `You ${variant.sentVerb}` : `${pokerName} ${variant.verb}`;
+    return (
+      <div
+        data-message-id={message.id}
+        className="group relative flex items-center justify-center gap-1.5 py-1.5 px-4 text-center text-xs text-ink-2"
+      >
+        <span aria-hidden>{variant.emoji}</span>
+        <span>{text}</span>
       </div>
     );
   }
