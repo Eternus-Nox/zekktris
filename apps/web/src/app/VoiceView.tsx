@@ -702,7 +702,7 @@ export function VoiceView({
 
   return (
     <>
-      <header className="px-4 h-12 border-b border-line flex items-center gap-2 shrink-0 pl-12 xl:pl-4 pr-12 xl:pr-4">
+      <header className="px-4 h-12 border-b border-line/40 flex items-center gap-2 shrink-0 pl-12 xl:pl-4 pr-12 xl:pr-4 bg-black text-white">
         <Volume2 size={18} className="text-accent shrink-0" />
         <span className="font-semibold truncate">
           {displayName ?? channel.name ?? '(unnamed)'}
