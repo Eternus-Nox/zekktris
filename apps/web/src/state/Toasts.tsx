@@ -27,14 +27,29 @@ import {
 
 type ToastKind = 'info' | 'success' | 'error';
 
+/** An optional trailing button on a toast (e.g. the poke-back emoji). */
+interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
+interface ToastOptions {
+  /** Tapping the toast body runs this (then dismisses) instead of just dismissing. */
+  onClick?: () => void;
+  /** A trailing action button shown beside the message. */
+  action?: ToastAction;
+}
+
 interface Toast {
   id: number;
   message: string;
   kind: ToastKind;
+  onClick?: () => void;
+  action?: ToastAction;
 }
 
 interface ToastContextValue {
-  push: (message: string, kind?: ToastKind, ttlMs?: number) => void;
+  push: (message: string, kind?: ToastKind, ttlMs?: number, opts?: ToastOptions) => void;
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null);
@@ -65,7 +80,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const push = useCallback(
-    (message: string, kind: ToastKind = 'info', ttlMs?: number) => {
+    (message: string, kind: ToastKind = 'info', ttlMs?: number, opts?: ToastOptions) => {
       // Errors are surfaced as a subtle, short-lived inline cue rather
       // than a prominent popup (see the renderer for styling). Still
       // logged to the console so failures remain debuggable.
@@ -80,7 +95,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       const effectiveTtl =
         ttlMs ?? (kind === 'error' ? Math.max(6000, message.length * 55) : 4000);
       const id = nextIdRef.current++;
-      setToasts((arr) => [...arr, { id, message, kind }]);
+      setToasts((arr) => [...arr, { id, message, kind, onClick: opts?.onClick, action: opts?.action }]);
       if (effectiveTtl > 0) {
         timersRef.current.set(
           id,
@@ -106,16 +121,39 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           // Errors previously rendered as a tiny, easy-to-miss grey pill —
           // which hid exactly the multi-sentence fix-it instructions a
           // first-time user needs when a call or upload fails.
-          <button
+          // A toast may carry a body tap-action (e.g. open the poke sender's
+          // DM) and a trailing action button (e.g. poke back) — kept as
+          // SIBLING buttons (never nested) so the markup stays valid.
+          <div
             key={t.id}
-            onClick={() => dismiss(t.id)}
             className={
-              'pointer-events-auto text-left px-4 py-2.5 rounded-md shadow-lg border text-sm leading-snug whitespace-pre-line transition-all hover:opacity-90 ' +
+              'pointer-events-auto flex items-stretch rounded-md shadow-lg border text-sm leading-snug overflow-hidden ' +
               toneClass(t.kind)
             }
           >
-            {t.message}
-          </button>
+            <button
+              onClick={() => {
+                t.onClick?.();
+                dismiss(t.id);
+              }}
+              className="flex-1 text-left px-4 py-2.5 whitespace-pre-line transition-all hover:opacity-90"
+            >
+              {t.message}
+            </button>
+            {t.action && (
+              <button
+                onClick={() => {
+                  t.action!.onClick();
+                  dismiss(t.id);
+                }}
+                className="px-3 flex items-center justify-center text-xl border-l border-white/10 hover:bg-white/10 transition-colors shrink-0"
+                aria-label={t.action.label}
+                title={t.action.label}
+              >
+                {t.action.label}
+              </button>
+            )}
+          </div>
         ))}
       </div>
     </ToastContext.Provider>

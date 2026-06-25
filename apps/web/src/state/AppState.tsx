@@ -3028,7 +3028,27 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         initiator_name: string;
       }>(GatewayEvent.POKE, (d) => {
         if (!selfId || d.initiator_id === selfId) return;
-        toasts.push(`${d.emoji}  ${d.initiator_name}`, 'info');
+        toasts.push(`${d.emoji}  ${d.initiator_name}`, 'info', undefined, {
+          // Tap the toast → open the DM with the sender (the poke arrived on
+          // their DM channel). Soft-nav (no full reload — keeps the gateway up).
+          onClick: () => {
+            window.history.pushState({}, '', `/channels/@me/${d.channel_id}`);
+            window.dispatchEvent(new PopStateEvent('popstate'));
+          },
+          // Tap the emoji → poke them back with the SAME variant.
+          action: {
+            label: d.emoji,
+            onClick: () => {
+              void (async () => {
+                try {
+                  await (await restForChannel(d.channel_id)).poke(d.channel_id, d.poke_type);
+                } catch {
+                  /* best-effort poke-back */
+                }
+              })();
+            },
+          },
+        });
       }),
       gateway.on<Channel>(GatewayEvent.CHANNEL_DELETE, (ch) => {
         dispatch({ type: 'CHANNEL_REMOVE', channelId: ch.id, guildId: ch.guildId });
@@ -3306,6 +3326,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       loadRelationships,
       loadSupervision,
       toasts.push,
+      restForChannel,
     ],
   );
 

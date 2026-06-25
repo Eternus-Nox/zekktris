@@ -123,19 +123,40 @@ struct RootView: View {
 }
 
 /// The transient incoming-poke pill (foreground phone only): the big emoji +
-/// who sent it. Auto-dismisses via AppStore.showPokeBanner.
+/// who sent it. Tap the pill to open the sender's DM; tap the trailing emoji
+/// chip to poke them back with the same one. Auto-dismisses via showPokeBanner.
 private struct PokeBannerView: View {
+    @EnvironmentObject private var store: AppStore
     let banner: PokeBanner
     var body: some View {
         HStack(spacing: 10) {
             Text(banner.emoji).font(.system(size: 28))
-            Text(banner.name).font(.system(size: 15, weight: .semibold))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(banner.name).font(.system(size: 15, weight: .semibold))
+                Text("Tap to open · tap the emoji to poke back")
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.ink2)
+                    .lineLimit(1)
+            }
+            // Poke back with the SAME emoji.
+            Button { store.pokeBack(banner) } label: {
+                Text(banner.emoji)
+                    .font(.system(size: 20))
+                    .frame(width: 40, height: 40)
+                    .background(Circle().fill(Color.white.opacity(0.15)))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Poke back")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.leading, 16)
+        .padding(.trailing, 8)
+        .padding(.vertical, 8)
         .background(.ultraThinMaterial, in: Capsule())
         .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
         .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
+        .contentShape(Capsule())
+        .onTapGesture { store.openPokeSender(banner) }
     }
 }
 

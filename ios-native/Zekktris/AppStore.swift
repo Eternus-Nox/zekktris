@@ -40,6 +40,10 @@ struct PokeBanner: Identifiable, Equatable {
     let id = UUID()
     let emoji: String
     let name: String
+    /// The DM channel the poke arrived on — tap the banner to open the sender.
+    let channelId: String
+    /// poke|heart|wave|like|fire — tap the emoji to send the SAME one back.
+    let pokeType: String
 }
 
 /// Holds the live application data — the user's guilds, the selected guild's
@@ -765,14 +769,41 @@ final class AppStore: ObservableObject {
         openChannelPollTimer = nil
     }
 
-    /// Show the transient poke banner (emoji + sender) for ~3s, then clear it.
+    /// Show the transient poke banner (emoji + sender) for ~5s, then clear it.
     /// The id guard means a newer poke landing mid-display owns the dismissal.
-    func showPokeBanner(emoji: String, name: String) {
-        let banner = PokeBanner(emoji: emoji, name: name)
+    /// 5s gives time to tap it (open the sender) or tap the emoji (poke back).
+    func showPokeBanner(channelId: String, emoji: String, name: String, pokeType: String) {
+        let banner = PokeBanner(emoji: emoji, name: name, channelId: channelId, pokeType: pokeType)
         pokeBanner = banner
         Task {
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
             if pokeBanner?.id == banner.id { pokeBanner = nil }
+        }
+    }
+
+    /// Tapped the poke banner → open the DM with the sender (the poke arrived on
+    /// their DM channel). Cold-launch safe: reload DMs if it isn't in memory yet.
+    func openPokeSender(_ banner: PokeBanner) {
+        pokeBanner = nil
+        let cid = banner.channelId
+        guard !cid.isEmpty else { return }
+        if let dm = dms.first(where: { $0.id == cid }) { jumpToDM(dm); return }
+        Task {
+            await loadDMs()
+            if let dm = dms.first(where: { $0.id == cid }) { jumpToDM(dm) }
+        }
+    }
+
+    /// Tapped the emoji on the poke banner → poke them back with the SAME variant.
+    func pokeBack(_ banner: PokeBanner) {
+        pokeBanner = nil
+        let cid = banner.channelId
+        guard !cid.isEmpty else { return }
+        let variant = PokeVariant(rawValue: banner.pokeType) ?? .poke
+        Task {
+            var channel = dms.first(where: { $0.id == cid })
+            if channel == nil { await loadDMs(); channel = dms.first(where: { $0.id == cid }) }
+            if let channel { await poke(channel, variant: variant) }
         }
     }
 
@@ -4007,8 +4038,10 @@ final class AppStore: ObservableObject {
                let initiator = d["initiator_id"] as? String, initiator != currentUserId {
                 let emoji = (d["emoji"] as? String) ?? "👉"
                 let name = (d["initiator_name"] as? String) ?? "Someone"
+                let channelId = (d["channel_id"] as? String) ?? ""
+                let pokeType = (d["poke_type"] as? String) ?? "poke"
                 WatchSync.shared.sendPoke(emoji: emoji, name: name)
-                showPokeBanner(emoji: emoji, name: name)
+                showPokeBanner(channelId: channelId, emoji: emoji, name: name, pokeType: pokeType)
             }
         case "MESSAGE_DELETE":
             // Payload is snake_case: { id, channel_id }.
