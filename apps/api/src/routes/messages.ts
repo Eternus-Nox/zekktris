@@ -152,12 +152,12 @@ const sendMessageSchema = z.object({
 // POST /:channelId/poke — nudge the other party in a 1:1 DM
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// A poke is a lightweight SYSTEM message (type 'default' + metadata
-// {kind:'poke', pokeType, initiatorId} — the same migration-free pattern as
-// streak warnings). It rides the normal MESSAGE_CREATE fan-out (so both parties
-// see the note live + the recipient's client buzzes) and gets a dedicated push
-// body ("👉 poked you") so it reaches a backgrounded recipient too. DM-1:1 only,
-// rate-limited per poker.
+// A poke is an EPHEMERAL nudge — purely a way to notify someone. It creates NO
+// message and leaves NO history (it must not clutter the DM), riding a
+// dedicated ephemeral POKE gateway event + a big-emoji push instead. Connected
+// clients surface it transiently (phone/web toast, watch big-emoji flash +
+// haptic); a closed app is reached by the push (body = the emoji, no text).
+// DM-1:1 only, rate-limited per poker.
 const pokeSchema = z.object({
   pokeType: z.enum(['poke', 'heart', 'wave', 'like', 'fire']),
 });
@@ -192,45 +192,22 @@ messagesRouter.post(
       .from(schema.users)
       .where(eq(schema.users.id, userId))
       .limit(1);
-
-    // System message: type 'default' + poke metadata (no enum migration).
-    // Non-empty content (the verb) is a graceful fallback for any renderer
-    // that doesn't yet special-case the poke metadata.
-    const inserted = await messages.createSystemMessage({
-      channelId,
-      guildId: null,
-      authorId: userId,
-      content: variant.verb,
-      type: 'default',
-      mentionedUserIds: [],
-      metadata: { kind: 'poke', pokeType, initiatorId: userId.toString() },
-    });
-    // Make it the channel's newest message so the DM sorts up + the note lands.
-    await db
-      .update(schema.channels)
-      .set({
-        lastMessageId: sql`GREATEST(COALESCE(${schema.channels.lastMessageId}, 0), ${inserted.id})`,
-      })
-      .where(eq(schema.channels.id, channelId));
-
-    const messageDTO = toMessage({
-      message: inserted,
-      author: poker ?? null,
-      attachments: [],
-      reactions: [],
-      mentionedUserIds: [],
-      mentionedRoleIds: [],
-      poll: null,
-      sticker: null,
-      forwardedFrom: null,
-      selfId: userId,
-    });
-    dispatch.messageCreate({ messageDTO, channelId, guildId: null });
-
-    // Push the OTHER party (best-effort, mute-aware). The in-chat note + buzz
-    // already reach a connected client via the gateway; this covers a closed
-    // app. A muted DM ('nothing') is skipped, same as a normal message.
     const pokerName = poker?.displayName ?? poker?.username ?? 'Someone';
+
+    // Ephemeral notification only — NO message row, NO lastMessageId bump, NO
+    // history. Connected recipients get the live POKE event; the sender is
+    // skipped client-side via initiator_id.
+    dispatch.poke({
+      channelId,
+      pokeType,
+      emoji: variant.emoji,
+      initiatorId: userId,
+      initiatorName: pokerName,
+    });
+
+    // Push the OTHER party (best-effort, mute-aware). The live POKE event
+    // already reaches a connected client; this covers a closed app. A muted DM
+    // ('nothing') is skipped, same as a normal message.
     try {
       const { resolveLevelsBulk } = await import('../services/notifications');
       const levels = await resolveLevelsBulk(others, channelId, null);
@@ -252,7 +229,7 @@ messagesRouter.post(
       // Push is best-effort — the gateway delivery already happened.
     }
 
-    return c.json({ message: messageDTO }, 201);
+    return c.json({ ok: true }, 200);
   },
 );
 

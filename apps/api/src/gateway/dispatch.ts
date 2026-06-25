@@ -381,6 +381,32 @@ export function typingStart(payload: {
   );
 }
 
+/**
+ * A poke / nudge. Ephemeral — creates NO message and no history; it's purely a
+ * notification. Goes to the DM channel audience; recipients surface it
+ * transiently and skip it if they're the initiator. (A closed app is reached by
+ * the push the route sends alongside this.)
+ */
+export function poke(payload: {
+  channelId: bigint;
+  pokeType: string;
+  emoji: string;
+  initiatorId: bigint;
+  initiatorName: string;
+}): void {
+  publish(
+    GatewayEvent.POKE,
+    {
+      channel_id: payload.channelId.toString(),
+      poke_type: payload.pokeType,
+      emoji: payload.emoji,
+      initiator_id: payload.initiatorId.toString(),
+      initiator_name: payload.initiatorName,
+    },
+    { kind: 'channel', channelId: payload.channelId, guildId: null },
+  );
+}
+
 export function presenceUpdate(payload: {
   userId: bigint;
   status: 'online' | 'idle' | 'dnd' | 'offline';

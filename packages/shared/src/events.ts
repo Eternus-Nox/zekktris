@@ -96,6 +96,14 @@ export const GatewayEvent = {
   TYPING_START: 'TYPING_START',
   PRESENCE_UPDATE: 'PRESENCE_UPDATE',
 
+  // Poke / nudge — an EPHEMERAL notification (no stored message, no history).
+  // Payload: { channel_id, poke_type, emoji, initiator_id, initiator_name }.
+  // Sent to the DM channel audience; the recipient's clients surface it
+  // transiently (a toast on phone/web, a big-emoji flash + haptic on the
+  // watch). The sender is skipped client-side via initiator_id. A backgrounded
+  // recipient gets the big-emoji push instead.
+  POKE: 'POKE',
+
   // User
   USER_UPDATE: 'USER_UPDATE',
 

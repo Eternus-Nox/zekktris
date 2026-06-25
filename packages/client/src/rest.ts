@@ -1963,11 +1963,12 @@ export class RestClient {
   }
 
   /**
-   * Poke/nudge the other party in a 1:1 DM. Creates a lightweight system
-   * message (which buzzes them + leaves a note in the chat); `pokeType` is
-   * one of poke | heart | wave | like | fire. Returns the created message.
+   * Poke/nudge the other party in a 1:1 DM. An EPHEMERAL notification — creates
+   * no message and leaves no history; it arrives back as a live POKE gateway
+   * event (+ a big-emoji push for a closed app). `pokeType` is one of
+   * poke | heart | wave | like | fire.
    */
-  poke(channelId: string, pokeType: string): Promise<{ message: Message }> {
+  poke(channelId: string, pokeType: string): Promise<{ ok: boolean }> {
     return this.request('POST', `/channels/${channelId}/poke`, { pokeType });
   }
 
