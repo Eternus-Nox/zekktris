@@ -164,7 +164,7 @@ export function MyEventsModal({
           <button
             type="button"
             onClick={() => nav('/channels/@me')}
-            className="xl:hidden -ml-1 mr-0.5 w-7 h-7 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3 shrink-0"
+            className="xl:hidden -ml-1 mr-0.5 w-10 h-10 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3 shrink-0"
             aria-label="Back to direct messages"
           >
             <ChevronLeft size={18} />

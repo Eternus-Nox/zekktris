@@ -891,8 +891,10 @@ struct VoiceChannelView: View {
             if !store.isWideLayout || store.stack.count > 1 {
                 Button(action: goBack) {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.system(size: 18, weight: .semibold))
                         .foregroundColor(Theme.ink2)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
             }
             Image(systemName: "speaker.wave.2.fill")
@@ -1322,7 +1324,7 @@ struct StageChannelView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Button { store.clearChannel() } label: {
-                Image(systemName: "chevron.left").font(.system(size: 17, weight: .semibold)).foregroundColor(Theme.ink2)
+                Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).foregroundColor(Theme.ink2).frame(width: 44, height: 44).contentShape(Rectangle())
             }
             Image(systemName: "person.wave.2.fill").font(.system(size: 15)).foregroundColor(Theme.accent)
             VStack(alignment: .leading, spacing: 1) {

@@ -623,7 +623,7 @@ export function Shell() {
                   ? nav(isDmMode ? `/channels/${ME}` : `/channels/${activeGuildId}`)
                   : nav(`/channels/${ME}`)
               }
-              className="w-9 h-9 flex items-center justify-center bg-bg-2/90 backdrop-blur border border-line rounded-md text-ink-2 hover:text-ink-1"
+              className="w-10 h-10 flex items-center justify-center bg-bg-2/90 backdrop-blur border border-line rounded-md text-ink-2 hover:text-ink-1"
               aria-label="Back"
             >
               <ChevronLeft size={18} />
@@ -641,7 +641,7 @@ export function Shell() {
           <div className="xl:hidden absolute top-2 right-2 z-20 flex gap-1">
             <button
               onClick={() => setMembersOpen(true)}
-              className="w-9 h-9 flex items-center justify-center bg-bg-2/90 backdrop-blur border border-line rounded-md text-ink-2 hover:text-ink-1"
+              className="w-10 h-10 flex items-center justify-center bg-bg-2/90 backdrop-blur border border-line rounded-md text-ink-2 hover:text-ink-1"
               aria-label="Open members"
             >
               <UsersIcon size={18} />

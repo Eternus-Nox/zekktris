@@ -559,8 +559,10 @@ struct PageBackButton: View {
                 if let closePage { closePage() } else { dismiss() }
             } label: {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: 18, weight: .semibold))
                     .foregroundColor(Theme.ink2)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Back")
         }
@@ -1423,7 +1425,7 @@ struct ScheduledMessagesSheet: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Scheduled").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task { await store.loadScheduled() }
         }
     }
@@ -2713,7 +2715,7 @@ struct SessionsSheet: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Active Sessions").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task { await store.loadSessions() }
             .refreshable { await store.loadSessions() }
         }
@@ -2862,7 +2864,7 @@ struct TwoFactorSheet: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Two-Factor Authentication").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task { await load() }
         }
     }
@@ -4453,8 +4455,10 @@ struct ChildControlsView: View {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button { dismiss() } label: {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(.system(size: 18, weight: .semibold))
                             .foregroundColor(Theme.ink2)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                 }
             }
@@ -4819,7 +4823,7 @@ struct RolesListView: View {
             .navigationTitle("Roles")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") }
+                ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") }
                 ToolbarItem(placement: .confirmationAction) {
                     Button { creatingRole = true } label: { Image(systemName: "plus") }
                 }
@@ -5077,7 +5081,7 @@ struct GuildSettingsView: View {
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Server Settings")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .onAppear {
                 name = store.selectedGuild?.name ?? ""
                 guildDescription = store.selectedGuild?.description ?? ""
@@ -5484,7 +5488,7 @@ struct CreateInviteSheet: View {
             .navigationTitle("Invite People")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") }
+                ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") }
                 if createdCode == nil {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Create") { create() }.disabled(busy || effectiveChannelId == nil)
@@ -5558,7 +5562,7 @@ struct ManageInvitesView: View {
             .navigationTitle("Invites")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") }
+                ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") }
                 ToolbarItem(placement: .confirmationAction) {
                     Button { showCreate = true } label: { Image(systemName: "plus") }
                         .accessibilityLabel("New invite")
@@ -5777,7 +5781,7 @@ struct ChannelWebhooksView: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Webhooks").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task { await store.loadWebhooks(channel.id) }
             .confirmationDialog(
                 "Delete webhook?",
@@ -5921,7 +5925,7 @@ struct ChannelPermissionsView: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Permissions").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task {
                 await store.loadChannelOverrides(channel.id)
                 if store.roles.isEmpty, let g = store.selectedGuild { await store.loadRoles(g) }
@@ -6081,7 +6085,7 @@ struct BrowseRolesView: View {
                 }
             }
             .navigationTitle("Get Roles").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task { await store.loadSelfAssignableRoles() }
         }
     }
@@ -6144,7 +6148,7 @@ struct ReactionRolesView: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Reaction Roles").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task {
                 await store.loadReactionRoles()
                 if store.roles.isEmpty, let g = store.selectedGuild { await store.loadRoles(g) }
@@ -6270,7 +6274,7 @@ struct EmojiManagerView: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Emoji").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task { await store.loadEmojis() }
             .onChange(of: pickerItem) { item in loadPicked(item) }
         }
@@ -6395,7 +6399,7 @@ struct StickerManagerView: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Stickers").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task { await store.loadStickers() }
             .onChange(of: pickerItem) { item in loadPicked(item) }
         }
@@ -6526,7 +6530,7 @@ struct EventsView: View {
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Events").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") }
+                ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") }
                 ToolbarItem(placement: .principal) {
                     Button { showMyEvents = true } label: {
                         Label("My Events", systemImage: "calendar.badge.clock").font(.zkSans(13))
@@ -6945,7 +6949,7 @@ struct EventAttendeesView: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle(event.name).navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task(id: status) { await store.loadEventAttendees(event, status: status) }
         }
     }
@@ -6992,7 +6996,7 @@ struct MyEventsView: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("My Events").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task { await store.loadMyEvents() }
         }
     }
@@ -7133,7 +7137,7 @@ struct StorageItemsView: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Files").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task { if store.storageItems.isEmpty { await store.loadStorageItems(reset: true) } }
             .sheet(item: $previewing) { StorageItemPreview(item: $0) }
         }
@@ -7234,7 +7238,7 @@ struct GuildInfoCard: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Server Info").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .sheet(isPresented: $showInvite) { CreateInviteSheet().environmentObject(store) }
         }
     }
@@ -7326,7 +7330,7 @@ struct ReorderServersView: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Reorder Servers").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .onAppear { items = store.orderedGuilds }
         }
     }
@@ -7381,7 +7385,7 @@ struct ReorderChannelsView: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Reorder Channels").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .onAppear { buildGroups() }
         }
     }
@@ -7460,7 +7464,7 @@ struct AdminObserveView: View {
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Observing: \(guild.name)")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .navigationDestination(for: Channel.self) { ch in
                 ObservedChannelView(channel: ch)
             }
@@ -8022,7 +8026,7 @@ struct ChildDMMessagesView: View {
                 .background(Theme.bg1.ignoresSafeArea())
                 .navigationTitle("\(child.name) & \(dm.recipient?.name ?? "Unknown")")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
                 .task {
                     do { messages = try await APIClient.shared.familyChildDMMessages(childId: child.id, channelId: dm.id) }
                     catch { self.error = (error as? APIError)?.message ?? error.localizedDescription }
@@ -8192,7 +8196,7 @@ struct ChildFriendProfileSheet: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Profile").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
         }
     }
 
@@ -8291,7 +8295,7 @@ struct StorageItemPreview: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Preview").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
         }
     }
 
@@ -8436,7 +8440,7 @@ struct GuildReportsView: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Reports").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task { await reload() }
         }
     }
@@ -8684,7 +8688,7 @@ struct GuildAuditLogView: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Audit Log").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task { await reload() }
         }
     }
@@ -9060,7 +9064,7 @@ private struct PresetWordsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close")
+                    Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close")
                         .font(.zkSans(15)).foregroundColor(Theme.accent)
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -9441,7 +9445,7 @@ struct AchievementsGallerySheet: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Achievements").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task {
                 achievements = (try? await APIClient.shared.myAchievements())?.achievements ?? []
                 loaded = true

@@ -306,8 +306,10 @@ struct MessageListView: View {
                     store.clearChannel()
                 } label: {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.system(size: 18, weight: .semibold))
                         .foregroundColor(Theme.ink2)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
             }
 
@@ -2824,7 +2826,7 @@ struct SearchSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button { store.clearSearch(); dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close")
+                    Button { store.clearSearch(); dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close")
                 }
             }
         }
@@ -2917,7 +2919,7 @@ struct DMSearchSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button { store.clearDMSearch(); dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close")
+                    Button { store.clearDMSearch(); dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close")
                 }
             }
             .onDisappear { store.clearDMSearch() }
@@ -3587,7 +3589,9 @@ struct MemberListView: View {
                     // showMembers covers the store-driven presentations.
                     Button { dismiss(); store.showMembers = false } label: {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(.system(size: 18, weight: .semibold))
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .accessibilityLabel("Close members")
                 }
@@ -3731,7 +3735,7 @@ struct PinPanelView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close")
+                    Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close")
                 }
             }
         }
@@ -4221,7 +4225,7 @@ struct EmojiStickerPicker: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle(tab == 0 ? "Emoji" : "Stickers").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task { await store.loadEmojis(); await store.loadStickers() }
         }
     }
@@ -4356,7 +4360,7 @@ struct ScheduleSheet: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Scheduled").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task { await store.loadScheduled() }
         }
     }
@@ -4544,7 +4548,7 @@ struct DmSettingsSheet: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle(channel.dmTitle).navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)) }.accessibilityLabel("Close") } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task { await store.loadDmSettings(channel.id) }
             .sheet(isPresented: $showEnableE2EE) {
                 EnableE2EESheet(channel: liveChannel)

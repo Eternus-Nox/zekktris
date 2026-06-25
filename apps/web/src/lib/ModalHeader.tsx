@@ -70,7 +70,7 @@ export function ModalHeader({
       <button
         type="button"
         onClick={onClose}
-        className="sm:hidden -ml-1 w-9 h-9 flex items-center justify-center rounded-md text-ink-2 hover:text-ink-1 hover:bg-bg-3 active:bg-bg-3 transition-colors"
+        className="sm:hidden -ml-1 w-10 h-10 flex items-center justify-center rounded-md text-ink-2 hover:text-ink-1 hover:bg-bg-3 active:bg-bg-3 transition-colors"
         aria-label="Back"
       >
         <ChevronLeft size={20} />
