@@ -28,7 +28,8 @@ import { MessageItem } from './MessageItem';
 import { PinPanel } from './PinPanel';
 import { SearchPanel } from './SearchPanel';
 import { useNavigate } from 'react-router-dom';
-import { Hash, AtSign, Paperclip, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronLeft, ChevronRight, CheckCircle, Lock } from '../lib/icons';
+import { Hash, AtSign, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronLeft, ChevronRight, CheckCircle, Lock } from '../lib/icons';
+import { CameraCaptureModal } from './CameraCaptureModal';
 import { SchedulePickerModal } from './SchedulePickerModal';
 // Lazy-loaded: the DM settings/privacy panel only mounts when opened.
 const DmSettingsPanel = lazy(() =>
@@ -1687,6 +1688,8 @@ function Composer({
   const recorder = useVoiceRecorder();
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
+  const [showCameraModal, setShowCameraModal] = useState(false);
 
   /**
    * Insert an emoji code at the textarea's current cursor position.
@@ -2165,6 +2168,43 @@ function Composer({
             e.target.value = '';
           }}
         />
+        {/* Camera — opens the device camera (mobile: native capture input;
+            desktop: a getUserMedia preview modal) and sends the photo through
+            the same attachment path. */}
+        <button
+          type="button"
+          onClick={() => {
+            if (files.length >= MAX_FILES) return;
+            if (window.matchMedia('(pointer: coarse)').matches) {
+              cameraInputRef.current?.click();
+            } else {
+              setShowCameraModal(true);
+            }
+          }}
+          disabled={files.length >= MAX_FILES}
+          className="w-7 h-7 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent shrink-0"
+          title={files.length >= MAX_FILES ? `Max ${MAX_FILES} files` : 'Take photo'}
+          aria-label="Take photo"
+        >
+          <Camera size={16} />
+        </button>
+        <input
+          ref={cameraInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={(e) => {
+            if (e.target.files) addFiles(e.target.files);
+            e.target.value = '';
+          }}
+        />
+        {showCameraModal && (
+          <CameraCaptureModal
+            onCapture={(file) => addFiles([file])}
+            onClose={() => setShowCameraModal(false)}
+          />
+        )}
 
         <textarea
           ref={taRef}

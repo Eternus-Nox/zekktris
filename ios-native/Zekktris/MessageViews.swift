@@ -17,6 +17,7 @@ struct MessageListView: View {
     @State private var showDmSettings = false
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var showPhotoPicker = false
+    @State private var showCamera = false
     @State private var pendingAttachments: [PendingAttachment] = []
     @State private var showPollSheet = false
     @State private var showStickers = false
@@ -558,6 +559,13 @@ struct MessageListView: View {
                         Button { showPhotoPicker = true } label: {
                             Label("Photo or video", systemImage: "photo")
                         }
+                        // Live camera capture (hidden on Simulator / camera-less
+                        // devices). Sends through the same attachment path.
+                        if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                            Button { showCamera = true } label: {
+                                Label("Take photo", systemImage: "camera")
+                            }
+                        }
                         if !channel.isE2EE {
                             Button { showPollSheet = true } label: { Label("Poll", systemImage: "chart.bar.xaxis") }
                         }
@@ -665,6 +673,19 @@ struct MessageListView: View {
             // and decrypted for playback like any other attachment.
             matching: .any(of: [.images, .videos])
         )
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraPicker { image in
+                showCamera = false
+                guard pendingAttachments.count < 10,
+                      let data = image.jpegData(compressionQuality: 0.85) else { return }
+                pendingAttachments.append(PendingAttachment(
+                    data: data, filename: "photo.jpg", mime: "image/jpeg",
+                    isVideo: false, preview: image))
+            } onCancel: {
+                showCamera = false
+            }
+            .ignoresSafeArea()
+        }
     }
 
     private var canSend: Bool {
@@ -4735,6 +4756,42 @@ struct DmSettingsSheet: View {
 private struct ShareFile: Identifiable {
     let id = UUID()
     let url: URL
+}
+
+/// Live camera capture for the composer — wraps UIImagePickerController(.camera).
+/// The captured photo is handed back as a UIImage; the composer turns it into a
+/// JPEG PendingAttachment and sends it through the normal attachment path (so
+/// E2EE encryption + upload work unchanged, in DMs and channels alike).
+private struct CameraPicker: UIViewControllerRepresentable {
+    let onCapture: (UIImage) -> Void
+    let onCancel: () -> Void
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.cameraCaptureMode = .photo
+        picker.mediaTypes = ["public.image"]
+        picker.delegate = context.coordinator
+        return picker
+    }
+    func updateUIViewController(_ controller: UIImagePickerController, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: CameraPicker
+        init(_ parent: CameraPicker) { self.parent = parent }
+        func imagePickerController(_ picker: UIImagePickerController,
+                                   didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            if let image = info[.originalImage] as? UIImage {
+                parent.onCapture(image)
+            } else {
+                parent.onCancel()
+            }
+        }
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.onCancel()
+        }
+    }
 }
 
 /// Thin bridge to the iOS share sheet (UIActivityViewController) for exporting
