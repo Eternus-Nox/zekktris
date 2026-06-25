@@ -2853,27 +2853,58 @@ final class AppStore: ObservableObject {
     func loadNotificationOverrides() async {
         guard let rows = try? await api.notificationOverrides() else { return }
         var map: [String: String] = [:]
-        for r in rows { if let lvl = r.level { map[r.targetId] = lvl } }
+        // Key by "type:id" so a channel override and its guild override can
+        // coexist and resolve in channel>guild order (a bare-id key aliased
+        // them and couldn't express precedence).
+        for r in rows { if let lvl = r.level { map["\(r.targetType):\(r.targetId)"] = lvl } }
         notificationOverrides = map
     }
 
     func isGuildMuted(_ guildId: String) -> Bool {
-        notificationOverrides[guildId] == "nothing"
+        notificationOverrides["guild:\(guildId)"] == "nothing"
     }
 
     /// Mute/unmute a whole guild. Optimistic local update + PUT; the server's
     /// push fan-out honors the override immediately.
     func setGuildMuted(_ guildId: String, _ muted: Bool) async {
-        let prev = notificationOverrides[guildId]
-        if muted { notificationOverrides[guildId] = "nothing" }
-        else { notificationOverrides.removeValue(forKey: guildId) }
+        let key = "guild:\(guildId)"
+        let prev = notificationOverrides[key]
+        if muted { notificationOverrides[key] = "nothing" }
+        else { notificationOverrides.removeValue(forKey: key) }
         do {
             try await api.setNotificationOverride(
                 targetType: "guild", targetId: guildId, level: muted ? "nothing" : nil)
         } catch {
             // Roll back on failure.
-            if let prev { notificationOverrides[guildId] = prev }
-            else { notificationOverrides.removeValue(forKey: guildId) }
+            if let prev { notificationOverrides[key] = prev }
+            else { notificationOverrides.removeValue(forKey: key) }
+            errorText = (error as? APIError)?.message ?? error.localizedDescription
+        }
+
+    }
+
+    /// Effective notification level for a channel: explicit channel override,
+    /// else the guild override, else "all" (mirrors the server + web).
+    func channelLevel(_ channelId: String, guildId: String?) -> String {
+        if let ch = notificationOverrides["channel:\(channelId)"] { return ch }
+        if let gid = guildId, let g = notificationOverrides["guild:\(gid)"] { return g }
+        return "all"
+    }
+
+    /// Set this channel's notification level (all/mentions/nothing) — a personal
+    /// setting independent of the guild. "all" = server notifications (the
+    /// explicit opt-in the push fan-out honors); "nothing" = mute. Optimistic
+    /// local update + PUT, with rollback on failure.
+    func setChannelLevel(_ channelId: String, _ level: String) async {
+        let key = "channel:\(channelId)"
+        let prev = notificationOverrides[key]
+        notificationOverrides[key] = level
+        do {
+            try await api.setNotificationOverride(
+                targetType: "channel", targetId: channelId, level: level)
+        } catch {
+            if let prev { notificationOverrides[key] = prev }
+            else { notificationOverrides.removeValue(forKey: key) }
             errorText = (error as? APIError)?.message ?? error.localizedDescription
         }
     }

@@ -2829,10 +2829,29 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           document.hasFocus() &&
           typeof window !== 'undefined' &&
           window.location.pathname.includes(`/${m.channelId}`);
+        // "Get notifications from servers too": also ping for a plain guild
+        // message when the user EXPLICITLY chose All for this channel (or its
+        // guild). Must be explicit — the resolver defaults to 'all', so a bare
+        // resolve would fire-hose every guild message. Mirrors the server push.
+        const chOverride = fresh.notificationOverrides[`channel:${m.channelId}`];
+        let explicitAll = chOverride === 'all';
+        if (!chOverride && !isDM) {
+          for (const [gid, channels] of Object.entries(fresh.channelsByGuild)) {
+            if (channels.some((c) => c.id === m.channelId)) {
+              explicitAll = fresh.notificationOverrides[`guild:${gid}`] === 'all';
+              break;
+            }
+          }
+        }
         // Device-local "Messages & mentions" toggle (Settings) gates BOTH
         // the audible ping and the desktop notification, mirroring the
         // native app's notifyMessages switch.
-        if (getNotifyPrefs().notifyMessages && !muted && !looking && (isMention || isDM)) {
+        if (
+          getNotifyPrefs().notifyMessages &&
+          !muted &&
+          !looking &&
+          (isMention || isDM || explicitAll)
+        ) {
           playMentionPing();
 
           // Native desktop notification (Electron app only — browsers

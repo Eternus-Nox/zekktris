@@ -1144,6 +1144,17 @@ struct ChannelListView: View {
             }
         }
         .contextMenu {
+            // Per-channel notifications — a personal setting for EVERY member
+            // (not gated behind manage). "All messages" = server notifications;
+            // "Nothing" = mute this channel.
+            Picker("Notifications", selection: Binding(
+                get: { store.channelLevel(channel.id, guildId: channel.guildId) },
+                set: { lvl in Task { await store.setChannelLevel(channel.id, lvl) } }
+            )) {
+                Label("All messages", systemImage: "bell.fill").tag("all")
+                Label("Only @mentions", systemImage: "at").tag("mentions")
+                Label("Nothing", systemImage: "bell.slash.fill").tag("nothing")
+            }
             if store.canManageChannels {
                 Button { editingChannel = channel } label: {
                     Label("Edit Channel", systemImage: "pencil")

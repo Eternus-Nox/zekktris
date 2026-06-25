@@ -17,7 +17,7 @@
 import { lazy, Suspense, useMemo, useState, useSyncExternalStore } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError, type Channel, type Guild } from '@zekktris/client';
-import { useAppStateSelector, isChannelUnread, channelMentionCount, isChannelMuted } from '../state/AppState';
+import { useAppStateSelector, isChannelUnread, channelMentionCount, isChannelMuted, effectiveNotificationLevel } from '../state/AppState';
 import { useAuth } from '../auth/AuthContext';
 import { useToasts } from '../state/Toasts';
 // Lazy-loaded: this modal (and its role/member/automod editors) is ~120 KB and
@@ -722,18 +722,31 @@ function ChannelRow({
                 });
               },
             },
-            {
-              label: muted ? 'Unmute channel' : 'Mute channel',
-              onClick: () => {
-                void setNotificationOverride(
-                  'channel',
-                  channel.id,
-                  muted ? null : 'nothing',
-                ).catch(() => {
-                  toasts.push('Could not update mute', 'error');
+            ...(() => {
+              // 3-way per-channel notifications. 'all' = notify on every
+              // message (server notifications), 'mentions' = only @mentions,
+              // 'nothing' = mute. The active level (channel override, else the
+              // inherited guild/default) is checkmarked.
+              const current = effectiveNotificationLevel(
+                state.notificationOverrides,
+                channel.id,
+                channel.guildId ?? null,
+              );
+              const set = (level: 'all' | 'mentions' | 'nothing') => () => {
+                void setNotificationOverride('channel', channel.id, level).catch(() => {
+                  toasts.push('Could not update notifications', 'error');
                 });
-              },
-            },
+              };
+              const opt = (label: string, level: 'all' | 'mentions' | 'nothing') => ({
+                label: current === level ? `✓ ${label}` : label,
+                onClick: set(level),
+              });
+              return [
+                opt('All messages', 'all'),
+                opt('Only @mentions', 'mentions'),
+                opt('Nothing (mute)', 'nothing'),
+              ];
+            })(),
             {
               label: 'Edit channel',
               onClick: onEdit,
