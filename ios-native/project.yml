@@ -45,7 +45,7 @@ targets:
       # can decrypt E2EE message previews on-device (xcodegen auto-adds it to
       # the Embed App Extensions build phase).
       - target: NotificationService
-      # Bundles + embeds the watchOS companion ("Zekktris Poke") into the app
+      # Bundles + embeds the watchOS companion ("Zekktris" on the watch) into the app
       # so it ships to a paired Apple Watch (Embed Watch Content phase).
       - target: ZekktrisWatch
         embed: true
@@ -144,8 +144,9 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Automatic
 
-  # watchOS companion — "Zekktris Poke". A standalone single-target watch app
-  # (WKApplication) for quick pokes/nudges. It does NOT compile the iOS app's
+  # watchOS companion — displays as "Zekktris" on the watch. A standalone
+  # single-target watch app (WKApplication) for quick messages/pokes to a
+  # recent DM peer. It does NOT compile the iOS app's
   # sources (no LiveKit etc.) — it's self-contained under ZekktrisWatch/ and
   # gets the auth token + poke targets from the phone over WatchConnectivity,
   # then calls POST /channels/:id/poke directly.
@@ -158,7 +159,7 @@ targets:
     info:
       path: ZekktrisWatch/Info.plist
       properties:
-        CFBundleDisplayName: Zekktris Poke
+        CFBundleDisplayName: Zekktris
         CFBundleShortVersionString: "2.0"
         CFBundleVersion: "3"
         WKApplication: true

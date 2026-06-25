@@ -7,9 +7,9 @@ private struct WatchPokeTarget: Codable {
     let name: String
 }
 
-/// Pushes the auth token + API base URL + recent poke targets to the paired
-/// Apple Watch over WatchConnectivity, so the "Zekktris Poke" watch app can
-/// nudge a DM peer without the phone in the loop. Uses `updateApplicationContext`
+/// Pushes the auth token + API base URL + recent DM targets to the paired
+/// Apple Watch over WatchConnectivity, so the "Zekktris" watch app can message
+/// or nudge a DM peer without the phone in the loop. Uses `updateApplicationContext`
 /// (latest-wins, persisted + redelivered by the system on watch launch), so
 /// the watch holds the token only in memory.
 @MainActor
