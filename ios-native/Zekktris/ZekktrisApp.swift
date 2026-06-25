@@ -107,6 +107,35 @@ struct RootView: View {
                 break
             }
         }
+        // Transient incoming-poke banner — floats above the whole app while
+        // foreground. (The watch shows the big-emoji flash; the phone keeps it
+        // a subtle pill so a poke notifies without leaving a message.)
+        .overlay(alignment: .top) {
+            if let banner = store.pokeBanner {
+                PokeBannerView(banner: banner)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .id(banner.id)
+            }
+        }
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: store.pokeBanner?.id)
+    }
+}
+
+/// The transient incoming-poke pill (foreground phone only): the big emoji +
+/// who sent it. Auto-dismisses via AppStore.showPokeBanner.
+private struct PokeBannerView: View {
+    let banner: PokeBanner
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(banner.emoji).font(.system(size: 28))
+            Text(banner.name).font(.system(size: 15, weight: .semibold))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
+        .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
     }
 }
 

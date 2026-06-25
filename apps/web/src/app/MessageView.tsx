@@ -2720,8 +2720,8 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
 /**
  * DM header poke/nudge button. Tapping opens a small palette (the swipeable
  * variant set on iOS / the watch; a click-to-send row here); each emoji fires
- * POST /channels/:id/poke. The poke comes back over the gateway as the system
- * message that renders in-chat.
+ * POST /channels/:id/poke. The poke is an ephemeral nudge — it leaves no
+ * message; the recipient gets a transient toast (or big-emoji push when away).
  */
 function DmHeaderPokeButton({ channel }: { channel: Channel }) {
   const restForChannel = useAppStateSelector((v) => v.restForChannel);

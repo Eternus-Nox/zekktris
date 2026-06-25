@@ -34,6 +34,14 @@ struct IncomingCall: Identifiable {
     let channel: Channel
 }
 
+/// A poke that just arrived — the transient top banner shown on the phone
+/// (the watch gets the big-emoji flash instead). No history; purely a nudge.
+struct PokeBanner: Identifiable, Equatable {
+    let id = UUID()
+    let emoji: String
+    let name: String
+}
+
 /// Holds the live application data — the user's guilds, the selected guild's
 /// channels, and the selected channel's messages — and wires the gateway so
 /// incoming `MESSAGE_CREATE` events append in real time.
@@ -118,6 +126,10 @@ final class AppStore: ObservableObject {
 
     @Published var selectedGuild: Guild?
     @Published var selectedChannel: Channel?
+
+    /// A poke just arrived — drives the transient top banner (foreground only).
+    /// The watch gets the big-emoji flash; the phone shows this small banner.
+    @Published var pokeBanner: PokeBanner?
 
     /// Direct-message channels for the current user.
     @Published var dms: [Channel] = []
@@ -740,6 +752,17 @@ final class AppStore: ObservableObject {
     private func stopOpenChannelPolling() {
         openChannelPollTimer?.invalidate()
         openChannelPollTimer = nil
+    }
+
+    /// Show the transient poke banner (emoji + sender) for ~3s, then clear it.
+    /// The id guard means a newer poke landing mid-display owns the dismissal.
+    func showPokeBanner(emoji: String, name: String) {
+        let banner = PokeBanner(emoji: emoji, name: name)
+        pokeBanner = banner
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if pokeBanner?.id == banner.id { pokeBanner = nil }
+        }
     }
 
     /// Compute the desired auto status and push it if it differs from the
@@ -3945,16 +3968,7 @@ final class AppStore: ObservableObject {
                 upsert(message)
                 if let c = selectedChannel { markChannelRead(c) }
             }
-            // A received poke shows as the in-chat notice + the normal push on
-            // the phone (no flash/haptic here — that's WATCH-only). Relay it to
-            // the watch so, if the watch app is up, it flashes the emoji on top
-            // + plays the haptic wave (otherwise the mirrored push taps the
-            // wrist). Skip our own echoed pokes.
-            if message.metadata?.kind == "poke",
-               (message.authorId ?? message.author?.id) != currentUserId {
-                let variant = PokeVariant(rawValue: message.metadata?.pokeType ?? "poke") ?? .poke
-                WatchSync.shared.sendPoke(emoji: variant.emoji)
-            }
+            // (Pokes are no longer messages — see the POKE event case below.)
             // Reflect the new unread on the home-screen badge (no-op while the
             // message is in the open channel — markChannelRead already cleared it).
             updateAppBadge()
@@ -3971,6 +3985,19 @@ final class AppStore: ObservableObject {
                let streak = d["streak"] as? Int {
                 if let i = dms.firstIndex(where: { $0.id == cid }) { dms[i].streak = streak }
                 if selectedChannel?.id == cid { selectedChannel?.streak = streak }
+            }
+        case "POKE":
+            // Ephemeral nudge — no message, no history. Payload snake_case:
+            // { channel_id, poke_type, emoji, initiator_id, initiator_name }.
+            // Skip our own poke (echoed to the DM channel audience). Relay to
+            // the watch (big-emoji flash + haptic if the watch app is up) and
+            // show a transient banner on the phone.
+            if let d = jsonDict(data),
+               let initiator = d["initiator_id"] as? String, initiator != currentUserId {
+                let emoji = (d["emoji"] as? String) ?? "👉"
+                let name = (d["initiator_name"] as? String) ?? "Someone"
+                WatchSync.shared.sendPoke(emoji: emoji)
+                showPokeBanner(emoji: emoji, name: name)
             }
         case "MESSAGE_DELETE":
             // Payload is snake_case: { id, channel_id }.

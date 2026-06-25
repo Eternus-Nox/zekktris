@@ -3017,6 +3017,19 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       gateway.on<{ channel_id: string; streak: number }>(GatewayEvent.DM_STREAK_UPDATE, (d) => {
         dispatch({ type: 'DM_STREAK_SET', channelId: d.channel_id, streak: d.streak });
       }),
+      // Poke / nudge — an ephemeral notification (no message, no history). Show
+      // a transient toast (emoji + who); skip our own pokes echoed to the DM
+      // channel audience. A closed app is reached by the big-emoji push.
+      gateway.on<{
+        channel_id: string;
+        poke_type: string;
+        emoji: string;
+        initiator_id: string;
+        initiator_name: string;
+      }>(GatewayEvent.POKE, (d) => {
+        if (!selfId || d.initiator_id === selfId) return;
+        toasts.push(`${d.emoji}  ${d.initiator_name}`, 'info');
+      }),
       gateway.on<Channel>(GatewayEvent.CHANNEL_DELETE, (ch) => {
         dispatch({ type: 'CHANNEL_REMOVE', channelId: ch.id, guildId: ch.guildId });
       }),
@@ -3292,6 +3305,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       loadNotificationOverrides,
       loadRelationships,
       loadSupervision,
+      toasts.push,
     ],
   );
 
