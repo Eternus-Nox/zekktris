@@ -4007,7 +4007,7 @@ final class AppStore: ObservableObject {
                let initiator = d["initiator_id"] as? String, initiator != currentUserId {
                 let emoji = (d["emoji"] as? String) ?? "👉"
                 let name = (d["initiator_name"] as? String) ?? "Someone"
-                WatchSync.shared.sendPoke(emoji: emoji)
+                WatchSync.shared.sendPoke(emoji: emoji, name: name)
                 showPokeBanner(emoji: emoji, name: name)
             }
         case "MESSAGE_DELETE":

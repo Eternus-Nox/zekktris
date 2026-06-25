@@ -8,10 +8,12 @@ struct PokeTarget: Identifiable, Codable, Hashable {
     let name: String
 }
 
-/// A transient incoming-poke flash — the enlarged emoji shown on top.
+/// A transient incoming-poke flash — the full-screen emoji shown on top,
+/// optionally captioned with who sent it.
 struct PokeFlash: Identifiable, Equatable {
     let id = UUID()
     let emoji: String
+    var name: String? = nil
 }
 
 /// Receives the auth token + API base URL + poke targets from the paired
@@ -43,10 +45,10 @@ final class WatchSyncStore: NSObject, ObservableObject {
         }
     }
 
-    /// Flash the enlarged emoji on top + play a three-beat haptic wave when the
-    /// phone relays a poke. Auto-clears after the animation.
-    private func flashIncomingPoke(_ emoji: String) {
-        let flash = PokeFlash(emoji: emoji)
+    /// Flash the full-screen emoji on top + play a three-beat haptic wave when
+    /// the phone relays a poke. Auto-clears after the takeover has registered.
+    private func flashIncomingPoke(_ emoji: String, from name: String?) {
+        let flash = PokeFlash(emoji: emoji, name: name)
         incomingPoke = flash
         let device = WKInterfaceDevice.current()
         for i in 0..<3 {
@@ -55,7 +57,7 @@ final class WatchSyncStore: NSObject, ObservableObject {
             }
         }
         Task {
-            try? await Task.sleep(nanoseconds: 1_600_000_000)
+            try? await Task.sleep(nanoseconds: 2_200_000_000)
             if incomingPoke?.id == flash.id { incomingPoke = nil }
         }
     }
@@ -85,6 +87,7 @@ extension WatchSyncStore: WCSessionDelegate {
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
         guard message["kind"] as? String == "poke" else { return }
         let emoji = message["emoji"] as? String ?? "👉"
-        Task { @MainActor in self.flashIncomingPoke(emoji) }
+        let name = message["name"] as? String
+        Task { @MainActor in self.flashIncomingPoke(emoji, from: name) }
     }
 }

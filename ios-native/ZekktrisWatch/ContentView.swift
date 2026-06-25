@@ -26,17 +26,40 @@ struct ContentView: View {
             .navigationTitle("Friends")
             .navigationDestination(for: PokeTarget.self) { FriendScreen(target: $0) }
         }
-        // Got poked: the enlarged emoji flashes ON TOP of whatever screen
-        // you're on (paired with the haptic wave in WatchSyncStore).
+        // Got poked: a FULL-SCREEN emoji takeover on top of whatever screen
+        // you're on (paired with the haptic wave in WatchSyncStore). The emoji
+        // scales to the watch face via GeometryReader so it fills the screen on
+        // every size (40–49mm), instead of a fixed point size. Native Text, not
+        // a PNG — an emoji glyph renders razor-sharp at any size and the relay
+        // payload stays a few bytes.
         .overlay {
             if let poke = sync.incomingPoke {
-                ZStack {
-                    Color.black.opacity(0.55).ignoresSafeArea()
-                    Text(poke.emoji)
-                        .font(.system(size: 90))
-                        .transition(.scale(scale: 0.4).combined(with: .opacity))
-                        .id(poke.id)
+                GeometryReader { geo in
+                    let side = min(geo.size.width, geo.size.height)
+                    ZStack {
+                        LinearGradient(
+                            colors: [Color.black, Color(white: 0.08)],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                        .ignoresSafeArea()
+                        VStack(spacing: 4) {
+                            Text(poke.emoji)
+                                .font(.system(size: side * 0.7))
+                                .minimumScaleFactor(0.5)
+                                .lineLimit(1)
+                            if let name = poke.name, !name.isEmpty {
+                                Text("from \(name)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.white.opacity(0.85))
+                                    .lineLimit(1)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
+                .ignoresSafeArea()
+                .transition(.scale(scale: 0.5).combined(with: .opacity))
+                .id(poke.id)
                 .allowsHitTesting(false)
             }
         }

@@ -41,14 +41,16 @@ final class WatchSync: NSObject {
         try? session.updateApplicationContext(ctx)
     }
 
-    /// Relay an incoming poke to the watch so it can flash the emoji + buzz —
-    /// ONLY while the watch app is reachable (foreground). When it isn't, the
-    /// mirrored push notification taps the wrist instead, so we just skip.
-    func sendPoke(emoji: String) {
+    /// Relay an incoming poke to the watch so it can flash the emoji full-screen
+    /// + buzz — ONLY while the watch app is reachable (foreground). When it
+    /// isn't, the mirrored push notification taps the wrist instead, so we skip.
+    /// `name` captions the flash ("from Alice"); a few bytes, so we never ship
+    /// an image — the watch renders the emoji natively at full size.
+    func sendPoke(emoji: String, name: String) {
         guard WCSession.isSupported() else { return }
         let session = WCSession.default
         guard session.activationState == .activated, session.isReachable else { return }
-        session.sendMessage(["kind": "poke", "emoji": emoji], replyHandler: nil, errorHandler: nil)
+        session.sendMessage(["kind": "poke", "emoji": emoji, "name": name], replyHandler: nil, errorHandler: nil)
     }
 }
 
