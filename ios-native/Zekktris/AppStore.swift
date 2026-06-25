@@ -649,12 +649,23 @@ final class AppStore: ObservableObject {
     func foregroundReconnect() {
         guard currentUserId != nil else { return }
         gateway.forceReconnect()
-        // The gateway's RESUME replays missed events, but a resume gap — or a
-        // message delivered to the now-discarded suspended socket — can leave
-        // the OPEN conversation missing messages that arrived while we were
-        // backgrounded, and RESUMED skips the READY full-resync. Reconcile the
-        // open channel directly so new messages always appear on return.
+        // Recover messages that arrived in the OPEN conversation while we were
+        // backgrounded. The gateway RESUME replays missed frames just before
+        // RESUMED (and we reconcile on RESUMED/READY too) — but this immediate
+        // reconcile can RACE the socket resume, the replay flush, and the
+        // network returning from a cold foreground; a lost race would otherwise
+        // not retry until the 12s poll, which is the exact "I foreground after a
+        // push and the new DM message isn't there" symptom. So reconcile NOW
+        // and again AFTER the socket has had time to come back, so a just-missed
+        // message appears within a couple seconds in every case. Each is a cheap
+        // after-cursor fetch (usually zero rows) and dedup-safe via upsert.
         Task { await reconcileOpenChannel() }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_300_000_000)
+            await reconcileOpenChannel()
+            try? await Task.sleep(nanoseconds: 2_700_000_000) // ~4s after foreground
+            await reconcileOpenChannel()
+        }
         // Refresh the watch with the freshest token + targets on foreground.
         syncWatch()
     }
