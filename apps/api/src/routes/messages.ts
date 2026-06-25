@@ -1010,33 +1010,48 @@ messagesRouter.post(
           targetUserIds = result.mentionedUserIds.filter((id) => id !== userId);
         }
 
-        if (targetUserIds.length === 0) return;
-
-        // Honor per-user mutes. Each recipient may have set a guild- or
-        // channel-level override. Levels:
+        // Mute-honoring filter for the MENTION/DM recipients above. Each may
+        // have a guild- or channel-level override:
         //   - 'all'      → push always
-        //   - 'mentions' → push only if this message mentions them (or
-        //                  it's a DM, where every message is implicitly
-        //                  a "mention")
+        //   - 'mentions' → push when this message mentions them (or it's a DM,
+        //                  where every message is implicitly a "mention")
         //   - 'nothing'  → never push
-        // The targetUserIds set was already filtered to mentioned+self
-        // in the guild path, and to all recipients in DMs. So:
-        //   - In a guild: every target is mentioned, so 'mentions' AND
-        //     'all' both push, only 'nothing' filters out.
-        //   - In a DM: 'mentions' counts as an implicit mention so it
-        //     also pushes; only 'nothing' filters out.
-        // Simpler: in this code path 'mentions' and 'all' are equivalent,
-        // and we filter exactly when level === 'nothing'.
-        const { resolveLevelsBulk } = await import('../services/notifications');
+        // Every id here is a mention/DM target, so 'all' and 'mentions' both
+        // push and only 'nothing' filters out.
+        const { resolveLevelsBulk, listChannelAllSubscribers } = await import(
+          '../services/notifications'
+        );
         const levels = await resolveLevelsBulk(
           targetUserIds,
           channelId,
           ctx.channel.guildId ?? null,
         );
-        const allowedTargets = targetUserIds.filter(
-          (id) => (levels.get(id.toString()) ?? 'all') !== 'nothing',
-        );
+        const allowed = new Map<string, bigint>();
+        for (const id of targetUserIds) {
+          if ((levels.get(id.toString()) ?? 'all') !== 'nothing') allowed.set(id.toString(), id);
+        }
 
+        // "Get notifications from servers too": for a GUILD message, also push
+        // anyone who EXPLICITLY opted into all-messages for this channel/guild
+        // (channel/guild override === 'all'). This is the only path where 'all'
+        // differs from 'mentions' — a non-mention message reaches these
+        // subscribers. Strictly opt-in (the implicit 'all' default does NOT
+        // subscribe, so members aren't fire-hosed). Verify they can still VIEW
+        // the channel and exclude the author. No mention-badge bump (not a
+        // mention). Only runs the viewer query when someone actually opted in.
+        if (!isDM && ctx.channel.guildId) {
+          const subs = await listChannelAllSubscribers(channelId, ctx.channel.guildId);
+          if (subs.length > 0) {
+            const viewers = new Set(
+              (await listChannelViewerIds(ctx.channel.guildId, channelId)).map((id) => id.toString()),
+            );
+            for (const id of subs) {
+              if (id !== userId && viewers.has(id.toString())) allowed.set(id.toString(), id);
+            }
+          }
+        }
+
+        const allowedTargets = [...allowed.values()];
         if (allowedTargets.length === 0) return;
 
         if (isDM) {

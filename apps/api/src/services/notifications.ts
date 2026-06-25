@@ -139,5 +139,55 @@ export async function resolveLevelsBulk(
   return out;
 }
 
+/**
+ * Users who EXPLICITLY opted into ALL-message notifications for this channel —
+ * a channel-level 'all', or a guild-level 'all' not downgraded by a channel
+ * override (resolution channel > guild). Drives the "get notifications from
+ * servers too" push for ordinary (non-mention) guild messages.
+ *
+ * Crucially this is OPT-IN ONLY: it queries the notification_overrides table
+ * (small, indexed) and never treats the implicit 'all' default as a
+ * subscription — so a user with no override row gets NOTHING for non-mention
+ * messages (otherwise every member would be fire-hosed on every message). The
+ * caller must still filter the returned ids to channel VIEWERS and exclude the
+ * author.
+ */
+export async function listChannelAllSubscribers(
+  channelId: bigint,
+  guildId: bigint | null,
+): Promise<bigint[]> {
+  const targets: bigint[] = guildId !== null ? [channelId, guildId] : [channelId];
+  const rows = await db
+    .select({
+      userId: schema.notificationOverrides.userId,
+      targetType: schema.notificationOverrides.targetType,
+      targetId: schema.notificationOverrides.targetId,
+      level: schema.notificationOverrides.level,
+    })
+    .from(schema.notificationOverrides)
+    .where(inArray(schema.notificationOverrides.targetId, targets));
+
+  type Buckets = { channel?: NotificationLevel; guild?: NotificationLevel };
+  const byUser = new Map<string, { id: bigint; b: Buckets }>();
+  for (const r of rows) {
+    const key = r.userId.toString();
+    let entry = byUser.get(key);
+    if (!entry) {
+      entry = { id: r.userId, b: {} };
+      byUser.set(key, entry);
+    }
+    if (r.targetType === 'channel' && r.targetId === channelId) {
+      entry.b.channel = r.level as NotificationLevel;
+    } else if (r.targetType === 'guild' && guildId !== null && r.targetId === guildId) {
+      entry.b.guild = r.level as NotificationLevel;
+    }
+  }
+  const out: bigint[] = [];
+  for (const { id, b } of byUser.values()) {
+    if ((b.channel ?? b.guild) === 'all') out.push(id);
+  }
+  return out;
+}
+
 // Suppress unused-warning for sql tag we keep available to migrations.
 void sql;
