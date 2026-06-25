@@ -1,8 +1,9 @@
 import SwiftUI
 import WatchKit
 
-/// Root: a list of recent DM peers to poke. Empty/locked states guide the user
-/// to open the phone app (which syncs the token + targets).
+/// Root: a list of recent DM peers. Tap one to message or poke them.
+/// Empty/locked states guide the user to open the phone app (which syncs the
+/// token + targets).
 struct ContentView: View {
     @EnvironmentObject private var sync: WatchSyncStore
 
@@ -15,15 +16,15 @@ struct ContentView: View {
                         text: "Open Zekktris on your iPhone to sync."
                     )
                 } else if sync.targets.isEmpty {
-                    notice(systemImage: "hand.point.right", text: "No recent DMs to poke yet.")
+                    notice(systemImage: "bubble.left.and.bubble.right", text: "No recent DMs yet.")
                 } else {
                     List(sync.targets) { target in
                         NavigationLink(value: target) { Text(target.name).lineLimit(1) }
                     }
                 }
             }
-            .navigationTitle("Poke")
-            .navigationDestination(for: PokeTarget.self) { PokePager(target: $0) }
+            .navigationTitle("Friends")
+            .navigationDestination(for: PokeTarget.self) { FriendScreen(target: $0) }
         }
         // Got poked: the enlarged emoji flashes ON TOP of whatever screen
         // you're on (paired with the haptic wave in WatchSyncStore).
@@ -48,6 +49,82 @@ struct ContentView: View {
             Text(text).font(.footnote).multilineTextAlignment(.center).foregroundStyle(.secondary)
         }
         .padding()
+    }
+}
+
+/// Tapped a friend: choose to send a real message (dictate/scribble) or a poke.
+struct FriendScreen: View {
+    let target: PokeTarget
+
+    var body: some View {
+        List {
+            NavigationLink {
+                MessageComposer(target: target)
+            } label: {
+                Label("Message", systemImage: "bubble.left.fill")
+            }
+            NavigationLink {
+                PokePager(target: target)
+            } label: {
+                Label("Poke", systemImage: "hand.point.right.fill")
+            }
+        }
+        .navigationTitle(target.name)
+    }
+}
+
+/// Dictate / scribble a text DM and send it straight from the wrist.
+struct MessageComposer: View {
+    @EnvironmentObject private var sync: WatchSyncStore
+    @Environment(\.dismiss) private var dismiss
+    let target: PokeTarget
+    @State private var text = ""
+    @State private var sending = false
+    @State private var sent = false
+
+    var body: some View {
+        VStack(spacing: 10) {
+            TextField("Message", text: $text, axis: .vertical)
+                .lineLimit(1...4)
+            Button { send() } label: {
+                if sending {
+                    ProgressView()
+                } else {
+                    Label(sent ? "Sent!" : "Send", systemImage: "paperplane.fill")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .tint(sent ? .green : .accentColor)
+            .disabled(sending || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .padding(.horizontal)
+        .navigationTitle(target.name)
+    }
+
+    private func send() {
+        let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sending, !body.isEmpty, let token = sync.token, let base = sync.apiBaseURL else { return }
+        sending = true
+        WKInterfaceDevice.current().play(.click)
+        Task {
+            let ok = await WatchPokeAPI.sendMessage(
+                baseURL: base, token: token, channelId: target.id, content: body
+            )
+            await MainActor.run {
+                sending = false
+                if ok {
+                    sent = true
+                    text = ""
+                    WKInterfaceDevice.current().play(.success)
+                } else {
+                    WKInterfaceDevice.current().play(.failure)
+                }
+            }
+            // On success, pop back to the friend after a beat so the "Sent!"
+            // confirmation is visible.
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            await MainActor.run { if sent { dismiss() } }
+        }
     }
 }
 
