@@ -157,9 +157,17 @@ export function MessageView({
     };
     document.addEventListener('visibilitychange', reconcileIfVisible);
     window.addEventListener('focus', reconcileIfVisible);
+    // Safety net for a focused-but-stale tab: the socket can go silently
+    // half-dead (or a live event slip through) WITHOUT a focus/visibility
+    // change to trigger the reconcile above, leaving the open conversation
+    // sitting behind until the user navigates away and back. Poll the open
+    // channel every 12s while visible so it always converges. Cheap — a no-op
+    // `after` fetch returning zero rows in the common case.
+    const poll = window.setInterval(reconcileIfVisible, 12_000);
     return () => {
       document.removeEventListener('visibilitychange', reconcileIfVisible);
       window.removeEventListener('focus', reconcileIfVisible);
+      window.clearInterval(poll);
     };
   }, [channel.id, reconcileChannel]);
 

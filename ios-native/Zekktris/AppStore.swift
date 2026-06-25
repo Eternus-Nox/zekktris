@@ -553,6 +553,8 @@ final class AppStore: ObservableObject {
     /// invisible). Cleared on any manual status pick (noteManualStatusChange).
     private var autoSetIdle = false
     private var autoPresenceTimer: Timer?
+    /// Safety-net poll for the OPEN conversation (see startOpenChannelPolling).
+    private var openChannelPollTimer: Timer?
     /// Becomes true after the first gateway READY. A later READY means we
     /// reconnected after a drop, so we re-sync state (events were missed while
     /// disconnected) — mirroring the web client re-bootstrapping on reconnect.
@@ -606,6 +608,7 @@ final class AppStore: ObservableObject {
             showDMs()
         }
         startAutoPresence()
+        startOpenChannelPolling()
     }
 
     /// Callers (e.g. a 1:1 ring) whose hangup arrived before `dms` was loaded
@@ -692,6 +695,7 @@ final class AppStore: ObservableObject {
     func setAppActive(_ active: Bool) {
         appActive = active
         if active { lastInteractionAt = Date() }
+        if active { startOpenChannelPolling() } else { stopOpenChannelPolling() }
         evaluateAutoPresence()
         // Re-sync the home-screen badge to true unread on every fg/bg flip (a
         // push may have set a stale number while we were away).
@@ -715,6 +719,29 @@ final class AppStore: ObservableObject {
         autoPresenceTimer = nil
     }
 
+    /// Safety net for the "stale open DM" bug: while the app is foreground AND a
+    /// conversation is open, reconcile it every 12s. The gateway delivers live
+    /// messages instantly in the normal case; this catches the rare miss — a
+    /// silently half-dead socket the heartbeat watchdog hasn't tripped yet, a
+    /// resume gap, or a push-only delivery — so the OPEN conversation can never
+    /// sit behind for more than the interval. Previously a missed live message
+    /// only surfaced after leaving + re-entering the channel (which re-fetches).
+    /// Cheap: an `after`-cursor fetch that returns zero rows in the common case.
+    private func startOpenChannelPolling() {
+        openChannelPollTimer?.invalidate()
+        openChannelPollTimer = Timer.scheduledTimer(withTimeInterval: 12, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.appActive, self.selectedChannel != nil else { return }
+                await self.reconcileOpenChannel()
+            }
+        }
+    }
+
+    private func stopOpenChannelPolling() {
+        openChannelPollTimer?.invalidate()
+        openChannelPollTimer = nil
+    }
+
     /// Compute the desired auto status and push it if it differs from the
     /// current chosen status. No-op when auto shouldn't act.
     func evaluateAutoPresence() {
@@ -736,6 +763,7 @@ final class AppStore: ObservableObject {
 
     func stop() {
         stopAutoPresence()
+        stopOpenChannelPolling()
         gateway.disconnect()
         currentUserId = nil
         currentUser = nil
