@@ -167,6 +167,13 @@ export const messages = pgTable(
     pinnedIdx: index('messages_pinned_idx')
       .on(t.channelId)
       .where(sql`pinned AND deleted_at IS NULL`),
+    /** (reply_to_id): the "First Responder" achievement self-joins
+     *  `parent.id = messages.reply_to_id`. Partial — only reply messages have
+     *  a non-null reply_to_id (a fraction of all messages), so this stays tiny
+     *  vs a full index over the biggest table. Matches migration 0089. */
+    replyToIdx: index('messages_reply_to_idx')
+      .on(t.replyToId)
+      .where(sql`reply_to_id IS NOT NULL`),
   }),
 );
 
