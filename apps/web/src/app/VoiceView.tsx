@@ -13,7 +13,7 @@
  * Participants come from AppState (server presence). Speaking + tracks
  * come from the voice manager's pub/sub. The two are joined by user id.
  */
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError, type Channel } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
@@ -657,21 +657,23 @@ export function VoiceView({
     [offeredStreams, viewingSids],
   );
 
-  const startViewing = (sid: string) =>
+  // Stable so the memoized ParticipantTile's onJoinStream prop doesn't change
+  // every render (otherwise React.memo could never skip a tile).
+  const startViewing = useCallback((sid: string) =>
     setViewingSids((prev) => {
       if (prev.has(sid)) return prev;
       const next = new Set(prev);
       next.add(sid);
       return next;
-    });
+    }), []);
 
-  const stopViewing = (sid: string) =>
+  const stopViewing = useCallback((sid: string) =>
     setViewingSids((prev) => {
       if (!prev.has(sid)) return prev;
       const next = new Set(prev);
       next.delete(sid);
       return next;
-    });
+    }), []);
 
   // Build a per-user map of streams this user hasn't watched yet —
   // used by ParticipantTile to render an inline "Join stream" link
@@ -1182,7 +1184,11 @@ export function VoiceView({
  * for the markup + the CSS class hookup in index.css.
  */
 
-function ParticipantTile({
+// Memoized so a single speaker transition (the speakers Set is replaced on
+// every probe tick) re-renders ONLY the tile whose `speaking` actually changed,
+// not all N tiles. Relies on its props being stable when unchanged (primitives;
+// onJoinStream is useCallback'd; unwatchedStreams is a memoized per-user array).
+const ParticipantTile = memo(function ParticipantTile({
   userId,
   label,
   speaking,
@@ -1431,7 +1437,7 @@ function ParticipantTile({
       )}
     </>
   );
-}
+});
 
 /** Muted-speaker icon. File-scoped helper used by participant-tile
     locally-muted badges and the master volume control. Same shape
