@@ -2014,8 +2014,12 @@ export class RestClient {
       /** Per-file client metadata, POSITIONAL to `files` (entry k describes
           files[k], may be null). Carries plaintext image dims so E2EE (.zke)
           images — which the server can't measure — reserve the slot on the
-          recipient before decrypt. */
-      attachmentsMeta?: ({ width?: number; height?: number } | null)[];
+          recipient before decrypt, and `hasThumbnail` when a `thumbs[k]` part
+          is present. */
+      attachmentsMeta?: ({ width?: number; height?: number; hasThumbnail?: boolean } | null)[];
+      /** Per-file ENCRYPTED thumbnail, POSITIONAL to `files` (null when none).
+          Uploaded as a sparse `thumbs[k]` part for E2EE images. */
+      thumbs?: (File | null)[];
     },
   ): Promise<{ message: Message }> {
     const files = input.files ?? [];
@@ -2046,6 +2050,13 @@ export class RestClient {
     for (let i = 0; i < files.length; i++) {
       // Server reads `files[N]` so this naming is part of the contract.
       fd.append(`files[${i}]`, files[i]!, files[i]!.name);
+    }
+    // Sparse encrypted thumbnails, positional to files[i] (E2EE images only).
+    if (input.thumbs) {
+      for (let i = 0; i < input.thumbs.length; i++) {
+        const t = input.thumbs[i];
+        if (t) fd.append(`thumbs[${i}]`, t, t.name);
+      }
     }
     return this.request('POST', `/channels/${channelId}/messages`, fd);
   }

@@ -439,6 +439,66 @@ export async function imageBitmapDims(
   }
 }
 
+/**
+ * Generate a small ENCRYPTED thumbnail for an E2EE image at send time. Decodes
+ * the image, draws a downscaled copy to a canvas, encodes webp, and encrypts it
+ * with the channel key — returned as a `.zke` File to upload as a sibling
+ * thumbnail part. Returns the ORIGINAL image's dims too (for slot reservation).
+ * Null when the image can't be decoded/encoded/encrypted (caller sends no thumb).
+ */
+export async function makeEncryptedThumbnail(
+  file: File,
+  channelId: string,
+  maxDim = 480,
+  quality = 0.7,
+): Promise<{ thumb: File; width: number; height: number } | null> {
+  try {
+    const bmp = await createImageBitmap(file);
+    const ow = bmp.width;
+    const oh = bmp.height;
+    if (!ow || !oh) {
+      bmp.close();
+      return null;
+    }
+    const scale = Math.min(1, maxDim / Math.max(ow, oh));
+    const tw = Math.max(1, Math.round(ow * scale));
+    const th = Math.max(1, Math.round(oh * scale));
+    const canvas =
+      typeof OffscreenCanvas !== 'undefined'
+        ? new OffscreenCanvas(tw, th)
+        : Object.assign(document.createElement('canvas'), { width: tw, height: th });
+    const ctx = (canvas as HTMLCanvasElement | OffscreenCanvas).getContext('2d') as
+      | CanvasRenderingContext2D
+      | OffscreenCanvasRenderingContext2D
+      | null;
+    if (!ctx) {
+      bmp.close();
+      return null;
+    }
+    ctx.drawImage(bmp, 0, 0, tw, th);
+    bmp.close();
+    const blob: Blob =
+      canvas instanceof OffscreenCanvas
+        ? await canvas.convertToBlob({ type: 'image/webp', quality })
+        : await new Promise<Blob>((resolve, reject) =>
+            (canvas as HTMLCanvasElement).toBlob(
+              (b) => (b ? resolve(b) : reject(new Error('toBlob failed'))),
+              'image/webp',
+              quality,
+            ),
+          );
+    const enc = await encryptBytesForDm(new Uint8Array(await blob.arrayBuffer()), channelId);
+    if (!enc) return null;
+    // Inner format is irrelevant (re-encrypted to octet-stream); name marks it.
+    const thumb = new File([enc as unknown as BlobPart], 'thumb.webp.zke', {
+      type: 'application/octet-stream',
+    });
+    return { thumb, width: ow, height: oh };
+  } catch {
+    return null;
+  }
+}
+
 /** Decrypt `.zke` attachment bytes (iv(12) || ciphertext || tag(16)). */
 export async function decryptBytesForDm(
   data: Uint8Array,

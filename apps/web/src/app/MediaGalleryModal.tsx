@@ -149,7 +149,9 @@ function GalleryPhoto({
   onOpen: (x: { src: string; filename?: string }) => void;
 }) {
   const encrypted = a.filename.endsWith('.zke');
-  const [src, setSrc] = useState<string | null>(encrypted ? null : a.url);
+  // Grid cell uses the small thumbnail when present; the lightbox opens full.
+  const inlineSrc = a.thumbnailUrl ?? a.url;
+  const [src, setSrc] = useState<string | null>(encrypted ? null : inlineSrc);
   const [keyVersion, setKeyVersion] = useState(getKeyVersion());
 
   useEffect(() => subscribeToKeyChanges(() => setKeyVersion(getKeyVersion())), []);
@@ -160,7 +162,7 @@ function GalleryPhoto({
     (async () => {
       try {
         // Cached + owned by the shared decrypted-media cache — do not revoke.
-        const url = await decryptedMediaURL(a.url, channelId);
+        const url = await decryptedMediaURL(inlineSrc, channelId);
         if (cancelled || !url) return;
         setSrc(url);
       } catch {
@@ -170,12 +172,22 @@ function GalleryPhoto({
     return () => {
       cancelled = true;
     };
-  }, [a.url, channelId, encrypted, keyVersion]);
+  }, [inlineSrc, channelId, encrypted, keyVersion]);
+
+  // Open the FULL image in the lightbox (the grid shows only the thumbnail).
+  const openFull = async () => {
+    if (!encrypted) {
+      onOpen({ src: a.url, filename: realName(a) });
+      return;
+    }
+    const full = await decryptedMediaURL(a.url, channelId);
+    if (full ?? src) onOpen({ src: (full ?? src)!, filename: realName(a) });
+  };
 
   return (
     <button
       type="button"
-      onClick={() => src && onOpen({ src, filename: realName(a) })}
+      onClick={() => void openFull()}
       className="aspect-square overflow-hidden rounded bg-bg-3"
       title={realName(a)}
     >

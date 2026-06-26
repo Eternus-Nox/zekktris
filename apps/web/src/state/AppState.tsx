@@ -2411,6 +2411,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         isVoiceMessage: !!input.voiceMessage && i === 0,
         durationSeconds: input.voiceMessage && i === 0 ? input.voiceMessage.durationSeconds : null,
         waveform: input.voiceMessage && i === 0 ? input.voiceMessage.waveform : null,
+        // Optimistic row renders the local full image inline; no thumb needed.
+        thumbnailUrl: null,
       }));
 
       const placeholder: Message = {
@@ -2478,13 +2480,19 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       // Retry re-uploads ciphertext too — never plaintext. Each encrypted
       // file gets the `.zke` suffix the renderer/gallery use to detect it.
       let uploadFiles = files;
-      let attachmentsMeta: ({ width?: number; height?: number } | null)[] | undefined;
+      let attachmentsMeta:
+        | ({ width?: number; height?: number; hasThumbnail?: boolean } | null)[]
+        | undefined;
+      let thumbFiles: (File | null)[] | undefined;
       if (input.encryptAttachmentsForDm && files.length > 0) {
         try {
-          const { encryptBytesForDm, imageBitmapDims } = await import('../lib/e2ee');
+          const { encryptBytesForDm, imageBitmapDims, makeEncryptedThumbnail } = await import(
+            '../lib/e2ee'
+          );
           const cid = input.encryptAttachmentsForDm;
           const out: File[] = [];
-          const meta: ({ width?: number; height?: number } | null)[] = [];
+          const meta: ({ width?: number; height?: number; hasThumbnail?: boolean } | null)[] = [];
+          const thumbs: (File | null)[] = [];
           for (const f of files) {
             const bytes = new Uint8Array(await f.arrayBuffer());
             const enc = await encryptBytesForDm(bytes, cid);
@@ -2494,17 +2502,28 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
                 type: 'application/octet-stream',
               }),
             );
-            // Plaintext dims (images only) so the recipient reserves the slot
-            // before decrypt — the server can't measure the ciphertext.
+            // For images: make a small ENCRYPTED thumbnail (loaded inline) and
+            // send the original's dims (slot reservation). The dims/thumb come
+            // from the plaintext original, never the ciphertext. If thumbnailing
+            // fails, still send dims so the slot is reserved.
             if (f.type.startsWith('image/')) {
-              const d = await imageBitmapDims(f);
-              meta.push(d ? { width: d.width, height: d.height } : null);
+              const r = await makeEncryptedThumbnail(f, cid);
+              if (r) {
+                meta.push({ width: r.width, height: r.height, hasThumbnail: true });
+                thumbs.push(r.thumb);
+              } else {
+                const d = await imageBitmapDims(f);
+                meta.push(d ? { width: d.width, height: d.height } : null);
+                thumbs.push(null);
+              }
             } else {
               meta.push(null);
+              thumbs.push(null);
             }
           }
           uploadFiles = out;
           attachmentsMeta = meta;
+          thumbFiles = thumbs;
         } catch {
           // Never fall back to plaintext under E2EE — fail the bubble.
           dispatch({ type: 'MESSAGE_MARK_FAILED', channelId, localId });
@@ -2526,6 +2545,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           ...(input.stickerId ? { stickerId: input.stickerId } : {}),
           ...(input.voiceMessage ? { voiceMessage: input.voiceMessage } : {}),
           ...(attachmentsMeta ? { attachmentsMeta } : {}),
+          ...(thumbFiles ? { thumbs: thumbFiles } : {}),
         });
         dispatch({
           type: 'MESSAGE_REPLACE_LOCAL',

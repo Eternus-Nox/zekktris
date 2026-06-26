@@ -102,7 +102,9 @@ export function Attachments({
               aria-label={`Open ${img.filename}`}
             >
               <img
-                src={img.url}
+                // Inline loads the small server thumbnail when present; the
+                // lightbox (below) opens the full image.
+                src={img.thumbnailUrl ?? img.url}
                 alt={img.filename}
                 width={img.width ?? undefined}
                 height={img.height ?? undefined}
@@ -173,14 +175,17 @@ function EncryptedImageGallery({
   channelId?: string;
 }) {
   const [urls, setUrls] = useState<(string | null)[]>(() => attachments.map(() => null));
+  // Full-resolution decrypted URLs for the lightbox (decrypted lazily on open;
+  // inline uses the small thumbnails so scrolling never downloads full blobs).
+  const [fullUrls, setFullUrls] = useState<(string | null)[]>(() => attachments.map(() => null));
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [keyVersion, setKeyVersion] = useState(getKeyVersion());
 
   useEffect(() => subscribeToKeyChanges(() => setKeyVersion(getKeyVersion())), []);
 
-  // Key the decrypt effect on the concrete attachment URLs (stable across
+  // Key the decrypt effect on the concrete URLs (thumb + full, stable across
   // re-renders) + the channel key version, not the array identity.
-  const urlKey = attachments.map((a) => a.url).join('|');
+  const urlKey = attachments.map((a) => `${a.thumbnailUrl ?? ''}|${a.url}`).join('||');
   useEffect(() => {
     if (!channelId) {
       setUrls(attachments.map(() => null));
@@ -191,9 +196,10 @@ function EncryptedImageGallery({
       // Object URLs are owned + cached by the shared decrypted-media cache
       // (keyed by channel+url, invalidated on key change) — do NOT revoke
       // them here, or a sibling/gallery view reusing the same cached URL
-      // would break.
+      // would break. Inline loads the THUMBNAIL when present (tiny download +
+      // decrypt); falls back to the full image for old messages.
       const out = await Promise.all(
-        attachments.map((a) => decryptedMediaURL(a.url, channelId)),
+        attachments.map((a) => decryptedMediaURL(a.thumbnailUrl ?? a.url, channelId)),
       );
       if (cancelled) return;
       setUrls(out);
@@ -203,6 +209,21 @@ function EncryptedImageGallery({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlKey, channelId, keyVersion]);
+
+  // Decrypt FULL images only once the lightbox is opened — keeps inline scroll
+  // cheap (thumbnails) while the full-screen view shows full resolution.
+  useEffect(() => {
+    if (lightboxIndex === null || !channelId) return;
+    let cancelled = false;
+    void (async () => {
+      const out = await Promise.all(attachments.map((a) => decryptedMediaURL(a.url, channelId)));
+      if (!cancelled) setFullUrls(out);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lightboxIndex, urlKey, channelId, keyVersion]);
 
   // The lightbox set is the successfully-decrypted images (with real names).
   const ready = attachments
@@ -253,7 +274,15 @@ function EncryptedImageGallery({
       </div>
       {lightboxIndex !== null && lightboxIndex >= 0 && (
         <ImageLightbox
-          images={ready.map((x) => ({ src: x.url, filename: x.a.filename.replace(/\.zke$/, '') }))}
+          images={ready.map((x) => {
+            // Full-res for the lightbox; fall back to the inline thumb until the
+            // full image finishes decrypting.
+            const ai = attachments.indexOf(x.a);
+            return {
+              src: (ai >= 0 ? fullUrls[ai] : null) ?? x.url,
+              filename: x.a.filename.replace(/\.zke$/, ''),
+            };
+          })}
           initialIndex={lightboxIndex}
           onClose={() => setLightboxIndex(null)}
         />
@@ -306,6 +335,8 @@ function EncryptedAttachment({
   channelId?: string;
 }) {
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  // Full-res decrypted URL for the lightbox (inline objectUrl is the thumbnail).
+  const [fullUrl, setFullUrl] = useState<string | null>(null);
   const [state, setState] = useState<'loading' | 'locked' | 'failed' | 'ready'>('loading');
   const [keyVersion, setKeyVersion] = useState(getKeyVersion());
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -326,8 +357,12 @@ function EncryptedAttachment({
       setState('loading');
       try {
         // Cached + owned by the shared decrypted-media cache — do not revoke.
+        // Images load the small thumbnail inline when present; the lightbox
+        // decrypts the full image on open (see below). Videos use the full url.
+        const inlineSrc =
+          looksImage && attachment.thumbnailUrl ? attachment.thumbnailUrl : attachment.url;
         const url = await decryptedMediaURL(
-          attachment.url,
+          inlineSrc,
           channelId,
           looksVideo ? videoMimeFromName(realName) : undefined,
         );
@@ -345,7 +380,20 @@ function EncryptedAttachment({
     return () => {
       cancelled = true;
     };
-  }, [attachment.url, channelId, keyVersion]);
+  }, [attachment.url, attachment.thumbnailUrl, channelId, looksImage, looksVideo, realName, keyVersion]);
+
+  // Decrypt the FULL image only when the lightbox opens (inline is the thumb).
+  useEffect(() => {
+    if (!lightboxOpen || !channelId || !looksImage || !attachment.thumbnailUrl) return;
+    let cancelled = false;
+    void (async () => {
+      const url = await decryptedMediaURL(attachment.url, channelId);
+      if (!cancelled && url) setFullUrl(url);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [lightboxOpen, attachment.url, attachment.thumbnailUrl, channelId, looksImage, keyVersion]);
 
   if (state === 'ready' && objectUrl && looksImage) {
     // No per-image E2EE lock — like iOS, the decrypted image shows no badge;
@@ -369,7 +417,11 @@ function EncryptedAttachment({
           />
         </button>
         {lightboxOpen && (
-          <ImageLightbox src={objectUrl} filename={realName} onClose={() => setLightboxOpen(false)} />
+          <ImageLightbox
+            src={fullUrl ?? objectUrl}
+            filename={realName}
+            onClose={() => setLightboxOpen(false)}
+          />
         )}
       </>
     );
