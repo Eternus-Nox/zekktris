@@ -1505,6 +1505,7 @@ struct MessageRow: View, Equatable {
                 }
                 if showHeader {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        if !isWebhook, let a = message.author { NameTag(a) }
                         Text(displayName)
                             .font(.zkSans(15, weight: .medium))
                             .foregroundColor(isWebhook ? Theme.ink1 : (data.authorColorRGB.map { store.color(fromRGB: $0) } ?? Theme.ink1))
@@ -3305,6 +3306,7 @@ struct ProfileCardView: View {
 
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
+                        NameTag(user)
                         Text(user.displayName ?? user.username ?? "Unknown")
                             .font(.zkSans(21, weight: .bold))
                             .foregroundColor(store.memberColor(user.id) ?? Theme.ink1)
@@ -3700,10 +3702,13 @@ struct MemberListView: View {
                    status: store.status(for: m.userId, fallback: m.user.status),
                    ringColor: Theme.bg1, decoration: m.user.avatarDecoration)
             VStack(alignment: .leading, spacing: 1) {
-                Text(m.nickname ?? m.user.name)
-                    .font(.zkSans(15, weight: .medium))
-                    .foregroundColor(store.memberColor(m.userId) ?? Theme.ink1)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    NameTag(m.user)
+                    Text(m.nickname ?? m.user.name)
+                        .font(.zkSans(15, weight: .medium))
+                        .foregroundColor(store.memberColor(m.userId) ?? Theme.ink1)
+                        .lineLimit(1)
+                }
                 if m.nickname != nil {
                     Text(m.user.name)
                         .font(.zkSans(12))

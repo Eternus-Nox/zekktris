@@ -8,6 +8,16 @@ extension Color {
         let b = Double(hex & 0xFF) / 255.0
         self.init(.sRGB, red: r, green: g, blue: b, opacity: alpha)
     }
+
+    /// Parse a "#rrggbb" (or "rrggbb") hex string, e.g. a server-stored
+    /// name-tag color. Returns nil for malformed input so callers can fall
+    /// back to the theme accent.
+    init?(hexString: String) {
+        var s = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, let v = UInt32(s, radix: 16) else { return nil }
+        self.init(hex: v)
+    }
 }
 
 /// A full set of themeable colors. Mirrors the web app's per-theme CSS

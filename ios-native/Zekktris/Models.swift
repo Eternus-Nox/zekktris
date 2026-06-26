@@ -28,6 +28,12 @@ struct PublicUser: Codable, Identifiable, Hashable {
     /// (GET /users/:id); nil on list-derived users. The profile card uses it
     /// to gate the Message + Call buttons (mirrors web).
     var canMessage: Bool?
+    /// Custom name tag ("clan tag") rendered IN FRONT of the name. Any/all
+    /// may be nil; renders only when label or emoji is set. tagColor is a
+    /// #rrggbb hex (clients fall back to the accent when nil).
+    var tagLabel: String?
+    var tagColor: String?
+    var tagEmoji: String?
 
     /// Best display label with sensible fallbacks.
     var name: String { displayName ?? username ?? "Unknown" }
@@ -97,6 +103,11 @@ struct SelfUser: Codable, Identifiable, Hashable {
     /// Optional for back-compat with sessions hydrated before the column existed;
     /// nil is treated as the server default `true`.
     var dmReadReceiptsEnabled: Bool?
+    /// Custom name tag ("clan tag") — carried on the self user so the
+    /// Appearance editor pre-fills and survives relaunch. See PublicUser.
+    var tagLabel: String?
+    var tagColor: String?
+    var tagEmoji: String?
 
     var name: String { displayName ?? username ?? "You" }
 }

@@ -320,6 +320,9 @@ export class RestClient {
         | 'allowDmsFromServerMembers'
         | 'publicKey'
         | 'achievementsPublic'
+        | 'tagLabel'
+        | 'tagColor'
+        | 'tagEmoji'
       >
     >,
   ): Promise<{ user: SelfUser }> {

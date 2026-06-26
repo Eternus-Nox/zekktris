@@ -16,6 +16,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ApiError } from '@zekktris/client';
+import { UserTag } from '../lib/UserTag';
 import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
 import { AchievementsShelf } from './AchievementsShelf';
@@ -742,6 +743,16 @@ export function SettingsView() {
               })}
             </div>
           </div>
+
+          {/* Name Tag — a small "clan tag" pill (emoji + color + up to 6
+              chars) shown IN FRONT of your name everywhere it appears. */}
+          <div className="mt-4 pt-3 border-t border-line">
+            <div className="flex items-baseline justify-between gap-2">
+              <h3 className="text-sm font-medium text-ink-1">Name Tag</h3>
+              <span className="text-[0.65rem] text-ink-3 shrink-0">Shown in front of your name</span>
+            </div>
+            <TagSettings />
+          </div>
         </section>
 
           {/* ── Privacy ──────────────────────────────────────────────────
@@ -1363,6 +1374,136 @@ function NotificationTypeToggles() {
 //
 // Unsubscribe is symmetric: `pushManager.unsubscribe()` to remove the
 // browser-side registration, then DELETE on the server.
+
+/**
+ * TagSettings — editor for the custom name tag ("clan tag"). Lives in the
+ * Appearance section. The tag (emoji + #color + up to 6 chars) renders IN
+ * FRONT of the user's name everywhere it appears. Saves via PATCH /@me;
+ * the live preview shows the pill ahead of the name to match render order.
+ */
+function TagSettings() {
+  const { rest, user, updateUser } = useAuth();
+  const toasts = useToasts();
+  const [emoji, setEmoji] = useState(user?.tagEmoji ?? '');
+  const [color, setColor] = useState(user?.tagColor ?? '#3dd7ec');
+  const [label, setLabel] = useState(user?.tagLabel ?? '');
+  const [pending, setPending] = useState(false);
+
+  const dirty =
+    emoji !== (user?.tagEmoji ?? '') ||
+    color !== (user?.tagColor ?? '#3dd7ec') ||
+    label !== (user?.tagLabel ?? '');
+
+  async function save() {
+    if (pending) return;
+    setPending(true);
+    try {
+      const res = await rest.patchMe({
+        tagLabel: label.trim() === '' ? null : label.trim(),
+        tagColor: color,
+        tagEmoji: emoji.trim() === '' ? null : emoji.trim(),
+      });
+      updateUser(res.user);
+      toasts.push('Tag saved', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Tag update failed', 'error');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function clearTag() {
+    if (pending) return;
+    setEmoji('');
+    setLabel('');
+    setPending(true);
+    try {
+      const res = await rest.patchMe({ tagLabel: null, tagEmoji: null });
+      updateUser(res.user);
+      toasts.push('Tag cleared', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Tag update failed', 'error');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const preview = {
+    tagLabel: label.trim() || null,
+    tagColor: color,
+    tagEmoji: emoji.trim() || null,
+  };
+  const hasTag = !!(user?.tagLabel || user?.tagEmoji);
+
+  return (
+    <div className="space-y-3 mt-2">
+      <p className="text-xs text-ink-3">
+        A small tag shown in front of your name everywhere — an emoji, a
+        color, and up to 6 characters. Leave it blank for no tag.
+      </p>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex flex-col gap-1">
+          <span className="text-[0.7rem] text-ink-3">Emoji</span>
+          <input
+            value={emoji}
+            onChange={(e) => setEmoji(e.target.value)}
+            maxLength={16}
+            placeholder="😎"
+            className="w-16 bg-bg-2 border border-line rounded-md px-2 py-1.5 text-sm text-center outline-none focus:border-accent transition-colors"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[0.7rem] text-ink-3">Color</span>
+          <input
+            type="color"
+            value={color}
+            onChange={(e) => setColor(e.target.value)}
+            className="w-12 h-9 bg-bg-2 border border-line rounded-md p-0.5 cursor-pointer"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[0.7rem] text-ink-3">Label</span>
+          <input
+            value={label}
+            onChange={(e) => setLabel(e.target.value.slice(0, 6))}
+            maxLength={6}
+            placeholder="CLAN"
+            className="w-28 bg-bg-2 border border-line rounded-md px-2 py-1.5 text-sm outline-none focus:border-accent transition-colors"
+          />
+        </label>
+        <div className="flex flex-col gap-1">
+          <span className="text-[0.7rem] text-ink-3">Preview</span>
+          <div className="h-9 flex items-center gap-1.5 px-2.5 rounded-md bg-bg-2 border border-line">
+            <UserTag user={preview} />
+            <span className="text-sm text-ink-1 font-medium truncate max-w-[10rem]">
+              {user?.displayName ?? 'You'}
+            </span>
+          </div>
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={pending || !dirty}
+          className="px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-bg-0 hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+        >
+          {pending ? 'Saving…' : 'Save tag'}
+        </button>
+        {hasTag && (
+          <button
+            type="button"
+            onClick={() => void clearTag()}
+            disabled={pending}
+            className="px-3 py-1.5 rounded-md text-sm text-ink-2 hover:text-ink-1 border border-line hover:bg-bg-3 disabled:opacity-50 transition-colors"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function ParentalControlsToggle() {
   const enabled = useParentalControlsEnabled();

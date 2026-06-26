@@ -52,6 +52,12 @@ export interface PublicUser {
       back-compat with payloads serialized before bots existed;
       treat missing as false. */
   isBot?: boolean;
+  /** Custom name tag ("clan tag") rendered IN FRONT of the name.
+      Any/all may be null. Renders only when label or emoji is set.
+      tagColor is a #rrggbb hex (defaults to accent when null). */
+  tagLabel?: string | null;
+  tagColor?: string | null;
+  tagEmoji?: string | null;
 }
 
 /** A bot account owned by the current user. Like a PublicUser but with

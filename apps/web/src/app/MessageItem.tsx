@@ -18,6 +18,7 @@
 import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
+import { UserTag } from '../lib/UserTag';
 import type { Channel, Message, MessageEmbed } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
 import { useAppStateSelector, isUserBlocked } from '../state/AppState';
@@ -770,6 +771,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
       <div className="flex-1 min-w-0">
         {!continuation && (
           <div className="flex items-baseline gap-2">
+            {!isWebhook && author && <UserTag user={author} />}
             <button
               type="button"
               onClick={!isWebhook && author ? (e) => onAvatarClick(author, e) : undefined}

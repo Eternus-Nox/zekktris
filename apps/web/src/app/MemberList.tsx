@@ -20,6 +20,7 @@
 
 import { memo, useEffect, useMemo, useRef } from 'react';
 import { Virtualizer, type VirtualizerHandle } from 'virtua';
+import { UserTag } from '../lib/UserTag';
 import { useAppStateSelector } from '../state/AppState';
 import { useAuth } from '../auth/AuthContext';
 import { avatarColor, avatarInitials } from '../lib/avatar';
@@ -339,6 +340,7 @@ const MemberRow = memo(function MemberRow({
             className={`absolute bottom-0 right-0 z-10 w-3 h-3 rounded-full border-2 border-bg-2 ${onlineDot}`}
           />
         </span>
+        <UserTag user={m.user} />
         <span
           className={`truncate text-sm ${roleColor ? '' : 'text-ink-1'}`}
           style={roleColor ? { color: roleColor } : undefined}

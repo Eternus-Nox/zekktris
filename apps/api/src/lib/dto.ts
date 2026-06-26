@@ -72,6 +72,11 @@ export interface SelfUserDTO {
       happens lazily client-side on first DM send). The matching
       private key is stored only in the client's localStorage. */
   publicKey: string | null;
+  /** Custom name tag ("clan tag") rendered in front of the name. Any/all
+      null. Carried on the self DTO so the settings editor pre-fills. */
+  tagLabel: string | null;
+  tagColor: string | null;
+  tagEmoji: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -102,6 +107,12 @@ export interface PublicUserDTO {
   createdAt: string;
   /** True for bot accounts. Drives the BOT badge in clients. */
   isBot: boolean;
+  /** Custom name tag ("clan tag") rendered in front of the name. Any/all
+      null. Renders only when label or emoji is set. tagColor is a #rrggbb
+      hex (clients default to the accent when null). */
+  tagLabel: string | null;
+  tagColor: string | null;
+  tagEmoji: string | null;
 }
 
 export function toSelfUser(user: User): SelfUserDTO {
@@ -127,6 +138,9 @@ export function toSelfUser(user: User): SelfUserDTO {
     achievementsPublic: user.achievementsPublic,
     allowDmsFromServerMembers: user.allowDmsFromServerMembers,
     publicKey: user.publicKey ?? null,
+    tagLabel: user.tagLabel ?? null,
+    tagColor: user.tagColor ?? null,
+    tagEmoji: user.tagEmoji ?? null,
     createdAt: isoDate(user.createdAt),
     updatedAt: isoDate(user.updatedAt),
   };
@@ -152,6 +166,9 @@ export function toPublicUser(user: User): PublicUserDTO {
     publicKey: user.publicKey ?? null,
     createdAt: isoDate(user.createdAt),
     isBot: user.isBot,
+    tagLabel: user.tagLabel ?? null,
+    tagColor: user.tagColor ?? null,
+    tagEmoji: user.tagEmoji ?? null,
   };
 }
 

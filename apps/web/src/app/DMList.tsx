@@ -21,6 +21,7 @@ import { useAuth } from '../auth/AuthContext';
 import { useToasts } from '../state/Toasts';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
+import { UserTag } from '../lib/UserTag';
 import { Search, X, Calendar, Users, Bookmark, ShieldE2ee } from '../lib/icons';
 import { ChannelMenu } from './ChannelMenu';
 
@@ -398,6 +399,7 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
             </span>
           )}
         </span>
+        {recipient && <UserTag user={recipient} />}
         <span className="truncate min-w-0 text-[15px]">{displayName}</span>
         {typeof channel.streak === 'number' && channel.streak > 0 && (
           // Messaging streak: consecutive UTC days both parties messaged.

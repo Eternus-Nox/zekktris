@@ -161,6 +161,56 @@ struct CachedImage<Placeholder: View, Failure: View>: View {
     }
 }
 
+/// Custom name-tag ("clan tag") pill — emoji + label tinted by the user's
+/// chosen color (falls back to the theme accent). Renders nothing unless a
+/// label or emoji is set. Shown IN FRONT of the user's name everywhere it
+/// appears (messages, member list, profile, DM list) — mirrors the web UserTag.
+struct NameTag: View {
+    let label: String?
+    let color: String?
+    let emoji: String?
+
+    init(label: String?, color: String?, emoji: String?) {
+        let l = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let e = emoji?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.label = (l?.isEmpty == false) ? l : nil
+        self.color = color
+        self.emoji = (e?.isEmpty == false) ? e : nil
+    }
+
+    /// Convenience for any PublicUser.
+    init(_ user: PublicUser) {
+        self.init(label: user.tagLabel, color: user.tagColor, emoji: user.tagEmoji)
+    }
+
+    var body: some View {
+        if label != nil || emoji != nil {
+            let tint = color.flatMap { Color(hexString: $0) } ?? Theme.accent
+            HStack(spacing: 2) {
+                if let emoji { Text(emoji) }
+                if let label { Text(label) }
+            }
+            .font(.zkSans(10, weight: .semibold))
+            .foregroundColor(tint)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(RoundedRectangle(cornerRadius: 5).fill(tint.opacity(0.14)))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(tint, lineWidth: 1))
+            .fixedSize()
+        }
+    }
+}
+
+extension Color {
+    /// "#RRGGBB" for persisting a name-tag color to the server.
+    var tagHexString: String {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        UIColor(self).getRed(&r, green: &g, blue: &b, alpha: &a)
+        return String(format: "#%02X%02X%02X",
+                      Int((r * 255).rounded()), Int((g * 255).rounded()), Int((b * 255).rounded()))
+    }
+}
+
 struct Avatar: View {
     let url: String?
     let name: String

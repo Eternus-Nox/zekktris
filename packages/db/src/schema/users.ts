@@ -156,6 +156,18 @@ export const users = pgTable(
       withTimezone: true,
     }),
     /**
+     * Custom name tag ("clan tag") — a small pill rendered IN FRONT of
+     * the user's name everywhere it appears (messages, member list,
+     * profile, DM list). All three parts are optional and independent:
+     *   tagLabel  — up to 6 characters of text (NULL = no text)
+     *   tagColor  — hex color (e.g. #3dd7ec) for the pill (NULL = accent)
+     *   tagEmoji  — a single leading emoji (NULL = none)
+     * The tag renders only when at least a label or emoji is set.
+     */
+    tagLabel: text('tag_label'),
+    tagColor: text('tag_color'),
+    tagEmoji: text('tag_emoji'),
+    /**
      * Privacy preference controlling who can open a DM with this user
      * and ring them for a 1:1 call.
      *

@@ -1504,6 +1504,7 @@ private struct DMRow: View {
                         .offset(x: 3, y: -3)
                 }
             }
+            if let u = dm.dmAvatarUser { NameTag(u) }
             Text(dm.dmTitle)
                 .font(.zkSans(15, weight: unread ? .semibold : .regular))
                 .foregroundColor(unread ? Theme.ink1 : Theme.ink2)
@@ -1818,6 +1819,12 @@ struct SettingsView: View {
     @State private var showTwoFactor = false
     @State private var showBots = false
     @State private var showAchievements = false
+    // Name-tag ("clan tag") editor state, seeded from the self user.
+    @State private var tagLabel = ""
+    @State private var tagEmoji = ""
+    @State private var tagColor = Color(hex: 0x3DD7EC)
+    @State private var tagSaving = false
+    @State private var tagStatus: String?
     // Mic input test (record-and-discard meter; never sent). Reuses the
     // voice-message recorder's live metering — no new audio infra.
     @StateObject private var micTest = VoiceRecorder()
@@ -1913,6 +1920,11 @@ struct SettingsView: View {
                     customStatusHasFutureExpiry(session.currentUser?.customStatusExpiresAt) ? .keep : .off
                 faceIDOn = session.faceIDEnabled
                 achievementsPublicOn = session.currentUser?.achievementsPublic ?? false
+                tagLabel = session.currentUser?.tagLabel ?? ""
+                tagEmoji = session.currentUser?.tagEmoji ?? ""
+                if let hex = session.currentUser?.tagColor, let c = Color(hexString: hex) {
+                    tagColor = c
+                }
             }
             // Keep the mirror in sync if currentUser is refreshed (e.g. the
             // background getMe on foreground) while Settings is open.
@@ -2258,6 +2270,104 @@ struct SettingsView: View {
                     }
                 }
                 .padding(.vertical, 2)
+            }
+
+            Divider().background(Theme.line).padding(.vertical, 6)
+            nameTagEditor
+        }
+    }
+
+    /// Name-tag ("clan tag") editor — emoji + color + up to 6 chars, shown in
+    /// front of your name everywhere. Saves through Session.setNameTag.
+    private var nameTagEditor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("NAME TAG")
+            Text("A small tag shown in front of your name everywhere — an emoji, a color, and up to 6 characters. Leave blank for none.")
+                .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(alignment: .bottom, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Emoji").font(.zkSans(11)).foregroundColor(Theme.ink3)
+                    TextField("😎", text: $tagEmoji)
+                        .multilineTextAlignment(.center)
+                        .font(.zkSans(16)).foregroundColor(Theme.ink1)
+                        .frame(width: 52).padding(.vertical, 8)
+                        .background(Theme.bg1).clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line, lineWidth: 1))
+                        .onChange(of: tagEmoji) { v in
+                            if v.count > 2 { tagEmoji = String(v.prefix(2)) }
+                        }
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Color").font(.zkSans(11)).foregroundColor(Theme.ink3)
+                    ColorPicker("", selection: $tagColor, supportsOpacity: false)
+                        .labelsHidden().frame(width: 44, height: 36)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Label").font(.zkSans(11)).foregroundColor(Theme.ink3)
+                    TextField("CLAN", text: $tagLabel)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                        .font(.zkSans(15)).foregroundColor(Theme.ink1)
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .background(Theme.bg1).clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line, lineWidth: 1))
+                        .onChange(of: tagLabel) { v in
+                            if v.count > 6 { tagLabel = String(v.prefix(6)) }
+                        }
+                }
+            }
+
+            // Live preview: pill in front of your name.
+            HStack(spacing: 8) {
+                Text("Preview").font(.zkSans(11)).foregroundColor(Theme.ink3)
+                HStack(spacing: 6) {
+                    NameTag(label: tagLabel, color: tagColor.tagHexString, emoji: tagEmoji)
+                    Text(session.currentUser?.name ?? "You")
+                        .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(Theme.bg1).clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    Task {
+                        tagSaving = true; tagStatus = nil
+                        let err = await session.setNameTag(label: tagLabel, color: tagColor.tagHexString, emoji: tagEmoji)
+                        tagStatus = err ?? "Saved"
+                        tagSaving = false
+                    }
+                } label: {
+                    Text(tagSaving ? "Saving…" : "Save tag")
+                        .font(.zkSans(14, weight: .semibold)).foregroundColor(.white)
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain).disabled(tagSaving)
+
+                if !tagLabel.isEmpty || !tagEmoji.isEmpty {
+                    Button {
+                        tagLabel = ""; tagEmoji = ""
+                        Task {
+                            tagSaving = true; tagStatus = nil
+                            let err = await session.setNameTag(label: "", color: tagColor.tagHexString, emoji: "")
+                            tagStatus = err ?? "Cleared"
+                            tagSaving = false
+                        }
+                    } label: {
+                        Text("Clear").font(.zkSans(14)).foregroundColor(Theme.ink2)
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain).disabled(tagSaving)
+                }
+
+                if let tagStatus {
+                    Text(tagStatus).font(.zkSans(12))
+                        .foregroundColor(tagStatus == "Saved" || tagStatus == "Cleared" ? Theme.ink3 : Theme.dangerSoft)
+                }
             }
         }
     }
