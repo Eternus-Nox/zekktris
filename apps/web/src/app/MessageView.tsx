@@ -2261,6 +2261,24 @@ function Composer({
               onCancelReply?.();
             }
           }}
+          onPaste={(e) => {
+            // Paste an image straight from the clipboard (Cmd/Ctrl+V) as an
+            // attachment — works in channels and DMs; goes through the same
+            // path as a picked/captured image (compression + E2EE on send).
+            const items = e.clipboardData?.items;
+            if (!items || files.length >= MAX_FILES) return;
+            const imgs: File[] = [];
+            for (const it of items) {
+              if (it.kind === 'file' && it.type.startsWith('image/')) {
+                const f = it.getAsFile();
+                if (f) imgs.push(f);
+              }
+            }
+            if (imgs.length > 0) {
+              e.preventDefault(); // don't also paste the image's name as text
+              addFiles(imgs);
+            }
+          }}
           rows={1}
           enterKeyHint="send"
           placeholder={placeholder ?? `Message #${channel.name ?? ''}`}

@@ -591,6 +591,14 @@ struct MessageListView: View {
                                 Label("Take photo", systemImage: "camera")
                             }
                         }
+                        // Paste an image from the clipboard — only shown when the
+                        // pasteboard actually holds an image (checked when the
+                        // menu opens). Same attachment path as a picked photo.
+                        if UIPasteboard.general.hasImages {
+                            Button { pasteImages() } label: {
+                                Label("Paste image", systemImage: "doc.on.clipboard")
+                            }
+                        }
                         if !channel.isE2EE {
                             Button { showPollSheet = true } label: { Label("Poll", systemImage: "chart.bar.xaxis") }
                         }
@@ -966,6 +974,19 @@ struct MessageListView: View {
         case "unflip": return arg.isEmpty ? unflip : "\(arg) \(unflip)"
         case "spoiler": return arg.isEmpty ? input : "||\(arg)||"
         default: return input
+        }
+    }
+
+    /// Add image(s) from the clipboard as pending attachments (same path as a
+    /// picked photo). Respects the 10-attachment cap.
+    private func pasteImages() {
+        let images = UIPasteboard.general.images ?? []
+        for img in images {
+            guard pendingAttachments.count < 10,
+                  let data = img.jpegData(compressionQuality: 0.85) else { break }
+            pendingAttachments.append(PendingAttachment(
+                data: data, filename: "pasted.jpg", mime: "image/jpeg",
+                isVideo: false, preview: img))
         }
     }
 
