@@ -1886,7 +1886,6 @@ struct SettingsView: View {
                         displayNameSection
                         bioSection
                         customStatusSection
-                        decorationSection
                         achievementsSection
                     case .preferences:
                         appearanceSection
@@ -2271,6 +2270,10 @@ struct SettingsView: View {
                 .padding(.vertical, 2)
             }
 
+            Divider().background(Theme.line).padding(.vertical, 6)
+            // Profile frame (avatar decoration) lives here with themes + the
+            // name tag (matches web's Appearance: Themes / Avatar Frame / Name Tag).
+            decorationSection
             Divider().background(Theme.line).padding(.vertical, 6)
             nameTagEditor
         }
