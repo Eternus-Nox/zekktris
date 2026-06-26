@@ -4,6 +4,7 @@ import {
   messageMatchesPatterns,
   messageMatchesRegexes,
   messageMatchesLinkFilter,
+  isSafeRegexPattern,
 } from '../src/services/automod';
 
 // These helpers are pure (no DB) so they always run, regardless of integration setup.
@@ -51,6 +52,33 @@ describe('automod pure helpers', () => {
 
     it('skips an invalid regex instead of throwing', () => {
       expect(messageMatchesRegexes('anything', ['(unclosed'])).toBe(false);
+    });
+
+    it('skips a catastrophic-backtracking (ReDoS) pattern instead of running it', () => {
+      // `(a+)+$` against a long non-matching input is the classic ReDoS bomb;
+      // it must be SKIPPED (return false fast), never executed on the hot path.
+      const evil = '(a+)+$';
+      const input = 'a'.repeat(40) + '!'; // would hang an unguarded RegExp
+      const start = Date.now();
+      expect(messageMatchesRegexes(input, [evil])).toBe(false);
+      expect(Date.now() - start).toBeLessThan(100); // proves it didn't backtrack
+    });
+
+    it('still matches safe patterns alongside a skipped unsafe one', () => {
+      expect(messageMatchesRegexes('hello world', ['(x+)+$', 'world'])).toBe(true);
+    });
+  });
+
+  describe('isSafeRegexPattern', () => {
+    it('accepts ordinary patterns', () => {
+      expect(isSafeRegexPattern('#[0-9]+')).toBe(true);
+      expect(isSafeRegexPattern('badword')).toBe(true);
+      expect(isSafeRegexPattern('')).toBe(true);
+    });
+
+    it('rejects nested-quantifier (ReDoS) shapes', () => {
+      expect(isSafeRegexPattern('(a+)+$')).toBe(false);
+      expect(isSafeRegexPattern('(.*)*')).toBe(false);
     });
   });
 

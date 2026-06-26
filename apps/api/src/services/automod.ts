@@ -37,6 +37,7 @@
  */
 
 import { and, eq } from 'drizzle-orm';
+import safe from 'safe-regex';
 import { db, schema } from '../db';
 import { nextSnowflake } from '../snowflake';
 import { errors } from '../errors';
@@ -87,6 +88,7 @@ export async function listGuildRules(guildId: bigint): Promise<schema.AutomodRul
 }
 
 export async function createRule(input: CreateRuleInput): Promise<schema.AutomodRule> {
+  assertPatternsSafe(input.ruleType, input.patterns);
   const id = nextSnowflake();
   const [row] = await db
     .insert(schema.automodRules)
@@ -123,6 +125,24 @@ export async function updateRule(
   guildId: bigint,
   input: UpdateRuleInput,
 ): Promise<schema.AutomodRule> {
+  // Validate updated regex patterns against the rule's stored type (which the
+  // patch can't change). One cheap lookup, only when patterns are touched.
+  if (input.patterns !== undefined) {
+    const [existing] = await db
+      .select({ ruleType: schema.automodRules.ruleType })
+      .from(schema.automodRules)
+      .where(
+        and(
+          eq(schema.automodRules.id, ruleId),
+          eq(schema.automodRules.guildId, guildId),
+        ),
+      )
+      .limit(1);
+    if (existing) {
+      assertPatternsSafe(existing.ruleType as AutomodRuleType, input.patterns);
+    }
+  }
+
   // Build the patch object — only include fields the caller actually
   // specified. Using `undefined`-passthrough with Drizzle's `set` is
   // tempting but cleaner to be explicit so we don't accidentally
@@ -361,32 +381,94 @@ function escapeRegex(s: string): string {
 }
 
 /**
- * Raw regex match — true if any pattern matches anywhere in the
- * content. Patterns are compiled with the case-insensitive flag by
- * default; admins can override per-pattern with inline flag syntax.
+ * Whether an admin-supplied regex is SAFE to run on the message-send hot
+ * path — i.e. free of catastrophic-backtracking ("ReDoS") shapes. Automod
+ * regex rules run inline on every guild message, single-threaded; a pattern
+ * like `(a+)+$` against a crafted input can pin the event loop and stall
+ * EVERY request + gateway frame on the replica (cross-tenant DoS). `safe`
+ * (safe-regex) bounds repetition star-height — the classic ReDoS guard.
  *
- * Invalid regex patterns (admin typo, unsupported feature) are
- * SKIPPED rather than crashing — a broken rule shouldn't kill the
- * message-send path. The skip happens silently; admins testing
- * their rules can use the preview affordance in the UI to confirm
- * patterns parse correctly.
+ * Exported so rule create/update validation rejects exactly the patterns the
+ * runtime would skip (consistent admin feedback). Empty patterns are no-ops
+ * (safe); an unparseable pattern is treated as unsafe (it can't run anyway).
+ */
+export function isSafeRegexPattern(pattern: string): boolean {
+  const pat = pattern.trim();
+  if (pat.length === 0) return true;
+  try {
+    return safe(pat);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reject ReDoS-prone patterns for `regex_pattern` rules with a clear,
+ * admin-facing error at create/update time (the runtime would otherwise
+ * silently skip them, which reads as "my rule doesn't work"). No-op for the
+ * other rule types, whose "patterns" are literal keywords / domains compiled
+ * with escaping, never as raw user regex.
+ */
+export function assertPatternsSafe(
+  ruleType: AutomodRuleType,
+  patterns: string[] | undefined,
+): void {
+  if (ruleType !== 'regex_pattern' || !patterns) return;
+  for (const p of patterns) {
+    if (!isSafeRegexPattern(p)) {
+      throw errors.badRequest(
+        `Unsafe regex pattern rejected — it could cause catastrophic backtracking (ReDoS): ${p
+          .trim()
+          .slice(0, 80)}`,
+      );
+    }
+  }
+}
+
+// Compiled-pattern cache for the regex automod rules. Keyed by the raw
+// (trimmed) pattern → its compiled RegExp, or null when the pattern is unsafe
+// (ReDoS-prone) or invalid, so it's permanently skipped. This (a) neutralizes
+// any catastrophic pattern already stored before the create-time guard
+// existed — it's checked with `safe()` BEFORE we ever construct/run it — and
+// (b) avoids re-running the safety check + recompiling on every message.
+const compiledPatternCache = new Map<string, RegExp | null>();
+const COMPILED_PATTERN_CACHE_MAX = 2000;
+
+function compilePattern(raw: string): RegExp | null {
+  const pat = raw.trim();
+  if (pat.length === 0) return null;
+  const cached = compiledPatternCache.get(pat);
+  if (cached !== undefined) return cached;
+  let rx: RegExp | null = null;
+  // ReDoS guard FIRST — never run (or even construct) a pattern that could
+  // pin the event loop, even if it slipped into storage before validation.
+  if (isSafeRegexPattern(pat)) {
+    try {
+      rx = new RegExp(pat, 'i');
+    } catch {
+      rx = null; // invalid (admin typo / unsupported feature) → skip
+    }
+  }
+  if (compiledPatternCache.size >= COMPILED_PATTERN_CACHE_MAX) {
+    compiledPatternCache.clear();
+  }
+  compiledPatternCache.set(pat, rx);
+  return rx;
+}
+
+/**
+ * Raw regex match — true if any pattern matches anywhere in the content.
+ * Patterns are compiled (case-insensitive) once and cached. ReDoS-prone or
+ * invalid patterns are SKIPPED rather than crashing or stalling the send
+ * path — see compilePattern / isSafeRegexPattern.
  *
  * Exported for testing.
  */
 export function messageMatchesRegexes(content: string, patterns: string[]): boolean {
   if (patterns.length === 0) return false;
   for (const raw of patterns) {
-    const pat = raw.trim();
-    if (pat.length === 0) continue;
-    try {
-      const rx = new RegExp(pat, 'i');
-      if (rx.test(content)) return true;
-    } catch {
-      // Invalid regex — skip this pattern. Admin gets feedback via
-      // the preview/test affordance in the UI; runtime sends just
-      // ignore the broken pattern rather than failing closed.
-      continue;
-    }
+    const rx = compilePattern(raw);
+    if (rx && rx.test(content)) return true;
   }
   return false;
 }
