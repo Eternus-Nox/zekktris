@@ -899,7 +899,7 @@ struct VoiceChannelView: View {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 20, weight: .semibold))
                         .foregroundColor(Theme.ink2)
-                        .padding(.leading, 8)
+                        .padding(.leading, 14)
                         .frame(width: 44, height: 44, alignment: .leading)
                         .contentShape(Rectangle())
                 }
@@ -1331,7 +1331,7 @@ struct StageChannelView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Button { store.clearChannel() } label: {
-                Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)).foregroundColor(Theme.ink2).frame(width: 44, height: 44).contentShape(Rectangle())
+                Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold)).foregroundColor(Theme.ink2).padding(.leading, 14).frame(width: 44, height: 44, alignment: .leading).contentShape(Rectangle())
             }
             Image(systemName: "person.wave.2.fill").font(.system(size: 15)).foregroundColor(Theme.accent)
             VStack(alignment: .leading, spacing: 1) {
