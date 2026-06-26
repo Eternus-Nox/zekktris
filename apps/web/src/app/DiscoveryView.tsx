@@ -124,7 +124,7 @@ export function DiscoveryView() {
           className="xl:hidden -ml-1 w-10 h-10 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3 shrink-0"
           aria-label="Back to direct messages"
         >
-          <ChevronLeft size={18} />
+          <ChevronLeft size={20} />
         </button>
         <Compass size={16} className="text-accent shrink-0" />
         <h1 className="text-base sm:text-lg font-semibold truncate">Discover Servers</h1>

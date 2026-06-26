@@ -171,7 +171,7 @@ export function SavedView() {
           className="xl:hidden -ml-1 mr-0.5 w-10 h-10 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3 shrink-0"
           aria-label="Back to direct messages"
         >
-          <ChevronLeft size={18} />
+          <ChevronLeft size={20} />
         </button>
         <Bookmark size={16} className="text-accent" filled />
         <h1 className="text-base font-semibold text-ink-1">Saved messages</h1>

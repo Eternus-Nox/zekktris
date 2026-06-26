@@ -521,7 +521,7 @@ export function MessageView({
             onClick={() =>
               nav(`/channels/${channel.guildId}/${channel.parentId}`)
             }
-            className="shrink-0 w-10 h-10 -ml-1 flex items-center justify-center rounded text-accent hover:text-ink-1 hover:bg-bg-3 transition-colors"
+            className="shrink-0 w-10 h-10 -ml-1 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3 transition-colors"
             aria-label="Back to forum"
             title="Back to forum"
           >
