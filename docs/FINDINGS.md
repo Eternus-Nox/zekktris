@@ -711,10 +711,12 @@ real + hot-at-scale + not-already-fixed after per-finding adversarial verificati
   already-stored bad patterns are neutralized too. 301 API tests green.
 
 ## Still OPEN (verified real; ranked for follow-up — need a decision or are bigger)
-- **`messages(reply_to_id)` partial index (part 2 of achievements, S but risky):**
-  serves the first-responder self-join. Additive, but `messages` is large and the
-  migrator is transactional (no `CONCURRENTLY`) → a build-time write lock. Needs a
-  concurrent-build strategy / maintenance-window decision.
+- **`messages(reply_to_id)` partial index — FIXED (commit 9b7e880):** serves the
+  First Responder achievement self-join. Shipped as a PARTIAL index over reply
+  rows only (`WHERE reply_to_id IS NOT NULL`), migration 0089. The migration
+  documents an out-of-band `CREATE INDEX CONCURRENTLY` pre-build for very large
+  `messages` tables (`IF NOT EXISTS` makes the migration a no-op afterward), to
+  avoid the transactional migrator's write-lock on the biggest table.
 - **@everyone push fan-out (L) — FIXED (commit 69ec35a):** `routes/messages.ts`
   + `services/push.ts`/`apns.ts`/`fcm.ts` did 3×N token-table queries +
   unbounded outbound concurrency on a big announcement. New
