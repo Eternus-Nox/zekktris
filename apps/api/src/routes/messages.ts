@@ -56,7 +56,7 @@ import { env } from '../env';
 import type { User } from '@zekktris/db';
 import { POKE_VARIANTS } from '@zekktris/db';
 import { RateLimiter } from '../lib/rateLimit';
-import { sendToUser } from '../services/push';
+import { sendToUser, sendToUsers, type PushPayload } from '../services/push';
 import { MESSAGE_CONTENT_MAX_LENGTH } from '@zekktris/shared/constants';
 
 // Per-poker throttle for the nudge/poke endpoint — pokes are lightweight, so
@@ -1172,48 +1172,44 @@ messagesRouter.post(
           // updates while the app is closed). Bulk lookup, mirroring the
           // resolveLevelsBulk / getDmNotificationPrefsForChannel calls above.
           const badges = await readStates.unreadBadgeCounts(allowedTargets);
-          await Promise.all(
-            allowedTargets.map(async (target) => {
-              const showContent = prefs.get(target) ?? !isE2EEContent;
-              const fits = payload.content.length <= E2EE_PUSH_MAX;
-              const badge = badges.get(target.toString()) ?? 0;
-              const push =
-                showContent && isE2EEContent
-                  ? {
-                      title: contentTitle,
-                      body: 'Encrypted message',
-                      ...common,
-                      badge,
-                      // NSE decrypt payload (e2ee = ciphertext) only when it
-                      // fits; either way the reply data rides along.
-                      ...(fits
-                        ? { mutableContent: true, data: { ...replyData, e2ee: payload.content } }
-                        : { data: replyData }),
-                    }
-                  : showContent
-                    ? { title: contentTitle, body: contentBody, ...common, badge, data: replyData }
-                    : { title: genericTitle, body: genericBody, ...common, badge, data: replyData };
-              return sendToUser(target, push);
-            }),
-          );
+          // Bulk fan-out: one token query per transport + bounded send burst,
+          // with each recipient's own preview-pref / E2EE / badge payload.
+          await sendToUsers(allowedTargets, (target): PushPayload => {
+            const showContent = prefs.get(target) ?? !isE2EEContent;
+            const fits = payload.content.length <= E2EE_PUSH_MAX;
+            const badge = badges.get(target.toString()) ?? 0;
+            return showContent && isE2EEContent
+              ? {
+                  title: contentTitle,
+                  body: 'Encrypted message',
+                  ...common,
+                  badge,
+                  // NSE decrypt payload (e2ee = ciphertext) only when it
+                  // fits; either way the reply data rides along.
+                  ...(fits
+                    ? { mutableContent: true, data: { ...replyData, e2ee: payload.content } }
+                    : { data: replyData }),
+                }
+              : showContent
+                ? { title: contentTitle, body: contentBody, ...common, badge, data: replyData }
+                : { title: genericTitle, body: genericBody, ...common, badge, data: replyData };
+          });
         } else {
-          // Guild mentions: each mentioned recipient gets their own app-icon
+          // Guild mentions / @everyone: each recipient gets their own app-icon
           // badge count (the per-DM preview pref doesn't apply, and guild
-          // messages are never E2EE). Inline reply is offered here too.
+          // messages are never E2EE). Inline reply is offered here too. Bulk
+          // fan-out is the scale win — an @everyone in a big guild is now 3
+          // token queries + a bounded send burst, not 3×N + an unbounded one.
           const badges = await readStates.unreadBadgeCounts(allowedTargets);
-          await Promise.all(
-            allowedTargets.map((target) =>
-              sendToUser(target, {
-                title,
-                body,
-                url,
-                tag: channelId.toString(),
-                kind: 'message' as const,
-                badge: badges.get(target.toString()) ?? 0,
-                data: { channelId: channelId.toString(), isE2EE: false },
-              }),
-            ),
-          );
+          await sendToUsers(allowedTargets, (target): PushPayload => ({
+            title,
+            body,
+            url,
+            tag: channelId.toString(),
+            kind: 'message' as const,
+            badge: badges.get(target.toString()) ?? 0,
+            data: { channelId: channelId.toString(), isE2EE: false },
+          }));
         }
       } catch {
         // Push is non-critical; failure here mustn't surface anywhere.

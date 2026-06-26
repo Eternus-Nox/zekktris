@@ -26,11 +26,12 @@
 
 import http2 from 'node:http2';
 import { importPKCS8, SignJWT } from 'jose';
-import { and, eq, ne } from 'drizzle-orm';
+import { and, eq, ne, inArray } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { env } from '../env';
 import { errors } from '../errors';
 import { nextSnowflake } from '../snowflake';
+import { runBounded, PUSH_FANOUT_CONCURRENCY } from '../lib/concurrency';
 import type { PushPayload } from './push';
 
 let configured = false;
@@ -407,51 +408,106 @@ export async function sendToUserApns(userId: bigint, payload: PushPayload): Prom
   await Promise.all(
     tokens.map(async (row) => {
       const res = await sendOne(row.token, body, jwt);
-      if (!res.ok) {
-        // Make delivery failures visible in `docker logs` — silent
-        // BadDeviceToken/TopicDisallowed made "notifications don't
-        // arrive" undiagnosable. Common causes: APNS_PRODUCTION
-        // mismatched with the build (Xcode runs need sandbox=false),
-        // or APNS_BUNDLE_ID not matching the app's bundle id.
-        // eslint-disable-next-line no-console
-        console.warn(
-          `APNs: send failed (status ${res.status}${res.reason ? `, ${res.reason}` : ''})`,
-        );
-      }
-      if (res.ok) {
-        delivered++;
-        void db
-          .update(schema.apnsDeviceTokens)
-          .set({ lastUsedAt: new Date() })
-          .where(eq(schema.apnsDeviceTokens.token, row.token))
-          .catch(() => undefined);
-        return;
-      }
-      const permanent =
-        res.status === 410 ||
-        res.reason === 'BadDeviceToken' ||
-        res.reason === 'Unregistered' ||
-        res.reason === 'DeviceTokenNotForTopic';
-      if (permanent) {
-        // Defense-in-depth: prune by token AND guard platform != 'android', so
-        // the APNs cleanup can never delete an Android FCM row even if a future
-        // caller regresses the platform filter on the token query above.
-        void db
-          .delete(schema.apnsDeviceTokens)
-          .where(
-            and(
-              eq(schema.apnsDeviceTokens.token, row.token),
-              ne(schema.apnsDeviceTokens.platform, 'android'),
-            ),
-          )
-          .catch(() => undefined);
-      }
-      // eslint-disable-next-line no-console
-      console.warn(
-        `APNs send failed (status ${res.status}${res.reason ? `, ${res.reason}` : ''})`,
-      );
+      if (applyApnsResult(row.token, res)) delivered++;
     }),
   );
+
+  return delivered;
+}
+
+/**
+ * Apply one APNs send result: bump lastUsedAt on success, prune the token on a
+ * PERMANENT failure (410 / BadDeviceToken / Unregistered / DeviceTokenNotForTopic),
+ * warn otherwise. Returns whether it delivered. Shared by the single-user and
+ * bulk fan-out paths so the prune semantics can't drift between them.
+ *
+ * Defense-in-depth on the prune: token AND platform != 'android', so the APNs
+ * cleanup can never delete an Android FCM row even if a caller regresses the
+ * platform filter on the token query.
+ */
+function applyApnsResult(token: string, res: ApnsResult): boolean {
+  if (res.ok) {
+    void db
+      .update(schema.apnsDeviceTokens)
+      .set({ lastUsedAt: new Date() })
+      .where(eq(schema.apnsDeviceTokens.token, token))
+      .catch(() => undefined);
+    return true;
+  }
+  const permanent =
+    res.status === 410 ||
+    res.reason === 'BadDeviceToken' ||
+    res.reason === 'Unregistered' ||
+    res.reason === 'DeviceTokenNotForTopic';
+  if (permanent) {
+    void db
+      .delete(schema.apnsDeviceTokens)
+      .where(
+        and(
+          eq(schema.apnsDeviceTokens.token, token),
+          ne(schema.apnsDeviceTokens.platform, 'android'),
+        ),
+      )
+      .catch(() => undefined);
+  }
+  // Surfaced in `docker logs` — silent BadDeviceToken/TopicDisallowed made
+  // "notifications don't arrive" undiagnosable. Common causes: APNS_PRODUCTION
+  // mismatched with the build, or APNS_BUNDLE_ID not matching the app.
+  // eslint-disable-next-line no-console
+  console.warn(
+    `APNs send failed (status ${res.status}${res.reason ? `, ${res.reason}` : ''})`,
+  );
+  return false;
+}
+
+/**
+ * Bulk APNs fan-out: deliver a per-recipient payload to MANY users' iOS
+ * devices, fetching all (non-android) tokens in ONE query and bounding the
+ * in-flight sends. Used by the @everyone / large-mention path. Returns the
+ * successful-delivery count. No-op (0) if APNs isn't configured.
+ */
+export async function sendToUsersApns(
+  userIds: bigint[],
+  payloadFor: (userId: bigint) => PushPayload,
+): Promise<number> {
+  if (!configured && !(await initApns())) return 0;
+  if (userIds.length === 0) return 0;
+
+  const rows = await db
+    .select({
+      userId: schema.apnsDeviceTokens.userId,
+      token: schema.apnsDeviceTokens.token,
+    })
+    .from(schema.apnsDeviceTokens)
+    .where(
+      and(
+        inArray(schema.apnsDeviceTokens.userId, userIds),
+        ne(schema.apnsDeviceTokens.platform, 'android'),
+      ),
+    );
+  if (rows.length === 0) return 0;
+
+  let jwt: string;
+  try {
+    jwt = await providerToken();
+  } catch {
+    return 0;
+  }
+
+  // Build each user's APNs body once; its tokens reuse it.
+  const bodyByUser = new Map<string, string>();
+  let delivered = 0;
+  const tasks = rows.map((row) => async () => {
+    const key = row.userId.toString();
+    let body = bodyByUser.get(key);
+    if (body === undefined) {
+      body = buildApnsPayload(payloadFor(row.userId));
+      bodyByUser.set(key, body);
+    }
+    const res = await sendOne(row.token, body, jwt);
+    if (applyApnsResult(row.token, res)) delivered++;
+  });
+  await runBounded(tasks, PUSH_FANOUT_CONCURRENCY);
 
   return delivered;
 }

@@ -27,11 +27,12 @@
  */
 
 import webpush from 'web-push';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { env } from '../env';
 import { errors } from '../errors';
 import { nextSnowflake } from '../snowflake';
+import { runBounded, PUSH_FANOUT_CONCURRENCY } from '../lib/concurrency';
 
 let configured = false;
 
@@ -195,6 +196,70 @@ export interface PushPayload {
   badge?: number;
 }
 
+type WebPushSub = typeof schema.pushSubscriptions.$inferSelect;
+
+/**
+ * Deliver one Web Push to one subscription. Returns true on success. Prunes
+ * the row on 404/410 (subscription gone) and bumps lastUsedAt on success
+ * (fire-and-forget). Shared by the single-user and bulk fan-out paths so the
+ * prune/bump semantics can't drift between them.
+ */
+async function sendWebPushOne(sub: WebPushSub, body: string): Promise<boolean> {
+  try {
+    await webpush.sendNotification(
+      { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+      body,
+    );
+    void db
+      .update(schema.pushSubscriptions)
+      .set({ lastUsedAt: new Date() })
+      .where(eq(schema.pushSubscriptions.endpoint, sub.endpoint))
+      .catch(() => undefined);
+    return true;
+  } catch (err) {
+    const status = (err as { statusCode?: number }).statusCode;
+    // 404 / 410 = subscription gone (uninstalled, expired, revoked).
+    if (status === 404 || status === 410) {
+      void deleteByEndpoint(sub.endpoint).catch(() => undefined);
+    }
+    // eslint-disable-next-line no-console
+    console.warn(`push send failed (status ${status ?? 'unknown'}):`, sub.endpoint);
+    return false;
+  }
+}
+
+/** True when NO push transport (Web Push / APNs / FCM) is configured. */
+function noTransportConfigured(): boolean {
+  return (
+    !configured &&
+    env.APNS_KEY_P8 === undefined &&
+    env.APNS_KEY_P8_FILE === undefined &&
+    env.FCM_PROJECT_ID === undefined
+  );
+}
+
+/**
+ * Web Push subscriptions for many users in ONE query, grouped by user id
+ * (string key). The fan-out path uses this to avoid a per-user round-trip.
+ */
+export async function listSubscriptionsForUsers(
+  userIds: bigint[],
+): Promise<Map<string, WebPushSub[]>> {
+  const byUser = new Map<string, WebPushSub[]>();
+  if (userIds.length === 0) return byUser;
+  const rows = await db
+    .select()
+    .from(schema.pushSubscriptions)
+    .where(inArray(schema.pushSubscriptions.userId, userIds));
+  for (const row of rows) {
+    const key = row.userId.toString();
+    const arr = byUser.get(key);
+    if (arr) arr.push(row);
+    else byUser.set(key, [row]);
+  }
+  return byUser;
+}
+
 /**
  * Send a push notification to every subscription belonging to a user.
  * Best-effort: per-subscription failures are logged but don't prevent
@@ -234,38 +299,7 @@ export async function sendToUser(
   // would add 100s of ms per device for a user with multiple subscriptions.
   await Promise.all(
     subs.map(async (sub) => {
-      try {
-        await webpush.sendNotification(
-          {
-            endpoint: sub.endpoint,
-            keys: {
-              p256dh: sub.p256dh,
-              auth: sub.auth,
-            },
-          },
-          body,
-        );
-        delivered++;
-        // Bump lastUsedAt — dead subscriptions can be reaped later by
-        // pruning rows that haven't been used in N days. Done in a fire-
-        // and-forget so a slow DB doesn't block the response.
-        void db
-          .update(schema.pushSubscriptions)
-          .set({ lastUsedAt: new Date() })
-          .where(eq(schema.pushSubscriptions.endpoint, sub.endpoint))
-          .catch(() => undefined);
-      } catch (err) {
-        const status = (err as { statusCode?: number }).statusCode;
-        // 404 / 410 = subscription gone (uninstalled, expired, revoked).
-        // Delete the row so we don't keep trying.
-        if (status === 404 || status === 410) {
-          void deleteByEndpoint(sub.endpoint).catch(() => undefined);
-        }
-        // Other failures (network, gateway 5xx) are transient — log and
-        // continue. The next event will retry naturally.
-        // eslint-disable-next-line no-console
-        console.warn(`push send failed (status ${status ?? 'unknown'}):`, sub.endpoint);
-      }
+      if (await sendWebPushOne(sub, body)) delivered++;
     }),
   );
 
@@ -287,6 +321,69 @@ export async function sendToUser(
   try {
     const { sendToUserFcm } = await import('./fcm');
     delivered += await sendToUserFcm(userId, payload);
+  } catch {
+    // FCM module/init failure is non-fatal.
+  }
+
+  return delivered;
+}
+
+/**
+ * Fan a push out to MANY users at once, with a per-recipient payload builder
+ * (e.g. each gets their own app-icon badge count). Built for large audiences
+ * — an @everyone in a big guild — where the naive
+ * `Promise.all(users.map(sendToUser))` does 3 token-table queries PER user and
+ * opens one unbounded burst of outbound sockets. This instead:
+ *   - fetches Web Push / APNs / FCM tokens for the whole set in 3 queries
+ *     total (one per transport, grouped by user), and
+ *   - bounds the in-flight outbound sends across every transport.
+ * Returns the total successful-delivery count. Best-effort throughout.
+ *
+ * `payloadFor` is called once per (user that has at least one device); keep it
+ * cheap and pure — it may be invoked per transport for the same user.
+ */
+export async function sendToUsers(
+  userIds: bigint[],
+  payloadFor: (userId: bigint) => PushPayload,
+  opts?: { skipApns?: boolean },
+): Promise<number> {
+  if (userIds.length === 0) return 0;
+  if (noTransportConfigured()) return 0;
+
+  let delivered = 0;
+
+  // Web Push — one query, grouped, bounded send. Skipped when VAPID isn't set
+  // (the native legs below still run, mirroring sendToUser).
+  if (configured) {
+    const byUser = await listSubscriptionsForUsers(userIds);
+    if (byUser.size > 0) {
+      const tasks: Array<() => Promise<void>> = [];
+      for (const uid of userIds) {
+        const subs = byUser.get(uid.toString());
+        if (!subs || subs.length === 0) continue;
+        const body = JSON.stringify(payloadFor(uid));
+        for (const sub of subs) {
+          tasks.push(async () => {
+            if (await sendWebPushOne(sub, body)) delivered++;
+          });
+        }
+      }
+      await runBounded(tasks, PUSH_FANOUT_CONCURRENCY);
+    }
+  }
+
+  if (!opts?.skipApns) {
+    try {
+      const { sendToUsersApns } = await import('./apns');
+      delivered += await sendToUsersApns(userIds, payloadFor);
+    } catch {
+      // APNs module/init failure is non-fatal.
+    }
+  }
+
+  try {
+    const { sendToUsersFcm } = await import('./fcm');
+    delivered += await sendToUsersFcm(userIds, payloadFor);
   } catch {
     // FCM module/init failure is non-fatal.
   }

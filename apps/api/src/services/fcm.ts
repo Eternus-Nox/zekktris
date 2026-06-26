@@ -23,9 +23,10 @@
  */
 
 import { importPKCS8, SignJWT } from 'jose';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { env } from '../env';
+import { runBounded, PUSH_FANOUT_CONCURRENCY } from '../lib/concurrency';
 import type { PushPayload } from './push';
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
@@ -169,60 +170,136 @@ export async function sendToUserFcm(userId: bigint, payload: PushPayload): Promi
     return 0;
   }
 
-  const url = `https://fcm.googleapis.com/v1/projects/${env.FCM_PROJECT_ID as string}/messages:send`;
+  const url = fcmSendUrl();
   let delivered = 0;
 
   await Promise.all(
     tokens.map(async (row) => {
-      try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${bearer}`,
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify({ message: buildFcmMessage(payload, row.token) }),
-        });
-        if (res.ok) {
-          delivered++;
-          void db
-            .update(schema.apnsDeviceTokens)
-            .set({ lastUsedAt: new Date() })
-            .where(eq(schema.apnsDeviceTokens.token, row.token))
-            .catch(() => undefined);
-          return;
-        }
-        // 404 (NOT_FOUND/UNREGISTERED) or 400 (INVALID_ARGUMENT) = the token is
-        // dead (app uninstalled / token rotated). Prune so we stop trying.
-        let reason = '';
-        try {
-          const body = (await res.json()) as {
-            error?: { status?: string; message?: string };
-          };
-          reason = body.error?.status ?? body.error?.message ?? '';
-        } catch {
-          /* non-JSON error body */
-        }
-        const permanent =
-          res.status === 404 ||
-          reason === 'UNREGISTERED' ||
-          reason === 'NOT_FOUND' ||
-          (res.status === 400 && reason === 'INVALID_ARGUMENT');
-        if (permanent) {
-          void db
-            .delete(schema.apnsDeviceTokens)
-            .where(eq(schema.apnsDeviceTokens.token, row.token))
-            .catch(() => undefined);
-        }
-        // eslint-disable-next-line no-console
-        console.warn(`FCM send failed (status ${res.status}${reason ? `, ${reason}` : ''})`);
-      } catch (err) {
-        // Network/transport — transient; the next event retries naturally.
-        // eslint-disable-next-line no-console
-        console.warn('FCM send error:', (err as Error).message);
-      }
+      if (await sendFcmOne(row.token, payload, bearer, url)) delivered++;
     }),
   );
+
+  return delivered;
+}
+
+function fcmSendUrl(): string {
+  return `https://fcm.googleapis.com/v1/projects/${env.FCM_PROJECT_ID as string}/messages:send`;
+}
+
+/**
+ * Deliver one FCM message to one Android token. Returns true on success.
+ * Prunes permanently-dead tokens (404/UNREGISTERED/NOT_FOUND/INVALID_ARGUMENT)
+ * and bumps lastUsedAt on success. Shared by the single-user and bulk paths so
+ * the prune semantics can't drift between them.
+ */
+async function sendFcmOne(
+  token: string,
+  payload: PushPayload,
+  bearer: string,
+  url: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${bearer}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ message: buildFcmMessage(payload, token) }),
+    });
+    if (res.ok) {
+      void db
+        .update(schema.apnsDeviceTokens)
+        .set({ lastUsedAt: new Date() })
+        .where(eq(schema.apnsDeviceTokens.token, token))
+        .catch(() => undefined);
+      return true;
+    }
+    // 404 (NOT_FOUND/UNREGISTERED) or 400 (INVALID_ARGUMENT) = the token is
+    // dead (app uninstalled / token rotated). Prune so we stop trying.
+    let reason = '';
+    try {
+      const body = (await res.json()) as { error?: { status?: string; message?: string } };
+      reason = body.error?.status ?? body.error?.message ?? '';
+    } catch {
+      /* non-JSON error body */
+    }
+    const permanent =
+      res.status === 404 ||
+      reason === 'UNREGISTERED' ||
+      reason === 'NOT_FOUND' ||
+      (res.status === 400 && reason === 'INVALID_ARGUMENT');
+    if (permanent) {
+      void db
+        .delete(schema.apnsDeviceTokens)
+        .where(eq(schema.apnsDeviceTokens.token, token))
+        .catch(() => undefined);
+    }
+    // eslint-disable-next-line no-console
+    console.warn(`FCM send failed (status ${res.status}${reason ? `, ${reason}` : ''})`);
+    return false;
+  } catch (err) {
+    // Network/transport — transient; the next event retries naturally.
+    // eslint-disable-next-line no-console
+    console.warn('FCM send error:', (err as Error).message);
+    return false;
+  }
+}
+
+/** Android (FCM) tokens for many users in ONE query, as {userId, token} rows. */
+async function listAndroidTokensForUsers(
+  userIds: bigint[],
+): Promise<Array<{ userId: bigint; token: string }>> {
+  if (userIds.length === 0) return [];
+  return db
+    .select({ userId: schema.apnsDeviceTokens.userId, token: schema.apnsDeviceTokens.token })
+    .from(schema.apnsDeviceTokens)
+    .where(
+      and(
+        inArray(schema.apnsDeviceTokens.userId, userIds),
+        eq(schema.apnsDeviceTokens.platform, 'android'),
+      ),
+    );
+}
+
+/**
+ * Bulk FCM fan-out: deliver a per-recipient payload to MANY users' Android
+ * devices, fetching all tokens in ONE query and bounding the in-flight sends.
+ * Returns the successful-delivery count. No-op (0) if FCM isn't configured.
+ */
+export async function sendToUsersFcm(
+  userIds: bigint[],
+  payloadFor: (userId: bigint) => PushPayload,
+): Promise<number> {
+  if (!configured && !(await initFcm())) return 0;
+  if (userIds.length === 0) return 0;
+
+  const rows = await listAndroidTokensForUsers(userIds);
+  if (rows.length === 0) return 0;
+
+  let bearer: string;
+  try {
+    bearer = await accessToken();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('FCM: could not obtain access token:', (err as Error).message);
+    return 0;
+  }
+
+  const url = fcmSendUrl();
+  // One payload per user; its tokens reuse it (buildFcmMessage re-embeds the token).
+  const payloadByUser = new Map<string, PushPayload>();
+  let delivered = 0;
+  const tasks = rows.map((row) => async () => {
+    const key = row.userId.toString();
+    let p = payloadByUser.get(key);
+    if (p === undefined) {
+      p = payloadFor(row.userId);
+      payloadByUser.set(key, p);
+    }
+    if (await sendFcmOne(row.token, p, bearer, url)) delivered++;
+  });
+  await runBounded(tasks, PUSH_FANOUT_CONCURRENCY);
 
   return delivered;
 }
