@@ -120,6 +120,15 @@ struct MessageListView: View {
                                     .equatable()
                                     .id(message.id)
                                     .padding(.top, header ? 10 : 0)
+                                    .onAppear {
+                                        // Prefetch the next older page BEFORE the user reaches
+                                        // the very top, so scrollback feels instant. Fires when
+                                        // a row within ~10 of the oldest loaded message appears;
+                                        // loadOlderMessages is re-entrancy-guarded + dedup-safe.
+                                        if didInitialScroll, store.hasMoreMessages, index <= 10 {
+                                            Task { await store.loadOlderMessages() }
+                                        }
+                                    }
                             }
 
                             Color.clear.frame(height: 1).id(bottomAnchor)

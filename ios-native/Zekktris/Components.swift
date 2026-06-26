@@ -458,8 +458,7 @@ private let timeFormatter: DateFormatter = {
 /// Parse an ISO timestamp from the API into a short local time string.
 /// Returns "" if the value can't be parsed.
 func shortTime(_ iso: String) -> String {
-    let date = isoFormatter.date(from: iso) ?? isoFormatterNoFraction.date(from: iso)
-    guard let date else { return "" }
+    guard let date = messageDate(iso) else { return "" }
     return timeFormatter.string(from: date)
 }
 
@@ -467,9 +466,24 @@ private let dateDividerFormatter: DateFormatter = {
     let f = DateFormatter(); f.dateStyle = .long; f.timeStyle = .none; return f
 }()
 
-/// Parse an ISO timestamp (fractional or plain) into a Date, or nil.
+/// Memoized ISO→Date cache. Message timestamps are immutable and the SAME
+/// string is parsed many times — per-row header/divider checks, the same-author
+/// run walk, the timestamp label, and again for every row after a scrollback
+/// prepend. ISO8601DateFormatter parsing is among the slowest Foundation calls,
+/// so caching it removes the dominant client cost of loading older messages.
+/// Accessed only from the main-thread message-list UI; bounded so a long session
+/// can't grow it without limit.
+private var messageDateCache: [String: Date] = [:]
+
+/// Parse an ISO timestamp (fractional or plain) into a Date, or nil. Memoized.
 func messageDate(_ iso: String) -> Date? {
-    isoFormatter.date(from: iso) ?? isoFormatterNoFraction.date(from: iso)
+    if let cached = messageDateCache[iso] { return cached }
+    guard let d = isoFormatter.date(from: iso) ?? isoFormatterNoFraction.date(from: iso) else {
+        return nil
+    }
+    if messageDateCache.count > 8000 { messageDateCache.removeAll(keepingCapacity: true) }
+    messageDateCache[iso] = d
+    return d
 }
 
 /// "Today" / "Yesterday" / "January 5, 2026" label for a message date divider.

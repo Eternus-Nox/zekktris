@@ -1320,7 +1320,11 @@ function Scroller({
     wasPinnedRef.current = pinned;
     if (pinned && unreadBelow) setUnreadBelow(false);
 
-    if (el.scrollTop > SCROLLBACK_TRIGGER_PX) {
+    // Prefetch the next older page ~1.5 viewports BEFORE the top, so the page
+    // is usually already in state when the user reaches the top (no visible
+    // wait). Falls back to the 200px floor on tiny viewports.
+    const triggerPx = Math.max(SCROLLBACK_TRIGGER_PX, el.clientHeight * 1.5);
+    if (el.scrollTop > triggerPx) {
       triggerArmedRef.current = true;
       return;
     }
@@ -1565,6 +1569,22 @@ function clearDraft(channelId: string): void {
   drafts.delete(channelId);
 }
 
+// Memoize Date.parse — groupMessages re-runs over the WHOLE message array on
+// every scrollback prepend (the memo key changes when a page is prepended), so
+// without caching it re-parses every message's timestamp on each older page.
+// Timestamps are immutable, so a string→epoch cache makes regroup-on-prepend
+// an O(new-rows) parse instead of O(total). Bounded for a long session.
+const parsedTimeCache = new Map<string, number>();
+function tsMs(iso: string): number {
+  let t = parsedTimeCache.get(iso);
+  if (t === undefined) {
+    t = Date.parse(iso);
+    if (parsedTimeCache.size > 10000) parsedTimeCache.clear();
+    parsedTimeCache.set(iso, t);
+  }
+  return t;
+}
+
 function groupMessages(msgs: Message[]): Message[][] {
   const out: Message[][] = [];
   for (const m of msgs) {
@@ -1591,7 +1611,7 @@ function groupMessages(msgs: Message[]): Message[][] {
       lastMsg.authorId !== null &&
       // Cap the run so the header re-appears every N messages (iOS parity).
       last.length < MESSAGES_PER_HEADER_RUN &&
-      Date.parse(m.createdAt) - Date.parse(lastMsg.createdAt) < GROUP_WINDOW_MS
+      tsMs(m.createdAt) - tsMs(lastMsg.createdAt) < GROUP_WINDOW_MS
     ) {
       last.push(m);
     } else {
