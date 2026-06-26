@@ -738,6 +738,11 @@ real + hot-at-scale + not-already-fixed after per-finding adversarial verificati
   NOTE: pg_trgm search index was descoped (CREATE EXTENSION needs DB
   privileges some self-hosters lack) — leading-wildcard ILIKE search remains a
   smaller, separate follow-up.
-- **Optional:** Redis TTL cache for the achievements shelf; DB pool default
-  10→~20 + an ops note on the cluster-wide `replicas × pool ≤ max_connections`
-  invariant (keep `prepare:false` under pgbouncer).
+- **DB pool default 10→20 + ops note — DONE (commit 6592d99):** bumped
+  env.DB_POOL_MAX + the createDb fallback to 20; documented the cluster-wide
+  `(replicas × pool) + reserved ≤ max_connections` invariant in env.ts,
+  packages/db/client.ts, and .env.example (keep `prepare:false` under
+  pgbouncer). Env-overridable.
+- **Optional, still deferred:** Redis TTL cache for the achievements shelf;
+  pg_trgm index for directory substring search (CREATE EXTENSION privilege
+  risk on some self-hosters). Neither is a current bottleneck.
