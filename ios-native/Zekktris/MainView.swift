@@ -561,6 +561,7 @@ struct PageBackButton: View {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundColor(Theme.ink2)
+                    .padding(.leading, 8)
                     .frame(width: 44, height: 44, alignment: .leading)
                     .contentShape(Rectangle())
             }
