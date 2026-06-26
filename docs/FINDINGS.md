@@ -715,9 +715,14 @@ real + hot-at-scale + not-already-fixed after per-finding adversarial verificati
   serves the first-responder self-join. Additive, but `messages` is large and the
   migrator is transactional (no `CONCURRENTLY`) → a build-time write lock. Needs a
   concurrent-build strategy / maintenance-window decision.
-- **@everyone push fan-out (L):** `routes/messages.ts` + `services/push.ts` —
-  3×N token-table round-trips + unbounded outbound HTTPS concurrency on a big
-  announcement. Add `listSubscriptionsForUsers` bulk + a concurrency limiter.
+- **@everyone push fan-out (L) — FIXED (commit 69ec35a):** `routes/messages.ts`
+  + `services/push.ts`/`apns.ts`/`fcm.ts` did 3×N token-table queries +
+  unbounded outbound concurrency on a big announcement. New
+  `sendToUsers(userIds, payloadFor)` does one query per transport (grouped by
+  user) + a bounded send burst (`runBounded`, `lib/concurrency.ts`,
+  cap 32); per-token send/prune extracted to shared helpers so single + bulk
+  can't drift. Both DM + guild-mention paths use it. 301 tests + new
+  runBounded unit tests green.
 - **Discovery directory (M, migration + drift risk):** `services/discovery.ts`
   live join + COUNT(DISTINCT) + aggregate ORDER BY + leading-wildcard ILIKE +
   OFFSET per page on every directory open/keystroke. Denormalize `guilds.member_count`
