@@ -701,14 +701,16 @@ real + hot-at-scale + not-already-fixed after per-finding adversarial verificati
 - **Achievements DoS amplifier (part 1, S):** both achievements routes now
   rate-limited 60/min per requester (the shelf is ~7 uncached aggregates and any
   authed user could request any user's).
+- **Automod ReDoS (MED, full-process blast radius) — FIXED (commit cc279a0):**
+  an admin catastrophic-backtracking regex in `services/automod.ts`
+  (`messageMatchesRegexes`, inline on message-send) could pin the event loop and
+  stall the whole replica. Chose the no-native-dep route (deploy is node:20-alpine
+  → RE2 has no musl prebuilds): `safe-regex` (pure JS, star-height bound) gates
+  patterns at create/update time (reject w/ admin error) AND at runtime via a
+  compiled-pattern cache that checks safety before constructing/running — so
+  already-stored bad patterns are neutralized too. 301 API tests green.
 
 ## Still OPEN (verified real; ranked for follow-up — need a decision or are bigger)
-- **Automod ReDoS (MED, full-process blast radius):** an admin-supplied
-  catastrophic-backtracking regex in `services/automod.ts` (`messageMatchesRegexes`,
-  awaited inline on message-send) can pin the single-threaded event loop, stalling
-  every request/gateway frame on the replica. Fix options: RE2-backed engine
-  (native dep, rejects some PCRE features), worker+timeout, or a create-time
-  `safe-regex` validation backstop. DECISION NEEDED.
 - **`messages(reply_to_id)` partial index (part 2 of achievements, S but risky):**
   serves the first-responder self-join. Additive, but `messages` is large and the
   migrator is transactional (no `CONCURRENTLY`) → a build-time write lock. Needs a
