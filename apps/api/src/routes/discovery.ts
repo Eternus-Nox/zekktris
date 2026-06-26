@@ -19,6 +19,7 @@ import { z } from 'zod';
 import { errors } from '../errors';
 import { requireAuth, requireUserId } from '../auth/middleware';
 import { validate } from '../lib/validate';
+import { RateLimiter } from '../lib/rateLimit';
 import { snowflakeSchema } from '../lib/validation';
 import { toGuild, toGuildMember } from '../lib/dto';
 import * as discovery from '../services/discovery';
@@ -44,12 +45,19 @@ const listQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).optional(),
 });
 
+// Browse/search/paginate the directory. Generous per-user cap (search-as-you-
+// type fires several) — light defense against hammering an unauthenticated-
+// from-any-account read. Inherits the Redis fail-open contract.
+const discoveryListRl = new RateLimiter(120, 60_000, 'discovery-list');
+
 discoveryRouter.get(
   '/discovery',
   requireAuth,
   validate('query', listQuerySchema),
   async (c) => {
-    requireUserId(c); // must be authed; no per-result gating
+    const userId = requireUserId(c); // must be authed; no per-result gating
+    const rl = await discoveryListRl.consume(userId.toString());
+    if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
     const { q, category, offset } = c.req.valid('query');
     const result = await discovery.listDiscoverable({ query: q, category, offset });
     return c.json({

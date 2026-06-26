@@ -24,6 +24,7 @@ import { purgeExpiredSessions } from './auth/sessions';
 import { sweepExpiredDmMessages } from './services/dms';
 import { sweepStreakWarnings } from './services/streaks';
 import { pruneDeadInvites } from './services/invites';
+import { refreshDiscoverableMemberCounts } from './services/discovery';
 
 async function main(): Promise<void> {
   await runStartupChecks();
@@ -231,6 +232,22 @@ async function main(): Promise<void> {
   } else {
     log.info('invite prune sweep disabled (INVITE_PRUNE_ENABLED=false)');
   }
+
+  // ── Discovery member-count refresh ────────────────────────────────────
+  //
+  // Recomputes the denormalized guilds.member_count for discoverable guilds so
+  // the directory sorts/shows counts without a per-request aggregate. Only
+  // touches the (small) discoverable subset and only rows that changed, so
+  // it's cheap. Eventually-consistent to this interval — fine for a browser.
+  // Idempotent + multi-replica safe. Leading run 30 s after boot.
+  const runDiscoveryCountRefresh = () =>
+    void refreshDiscoverableMemberCounts()
+      .then((n) => {
+        if (n > 0) log.info('discovery member counts refreshed', { updated: n });
+      })
+      .catch((err) => log.error('discovery member-count refresh failed', { err }));
+  setTimeout(runDiscoveryCountRefresh, 30_000);
+  const discoveryCountTimer = setInterval(runDiscoveryCountRefresh, 10 * 60_000); // 10m
 
   // ── Event status sweep ────────────────────────────────────────────────
   //
@@ -585,6 +602,7 @@ async function main(): Promise<void> {
     if (streakWarnTimer) clearInterval(streakWarnTimer);
     if (compressTimer) clearInterval(compressTimer);
     if (invitePruneTimer) clearInterval(invitePruneTimer);
+    clearInterval(discoveryCountTimer);
     clearInterval(eventSweepTimer);
     clearInterval(pollSweepTimer);
     clearInterval(afkSweepTimer);

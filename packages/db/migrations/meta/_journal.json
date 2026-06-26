@@ -610,6 +610,13 @@
       "when": 1784600212000,
       "tag": "0087_notification_overrides_target_id_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1784600213000,
+      "tag": "0088_guild_member_count",
+      "breakpoints": true
     }
   ]
 }

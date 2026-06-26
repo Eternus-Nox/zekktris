@@ -117,23 +117,14 @@ export async function listDiscoverable(args: {
   }
   const where = and(...conds);
 
-  // Compute member counts via a LEFT JOIN + GROUP BY. Previously this
-  // was a correlated subquery in the SELECT clause; that pattern
-  // returned 0 for guilds that actually had members — drizzle's
-  // sql-template builder didn't emit the outer-scope guild reference
-  // in a form Postgres correlated reliably, and the count came back
-  // as zero regardless of guild_members content. LEFT JOIN +
-  // GROUP BY is the textbook fix: explicit join with filters in the
-  // ON clause, then COUNT(DISTINCT) on the joined user id so guilds
-  // with no surviving members still appear (counted as 0) rather
-  // than dropping out of the result set entirely.
-  //
-  // Filters out banned + soft-deleted users in the ON clause for the
-  // same reason as before: the admin ban path leaves guild_members
-  // rows intact (audit retention), so an unfiltered COUNT would
-  // inflate the directory number with banned ghosts.
-  const memberCountSql = sql<number>`COUNT(DISTINCT ${schema.users.id})::int`;
-
+  // Member count is read from the denormalized `guilds.member_count` column
+  // (maintained for discoverable guilds by refreshDiscoverableMemberCounts +
+  // refreshGuildMemberCount). This replaces the old per-request LEFT JOIN +
+  // COUNT(DISTINCT) + GROUP BY + aggregate ORDER BY over the whole
+  // discoverable catalogue, which didn't scale as the directory grew. The
+  // browse default sort (member_count DESC, id DESC) is served by the partial
+  // guilds_discoverable_rank_idx. Count is eventually-consistent (fresh to
+  // the sweep interval), which is fine for a directory.
   const rows = await db
     .select({
       id: schema.guilds.id,
@@ -144,37 +135,11 @@ export async function listDiscoverable(args: {
       iconUrl: schema.guilds.iconUrl,
       bannerUrl: schema.guilds.bannerUrl,
       vanityUrlCode: schema.guilds.vanityUrlCode,
-      memberCount: memberCountSql,
+      memberCount: schema.guilds.memberCount,
     })
     .from(schema.guilds)
-    // LEFT JOIN through guild_members → users so banned/deleted users
-    // are filtered from the count in the ON clause. LEFT preserves
-    // guild rows even when they have zero qualifying members, so a
-    // newly-created guild (1 owner, no one else) still renders.
-    .leftJoin(
-      schema.guildMembers,
-      eq(schema.guildMembers.guildId, schema.guilds.id),
-    )
-    .leftJoin(
-      schema.users,
-      and(
-        eq(schema.users.id, schema.guildMembers.userId),
-        isNull(schema.users.bannedAt),
-        isNull(schema.users.deletedAt),
-      ),
-    )
     .where(where)
-    .groupBy(
-      schema.guilds.id,
-      schema.guilds.name,
-      schema.guilds.description,
-      schema.guilds.discoveryDescription,
-      schema.guilds.discoveryCategory,
-      schema.guilds.iconUrl,
-      schema.guilds.bannerUrl,
-      schema.guilds.vanityUrlCode,
-    )
-    .orderBy(desc(memberCountSql), desc(schema.guilds.id))
+    .orderBy(desc(schema.guilds.memberCount), desc(schema.guilds.id))
     .limit(PAGE_LIMIT)
     .offset(offset);
 
@@ -187,6 +152,58 @@ export async function listDiscoverable(args: {
   const total = totalRows[0]?.n ?? 0;
 
   return { guilds: rows, total };
+}
+
+/**
+ * Recompute `member_count` for every discoverable, non-deleted guild from the
+ * exact live count (excluding globally-banned + deleted users — the admin ban
+ * path leaves guild_members rows intact for audit retention). One bulk
+ * statement, only touching rows whose stored count actually changed.
+ * Idempotent + multi-replica safe (concurrent runs converge on the same
+ * values). This sweep is the SOURCE OF TRUTH for the directory's denormalized
+ * count, so it self-heals any drift — there's no per-membership-mutation
+ * counter to keep in sync. Returns the number of guilds updated.
+ */
+export async function refreshDiscoverableMemberCounts(): Promise<number> {
+  const res = await db.execute(sql`
+    UPDATE "guilds" g
+    SET "member_count" = COALESCE(c.cnt, 0)
+    FROM "guilds" g2
+    LEFT JOIN LATERAL (
+      SELECT COUNT(DISTINCT u.id)::int AS cnt
+      FROM "guild_members" gm
+      JOIN "users" u ON u.id = gm.user_id
+      WHERE gm.guild_id = g2.id
+        AND u.banned_at IS NULL
+        AND u.deleted_at IS NULL
+    ) c ON true
+    WHERE g.id = g2.id
+      AND g2.discoverable
+      AND g2.deleted_at IS NULL
+      AND g.member_count IS DISTINCT FROM COALESCE(c.cnt, 0)
+    RETURNING g.id
+  `);
+  return (res as unknown as { length?: number }).length ?? 0;
+}
+
+/**
+ * Recompute one guild's `member_count` immediately — called when a guild opts
+ * INTO discovery so its directory count/rank is correct from the first listing
+ * rather than 0 until the next sweep.
+ */
+export async function refreshGuildMemberCount(guildId: bigint): Promise<void> {
+  await db.execute(sql`
+    UPDATE "guilds"
+    SET "member_count" = COALESCE((
+      SELECT COUNT(DISTINCT u.id)::int
+      FROM "guild_members" gm
+      JOIN "users" u ON u.id = gm.user_id
+      WHERE gm.guild_id = ${guildId}
+        AND u.banned_at IS NULL
+        AND u.deleted_at IS NULL
+    ), 0)
+    WHERE "id" = ${guildId}
+  `);
 }
 
 // ── Set discoverable (owner / MANAGE_GUILD) ─────────────────────────────
@@ -267,6 +284,13 @@ export async function setDiscoverable(
       ...(cleanedCat !== undefined ? { discoveryCategory: cleanedCat } : {}),
     },
   });
+
+  // On opt-in, compute the count now so the guild ranks correctly on its first
+  // listing instead of showing 0 until the next sweep. (On opt-out nothing
+  // reads it, so no refresh needed.)
+  if (input.discoverable) {
+    await refreshGuildMemberCount(input.guildId).catch(() => undefined);
+  }
 
   return row;
 }

@@ -112,6 +112,13 @@ export const guilds = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    /** Denormalized, eventually-consistent count of non-banned, non-deleted
+        members. Maintained for DISCOVERABLE guilds by a periodic sweep
+        (services/discovery.refreshDiscoverableMemberCounts) and refreshed on
+        discovery opt-in, so the directory can sort + show counts without a
+        per-request COUNT/GROUP-BY aggregate over the whole catalogue. NOT
+        maintained for non-discoverable guilds (nothing reads it there). */
+    memberCount: integer('member_count').notNull().default(0),
   },
   (t) => ({
     ownerIdx: index('guilds_owner_idx').on(t.ownerId),
@@ -121,6 +128,12 @@ export const guilds = pgTable(
         use a simple b-tree for v1 since dataset is small; a partial
         index over WHERE discoverable IS TRUE is a future optimization. */
     discoverableIdx: index('guilds_discoverable_idx').on(t.discoverable),
+    /** Serves the discovery browse default sort (member_count DESC, id DESC),
+        partial over the discoverable, non-deleted subset so the directory is
+        index-served instead of sorting the whole table per request. */
+    discoverableRankIdx: index('guilds_discoverable_rank_idx')
+      .on(t.memberCount.desc(), t.id.desc())
+      .where(sql`${t.discoverable} AND ${t.deletedAt} IS NULL`),
   }),
 );
 
