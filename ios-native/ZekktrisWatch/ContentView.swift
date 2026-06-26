@@ -106,21 +106,26 @@ struct MessageComposer: View {
     @State private var sent = false
 
     var body: some View {
-        VStack(spacing: 10) {
-            TextField("Message", text: $text, axis: .vertical)
-                .lineLimit(1...4)
-            Button { send() } label: {
-                if sending {
-                    ProgressView()
-                } else {
-                    Label(sent ? "Sent!" : "Send", systemImage: "paperplane.fill")
-                        .frame(maxWidth: .infinity)
+        // Scrollable so a long dictated message can be read in full (it grows
+        // and wraps) and the Send button is always reachable below it — before
+        // this the field capped at 4 lines and overflowed off-screen.
+        ScrollView {
+            VStack(spacing: 10) {
+                TextField("Message", text: $text, axis: .vertical)
+                    .lineLimit(1...12)
+                Button { send() } label: {
+                    if sending {
+                        ProgressView()
+                    } else {
+                        Label(sent ? "Sent!" : "Send", systemImage: "paperplane.fill")
+                            .frame(maxWidth: .infinity)
+                    }
                 }
+                .tint(sent ? .green : .accentColor)
+                .disabled(sending || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .tint(sent ? .green : .accentColor)
-            .disabled(sending || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .padding(.horizontal)
         }
-        .padding(.horizontal)
         .navigationTitle(target.name)
     }
 
