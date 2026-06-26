@@ -723,10 +723,19 @@ real + hot-at-scale + not-already-fixed after per-finding adversarial verificati
   cap 32); per-token send/prune extracted to shared helpers so single + bulk
   can't drift. Both DM + guild-mention paths use it. 301 tests + new
   runBounded unit tests green.
-- **Discovery directory (M, migration + drift risk):** `services/discovery.ts`
-  live join + COUNT(DISTINCT) + aggregate ORDER BY + leading-wildcard ILIKE +
-  OFFSET per page on every directory open/keystroke. Denormalize `guilds.member_count`
-  + keyset paginate + pg_trgm; counter must be maintained on every membership path.
+- **Discovery directory (M) — FIXED (commit cef5a01):** `services/discovery.ts`
+  did a live join + COUNT(DISTINCT) + aggregate ORDER BY over the whole
+  discoverable catalogue per open/keystroke/page. Denormalized
+  `guilds.member_count` (migration 0088 + partial rank index); the browse
+  default is now index-served. Chose a periodic-sweep maintenance model
+  (`refreshDiscoverableMemberCounts`, 10m, source-of-truth + self-healing,
+  exact ban/delete-excluding count over the small discoverable subset) +
+  on-opt-in refresh — deliberately NOT a per-membership-mutation counter (the
+  drift hazard). Counts are eventually-consistent, fine for a directory. Added
+  a 120/min rate limit to GET /discovery. 308 tests green.
+  NOTE: pg_trgm search index was descoped (CREATE EXTENSION needs DB
+  privileges some self-hosters lack) — leading-wildcard ILIKE search remains a
+  smaller, separate follow-up.
 - **Optional:** Redis TTL cache for the achievements shelf; DB pool default
   10→~20 + an ops note on the cluster-wide `replicas × pool ≤ max_connections`
   invariant (keep `prepare:false` under pgbouncer).
