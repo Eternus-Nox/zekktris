@@ -146,6 +146,26 @@ const sendMessageSchema = z.object({
       eliminating the brief duplicate "ghost" bubble when the echo beats
       the REST 201 response. */
   nonce: z.string().max(64).optional(),
+  /** Per-attachment client metadata, POSITIONAL to the uploaded files (entry
+      k describes files[k]; may be null for files with no meta). Used so E2EE
+      (.zke) images — which the server can't measure, since it only sees
+      ciphertext — can still store width/height and have the recipient reserve
+      the exact slot before decrypt (no reflow). Dims aren't sensitive (same as
+      the already-plaintext voice durationSeconds/waveform). Server-measured
+      dims (non-E2EE, via sharp) take precedence. (`hasThumbnail` is reserved
+      for the upcoming encrypted-thumbnail upload.) */
+  attachments: z
+    .array(
+      z
+        .object({
+          width: z.number().int().min(1).max(100000).optional(),
+          height: z.number().int().min(1).max(100000).optional(),
+          hasThumbnail: z.boolean().optional(),
+        })
+        .nullable(),
+    )
+    .max(50)
+    .optional(),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -638,14 +658,17 @@ messagesRouter.post(
           // when payload.voiceMessage is set, so applying to index 0
           // is unambiguous.
           const voice = i === 0 && payload.voiceMessage ? payload.voiceMessage : null;
+          // Client-supplied dims fill in for E2EE (.zke) images the server
+          // can't measure; server-measured dims (non-E2EE, sharp) win.
+          const meta = payload.attachments?.[i] ?? null;
           return {
             id: s.attachmentId,
             filename: s.filename,
             contentType: s.contentType,
             size: s.size,
             url: s.url,
-            width: s.width,
-            height: s.height,
+            width: s.width ?? meta?.width ?? null,
+            height: s.height ?? meta?.height ?? null,
             isVoiceMessage: !!voice,
             durationSeconds: voice ? voice.durationSeconds : null,
             waveform: voice ? voice.waveform : null,

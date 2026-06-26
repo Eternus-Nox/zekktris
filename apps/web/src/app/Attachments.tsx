@@ -152,6 +152,19 @@ export function Attachments({
  * them. Mirrors the plain-image grouping; the decrypted bytes only ever live
  * in local blob URLs (revoked on unmount).
  */
+/** Reserve an encrypted image's slot from its (plaintext) dims so the row
+ *  doesn't reflow when it decrypts. undefined when dims are unknown (old
+ *  messages / non-image) → falls back to the fixed placeholder + natural img. */
+function encSlotStyle(
+  a: Attachment,
+  maxW = 384,
+  maxH = 320,
+): { width: number; height: number } | undefined {
+  if (!a.width || !a.height) return undefined;
+  const s = Math.min(maxW / a.width, maxH / a.height, 1);
+  return { width: Math.round(a.width * s), height: Math.round(a.height * s) };
+}
+
 function EncryptedImageGallery({
   attachments,
   channelId,
@@ -202,11 +215,15 @@ function EncryptedImageGallery({
         {attachments.map((a, i) => {
           const url = urls[i];
           const realName = a.filename.replace(/\.zke$/, '');
+          // Reserve the exact slot up front (when dims are known) so decrypt
+          // doesn't shove the rest of the conversation.
+          const slot = encSlotStyle(a);
           if (!url) {
             return (
               <span
                 key={a.id}
-                className="w-40 h-40 rounded-md border border-line bg-bg-2 flex items-center justify-center text-ink-3"
+                className={`rounded-md border border-line bg-bg-2 flex items-center justify-center text-ink-3 ${slot ? '' : 'w-40 h-40'}`}
+                style={slot}
                 title="Encrypted image"
               >
                 <Lock size={16} />
@@ -227,6 +244,7 @@ function EncryptedImageGallery({
                 src={url}
                 alt={realName}
                 loading="lazy"
+                style={slot}
                 className="rounded-md max-w-sm max-h-80 border border-line group-hover/img:border-accent/60 transition-colors object-contain cursor-zoom-in"
               />
             </button>
@@ -346,6 +364,7 @@ function EncryptedAttachment({
           <img
             src={objectUrl}
             alt={realName}
+            style={encSlotStyle(attachment, 320, 280)}
             className="max-w-[320px] max-h-[280px] rounded-lg border border-line object-contain group-hover/img:border-accent/60 transition-colors cursor-zoom-in"
           />
         </button>

@@ -4915,6 +4915,16 @@ struct EncryptedAttachmentView: View {
         return ["mp4", "mov", "m4v", "qt", "webm", "avi", "mkv"].contains(ext)
     }
 
+    /// Slot to reserve from the (plaintext) image dims so the row doesn't reflow
+    /// when the encrypted image decrypts. nil for videos / unknown dims (old
+    /// messages) → falls back to the unreserved layout.
+    private var reservedSize: CGSize? {
+        guard !isVideo, let w = attachment.width, let h = attachment.height, w > 0, h > 0 else { return nil }
+        let bound: CGFloat = 240
+        let s = min(bound / CGFloat(w), bound / CGFloat(h))
+        return CGSize(width: CGFloat(w) * s, height: CGFloat(h) * s)
+    }
+
     var body: some View {
         Group {
             if let image {
@@ -4982,6 +4992,10 @@ struct EncryptedAttachmentView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }
         }
+        // Reserve the image's slot up front (when dims are known) so the row
+        // doesn't jump when the encrypted image decrypts. No-op for videos /
+        // old messages without dims.
+        .frame(width: reservedSize?.width, height: reservedSize?.height, alignment: .leading)
         .fullScreenCover(item: $playingVideo) { VideoLightboxView(url: $0.url) }
         .onDisappear {
             // Decrypted video is written to a temp file (iOS doesn't auto-purge

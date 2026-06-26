@@ -17,6 +17,11 @@ struct UploadFile {
     let data: Data
     let filename: String
     let contentType: String
+    /// Plaintext pixel dims (images only) — sent as positional metadata so the
+    /// recipient reserves the exact slot for an E2EE image the server can't
+    /// measure (it only sees ciphertext). nil for non-images / unknown.
+    var width: Int? = nil
+    var height: Int? = nil
 }
 
 /// Thin REST client mirroring `packages/client/src/rest.ts`. Sends
@@ -772,6 +777,14 @@ final class APIClient {
         var payload: [String: Any] = ["content": content, "nonce": nonce]
         if let rid = replyToId { payload["replyToId"] = rid } else { payload["replyToId"] = NSNull() }
         if let vm = voiceMessage { payload["voiceMessage"] = vm }
+        // Per-file dims, POSITIONAL to files[i], so an E2EE image reserves its
+        // exact slot before decrypt. NSNull for files with no dims; the whole
+        // key is omitted when nothing has dims (byte-identical to old sends).
+        let attMeta: [Any] = files.map { f in
+            guard let w = f.width, let h = f.height else { return NSNull() }
+            return ["width": w, "height": h]
+        }
+        if attMeta.contains(where: { !($0 is NSNull) }) { payload["attachments"] = attMeta }
         let payloadJSON = try JSONSerialization.data(withJSONObject: payload)
 
         var body = Data()

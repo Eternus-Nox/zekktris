@@ -420,6 +420,25 @@ export async function encryptBytesForDm(
   }
 }
 
+/**
+ * Read an image file's natural pixel dimensions (decode-only, no re-encode).
+ * Used to send plaintext dims alongside an E2EE (.zke) image so the recipient
+ * reserves the exact slot before decrypt (no reflow). Returns null for formats
+ * the browser can't decode (some SVG/HEIC) — the caller then sends no dims.
+ */
+export async function imageBitmapDims(
+  file: File | Blob,
+): Promise<{ width: number; height: number } | null> {
+  try {
+    const bmp = await createImageBitmap(file);
+    const dims = { width: bmp.width, height: bmp.height };
+    bmp.close();
+    return dims.width > 0 && dims.height > 0 ? dims : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Decrypt `.zke` attachment bytes (iv(12) || ciphertext || tag(16)). */
 export async function decryptBytesForDm(
   data: Uint8Array,

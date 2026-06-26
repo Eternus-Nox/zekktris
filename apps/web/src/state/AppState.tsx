@@ -2478,11 +2478,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       // Retry re-uploads ciphertext too — never plaintext. Each encrypted
       // file gets the `.zke` suffix the renderer/gallery use to detect it.
       let uploadFiles = files;
+      let attachmentsMeta: ({ width?: number; height?: number } | null)[] | undefined;
       if (input.encryptAttachmentsForDm && files.length > 0) {
         try {
-          const { encryptBytesForDm } = await import('../lib/e2ee');
+          const { encryptBytesForDm, imageBitmapDims } = await import('../lib/e2ee');
           const cid = input.encryptAttachmentsForDm;
           const out: File[] = [];
+          const meta: ({ width?: number; height?: number } | null)[] = [];
           for (const f of files) {
             const bytes = new Uint8Array(await f.arrayBuffer());
             const enc = await encryptBytesForDm(bytes, cid);
@@ -2492,8 +2494,17 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
                 type: 'application/octet-stream',
               }),
             );
+            // Plaintext dims (images only) so the recipient reserves the slot
+            // before decrypt — the server can't measure the ciphertext.
+            if (f.type.startsWith('image/')) {
+              const d = await imageBitmapDims(f);
+              meta.push(d ? { width: d.width, height: d.height } : null);
+            } else {
+              meta.push(null);
+            }
           }
           uploadFiles = out;
+          attachmentsMeta = meta;
         } catch {
           // Never fall back to plaintext under E2EE — fail the bubble.
           dispatch({ type: 'MESSAGE_MARK_FAILED', channelId, localId });
@@ -2514,6 +2525,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           ...(input.forwardFromMessageId ? { forwardFromMessageId: input.forwardFromMessageId } : {}),
           ...(input.stickerId ? { stickerId: input.stickerId } : {}),
           ...(input.voiceMessage ? { voiceMessage: input.voiceMessage } : {}),
+          ...(attachmentsMeta ? { attachmentsMeta } : {}),
         });
         dispatch({
           type: 'MESSAGE_REPLACE_LOCAL',

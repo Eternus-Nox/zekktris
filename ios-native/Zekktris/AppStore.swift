@@ -2431,10 +2431,20 @@ final class AppStore: ObservableObject {
                         errorText = "Encryption failed."
                         return false
                     }
+                    // Pixel dims (images only), sent as plaintext metadata so the
+                    // recipient reserves the slot before decrypt — the server
+                    // can't measure the ciphertext. Dims aren't sensitive (same
+                    // as the plaintext voice duration/waveform).
+                    var w: Int?, h: Int?
+                    if att.contentType.hasPrefix("image/"),
+                       let sz = UIImage(data: att.data)?.size, sz.width > 0, sz.height > 0 {
+                        w = Int(sz.width); h = Int(sz.height)
+                    }
                     files.append(UploadFile(
                         data: enc,
                         filename: att.filename + ".zke",
-                        contentType: "application/octet-stream"
+                        contentType: "application/octet-stream",
+                        width: w, height: h
                     ))
                 }
                 if !caption.isEmpty {

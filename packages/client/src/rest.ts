@@ -2011,6 +2011,11 @@ export class RestClient {
           event so the sender can reconcile its optimistic placeholder
           without a duplicate flash. */
       nonce?: string;
+      /** Per-file client metadata, POSITIONAL to `files` (entry k describes
+          files[k], may be null). Carries plaintext image dims so E2EE (.zke)
+          images — which the server can't measure — reserve the slot on the
+          recipient before decrypt. */
+      attachmentsMeta?: ({ width?: number; height?: number } | null)[];
     },
   ): Promise<{ message: Message }> {
     const files = input.files ?? [];
@@ -2035,6 +2040,7 @@ export class RestClient {
         ...(input.stickerId ? { stickerId: input.stickerId } : {}),
         ...(input.voiceMessage ? { voiceMessage: input.voiceMessage } : {}),
         ...(input.nonce ? { nonce: input.nonce } : {}),
+        ...(input.attachmentsMeta ? { attachments: input.attachmentsMeta } : {}),
       }),
     );
     for (let i = 0; i < files.length; i++) {
