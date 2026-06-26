@@ -342,8 +342,8 @@ struct MessageListView: View {
                 } label: {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(Theme.accent)
-                        .frame(width: 44, height: 44)
+                        .foregroundColor(Theme.ink2)
+                        .frame(width: 44, height: 44, alignment: .leading)
                         .contentShape(Rectangle())
                 }
             }

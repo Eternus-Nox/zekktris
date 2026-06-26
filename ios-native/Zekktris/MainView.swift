@@ -559,9 +559,9 @@ struct PageBackButton: View {
                 if let closePage { closePage() } else { dismiss() }
             } label: {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 20, weight: .semibold))
                     .foregroundColor(Theme.ink2)
-                    .frame(width: 44, height: 44)
+                    .frame(width: 44, height: 44, alignment: .leading)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Back")
