@@ -2108,22 +2108,16 @@ struct MessageRow: View, Equatable {
             // Reserve the image's final on-screen size UP FRONT from its known
             // width/height so loading doesn't reflow the row (and the bottom).
             let dim = imageDisplaySize(att)
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().scaledToFit()
-                        .onTapGesture { store.openLightbox(url) }
-                case .empty:
-                    if dim != nil {
-                        Rectangle().fill(Theme.bg3)
-                            .overlay(ProgressView().tint(Theme.accent))
-                    } else {
-                        ProgressView().frame(width: 140, height: 90)
-                    }
-                default:
-                    fileChip(att)
+            CachedImage(url: url, contentMode: .fit) {
+                if dim != nil {
+                    Rectangle().fill(Theme.bg3).overlay(ProgressView().tint(Theme.accent))
+                } else {
+                    ProgressView().frame(width: 140, height: 90)
                 }
+            } failure: {
+                fileChip(att)
             }
+            .onTapGesture { store.openLightbox(url) }
             .frame(width: dim?.width, height: dim?.height)
             .frame(maxWidth: 240, maxHeight: 240, alignment: .leading)
             .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -2166,12 +2160,10 @@ struct MessageRow: View, Equatable {
                 .fill(Theme.bg3)
                 .aspectRatio(1, contentMode: .fit)
                 .overlay(
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .success(let image): image.resizable().scaledToFill()
-                        case .empty: ProgressView().tint(Theme.accent)
-                        default: Image(systemName: "photo").foregroundColor(Theme.ink3)
-                        }
+                    CachedImage(url: url, contentMode: .fill) {
+                        ProgressView().tint(Theme.accent)
+                    } failure: {
+                        Image(systemName: "photo").foregroundColor(Theme.ink3)
                     }
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 8))

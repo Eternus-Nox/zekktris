@@ -24,8 +24,18 @@ enum DecodedImageCache {
     static let shared: NSCache<NSURL, UIImage> = {
         let c = NSCache<NSURL, UIImage>()
         c.countLimit = 256
+        // Also bound by decoded bytes so a big photo gallery can't balloon
+        // memory (256 full-res images could be GBs). Eviction is whichever
+        // limit hits first.
+        c.totalCostLimit = 256 * 1024 * 1024 // 256 MB of decoded pixels
         return c
     }()
+
+    /// Store with an approximate decoded-byte cost so totalCostLimit applies.
+    static func store(_ image: UIImage, for url: URL) {
+        let px = image.size.width * image.size.height * image.scale * image.scale
+        shared.setObject(image, forKey: url as NSURL, cost: Int(px) * 4)
+    }
 }
 
 struct RetryingImage: View {
@@ -64,7 +74,7 @@ struct RetryingImage: View {
             }
             if image == nil {
                 let loaded = await Self.load(url)
-                if let loaded { DecodedImageCache.shared.setObject(loaded, forKey: url as NSURL) }
+                if let loaded { DecodedImageCache.store(loaded, for: url) }
                 image = loaded
             }
         }
@@ -90,6 +100,64 @@ struct RetryingImage: View {
             }
         }
         return nil
+    }
+}
+
+/// Cached, retrying image for inline message media. Shares DecodedImageCache +
+/// RetryingImage.load, so a recycled LazyVStack row paints an already-decoded
+/// image on the FIRST frame instead of re-fetching + re-decoding full-res on
+/// every scroll-back (the reported "images load slowly / choppy scroll"). Unlike
+/// RetryingImage (hardwired scaledToFill for avatars) the caller picks the
+/// content mode + the loading / failed placeholders.
+struct CachedImage<Placeholder: View, Failure: View>: View {
+    let url: URL
+    let contentMode: ContentMode
+    @ViewBuilder let placeholder: () -> Placeholder
+    @ViewBuilder let failure: () -> Failure
+    @State private var image: UIImage?
+    @State private var loadedURL: URL?
+    @State private var failed = false
+
+    init(
+        url: URL,
+        contentMode: ContentMode = .fit,
+        @ViewBuilder placeholder: @escaping () -> Placeholder,
+        @ViewBuilder failure: @escaping () -> Failure
+    ) {
+        self.url = url
+        self.contentMode = contentMode
+        self.placeholder = placeholder
+        self.failure = failure
+        let cached = DecodedImageCache.shared.object(forKey: url as NSURL)
+        _image = State(initialValue: cached)
+        _loadedURL = State(initialValue: cached != nil ? url : nil)
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().aspectRatio(contentMode: contentMode)
+            } else if failed {
+                failure()
+            } else {
+                placeholder()
+            }
+        }
+        .task(id: url) {
+            if loadedURL != url {
+                image = DecodedImageCache.shared.object(forKey: url as NSURL)
+                loadedURL = url
+                failed = false
+            }
+            if image == nil {
+                if let loaded = await RetryingImage.load(url) {
+                    DecodedImageCache.store(loaded, for: url)
+                    image = loaded
+                } else {
+                    failed = true
+                }
+            }
+        }
     }
 }
 
