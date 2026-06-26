@@ -344,8 +344,11 @@ export const envSchema = z.object({
     .string()
     .default('false')
     .transform((v) => v === 'true' || v === '1'),
-  // Database pool size.
-  DB_POOL_MAX: z.coerce.number().int().positive().default(10),
+  // Max Postgres connections PER API PROCESS. CLUSTER-WIDE budget: keep
+  // (replicas × DB_POOL_MAX) + reserved(migrations/admin) <= Postgres
+  // max_connections (default 100). One replica → 20 is plenty; with several
+  // replicas, lower this / raise max_connections / front with pgBouncer.
+  DB_POOL_MAX: z.coerce.number().int().positive().default(20),
   // Prepared statements. OFF by default for pgBouncer transaction-pooling
   // safety; set true when connecting directly to Postgres for a query
   // plan-caching speedup.
