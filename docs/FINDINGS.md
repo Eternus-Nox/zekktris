@@ -675,3 +675,51 @@ Top voice: (1) studio-grade noise suppression everywhere [M], (2) connection-qua
 (3) in-call reactions + hand-raise [M]. Top freshness: server template gallery [S], render the
 achievements shelf [S], Kid Mode preset [M]. Top self-host: mobile-config QR [M] (fixes the
 hardcoded-server gap), one-command update + auto-backup/rollback [M], unraid CA template [S].
+
+---
+
+# 2026-06-26 session — API scale/perf audit (7-dimension fan-out, adversarially verified)
+
+Scale-focused pass for large multi-user deployments. 18 candidates → 8 confirmed
+real + hot-at-scale + not-already-fixed after per-finding adversarial verification.
+
+## Fixed THIS session (commit 5f40819 — typecheck + 297 API tests green vs live PG)
+- **notification_overrides target_id seq scan (S):** `listChannelAllSubscribers`
+  runs on every non-DM guild message and filtered `WHERE target_id IN (...)`;
+  no index led with `target_id` (existing ones lead with `target_type`/`user_id`)
+  → full seq scan. Added a PLAIN `(target_id)` index (migration 0087). NOT the
+  partial `WHERE level='all'` the audit first proposed — the query post-filters
+  `level` in JS because channel-override-suppresses-guild precedence needs the
+  non-'all' rows, so a level predicate would make the index planner-unusable.
+- **Subscriber viewability over full roster (S):** `routes/messages.ts` validated
+  opt-in 'all' subscribers by materializing the FULL channel viewer set
+  (O(members) perm math + full-roster memberRoles scan); now scoped to `subs`
+  via `listViewableGuildChannelIdsForUsers(guildId, subs)`.
+- **Bot event-delivery N+1 (S):** `services/bots.ts` ran
+  `computeMemberChannelPermissions` per event-bot; now one batched
+  `listViewableGuildChannelIdsForUsers` pass, fail-closed on error.
+- **Achievements DoS amplifier (part 1, S):** both achievements routes now
+  rate-limited 60/min per requester (the shelf is ~7 uncached aggregates and any
+  authed user could request any user's).
+
+## Still OPEN (verified real; ranked for follow-up — need a decision or are bigger)
+- **Automod ReDoS (MED, full-process blast radius):** an admin-supplied
+  catastrophic-backtracking regex in `services/automod.ts` (`messageMatchesRegexes`,
+  awaited inline on message-send) can pin the single-threaded event loop, stalling
+  every request/gateway frame on the replica. Fix options: RE2-backed engine
+  (native dep, rejects some PCRE features), worker+timeout, or a create-time
+  `safe-regex` validation backstop. DECISION NEEDED.
+- **`messages(reply_to_id)` partial index (part 2 of achievements, S but risky):**
+  serves the first-responder self-join. Additive, but `messages` is large and the
+  migrator is transactional (no `CONCURRENTLY`) → a build-time write lock. Needs a
+  concurrent-build strategy / maintenance-window decision.
+- **@everyone push fan-out (L):** `routes/messages.ts` + `services/push.ts` —
+  3×N token-table round-trips + unbounded outbound HTTPS concurrency on a big
+  announcement. Add `listSubscriptionsForUsers` bulk + a concurrency limiter.
+- **Discovery directory (M, migration + drift risk):** `services/discovery.ts`
+  live join + COUNT(DISTINCT) + aggregate ORDER BY + leading-wildcard ILIKE +
+  OFFSET per page on every directory open/keystroke. Denormalize `guilds.member_count`
+  + keyset paginate + pg_trgm; counter must be maintained on every membership path.
+- **Optional:** Redis TTL cache for the achievements shelf; DB pool default
+  10→~20 + an ops note on the cluster-wide `replicas × pool ≤ max_connections`
+  invariant (keep `prepare:false` under pgbouncer).
