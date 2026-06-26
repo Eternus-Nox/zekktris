@@ -99,6 +99,12 @@ final class AppStore: ObservableObject {
         if collapsedCategories.contains(id) { collapsedCategories.remove(id) } else { collapsedCategories.insert(id) }
         UserDefaults.standard.set(Array(collapsedCategories), forKey: "zk.collapsedCategories")
     }
+    /// True only while bumpChannelLastMessage updates a channel's lastMessageId.
+    /// That's not a sort key and doesn't affect <#channel> mention labels, so the
+    /// didSet skips the O(n log n) re-sort AND the mentionContextVersion bump —
+    /// the bump would otherwise re-render every open message row on EVERY inbound
+    /// message in ANY channel (it's part of MessageRowData's Equatable key).
+    private var bumpingLastMessage = false
     @Published var channels: [Channel] = [] {
         // Memoize the position-sorted order so the channel list doesn't re-sort
         // on every SwiftUI render. The list derives categories + per-category
@@ -107,6 +113,7 @@ final class AppStore: ObservableObject {
         // state change (presence churn included), the Mac slowdown. Recomputed
         // only when `channels` actually changes.
         didSet {
+            if bumpingLastMessage { return } // lastMessageId-only bump (see below)
             sortedChannels = channels.sorted { a, b in
                 let pa = a.position ?? 0, pb = b.position ?? 0
                 return pa != pb ? pa < pb : a.id < b.id
@@ -1495,7 +1502,15 @@ final class AppStore: ObservableObject {
     private func bumpChannelLastMessage(_ channelId: String, _ messageId: String) {
         if let i = channels.firstIndex(where: { $0.id == channelId }),
            (channels[i].lastMessageId.map { snowflakeGreater(messageId, than: $0) } ?? true) {
+            // Update in place WITHOUT the didSet re-sort / mentionContextVersion
+            // bump (lastMessageId isn't a sort key), then mirror into the derived
+            // sortedChannels the list renders so the unread dot still updates.
+            bumpingLastMessage = true
             channels[i].lastMessageId = messageId
+            bumpingLastMessage = false
+            if let j = sortedChannels.firstIndex(where: { $0.id == channelId }) {
+                sortedChannels[j].lastMessageId = messageId
+            }
         }
         if let i = dms.firstIndex(where: { $0.id == channelId }),
            (dms[i].lastMessageId.map { snowflakeGreater(messageId, than: $0) } ?? true) {

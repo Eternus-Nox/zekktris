@@ -146,7 +146,10 @@ export function ChannelList({ guild, channels, activeChannelId }: Props) {
   // after the early return because by definition guild exists here.
   if (!guildRoles) void loadRoles(guild.id).catch(() => undefined);
 
-  const grouped = groupByCategory(channels ?? []);
+  // Memoized so the O(n log n) group+sort runs only when the channel list
+  // actually changes — not on every unrelated re-render (drag state, member/
+  // role/override updates).
+  const grouped = useMemo(() => groupByCategory(channels ?? []), [channels]);
 
   function toggle(catId: string) {
     setCollapsed((prev) => {
@@ -544,11 +547,15 @@ function ChannelRow({
   }
   // Granular subscriptions (was `useAppState()`): a channel row should only
   // re-render when its mute/read state changes, not on every dispatch.
+  // notificationOverrides changes rarely (only on a mute / notif edit), so the
+  // whole-map selector is fine. readStateByChannel is the HOT one — it's
+  // rebuilt by reference on EVERY inbound message, so selecting the whole map
+  // re-rendered every visible row on every message; it's read per-channel as
+  // primitives below instead.
   const notificationOverrides = useAppStateSelector((v) => v.state.notificationOverrides);
-  const readStateByChannel = useAppStateSelector((v) => v.state.readStateByChannel);
   const ackChannel = useAppStateSelector((v) => v.ackChannel);
   const setNotificationOverride = useAppStateSelector((v) => v.setNotificationOverride);
-  const state = { notificationOverrides, readStateByChannel };
+  const state = { notificationOverrides };
   const toasts = useToasts();
   const navigate = useNavigate();
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
@@ -563,8 +570,13 @@ function ChannelRow({
   // (see ChannelList header) so we don't repeat it on every row.
   const channelExplicitlyMuted =
     state.notificationOverrides[`channel:${channel.id}`] === 'nothing';
-  const rawUnread = !active && isChannelUnread(channel, state.readStateByChannel);
-  const mentions = channelMentionCount(channel.id, state.readStateByChannel);
+  // Per-channel primitives — this row re-renders only when ITS unread flag or
+  // mention count changes (the selected boolean/number is reference-stable),
+  // not on every message in any channel.
+  const rawUnread = useAppStateSelector(
+    (v) => !active && isChannelUnread(channel, v.state.readStateByChannel),
+  );
+  const mentions = useAppStateSelector((v) => channelMentionCount(channel.id, v.state.readStateByChannel));
   const unread = muted ? false : rawUnread;
 
   const lastMessageId = channel.lastMessageId ?? null;
