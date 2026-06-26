@@ -672,6 +672,10 @@ export interface AttachmentDTO {
   /** Base64-encoded waveform bytes (typically 32-64 samples). Only
       set for voice messages. */
   waveform: string | null;
+  /** Inline preview thumbnail URL, or null. Non-E2EE: a server-made ~480px
+      webp; E2EE: the .zke URL of a client-made, channel-key-encrypted
+      thumbnail. Null = load the full image (`url`) inline. */
+  thumbnailUrl: string | null;
 }
 
 export function toAttachment(a: Attachment): AttachmentDTO {
@@ -686,6 +690,7 @@ export function toAttachment(a: Attachment): AttachmentDTO {
     isVoiceMessage: a.isVoiceMessage ?? false,
     durationSeconds: a.durationSeconds ?? null,
     waveform: a.waveform ?? null,
+    thumbnailUrl: a.thumbnailUrl ?? null,
   };
 }
 

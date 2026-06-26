@@ -94,7 +94,10 @@ function normalizeContentType(filename: string, claimed: string): string {
   return 'application/octet-stream';
 }
 
-export async function saveUploadedFile(file: File): Promise<SavedFile> {
+export async function saveUploadedFile(
+  file: File,
+  opts: { encryptedThumb?: File | null; makeServerThumbnail?: boolean } = {},
+): Promise<SavedFile & { thumbnail: SavedFile | null }> {
   const maxBytes = env.MAX_UPLOAD_SIZE_MB * 1024 * 1024;
   if (file.size > maxBytes) {
     throw errors.payloadTooLarge(`file "${file.name}" exceeds ${env.MAX_UPLOAD_SIZE_MB} MB limit`);
@@ -151,6 +154,24 @@ export async function saveUploadedFile(file: File): Promise<SavedFile> {
   const diskPath = path.join(dir, safeName);
   await fs.writeFile(diskPath, buf);
 
+  // Inline thumbnail (its OWN attachment id/dir/row so the CDN can serve it +
+  // GC keeps it referenced). Two sources:
+  //  • E2EE: the client already made + encrypted a thumbnail (.zke) — save it
+  //    verbatim (it's octet-stream, so the recursive save skips image work).
+  //  • non-E2EE image: generate a ~480px webp from the bytes we already have.
+  // Either way it's saved via a nested saveUploadedFile (no further nesting).
+  let thumbnail: SavedFile | null = null;
+  if (opts.encryptedThumb) {
+    thumbnail = await saveUploadedFile(opts.encryptedThumb);
+  } else if (opts.makeServerThumbnail && /^image\//i.test(contentType)) {
+    const thumb = await encodeWebp(buf, { maxDim: 480, quality: 70 });
+    if (thumb) {
+      thumbnail = await saveUploadedFile(
+        new File([thumb.data], 'thumb.webp', { type: 'image/webp' }),
+      );
+    }
+  }
+
   return {
     attachmentId,
     filename: safeName,
@@ -160,6 +181,7 @@ export async function saveUploadedFile(file: File): Promise<SavedFile> {
     url: `/cdn/${attachmentId}/${encodeURIComponent(safeName)}`,
     width,
     height,
+    thumbnail,
   };
 }
 

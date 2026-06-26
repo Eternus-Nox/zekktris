@@ -229,6 +229,11 @@ export interface NewAttachmentInput {
   /** Base64-encoded waveform bytes (typically 32-64 samples). Only
       meaningful when isVoiceMessage is true. */
   waveform?: string | null;
+  /** URL of this attachment's inline thumbnail (its own attachment row), or
+      null. Set on the MAIN image row; points at the thumb row's CDN url. */
+  thumbnailUrl?: string | null;
+  /** True when this row is ITSELF a thumbnail (excluded from listings). */
+  isThumbnail?: boolean;
 }
 
 /** Result of a create or edit — the row plus the just-resolved mention ids. */
@@ -348,6 +353,8 @@ export async function createMessage(input: CreateMessageInput): Promise<MessageW
           isVoiceMessage: a.isVoiceMessage ?? false,
           durationSeconds: a.durationSeconds ?? null,
           waveform: a.waveform ?? null,
+          thumbnailUrl: a.thumbnailUrl ?? null,
+          isThumbnail: a.isThumbnail ?? false,
         })),
       );
     }
@@ -631,7 +638,14 @@ export async function loadAttachments(messageIds: bigint[]) {
   const rows = await db
     .select()
     .from(schema.attachments)
-    .where(inArray(schema.attachments.messageId, messageIds));
+    // Exclude thumbnail rows — they're previews of other attachments, not
+    // standalone items, so a message's own attachment list must not double up.
+    .where(
+      and(
+        inArray(schema.attachments.messageId, messageIds),
+        eq(schema.attachments.isThumbnail, false),
+      ),
+    );
   const map = new Map<bigint, schema.Attachment[]>();
   for (const r of rows) {
     const list = map.get(r.messageId);
@@ -665,6 +679,7 @@ export async function listChannelAttachments(
     eq(schema.messages.channelId, channelId),
     isNull(schema.messages.deletedAt),
     eq(schema.attachments.isVoiceMessage, false),
+    eq(schema.attachments.isThumbnail, false),
   ];
   if (opts.before !== undefined) conds.push(lt(schema.attachments.id, opts.before));
   if (opts.kind === 'media') {

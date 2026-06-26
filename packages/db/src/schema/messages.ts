@@ -211,6 +211,21 @@ export const attachments = pgTable(
      * for actual playback. Null for non-voice attachments.
      */
     waveform: text('waveform'),
+    /**
+     * Inline preview thumbnail URL, or null. Non-E2EE: a server-generated
+     * ~480px webp stored as its OWN attachments row. E2EE: the .zke URL of a
+     * client-generated, channel-key-encrypted thumbnail (also its own row).
+     * NULL = no thumbnail; clients load the full image (`url`) inline. The
+     * image's display dimensions live in width/height above.
+     */
+    thumbnailUrl: text('thumbnail_url'),
+    /**
+     * True when this row is ITSELF a thumbnail for another attachment. Each
+     * thumbnail gets its own row (so the CDN can serve it and GC keeps it
+     * referenced), but it's a preview — excluded from the media gallery and
+     * attachment listings.
+     */
+    isThumbnail: boolean('is_thumbnail').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     /**
      * Stamped by the periodic compression sweep once it has evaluated

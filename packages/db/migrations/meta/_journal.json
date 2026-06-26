@@ -589,6 +589,13 @@
       "when": 1784600200000,
       "tag": "0084_notification_overrides_user_target_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1784600210000,
+      "tag": "0085_attachment_thumbnail_url",
+      "breakpoints": true
     }
   ]
 }

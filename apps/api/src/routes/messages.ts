@@ -306,6 +306,10 @@ messagesRouter.post(
     const contentType = c.req.header('content-type') ?? '';
     let payload: z.infer<typeof sendMessageSchema>;
     let files: File[] = [];
+    // Parallel to `files` (by position): the encrypted thumbnail for files[i]
+    // (E2EE images only; null otherwise), and the client metadata for files[i].
+    let thumbFiles: (File | null)[] = [];
+    let attMeta: ({ width?: number; height?: number; hasThumbnail?: boolean } | null)[] = [];
 
     if (contentType.startsWith('multipart/form-data')) {
       const body = await c.req.parseBody({ all: true });
@@ -320,17 +324,36 @@ messagesRouter.post(
         }
       }
       payload = sendMessageSchema.parse(parsed);
-      // Collect File objects from any field whose value is a File. Discord-
-      // style "files[0]", "files[1]", ... and bare "files" all work.
+      // Reconstruct ordered MAIN files + a parallel encrypted-thumbnail array by
+      // parsing the indexed field names: files[i] (main) and thumbs[i] (the
+      // encrypted thumb for main i, E2EE images only, sparse). A legacy bare
+      // "files" key is appended in encounter order. Explicit index ordering
+      // keeps files / thumbs / the positional `attachments` meta aligned even
+      // for sparse slots (e.g. image + pdf + image).
+      const mainByIdx = new Map<number, File>();
+      const thumbByIdx = new Map<number, File>();
       for (const [key, value] of Object.entries(body)) {
-        const list = Array.isArray(value) ? value : [value];
-        for (const v of list) {
-          if (v instanceof File) files.push(v);
-        }
         if (key === 'payload_json') continue;
+        const list = Array.isArray(value) ? value : [value];
+        const mMain = /^files\[(\d+)\]$/.exec(key);
+        const mThumb = /^thumbs\[(\d+)\]$/.exec(key);
+        for (const v of list) {
+          if (!(v instanceof File)) continue;
+          if (mMain) mainByIdx.set(Number(mMain[1]), v);
+          else if (mThumb) thumbByIdx.set(Number(mThumb[1]), v);
+          else if (key === 'files') mainByIdx.set(mainByIdx.size, v); // legacy bare
+        }
       }
+      const idxs = [...mainByIdx.keys()].sort((a, b) => a - b);
+      files = idxs.map((i) => mainByIdx.get(i)!);
+      thumbFiles = idxs.map((i) => thumbByIdx.get(i) ?? null);
+      attMeta = idxs.map((i) => payload.attachments?.[i] ?? null);
       if (files.length > env.MAX_FILES_PER_MESSAGE) {
         throw errors.badRequest(`At most ${env.MAX_FILES_PER_MESSAGE} attachments per message`);
+      }
+      // A thumbnail part with no matching main file is malformed.
+      if ([...thumbByIdx.keys()].some((i) => !mainByIdx.has(i))) {
+        throw errors.badRequest('thumbnail without a matching attachment');
       }
     } else {
       const json = (await c.req.json().catch(() => ({}))) as unknown;
@@ -628,7 +651,20 @@ messagesRouter.post(
     // ── Save uploaded files to disk first; on any later failure we don't
     //    leak orphan files (a janitor cron is acceptable for v1; the message
     //    transaction failing is rare and recoverable). ────────────────────
-    const saved = files.length > 0 ? await Promise.all(files.map((f) => uploads.saveUploadedFile(f))) : [];
+    // Save mains; each call may ALSO produce a thumbnail (its own file/row):
+    // the client's encrypted thumb for E2EE images, or a server-generated webp
+    // for non-E2EE images (saveUploadedFile only thumbnails actual images).
+    const saved =
+      files.length > 0
+        ? await Promise.all(
+            files.map((f, i) =>
+              uploads.saveUploadedFile(f, {
+                encryptedThumb: thumbFiles[i] ?? null,
+                makeServerThumbnail: !thumbFiles[i],
+              }),
+            ),
+          )
+        : [];
 
     let result;
     try {
@@ -651,33 +687,58 @@ messagesRouter.post(
         hasAttachedPoll: !!payload.poll,
         forwardedFromMessageId,
         stickerId,
-        attachments: saved.map((s, i) => {
-          // Tag the first (and only) attachment with voice metadata
-          // when the request came in with a `voiceMessage` field.
-          // The validation block above guarantees files.length === 1
-          // when payload.voiceMessage is set, so applying to index 0
-          // is unambiguous.
+        attachments: saved.flatMap((s, i) => {
+          // Tag the first (and only) attachment with voice metadata when the
+          // request came in with a `voiceMessage` field (files.length === 1 is
+          // guaranteed above, so index 0 is unambiguous).
           const voice = i === 0 && payload.voiceMessage ? payload.voiceMessage : null;
           // Client-supplied dims fill in for E2EE (.zke) images the server
           // can't measure; server-measured dims (non-E2EE, sharp) win.
-          const meta = payload.attachments?.[i] ?? null;
-          return {
-            id: s.attachmentId,
-            filename: s.filename,
-            contentType: s.contentType,
-            size: s.size,
-            url: s.url,
-            width: s.width ?? meta?.width ?? null,
-            height: s.height ?? meta?.height ?? null,
-            isVoiceMessage: !!voice,
-            durationSeconds: voice ? voice.durationSeconds : null,
-            waveform: voice ? voice.waveform : null,
-          };
+          const meta = attMeta[i] ?? null;
+          const rows = [
+            {
+              id: s.attachmentId,
+              filename: s.filename,
+              contentType: s.contentType,
+              size: s.size,
+              url: s.url,
+              width: s.width ?? meta?.width ?? null,
+              height: s.height ?? meta?.height ?? null,
+              isVoiceMessage: !!voice,
+              durationSeconds: voice ? voice.durationSeconds : null,
+              waveform: voice ? voice.waveform : null,
+              thumbnailUrl: s.thumbnail?.url ?? null,
+              isThumbnail: false,
+            },
+          ];
+          // The thumbnail is its OWN attachment row (so the CDN serves it + GC
+          // keeps it); excluded from listings via isThumbnail.
+          if (s.thumbnail) {
+            const t = s.thumbnail;
+            rows.push({
+              id: t.attachmentId,
+              filename: t.filename,
+              contentType: t.contentType,
+              size: t.size,
+              url: t.url,
+              width: t.width ?? null,
+              height: t.height ?? null,
+              isVoiceMessage: false,
+              durationSeconds: null,
+              waveform: null,
+              thumbnailUrl: null,
+              isThumbnail: true,
+            });
+          }
+          return rows;
         }),
       });
     } catch (err) {
-      // Roll back the on-disk files if the transaction failed.
-      for (const s of saved) await uploads.deleteAttachmentFile(s.attachmentId);
+      // Roll back the on-disk files (main + thumbnail) if the tx failed.
+      for (const s of saved) {
+        await uploads.deleteAttachmentFile(s.attachmentId);
+        if (s.thumbnail) await uploads.deleteAttachmentFile(s.thumbnail.attachmentId);
+      }
       throw err;
     }
 
