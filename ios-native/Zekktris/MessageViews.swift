@@ -3,6 +3,31 @@ import PhotosUI
 import UIKit
 import UniformTypeIdentifiers
 import AVKit
+import ImageIO
+
+/// Decodes image bytes downsampled to a target pixel size via ImageIO, so the
+/// full-resolution bitmap is never realized in memory. Pure + off-main-safe —
+/// call it inside a detached task. Inline message images display at ≤240pt yet
+/// the raw bytes are often ~1920px, so downsampling cuts decode time + memory
+/// dramatically (the worst offender being multi-MB E2EE photos decoded on the
+/// main thread). Falls back to a plain decode if thumbnailing fails.
+enum ImageDownsampler {
+    static func decode(_ data: Data, maxPixels: CGFloat) -> UIImage? {
+        let srcOpts = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let src = CGImageSourceCreateWithData(data as CFData, srcOpts) else {
+            return UIImage(data: data)
+        }
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true, // honor EXIF orientation
+            kCGImageSourceThumbnailMaxPixelSize: maxPixels,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else {
+            return UIImage(data: data)
+        }
+        return UIImage(cgImage: cg)
+    }
+}
 
 /// A channel's message timeline plus the composer. Auto-scrolls to the newest
 /// message and keeps the composer pinned above the keyboard.
@@ -4025,7 +4050,10 @@ private struct EncryptedThumb: View {
             .onTapGesture { if image != nil { onTap() } }
             .task(id: e2eeUnlockVersion) {
                 if image == nil, let data = await store.decryptedAttachmentData(attachment, in: channel) {
-                    image = UIImage(data: data)
+                    // Downsample off-main — a ~130pt thumb never needs full res.
+                    image = await Task.detached(priority: .userInitiated) {
+                        ImageDownsampler.decode(data, maxPixels: 400)
+                    }.value
                 }
             }
     }
@@ -4988,7 +5016,11 @@ struct EncryptedAttachmentView: View {
                     failed = true
                 }
             } else {
-                image = UIImage(data: data)
+                // Downsample off-main — the inline view caps at ~240pt, so a
+                // full-res decode of a multi-MB photo on the UI thread is waste.
+                image = await Task.detached(priority: .userInitiated) {
+                    ImageDownsampler.decode(data, maxPixels: 720)
+                }.value
                 loading = false
                 failed = (image == nil && !data.isEmpty) ? false : failed
             }

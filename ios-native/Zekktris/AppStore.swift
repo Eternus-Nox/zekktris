@@ -2477,7 +2477,16 @@ final class AppStore: ObservableObject {
         guard channel.isE2EE, let key = e2eeKey(for: channel),
               let url = assetURL(attachment.url) else { return nil }
         guard let (blob, _) = try? await URLSession.shared.data(from: url) else { return nil }
-        guard let plain = E2EE.decryptData(blob, key: key) else { return nil }
+        // AES-GCM open over the whole (multi-MB) blob runs OFF the main actor so
+        // it doesn't jank scroll the moment an encrypted photo realizes — the
+        // PBKDF2 path already hops off-main the same way (deriveKeyOffMain).
+        let plain = await Task.detached(priority: .userInitiated) {
+            E2EE.decryptData(blob, key: key)
+        }.value
+        guard let plain else { return nil }
+        // Don't cache stale plaintext if the conversation was relocked while we
+        // were off-main.
+        guard e2eeKey(for: channel) != nil else { return nil }
         cacheMedia(attachment.id, plain)
         return plain
     }
@@ -4679,11 +4688,32 @@ final class AppStore: ObservableObject {
 
     private func decryptVisible() {
         guard let ch = selectedChannel, let key = e2eeKey(for: ch) else { return }
-        for m in messages where E2EE.isDecryptable(m.text) && decrypted[m.id] == nil {
-            if let pt = E2EE.decrypt(m.text, key: key) {
-                decrypted[m.id] = pt
-                resolveE2EEEmbeds(m.id, pt)
-            }
+        let channelId = ch.id
+        // Snapshot the not-yet-decrypted messages. (id, ciphertext) pairs are
+        // value types, safe to hand to a detached task.
+        let inputs: [(String, String)] = messages
+            .filter { E2EE.isDecryptable($0.text) && decrypted[$0.id] == nil }
+            .map { ($0.id, $0.text) }
+        guard !inputs.isEmpty else { return }
+        Task {
+            // AES-GCM open is a pure function — run the whole page off the main
+            // actor so opening a 50-message E2EE DM doesn't spike the UI thread.
+            let results: [(String, String)] = await Task.detached(priority: .userInitiated) {
+                inputs.compactMap { id, text in E2EE.decrypt(text, key: key).map { (id, $0) } }
+            }.value
+            guard !results.isEmpty else { return }
+            // Drop if we navigated away or the key was relocked/rotated while we
+            // were off-main (never cache stale plaintext). Re-validate against
+            // the CURRENT selected channel + its current key.
+            guard let cur = selectedChannel, cur.id == channelId, e2eeKey(for: cur) != nil else { return }
+            // Publish ALL decrypts in ONE @Published write — previously each
+            // message fired objectWillChange separately, forcing the message
+            // list to re-render up to N times on E2EE open (the dominant cause
+            // of "choppiest for E2EE").
+            var next = decrypted
+            for (id, pt) in results where next[id] == nil { next[id] = pt }
+            decrypted = next
+            for (id, pt) in results { resolveE2EEEmbeds(id, pt) }
         }
     }
 
