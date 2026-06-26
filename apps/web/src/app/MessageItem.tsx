@@ -34,7 +34,7 @@ import { AvatarImage } from '../lib/AvatarImage';
 import { AvatarDecoration } from '../lib/avatarDecorations';
 import { useProfileCard } from '../lib/useProfileCard';
 import { Edit, Trash, Pin, CornerUpLeft, MessageSquare, Smile, Phone, Shield, Bookmark } from '../lib/icons';
-import { decryptForDm, encryptForDm, isEncryptedWireFormat, hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
+import { decryptForDm, peekDecryptedText, encryptForDm, isEncryptedWireFormat, hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
 import { POKE_VARIANTS, type PokeType } from '../lib/poke';
 import { ForwardModal } from './ForwardModal';
 import { EmojiPicker } from './EmojiPicker';
@@ -343,9 +343,15 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   //   plaintext === null && failed === false → still decrypting (transient)
   //   plaintext === null && failed === true  → have a key but it didn't work
   //                                             (rotated key / corrupt / v1)
-  const [decResult, setDecResult] = useState<{ plaintext: string | null; failed: boolean }>({
-    plaintext: null,
-    failed: false,
+  const [decResult, setDecResult] = useState<{ plaintext: string | null; failed: boolean }>(() => {
+    // Seed synchronously from the decrypted-text cache so a row scrolled back
+    // into view (virtua re-mounts it) paints plaintext on the FIRST frame
+    // instead of flashing empty then filling a frame later.
+    if (encMeta.isEncrypted && !encMeta.noKey && channel) {
+      const hit = peekDecryptedText(message.content, channel.id);
+      if (hit !== null) return { plaintext: hit, failed: false };
+    }
+    return { plaintext: null, failed: false };
   });
   useEffect(() => {
     if (!encMeta.isEncrypted || encMeta.noKey || !channel) {

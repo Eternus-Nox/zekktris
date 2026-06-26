@@ -95,8 +95,18 @@ function importAesKey(keyBytes: Uint8Array): Promise<CryptoKey> {
 let keyVersion = 0;
 const keyListeners = new Set<() => void>();
 
+// Decrypted-TEXT cache: channelId + keyVersion + wireFormat -> plaintext.
+// In-memory only (never persisted), FIFO-evicted past a count cap, and CLEARED
+// on any key change below so a rotated/cleared key can never serve stale
+// plaintext. Avoids re-running AES-GCM every time a virtualized message row
+// re-mounts on scroll — the dominant E2EE-DM scroll cost on web. Same contract
+// as the decryptedMedia cache, for text.
+const decryptedText = new Map<string, string>();
+const DECRYPTED_TEXT_MAX = 4000;
+
 function notifyKeyChange(): void {
   keyVersion++;
+  decryptedText.clear();
   for (const fn of keyListeners) {
     try {
       fn();
@@ -311,17 +321,34 @@ export async function encryptForDm(
   }
 }
 
+function decryptedTextKey(channelId: string, wireFormat: string): string {
+  return `${channelId}\0${keyVersion}\0${wireFormat}`;
+}
+
+/**
+ * Synchronous peek into the decrypted-text cache. Lets a re-mounted message row
+ * paint its plaintext on the FIRST frame (no empty→filled flash) when the row
+ * was already decrypted this session. Returns null on a miss.
+ */
+export function peekDecryptedText(wireFormat: string, channelId: string): string | null {
+  return decryptedText.get(decryptedTextKey(channelId, wireFormat)) ?? null;
+}
+
 /**
  * Decrypt a wire-format string back to plaintext using the local
  * cached key. Returns null on any failure (no local key, malformed
- * wire format, MAC failure).
+ * wire format, MAC failure). Cached per (channel, keyVersion, ciphertext) so a
+ * row scrolled out and back doesn't re-run AES-GCM.
  */
 export async function decryptForDm(
   wireFormat: string,
   channelId: string,
 ): Promise<string | null> {
+  const cached = decryptedText.get(decryptedTextKey(channelId, wireFormat));
+  if (cached !== undefined) return cached;
   const key = getLocalKey(channelId);
   if (!key) return null;
+  const kvAtStart = keyVersion;
   try {
     // v3 — AES-256-GCM (current). WebCrypto throws on an auth-tag mismatch,
     // which the surrounding catch turns into a null (failed) result.
@@ -336,7 +363,15 @@ export async function decryptForDm(
         cryptoKey,
         ct as BufferSource,
       );
-      return naclUtil.encodeUTF8(new Uint8Array(pt));
+      const plain = naclUtil.encodeUTF8(new Uint8Array(pt));
+      // Never cache/return plaintext if the key was rotated/cleared mid-decrypt.
+      if (keyVersion !== kvAtStart) return null;
+      if (decryptedText.size > DECRYPTED_TEXT_MAX) {
+        const oldest = decryptedText.keys().next().value;
+        if (oldest !== undefined) decryptedText.delete(oldest);
+      }
+      decryptedText.set(decryptedTextKey(channelId, wireFormat), plain);
+      return plain;
     }
     // v2 (legacy XSalsa20-Poly1305 / NaCl secretbox) and v1 (per-user
     // keypair) are no longer decryptable — the XSalsa20 path was removed.
