@@ -2108,7 +2108,10 @@ struct MessageRow: View, Equatable {
             // Reserve the image's final on-screen size UP FRONT from its known
             // width/height so loading doesn't reflow the row (and the bottom).
             let dim = imageDisplaySize(att)
-            CachedImage(url: url, contentMode: .fit) {
+            // Inline shows the small server thumbnail when present; the tap opens
+            // the full image (full `url`).
+            let inlineURL = att.thumbnailUrl.flatMap { assetURL($0) } ?? url
+            CachedImage(url: inlineURL, contentMode: .fit) {
                 if dim != nil {
                     Rectangle().fill(Theme.bg3).overlay(ProgressView().tint(Theme.accent))
                 } else {
@@ -2156,11 +2159,14 @@ struct MessageRow: View, Equatable {
                 Task { await store.openImageLightbox(images: images, tapped: att.id, in: channel) }
             }
         } else if att.isImage, let url = assetURL(att.url) {
+            // Inline grid cell shows the small server thumbnail when present;
+            // the tap opens the full image via openImageLightbox.
+            let inlineURL = att.thumbnailUrl.flatMap { assetURL($0) } ?? url
             Rectangle()
                 .fill(Theme.bg3)
                 .aspectRatio(1, contentMode: .fit)
                 .overlay(
-                    CachedImage(url: url, contentMode: .fill) {
+                    CachedImage(url: inlineURL, contentMode: .fill) {
                         ProgressView().tint(Theme.accent)
                     } failure: {
                         Image(systemName: "photo").foregroundColor(Theme.ink3)
@@ -4041,8 +4047,12 @@ private struct EncryptedThumb: View {
             .contentShape(Rectangle())
             .onTapGesture { if image != nil { onTap() } }
             .task(id: e2eeUnlockVersion) {
-                if image == nil, let data = await store.decryptedAttachmentData(attachment, in: channel) {
-                    // Downsample off-main — a ~130pt thumb never needs full res.
+                guard image == nil else { return }
+                // Prefer the small encrypted thumbnail (tiny download + decrypt);
+                // fall back to the full blob for old messages without one.
+                var data = await store.decryptedThumbnailData(attachment, in: channel)
+                if data == nil { data = await store.decryptedAttachmentData(attachment, in: channel) }
+                if let data {
                     image = await Task.detached(priority: .userInitiated) {
                         ImageDownsampler.decode(data, maxPixels: 400)
                     }.value
@@ -4935,8 +4945,29 @@ struct EncryptedAttachmentView: View {
                     // Tap → full-screen preview of the DECRYPTED image (no
                     // plaintext URL). Long-press → Save/Copy/Share the decrypted
                     // bytes — E2EE is preserved end to end.
-                    .onTapGesture { store.openLightbox(image: image) }
-                    .imageActions { image }
+                    // Inline shows the THUMBNAIL; tapping decrypts the FULL image
+                    // for the lightbox (cached after first open). Save/Share also
+                    // use full resolution.
+                    .onTapGesture {
+                        Task {
+                            // `image` here is the (non-optional) inline thumbnail.
+                            // Decrypt the FULL image for the lightbox; fall back to
+                            // the thumb if the full blob is unavailable.
+                            var full: UIImage?
+                            if let data = await store.decryptedAttachmentData(attachment, in: channel) {
+                                full = await Task.detached(priority: .userInitiated) {
+                                    UIImage(data: data)
+                                }.value
+                            }
+                            store.openLightbox(image: full ?? image)
+                        }
+                    }
+                    .imageActions {
+                        if let full = await store.decryptedAttachmentData(attachment, in: channel) {
+                            return await Task.detached(priority: .userInitiated) { UIImage(data: full) }.value
+                        }
+                        return image
+                    }
                     // Per-image E2EE lock badge removed — the lock by the DM
                     // header already signals the whole conversation is encrypted.
             } else if let videoURL {
@@ -5005,12 +5036,13 @@ struct EncryptedAttachmentView: View {
         .task(id: e2eeUnlockVersion) {
             loading = true
             failed = false
-            guard let data = await store.decryptedAttachmentData(attachment, in: channel) else {
-                loading = false
-                failed = true
-                return
-            }
             if isVideo {
+                // Video has no thumbnail — decrypt the full blob to a temp file.
+                guard let data = await store.decryptedAttachmentData(attachment, in: channel) else {
+                    loading = false
+                    failed = true
+                    return
+                }
                 let ext = (displayName as NSString).pathExtension.lowercased()
                 let tmp = FileManager.default.temporaryDirectory
                     .appendingPathComponent(UUID().uuidString + "." + (ext.isEmpty ? "mp4" : ext))
@@ -5022,8 +5054,16 @@ struct EncryptedAttachmentView: View {
                     failed = true
                 }
             } else {
-                // Downsample off-main — the inline view caps at ~240pt, so a
-                // full-res decode of a multi-MB photo on the UI thread is waste.
+                // Inline image: decrypt the small thumbnail (tiny download +
+                // decrypt); fall back to the full blob for old messages. Decode
+                // off-main. The lightbox/Save decrypt the FULL image on tap.
+                var data = await store.decryptedThumbnailData(attachment, in: channel)
+                if data == nil { data = await store.decryptedAttachmentData(attachment, in: channel) }
+                guard let data else {
+                    loading = false
+                    failed = true
+                    return
+                }
                 image = await Task.detached(priority: .userInitiated) {
                     ImageDownsampler.decode(data, maxPixels: 720)
                 }.value

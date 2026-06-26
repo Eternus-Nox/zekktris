@@ -446,6 +446,8 @@ struct Attachment: Codable, Identifiable, Hashable {
     var isVoiceMessage: Bool?
     var durationSeconds: Int?
     var waveform: String?
+    /// Inline preview thumbnail URL (its own attachment). nil = load full inline.
+    var thumbnailUrl: String?
 
     var isImage: Bool { (contentType ?? "").hasPrefix("image/") }
     var isVideo: Bool { (contentType ?? "").hasPrefix("video/") }

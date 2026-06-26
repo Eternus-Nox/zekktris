@@ -2435,16 +2435,24 @@ final class AppStore: ObservableObject {
                     // recipient reserves the slot before decrypt — the server
                     // can't measure the ciphertext. Dims aren't sensitive (same
                     // as the plaintext voice duration/waveform).
-                    var w: Int?, h: Int?
+                    var w: Int?, h: Int?, thumbData: Data?
                     if att.contentType.hasPrefix("image/"),
                        let sz = UIImage(data: att.data)?.size, sz.width > 0, sz.height > 0 {
                         w = Int(sz.width); h = Int(sz.height)
+                        // Small ENCRYPTED thumbnail so the recipient loads a tiny
+                        // preview inline instead of the full multi-MB blob. Same
+                        // channel key; the server only ever sees ciphertext.
+                        if let thumb = ImageDownsampler.decode(att.data, maxPixels: 480),
+                           let jpeg = thumb.jpegData(compressionQuality: 0.6),
+                           let encThumb = E2EE.encryptData(jpeg, key: key) {
+                            thumbData = encThumb
+                        }
                     }
                     files.append(UploadFile(
                         data: enc,
                         filename: att.filename + ".zke",
                         contentType: "application/octet-stream",
-                        width: w, height: h
+                        width: w, height: h, thumbData: thumbData
                     ))
                 }
                 if !caption.isEmpty {
@@ -2498,6 +2506,27 @@ final class AppStore: ObservableObject {
         // were off-main.
         guard e2eeKey(for: channel) != nil else { return nil }
         cacheMedia(attachment.id, plain)
+        return plain
+    }
+
+    /// Fetch + decrypt the SMALL encrypted thumbnail (.zke) for an attachment.
+    /// Inline views show this instead of the full blob — far fewer bytes to
+    /// download + decrypt — while the lightbox / Save still use
+    /// decryptedAttachmentData (full resolution). Cached under a distinct
+    /// ":thumb" key so it never collides with the full image. Returns nil when
+    /// there's no thumbnail (old messages) — callers fall back to the full blob.
+    func decryptedThumbnailData(_ attachment: Attachment, in channel: Channel) async -> Data? {
+        guard let thumbURL = attachment.thumbnailUrl else { return nil }
+        let cacheKey = attachment.id + ":thumb"
+        if let cached = cachedMedia(cacheKey) { return cached }
+        guard channel.isE2EE, let key = e2eeKey(for: channel),
+              let url = assetURL(thumbURL) else { return nil }
+        guard let (blob, _) = try? await URLSession.shared.data(from: url) else { return nil }
+        let plain = await Task.detached(priority: .userInitiated) {
+            E2EE.decryptData(blob, key: key)
+        }.value
+        guard let plain, e2eeKey(for: channel) != nil else { return nil }
+        cacheMedia(cacheKey, plain)
         return plain
     }
 

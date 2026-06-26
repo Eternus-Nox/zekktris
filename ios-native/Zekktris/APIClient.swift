@@ -22,6 +22,9 @@ struct UploadFile {
     /// measure (it only sees ciphertext). nil for non-images / unknown.
     var width: Int? = nil
     var height: Int? = nil
+    /// Already-encrypted (.zke) thumbnail bytes for an E2EE image — uploaded as
+    /// a sibling `thumbs[i]` part so the recipient loads a tiny preview inline.
+    var thumbData: Data? = nil
 }
 
 /// Thin REST client mirroring `packages/client/src/rest.ts`. Sends
@@ -781,8 +784,12 @@ final class APIClient {
         // exact slot before decrypt. NSNull for files with no dims; the whole
         // key is omitted when nothing has dims (byte-identical to old sends).
         let attMeta: [Any] = files.map { f in
-            guard let w = f.width, let h = f.height else { return NSNull() }
-            return ["width": w, "height": h]
+            if f.width == nil, f.height == nil, f.thumbData == nil { return NSNull() }
+            var m: [String: Any] = [:]
+            if let w = f.width { m["width"] = w }
+            if let h = f.height { m["height"] = h }
+            if f.thumbData != nil { m["hasThumbnail"] = true }
+            return m
         }
         if attMeta.contains(where: { !($0 is NSNull) }) { payload["attachments"] = attMeta }
         let payloadJSON = try JSONSerialization.data(withJSONObject: payload)
@@ -800,6 +807,14 @@ final class APIClient {
             append("Content-Type: \(file.contentType)\r\n\r\n")
             body.append(file.data)
             append("\r\n")
+            // Sibling encrypted-thumbnail part for this image (E2EE only).
+            if let thumb = file.thumbData {
+                append("--\(boundary)\r\n")
+                append("Content-Disposition: form-data; name=\"thumbs[\(i)]\"; filename=\"thumb.zke\"\r\n")
+                append("Content-Type: application/octet-stream\r\n\r\n")
+                body.append(thumb)
+                append("\r\n")
+            }
         }
         append("--\(boundary)--\r\n")
 
