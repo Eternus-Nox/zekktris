@@ -35,6 +35,44 @@ struct PublicUser: Codable, Identifiable, Hashable {
 
 struct PublicUserWrap: Codable { let user: PublicUser }
 
+/// A bot account owned by the current user. Like a PublicUser but with the
+/// owner id. Bots authenticate via a static token that the server returns only
+/// at create/regenerate — it is never present on this DTO.
+struct Bot: Codable, Identifiable, Hashable {
+    let id: String
+    var username: String?
+    var displayName: String?
+    var avatarUrl: String?
+    var isBot: Bool?
+    var botOwnerId: String?
+    /// Configured event callback URL, or nil if the bot has no subscription.
+    /// The signing secret is never included here.
+    var botEventUrl: String?
+
+    var name: String { displayName ?? username ?? "Bot" }
+}
+
+/// A slash-command registered on a bot (owner view).
+struct BotCommand: Codable, Identifiable, Hashable {
+    let id: String
+    var botId: String
+    /// nil = global; otherwise scoped to this guild.
+    var guildId: String?
+    var name: String
+    var description: String
+    var createdAt: String?
+}
+
+struct BotListWrap: Codable { let bots: [Bot] }
+struct BotWrap: Codable { let bot: Bot }
+/// Create-bot response: the bot plus its one-time plaintext token.
+struct BotCreateResponse: Codable { let bot: Bot; let token: String }
+/// Regenerate-token response: just the new one-time plaintext token.
+struct BotTokenResponse: Codable { let token: String }
+struct BotCommandListWrap: Codable { let commands: [BotCommand] }
+/// Event-config response: the callback URL plus the (one-time-ish) signing secret.
+struct BotEventConfigResponse: Codable { let eventUrl: String?; let secret: String? }
+
 struct SelfUser: Codable, Identifiable, Hashable {
     let id: String
     var username: String?

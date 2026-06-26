@@ -1816,6 +1816,7 @@ struct SettingsView: View {
     @State private var showChangeEmail = false
     @State private var showSessions = false
     @State private var showTwoFactor = false
+    @State private var showBots = false
     @State private var showAchievements = false
     // Mic input test (record-and-discard meter; never sent). Reuses the
     // voice-message recorder's live metering — no new audio infra.
@@ -2655,12 +2656,28 @@ struct SettingsView: View {
             }
             .buttonStyle(.plain)
 
+            Button { showBots = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "cpu").font(.system(size: 14)).foregroundColor(Theme.ink3).frame(width: 20)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Bots").font(.system(size: 15)).foregroundColor(Theme.ink1)
+                        Text("Create bot accounts and API tokens").font(.system(size: 11)).foregroundColor(Theme.ink3)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.system(size: 12)).foregroundColor(Theme.ink4)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 12)
+                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+
         }
         .sheet(isPresented: $showChangePassword) { ChangePasswordSheet() }
         .sheet(isPresented: $showChangeUsername) { ChangeUsernameSheet() }
         .sheet(isPresented: $showChangeEmail) { ChangeEmailSheet() }
         .sheet(isPresented: $showSessions) { SessionsSheet() }
         .sheet(isPresented: $showTwoFactor) { TwoFactorSheet() }
+        .sheet(isPresented: $showBots) { BotsView() }
     }
 
     private func accountRow(label: String, value: String, copyable: Bool = false, mono: Bool = false,

@@ -638,6 +638,58 @@ final class APIClient {
         try await sendVoid("PUT", "/users/@me/notification-settings", bodyData: data)
     }
 
+    // ── Bots ──────────────────────────────────────────────────────────────
+    // Bot accounts owned by the current user. The plaintext token is returned
+    // ONLY by createBot + regenerateBotToken — store/show it immediately, it
+    // can't be retrieved again.
+
+    /// List the bots the current user owns.
+    func listBots() async throws -> [Bot] {
+        let wrap: BotListWrap = try await send("GET", "/users/@me/bots")
+        return wrap.bots
+    }
+
+    /// Create a bot. Returns the bot DTO + its plaintext token (shown once).
+    func createBot(username: String, displayName: String) async throws -> BotCreateResponse {
+        let body: [String: Any] = ["username": username, "displayName": displayName]
+        let data = try JSONSerialization.data(withJSONObject: body)
+        return try await send("POST", "/users/@me/bots", bodyData: data)
+    }
+
+    /// Regenerate a bot's token. Invalidates the previous token.
+    func regenerateBotToken(botId: String) async throws -> String {
+        let resp: BotTokenResponse = try await send("POST", "/users/@me/bots/\(botId)/token")
+        return resp.token
+    }
+
+    /// Update a bot's display name.
+    func updateBot(botId: String, displayName: String) async throws -> Bot {
+        let body: [String: Any] = ["displayName": displayName]
+        let data = try JSONSerialization.data(withJSONObject: body)
+        let wrap: BotWrap = try await send("PATCH", "/users/@me/bots/\(botId)", bodyData: data)
+        return wrap.bot
+    }
+
+    /// Delete a bot permanently.
+    func deleteBot(botId: String) async throws {
+        try await sendVoid("DELETE", "/users/@me/bots/\(botId)")
+    }
+
+    /// Add one of your bots to a guild. Requires MANAGE_GUILD on the target.
+    func addBotToGuild(guildId: String, botId: String) async throws {
+        let body: [String: Any] = ["botId": botId]
+        let data = try JSONSerialization.data(withJSONObject: body)
+        try await sendVoid("POST", "/guilds/\(guildId)/bots", bodyData: data)
+    }
+
+    /// Set or clear (url=nil) a bot's event callback URL. Returns the signing
+    /// secret once when a URL is set.
+    func setBotEventConfig(botId: String, url: String?) async throws -> BotEventConfigResponse {
+        let body: [String: Any] = ["url": url ?? NSNull()]
+        let data = try JSONSerialization.data(withJSONObject: body)
+        return try await send("PUT", "/users/@me/bots/\(botId)/event-config", bodyData: data)
+    }
+
     /// Enable shared-key E2EE on a DM. salt + verifier are derived client-side;
     /// the server never sees the password or key.
     func enableDmE2EE(channelId: String, salt: String, verifier: String) async throws {
