@@ -1933,23 +1933,29 @@ struct SettingsView: View {
                             } else { Theme.bg3 }
                         }
                     } else {
-                        LinearGradient(colors: [Theme.accent.opacity(0.35), Theme.accent2.opacity(0.25)],
+                        LinearGradient(colors: [Theme.accent.opacity(0.55), Theme.accent2.opacity(0.45)],
                                        startPoint: .topLeading, endPoint: .bottomTrailing)
                     }
                 }
-                .frame(height: 250)
+                .frame(height: 170)
                 .frame(maxWidth: .infinity)
                 .clipped()
+                // Legibility scrim so the avatar + name always read over any
+                // banner image, and the banner fades into the page below.
+                .overlay(
+                    LinearGradient(colors: [.clear, Theme.bg1.opacity(0.9)],
+                                   startPoint: .center, endPoint: .bottom)
+                )
 
                 PhotosPicker(selection: $bannerPickerItem, matching: .images) {
                     Image(systemName: "camera.fill")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(Theme.ink1)
-                        .frame(width: 26, height: 26)
+                        .frame(width: 30, height: 30)
                         .background(Color.black.opacity(0.55))
                         .clipShape(Circle())
                 }
-                .padding(8)
+                .padding(10)
             }
             // Edge to edge: cancel the Settings content's 16pt horizontal inset
             // so the banner spans the full screen width (square, no rounding).
@@ -1967,20 +1973,25 @@ struct SettingsView: View {
                     // launch (often 'offline' because getMe ran before the
                     // gateway identified). The presence map has the truth.
                     status: store.status(for: user?.id, fallback: user?.status),
+                    // Blend the presence dot's ring into the header background.
+                    ringColor: Theme.bg1,
                     // Show the selected avatar decoration here too — the
                     // header is the user's own profile frame, so the frame
                     // they pick below should be reflected.
                     decoration: user?.avatarDecoration,
                     toneId: user?.id
                 )
+                // Contrasting ring so the avatar separates cleanly from the
+                // banner it overhangs (matches the profile card).
+                .background(Circle().fill(Theme.bg1).frame(width: 84, height: 84))
                 .padding(.top, -38)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(session.currentUser?.name ?? "You")
-                        .font(.zkSans(18, weight: .semibold))
-                        .foregroundColor(Theme.ink1)
+                        .font(.zkSans(21, weight: .bold))
+                        .foregroundColor(store.memberColor(user?.id ?? "") ?? Theme.ink1)
                     if let username = session.currentUser?.username {
                         Text("@\(username)")
-                            .font(.zkSans(13))
+                            .font(.zkSans(14))
                             .foregroundColor(Theme.ink3)
                     }
                     PhotosPicker(selection: $avatarPickerItem, matching: .images) {
@@ -2684,7 +2695,10 @@ struct SettingsView: View {
     }
 
     private func sectionTitle(_ t: String) -> some View {
-        Text(t).font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+        Text(t.uppercased())
+            .font(.zkSans(11, weight: .bold))
+            .tracking(Theme.capTracking(11)) // letter-spaced uppercase label (web parity)
+            .foregroundColor(Theme.ink3)
     }
 }
 
