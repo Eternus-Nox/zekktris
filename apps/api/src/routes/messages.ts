@@ -47,6 +47,7 @@ import {
   computeMemberChannelPermissions,
   hasPermission,
   listChannelViewerIds,
+  listViewableGuildChannelIdsForUsers,
   assertChannelPermission,
 } from '../services/permissions';
 import { db, schema } from '../db';
@@ -1126,11 +1127,19 @@ messagesRouter.post(
         if (!isDM && ctx.channel.guildId) {
           const subs = await listChannelAllSubscribers(channelId, ctx.channel.guildId);
           if (subs.length > 0) {
-            const viewers = new Set(
-              (await listChannelViewerIds(ctx.channel.guildId, channelId)).map((id) => id.toString()),
+            // Scope the viewability check to the handful of opt-in subscribers
+            // rather than materializing the FULL channel viewer set (which is
+            // O(members) permission math + a full-roster memberRoles scan). The
+            // batched resolver returns each subscriber's viewable channel set;
+            // a non-member resolves to an empty set and is excluded.
+            const viewableBySub = await listViewableGuildChannelIdsForUsers(
+              ctx.channel.guildId,
+              subs,
             );
             for (const id of subs) {
-              if (id !== userId && viewers.has(id.toString())) allowed.set(id.toString(), id);
+              if (id !== userId && viewableBySub.get(id)?.has(channelId)) {
+                allowed.set(id.toString(), id);
+              }
             }
           }
         }

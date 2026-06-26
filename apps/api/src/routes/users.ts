@@ -71,8 +71,21 @@ usersRouter.get('/@me', requireAuth, async (c) => {
 // Achievements — computed on demand; see services/achievements.
 // ───────────────────────────────────────────────────────────────────────────
 
+// The shelf is ~7 uncached aggregate queries over the target user's history,
+// and ANY authed user can request ANY user's shelf — a cheap request that
+// amplifies into heavy DB work. Throttle per requester so one client can't
+// hammer the directory of profiles. Generous (a real user opens profiles
+// occasionally); inherits the Redis fail-open contract (degrades to no-limit,
+// never blocks reads, on a Redis outage).
+const achievementsRl = new RateLimiter(60, 60_000, 'achievements');
+async function consumeAchievements(requesterId: bigint): Promise<void> {
+  const r = await achievementsRl.consume(requesterId.toString());
+  if (!r.ok) throw errors.rateLimited(Math.ceil(r.retryAfterMs / 1000));
+}
+
 usersRouter.get('/@me/achievements', requireAuth, async (c) => {
   const userId = requireUserId(c);
+  await consumeAchievements(userId);
   // The visibility flag is a single, cheap column read — keep it OUTSIDE the
   // try/catch so a failure to COMPUTE the achievement list (the heavier,
   // multi-query path below) never silently reports `public: false` for a user
@@ -102,6 +115,7 @@ usersRouter.get(
   requireAuth,
   validate('param', z.object({ userId: snowflakeSchema })),
   async (c) => {
+    await consumeAchievements(requireUserId(c));
     const targetId = BigInt(c.req.valid('param').userId);
     const [target] = await db
       .select({ pub: schema.users.achievementsPublic })

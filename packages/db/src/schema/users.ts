@@ -576,6 +576,14 @@ export const notificationOverrides = pgTable(
     // (user_id, target_id) skipping target_type, so the PK's user_id prefix
     // alone can't seek target_id. This composite covers it directly.
     userTargetIdx: index('notification_overrides_user_target_idx').on(t.userId, t.targetId),
+    // Backs listChannelAllSubscribers (every non-DM guild message's push
+    // fan-out): WHERE target_id IN (channelId, guildId), filtering on
+    // target_id ALONE. None of the indexes above lead with target_id (they
+    // lead with target_type or user_id), so that query seq-scanned the whole
+    // table. NOT a partial WHERE level='all' index — the query post-filters
+    // level in JS (channel-override precedence needs to see non-'all' rows),
+    // so a level-predicated partial index would be unusable by the planner.
+    targetOnlyIdx: index('notification_overrides_target_id_idx').on(t.targetId),
   }),
 );
 

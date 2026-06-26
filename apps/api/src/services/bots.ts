@@ -461,10 +461,23 @@ export async function deliverMessageEventToBots(args: {
     );
   if (botMembers.length === 0) return;
 
-  const { computeMemberChannelPermissions, hasPermission } = await import(
-    './permissions'
-  );
-  const { Permissions } = await import('@zekktris/shared/permissions');
+  const { listViewableGuildChannelIdsForUsers } = await import('./permissions');
+
+  // VIEW_CHANNEL gate, batched across all event-bots in ONE resolver pass.
+  // This was an O(bots-per-guild) N+1 — computeMemberChannelPermissions per
+  // bot, each re-fetching the same channel/override/role rows — on the hot
+  // message-create path. The batched resolver returns each bot's viewable
+  // channel set. Fail closed (deliver nothing) on a query error: delivery is
+  // best-effort/fire-and-forget, so a DB blip must not throw out of here.
+  let viewable: Map<bigint, Set<bigint>>;
+  try {
+    viewable = await listViewableGuildChannelIdsForUsers(
+      args.guildId,
+      botMembers.map((b) => b.id),
+    );
+  } catch {
+    return;
+  }
 
   await Promise.all(
     botMembers.map(async (bot) => {
@@ -473,13 +486,8 @@ export async function deliverMessageEventToBots(args: {
       // could include a bot's own posts in future event types).
       if (bot.id === args.authorId) return;
       if (!bot.eventUrl || !bot.eventSecret) return;
-      // Permission gate: only deliver if the bot can view the channel.
-      try {
-        const perms = await computeMemberChannelPermissions(args.channelId, bot.id);
-        if (!hasPermission(perms, Permissions.VIEW_CHANNEL)) return;
-      } catch {
-        return;
-      }
+      // Only deliver if the bot can view the channel.
+      if (!viewable.get(bot.id)?.has(args.channelId)) return;
       await postEventToBot(bot.eventUrl, decryptField(bot.eventSecret), args.event);
     }),
   );
