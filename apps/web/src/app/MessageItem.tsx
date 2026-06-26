@@ -249,17 +249,12 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
       // and `:name:` tokens stay as text. For guild channels, we look
       // up `message.channelId`'s owning guild to find the right emoji
       // index.
-      const messageChannel = (() => {
-        for (const list of Object.values(channelsByGuild)) {
-          const found = list.find((c) => c.id === message.channelId);
-          if (found) return found;
-        }
-        return undefined;
-      })();
+      // The message's channel is the one being viewed (the `channel` prop), so
+      // there's no need to scan every guild's channel list to find it — pure
+      // waste on every row, and in a DM the scan always finds nothing. DMs have
+      // no custom (guild) emoji, so guildEmojis is undefined there.
       const guildEmojis =
-        messageChannel?.guildId !== undefined && messageChannel?.guildId !== null
-          ? emojisByGuild[messageChannel.guildId]
-          : undefined;
+        channel?.guildId != null ? emojisByGuild[channel.guildId] : undefined;
 
       return {
         // usersById is seeded only from message authors, so a DM mention of
@@ -296,7 +291,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
           : undefined,
       };
     },
-    [usersById, channelsByGuild, emojisByGuild, selfId, nav, message.channelId, message.author, channel?.recipients, onAvatarClick],
+    [usersById, channelsByGuild, emojisByGuild, selfId, nav, message.channelId, message.author, channel?.guildId, channel?.recipients, onAvatarClick],
   );
 
   // ── E2EE decryption ─────────────────────────────────────────────────────
@@ -920,7 +915,10 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
             authorId={message.authorId}
           />
         )}
-        <Reactions message={message} />
+        {/* Mount only when there ARE reactions — the component returns null
+            otherwise, but mounting it still cost two state subscriptions + a
+            scan per row. The hover "+react" picker is independent (above). */}
+        {message.reactions.length > 0 && <Reactions message={message} />}
 
         {/* DM receipt indicator. Renders inside the message bubble at the
             bottom-right so it visually sits below the hover action strip
