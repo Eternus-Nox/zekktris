@@ -57,8 +57,8 @@ struct ThreadListView: View {
             if !store.isWideLayout || store.stack.count > 1 {
                 Button { store.clearChannel() } label: {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(Theme.ink2)
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(Theme.accent)
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }

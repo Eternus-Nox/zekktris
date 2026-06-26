@@ -341,8 +341,8 @@ struct MessageListView: View {
                     store.clearChannel()
                 } label: {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(Theme.ink2)
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(Theme.accent)
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
@@ -1504,7 +1504,7 @@ struct MessageRow: View, Equatable {
                     replyPreview
                 }
                 if showHeader {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    HStack(alignment: .center, spacing: 6) {
                         if !isWebhook, let a = message.author { NameTag(a) }
                         Text(displayName)
                             .font(.zkSans(15, weight: .medium))

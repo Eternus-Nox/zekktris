@@ -760,7 +760,7 @@ export function MessageView({
             // Unarchive CTA; non-managers see only the status.
             <div
               role="status"
-              className="mx-3 mb-3 px-4 py-3 rounded-lg border border-line bg-bg-2/60 flex items-start gap-3"
+              className="mx-3 mt-2 mb-5 px-4 py-3 rounded-lg border border-line bg-bg-2/60 flex items-start gap-3"
             >
               <Archive size={18} className="text-ink-3 shrink-0 mt-0.5" />
               <div className="flex-1 min-w-0">

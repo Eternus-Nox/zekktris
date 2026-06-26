@@ -203,17 +203,15 @@ final class Session: ObservableObject {
         catch { authError = message(for: error) }
     }
 
-    /// Save the custom name tag ("clan tag"). Empty/whitespace label or emoji
-    /// clears that part (sent as null) so a blank tag disappears cleanly.
+    /// Save the custom name tag ("clan tag"), label-only. Empty/whitespace
+    /// label clears it (sent as null) so a blank tag disappears cleanly.
     /// tagColor is always sent (a #rrggbb hex). Returns nil on success or a
     /// user-facing error string.
-    func setNameTag(label: String, color: String, emoji: String) async -> String? {
+    func setNameTag(label: String, color: String) async -> String? {
         let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedEmoji = emoji.trimmingCharacters(in: .whitespacesAndNewlines)
         let patch: [String: Any] = [
             "tagLabel": trimmedLabel.isEmpty ? NSNull() : trimmedLabel,
             "tagColor": color,
-            "tagEmoji": trimmedEmoji.isEmpty ? NSNull() : trimmedEmoji,
         ]
         do { currentUser = try await api.updateProfile(patch); return nil }
         catch { return message(for: error) }

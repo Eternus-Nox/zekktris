@@ -206,15 +206,13 @@ const patchMeSchema = z
         z.null(),
       ])
       .optional(),
-    /** Custom name tag ("clan tag"). All optional + independently
-        clearable with null. tagLabel is capped at 6 chars; tagColor must
-        be a #rrggbb hex; tagEmoji is a short string (one emoji, allowing
-        multi-codepoint sequences). */
-    tagLabel: z.union([z.string().max(6), z.null()]).optional(),
+    /** Custom name tag ("clan tag"), label-only. Both optional +
+        independently clearable with null. tagLabel is capped at 4 chars;
+        tagColor must be a #rrggbb hex. */
+    tagLabel: z.union([z.string().max(4), z.null()]).optional(),
     tagColor: z
       .union([z.string().regex(/^#[0-9a-fA-F]{6}$/), z.null()])
       .optional(),
-    tagEmoji: z.union([z.string().max(16), z.null()]).optional(),
   })
   .refine((v) => Object.keys(v).length > 0, {
     message: 'At least one field is required',
@@ -257,17 +255,13 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   if (body.publicKey !== undefined) {
     update.publicKey = body.publicKey;
   }
-  // Name tag. Empty/whitespace label or emoji collapses to null so the tag
-  // disappears cleanly rather than rendering an empty pill.
+  // Name tag (label-only). Empty/whitespace label collapses to null so the
+  // tag disappears cleanly rather than rendering an empty pill.
   if (body.tagLabel !== undefined) {
     const v = body.tagLabel?.trim();
     update.tagLabel = v ? v : null;
   }
   if (body.tagColor !== undefined) update.tagColor = body.tagColor;
-  if (body.tagEmoji !== undefined) {
-    const v = body.tagEmoji?.trim();
-    update.tagEmoji = v ? v : null;
-  }
 
   // Whether THIS patch touches the avatar/banner columns — used to gate
   // the prior-URL capture (avoids an unnecessary SELECT FOR UPDATE for

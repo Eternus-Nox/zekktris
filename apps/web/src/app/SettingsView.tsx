@@ -1384,13 +1384,11 @@ function NotificationTypeToggles() {
 function TagSettings() {
   const { rest, user, updateUser } = useAuth();
   const toasts = useToasts();
-  const [emoji, setEmoji] = useState(user?.tagEmoji ?? '');
   const [color, setColor] = useState(user?.tagColor ?? '#3dd7ec');
   const [label, setLabel] = useState(user?.tagLabel ?? '');
   const [pending, setPending] = useState(false);
 
   const dirty =
-    emoji !== (user?.tagEmoji ?? '') ||
     color !== (user?.tagColor ?? '#3dd7ec') ||
     label !== (user?.tagLabel ?? '');
 
@@ -1401,7 +1399,6 @@ function TagSettings() {
       const res = await rest.patchMe({
         tagLabel: label.trim() === '' ? null : label.trim(),
         tagColor: color,
-        tagEmoji: emoji.trim() === '' ? null : emoji.trim(),
       });
       updateUser(res.user);
       toasts.push('Tag saved', 'success');
@@ -1414,11 +1411,10 @@ function TagSettings() {
 
   async function clearTag() {
     if (pending) return;
-    setEmoji('');
     setLabel('');
     setPending(true);
     try {
-      const res = await rest.patchMe({ tagLabel: null, tagEmoji: null });
+      const res = await rest.patchMe({ tagLabel: null });
       updateUser(res.user);
       toasts.push('Tag cleared', 'success');
     } catch (e) {
@@ -1431,27 +1427,16 @@ function TagSettings() {
   const preview = {
     tagLabel: label.trim() || null,
     tagColor: color,
-    tagEmoji: emoji.trim() || null,
   };
-  const hasTag = !!(user?.tagLabel || user?.tagEmoji);
+  const hasTag = !!user?.tagLabel;
 
   return (
     <div className="space-y-3 mt-2">
       <p className="text-xs text-ink-3">
-        A small tag shown in front of your name everywhere — an emoji, a
-        color, and up to 6 characters. Leave it blank for no tag.
+        A small tag shown in front of your name everywhere — a color and up to
+        4 characters. Leave it blank for no tag.
       </p>
       <div className="flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1">
-          <span className="text-[0.7rem] text-ink-3">Emoji</span>
-          <input
-            value={emoji}
-            onChange={(e) => setEmoji(e.target.value)}
-            maxLength={16}
-            placeholder="😎"
-            className="w-16 bg-bg-2 border border-line rounded-md px-2 py-1.5 text-sm text-center outline-none focus:border-accent transition-colors"
-          />
-        </label>
         <label className="flex flex-col gap-1">
           <span className="text-[0.7rem] text-ink-3">Color</span>
           <input
@@ -1465,8 +1450,8 @@ function TagSettings() {
           <span className="text-[0.7rem] text-ink-3">Label</span>
           <input
             value={label}
-            onChange={(e) => setLabel(e.target.value.slice(0, 6))}
-            maxLength={6}
+            onChange={(e) => setLabel(e.target.value.slice(0, 4))}
+            maxLength={4}
             placeholder="CLAN"
             className="w-28 bg-bg-2 border border-line rounded-md px-2 py-1.5 text-sm outline-none focus:border-accent transition-colors"
           />

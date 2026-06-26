@@ -322,7 +322,6 @@ export class RestClient {
         | 'achievementsPublic'
         | 'tagLabel'
         | 'tagColor'
-        | 'tagEmoji'
       >
     >,
   ): Promise<{ user: SelfUser }> {

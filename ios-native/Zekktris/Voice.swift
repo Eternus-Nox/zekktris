@@ -514,41 +514,47 @@ struct VoiceChannelView: View {
     private let columns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            ZStack {
-                Color.black
-                StarfieldView()
-                if hasAnyVideo {
-                    VStack(spacing: 0) {
-                        videoStage
-                            .padding(.horizontal, 10)
-                            .padding(.top, 10)
-                        audioOnlyStrip
-                    }
-                } else {
-                    arena
-                }
-                VStack {
-                    statusBanner
-                        .padding(.horizontal, 16)
-                        .padding(.top, 12)
-                    if store.voiceStates.isEmpty {
-                        Spacer()
-                        Text("No one else here yet")
-                            .font(.zkSans(13))
-                            .foregroundColor(.white.opacity(0.5))
-                        Spacer()
+        ZStack {
+            // Full-bleed space background behind EVERYTHING (header + content +
+            // controls + the safe-area edges) so there are no black gaps around
+            // or under the starfield. The header/controls bars are translucent
+            // (see below) so the stars show through them continuously.
+            Color.black.ignoresSafeArea()
+            StarfieldView().ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                header
+                ZStack {
+                    if hasAnyVideo {
+                        VStack(spacing: 0) {
+                            videoStage
+                                .padding(.horizontal, 10)
+                                .padding(.top, 10)
+                            audioOnlyStrip
+                        }
                     } else {
-                        Spacer()
+                        arena
+                    }
+                    VStack {
+                        statusBanner
+                            .padding(.horizontal, 16)
+                            .padding(.top, 12)
+                        if store.voiceStates.isEmpty {
+                            Spacer()
+                            Text("No one else here yet")
+                                .font(.zkSans(13))
+                                .foregroundColor(.white.opacity(0.5))
+                            Spacer()
+                        } else {
+                            Spacer()
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+                controls
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipped()
-            controls
         }
-        .background(Color.black)
         .onAppear {
             withAnimation(.linear(duration: 60).repeatForever(autoreverses: false)) { ringSpin = true }
             previousStates = store.voiceStates
@@ -891,8 +897,8 @@ struct VoiceChannelView: View {
             if !store.isWideLayout || store.stack.count > 1 {
                 Button(action: goBack) {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(Theme.ink2)
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(Theme.accent)
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
@@ -908,8 +914,8 @@ struct VoiceChannelView: View {
         }
         .padding(.horizontal, 14)
         .frame(height: 48)
-        .background(Theme.bg2)
-        .overlay(Rectangle().fill(Theme.line).frame(height: 1), alignment: .bottom)
+        .background(Theme.bg2.opacity(0.85))
+        .overlay(Rectangle().fill(Theme.lineSoft).frame(height: 1), alignment: .bottom)
     }
 
     @ViewBuilder
@@ -1081,8 +1087,8 @@ struct VoiceChannelView: View {
         }
         .padding(.vertical, 14)
         .frame(maxWidth: .infinity)
-        .background(Theme.bg2)
-        .overlay(Rectangle().fill(Theme.line).frame(height: 1), alignment: .top)
+        .background(Theme.bg2.opacity(0.85))
+        .overlay(Rectangle().fill(Theme.lineSoft).frame(height: 1), alignment: .top)
     }
 
     /// Return to the channel list WITHOUT leaving the call (the VoicePanel

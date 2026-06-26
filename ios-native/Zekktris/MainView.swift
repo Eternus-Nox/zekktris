@@ -1821,7 +1821,6 @@ struct SettingsView: View {
     @State private var showAchievements = false
     // Name-tag ("clan tag") editor state, seeded from the self user.
     @State private var tagLabel = ""
-    @State private var tagEmoji = ""
     @State private var tagColor = Color(hex: 0x3DD7EC)
     @State private var tagSaving = false
     @State private var tagStatus: String?
@@ -1921,7 +1920,6 @@ struct SettingsView: View {
                 faceIDOn = session.faceIDEnabled
                 achievementsPublicOn = session.currentUser?.achievementsPublic ?? false
                 tagLabel = session.currentUser?.tagLabel ?? ""
-                tagEmoji = session.currentUser?.tagEmoji ?? ""
                 if let hex = session.currentUser?.tagColor, let c = Color(hexString: hex) {
                     tagColor = c
                 }
@@ -2277,28 +2275,16 @@ struct SettingsView: View {
         }
     }
 
-    /// Name-tag ("clan tag") editor — emoji + color + up to 6 chars, shown in
-    /// front of your name everywhere. Saves through Session.setNameTag.
+    /// Name-tag ("clan tag") editor — color + up to 4 chars, shown in front of
+    /// your name everywhere. Saves through Session.setNameTag.
     private var nameTagEditor: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("NAME TAG")
-            Text("A small tag shown in front of your name everywhere — an emoji, a color, and up to 6 characters. Leave blank for none.")
+            Text("A small tag shown in front of your name everywhere — a color and up to 4 characters. Leave blank for none.")
                 .font(.zkSans(12)).foregroundColor(Theme.ink3)
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack(alignment: .bottom, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Emoji").font(.zkSans(11)).foregroundColor(Theme.ink3)
-                    TextField("😎", text: $tagEmoji)
-                        .multilineTextAlignment(.center)
-                        .font(.zkSans(16)).foregroundColor(Theme.ink1)
-                        .frame(width: 52).padding(.vertical, 8)
-                        .background(Theme.bg1).clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line, lineWidth: 1))
-                        .onChange(of: tagEmoji) { v in
-                            if v.count > 2 { tagEmoji = String(v.prefix(2)) }
-                        }
-                }
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Color").font(.zkSans(11)).foregroundColor(Theme.ink3)
                     ColorPicker("", selection: $tagColor, supportsOpacity: false)
@@ -2314,7 +2300,7 @@ struct SettingsView: View {
                         .background(Theme.bg1).clipShape(RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line, lineWidth: 1))
                         .onChange(of: tagLabel) { v in
-                            if v.count > 6 { tagLabel = String(v.prefix(6)) }
+                            if v.count > 4 { tagLabel = String(v.prefix(4)) }
                         }
                 }
             }
@@ -2323,7 +2309,7 @@ struct SettingsView: View {
             HStack(spacing: 8) {
                 Text("Preview").font(.zkSans(11)).foregroundColor(Theme.ink3)
                 HStack(spacing: 6) {
-                    NameTag(label: tagLabel, color: tagColor.tagHexString, emoji: tagEmoji)
+                    NameTag(label: tagLabel, color: tagColor.tagHexString)
                     Text(session.currentUser?.name ?? "You")
                         .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
                 }
@@ -2335,7 +2321,7 @@ struct SettingsView: View {
                 Button {
                     Task {
                         tagSaving = true; tagStatus = nil
-                        let err = await session.setNameTag(label: tagLabel, color: tagColor.tagHexString, emoji: tagEmoji)
+                        let err = await session.setNameTag(label: tagLabel, color: tagColor.tagHexString)
                         tagStatus = err ?? "Saved"
                         tagSaving = false
                     }
@@ -2347,12 +2333,12 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.plain).disabled(tagSaving)
 
-                if !tagLabel.isEmpty || !tagEmoji.isEmpty {
+                if !tagLabel.isEmpty {
                     Button {
-                        tagLabel = ""; tagEmoji = ""
+                        tagLabel = ""
                         Task {
                             tagSaving = true; tagStatus = nil
-                            let err = await session.setNameTag(label: "", color: tagColor.tagHexString, emoji: "")
+                            let err = await session.setNameTag(label: "", color: tagColor.tagHexString)
                             tagStatus = err ?? "Cleared"
                             tagSaving = false
                         }
