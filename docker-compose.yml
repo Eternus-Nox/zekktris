@@ -21,12 +21,24 @@
 
 # ──────────────────────────────────────────────────────────────────────────
 
+# Shared log-rotation policy: cap each container's json-file logs at ~50MB
+# (10MB × 5 files) so container logs don't grow unbounded on a long-lived host
+# (the db logs slow statements, the api logs at info, the proxy logs a line per
+# request). Apply by recreating the containers (docker compose down && up -d) —
+# NEVER pass -v, which would delete the bind-mounted db/uploads/caddy volumes.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   proxy:
     build:
       context: .
       dockerfile: ops/Dockerfile.web
     image: zekktris-proxy:latest
+    logging: *default-logging
     container_name: zekktris-proxy
     restart: unless-stopped
     # Host:container port mapping is N:N so the ports match inside and out.
@@ -86,6 +98,7 @@ services:
       context: .
       dockerfile: ops/Dockerfile.api
     image: zekktris-api:latest
+    logging: *default-logging
     container_name: zekktris-api
     restart: unless-stopped
     environment:
@@ -214,6 +227,7 @@ services:
 
   db:
     image: postgres:16-alpine
+    logging: *default-logging
     container_name: zekktris-db
     restart: unless-stopped
     # Postgres runtime tuning.
@@ -271,6 +285,7 @@ services:
 
   cache:
     image: redis:7-alpine
+    logging: *default-logging
     container_name: zekktris-cache
     restart: unless-stopped
     # Optional in v1: gateway pubsub uses the in-memory bus by default. The
@@ -326,6 +341,7 @@ services:
     # (env parsing, node-ip handling) that can break working voice with no
     # config change. Bump deliberately via LIVEKIT_IMAGE_TAG or here.
     image: livekit/livekit-server:${LIVEKIT_IMAGE_TAG:-v1.9.12}
+    logging: *default-logging
     container_name: zekktris-livekit
     restart: unless-stopped
     command: ["--config", "/etc/livekit.yaml"]

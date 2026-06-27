@@ -140,7 +140,11 @@ export async function saveUploadedFile(
   // client-compressed WebP — incurs ZERO server CPU here. Best-effort:
   // any failure (sharp missing, decode error, no size win) just stores
   // the original bytes unchanged.
-  if (/^image\/(jpeg|png)$/i.test(file.type)) {
+  // Gate on the NORMALIZED contentType (extension-derived), not the raw
+  // client-supplied file.type — so a PNG/JPEG uploaded with a wrong or empty
+  // Content-Type still gets the 1920px downscale + WebP re-encode instead of
+  // being stored at full resolution.
+  if (/^image\/(jpeg|png)$/i.test(contentType)) {
     const webp = await encodeWebp(buf, { maxDim: 1920, quality: 80 });
     if (webp && webp.data.length < buf.length) {
       buf = webp.data;
