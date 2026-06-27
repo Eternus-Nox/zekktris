@@ -138,6 +138,18 @@ export function ChannelList({ guild, channels, activeChannelId, onOpenMembers }:
     },
   });
 
+  // Memoized so the O(n log n) group+sort runs only when the channel list
+  // actually changes — not on every unrelated re-render (drag state, member/
+  // role/override updates).
+  //
+  // MUST be computed BEFORE the `if (!guild)` early return below so the hook
+  // count is identical whether or not a guild is active. ChannelList stays
+  // mounted (just hidden) in content modes (Discover/Mentions), where
+  // `guild` is undefined; toggling between a server and one of those on the
+  // server rail would otherwise flip this hook in/out of the render and
+  // throw React #310 / #300 ("rendered more/fewer hooks than last render").
+  const grouped = useMemo(() => groupByCategory(channels ?? []), [channels]);
+
   if (!guild) {
     return (
       <div className="flex items-center justify-center h-full text-ink-3 px-4 text-center text-sm">
@@ -150,11 +162,6 @@ export function ChannelList({ guild, channels, activeChannelId, onOpenMembers }:
   // admins. Cheap: idempotent at the AppState level. Safe to call
   // after the early return because by definition guild exists here.
   if (!guildRoles) void loadRoles(guild.id).catch(() => undefined);
-
-  // Memoized so the O(n log n) group+sort runs only when the channel list
-  // actually changes — not on every unrelated re-render (drag state, member/
-  // role/override updates).
-  const grouped = useMemo(() => groupByCategory(channels ?? []), [channels]);
 
   function toggle(catId: string) {
     setCollapsed((prev) => {
