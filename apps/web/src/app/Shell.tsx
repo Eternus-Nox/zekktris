@@ -616,7 +616,7 @@ export function Shell() {
             back-to-forum arrow) — so they're excluded here to avoid a
             double button. `xl:hidden` keeps this mobile-only. */}
         {((activeChannelId && activeChannel?.type !== 'public_thread') || isInviteMode) && (
-          <div className="xl:hidden absolute top-2 left-2 z-20 flex gap-1">
+          <div className="xl:hidden absolute top-0 left-2 h-12 z-20 flex items-center gap-1">
             <button
               onClick={() =>
                 activeChannelId
@@ -638,7 +638,7 @@ export function Shell() {
             must have a resolved guild id, and the active channel (if
             any) must be a guild channel rather than a DM. */}
         {!isDmMode && !isContentMode && activeGuildId && activeChannelId && activeChannel?.type !== 'guild_forum' && (
-          <div className="xl:hidden absolute top-2 right-2 z-20 flex gap-1">
+          <div className="xl:hidden absolute top-0 right-2 h-12 z-20 flex items-center gap-1">
             <button
               onClick={() => setMembersOpen(true)}
               className="w-10 h-10 flex items-center justify-center bg-bg-2/90 backdrop-blur border border-line rounded-md text-ink-2 hover:text-ink-1"
