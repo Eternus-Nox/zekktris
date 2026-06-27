@@ -577,6 +577,46 @@ async function main(): Promise<void> {
   setTimeout(runAttachmentGc, 5 * 60 * 1000);
   attachmentGcTimer = setInterval(runAttachmentGc, 60 * 60 * 1000);
 
+  // ── Media-retention sweep (opt-in) ─────────────────────────────────────
+  //
+  // Hard-deletes message attachments older than ATTACHMENT_RETENTION_DAYS to
+  // cap monotonic media growth. DISABLED by default (days=0). When enabled it
+  // starts in DRY-RUN (logs what it WOULD reclaim, deletes nothing) unless
+  // ATTACHMENT_RETENTION_DRY_RUN=false. Excludes pinned + E2EE. First run 6min
+  // after boot, then daily.
+  let retentionTimer: ReturnType<typeof setInterval> | null = null;
+  if (env.ATTACHMENT_RETENTION_DAYS > 0) {
+    const dryRun = env.ATTACHMENT_RETENTION_DRY_RUN;
+    const runRetention = () =>
+      void (async () => {
+        try {
+          const { runAttachmentRetentionSweep } = await import('./services/uploads');
+          const r = await runAttachmentRetentionSweep({
+            days: env.ATTACHMENT_RETENTION_DAYS,
+            dryRun,
+          });
+          if (r.candidates > 0) {
+            log.info(
+              dryRun
+                ? 'attachment retention (DRY RUN — would reclaim)'
+                : 'attachment retention sweep',
+              { candidates: r.candidates, deleted: r.deleted, mb: Math.round(r.bytes / 1048576) },
+            );
+          }
+        } catch (err) {
+          log.error('attachment retention sweep failed', { err });
+        }
+      })();
+    setTimeout(runRetention, 6 * 60 * 1000);
+    retentionTimer = setInterval(runRetention, 24 * 60 * 60 * 1000);
+    log.info('attachment retention sweep scheduled', {
+      days: env.ATTACHMENT_RETENTION_DAYS,
+      dryRun,
+    });
+  } else {
+    log.info('attachment retention sweep disabled (ATTACHMENT_RETENTION_DAYS=0)');
+  }
+
   // ── Graceful shutdown ──────────────────────────────────────────────────
 
   let shuttingDown = false;
@@ -609,6 +649,7 @@ async function main(): Promise<void> {
     clearInterval(scheduledMsgTimer);
     clearInterval(threadArchiveSweepTimer);
     if (attachmentGcTimer) clearInterval(attachmentGcTimer);
+    if (retentionTimer) clearInterval(retentionTimer);
 
     // Close all gateway connections first; they're the long-lived ones.
     detachGateway();

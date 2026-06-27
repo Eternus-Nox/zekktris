@@ -107,6 +107,22 @@ export async function saveUploadedFile(
   }
 
   let safeName = sanitizeFilename(file.name || 'untitled');
+
+  // Optional per-video size cap (0 = off). Checked from file.size before we
+  // read the bytes, using the extension/MIME-derived type — so a single large
+  // clip can be rejected without lowering the overall MAX_UPLOAD_SIZE_MB.
+  if (env.MAX_VIDEO_UPLOAD_SIZE_MB > 0) {
+    const earlyType = normalizeContentType(safeName, file.type || '');
+    if (
+      /^video\//i.test(earlyType) &&
+      file.size > env.MAX_VIDEO_UPLOAD_SIZE_MB * 1024 * 1024
+    ) {
+      throw errors.payloadTooLarge(
+        `video "${file.name}" exceeds the ${env.MAX_VIDEO_UPLOAD_SIZE_MB} MB video limit`,
+      );
+    }
+  }
+
   const attachmentId = nextSnowflake();
 
   // Read the bytes up front. For files <100MB this is fine in one shot;
@@ -981,4 +997,90 @@ export async function runAttachmentGcSweep(): Promise<{
 
   if (deleted > 0) invalidateStorageScan();
   return { scanned: entries.length, deleted };
+}
+
+/**
+ * Media-retention sweep: hard-delete message attachments whose message is older
+ * than `days`, reclaiming the bytes that otherwise grow forever (live media is
+ * the dominant disk sink). DISABLED unless ATTACHMENT_RETENTION_DAYS > 0, and
+ * defaults to a dry run (logs candidates, deletes nothing) until explicitly
+ * turned live — see the index.ts scheduler.
+ *
+ * Eligibility (all required): message older than the cutoff, NOT soft-deleted,
+ * NOT pinned, and in a NON-E2EE channel. Identity assets (avatars/icons/emoji/
+ * stickers) live in URL columns, not the attachments table, so they are never
+ * selected here. Batched (LIMIT) so a huge backlog drains over several runs.
+ *
+ * On a live run each eligible attachment has its file AND row removed, then any
+ * message left with no body and no remaining attachments is tombstoned so a
+ * reaped media-only message doesn't render as a blank bubble.
+ */
+export async function runAttachmentRetentionSweep(opts: {
+  days: number;
+  dryRun: boolean;
+  limit?: number;
+}): Promise<{ candidates: number; deleted: number; bytes: number }> {
+  if (opts.days <= 0) return { candidates: 0, deleted: 0, bytes: 0 };
+  const { db, schema } = await import('../db');
+  const { and, eq, lt, isNull, inArray, sql } = await import('drizzle-orm');
+  const cutoff = new Date(Date.now() - opts.days * 24 * 60 * 60 * 1000);
+
+  const rows = await db
+    .select({
+      id: schema.attachments.id,
+      size: schema.attachments.size,
+      messageId: schema.attachments.messageId,
+    })
+    .from(schema.attachments)
+    .innerJoin(schema.messages, eq(schema.messages.id, schema.attachments.messageId))
+    .innerJoin(schema.channels, eq(schema.channels.id, schema.messages.channelId))
+    .where(
+      and(
+        lt(schema.messages.createdAt, cutoff),
+        isNull(schema.messages.deletedAt),
+        eq(schema.messages.pinned, false),
+        eq(schema.channels.e2eeEnabled, false),
+      ),
+    )
+    .limit(opts.limit ?? 2000);
+
+  const bytes = rows.reduce((n, r) => n + (r.size ?? 0), 0);
+  if (opts.dryRun || rows.length === 0) {
+    return { candidates: rows.length, deleted: 0, bytes };
+  }
+
+  let deleted = 0;
+  const affected = new Set<bigint>();
+  for (const r of rows) {
+    try {
+      await deleteStorageItem(r.id); // remove the on-disk file
+      await db.delete(schema.attachments).where(eq(schema.attachments.id, r.id)); // remove the row
+      affected.add(r.messageId);
+      deleted++;
+    } catch (err) {
+      console.warn(`attachment retention: failed to delete ${r.id}`, err);
+    }
+  }
+
+  // Tombstone messages now left with no body AND no remaining attachments.
+  if (affected.size > 0) {
+    try {
+      await db
+        .update(schema.messages)
+        .set({ deletedAt: new Date() })
+        .where(
+          and(
+            inArray(schema.messages.id, [...affected]),
+            isNull(schema.messages.deletedAt),
+            eq(schema.messages.content, ''),
+            sql`NOT EXISTS (SELECT 1 FROM ${schema.attachments} a WHERE a.message_id = ${schema.messages.id})`,
+          ),
+        );
+    } catch (err) {
+      console.warn('attachment retention: empty-message tombstone pass failed', err);
+    }
+  }
+
+  if (deleted > 0) invalidateStorageScan();
+  return { candidates: rows.length, deleted, bytes };
 }

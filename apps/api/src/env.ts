@@ -184,7 +184,26 @@ export const envSchema = z.object({
   // ── Uploads ────────────────────────────────────────────────────────────
   UPLOAD_DIR: z.string().default('/data/uploads'),
   MAX_UPLOAD_SIZE_MB: z.coerce.number().int().min(1).max(10_000).default(100),
+  /** Optional per-VIDEO upload cap in MB. 0 (default) = no separate cap
+   *  (videos still bounded by MAX_UPLOAD_SIZE_MB). A single large clip can
+   *  dwarf hundreds of compressed images; set this to reject oversized videos
+   *  without lowering the overall limit. Rejects new uploads above it; never
+   *  mutates existing files. */
+  MAX_VIDEO_UPLOAD_SIZE_MB: z.coerce.number().int().min(0).max(10_000).default(0),
   MAX_FILES_PER_MESSAGE: z.coerce.number().int().min(1).max(100).default(10),
+  /** Auto-delete message attachments older than this many days. 0 (default) =
+   *  DISABLED. When > 0 this is DESTRUCTIVE: it hard-removes old photos/videos/
+   *  voice notes from chat history (and tombstones messages left with no body).
+   *  ALWAYS excludes pinned messages and E2EE channels. To prevent accidents it
+   *  starts in LOG-ONLY mode (see ATTACHMENT_RETENTION_DRY_RUN). */
+  ATTACHMENT_RETENTION_DAYS: z.coerce.number().int().min(0).default(0),
+  /** When the retention sweep is enabled (DAYS > 0), default to a DRY RUN that
+   *  only LOGS what it would reclaim and deletes nothing. Set to 'false' to
+   *  actually delete. */
+  ATTACHMENT_RETENTION_DRY_RUN: z
+    .string()
+    .default('true')
+    .transform((v) => v !== 'false' && v !== '0'),
   /**
    * Periodic image-compression sweep: re-encodes attachments older
    * than 7 days at lower quality to reduce disk footprint. Requires

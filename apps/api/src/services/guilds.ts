@@ -360,6 +360,16 @@ export async function deleteGuild(guildId: bigint, actorId: bigint): Promise<voi
 
   if (!updated) throw errors.notFound('Guild');
 
+  // Soft-delete the guild's channels too. The attachment GC keys "in use" on
+  // channels.deletedAt (not guilds.deletedAt) — so without this, a deleted
+  // guild's channels stay deletedAt=null and the GC treats all their media as
+  // referenced forever, never reclaiming it. (There is no guild-restore path;
+  // a deleted guild is gone, so marking its channels deleted is correct.)
+  await db
+    .update(schema.channels)
+    .set({ deletedAt: new Date() })
+    .where(and(eq(schema.channels.guildId, guildId), isNull(schema.channels.deletedAt)));
+
   // Note: we deliberately keep the guild_members rows so audit log queries
   // that join through them still work. For this scope the guild is "gone"
   // because every list/lookup honors deletedAt.
