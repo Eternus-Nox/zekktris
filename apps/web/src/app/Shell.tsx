@@ -519,8 +519,8 @@ export function Shell() {
               'grid-cols-[72px_1fr]'
             : 'grid-cols-[1fr] xl:grid-cols-[72px_1fr]'
           : railHiddenMobile
-            ? 'grid-cols-[1fr] xl:grid-cols-[72px_240px_1fr_240px]'
-            : 'grid-cols-[72px_1fr] xl:grid-cols-[72px_240px_1fr_240px]'
+            ? 'grid-cols-[1fr] xl:grid-cols-[72px_240px_1fr_280px]'
+            : 'grid-cols-[72px_1fr] xl:grid-cols-[72px_240px_1fr_280px]'
       } ${
         // The 4th column (member list) is dropped from the desktop
         // template when in DM mode (DMs have no member list) or

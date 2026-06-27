@@ -29,7 +29,6 @@ import { PinPanel } from './PinPanel';
 import { SearchPanel } from './SearchPanel';
 import { useNavigate } from 'react-router-dom';
 import { Hash, AtSign, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronLeft, ChevronRight, CheckCircle, Lock } from '../lib/icons';
-import { CameraCaptureModal } from './CameraCaptureModal';
 import { SchedulePickerModal } from './SchedulePickerModal';
 // Lazy-loaded: the DM settings/privacy panel only mounts when opened.
 const DmSettingsPanel = lazy(() =>
@@ -1709,7 +1708,14 @@ function Composer({
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
-  const [showCameraModal, setShowCameraModal] = useState(false);
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  // Touch devices get a small attach menu so "Take photo" can sit beside
+  // "Upload a file" (mirrors the iOS attach menu); desktop has no camera, so
+  // the paperclip uploads directly there. Pointer type is static per device.
+  const isCoarsePointer = useMemo(
+    () => typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches,
+    [],
+  );
 
   /**
    * Insert an emoji code at the textarea's current cursor position.
@@ -2165,18 +2171,70 @@ function Composer({
         className="flex items-center gap-1.5 bg-bg-2/60 backdrop-blur-sm rounded-lg px-2 py-1.5 border transition-all relative focus-within:shadow-[0_0_0_1px_var(--accent-glow),0_0_18px_var(--accent-glow)]"
         style={{ borderColor: 'var(--zk-line)' }}
       >
-        {/* Paperclip — opens the OS file picker. Hidden <input> is the
-            actual file source; the visible button just clicks it. */}
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={files.length >= MAX_FILES}
-          className="w-7 h-7 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent shrink-0"
-          title={files.length >= MAX_FILES ? `Max ${MAX_FILES} files` : 'Attach files'}
-          aria-label="Attach files"
-        >
-          <Paperclip size={16} />
-        </button>
+        {/* Attach — file upload, plus a camera option on touch devices.
+            Desktop has no useful capture surface, so the paperclip opens the
+            file picker directly there; on mobile it opens a small menu so
+            "Take photo" can sit beside "Upload a file" (mirrors the iOS
+            attach menu). Camera is mobile-only. */}
+        <div className="relative shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              if (files.length >= MAX_FILES) return;
+              if (isCoarsePointer) setAttachMenuOpen((o) => !o);
+              else fileInputRef.current?.click();
+            }}
+            disabled={files.length >= MAX_FILES}
+            className="w-7 h-7 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+            title={files.length >= MAX_FILES ? `Max ${MAX_FILES} files` : 'Attach'}
+            aria-label="Attach"
+            aria-haspopup={isCoarsePointer ? 'menu' : undefined}
+            aria-expanded={isCoarsePointer ? attachMenuOpen : undefined}
+          >
+            <Paperclip size={16} />
+          </button>
+          {attachMenuOpen && (
+            <>
+              {/* Invisible backdrop closes the menu on any outside tap.
+                  No body portal — avoids the click-outside trap. */}
+              <div
+                className="fixed inset-0 z-40"
+                onClick={() => setAttachMenuOpen(false)}
+              />
+              <div
+                className="absolute bottom-full left-0 mb-1 z-50 min-w-[180px] rounded-lg border bg-bg-2 shadow-lg py-1"
+                style={{ borderColor: 'var(--zk-line)' }}
+                role="menu"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setAttachMenuOpen(false);
+                    fileInputRef.current?.click();
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-ink-1 hover:bg-bg-3 text-left"
+                >
+                  <Paperclip size={15} className="text-ink-2 shrink-0" />
+                  Upload a file
+                </button>
+                {/* Camera — mobile only (this menu only opens on touch). */}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setAttachMenuOpen(false);
+                    cameraInputRef.current?.click();
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-ink-1 hover:bg-bg-3 text-left"
+                >
+                  <Camera size={15} className="text-ink-2 shrink-0" />
+                  Take photo
+                </button>
+              </div>
+            </>
+          )}
+        </div>
         <input
           ref={fileInputRef}
           type="file"
@@ -2188,26 +2246,6 @@ function Composer({
             e.target.value = '';
           }}
         />
-        {/* Camera — opens the device camera (mobile: native capture input;
-            desktop: a getUserMedia preview modal) and sends the photo through
-            the same attachment path. */}
-        <button
-          type="button"
-          onClick={() => {
-            if (files.length >= MAX_FILES) return;
-            if (window.matchMedia('(pointer: coarse)').matches) {
-              cameraInputRef.current?.click();
-            } else {
-              setShowCameraModal(true);
-            }
-          }}
-          disabled={files.length >= MAX_FILES}
-          className="w-7 h-7 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent shrink-0"
-          title={files.length >= MAX_FILES ? `Max ${MAX_FILES} files` : 'Take photo'}
-          aria-label="Take photo"
-        >
-          <Camera size={16} />
-        </button>
         <input
           ref={cameraInputRef}
           type="file"
@@ -2219,12 +2257,6 @@ function Composer({
             e.target.value = '';
           }}
         />
-        {showCameraModal && (
-          <CameraCaptureModal
-            onCapture={(file) => addFiles([file])}
-            onClose={() => setShowCameraModal(false)}
-          />
-        )}
 
         <textarea
           ref={taRef}
