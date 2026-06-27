@@ -545,6 +545,41 @@ function ChannelRow({
     // distinguishes them from regular text rows in the sidebar.
     return <LinkChannelRow channel={channel} onEdit={onEdit} dragState={dragState} onDragStart={onDragStart} wasJustDragging={wasJustDragging} />;
   }
+  // Text channel — the only branch that needs row-level hooks (unread /
+  // mention / mute state, context menu). It lives in its own component so
+  // ChannelRow itself stays HOOKLESS: a ChannelRow fiber can be reused
+  // across a guild switch where the channel at a given list position
+  // changes type (e.g. voice→text). If the hooks lived here, that type
+  // change would flip the hook count between renders and throw React #310
+  // ("rendered more hooks than during the previous render"). A dedicated
+  // child means each channel type owns its own fiber + hook list.
+  return (
+    <TextChannelRow
+      channel={channel}
+      active={active}
+      onEdit={onEdit}
+      dragState={dragState}
+      onDragStart={onDragStart}
+      wasJustDragging={wasJustDragging}
+    />
+  );
+}
+
+function TextChannelRow({
+  channel,
+  active,
+  onEdit,
+  dragState,
+  onDragStart,
+  wasJustDragging,
+}: {
+  channel: Channel;
+  active: boolean;
+  onEdit: () => void;
+  dragState: DragState;
+  onDragStart?: (channelId: string, kind: 'channel' | 'category', label: string, e: React.PointerEvent) => void;
+  wasJustDragging?: () => boolean;
+}) {
   // Granular subscriptions (was `useAppState()`): a channel row should only
   // re-render when its mute/read state changes, not on every dispatch.
   // notificationOverrides changes rarely (only on a mute / notif edit), so the
