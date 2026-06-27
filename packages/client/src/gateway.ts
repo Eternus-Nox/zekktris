@@ -232,22 +232,42 @@ export class GatewayClient {
     }
     this.ws = ws;
 
+    // Every listener is guarded by `this.ws === ws`. A socket can be
+    // SUPERSEDED while still settling: forceReconnect() closes the old socket
+    // and opens a new one in the SAME tick, so the old socket's `close` (and a
+    // racing new socket's `open`) can fire after `this.ws` already points at
+    // the replacement. Without the guard, a superseded socket's `close` would
+    // run cleanupSocket() — nulling the LIVE socket's reference — and schedule
+    // another reconnect, orphaning sockets. Worse, if the new socket's `open`
+    // lost the race it would RESUME on a stale reference and the server's
+    // live-session takeover would ping-pong the orphans forever (~1s resume
+    // storm). Ignoring non-current sockets makes replacement clean.
     ws.addEventListener('open', () => {
+      if (this.ws !== ws) return; // superseded before it opened
       this.log('debug', 'gateway: socket open');
       // Wait for HELLO before doing anything else.
     });
 
     ws.addEventListener('message', (ev) => {
+      if (this.ws !== ws) return; // frame from a superseded socket
       this.handleFrame(ev.data);
     });
 
     ws.addEventListener('close', (ev) => {
+      if (this.ws !== ws) {
+        // A superseded socket finally closed. forceReconnect() already tore
+        // down its timers and started the replacement; touching state or
+        // scheduling another reconnect here would clobber the live socket.
+        this.log('debug', 'gateway: superseded socket closed', { code: ev.code });
+        return;
+      }
       this.log('debug', 'gateway: socket closed', { code: ev.code, reason: ev.reason });
       this.cleanupSocket();
       if (!this.intentionallyClosed) this.scheduleReconnect();
     });
 
     ws.addEventListener('error', (ev) => {
+      if (this.ws !== ws) return; // error on a superseded socket
       this.log('warn', 'gateway: socket error', { ev });
       // 'close' will follow; reconnect logic lives there.
     });
