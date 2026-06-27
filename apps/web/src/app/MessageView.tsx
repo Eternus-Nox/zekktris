@@ -28,7 +28,7 @@ import { MessageItem } from './MessageItem';
 import { PinPanel } from './PinPanel';
 import { SearchPanel } from './SearchPanel';
 import { useNavigate } from 'react-router-dom';
-import { Hash, AtSign, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronLeft, ChevronRight, CheckCircle, Lock } from '../lib/icons';
+import { Hash, AtSign, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronLeft, ChevronRight, CheckCircle, Lock, Users as UsersIcon } from '../lib/icons';
 import { SchedulePickerModal } from './SchedulePickerModal';
 // Lazy-loaded: the DM settings/privacy panel only mounts when opened.
 const DmSettingsPanel = lazy(() =>
@@ -65,6 +65,7 @@ const PIN_THRESHOLD_PX = 200;
 export function MessageView({
   channel,
   jumpToMessageId,
+  onOpenMembers,
 }: {
   channel: Channel;
   /** When supplied, MessageView loads a window of messages centered
@@ -72,6 +73,11 @@ export function MessageView({
       brief highlight flash. Driven by the `/channels/G/C/M` route
       shape — used for message-link jumping. */
   jumpToMessageId?: string;
+  /** Opens the member list (mobile drawer). Renders an inline members
+      button in the header for guild channels, so the order reads
+      search · pin · members. Desktop shows the member column instead,
+      so the button is mobile-only (xl:hidden). */
+  onOpenMembers?: () => void;
 }) {
   // Granular subscriptions (was `useAppState()`): the channel container now
   // re-renders only when a slice it actually reads changes, not on every
@@ -666,6 +672,22 @@ export function MessageView({
               title="Pinned messages"
             >
               <Pin size={16} />
+            </button>
+          )}
+          {/* Members — guild channels only (DMs have no member list).
+              Mobile-only: desktop shows the always-on member column, so this
+              opens the drawer on phones. Sits after Pin → search · pin ·
+              members. Replaces the old floating top-right button that
+              overlapped these header actions. */}
+          {!isDM && (
+            <button
+              type="button"
+              onClick={() => onOpenMembers?.()}
+              className="xl:hidden w-8 h-8 flex items-center justify-center rounded transition-colors text-ink-3 hover:text-ink-1 hover:bg-bg-3"
+              aria-label="Members"
+              title="Members"
+            >
+              <UsersIcon size={16} />
             </button>
           )}
         </div>

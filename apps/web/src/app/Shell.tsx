@@ -519,8 +519,8 @@ export function Shell() {
               'grid-cols-[72px_1fr]'
             : 'grid-cols-[1fr] xl:grid-cols-[72px_1fr]'
           : railHiddenMobile
-            ? 'grid-cols-[1fr] xl:grid-cols-[72px_240px_1fr_320px]'
-            : 'grid-cols-[72px_1fr] xl:grid-cols-[72px_240px_1fr_320px]'
+            ? 'grid-cols-[1fr] xl:grid-cols-[72px_240px_1fr_300px]'
+            : 'grid-cols-[72px_1fr] xl:grid-cols-[72px_240px_1fr_300px]'
       } ${
         // The 4th column (member list) is dropped from the desktop
         // template when in DM mode (DMs have no member list) or
@@ -631,14 +631,13 @@ export function Shell() {
             </button>
           </div>
         )}
-        {/* Members toggle. Only shown when the user is actually
-            looking at a guild context — not in DMs, discovery, the
-            friends list, or any other non-guild surface. The check
-            mirrors the guild-active conditions used elsewhere in the
-            shell: must NOT be DM mode, must NOT be discover mode,
-            must have a resolved guild id, and the active channel (if
-            any) must be a guild channel rather than a DM. */}
-        {!isDmMode && !isContentMode && activeGuildId && activeChannelId && activeChannel?.type !== 'guild_forum' && (
+        {/* Members toggle — ONLY for voice/stage views, whose headers don't
+            host their own members button. Text channels and threads render an
+            inline members button in the MessageView header (search · pin ·
+            members), so the floating one is excluded there to avoid a
+            duplicate that overlapped the header's right-aligned buttons. */}
+        {!isDmMode && !isContentMode && activeGuildId &&
+          (activeChannel?.type === 'guild_voice' || activeChannel?.type === 'guild_stage') && (
           <div className="xl:hidden absolute top-0 right-2 h-12 z-20 flex items-center gap-1">
             <button
               onClick={() => setMembersOpen(true)}
@@ -737,6 +736,7 @@ export function Shell() {
                 <MessageView
                   channel={activeChannel}
                   jumpToMessageId={params.messageId}
+                  onOpenMembers={() => setMembersOpen(true)}
                 />
               );
             })()}
@@ -860,7 +860,7 @@ export function Shell() {
             onClick={() => setMembersOpen(false)}
           />
           <div
-            className={`relative xl:static h-full shrink-0 transition-transform xl:transition-none xl:translate-x-0 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] xl:pt-0 xl:pb-0 ${
+            className={`relative xl:static h-full shrink-0 w-[86vw] max-w-[340px] xl:w-auto xl:max-w-none transition-transform xl:transition-none xl:translate-x-0 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] xl:pt-0 xl:pb-0 ${
               membersOpen ? 'translate-x-0' : 'translate-x-full xl:translate-x-0'
             }`}
           >
