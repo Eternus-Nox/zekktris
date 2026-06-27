@@ -704,7 +704,10 @@ export function VoiceView({
 
   return (
     <>
-      <header className="px-4 h-12 border-b border-line/40 flex items-center gap-2 shrink-0 pl-12 xl:pl-4 pr-12 xl:pr-4 bg-black text-white">
+      <header
+        className="px-4 h-12 border-b flex items-center gap-2 shrink-0 pl-12 xl:pl-4 pr-12 xl:pr-4"
+        style={{ borderBottomColor: 'var(--zk-line-soft)' }}
+      >
         <Volume2 size={18} className="text-accent shrink-0" />
         <span className="font-semibold truncate">
           {displayName ?? channel.name ?? '(unnamed)'}
@@ -759,7 +762,11 @@ export function VoiceView({
         </div>
       )}
 
-      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin p-4 pb-24 sm:pb-28 flex flex-col gap-4">
+      <div className="flex-1 min-h-0 relative overflow-y-auto scrollbar-thin p-4 pb-24 sm:pb-28 flex flex-col gap-4 bg-black">
+        {/* Same deep-space backdrop as the no-video arena, so the space theme
+            fills the whole call area in the video/screenshare layout too
+            (instead of the navy column bg showing through as a gap). */}
+        <ArenaStarfield />
         {participants.length === 0 ? (
           <div className="flex-1 flex items-center justify-center text-ink-3 text-sm">
             No one's in this voice channel yet.
