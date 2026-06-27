@@ -592,6 +592,7 @@ export function Shell() {
             guild={activeGuild}
             channels={activeGuildChannels}
             activeChannelId={activeChannelId}
+            onOpenMembers={() => setMembersOpen(true)}
           />
         )}
         <VoicePanel activeChannelId={activeChannelId} />
@@ -623,10 +624,10 @@ export function Shell() {
                   ? nav(isDmMode ? `/channels/${ME}` : `/channels/${activeGuildId}`)
                   : nav(`/channels/${ME}`)
               }
-              className="w-10 h-10 flex items-center justify-center bg-bg-2/90 backdrop-blur border border-line rounded-md text-ink-2 hover:text-ink-1"
+              className="-ml-1 w-10 h-10 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3"
               aria-label="Back"
             >
-              <ChevronLeft size={18} />
+              <ChevronLeft size={20} />
             </button>
           </div>
         )}
@@ -641,7 +642,7 @@ export function Shell() {
           <div className="xl:hidden absolute top-0 right-2 h-12 z-20 flex items-center gap-1">
             <button
               onClick={() => setMembersOpen(true)}
-              className="w-10 h-10 flex items-center justify-center bg-bg-2/90 backdrop-blur border border-line rounded-md text-ink-2 hover:text-ink-1"
+              className="-mr-1 w-10 h-10 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3"
               aria-label="Open members"
             >
               <UsersIcon size={18} />

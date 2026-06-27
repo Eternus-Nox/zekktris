@@ -31,7 +31,7 @@ import { ChannelCreateModal } from './ChannelCreateModal';
 import { ChannelEditModal } from './ChannelEditModal';
 import { BrowseRolesModal } from './BrowseRolesModal';
 import { EventsModal } from './EventsModal';
-import { Hash, ChevronRight, ChevronDown, Edit, Volume2, MicOff, HeadphonesOff, Radio, Lock, Plus, Forum, Settings, ExternalLink } from '../lib/icons';
+import { Hash, ChevronRight, ChevronDown, Edit, Volume2, MicOff, HeadphonesOff, Radio, Lock, Plus, Forum, Settings, ExternalLink, Users as UsersIcon } from '../lib/icons';
 import { SpeakingRing } from '../lib/SpeakingRing';
 import { AvatarImage } from '../lib/AvatarImage';
 import { UserVolumePopover } from '../lib/UserVolumePopover';
@@ -47,9 +47,14 @@ interface Props {
   guild: Guild | undefined;
   channels: Channel[] | undefined;
   activeChannelId: string | undefined;
+  /** Opens the member list. On mobile this slides in the members drawer;
+      on desktop the member column is always visible so the rail's members
+      button is mobile-only (xl:hidden). Mirrors the iOS channel-rail
+      header where members sits next to the + button. */
+  onOpenMembers?: () => void;
 }
 
-export function ChannelList({ guild, channels, activeChannelId }: Props) {
+export function ChannelList({ guild, channels, activeChannelId, onOpenMembers }: Props) {
   const { user, rest } = useAuth();
   // Granular subscriptions (was `useAppState()`). Only these slices drive
   // the list container; the local `appState` keeps existing reads unchanged.
@@ -192,7 +197,7 @@ export function ChannelList({ guild, channels, activeChannelId }: Props) {
           lines instead of truncating — long server names matter
           more than the visual cost of an extra line. */}
       <div
-        className="px-3 py-1.5 border-b shadow-sm shrink-0"
+        className="px-3 py-1.5 border-b shadow-sm shrink-0 flex items-center gap-1"
         style={{ borderBottomColor: 'var(--zk-line-soft)' }}
       >
         <button
@@ -204,7 +209,7 @@ export function ChannelList({ guild, channels, activeChannelId }: Props) {
             // regardless of where in the header the user clicked.
             setShowInfo({ x: rect.left + 8, y: rect.bottom });
           }}
-          className="w-full flex items-start gap-1 px-1 -mx-1 py-1 rounded hover:bg-bg-3/40 transition-colors text-left"
+          className="flex-1 min-w-0 flex items-start gap-1 px-1 -mx-1 py-1 rounded hover:bg-bg-3/40 transition-colors text-left"
           title="Server menu"
           aria-expanded={!!showInfo}
         >
@@ -244,6 +249,36 @@ export function ChannelList({ guild, channels, activeChannelId }: Props) {
             }`}
             aria-hidden
           />
+        </button>
+        {/* Right-aligned action cluster — mirrors the iOS channel-rail
+            header: a create-channel "+" (managers only) followed by a
+            members button. `canReorder` is the MANAGE_CHANNELS proxy used
+            elsewhere in this file to gate channel creation. */}
+        {canReorder && (
+          <button
+            type="button"
+            onClick={() => {
+              setCreateInCategory(null);
+              setShowCreate(true);
+            }}
+            className="shrink-0 w-8 h-8 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3 transition-colors"
+            title="Create channel"
+            aria-label="Create channel"
+          >
+            <Plus size={18} />
+          </button>
+        )}
+        {/* Members. Mobile-only: on desktop (xl+) the member list is an
+            always-visible right column, so a button there would be a
+            no-op. On mobile it opens the members drawer. */}
+        <button
+          type="button"
+          onClick={() => onOpenMembers?.()}
+          className="xl:hidden shrink-0 w-8 h-8 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3 transition-colors"
+          title="Members"
+          aria-label="Members"
+        >
+          <UsersIcon size={18} />
         </button>
       </div>
 
