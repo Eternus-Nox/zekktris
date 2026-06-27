@@ -570,6 +570,21 @@ export function MessageView({
             saved (bookmarked) messages cover the "keep this" need — but
             stays in guild channels, where pins are a shared feature. */}
         <div className="ml-auto flex items-center gap-1 shrink-0">
+          {/* Search leads the action group — ahead of the DM call button and
+              the channel Pins button. Visible everywhere. */}
+          <button
+            type="button"
+            onClick={() => setOverlay(overlay === 'search' ? null : 'search')}
+            className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${
+              overlay === 'search'
+                ? 'bg-bg-3 text-ink-1'
+                : 'text-ink-3 hover:text-ink-1 hover:bg-bg-3'
+            }`}
+            aria-label="Search messages"
+            title="Search"
+          >
+            <Search size={16} />
+          </button>
           {isDM1to1 && (
             <DmHeaderCallButton channel={channel} />
           )}
@@ -653,19 +668,6 @@ export function MessageView({
               <Pin size={16} />
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => setOverlay(overlay === 'search' ? null : 'search')}
-            className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${
-              overlay === 'search'
-                ? 'bg-bg-3 text-ink-1'
-                : 'text-ink-3 hover:text-ink-1 hover:bg-bg-3'
-            }`}
-            aria-label="Search messages"
-            title="Search"
-          >
-            <Search size={16} />
-          </button>
         </div>
         {isDM1to1 && dmSettingsOpen && user && (
           <Suspense fallback={null}>
