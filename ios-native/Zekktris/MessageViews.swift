@@ -37,7 +37,11 @@ struct MessageListView: View {
     let channel: Channel
 
     @State private var draft = ""
-    @FocusState private var composerFocused: Bool
+    // Plain @State (not @FocusState) because the composer is now a UITextView
+    // representable (ComposerTextView) that bridges focus through this binding
+    // — see its Coordinator. Image paste needs the UITextView; @FocusState
+    // only binds to native SwiftUI fields.
+    @State private var composerFocused = false
     @State private var showEnableSheet = false
     @State private var showDmSettings = false
     @State private var pickerItems: [PhotosPickerItem] = []
@@ -601,14 +605,9 @@ struct MessageListView: View {
                                 Label("Take photo", systemImage: "camera")
                             }
                         }
-                        // Paste an image from the clipboard — only shown when the
-                        // pasteboard actually holds an image (checked when the
-                        // menu opens). Same attachment path as a picked photo.
-                        if UIPasteboard.general.hasImages {
-                            Button { pasteImages() } label: {
-                                Label("Paste image", systemImage: "doc.on.clipboard")
-                            }
-                        }
+                        // (Pasting an image is now done straight from the iOS
+                        // keyboard — the composer field intercepts an image
+                        // paste and attaches it. No menu button needed.)
                         if !channel.isE2EE {
                             Button { showPollSheet = true } label: { Label("Poll", systemImage: "chart.bar.xaxis") }
                         }
@@ -624,11 +623,12 @@ struct MessageListView: View {
                             .frame(width: 28, height: 32)
                     }
 
-                    TextField(composerPlaceholder, text: $draft, axis: .vertical)
-                        .lineLimit(1...5)
-                        .focused($composerFocused)
-                        .foregroundColor(Theme.ink1)
-                        .padding(.vertical, 6)
+                    ComposerTextView(
+                        text: $draft,
+                        placeholder: composerPlaceholder,
+                        isFocused: $composerFocused,
+                        onPasteImages: { addPastedImages($0) }
+                    )
 
                     Button { showEmojiPicker = true } label: {
                         Image(systemName: "face.smiling")
@@ -987,10 +987,10 @@ struct MessageListView: View {
         }
     }
 
-    /// Add image(s) from the clipboard as pending attachments (same path as a
-    /// picked photo). Respects the 10-attachment cap.
-    private func pasteImages() {
-        let images = UIPasteboard.general.images ?? []
+    /// Add image(s) as pending attachments (same path as a picked photo).
+    /// Called when the user pastes image(s) into the composer via the iOS
+    /// keyboard (see ComposerTextView). Respects the 10-attachment cap.
+    private func addPastedImages(_ images: [UIImage]) {
         for img in images {
             guard pendingAttachments.count < 10,
                   let data = img.jpegData(compressionQuality: 0.85) else { break }
@@ -2579,6 +2579,136 @@ private struct PendingAttachment: Identifiable {
     let mime: String
     let isVideo: Bool
     let preview: UIImage?
+}
+
+/// UITextView subclass that accepts pasted images. SwiftUI's `TextField`
+/// can't intercept an image paste from the keyboard's edit menu — a copied
+/// image is silently dropped. This enables the "Paste" item whenever the
+/// pasteboard holds an image and routes those images to a handler (which adds
+/// them as pending attachments), so pasting works straight from the keyboard
+/// instead of a separate menu button.
+private final class ImagePasteTextView: UITextView {
+    var onPasteImages: (([UIImage]) -> Void)?
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)), UIPasteboard.general.hasImages {
+            return true
+        }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    override func paste(_ sender: Any?) {
+        // Prefer images: if the clipboard holds image(s), hand them off and
+        // stop — don't also dump a file path / alt text into the field. Plain
+        // text (no image) falls through to the normal text paste.
+        if UIPasteboard.general.hasImages,
+           let images = UIPasteboard.general.images, !images.isEmpty {
+            onPasteImages?(images)
+            return
+        }
+        super.paste(sender)
+    }
+}
+
+/// Composer text input backed by `ImagePasteTextView`. Mirrors the prior
+/// SwiftUI `TextField`: vertical auto-grow (1...maxLines, then it scrolls),
+/// a placeholder, a focus binding bridged to `@FocusState`-style state, and
+/// Theme styling. Exists so image paste can be intercepted (see above).
+private struct ComposerTextView: UIViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    @Binding var isFocused: Bool
+    var maxLines: Int = 5
+    let onPasteImages: ([UIImage]) -> Void
+
+    func makeUIView(context: Context) -> ImagePasteTextView {
+        let tv = ImagePasteTextView()
+        tv.delegate = context.coordinator
+        tv.onPasteImages = onPasteImages
+        tv.font = UIFont.preferredFont(forTextStyle: .body)
+        tv.textColor = UIColor(Theme.ink1)
+        tv.tintColor = UIColor(Theme.accent)
+        tv.backgroundColor = .clear
+        tv.isScrollEnabled = true
+        tv.textContainerInset = UIEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
+        tv.textContainer.lineFragmentPadding = 0
+        tv.text = text
+
+        let placeholderLabel = UILabel()
+        placeholderLabel.text = placeholder
+        placeholderLabel.font = tv.font
+        placeholderLabel.textColor = UIColor(Theme.ink3)
+        placeholderLabel.numberOfLines = 1
+        placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
+        tv.addSubview(placeholderLabel)
+        NSLayoutConstraint.activate([
+            placeholderLabel.leadingAnchor.constraint(equalTo: tv.leadingAnchor),
+            placeholderLabel.topAnchor.constraint(equalTo: tv.topAnchor, constant: 6),
+            placeholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: tv.trailingAnchor),
+        ])
+        placeholderLabel.isHidden = !text.isEmpty
+        context.coordinator.placeholderLabel = placeholderLabel
+        return tv
+    }
+
+    func updateUIView(_ uiView: ImagePasteTextView, context: Context) {
+        if uiView.text != text { uiView.text = text }
+        uiView.onPasteImages = onPasteImages
+        context.coordinator.placeholderLabel?.text = placeholder
+        context.coordinator.placeholderLabel?.isHidden = !uiView.text.isEmpty
+        // Focus bridge — defer to the next runloop so we never mutate the
+        // responder chain mid-layout. Idempotent via the isFirstResponder guard.
+        let wantFocus = isFocused
+        DispatchQueue.main.async {
+            if wantFocus, !uiView.isFirstResponder {
+                uiView.becomeFirstResponder()
+            } else if !wantFocus, uiView.isFirstResponder {
+                uiView.resignFirstResponder()
+            }
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: ImagePasteTextView, context: Context) -> CGSize? {
+        let line = uiView.font?.lineHeight ?? 18
+        let inset = uiView.textContainerInset.top + uiView.textContainerInset.bottom
+        let minH = ceil(line + inset)
+        let maxH = ceil(line * CGFloat(maxLines) + inset)
+        let width = proposal.width ?? uiView.bounds.width
+        // Width not resolved yet (degenerate first pass): reserve a single
+        // line so the bar never collapses to zero height before re-measure.
+        guard width > 0 else { return CGSize(width: width, height: minH) }
+        let fitting = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: width, height: min(max(fitting.height, minH), maxH))
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        private let parent: ComposerTextView
+        weak var placeholderLabel: UILabel?
+
+        init(_ parent: ComposerTextView) { self.parent = parent }
+
+        func textViewDidChange(_ textView: UITextView) {
+            // Mutating the bound text re-evaluates the owning SwiftUI view,
+            // which re-runs sizeThatFits below — that's what drives the
+            // 1...maxLines auto-grow as the user types.
+            parent.text = textView.text
+            placeholderLabel?.isHidden = !textView.text.isEmpty
+        }
+
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            if !parent.isFocused {
+                DispatchQueue.main.async { self.parent.isFocused = true }
+            }
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            if parent.isFocused {
+                DispatchQueue.main.async { self.parent.isFocused = false }
+            }
+        }
+    }
 }
 
 /// Wrapper so a video URL can drive a `.fullScreenCover(item:)`.
