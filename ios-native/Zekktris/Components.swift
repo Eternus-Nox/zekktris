@@ -82,6 +82,15 @@ struct RetryingImage: View {
 
     /// Fetch with up to 3 attempts (0.6s / 1.2s backoff between them).
     static func load(_ url: URL, attempts: Int = 3) async -> UIImage? {
+        guard let data = await loadData(url, attempts: attempts) else { return nil }
+        return UIImage(data: data)
+    }
+
+    /// Fetch the RAW image bytes (same retry/backoff as `load`), without
+    /// decoding to a UIImage. Used for "Save to Photos" so the ORIGINAL file is
+    /// written to the library verbatim — preserving format/quality and keeping
+    /// animated GIFs animated (UIImage(data:) would flatten to one frame).
+    static func loadData(_ url: URL, attempts: Int = 3) async -> Data? {
         var request = URLRequest(url: url)
         request.cachePolicy = .returnCacheDataElseLoad
         for attempt in 1...attempts {
@@ -92,8 +101,8 @@ struct RetryingImage: View {
                    !(200...299).contains(http.statusCode) {
                     throw URLError(.badServerResponse)
                 }
-                if let img = UIImage(data: data) { return img }
-                throw URLError(.cannotDecodeContentData)
+                guard !data.isEmpty else { throw URLError(.cannotDecodeContentData) }
+                return data
             } catch {
                 guard attempt < attempts else { return nil }
                 try? await Task.sleep(nanoseconds: UInt64(attempt) * 600_000_000)

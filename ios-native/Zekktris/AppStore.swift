@@ -31,6 +31,51 @@ enum Haptics {
     }
 }
 
+/// Saves images to the Photos library via PhotoKit with an explicit add-only
+/// authorization request. The old `UIImageWriteToSavedPhotosAlbum` silently
+/// no-ops when add-only access hasn't been granted yet (and offers no error
+/// callback) — that's why received photos sometimes never appeared in the
+/// gallery. This mirrors the working video-save path.
+enum PhotoSaver {
+    /// Save raw image bytes verbatim — preserves the original format/quality
+    /// (incl. animated GIFs). Preferred whenever we already hold the Data.
+    @discardableResult
+    static func save(data: Data) async -> Bool {
+        guard await ensureAddAccess() else { return false }
+        do {
+            try await PHPhotoLibrary.shared().performChanges {
+                PHAssetCreationRequest.forAsset().addResource(with: .photo, data: data, options: nil)
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Save a decoded UIImage (used when only an in-memory image is available,
+    /// e.g. an already-decrypted E2EE page).
+    @discardableResult
+    static func save(_ image: UIImage) async -> Bool {
+        guard await ensureAddAccess() else { return false }
+        do {
+            try await PHPhotoLibrary.shared().performChanges {
+                PHAssetCreationRequest.creationRequestForAsset(from: image)
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private static func ensureAddAccess() async -> Bool {
+        if PHPhotoLibrary.authorizationStatus(for: .addOnly) == .notDetermined {
+            _ = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+        }
+        let auth = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        return auth == .authorized || auth == .limited
+    }
+}
+
 /// A drill-down destination beyond the root channel/DM list.
 enum Route: Hashable {
     case messages(Channel)
@@ -3899,10 +3944,9 @@ final class AppStore: ObservableObject {
         var saved = 0
         for att in media {
             if channel.isE2EE, att.filename?.hasSuffix(".zke") == true {
-                // Grid only groups encrypted IMAGES, so decrypt → save image.
+                // Grid only groups encrypted IMAGES, so decrypt → save the bytes.
                 if let data = await decryptedAttachmentData(att, in: channel),
-                   let img = UIImage(data: data) {
-                    UIImageWriteToSavedPhotosAlbum(img, nil, nil, nil)
+                   await PhotoSaver.save(data: data) {
                     saved += 1
                 }
                 continue
@@ -3910,8 +3954,9 @@ final class AppStore: ObservableObject {
             guard let url = assetURL(att.url) else { continue }
             if att.isVideo {
                 if await saveVideoToPhotos(from: url) { saved += 1 }
-            } else if att.isImage, let img = await RetryingImage.load(url) {
-                UIImageWriteToSavedPhotosAlbum(img, nil, nil, nil)
+            } else if att.isImage,
+                      let data = await RetryingImage.loadData(url),
+                      await PhotoSaver.save(data: data) {
                 saved += 1
             }
         }

@@ -4091,10 +4091,17 @@ struct ImageLightboxView: View {
         guard index >= 0, index < item.items.count else { return }
         let it = item.items[index]
         Task {
-            var img = it.image
-            if img == nil, let url = it.url { img = await RetryingImage.load(url) }
-            guard let img else { return }
-            UIImageWriteToSavedPhotosAlbum(img, nil, nil, nil)
+            let ok: Bool
+            if let img = it.image {
+                // Decrypted E2EE page already in memory.
+                ok = await PhotoSaver.save(img)
+            } else if let url = it.url, let data = await RetryingImage.loadData(url) {
+                // Plain image — save the ORIGINAL bytes (preserves format/quality).
+                ok = await PhotoSaver.save(data: data)
+            } else {
+                ok = false
+            }
+            guard ok else { return }
             savedFlash = true
             try? await Task.sleep(nanoseconds: 1_200_000_000)
             savedFlash = false
@@ -5022,8 +5029,8 @@ private struct ImageShareItem: Identifiable {
 /// `provider` yields the UIImage on demand — for plain attachments it loads
 /// from the URL; for E2EE images it returns the already-decrypted UIImage, so
 /// the saved/shared/copied bytes are the DECRYPTED image and E2EE is never
-/// bypassed (no plaintext URL is exposed). Save-to-Photos uses
-/// UIImageWriteToSavedPhotosAlbum (NSPhotoLibraryAddUsageDescription is set).
+/// bypassed (no plaintext URL is exposed). Save-to-Photos goes through
+/// PhotoSaver (PhotoKit + add-only authorization).
 private struct ImageActionsModifier: ViewModifier {
     let provider: () async -> UIImage?
     @State private var shareItem: ImageShareItem?
@@ -5032,7 +5039,7 @@ private struct ImageActionsModifier: ViewModifier {
         content
             .contextMenu {
                 Button {
-                    withImage { UIImageWriteToSavedPhotosAlbum($0, nil, nil, nil) }
+                    Task { if let img = await provider() { _ = await PhotoSaver.save(img) } }
                 } label: { Label("Save to Photos", systemImage: "square.and.arrow.down") }
                 Button {
                     withImage { UIPasteboard.general.image = $0 }
