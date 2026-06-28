@@ -48,6 +48,11 @@ enum PhotoSaver {
             }
             return true
         } catch {
+            // addResource(.photo) only accepts JPEG/PNG/GIF/HEIC. Non-E2EE
+            // images are server-compressed to WEBP, which it rejects — that's
+            // why those saves silently failed. Fall back to a decoded UIImage
+            // (iOS decodes WebP), which re-encodes to a Photos-native format.
+            if let img = UIImage(data: data) { return await save(img) }
             return false
         }
     }
