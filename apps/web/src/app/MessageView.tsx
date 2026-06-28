@@ -28,7 +28,7 @@ import { MessageItem } from './MessageItem';
 import { PinPanel } from './PinPanel';
 import { SearchPanel } from './SearchPanel';
 import { useNavigate } from 'react-router-dom';
-import { Hash, AtSign, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronLeft, ChevronRight, CheckCircle, Lock, Users as UsersIcon } from '../lib/icons';
+import { Hash, AtSign, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronLeft, ChevronRight, CheckCircle, Lock, Users as UsersIcon, Hand } from '../lib/icons';
 import { SchedulePickerModal } from './SchedulePickerModal';
 // Lazy-loaded: the DM settings/privacy panel only mounts when opened.
 const DmSettingsPanel = lazy(() =>
@@ -2888,7 +2888,9 @@ function DmHeaderPokeButton({ channel }: { channel: Channel }) {
         title="Poke / nudge"
         aria-expanded={open}
       >
-        <span aria-hidden className="text-[15px] leading-none">👉</span>
+        {/* Monochrome line icon (not the 👉 emoji) so it matches the
+            grayscale Search/Call/Settings icons beside it. */}
+        <Hand size={16} />
       </button>
       {open && (
         <>
