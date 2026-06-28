@@ -34,6 +34,8 @@ import { toSelfUser, toPublicUser, toSession, toReadState } from '../lib/dto';
 import * as readStates from '../services/readStates';
 import * as supervision from '../services/supervision';
 import * as messages from '../services/messages';
+import { messageMatchesPatterns } from '../services/automod';
+import { BANNED_WORDS_PRESET } from '../data/bannedWordsPreset';
 import {
   bioSchema,
   cdnPathOrNullSchema,
@@ -259,6 +261,12 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   // tag disappears cleanly rather than rendering an empty pill.
   if (body.tagLabel !== undefined) {
     const v = body.tagLabel?.trim();
+    // Block vulgar tags — the name tag renders next to the username
+    // everywhere, so it must clear the same profanity bar as the rest of the
+    // app. Reuses the shared banned-words preset + word-boundary matcher.
+    if (v && messageMatchesPatterns(v, BANNED_WORDS_PRESET)) {
+      throw errors.badRequest('That name tag contains a word that isn’t allowed.');
+    }
     update.tagLabel = v ? v : null;
   }
   if (body.tagColor !== undefined) update.tagColor = body.tagColor;
