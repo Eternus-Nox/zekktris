@@ -10,6 +10,27 @@ import os
 /// app runs outside Xcode — used to pin where an incoming ring is dropped.
 private let callLog = Logger(subsystem: "com.zekktris.native", category: "calls")
 
+/// Small haptic helpers. Centralized so message/poke feedback is consistent.
+enum Haptics {
+    /// 2–3 quick taps for an incoming message from someone else.
+    @MainActor static func incomingMessage() {
+        let gen = UIImpactFeedbackGenerator(style: .medium)
+        gen.prepare()
+        for i in 0..<3 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.16) {
+                gen.impactOccurred()
+            }
+        }
+    }
+
+    /// A single firm tap when a poke arrives.
+    @MainActor static func poke() {
+        let gen = UIImpactFeedbackGenerator(style: .heavy)
+        gen.prepare()
+        gen.impactOccurred()
+    }
+}
+
 /// A drill-down destination beyond the root channel/DM list.
 enum Route: Hashable {
     case messages(Channel)
@@ -4104,6 +4125,19 @@ final class AppStore: ObservableObject {
                 upsert(message)
                 if let c = selectedChannel { markChannelRead(c) }
             }
+            // Tactile feedback for a message from SOMEONE ELSE. The phone buzzes
+            // (2–3 taps) when the message lands in the channel you're viewing and
+            // that channel isn't muted; the watch buzzes for incoming DMs while
+            // its app is reachable (mirrors the poke relay below).
+            if let a = message.authorId ?? message.author?.id, a != currentUserId {
+                if message.channelId == selectedChannel?.id,
+                   channelLevel(message.channelId, guildId: selectedChannel?.guildId) != "nothing" {
+                    Haptics.incomingMessage()
+                }
+                if dms.contains(where: { $0.id == message.channelId }) {
+                    WatchSync.shared.sendIncomingMessage()
+                }
+            }
             // (Pokes are no longer messages — see the POKE event case below.)
             // Reflect the new unread on the home-screen badge (no-op while the
             // message is in the open channel — markChannelRead already cleared it).
@@ -4136,6 +4170,7 @@ final class AppStore: ObservableObject {
                 let pokeType = (d["poke_type"] as? String) ?? "poke"
                 WatchSync.shared.sendPoke(emoji: emoji, name: name)
                 showPokeBanner(channelId: channelId, emoji: emoji, name: name, pokeType: pokeType)
+                Haptics.poke()
             }
         case "MESSAGE_DELETE":
             // Payload is snake_case: { id, channel_id }.

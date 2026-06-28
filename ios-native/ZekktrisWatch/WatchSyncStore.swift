@@ -50,15 +50,29 @@ final class WatchSyncStore: NSObject, ObservableObject {
     private func flashIncomingPoke(_ emoji: String, from name: String?) {
         let flash = PokeFlash(emoji: emoji, name: name)
         incomingPoke = flash
-        let device = WKInterfaceDevice.current()
-        for i in 0..<3 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.18) {
-                device.play(.notification)
-            }
-        }
+        // ~1 second of haptic for a poke — longer + stronger than a message so
+        // the two are distinguishable on the wrist.
+        playHapticWave(count: 6, interval: 0.16)
         Task {
             try? await Task.sleep(nanoseconds: 2_200_000_000)
             if incomingPoke?.id == flash.id { incomingPoke = nil }
+        }
+    }
+
+    /// 2–3 quick taps when the phone relays an incoming DM message.
+    private func buzzIncomingMessage() {
+        playHapticWave(count: 3, interval: 0.18)
+    }
+
+    /// Play `count` notification haptics spaced `interval` seconds apart.
+    /// watchOS haptics are fixed short pulses, so a sustained buzz is several
+    /// in a row.
+    private func playHapticWave(count: Int, interval: Double) {
+        let device = WKInterfaceDevice.current()
+        for i in 0..<count {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * interval) {
+                device.play(.notification)
+            }
         }
     }
 }
@@ -85,9 +99,16 @@ extension WatchSyncStore: WCSessionDelegate {
     // Live poke relay from the phone (sent only while the watch app is
     // reachable). Triggers the on-top flash + haptic wave.
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
-        guard message["kind"] as? String == "poke" else { return }
-        let emoji = message["emoji"] as? String ?? "👉"
-        let name = message["name"] as? String
-        Task { @MainActor in self.flashIncomingPoke(emoji, from: name) }
+        switch message["kind"] as? String {
+        case "poke":
+            let emoji = message["emoji"] as? String ?? "👉"
+            let name = message["name"] as? String
+            Task { @MainActor in self.flashIncomingPoke(emoji, from: name) }
+        case "message":
+            // Incoming DM relayed from the phone — buzz the wrist (2–3 taps).
+            Task { @MainActor in self.buzzIncomingMessage() }
+        default:
+            return
+        }
     }
 }

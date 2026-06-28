@@ -52,6 +52,18 @@ final class WatchSync: NSObject {
         guard session.activationState == .activated, session.isReachable else { return }
         session.sendMessage(["kind": "poke", "emoji": emoji, "name": name], replyHandler: nil, errorHandler: nil)
     }
+
+    /// Relay the FACT that a DM message arrived to the watch so it buzzes
+    /// (2–3 taps) — ONLY while the watch app is reachable (foreground). When it
+    /// isn't, the mirrored push notification taps the wrist instead, so we skip.
+    /// No content is shipped (privacy); the watch's Messages view fetches on
+    /// demand.
+    func sendIncomingMessage() {
+        guard WCSession.isSupported() else { return }
+        let session = WCSession.default
+        guard session.activationState == .activated, session.isReachable else { return }
+        session.sendMessage(["kind": "message"], replyHandler: nil, errorHandler: nil)
+    }
 }
 
 extension WatchSync: WCSessionDelegate {

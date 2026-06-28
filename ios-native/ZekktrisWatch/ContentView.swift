@@ -82,14 +82,19 @@ struct FriendScreen: View {
     var body: some View {
         List {
             NavigationLink {
+                PokePager(target: target)
+            } label: {
+                Label("Poke", systemImage: "hand.point.right.fill")
+            }
+            NavigationLink {
                 MessageComposer(target: target)
             } label: {
                 Label("Message", systemImage: "bubble.left.fill")
             }
             NavigationLink {
-                PokePager(target: target)
+                MessagesView(target: target)
             } label: {
-                Label("Poke", systemImage: "hand.point.right.fill")
+                Label("Messages", systemImage: "text.bubble")
             }
         }
         .navigationTitle(target.name)
@@ -104,24 +109,29 @@ struct MessageComposer: View {
     @State private var text = ""
     @State private var sending = false
     @State private var sent = false
+    @State private var failed = false
 
     var body: some View {
         // Scrollable so a long dictated message can be read in full (it grows
-        // and wraps) and the Send button is always reachable below it — before
-        // this the field capped at 4 lines and overflowed off-screen.
+        // and wraps) and the Send button is always reachable below it. The
+        // field starts several lines tall so you can see the whole message
+        // before sending it.
         ScrollView {
             VStack(spacing: 10) {
                 TextField("Message", text: $text, axis: .vertical)
-                    .lineLimit(1...12)
+                    .lineLimit(4...20)
+                    .frame(minHeight: 84, alignment: .top)
                 Button { send() } label: {
                     if sending {
                         ProgressView()
                     } else {
-                        Label(sent ? "Sent!" : "Send", systemImage: "paperplane.fill")
+                        Label(sent ? "Sent!" : (failed ? "Retry" : "Send"), systemImage: "paperplane.fill")
                             .frame(maxWidth: .infinity)
                     }
                 }
-                .tint(sent ? .green : .accentColor)
+                // Green once it lands, red if the send failed (tap to retry),
+                // accent otherwise.
+                .tint(sent ? .green : (failed ? .red : .accentColor))
                 .disabled(sending || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .padding(.horizontal)
@@ -133,6 +143,7 @@ struct MessageComposer: View {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sending, !body.isEmpty, let token = sync.token, let base = sync.apiBaseURL else { return }
         sending = true
+        failed = false
         WKInterfaceDevice.current().play(.click)
         Task {
             let ok = await WatchPokeAPI.sendMessage(
@@ -145,6 +156,7 @@ struct MessageComposer: View {
                     text = ""
                     WKInterfaceDevice.current().play(.success)
                 } else {
+                    failed = true
                     WKInterfaceDevice.current().play(.failure)
                 }
             }
@@ -152,6 +164,56 @@ struct MessageComposer: View {
             // confirmation is visible.
             try? await Task.sleep(nanoseconds: 900_000_000)
             await MainActor.run { if sent { dismiss() } }
+        }
+    }
+}
+
+/// Read the last handful of messages in this DM straight from the wrist.
+/// Fetches on appear via the synced token; newest at the top.
+struct MessagesView: View {
+    @EnvironmentObject private var sync: WatchSyncStore
+    let target: PokeTarget
+    @State private var messages: [WatchMessage] = []
+    @State private var loading = true
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if loading {
+                ProgressView()
+            } else if failed {
+                notice("Couldn’t load messages.")
+            } else if messages.isEmpty {
+                notice("No messages yet.")
+            } else {
+                List(messages) { m in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(m.author)
+                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        Text(m.content).font(.footnote)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+        .navigationTitle("Messages")
+        .task { await load() }
+    }
+
+    private func notice(_ s: String) -> some View {
+        Text(s).font(.footnote).foregroundStyle(.secondary)
+            .multilineTextAlignment(.center).padding()
+    }
+
+    private func load() async {
+        guard let token = sync.token, let base = sync.apiBaseURL else {
+            await MainActor.run { loading = false; failed = true }
+            return
+        }
+        let result = await WatchPokeAPI.fetchMessages(baseURL: base, token: token, channelId: target.id)
+        await MainActor.run {
+            loading = false
+            if let result { messages = result } else { failed = true }
         }
     }
 }
