@@ -19,3 +19,23 @@ Pods/
 
 # Local appdata (APPDATA_PATH=./data): live Postgres volume, Caddy certs, uploads.
 /data/
+
+# ── Server deployment: live data + artifacts + host-local files (never source) ──
+# Live data / persisted volumes
+/uploads/
+/db/
+/caddy-data/
+/caddy-config/
+# Build / release artifacts served by the host
+/desktop-updates/
+/download/
+desktop/updates/
+desktop/package-lock.json
+# Host-local deploy scaffolding (not part of the monorepo)
+/src/
+/static/
+/tsconfig.json
+/update.sh
+/update.ps1
+# Android Firebase client config — carries an API key; provide at build time, don't commit
+apps/web/android/app/google-services.json
