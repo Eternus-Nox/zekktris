@@ -403,27 +403,30 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
         <span className="truncate min-w-0 text-[15px]">{displayName}</span>
         {typeof channel.streak === 'number' && channel.streak > 0 && (
           // Messaging streak: consecutive UTC days both parties messaged.
-          // Mirrors the iOS flame chip (amber tint, mono count).
+          // Shares the SAME box metrics as the clan tag (UserTag) — same
+          // rounded-md / px-1.5 / py-0.5 / text-[10px] / font / leading / border
+          // — so the two pills look like a matched set, differing only in color
+          // and the flame icon.
           <span
-            className="inline-flex items-center gap-0.5 whitespace-nowrap px-1.5 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/40 text-ink-1 font-mono font-semibold text-[10px] leading-none shrink-0 self-center"
+            className="inline-flex items-center self-center gap-0.5 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[10px] font-semibold leading-none border bg-amber-500/15 border-amber-500/40 text-ink-1 shrink-0"
             title={`${channel.streak}-day messaging streak`}
           >
-            {/* Amber flame + mono count. inline-flex items-center centers the
-                flame's box with the digit; the digit takes a 0.5px downward
-                nudge to counter the font's top-heavy figure metrics so it reads
-                centered against the (slightly larger) flame. self-center keeps
-                the whole chip vertically centered on the username row. */}
+            {/* Flame matches the digit's height (10px). It's nudged up a hair to
+                align with the digit, whose figure glyphs sit slightly high in
+                the line box — that way the count keeps the SAME natural position
+                as the clan-tag text (so the two pills line up), while the flame
+                still looks centered against it. */}
             <svg
-              width="11"
-              height="11"
+              width="10"
+              height="10"
               viewBox="0 0 24 24"
               fill="currentColor"
-              className="text-amber-400 shrink-0"
+              className="text-amber-400 shrink-0 relative -top-[0.5px]"
               aria-hidden
             >
               <path d="M13.5 0.67s0.74 2.65 0.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l0.03-0.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5 0.67zM11.71 19c-1.78 0-3.22-1.4-3.22-3.14 0-1.62 1.05-2.76 2.81-3.12 1.77-0.36 3.6-1.21 4.62-2.58 0.39 1.29 0.59 2.65 0.59 4.04 0 2.65-2.15 4.8-4.8 4.8z" />
             </svg>
-            <span className="relative top-[0.5px]">{channel.streak}</span>
+            {channel.streak}
           </span>
         )}
         {/* Spacer: keeps the name + streak hugging the left and pushes the
