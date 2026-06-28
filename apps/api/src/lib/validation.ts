@@ -67,6 +67,15 @@ function stripUnsafeChars(s: string): string {
     .replace(/[\u202A-\u202E\u2066-\u2069]/g, ''); // bidi overrides
 }
 
+/** Capitalize the first character of a display name ("john" → "John").
+ *  No-op when the first char isn't a lowercase letter (digit, symbol, emoji,
+ *  or already capital), and surrogate-safe so an emoji-first name isn't
+ *  corrupted. */
+function capitalizeFirst(s: string): string {
+  if (!s) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 export const displayNameSchema = z
   .string()
   .transform(stripUnsafeChars)
@@ -76,7 +85,8 @@ export const displayNameSchema = z
       .trim()
       .min(1, 'Display name cannot be empty')
       .max(DISPLAY_NAME_MAX_LENGTH, `Display name must be at most ${DISPLAY_NAME_MAX_LENGTH} characters`),
-  );
+  )
+  .transform(capitalizeFirst);
 
 /**
  * Nickname schema — same hygiene as display name, applied per-guild.
