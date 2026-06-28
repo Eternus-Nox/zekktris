@@ -770,8 +770,8 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
 
       <div className="flex-1 min-w-0">
         {!continuation && (
-          <div className="flex items-baseline gap-2">
-            {!isWebhook && author && <UserTag user={author} />}
+          <div className="flex items-center gap-2">
+            {!isWebhook && author && <UserTag user={author} className="-mr-1" />}
             <button
               type="button"
               onClick={!isWebhook && author ? (e) => onAvatarClick(author, e) : undefined}

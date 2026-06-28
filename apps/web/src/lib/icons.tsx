@@ -690,6 +690,19 @@ export function Hand(props: IconProps) {
   );
 }
 
+/** Pointing hand — index finger extended from a fist (a "poke / nudge"
+ *  gesture). Used for the DM poke button (👉, but monochrome). */
+export function HandPointing(props: IconProps) {
+  return (
+    <Svg {...props}>
+      {/* Extended index finger pointing up */}
+      <path d="M11 12V4a2 2 0 0 1 4 0v8" />
+      {/* Curled fingers + thumb + wrist forming the fist below it */}
+      <path d="M15 12a2 2 0 0 1 4 0v3a7 7 0 0 1-7 7 7 7 0 0 1-5-2l-3.3-3.4a2 2 0 0 1 2.9-2.8L9 13" />
+    </Svg>
+  );
+}
+
 /** Concentric arcs around a dot — broadcast / radio / stage marker.
  *  Visually distinct from Volume2 (voice) so users can tell stage
  *  channels apart from voice channels in the channel list at a glance. */

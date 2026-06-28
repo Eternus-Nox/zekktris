@@ -519,8 +519,8 @@ export function Shell() {
               'grid-cols-[72px_1fr]'
             : 'grid-cols-[1fr] xl:grid-cols-[72px_1fr]'
           : railHiddenMobile
-            ? 'grid-cols-[1fr] xl:grid-cols-[72px_240px_1fr_300px]'
-            : 'grid-cols-[72px_1fr] xl:grid-cols-[72px_240px_1fr_300px]'
+            ? 'grid-cols-[1fr] xl:grid-cols-[72px_264px_1fr_300px]'
+            : 'grid-cols-[72px_1fr] xl:grid-cols-[72px_264px_1fr_300px]'
       } ${
         // The 4th column (member list) is dropped from the desktop
         // template when in DM mode (DMs have no member list) or
@@ -529,7 +529,7 @@ export function Shell() {
         // can use). Threads UNDER the forum still get the member
         // list since they're conversations.
         isDmLayout || activeChannel?.type === 'guild_forum'
-          ? 'xl:!grid-cols-[72px_240px_1fr]'
+          ? 'xl:!grid-cols-[72px_264px_1fr]'
           : ''
       }`}
     >

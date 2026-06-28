@@ -200,9 +200,9 @@ export function ChannelList({ guild, channels, activeChannelId, onOpenMembers }:
           opens the GuildInfoCard menu (which carries Invite, Mark
           all read, Mute, Create channel, Settings, Leave). The
           chevron flips 180° when the menu is open so it doubles as
-          a state indicator. The name itself wraps onto multiple
-          lines instead of truncating — long server names matter
-          more than the visual cost of an extra line. */}
+          a state indicator. The name stays on ONE line (truncated with
+          an ellipsis if it's very long) so the header reads as a tidy
+          single row alongside the action buttons. */}
       <div
         className="px-3 py-1.5 border-b shadow-sm shrink-0 flex items-center gap-1"
         style={{ borderBottomColor: 'var(--zk-line-soft)' }}
@@ -216,12 +216,12 @@ export function ChannelList({ guild, channels, activeChannelId, onOpenMembers }:
             // regardless of where in the header the user clicked.
             setShowInfo({ x: rect.left + 8, y: rect.bottom });
           }}
-          className="flex-1 min-w-0 flex items-start gap-1 px-1 -mx-1 py-1 rounded hover:bg-bg-3/40 transition-colors text-left"
+          className="flex-1 min-w-0 flex items-center gap-1 px-1 -mx-1 py-1 rounded hover:bg-bg-3/40 transition-colors text-left"
           title="Server menu"
           aria-expanded={!!showInfo}
         >
-          <span className="font-semibold text-sm text-ink-1 leading-tight flex-1 break-words flex items-center gap-1.5">
-            <span className="break-words">{guild.name}</span>
+          <span className="font-semibold text-sm text-ink-1 leading-tight flex-1 min-w-0 flex items-center gap-1.5">
+            <span className="truncate">{guild.name}</span>
             {/* Guild-level mute indicator. Renders ONCE here when the
                 user has muted the whole server, instead of stamping
                 the same icon on every channel row in the list below.

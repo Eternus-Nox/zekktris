@@ -20,7 +20,7 @@ export function UserTag({
   const color = user.tagColor || 'var(--accent)';
   return (
     <span
-      className={`inline-flex items-center self-center rounded-[0.3rem] px-1.5 py-0.5 text-[0.65rem] font-semibold leading-none border shrink-0 ${className}`}
+      className={`inline-flex items-center self-center rounded-md px-1.5 py-0.5 text-[10px] font-semibold leading-none border shrink-0 ${className}`}
       style={{
         color,
         borderColor: color,

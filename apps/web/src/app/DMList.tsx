@@ -399,7 +399,7 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
             </span>
           )}
         </span>
-        {recipient && <UserTag user={recipient} />}
+        {recipient && <UserTag user={recipient} className="-mr-1" />}
         <span className="truncate min-w-0 text-[15px]">{displayName}</span>
         {typeof channel.streak === 'number' && channel.streak > 0 && (
           // Messaging streak: consecutive UTC days both parties messaged.
@@ -408,14 +408,14 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
             className="inline-flex items-center gap-0.5 whitespace-nowrap px-1.5 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/40 text-ink-1 font-mono font-semibold text-[10px] leading-none shrink-0 self-center"
             title={`${channel.streak}-day messaging streak`}
           >
-            {/* iOS (StreakChip): amber flame + ink-white count, soft-cornered
-                rectangle. inline-flex items-center centers the flame's box with
-                the digit (no optical nudge — matches the iOS HStack, which
-                doesn't offset the flame). self-center keeps the whole chip
-                vertically centered on the username row. */}
+            {/* Amber flame + mono count. inline-flex items-center centers the
+                flame's box with the digit; the digit takes a 0.5px downward
+                nudge to counter the font's top-heavy figure metrics so it reads
+                centered against the (slightly larger) flame. self-center keeps
+                the whole chip vertically centered on the username row. */}
             <svg
-              width="9"
-              height="9"
+              width="11"
+              height="11"
               viewBox="0 0 24 24"
               fill="currentColor"
               className="text-amber-400 shrink-0"
@@ -423,7 +423,7 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
             >
               <path d="M13.5 0.67s0.74 2.65 0.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l0.03-0.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5 0.67zM11.71 19c-1.78 0-3.22-1.4-3.22-3.14 0-1.62 1.05-2.76 2.81-3.12 1.77-0.36 3.6-1.21 4.62-2.58 0.39 1.29 0.59 2.65 0.59 4.04 0 2.65-2.15 4.8-4.8 4.8z" />
             </svg>
-            {channel.streak}
+            <span className="relative top-[0.5px]">{channel.streak}</span>
           </span>
         )}
         {/* Spacer: keeps the name + streak hugging the left and pushes the
