@@ -409,7 +409,7 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
           // text-[10px] / font / leading / border — so the two pills look like
           // a matched set, differing only in color and the flame icon.
           <span
-            className="inline-flex items-center self-center gap-0.5 whitespace-nowrap rounded-md px-1.5 pt-[3px] pb-[1px] text-[10px] font-semibold leading-none border bg-amber-500/15 border-amber-500/40 text-ink-1 shrink-0"
+            className="inline-flex items-center self-center -ml-1 gap-0.5 whitespace-nowrap rounded-md px-1.5 pt-[3px] pb-[1px] text-[10px] font-semibold leading-none border bg-amber-500/15 border-amber-500/40 text-ink-1 shrink-0"
             title={`${channel.streak}-day messaging streak`}
           >
             {/* Flame matches the digit's height (10px). It's nudged up a hair to
