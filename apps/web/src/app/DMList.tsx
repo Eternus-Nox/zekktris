@@ -404,12 +404,12 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
         {typeof channel.streak === 'number' && channel.streak > 0 && (
           // Messaging streak: consecutive UTC days both parties messaged.
           // Shares the SAME box metrics as the clan tag (UserTag) — same
-          // rounded-md / px-1.5 / asymmetric pt-[3px] pb-[1px] (nudges the
-          // flame+count down a hair so they sit centered in the pill) /
+          // rounded-md / px-1.5 / asymmetric pt-[2.5px] pb-[1.5px] (nudges the
+          // flame+count down a tiny bit so they sit centered in the pill) /
           // text-[10px] / font / leading / border — so the two pills look like
           // a matched set, differing only in color and the flame icon.
           <span
-            className="inline-flex items-center self-center -ml-1 gap-0.5 whitespace-nowrap rounded-md px-1.5 pt-[3px] pb-[1px] text-[10px] font-semibold leading-none border bg-amber-500/15 border-amber-500/40 text-ink-1 shrink-0"
+            className="inline-flex items-center self-center -ml-1 gap-0.5 whitespace-nowrap rounded-md px-1.5 pt-[2.5px] pb-[1.5px] text-[10px] font-semibold leading-none border bg-amber-500/15 border-amber-500/40 text-ink-1 shrink-0"
             title={`${channel.streak}-day messaging streak`}
           >
             {/* Flame matches the digit's height (10px). It's nudged up a hair to
