@@ -76,6 +76,12 @@ function capitalizeFirst(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+/** Any emoji pictograph or flag (regional-indicator) character. The `u` flag is
+ *  required for the Unicode property escapes. Extended_Pictographic covers the
+ *  emoji set (😀 🔥 👋 …, plus ZWJ-sequence bases); Regional_Indicator covers
+ *  flag pairs (🇺🇸). Used to keep display names text-only. */
+const EMOJI_REGEX = /[\p{Extended_Pictographic}\p{Regional_Indicator}]/u;
+
 export const displayNameSchema = z
   .string()
   .transform(stripUnsafeChars)
@@ -84,7 +90,8 @@ export const displayNameSchema = z
       .string()
       .trim()
       .min(1, 'Display name cannot be empty')
-      .max(DISPLAY_NAME_MAX_LENGTH, `Display name must be at most ${DISPLAY_NAME_MAX_LENGTH} characters`),
+      .max(DISPLAY_NAME_MAX_LENGTH, `Display name must be at most ${DISPLAY_NAME_MAX_LENGTH} characters`)
+      .refine((s) => !EMOJI_REGEX.test(s), 'Display name cannot contain emoji'),
   )
   .transform(capitalizeFirst);
 

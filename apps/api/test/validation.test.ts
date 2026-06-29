@@ -51,8 +51,8 @@ describe('validation schemas', () => {
 
   describe('displayNameSchema', () => {
     it('strips zero-width and bidi-override characters', () => {
-      expect(displayNameSchema.parse('al\u200Bice')).toBe('alice'); // zero-width space
-      expect(displayNameSchema.parse('evil\u202Egnp.exe')).toBe('evilgnp.exe'); // RTL override
+      expect(displayNameSchema.parse('al\u200Bice')).toBe('Alice'); // zero-width space (then capitalized)
+      expect(displayNameSchema.parse('evil\u202Egnp.exe')).toBe('Evilgnp.exe'); // RTL override
     });
     it('rejects a value that is empty after stripping/trimming', () => {
       expect(displayNameSchema.safeParse('   ').success).toBe(false);
@@ -60,6 +60,16 @@ describe('validation schemas', () => {
     });
     it('preserves case in a normal display name', () => {
       expect(displayNameSchema.parse('Alice Liddell')).toBe('Alice Liddell');
+    });
+    it('capitalizes the first letter', () => {
+      expect(displayNameSchema.parse('john')).toBe('John');
+    });
+    it('rejects emoji but allows accents/CJK', () => {
+      expect(displayNameSchema.safeParse('🔥flame').success).toBe(false);
+      expect(displayNameSchema.safeParse('alice 🎉').success).toBe(false);
+      expect(displayNameSchema.safeParse('🇺🇸').success).toBe(false); // flag (regional indicators)
+      expect(displayNameSchema.parse('José')).toBe('José');
+      expect(displayNameSchema.parse('名前')).toBe('名前');
     });
   });
 });
