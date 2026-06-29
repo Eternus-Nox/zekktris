@@ -236,13 +236,18 @@ messagesRouter.post(
         others.map(async (target) => {
           if (levels.get(target.toString()) === 'nothing') return;
           await sendToUser(target, {
-            // Emoji-only body (no "poked you" text) — the nudge IS the emoji;
-            // the sender's name in the title says who. tag replaces a prior
-            // poke from the same DM rather than stacking.
+            // The nudge IS the emoji. On iOS, mutable-content lets the
+            // Notification Service Extension render the emoji as a big centered
+            // image and drop the text (pokeEmoji rides in data); the watch shows
+            // that same enriched notification. Web/fallback shows the emoji as
+            // the body. The sender's name is the title; tag replaces a prior poke
+            // from the same DM rather than stacking.
             title: pokerName,
             body: variant.emoji,
             url: `/channels/@me/${channelId.toString()}`,
             tag: `poke-${channelId.toString()}`,
+            mutableContent: true,
+            data: { pokeEmoji: variant.emoji },
           }).catch(() => undefined);
         }),
       );
@@ -1016,8 +1021,18 @@ messagesRouter.post(
           payload.content.length > remaining
             ? payload.content.slice(0, remaining - 1) + '…'
             : payload.content;
-        const messagePart =
-          truncatedBody || (saved.length > 0 ? '(attachment)' : '');
+        // For an image attachment, the iOS NSE attaches the actual image, so
+        // give the body a friendly label instead of "(attachment)".
+        const firstImage = saved.find((s) => (s.contentType ?? '').startsWith('image/'));
+        const attachmentLabel = firstImage ? '📷 Photo' : saved.length > 0 ? '📎 Attachment' : '';
+        const messagePart = truncatedBody || attachmentLabel;
+        // Absolute URL the NSE downloads to show the image inline. Non-E2EE only
+        // (E2EE bytes are encrypted and never previewed); prefer the smaller
+        // thumbnail when one exists.
+        const imageUrl =
+          firstImage && !ctx.channel.e2eeEnabled
+            ? `${env.PUBLIC_URL}${firstImage.thumbnail?.url ?? firstImage.url}`
+            : undefined;
         // Push notification layout: title is the author's name; body
         // is just the message text. iOS auto-inserts a "from Zekktris"
         // subtitle between them for PWA notifications (unremovable —
@@ -1191,7 +1206,16 @@ messagesRouter.post(
                     : { data: replyData }),
                 }
               : showContent
-                ? { title: contentTitle, body: contentBody, ...common, badge, data: replyData }
+                ? imageUrl
+                  ? {
+                      title: contentTitle,
+                      body: contentBody,
+                      ...common,
+                      badge,
+                      mutableContent: true,
+                      data: { ...replyData, imageUrl },
+                    }
+                  : { title: contentTitle, body: contentBody, ...common, badge, data: replyData }
                 : { title: genericTitle, body: genericBody, ...common, badge, data: replyData };
           });
         } else {
@@ -1208,7 +1232,8 @@ messagesRouter.post(
             tag: channelId.toString(),
             kind: 'message' as const,
             badge: badges.get(target.toString()) ?? 0,
-            data: { channelId: channelId.toString(), isE2EE: false },
+            ...(imageUrl ? { mutableContent: true } : {}),
+            data: { channelId: channelId.toString(), isE2EE: false, ...(imageUrl ? { imageUrl } : {}) },
           }));
         }
       } catch {
