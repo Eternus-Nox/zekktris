@@ -634,10 +634,9 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
     return (
       <div
         data-message-id={message.id}
-        className="group relative flex flex-col items-center justify-center gap-1 py-2 px-4 text-center text-xs text-ink-2"
+        className="group relative flex items-center justify-center gap-1.5 py-1.5 px-4 text-center text-xs text-ink-2"
       >
-        {/* Enlarged emoji on top so a poke pops (it's a nudge), caption beneath. */}
-        <span aria-hidden className="text-[34px] leading-none">{variant.emoji}</span>
+        <span aria-hidden>{variant.emoji}</span>
         <span>{text}</span>
       </div>
     );
