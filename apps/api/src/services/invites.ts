@@ -313,6 +313,18 @@ export async function acceptInvite(
       .returning();
     if (consumed.length === 0) throw errors.notFound('Invite');
 
+    // Re-check the ban immediately before insert: a ban can land between the
+    // step-2 check and now (neither the consume above nor the member PK guards
+    // against a concurrent ban). Under READ COMMITTED a committed ban is visible
+    // here, and throwing rolls back the whole tx (including the consumed use) —
+    // closing the join-while-being-banned window.
+    const bannedNow = await tx
+      .select({ userId: schema.bans.userId })
+      .from(schema.bans)
+      .where(and(eq(schema.bans.guildId, invite.guildId), eq(schema.bans.userId, userId)))
+      .limit(1);
+    if (bannedNow[0]) throw errors.forbidden('You are banned from this guild');
+
     // Step 4: insert member + audit.
     await tx.insert(schema.guildMembers).values({
       guildId: invite.guildId,

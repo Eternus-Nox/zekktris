@@ -14,7 +14,7 @@
  * ChannelEditModal — name/topic/slowmode + delete.
  */
 
-import { lazy, Suspense, useMemo, useState, useSyncExternalStore } from 'react';
+import { lazy, Suspense, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError, type Channel, type Guild } from '@zekktris/client';
 import { useAppStateSelector, isChannelUnread, channelMentionCount, isChannelMuted, effectiveNotificationLevel } from '../state/AppState';
@@ -89,6 +89,10 @@ export function ChannelList({ guild, channels, activeChannelId, onOpenMembers }:
   const [showBrowseRoles, setShowBrowseRoles] = useState(false);
   // Events modal toggle. Same parent-owned pattern as browse-roles.
   const [showEvents, setShowEvents] = useState(false);
+  // Stable close callbacks so the modals' Escape-key effects (which depend on
+  // onClose) don't tear down + re-add their listeners on every parent render.
+  const closeBrowseRoles = useCallback(() => setShowBrowseRoles(false), []);
+  const closeEvents = useCallback(() => setShowEvents(false), []);
 
   // ── Permission + drag setup (must run on every render to keep the
   // hooks order stable; we tolerate guild=undefined here and gate the
@@ -526,10 +530,10 @@ export function ChannelList({ guild, channels, activeChannelId, onOpenMembers }:
         />
       )}
       {showBrowseRoles && (
-        <BrowseRolesModal guild={guild} onClose={() => setShowBrowseRoles(false)} />
+        <BrowseRolesModal guild={guild} onClose={closeBrowseRoles} />
       )}
       {showEvents && (
-        <EventsModal guild={guild} onClose={() => setShowEvents(false)} />
+        <EventsModal guild={guild} onClose={closeEvents} />
       )}
     </>
   );

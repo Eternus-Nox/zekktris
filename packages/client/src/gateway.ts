@@ -317,7 +317,6 @@ export class GatewayClient {
       this.log('warn', 'gateway: malformed frame');
       return;
     }
-    if (typeof frame.s === 'number') this.lastSeq = frame.s;
 
     switch (frame.op) {
       case GatewayOp.HELLO: {
@@ -360,6 +359,10 @@ export class GatewayClient {
         return;
       case GatewayOp.DISPATCH: {
         if (!frame.t) return;
+        // Only DISPATCH frames carry a sequence — advance lastSeq here, AFTER
+        // the op is validated, so a malformed non-dispatch frame can't corrupt
+        // the resume cursor.
+        if (typeof frame.s === 'number') this.lastSeq = frame.s;
         // READY (fresh identify) or RESUMED (replay caught us up) both mean
         // the connection is live; reset backoff and capture the session id so
         // the NEXT reconnect can attempt a resume.
@@ -448,10 +451,15 @@ export class GatewayClient {
    * sequence of heartbeats doesn't accumulate timers.
    */
   private sendHeartbeat(): void {
+    // Scope the watchdog to THIS socket: if the socket is replaced (closed +
+    // reconnected) before the watchdog fires, a late callback must NOT tear down
+    // the healthy replacement and reset backoff (that's a reconnect storm).
+    const ws = this.ws;
     this.send({ op: GatewayOp.HEARTBEAT, d: { seq: this.lastSeq } });
     if (this.ackWatchdogTimer) clearTimeout(this.ackWatchdogTimer);
     this.ackWatchdogTimer = setTimeout(() => {
       this.ackWatchdogTimer = null;
+      if (this.ws !== ws) return; // stale watchdog from a since-replaced socket
       this.log('warn', 'gateway: heartbeat ack timeout, reconnecting');
       // Force-reconnect — old socket is dead even though we never got
       // a close event. Trying to send anything else on it would fail
@@ -474,7 +482,10 @@ export class GatewayClient {
   private setStatus(s: ConnectionStatus): void {
     if (this.status === s) return;
     this.status = s;
-    for (const h of this.statusHandlers) {
+    // Snapshot before iterating: a handler may unsubscribe itself/another
+    // during dispatch, which would mutate the live Set mid-iteration and skip
+    // handlers.
+    for (const h of [...this.statusHandlers]) {
       try {
         h(s);
       } catch {
@@ -486,7 +497,9 @@ export class GatewayClient {
   private emit(name: string, data: unknown): void {
     const set = this.handlers.get(name);
     if (!set) return;
-    for (const h of set) {
+    // Snapshot before iterating (see setStatus) — a throwing handler whose
+    // error path unsubscribes a not-yet-called handler would otherwise skip it.
+    for (const h of [...set]) {
       try {
         h(data);
       } catch (err) {

@@ -1171,8 +1171,11 @@ export function toForwardSource(args: {
         }
       : null,
     author: args.sourceAuthor ? toPublicUser(args.sourceAuthor) : null,
-    content: m.content,
-    attachments: args.sourceAttachments.map(toAttachment),
+    // Redact a soft-deleted source: the `deleted` flag already tells the client
+    // to render "[deleted]", but shipping the original content/attachments would
+    // leak data the author deleted (a forward shouldn't be a backdoor past it).
+    content: m.deletedAt ? '' : m.content,
+    attachments: m.deletedAt ? [] : args.sourceAttachments.map(toAttachment),
     createdAt: isoDate(m.createdAt) ?? new Date().toISOString(),
     deleted: !!m.deletedAt,
   };

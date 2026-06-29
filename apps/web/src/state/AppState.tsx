@@ -2617,8 +2617,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       if (!input || input.channelId !== channelId) return;
       const files = pendingFilesRef.current.get(localId) ?? [];
 
-      // Flip back to pending state visually.
-      const existing = state.messagesByChannel[channelId];
+      // Flip back to pending state visually. Read via stateRef (not the closure)
+      // so a stale callback instance can't miss the message in an old snapshot.
+      const existing = stateRef.current.messagesByChannel[channelId];
       if (existing) {
         const target = existing.find((m) => m.id === localId);
         if (target) {
@@ -2676,7 +2677,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         }
       }
     },
-    [rest, state.messagesByChannel, toasts],
+    [rest, toasts],
   );
 
   const discardFailedMessage = useCallback(
@@ -2762,6 +2763,16 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       setVoicePrefsSyncer(null);
     };
   }, [token, user, rest]);
+
+  // On logout, drop any pending optimistic-send state. The provider stays
+  // mounted across auth changes, so without this the refs hold the previous
+  // session's File objects + input metadata indefinitely (cross-session leak).
+  useEffect(() => {
+    if (!token) {
+      pendingFilesRef.current.clear();
+      pendingInputsRef.current.clear();
+    }
+  }, [token]);
 
   // ── Gateway → state ──────────────────────────────────────────────────
   // Subscriptions are scoped to the lifetime of the auth session.

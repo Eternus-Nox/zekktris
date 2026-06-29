@@ -160,6 +160,14 @@ class Registry {
     const timer = setTimeout(() => this.evictDetached(conn), RESUME_WINDOW_MS);
     // Don't keep the event loop alive just to expire a buffer.
     (timer as { unref?: () => void }).unref?.();
+    // If this sessionId was already retained by a DIFFERENT connection (e.g. a
+    // RESUME adopted the id, then this socket closed mid-handshake), fully evict
+    // the stale one first. Otherwise it's orphaned: overwriting the map entry
+    // leaves its timer to no-op on evictDetached's identity check, and its
+    // cleanup hook (event-bus unsubscribe) never runs. remove() clears that
+    // entry's timer + runs its cleanup.
+    const prior = this.detachedSessions.get(conn.sessionId);
+    if (prior && prior.conn !== conn) this.remove(prior.conn);
     this.detachedSessions.set(conn.sessionId, { conn, timer });
 
     // Global memory backstop: if too many sessions are retained (mass

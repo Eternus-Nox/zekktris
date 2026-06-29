@@ -141,8 +141,15 @@ authRouter.post('/register', validate('json', registerSchema), async (c) => {
     const { isEmailConfigured } = await import('../services/email');
     let verifiedUser = user;
     if (isEmailConfigured()) {
+      // Fire-and-forget so signup isn't blocked on SMTP, but log at ERROR (not
+      // warn): a failure here leaves a freshly-created account unverified with
+      // no email — ops needs to see it. The user can recover via
+      // /resend-verification.
       void issueEmailVerification(user.id, user.email).catch((err) =>
-        log.warn('verification email failed', { err: String(err) }),
+        log.error('signup verification email failed — account created but unverified', {
+          userId: user.id.toString(),
+          err: String(err),
+        }),
       );
     } else {
       const [u] = await db
@@ -375,6 +382,22 @@ authRouter.post('/refresh', async (c) => {
     clearRefreshCookie(c);
     throw errors.unauthenticated('Refresh token is no longer valid');
   }
+
+  // Re-check ban/deletion AFTER the rotate (a committed write): a ban landing in
+  // the check→rotate window would otherwise mint a fresh ~15-min access token
+  // for a just-banned user. Re-reading after the rotate sees the committed ban;
+  // if banned/deleted, revoke this session and fail.
+  const recheck = await db
+    .select({ bannedAt: schema.users.bannedAt, deletedAt: schema.users.deletedAt })
+    .from(schema.users)
+    .where(eq(schema.users.id, session.userId))
+    .limit(1);
+  if (!recheck[0] || recheck[0].bannedAt || recheck[0].deletedAt) {
+    await revokeSession(session.id).catch(() => undefined);
+    clearRefreshCookie(c);
+    throw errors.unauthenticated('Refresh token is no longer valid');
+  }
+
   const accessToken = await signAccessToken({
     userId: session.userId,
     sessionId: session.id,
