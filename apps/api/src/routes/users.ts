@@ -626,7 +626,36 @@ usersRouter.get(
       };
     });
 
-    return c.json({ mentions: enriched });
+    // Resolve mention tokens in the preview text so the inbox shows readable
+    // names, not raw snowflakes. User mentions (<@id> / <@!id>) → "@displayName"
+    // (bulk-fetched); role/channel tokens → a clean generic. The real message
+    // view (on tap) re-fetches raw content and renders proper chips — this only
+    // prettifies the inbox preview, server-side, so web + iOS both benefit.
+    const mentionedIds = new Set<string>();
+    for (const m of enriched) {
+      const content = (m as { content?: string | null }).content ?? '';
+      for (const match of content.matchAll(/<@!?(\d+)>/g)) {
+        if (match[1]) mentionedIds.add(match[1]);
+      }
+    }
+    const nameById = new Map<string, string>();
+    if (mentionedIds.size > 0) {
+      const mentionedUsers = await db
+        .select({ id: schema.users.id, displayName: schema.users.displayName })
+        .from(schema.users)
+        .where(inArray(schema.users.id, [...mentionedIds].map((id) => BigInt(id))));
+      for (const u of mentionedUsers) nameById.set(u.id.toString(), u.displayName);
+    }
+    const resolved = enriched.map((m) => {
+      const content = (m as { content?: string | null }).content ?? '';
+      const pretty = content
+        .replace(/<@!?(\d+)>/g, (_full, id: string) => `@${nameById.get(id) ?? 'user'}`)
+        .replace(/<@&\d+>/g, '@role')
+        .replace(/<#\d+>/g, '#channel');
+      return { ...(m as object), content: pretty };
+    });
+
+    return c.json({ mentions: resolved });
   },
 );
 
