@@ -47,7 +47,6 @@ import {
   computeMemberChannelPermissions,
   hasPermission,
   listChannelViewerIds,
-  listViewableGuildChannelIdsForUsers,
   assertChannelPermission,
 } from '../services/permissions';
 import { db, schema } from '../db';
@@ -1088,39 +1087,44 @@ messagesRouter.post(
           ? `/channels/@me/${channelId.toString()}`
           : `/channels/${(ctx.channel.guildId ?? 0n).toString()}/${channelId.toString()}`;
 
-        // Recipients: in a guild, the people @mentioned; in a DM,
-        // every recipient. Always exclude the author — no one wants
-        // a notification from themselves.
+        // Recipients (opt-out model). DMs: every other participant. Guild
+        // channels (text, forums, threads, announcements): EVERY member who can
+        // VIEW the channel — private/mod channels stay private. Each viewer's
+        // resolved level then decides whether the push actually goes out (below).
+        // Author is always excluded.
         let targetUserIds: bigint[] = [];
+        const mentioned = new Set<string>(); // who this message actually @mentions
         if (isDM) {
           const recipients = await dms.listAllRecipients(channelId);
           targetUserIds = recipients.filter((id) => id !== userId);
-        } else if (result.mentionsEveryone && ctx.channel.guildId) {
-          // @everyone: the audience is every guild member who can VIEW this
-          // channel (private/mod channels stay private). The sender already
-          // passed the MENTION_EVERYONE gate in createMessage. Bump their
-          // mention badge unconditionally (same as direct @mentions, which are
-          // badged inline in createMessage), then push below honoring mute.
+        } else if (ctx.channel.guildId) {
+          // NOTE: this is a full channel-viewer computation per message
+          // (O(members) permission math). Acceptable for typical guilds; if a
+          // very large/active guild ever makes this hot, cache the viewer set.
           const viewers = (await listChannelViewerIds(ctx.channel.guildId, channelId)).filter(
             (id) => id !== userId,
           );
-          await readStates.bumpMentions(channelId, viewers);
           targetUserIds = viewers;
-        } else if (result.mentionedUserIds.length > 0) {
-          targetUserIds = result.mentionedUserIds.filter((id) => id !== userId);
+          if (result.mentionsEveryone) {
+            for (const id of viewers) mentioned.add(id.toString());
+            // @everyone bumps the mention badge for every viewer (direct
+            // @mentions are badged inline in createMessage).
+            await readStates.bumpMentions(channelId, viewers);
+          } else {
+            for (const id of result.mentionedUserIds) mentioned.add(id.toString());
+          }
         }
 
-        // Mute-honoring filter for the MENTION/DM recipients above. Each may
-        // have a guild- or channel-level override:
-        //   - 'all'      → push always
-        //   - 'mentions' → push when this message mentions them (or it's a DM,
-        //                  where every message is implicitly a "mention")
-        //   - 'nothing'  → never push
-        // Every id here is a mention/DM target, so 'all' and 'mentions' both
-        // push and only 'nothing' filters out.
-        const { resolveLevelsBulk, listChannelAllSubscribers } = await import(
-          '../services/notifications'
-        );
+        // Apply each target's resolved level (channel override → guild override
+        // → default 'all'):
+        //   'all'      → push every message (the default — so members get every
+        //                text/forum message unless they change it)
+        //   'mentions' → push only when this message mentions them
+        //   'nothing'  → never push (channel muted, OR the whole server muted
+        //                via a guild-level override)
+        // DMs keep their semantics: 'mentions' still pushes (every DM message is
+        // implicitly a mention); only 'nothing' mutes a DM.
+        const { resolveLevelsBulk } = await import('../services/notifications');
         const levels = await resolveLevelsBulk(
           targetUserIds,
           channelId,
@@ -1128,35 +1132,10 @@ messagesRouter.post(
         );
         const allowed = new Map<string, bigint>();
         for (const id of targetUserIds) {
-          if ((levels.get(id.toString()) ?? 'all') !== 'nothing') allowed.set(id.toString(), id);
-        }
-
-        // "Get notifications from servers too": for a GUILD message, also push
-        // anyone who EXPLICITLY opted into all-messages for this channel/guild
-        // (channel/guild override === 'all'). This is the only path where 'all'
-        // differs from 'mentions' — a non-mention message reaches these
-        // subscribers. Strictly opt-in (the implicit 'all' default does NOT
-        // subscribe, so members aren't fire-hosed). Verify they can still VIEW
-        // the channel and exclude the author. No mention-badge bump (not a
-        // mention). Only runs the viewer query when someone actually opted in.
-        if (!isDM && ctx.channel.guildId) {
-          const subs = await listChannelAllSubscribers(channelId, ctx.channel.guildId);
-          if (subs.length > 0) {
-            // Scope the viewability check to the handful of opt-in subscribers
-            // rather than materializing the FULL channel viewer set (which is
-            // O(members) permission math + a full-roster memberRoles scan). The
-            // batched resolver returns each subscriber's viewable channel set;
-            // a non-member resolves to an empty set and is excluded.
-            const viewableBySub = await listViewableGuildChannelIdsForUsers(
-              ctx.channel.guildId,
-              subs,
-            );
-            for (const id of subs) {
-              if (id !== userId && viewableBySub.get(id)?.has(channelId)) {
-                allowed.set(id.toString(), id);
-              }
-            }
-          }
+          const level = levels.get(id.toString()) ?? 'all';
+          if (level === 'nothing') continue;
+          if (level === 'mentions' && !isDM && !mentioned.has(id.toString())) continue;
+          allowed.set(id.toString(), id);
         }
 
         const allowedTargets = [...allowed.values()];
