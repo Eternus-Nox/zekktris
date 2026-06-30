@@ -11,44 +11,129 @@
 
 import { useState, useRef, type FormEvent, type KeyboardEventHandler, type Ref, type RefObject } from 'react';
 import { ZekktrisMark } from '../lib/ZekktrisMark';
+import { Eye, EyeOff } from '../lib/icons';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { ApiError } from '@zekktris/client';
 import { useAuth } from './AuthContext';
 
-function AuthCard({
-  title,
-  subtitle,
+/**
+ * Split-panel auth shell: a left brand pillar (Zekktris mark + wordmark,
+ * desktop only) beside the form column, both inside one rounded glass card
+ * centered over the ambient abyss. On mobile the pillar collapses to a
+ * compact logo row above the form. The form column owns its own heading
+ * ("Welcome back" / "Create an account").
+ */
+function AuthShell({
+  heading,
   children,
 }: {
-  title: string;
-  subtitle?: React.ReactNode;
+  heading?: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-bg-1 px-4 safe-area-padded relative overflow-hidden">
-      {/* Same ambient abyss the Shell mounts. Auth screens are the
-          user's first impression of Zekktris — having the plasma
-          aurora + starfield behind the form matters more here than
-          anywhere else. pointer-events: none keeps it purely
-          decorative. */}
+    <div className="min-h-screen flex items-center justify-center bg-bg-1 px-4 py-8 safe-area-padded relative overflow-hidden">
+      {/* Same ambient abyss the Shell mounts — auth is the user's first
+          impression of Zekktris, so it gets the full plasma + starfield. */}
       <div className="abyss" aria-hidden />
-      <div className="w-full max-w-md glass glass-edge rounded-xl p-8 shadow-2xl relative z-10">
-        <div className="mb-6 flex items-start gap-3">
-          {/* Zekktris mark. icon.svg is the same artwork used as the
-              favicon + PWA tile, so the visual identity is consistent
-              from "before sign-in" through "running as installed
-              app". 40px reads cleanly next to the wordmark; larger
-              than the favicon stamp but compact enough to leave the
-              title room. */}
-          <ZekktrisMark size={40} className="w-10 h-10 shrink-0" />
-          <div className="min-w-0 flex-1">
-            <h1 className="text-2xl font-semibold tracking-tight">Zekktris</h1>
-            {subtitle ?? <p className="text-ink-2 mt-1">{title}</p>}
-          </div>
+      <div className="relative z-10 w-full max-w-3xl grid md:grid-cols-2 glass glass-edge rounded-2xl overflow-hidden shadow-2xl">
+        {/* Brand pillar — desktop only. */}
+        <div
+          className="hidden md:flex flex-col items-center justify-center gap-4 p-10 border-r"
+          style={{ borderColor: 'var(--zk-line-soft)' }}
+        >
+          <ZekktrisMark size={96} className="w-24 h-24 shrink-0" />
+          <span className="text-3xl font-bold tracking-tight">Zekktris</span>
         </div>
-        {children}
+        {/* Form column. */}
+        <div className="p-8 sm:p-10">
+          {/* Compact brand row for mobile (pillar is hidden there). */}
+          <div className="md:hidden flex items-center justify-center gap-2 mb-6">
+            <ZekktrisMark size={32} className="w-8 h-8 shrink-0" />
+            <span className="text-xl font-bold tracking-tight">Zekktris</span>
+          </div>
+          {heading && <h1 className="text-2xl font-bold text-center mb-6">{heading}</h1>}
+          {children}
+        </div>
       </div>
     </div>
+  );
+}
+
+/** Password input with a show/hide eye toggle (matches the auth mockups). */
+function PasswordField({
+  label,
+  value,
+  onChange,
+  autoComplete,
+  minLength,
+  maxLength,
+  inputRef,
+  onKeyDown,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  autoComplete?: string;
+  minLength?: number;
+  maxLength?: number;
+  inputRef?: Ref<HTMLInputElement>;
+  onKeyDown?: KeyboardEventHandler<HTMLInputElement>;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <label className="block">
+      <span className="text-sm text-ink-2">{label}</span>
+      <div className="relative mt-1">
+        <input
+          ref={inputRef}
+          className="w-full bg-bg-1/60 backdrop-blur-sm border rounded-md pl-3 pr-10 py-2 outline-none transition-all focus:shadow-[0_0_0_1px_var(--accent-glow),0_0_14px_var(--accent-glow)]"
+          style={{ borderColor: 'var(--zk-line)' }}
+          type={show ? 'text' : 'password'}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={onKeyDown}
+          autoComplete={autoComplete}
+          required
+          minLength={minLength}
+          maxLength={maxLength}
+        />
+        <button
+          type="button"
+          onClick={() => setShow((s) => !s)}
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-3 hover:text-ink-1 p-1"
+          aria-label={show ? 'Hide password' : 'Show password'}
+          tabIndex={-1}
+        >
+          {show ? <EyeOff size={16} /> : <Eye size={16} />}
+        </button>
+      </div>
+    </label>
+  );
+}
+
+/** "I agree to the Terms of Service and Privacy Policy" consent checkbox. */
+function TosCheckbox({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="flex items-center gap-2 text-sm text-ink-2 cursor-pointer select-none">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="w-4 h-4 rounded accent-[var(--accent)] shrink-0"
+      />
+      <span>
+        I agree to the{' '}
+        <Link to="/terms" className="text-accent hover:underline">Terms of Service</Link>{' '}
+        and{' '}
+        <Link to="/privacy" className="text-accent hover:underline">Privacy Policy</Link>
+      </span>
+    </label>
   );
 }
 
@@ -270,7 +355,7 @@ export function LoginPage() {
   }
 
   return (
-    <AuthCard title={needs2FA ? 'Two-factor authentication' : 'Welcome back'}>
+    <AuthShell heading={needs2FA ? 'Two-factor authentication' : 'Welcome back'}>
       {justReset && !needs2FA && (
         <div className="mb-4 rounded-md border border-emerald-600/40 bg-emerald-600/15 px-3 py-2 text-sm text-emerald-300">
           Your password was reset. Sign in with your new password below.
@@ -280,7 +365,7 @@ export function LoginPage() {
         {!needs2FA ? (
           <>
             <Field label="Email" type="email" value={email} onChange={setEmail} autoComplete="email" />
-            <Field label="Password" type="password" value={password} onChange={setPassword} autoComplete="current-password" />
+            <PasswordField label="Password" value={password} onChange={setPassword} autoComplete="current-password" />
           </>
         ) : (
           <>
@@ -333,7 +418,7 @@ export function LoginPage() {
           </>
         )}
       </form>
-    </AuthCard>
+    </AuthShell>
   );
 }
 
@@ -398,6 +483,7 @@ export function RegisterPage() {
   const [dobMonth, setDobMonth] = useState('');
   const [dobDay, setDobDay] = useState('');
   const [dobYear, setDobYear] = useState('');
+  const [agreed, setAgreed] = useState(false);
   const [pending, setPending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [searchParams] = useSearchParams();
@@ -442,6 +528,10 @@ export function RegisterPage() {
       setErr('Enter your date of birth.');
       return;
     }
+    if (!agreed) {
+      setErr('Please agree to the Terms of Service and Privacy Policy.');
+      return;
+    }
     setPending(true);
     setErr(null);
     try {
@@ -462,7 +552,7 @@ export function RegisterPage() {
   }
 
   return (
-    <AuthCard title="Create your account">
+    <AuthShell heading="Create an account">
       <form onSubmit={onSubmit} className="space-y-4">
         <Field
           label="Email"
@@ -496,24 +586,21 @@ export function RegisterPage() {
           onKeyDown={enterTo(passwordRef)}
         />
         <div>
-          <Field
+          <PasswordField
             label="Password"
-            type="password"
             value={password}
             onChange={setPassword}
             autoComplete="new-password"
             minLength={8}
             maxLength={200}
-            hint="At least 8 characters."
             inputRef={passwordRef}
             onKeyDown={enterTo(repeatRef)}
           />
           <PasswordStrength password={password} />
         </div>
         <div>
-          <Field
-            label="Repeat password"
-            type="password"
+          <PasswordField
+            label="Confirm Password"
             value={repeatPassword}
             onChange={setRepeatPassword}
             autoComplete="new-password"
@@ -543,6 +630,7 @@ export function RegisterPage() {
           maxLength={64}
           hint="Only needed if this server is invite-only. Paste the code you were given (invite links fill this in for you)."
         />
+        <TosCheckbox checked={agreed} onChange={setAgreed} />
         {err && <ErrorBanner message={err} />}
         <SubmitButton pending={pending}>Create account</SubmitButton>
         <p className="text-sm text-ink-2 text-center pt-2">
@@ -552,7 +640,7 @@ export function RegisterPage() {
           </Link>
         </p>
       </form>
-    </AuthCard>
+    </AuthShell>
   );
 }
 
@@ -599,7 +687,7 @@ export function ForgotPasswordPage() {
 
   if (submitted) {
     return (
-      <AuthCard title="Check your email">
+      <AuthShell heading="Check your email">
         <div className="space-y-4">
           <p className="text-sm text-ink-2 leading-relaxed">
             If an account exists with that email, we&apos;ve sent a password
@@ -617,12 +705,12 @@ export function ForgotPasswordPage() {
             Back to sign in
           </Link>
         </div>
-      </AuthCard>
+      </AuthShell>
     );
   }
 
   return (
-    <AuthCard title="Reset your password">
+    <AuthShell heading="Reset your password">
       <p className="text-sm text-ink-2 mb-4 leading-relaxed">
         Enter the email address you signed up with. If we find an
         account, we&apos;ll send a link to choose a new password.
@@ -643,7 +731,7 @@ export function ForgotPasswordPage() {
           </Link>
         </p>
       </form>
-    </AuthCard>
+    </AuthShell>
   );
 }
 
@@ -680,7 +768,7 @@ export function ResetPasswordPage() {
   // form and getting a generic 400 on submit.
   if (!resetToken) {
     return (
-      <AuthCard title="Reset link is invalid">
+      <AuthShell heading="Reset link is invalid">
         <div className="space-y-4">
           <p className="text-sm text-ink-2 leading-relaxed">
             This page expected a reset token in the URL but didn&apos;t
@@ -694,7 +782,7 @@ export function ResetPasswordPage() {
             Request a new reset link
           </Link>
         </div>
-      </AuthCard>
+      </AuthShell>
     );
   }
 
@@ -722,7 +810,7 @@ export function ResetPasswordPage() {
   }
 
   return (
-    <AuthCard title="Choose a new password">
+    <AuthShell heading="Choose a new password">
       <p className="text-sm text-ink-2 mb-4 leading-relaxed">
         Set a new password for your account. After saving, you&apos;ll
         be signed out of every device and need to sign in with the
@@ -759,6 +847,6 @@ export function ResetPasswordPage() {
           </Link>
         </p>
       </form>
-    </AuthCard>
+    </AuthShell>
   );
 }
