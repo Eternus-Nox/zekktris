@@ -17,48 +17,56 @@
  *   </div>
  */
 
-/** A 2.5px-thick ring cut out of a full-bleed background (used by the
- *  gradient decorations — the mask removes the center so only a ring shows). */
+/** A fixed-thickness ring cut out of a full-bleed background. EVERY
+ *  decoration — solid or gradient — renders through this same mask, so they
+ *  all have an IDENTICAL ring diameter + thickness; only the fill color (and
+ *  optional glow) differs. (Previously solids used box-shadow, which grows
+ *  OUTSIDE the element, while gradients used this mask, which draws INSIDE
+ *  it, and thicknesses ranged 1.5–2.5px — so the frames had visibly different
+ *  diameters. Unifying on the mask makes every frame the same size.)
+ *
+ *  2px band at the element's farthest-side edge. With the default
+ *  `-inset-[3px]` container this reproduces the old solid 2px ring exactly:
+ *  the band sits 1–3px outside the avatar. */
 const RING_MASK =
-  'radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2.5px))';
+  'radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))';
 
 interface DecoKind {
   id: string;
   label: string;
-  /** Solid/glow ring via box-shadow (re-tints with the theme when it uses
-   *  the --c-accent var). Mutually exclusive with `gradient`. */
-  box?: string;
-  /** A conic-gradient ring (masked to a ring). Mutually exclusive with `box`. */
-  gradient?: string;
+  /** Ring fill — a solid CSS color or a conic-gradient. Omitted for 'none'.
+   *  Solid accent variants use the --c-accent var so they re-tint with the
+   *  active theme. */
+  fill?: string;
+  /** Optional glow color. Rendered as a drop-shadow on the masked ring (so it
+   *  follows the ring's alpha and glows the ring WITHOUT enlarging its
+   *  diameter — keeping every frame the same size). */
+  glow?: string;
 }
 
 /** The picker registry. 'none' first so it reads as the default/off state. */
 export const AVATAR_DECORATIONS: DecoKind[] = [
   { id: 'none', label: 'None' },
-  { id: 'ring', label: 'Accent', box: '0 0 0 2px rgb(var(--c-accent))' },
-  {
-    id: 'glow',
-    label: 'Accent glow',
-    box: '0 0 0 1.5px rgb(var(--c-accent)), 0 0 9px 1px rgb(var(--c-accent) / 0.65)',
-  },
-  { id: 'gold', label: 'Gold', box: '0 0 0 2px #f4c95b, 0 0 7px 0 rgba(244,201,91,0.55)' },
-  { id: 'rose', label: 'Rose', box: '0 0 0 2px #ec5fb5, 0 0 7px 0 rgba(236,95,181,0.55)' },
-  { id: 'violet', label: 'Violet', box: '0 0 0 2px #9d7bff, 0 0 7px 0 rgba(157,123,255,0.55)' },
-  { id: 'lime', label: 'Lime', box: '0 0 0 2px #7ee787, 0 0 7px 0 rgba(126,231,135,0.55)' },
+  { id: 'ring', label: 'Accent', fill: 'rgb(var(--c-accent))' },
+  { id: 'glow', label: 'Accent glow', fill: 'rgb(var(--c-accent))', glow: 'rgb(var(--c-accent) / 0.7)' },
+  { id: 'gold', label: 'Gold', fill: '#f4c95b', glow: 'rgba(244,201,91,0.6)' },
+  { id: 'rose', label: 'Rose', fill: '#ec5fb5', glow: 'rgba(236,95,181,0.6)' },
+  { id: 'violet', label: 'Violet', fill: '#9d7bff', glow: 'rgba(157,123,255,0.6)' },
+  { id: 'lime', label: 'Lime', fill: '#7ee787', glow: 'rgba(126,231,135,0.6)' },
   {
     id: 'aurora',
     label: 'Aurora',
-    gradient: 'conic-gradient(from 140deg, #3dd7ec, #9d7bff, #ec5fb5, #3dd7ec)',
+    fill: 'conic-gradient(from 140deg, #3dd7ec, #9d7bff, #ec5fb5, #3dd7ec)',
   },
   {
     id: 'sunset',
     label: 'Sunset',
-    gradient: 'conic-gradient(from 200deg, #ffd13d, #ec5fb5, #9d7bff, #ffd13d)',
+    fill: 'conic-gradient(from 200deg, #ffd13d, #ec5fb5, #9d7bff, #ffd13d)',
   },
   {
     id: 'emerald',
     label: 'Emerald',
-    gradient: 'conic-gradient(from 120deg, #7ee787, #3dd7ec, #7ee787)',
+    fill: 'conic-gradient(from 120deg, #7ee787, #3dd7ec, #7ee787)',
   },
 ];
 
@@ -67,26 +75,29 @@ const BY_ID = new Map(AVATAR_DECORATIONS.map((d) => [d.id, d]));
 /**
  * Overlay ring for an avatar. Returns null when there's no decoration. Place
  * it as the last child of the avatar's relative, rounded-full container.
- * `className` controls size/position — default hugs the avatar edge.
+ * `className` controls size/position — default sits just outside the avatar
+ * edge. Every variant renders through one mask so all frames share a diameter.
  */
 export function AvatarDecoration({
   decoration,
-  className = 'absolute -inset-px rounded-full pointer-events-none',
+  className = 'absolute -inset-[3px] rounded-full pointer-events-none',
 }: {
   decoration?: string | null;
   className?: string;
 }) {
   if (!decoration || decoration === 'none') return null;
   const d = BY_ID.get(decoration);
-  if (!d) return null;
-  if (d.gradient) {
-    return (
-      <span
-        aria-hidden
-        className={className}
-        style={{ background: d.gradient, WebkitMask: RING_MASK, mask: RING_MASK }}
-      />
-    );
-  }
-  return <span aria-hidden className={className} style={{ boxShadow: d.box }} />;
+  if (!d || !d.fill) return null;
+  return (
+    <span
+      aria-hidden
+      className={className}
+      style={{
+        background: d.fill,
+        WebkitMask: RING_MASK,
+        mask: RING_MASK,
+        filter: d.glow ? `drop-shadow(0 0 4px ${d.glow})` : undefined,
+      }}
+    />
+  );
 }
