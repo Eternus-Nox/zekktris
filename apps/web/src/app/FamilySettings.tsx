@@ -169,6 +169,7 @@ export function FamilySettings() {
   const sup = state.supervision;
 
   const [username, setUsername] = useState('');
+  const [parentEmail, setParentEmail] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [viewingChild, setViewingChild] = useState<FamilyUser | null>(null);
   const [requests, setRequests] = useState<FamilyRequest[]>([]);
@@ -229,6 +230,36 @@ export function FamilySettings() {
     );
   };
 
+  const inviteParent = () => {
+    const email = parentEmail.trim();
+    if (!email) return;
+    setBusy('invite-parent');
+    rest
+      .familyRequestParent(email)
+      .then(async (r) => {
+        await reloadSupervision();
+        setParentEmail('');
+        toasts.push(
+          r.status === 'awaiting_signup'
+            ? "Invite emailed — they'll appear here once they make an account and accept."
+            : 'Invite sent — waiting for them to accept.',
+          'success',
+        );
+      })
+      .catch((e) => toasts.push(e instanceof ApiError ? e.message : 'Something went wrong', 'error'))
+      .finally(() => setBusy(null));
+  };
+
+  // Show the "link a guardian" surface to minors (and anyone with a pending
+  // guardian invite or who already has a guardian and could add a second).
+  const showGuardianInvite =
+    !!sup &&
+    (sup.isMinor ||
+      sup.supervisedBy.length > 0 ||
+      sup.graceActive ||
+      sup.restrictedHeavily ||
+      (sup.outgoingParentRequests?.length ?? 0) > 0);
+
   if (!sup) {
     return <p className="text-sm text-ink-3">Loading…</p>;
   }
@@ -268,6 +299,112 @@ export function FamilySettings() {
         aren't end-to-end encrypted (so you can review them), except messages
         between the two of you, which stay private.
       </div>
+
+      {/* Minor age-gate state (child POV). */}
+      {sup.restrictedHeavily ? (
+        <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-3.5 text-sm text-red-200 leading-relaxed">
+          Your account is restricted until a parent or guardian is linked. Ask a guardian to
+          supervise your account by entering their email below.
+        </div>
+      ) : sup.graceActive ? (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3.5 text-sm text-amber-200 leading-relaxed">
+          Link a parent or guardian within{' '}
+          <strong>
+            {sup.graceDaysRemaining ?? 0} {(sup.graceDaysRemaining ?? 0) === 1 ? 'day' : 'days'}
+          </strong>{' '}
+          to keep full access. After that your account is limited until a guardian is connected.
+        </div>
+      ) : null}
+
+      {/* Link a guardian by email (child POV). */}
+      {showGuardianInvite && (
+        <section className="space-y-2">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
+            Link a guardian
+          </h4>
+          <p className="text-xs text-ink-3 leading-relaxed">
+            Enter a parent or guardian&apos;s email. If they have an account they&apos;ll get a
+            request to approve; otherwise we&apos;ll email them an invite to create one.
+          </p>
+          <div className="flex gap-2">
+            <input
+              type="email"
+              value={parentEmail}
+              onChange={(e) => setParentEmail(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && inviteParent()}
+              placeholder="guardian@email.com"
+              className="flex-1 bg-bg-1/60 border rounded-md px-3 py-2 text-sm outline-none focus:shadow-[0_0_0_1px_var(--accent-glow)]"
+              style={{ borderColor: 'var(--zk-line)' }}
+            />
+            <button
+              type="button"
+              disabled={busy !== null || !parentEmail.trim()}
+              onClick={inviteParent}
+              className="text-sm px-3 py-2 rounded-md border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40 shrink-0"
+            >
+              {busy === 'invite-parent' ? '…' : 'Send invite'}
+            </button>
+          </div>
+          {(sup.outgoingParentRequests?.length ?? 0) > 0 && (
+            <ul className="space-y-1.5 pt-1">
+              {sup.outgoingParentRequests!.map((u) => (
+                <PersonRow key={u.id} user={u}>
+                  <span className="flex items-center gap-2 shrink-0">
+                    <span className="text-xs text-ink-3">Pending</span>
+                    <button
+                      type="button"
+                      disabled={busy !== null}
+                      onClick={() =>
+                        void run(`cancel-${u.id}`, () => rest.familyRemoveLink(u.id), 'Invite cancelled')
+                      }
+                      className="text-xs px-2.5 py-1 rounded border border-line text-ink-2 hover:text-ink-1 hover:bg-bg-3 disabled:opacity-40"
+                    >
+                      Cancel
+                    </button>
+                  </span>
+                </PersonRow>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
+      {/* Child-initiated requests awaiting MY (the parent's) acceptance. */}
+      {(sup.incomingChildRequests?.length ?? 0) > 0 && (
+        <section className="space-y-2">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
+            Accounts asking you to supervise them
+          </h4>
+          <ul className="space-y-1.5">
+            {sup.incomingChildRequests!.map((u) => (
+              <PersonRow key={u.id} user={u}>
+                <span className="flex gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    disabled={busy !== null}
+                    onClick={() =>
+                      void run(`accchild-${u.id}`, () => rest.familyAcceptChildRequest(u.id), 'Now supervising')
+                    }
+                    className="text-xs px-2.5 py-1 rounded border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40"
+                  >
+                    Accept
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy !== null}
+                    onClick={() =>
+                      void run(`declchild-${u.id}`, () => rest.familyRemoveLink(u.id), 'Declined')
+                    }
+                    className="text-xs px-2.5 py-1 rounded border border-line text-ink-2 hover:text-ink-1 hover:bg-bg-3 disabled:opacity-40"
+                  >
+                    Decline
+                  </button>
+                </span>
+              </PersonRow>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {/* Requests awaiting MY acceptance */}
       {sup.incomingRequests.length > 0 && (
