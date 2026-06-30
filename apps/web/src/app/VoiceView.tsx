@@ -1288,7 +1288,7 @@ const ParticipantTile = memo(function ParticipantTile({
             stacks above the ring (same pattern as the channel rail).
             pointer-events:none so it never intercepts the avatar's
             click (mute-locally popover). */}
-        {speaking && <SpeakingRing inset={3} />}
+        <SpeakingRing inset={3} speaking={speaking} />
         <div
           className={`relative w-full h-full rounded-full text-sm sm:text-base font-bold flex items-center justify-center overflow-hidden ${tone}`}
         >
@@ -1350,7 +1350,7 @@ const ParticipantTile = memo(function ParticipantTile({
             stacks on top (matches the channel rail). The ring's
             negative inset makes it peek out around the edge.
             pointer-events:none so it doesn't block the avatar click. */}
-        {speaking && <SpeakingRing inset={4} />}
+        <SpeakingRing inset={4} speaking={speaking} />
         <div
           className={`relative w-full h-full rounded-full text-lg sm:text-2xl md:text-3xl font-bold flex items-center justify-center overflow-hidden ${tone}`}
         >

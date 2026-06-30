@@ -20,7 +20,16 @@
  * voice arena that participants orbit — see VoiceView — not here.)
  */
 
-export function SpeakingRing({ inset = 2 }: { inset?: number }) {
+export function SpeakingRing({
+  inset = 2,
+  speaking = true,
+}: {
+  inset?: number;
+  /** When provided, the ring stays mounted and fades on speaking change
+   *  (so it eases in/out instead of popping). Omit (defaults true) for the
+   *  legacy mount-when-speaking callers (the channel rail). */
+  speaking?: boolean;
+}) {
   // Ring band as a fraction of the radius. `closest-side` makes the
   // mask gradient's radius equal the circle radius, so these stops are
   // size-independent → the ring is always the same proportion thick.
@@ -29,7 +38,11 @@ export function SpeakingRing({ inset = 2 }: { inset?: number }) {
   return (
     <div
       className="absolute rounded-full pointer-events-none"
-      style={{ inset: `-${inset}px` }}
+      style={{
+        inset: `-${inset}px`,
+        opacity: speaking ? 1 : 0,
+        transition: 'opacity 160ms ease',
+      }}
       aria-hidden
     >
       {/* Themed gradient ring, masked to a proportional band. Uses the
