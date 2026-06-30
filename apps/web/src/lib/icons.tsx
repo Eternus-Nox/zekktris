@@ -99,15 +99,6 @@ export function AtSign(props: IconProps) {
   );
 }
 
-export function Home(props: IconProps) {
-  return (
-    <Svg {...props}>
-      <path d="M3 12L12 3l9 9" />
-      <path d="M5 10v10a1 1 0 0 0 1 1h4v-7h4v7h4a1 1 0 0 0 1-1V10" />
-    </Svg>
-  );
-}
-
 // ── Action / button icons ──────────────────────────────────────────────────
 
 export function Plus(props: IconProps) {

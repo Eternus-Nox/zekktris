@@ -110,39 +110,3 @@ export function usePwaInstall() {
 
   return { mode, promptInstall };
 }
-
-/**
- * useOnlineStatus
- * ---------------
- * Reflects navigator.onLine into React state. Useful for showing an
- * "offline" banner so users don't think the app is broken when their
- * connection drops. We listen for online/offline events; the initial
- * value uses `navigator.onLine` which is reliably correct at mount.
- *
- * Caveat: navigator.onLine reports the OS-level connectivity, not
- * whether the API server is reachable. A user can be "online" while
- * the gateway connection is severed (proxy issue, server down). The
- * app's own gateway connection-state indicator (separate component)
- * reflects that more accurately; this hook is the cheap win for
- * losing wifi entirely.
- */
-export function useOnlineStatus(): boolean {
-  const [online, setOnline] = useState<boolean>(() =>
-    typeof window === 'undefined' ? true : window.navigator.onLine,
-  );
-  useEffect(() => {
-    function on() {
-      setOnline(true);
-    }
-    function off() {
-      setOnline(false);
-    }
-    window.addEventListener('online', on);
-    window.addEventListener('offline', off);
-    return () => {
-      window.removeEventListener('online', on);
-      window.removeEventListener('offline', off);
-    };
-  }, []);
-  return online;
-}
