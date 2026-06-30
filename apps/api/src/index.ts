@@ -24,6 +24,7 @@ import { purgeExpiredSessions } from './auth/sessions';
 import { sweepExpiredDmMessages } from './services/dms';
 import { sweepStreakWarnings } from './services/streaks';
 import { pruneDeadInvites } from './services/invites';
+import { sweepParentLinksByAge } from './services/supervisionAgeSweep';
 import { refreshDiscoverableMemberCounts } from './services/discovery';
 
 async function main(): Promise<void> {
@@ -231,6 +232,29 @@ async function main(): Promise<void> {
     });
   } else {
     log.info('invite prune sweep disabled (INVITE_PRUNE_ENABLED=false)');
+  }
+
+  // ── Supervision auto-release sweep ─────────────────────────────────────
+  // Revoke parent/child links once the child turns 18. Hygiene only — the 18+
+  // release is computed on the fly in getActiveParentIds/buildE2eePolicy, so
+  // this just tidies stale 'active' rows. Idempotent + multi-replica safe.
+  // Leading run 5 min after boot. Error-isolated like the other sweeps.
+  let parentLinkAgeTimer: ReturnType<typeof setInterval> | null = null;
+  if (env.PARENT_LINK_AGE_CHECK_ENABLED) {
+    const intervalMs = env.PARENT_LINK_AGE_CHECK_INTERVAL_HOURS * 60 * 60 * 1000;
+    const runParentLinkAge = () =>
+      void sweepParentLinksByAge()
+        .then((r) => {
+          if (r.revoked > 0) log.info('supervision links auto-released (child turned 18)', { revoked: r.revoked });
+        })
+        .catch((err) => log.error('supervision age sweep failed', { err }));
+    setTimeout(runParentLinkAge, 5 * 60_000);
+    parentLinkAgeTimer = setInterval(runParentLinkAge, intervalMs);
+    log.info('supervision age sweep scheduled', {
+      intervalHours: env.PARENT_LINK_AGE_CHECK_INTERVAL_HOURS,
+    });
+  } else {
+    log.info('supervision age sweep disabled (PARENT_LINK_AGE_CHECK_ENABLED=false)');
   }
 
   // ── Discovery member-count refresh ────────────────────────────────────
@@ -642,6 +666,7 @@ async function main(): Promise<void> {
     if (streakWarnTimer) clearInterval(streakWarnTimer);
     if (compressTimer) clearInterval(compressTimer);
     if (invitePruneTimer) clearInterval(invitePruneTimer);
+    if (parentLinkAgeTimer) clearInterval(parentLinkAgeTimer);
     clearInterval(discoveryCountTimer);
     clearInterval(eventSweepTimer);
     clearInterval(pollSweepTimer);

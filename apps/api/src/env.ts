@@ -181,6 +181,15 @@ export const envSchema = z.object({
    *  swept. 0 = delete on the next sweep with no retention. */
   INVITE_PRUNE_GRACE_DAYS: z.coerce.number().int().min(0).max(365).default(7),
 
+  /** Supervision auto-release: periodically revoke parent/child links whose
+   *  child has turned 18. Hygiene only — 18+ release is computed on the fly,
+   *  so disabling this just leaves stale 'active' rows in the table. */
+  PARENT_LINK_AGE_CHECK_ENABLED: z
+    .string()
+    .default('true')
+    .transform((v) => v !== 'false' && v !== '0'),
+  PARENT_LINK_AGE_CHECK_INTERVAL_HOURS: z.coerce.number().min(0.25).default(24),
+
   // ── Uploads ────────────────────────────────────────────────────────────
   UPLOAD_DIR: z.string().default('/data/uploads'),
   MAX_UPLOAD_SIZE_MB: z.coerce.number().int().min(1).max(10_000).default(100),

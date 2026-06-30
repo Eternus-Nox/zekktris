@@ -2799,6 +2799,17 @@ export class RestClient {
     return this.request('DELETE', `/family/links/${otherId}`);
   }
 
+  /** Child invites a guardian by email. `pending` = the email has an account
+      (awaiting their accept); `awaiting_signup` = we emailed an invite. */
+  familyRequestParent(email: string): Promise<{ status: 'pending' | 'awaiting_signup' }> {
+    return this.request('POST', '/family/request-parent', { email });
+  }
+
+  /** Parent accepts a child-initiated supervision request. */
+  familyAcceptChildRequest(childId: string): Promise<{ ok: boolean }> {
+    return this.request('POST', `/family/child-requests/${childId}/accept`);
+  }
+
   // Parent read view ---------------------------------------------------------
 
   familyChildFriends(childId: string): Promise<{
@@ -2922,14 +2933,26 @@ export interface FamilySummary {
   /** The current user's own restrictions if they're a supervised child;
       null otherwise. */
   restrictions: ChildRestrictions | null;
+  /** Age-driven minor state (server-computed; optional for forward-compat
+      with older servers). isMinor = 13–17. graceActive = minor, unlinked,
+      within the 30-day window to connect a parent. restrictedHeavily = minor,
+      unlinked, past the window (strict restrictions in effect). */
+  isMinor?: boolean;
+  graceActive?: boolean;
+  graceDaysRemaining?: number | null;
+  restrictedHeavily?: boolean;
   /** Children I actively supervise. */
   children: FamilyUser[];
   /** Supervision requests I've sent that are awaiting acceptance. */
   outgoingRequests: FamilyUser[];
+  /** Child-initiated requests awaiting MY (the parent's) acceptance. */
+  incomingChildRequests?: FamilyUser[];
   /** Parents actively supervising me. */
   supervisedBy: FamilyUser[];
-  /** Requests awaiting MY acceptance. */
+  /** Parent-initiated requests awaiting MY acceptance. */
   incomingRequests: FamilyUser[];
+  /** Parent invites I (the child) sent, awaiting the parent's acceptance. */
+  outgoingParentRequests?: FamilyUser[];
 }
 
 export interface ChildRestrictions {
