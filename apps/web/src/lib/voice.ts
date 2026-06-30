@@ -1003,6 +1003,37 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
     publishSpeakers(next);
   }) as never);
 
+  // Local connection round-trip time (ms) for the header connection pill.
+  // The subscriber PeerConnection's nominated candidate-pair carries the live
+  // RTT; we sample it ~1Hz. The SDK's RTCEngine is @internal, so we reach the
+  // PC defensively (optional chaining + try/catch) and just skip a tick if the
+  // shape isn't there. `currentRoundTripTime` is in seconds → ×1000 for ms.
+  const pollRtt = () => {
+    const pc = (r as unknown as {
+      engine?: { pcManager?: { subscriber?: { getStats?: () => Promise<RTCStatsReport> } } };
+    }).engine?.pcManager?.subscriber;
+    if (!pc?.getStats) return;
+    pc.getStats()
+      .then((report) => {
+        if (room !== (r as unknown as RoomLike)) return; // a newer session owns the module now
+        let rttMs: number | null = null;
+        report.forEach((s) => {
+          const st = s as { type?: string; state?: string; currentRoundTripTime?: number };
+          if (
+            st.type === 'candidate-pair' &&
+            st.state === 'succeeded' &&
+            typeof st.currentRoundTripTime === 'number'
+          ) {
+            rttMs = Math.round(st.currentRoundTripTime * 1000);
+          }
+        });
+        publishRtt(rttMs);
+      })
+      .catch(() => {});
+  };
+  rttPollInterval = window.setInterval(pollRtt, 1000);
+  pollRtt();
+
   // ── Audio-level polling fallback ──────────────────────────────────────
   //
   // Belt-and-suspenders for remote speaking detection. The event-based
@@ -1751,6 +1782,11 @@ export async function disconnectVoice(opts: { keepAudioContext?: boolean } = {})
     clearInterval(remoteSpeakingPollInterval);
     remoteSpeakingPollInterval = null;
   }
+  if (rttPollInterval !== null) {
+    clearInterval(rttPollInterval);
+    rttPollInterval = null;
+  }
+  publishRtt(null);
   // Tear down every per-track WebAudio speaker probe.
   for (const sid of Array.from(remoteSpeakerProbes.keys())) {
     detachRemoteSpeakerProbe(sid);
@@ -2024,11 +2060,16 @@ const speakerListeners = new Set<SpeakerListener>();
 const trackListeners = new Set<TrackListener>();
 const connectionStateListeners = new Set<ConnectionStateListener>();
 const qualityListeners = new Set<QualityListener>();
+/** Local connection round-trip time (ms) for the header connection pill. */
+type RttListener = (rttMs: number | null) => void;
+const rttListeners = new Set<RttListener>();
 let currentSpeakers: Set<string> = new Set();
 let remoteSpeakingPollInterval: number | null = null;
+let rttPollInterval: number | null = null;
 let currentTracks: VoiceTrackInfo[] = [];
 let currentConnectionState: VoiceConnectionState = 'disconnected';
 let currentQuality: Map<string, VoiceQuality> = new Map();
+let currentRttMs: number | null = null;
 
 /** Coerce the SDK's ConnectionQuality (a string enum) into our union,
     defaulting anything unexpected to 'unknown' so a future SDK value
@@ -2230,6 +2271,21 @@ export function getConnectionQuality(): Map<string, VoiceQuality> {
 function publishQuality(m: Map<string, VoiceQuality>): void {
   currentQuality = m;
   for (const l of qualityListeners) l(m);
+}
+
+export function subscribeRtt(listener: RttListener): () => void {
+  rttListeners.add(listener);
+  return () => {
+    rttListeners.delete(listener);
+  };
+}
+export function getRtt(): number | null {
+  return currentRttMs;
+}
+function publishRtt(ms: number | null): void {
+  if (ms === currentRttMs) return;
+  currentRttMs = ms;
+  for (const l of rttListeners) l(ms);
 }
 
 function publishSpeakers(s: Set<string>): void {

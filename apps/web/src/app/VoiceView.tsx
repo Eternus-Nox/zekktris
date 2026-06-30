@@ -62,6 +62,8 @@ import {
   getConnectionState,
   subscribeConnectionQuality,
   getConnectionQuality,
+  subscribeRtt,
+  getRtt,
   setDeafenHotkeyHandler,
   prepareVoiceAudio,
   VoiceError,
@@ -234,10 +236,19 @@ export function VoiceView({
   const speakers = useSpeakers();
   const tracks = useTracks();
   const connState = useVoiceConnectionState();
+  // Local connection quality (read our own entry from the per-participant map)
+  // + round-trip latency, both surfaced in the header connection pill.
   const quality = useConnectionQuality();
+  const rttMs = useRtt();
 
   const [cameraOn, setCameraOn] = useState(false);
   const [screenOn, setScreenOn] = useState(false);
+  // Hardware availability — used to HIDE the share buttons entirely when there's
+  // nothing to share (no camera, or a browser without screen capture). Start
+  // optimistic so the buttons don't flicker out on first paint before the async
+  // device probe resolves; the effect below corrects them.
+  const [hasCamera, setHasCamera] = useState(true);
+  const [canScreenShare, setCanScreenShare] = useState(true);
   // Theater mode hides the participant tile row entirely so the
   // screen share fills the whole content area. Lives as page-local
   // state; we don't persist it because users typically want it
@@ -503,6 +514,27 @@ export function VoiceView({
     return () => setDeafenHotkeyHandler(null);
   }, []);
 
+  // Probe what this device can actually share, to hide the share buttons when
+  // there's nothing to share. enumerateDevices reports a videoinput entry when
+  // a camera exists even before permission is granted (label is just empty),
+  // so absence reliably means "no camera". getDisplayMedia is missing on most
+  // mobile browsers → no screen share there.
+  useEffect(() => {
+    let cancelled = false;
+    navigator.mediaDevices
+      ?.enumerateDevices?.()
+      .then((devices) => {
+        if (!cancelled) setHasCamera(devices.some((d) => d.kind === 'videoinput'));
+      })
+      .catch(() => {
+        if (!cancelled) setHasCamera(false);
+      });
+    setCanScreenShare(typeof navigator.mediaDevices?.getDisplayMedia === 'function');
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // In-flight guard refs. setScreenShareEnabled / setCameraEnabled can
   // take 500ms-3s to resolve (OS picker, encoder negotiation). Without
   // a sync guard, a user clicking rapidly between off→on→off→on races
@@ -737,6 +769,9 @@ export function VoiceView({
             <span className="text-ink-2 text-sm truncate hidden sm:inline">{channel.topic}</span>
           </>
         )}
+        {/* Connection pill: local quality (WiFi glyph) + live latency, pushed
+            to the right of the title. Only while we're actually in this call. */}
+        {inThis && <ConnectionPill quality={quality.get(user?.id ?? '')} rttMs={rttMs} />}
       </header>
 
       {/* Reconnecting banner. LiveKit fires Reconnecting when the media
@@ -870,7 +905,6 @@ export function VoiceView({
                         speaking={speakers.has(p.userId)}
                         muted={p.selfMute}
                         deaf={p.selfDeaf}
-                        quality={quality.get(p.userId)}
                         compact
                         isSelf={p.userId === user?.id}
                       />
@@ -1053,7 +1087,6 @@ export function VoiceView({
                           speaking={speakers.has(p.userId)}
                           muted={p.selfMute}
                           deaf={p.selfDeaf}
-                          quality={quality.get(p.userId)}
                           isSelf={isMe}
                           unwatchedStreams={unwatchedByUser.get(p.userId)}
                           onJoinStream={startViewing}
@@ -1142,27 +1175,31 @@ export function VoiceView({
               inactiveLabel="Undeafen"
               onClick={toggleDeafen}
             />
-            <ControlButton
-              active={!cameraOn}
-              activeIcon={<VideoOff size={16} />}
-              inactiveIcon={<Video size={16} />}
-              activeLabel="Turn on camera"
-              inactiveLabel="Turn off camera"
-              onClick={toggleCamera}
-              disabled={videoRestricted}
-              disabledTitle="Video is restricted by your parent"
-            />
-            <ControlButton
-              active={!screenOn}
-              activeIcon={<ScreenShare size={16} />}
-              inactiveIcon={<ScreenShare size={16} />}
-              activeLabel="Share screen"
-              inactiveLabel="Stop sharing"
-              onClick={toggleScreenShare}
-              danger={screenOn}
-              disabled={streamRestricted}
-              disabledTitle="Screen sharing is restricted by your parent"
-            />
+            {hasCamera && (
+              <ControlButton
+                active={!cameraOn}
+                activeIcon={<VideoOff size={16} />}
+                inactiveIcon={<Video size={16} />}
+                activeLabel="Turn on camera"
+                inactiveLabel="Turn off camera"
+                onClick={toggleCamera}
+                disabled={videoRestricted}
+                disabledTitle="Video is restricted by your parent"
+              />
+            )}
+            {canScreenShare && (
+              <ControlButton
+                active={!screenOn}
+                activeIcon={<ScreenShare size={16} />}
+                inactiveIcon={<ScreenShare size={16} />}
+                activeLabel="Share screen"
+                inactiveLabel="Stop sharing"
+                onClick={toggleScreenShare}
+                danger={screenOn}
+                disabled={streamRestricted}
+                disabledTitle="Screen sharing is restricted by your parent"
+              />
+            )}
             <MasterVolumeControl />
             <button
               onClick={() => void leave()}
@@ -1226,7 +1263,6 @@ const ParticipantTile = memo(function ParticipantTile({
   compact,
   avatarUrl,
   hideName,
-  quality,
   unwatchedStreams,
   onJoinStream,
 }: {
@@ -1236,10 +1272,6 @@ const ParticipantTile = memo(function ParticipantTile({
   muted: boolean;
   deaf: boolean;
   isSelf?: boolean;
-  /** LiveKit connection quality for this participant (F5), rendered as
-      signal bars in the tile corner. Undefined / 'unknown' renders no
-      indicator (no estimate yet). */
-  quality?: VoiceQuality;
   /** When true, render as a small dock-style tile at the bottom rather
       than a full grid cell. Used when a featured video area is present. */
   compact?: boolean;
@@ -1401,11 +1433,6 @@ const ParticipantTile = memo(function ParticipantTile({
             <VolumeXIcon size={10} />
           </span>
         )}
-        {/* Connection-quality signal bars (F5), top-right corner. Hidden
-            while quality is unknown so a healthy call stays uncluttered. */}
-        <span className="absolute top-0 right-0">
-          <QualityBars quality={quality} />
-        </span>
       </div>
       {!hideName && (
         <span className="text-[0.7rem] sm:text-sm text-ink-1 truncate max-w-full leading-tight text-center">
@@ -1914,45 +1941,66 @@ function useConnectionQuality(): Map<string, VoiceQuality> {
   );
 }
 
-// ── Connection-quality signal bars (F5) ──────────────────────────────────────
+function useRtt(): number | null {
+  return useSyncExternalStore(
+    subscribeRtt,
+    () => getRtt(),
+    () => null,
+  );
+}
+
+// ── Connection pill (local connection quality + latency) ──────────────────────
 //
-// Three ascending bars whose lit count + color reflect the LiveKit
-// ConnectionQuality for a participant: excellent = 3 green, good = 2
-// amber, poor = 1 red, lost = 0 (hollow red). 'unknown' renders nothing
-// (no estimate yet) so a healthy call isn't peppered with placeholder
-// icons. Purely informational — pointer-events off, sits in a tile corner.
-function QualityBars({ quality }: { quality: VoiceQuality | undefined }) {
+// A WiFi-style signal glyph whose lit arcs + color reflect the LOCAL user's
+// LiveKit connection quality (excellent = 3 arcs green, good = 2 amber,
+// poor/lost = 1 red), plus the live round-trip time in ms. Lives in the voice
+// header to the RIGHT of the channel title — NOT on participant tiles. Renders
+// nothing until there's a quality estimate, so a healthy call's header stays
+// clean until there's something to show.
+function ConnectionPill({
+  quality,
+  rttMs,
+}: {
+  quality: VoiceQuality | undefined;
+  rttMs: number | null;
+}) {
   if (!quality || quality === 'unknown') return null;
-  const lit = quality === 'excellent' ? 3 : quality === 'good' ? 2 : quality === 'poor' ? 1 : 0;
+  const lit = quality === 'excellent' ? 3 : quality === 'good' ? 2 : 1; // poor / lost = 1
   const color =
     quality === 'excellent'
       ? 'rgb(74 222 128)' // green-400
       : quality === 'good'
         ? 'rgb(250 204 21)' // yellow-400
         : 'rgb(248 113 113)'; // red-400 (poor / lost)
-  const label =
-    quality === 'lost' ? 'Connection lost' : `Connection: ${quality}`;
+  const dim = 'rgb(148 163 184 / 0.35)';
+  const label = quality === 'lost' ? 'Connection lost' : `Connection: ${quality}`;
   return (
     <div
-      className="flex items-end gap-[2px] pointer-events-none"
-      style={{ height: 12 }}
-      title={label}
-      aria-label={label}
+      className="ml-auto shrink-0 flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-bg-2 text-ink-1 pointer-events-none"
+      style={{ border: `1px solid ${color}` }}
+      title={`${label}${rttMs != null ? ` — ${rttMs} ms` : ''}`}
       role="img"
+      aria-label={`${label}${rttMs != null ? `, ${rttMs} milliseconds` : ''}`}
     >
-      {[0, 1, 2].map((i) => (
-        <div
-          key={i}
-          style={{
-            width: 3,
-            height: 4 + i * 4,
-            borderRadius: 1,
-            background: i < lit ? color : 'transparent',
-            border: `1px solid ${i < lit ? color : 'rgb(248 113 113 / 0.45)'}`,
-            boxSizing: 'border-box',
-          }}
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+        {/* outer arc = bar 3 */}
+        <path
+          d="M2 6.4a9 9 0 0 1 12 0"
+          stroke={lit >= 3 ? color : dim}
+          strokeWidth="1.6"
+          strokeLinecap="round"
         />
-      ))}
+        {/* middle arc = bar 2 */}
+        <path
+          d="M4.4 9a5.2 5.2 0 0 1 7.2 0"
+          stroke={lit >= 2 ? color : dim}
+          strokeWidth="1.6"
+          strokeLinecap="round"
+        />
+        {/* inner dot = bar 1 */}
+        <circle cx="8" cy="12.4" r="1.35" fill={lit >= 1 ? color : dim} />
+      </svg>
+      {rttMs != null && <span>{rttMs} ms</span>}
     </div>
   );
 }
