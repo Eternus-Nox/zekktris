@@ -256,6 +256,33 @@ export class RestClient {
     return this.request('POST', '/auth/logout');
   }
 
+  // ── WebAuthn passkeys ───────────────────────────────────────────────────
+  // `options` is the @simplewebauthn options JSON; the web app feeds it to
+  // startRegistration/startAuthentication and posts the result back. Typed
+  // unknown here so the shared client carries no WebAuthn dependency.
+  passkeyRegisterOptions(): Promise<{ challengeId: string; options: unknown }> {
+    return this.request('POST', '/auth/passkey/register/options');
+  }
+  passkeyRegisterVerify(input: {
+    challengeId: string;
+    response: unknown;
+    deviceName?: string;
+  }): Promise<{ ok: boolean }> {
+    return this.request('POST', '/auth/passkey/register/verify', input);
+  }
+  passkeyLoginOptions(): Promise<{ challengeId: string; options: unknown }> {
+    return this.request('POST', '/auth/passkey/login/options');
+  }
+  passkeyLoginVerify(input: { challengeId: string; response: unknown }): Promise<AuthSession> {
+    return this.request('POST', '/auth/passkey/login/verify', input);
+  }
+  listPasskeys(): Promise<{ passkeys: PasskeyInfo[] }> {
+    return this.request('GET', '/auth/passkey');
+  }
+  deletePasskey(id: string): Promise<{ ok: boolean }> {
+    return this.request('DELETE', `/auth/passkey/${id}`);
+  }
+
   /**
    * Initiate a password reset for the given email. The server
    * always returns ok regardless of whether the email exists —
@@ -2953,6 +2980,15 @@ export interface FamilySummary {
   incomingRequests: FamilyUser[];
   /** Parent invites I (the child) sent, awaiting the parent's acceptance. */
   outgoingParentRequests?: FamilyUser[];
+}
+
+export interface PasskeyInfo {
+  id: string;
+  deviceName: string | null;
+  /** True for a synced/multi-device passkey (UX hint only). */
+  backedUp: boolean;
+  createdAt: string;
+  lastUsedAt: string | null;
 }
 
 export interface ChildRestrictions {

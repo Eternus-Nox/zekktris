@@ -45,6 +45,9 @@ interface AuthContextValue extends AuthState {
   rest: RestClient;
   gateway: GatewayClient;
   login: (email: string, password: string, code?: string) => Promise<void>;
+  /** Sign in with a passkey (WebAuthn). Runs the discoverable-credential
+      ceremony then mints a session like a password login. */
+  loginWithPasskey: () => Promise<void>;
   register: (input: { email: string; username: string; displayName: string; password: string; dateOfBirth: string; code?: string }) => Promise<void>;
   logout: () => Promise<void>;
   /**
@@ -268,6 +271,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [rest, setToken],
   );
 
+  const loginWithPasskey = useCallback<AuthContextValue['loginWithPasskey']>(async () => {
+    // Lazy-load the WebAuthn browser lib so it isn't in the main bundle.
+    const { startAuthentication } = await import('@simplewebauthn/browser');
+    const { challengeId, options } = await rest.passkeyLoginOptions();
+    const response = await startAuthentication({ optionsJSON: options as never });
+    const r = await rest.passkeyLoginVerify({ challengeId, response });
+    setToken(r.accessToken, r.user);
+  }, [rest, setToken]);
+
   const register = useCallback<AuthContextValue['register']>(
     async (input) => {
       const r = await rest.register(input);
@@ -303,8 +315,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo<AuthContextValue>(
-    () => ({ ...state, rest, gateway, login, register, logout, updateUser, emailVerificationRequired }),
-    [state, rest, gateway, login, register, logout, updateUser, emailVerificationRequired],
+    () => ({ ...state, rest, gateway, login, loginWithPasskey, register, logout, updateUser, emailVerificationRequired }),
+    [state, rest, gateway, login, loginWithPasskey, register, logout, updateUser, emailVerificationRequired],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

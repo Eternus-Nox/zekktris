@@ -11,7 +11,7 @@
 
 import { useState, useRef, type FormEvent, type KeyboardEventHandler, type Ref, type RefObject } from 'react';
 import { ZekktrisMark } from '../lib/ZekktrisMark';
-import { Eye, EyeOff } from '../lib/icons';
+import { Eye, EyeOff, Key } from '../lib/icons';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { ApiError } from '@zekktris/client';
 import { useAuth } from './AuthContext';
@@ -300,7 +300,10 @@ function setStoredLastEmail(email: string): void {
 }
 
 export function LoginPage() {
-  const { login, token, hydrating } = useAuth();
+  const { login, loginWithPasskey, token, hydrating } = useAuth();
+  const [passkeyPending, setPasskeyPending] = useState(false);
+  const passkeySupported =
+    typeof window !== 'undefined' && typeof window.PublicKeyCredential !== 'undefined';
   const nav = useNavigate();
   // Initialize from storage so a returning user sees their address
   // already filled in — they only need to type the password. lazy
@@ -351,6 +354,24 @@ export function LoginPage() {
       }
     } finally {
       setPending(false);
+    }
+  }
+
+  async function onPasskey() {
+    setPasskeyPending(true);
+    setErr(null);
+    try {
+      await loginWithPasskey();
+      nav(nextPath, { replace: true });
+    } catch (e) {
+      // The user dismissing the OS/browser passkey prompt throws — that's not
+      // an error worth surfacing. Show a message only for real failures.
+      const name = e instanceof Error ? e.name : '';
+      if (name !== 'NotAllowedError' && name !== 'AbortError') {
+        setErr(e instanceof ApiError ? e.message : 'Passkey sign-in failed.');
+      }
+    } finally {
+      setPasskeyPending(false);
     }
   }
 
@@ -409,6 +430,26 @@ export function LoginPage() {
                 Forgot your password?
               </Link>
             </p>
+            {passkeySupported && (
+              <>
+                {/* OR divider + passkey sign-in. */}
+                <div className="flex items-center gap-3 pt-1" aria-hidden>
+                  <span className="h-px flex-1" style={{ background: 'var(--zk-line)' }} />
+                  <span className="text-xs text-ink-3">OR</span>
+                  <span className="h-px flex-1" style={{ background: 'var(--zk-line)' }} />
+                </div>
+                <button
+                  type="button"
+                  onClick={onPasskey}
+                  disabled={passkeyPending}
+                  className="w-full flex items-center justify-center gap-2 bg-bg-1/60 border rounded-md py-2 text-sm font-medium hover:bg-bg-3 disabled:opacity-60 transition-colors"
+                  style={{ borderColor: 'var(--zk-line)' }}
+                >
+                  <Key size={16} />
+                  {passkeyPending ? 'Waiting for passkey…' : 'Log in with a passkey'}
+                </button>
+              </>
+            )}
             <p className="text-sm text-ink-2 text-center pt-2">
               New here?{' '}
               <Link to="/register" className="text-accent hover:underline">

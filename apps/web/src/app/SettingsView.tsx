@@ -15,7 +15,7 @@
  */
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { ApiError } from '@zekktris/client';
+import { ApiError, type PasskeyInfo } from '@zekktris/client';
 import { UserTag } from '../lib/UserTag';
 import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
@@ -30,7 +30,7 @@ import {
 } from '../lib/notifyPrefs';
 import { useToasts } from '../state/Toasts';
 import { compressImage } from '../lib/compressImage';
-import { AlertTriangle, Copy, Settings as SettingsIcon, Shield, ChevronLeft } from '../lib/icons';
+import { AlertTriangle, Copy, Settings as SettingsIcon, Shield, ChevronLeft, Key } from '../lib/icons';
 import { useNavigate } from 'react-router-dom';
 import { copyText } from '../lib/clipboard';
 import { qrEncode, qrToSvg } from '../lib/qr';
@@ -520,6 +520,7 @@ export function SettingsView() {
               before firing the REST call. */}
           <PasswordSection />
           <TwoFactorSection />
+          <PasskeysSection />
 
           {/* ── Profile ────────────────────────────────────────────────── */}
           <section className="space-y-3">
@@ -2340,6 +2341,101 @@ function BannerPicker({
  * back, plus shows a toast about how many sessions were revoked if
  * the user kept the "sign out other sessions" toggle on.
  */
+function PasskeysSection() {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const [passkeys, setPasskeys] = useState<PasskeyInfo[] | null>(null);
+  const [adding, setAdding] = useState(false);
+  const supported =
+    typeof window !== 'undefined' && typeof window.PublicKeyCredential !== 'undefined';
+
+  async function refresh() {
+    try {
+      const r = await rest.listPasskeys();
+      setPasskeys(r.passkeys);
+    } catch {
+      setPasskeys([]);
+    }
+  }
+  useEffect(() => {
+    if (supported) void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function addPasskey() {
+    setAdding(true);
+    try {
+      const { startRegistration } = await import('@simplewebauthn/browser');
+      const { challengeId, options } = await rest.passkeyRegisterOptions();
+      const response = await startRegistration({ optionsJSON: options as never });
+      await rest.passkeyRegisterVerify({ challengeId, response });
+      toasts.push('Passkey added', 'success');
+      await refresh();
+    } catch (e) {
+      // Dismissing the OS prompt throws — not worth a toast.
+      const name = e instanceof Error ? e.name : '';
+      if (name !== 'NotAllowedError' && name !== 'AbortError') {
+        toasts.push(e instanceof ApiError ? e.message : 'Could not add passkey', 'error');
+      }
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function removePasskey(id: string) {
+    try {
+      await rest.deletePasskey(id);
+      setPasskeys((p) => (p ?? []).filter((k) => k.id !== id));
+      toasts.push('Passkey removed', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not remove passkey', 'error');
+    }
+  }
+
+  if (!supported) return null;
+
+  return (
+    <section className="space-y-2">
+      <div className="text-xs uppercase tracking-wider text-ink-3">Passkeys</div>
+      <p className="text-sm text-ink-3 leading-relaxed">
+        Sign in without a password using your device&apos;s biometrics or a security key.
+      </p>
+      {passkeys && passkeys.length > 0 && (
+        <ul className="space-y-1.5">
+          {passkeys.map((k) => (
+            <li
+              key={k.id}
+              className="flex items-center gap-2 rounded-md border border-line bg-bg-1/60 px-3 py-2"
+            >
+              <Key size={16} className="text-accent shrink-0" />
+              <span className="flex-1 min-w-0 text-sm truncate">
+                {k.deviceName || 'Passkey'}
+                {k.backedUp && <span className="text-ink-3"> · synced</span>}
+              </span>
+              <button
+                type="button"
+                onClick={() => void removePasskey(k.id)}
+                className="text-xs text-red-400 hover:underline shrink-0"
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button
+        type="button"
+        onClick={addPasskey}
+        disabled={adding}
+        className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-md border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-50"
+      >
+        <Key size={15} />
+        {adding ? 'Waiting for passkey…' : 'Add a passkey'}
+      </button>
+    </section>
+  );
+}
+
 function TwoFactorSection() {
   const { rest } = useAuth();
   const toasts = useToasts();
