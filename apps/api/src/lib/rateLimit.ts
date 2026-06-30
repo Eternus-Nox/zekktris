@@ -105,6 +105,19 @@ export class RateLimiter {
   }
 
   /**
+   * Run a Redis op FAIL-OPEN: any error returns `fallback`. A Redis problem
+   * must never block or hard-fail a request — this is the module's core
+   * availability strategy, expressed once.
+   */
+  private async failOpen<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
+    try {
+      return await fn();
+    } catch {
+      return fallback;
+    }
+  }
+
+  /**
    * Returns { ok: true } if this consume is within the limit, or
    * { ok: false, retryAfterMs } if blocked. Async: the Redis backend is
    * network-bound; the in-memory backend resolves synchronously.
@@ -112,7 +125,7 @@ export class RateLimiter {
   async consume(key: string): Promise<ConsumeResult> {
     const redis = getRedis();
     if (!redis) return this.consumeMemory(key);
-    try {
+    return this.failOpen<ConsumeResult>(async () => {
       const res = (await redis.eval(WINDOW_LUA, 1, this.redisKey(key), this.windowMs)) as
         | [number | string, number | string]
         | null;
@@ -124,10 +137,7 @@ export class RateLimiter {
         return { ok: false, retryAfterMs: ttl > 0 ? ttl : this.windowMs };
       }
       return { ok: true };
-    } catch {
-      // Fail OPEN — a Redis problem must not block or hard-fail requests.
-      return { ok: true };
-    }
+    }, { ok: true });
   }
 
   /** Reset the counter for a key — e.g. after a successful login. */
@@ -137,11 +147,8 @@ export class RateLimiter {
       this.buckets.delete(key);
       return;
     }
-    try {
-      await redis.del(this.redisKey(key));
-    } catch {
-      // Best-effort; a missed reset just means the existing window stands.
-    }
+    // Best-effort; a missed reset just means the existing window stands.
+    await this.failOpen(() => redis.del(this.redisKey(key)), undefined);
   }
 
   // ── In-memory backend (behavior-identical to the original limiter) ─────────

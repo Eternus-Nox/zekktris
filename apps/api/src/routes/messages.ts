@@ -2616,47 +2616,27 @@ async function broadcastPollUpdate(channelId: bigint, messageId: bigint) {
     .limit(1);
   const m = messageRows[0];
   if (!m) return;
-  const author = m.authorId ? await loadUser(m.authorId) : null;
-  const attachmentMap = await messages.loadAttachments([messageId]);
-  // selfId is deliberately NOT passed to the poll loader: this DTO fans out
-  // to every channel member, and per-recipient vote state can't be expressed
-  // in one payload. Passing the acting user here broadcast THEIR ballot as
-  // everyone's `myVotes` — each recipient's UI showed (and revealed) the
-  // last voter's choices. Clients keep their own selection locally and the
-  // broadcast only refreshes the shared tallies. (embeds.ts:resolveEmbeds
-  // already follows this contract.)
-  const pollMap = await polls.loadPollsForMessages([messageId], null);
+  // All the hydration below is independent — run it in parallel (this DTO fans
+  // out to every channel member, so trimming ~7 sequential round-trips to one
+  // batch matters). selfId is deliberately NOT passed to the poll loader: per-
+  // recipient vote state can't live in one fan-out payload, so passing the
+  // acting user would broadcast THEIR ballot as everyone's `myVotes`. Clients
+  // keep their own selection locally; the broadcast only refreshes shared
+  // tallies. Reaction aggregation uses the shared O(n) helper (was an O(n²) loop).
+  const [author, attachmentMap, pollMap, reactionAgg, um, rm, channelRows] = await Promise.all([
+    m.authorId ? loadUser(m.authorId) : Promise.resolve(null),
+    messages.loadAttachments([messageId]),
+    polls.loadPollsForMessages([messageId], null),
+    reactions.aggregateReactions(messageId),
+    db.select().from(schema.messageUserMentions).where(eq(schema.messageUserMentions.messageId, messageId)),
+    db.select().from(schema.messageRoleMentions).where(eq(schema.messageRoleMentions.messageId, messageId)),
+    db
+      .select({ guildId: schema.channels.guildId })
+      .from(schema.channels)
+      .where(eq(schema.channels.id, channelId))
+      .limit(1),
+  ]);
   const pollEntry = pollMap.get(messageId);
-
-  // Reactions for the message
-  const reactionRows = await db
-    .select()
-    .from(schema.reactions)
-    .where(eq(schema.reactions.messageId, messageId));
-  const reactionAgg: Array<{ emoji: string; count: number; userIds: bigint[] }> = [];
-  for (const r of reactionRows) {
-    const ex = reactionAgg.find((x) => x.emoji === r.emoji);
-    if (ex) {
-      ex.count++;
-      ex.userIds.push(r.userId);
-    } else reactionAgg.push({ emoji: r.emoji, count: 1, userIds: [r.userId] });
-  }
-
-  // Mentions: small enough to refetch.
-  const um = await db
-    .select()
-    .from(schema.messageUserMentions)
-    .where(eq(schema.messageUserMentions.messageId, messageId));
-  const rm = await db
-    .select()
-    .from(schema.messageRoleMentions)
-    .where(eq(schema.messageRoleMentions.messageId, messageId));
-
-  const channelRows = await db
-    .select({ guildId: schema.channels.guildId })
-    .from(schema.channels)
-    .where(eq(schema.channels.id, channelId))
-    .limit(1);
   const guildId = channelRows[0]?.guildId ?? null;
 
   const messageDTO = toMessage({

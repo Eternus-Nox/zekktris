@@ -15,7 +15,7 @@
 
 import { customAlphabet } from 'nanoid';
 import { and, asc, eq, gt, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
-import { db, schema } from '../db';
+import { db, schema, isUniqueViolation } from '../db';
 import { errors, AppError } from '../errors';
 import { writeAudit } from './audit';
 import { assertJoinAllowed } from './raidProtection';
@@ -415,13 +415,4 @@ export async function joinGuildByApproval(
     });
     return { guildId, alreadyMember: false };
   });
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'code' in err &&
-    (err as { code: unknown }).code === '23505'
-  );
 }

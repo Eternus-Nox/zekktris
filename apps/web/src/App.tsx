@@ -94,7 +94,6 @@ export function App() {
                 <Route path="/scheduled" element={<Shell />} />
                 <Route path="/confirm-email" element={<ConfirmEmailPage />} />
                 <Route path="/verify-email" element={<VerifyEmailPage />} />
-                <Route path="/saved" element={<Shell />} />
                 <Route path="/create-server" element={<Shell />} />
                 <Route path="/join-server" element={<Shell />} />
                 <Route path="/" element={<Shell />} />

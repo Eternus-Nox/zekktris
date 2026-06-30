@@ -1104,7 +1104,10 @@ function MembersTab({ guild }: { guild: Guild }) {
 
   // Quick role lookup — `member.roleIds` is just snowflake strings; we
   // need the role row to render name + color in the pill UI.
-  const rolesById = new Map<string, Role>(allRoles.map((r) => [r.id, r]));
+  const rolesById = useMemo(
+    () => new Map<string, Role>(allRoles.map((r) => [r.id, r])),
+    [allRoles],
+  );
 
   // Filter on display name OR username (case-insensitive). We don't
   // filter by role membership — could be a future enhancement, but

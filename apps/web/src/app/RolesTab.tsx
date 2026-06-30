@@ -39,14 +39,11 @@ const DEFAULT_ROLE_COLOR = '#99aab5';
 
 export function RolesTab({ guild }: { guild: Guild }) {
   const { rest } = useAuth();
-  const { state, loadRoles } = useAppState();
+  const { loadRoles } = useAppState();
   const toasts = useToasts();
   const [roles, setRoles] = useState<Role[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  // Silence unused-var TS noise; we read from state via loadRoles below
-  // (which dispatches into the same store) and don't need state directly.
-  void state;
 
   async function refresh() {
     try {

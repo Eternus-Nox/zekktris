@@ -21,7 +21,6 @@
  */
 import { useEffect } from 'react';
 import { Portal } from '../lib/Portal';
-import { Edit } from '../lib/icons';
 
 interface MenuItem {
   label: string;
@@ -110,7 +109,3 @@ export function ChannelMenu({
     </Portal>
   );
 }
-
-// Suppress unused-warning on Edit import — it's referenced from the
-// callers (ChannelList builds its `items` array using this icon).
-void Edit;

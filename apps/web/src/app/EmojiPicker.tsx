@@ -194,6 +194,18 @@ export function EmojiPicker({ guildId, onSelect, onClose, className }: PickerPro
 
   const totalResults = filtered.guild.length + filtered.standard.length;
 
+  // Pre-group standard emoji by category (the no-query view) once per
+  // filtered.standard change, so unrelated re-renders don't re-filter all
+  // categories (~6 passes over ~100 emoji) every time.
+  const categorizedStandard = useMemo(
+    () =>
+      STANDARD_CATEGORIES.map((cat) => ({
+        cat,
+        emojis: filtered.standard.filter((e) => e.category === cat),
+      })).filter((g) => g.emojis.length > 0),
+    [filtered.standard],
+  );
+
   return (
     <div
       ref={containerRef}
@@ -279,13 +291,11 @@ export function EmojiPicker({ guildId, onSelect, onClose, className }: PickerPro
                     </div>
                   </Section>
                 ) : (
-                  STANDARD_CATEGORIES.map((cat) => {
-                    const inCat = filtered.standard.filter((e) => e.category === cat);
-                    if (inCat.length === 0) return null;
+                  categorizedStandard.map(({ cat, emojis }) => {
                     return (
                       <Section key={cat} title={cat}>
                         <div className="grid grid-cols-8 gap-0.5">
-                          {inCat.map((e) => (
+                          {emojis.map((e) => (
                             <button
                               key={e.name}
                               type="button"

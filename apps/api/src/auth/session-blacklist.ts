@@ -72,8 +72,9 @@ export class MemoryBlacklistStore implements BlacklistStore {
 
   async has(key: string): Promise<boolean> {
     const expiry = this.map.get(key);
-    if (expiry === undefined) return false;
-    if (expiry <= this.now()) {
+    // Absent or expired → not blacklisted. delete() is an idempotent no-op when
+    // the key is missing, so both cases share one path.
+    if (expiry === undefined || expiry <= this.now()) {
       this.map.delete(key);
       return false;
     }
