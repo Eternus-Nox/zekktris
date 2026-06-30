@@ -106,3 +106,39 @@ export const dmStreaks = pgTable(
       .where(sql`${t.streak} > 0`),
   }),
 );
+
+/**
+ * WebAuthn passkeys. One row per registered credential (a user can have many —
+ * a phone, a laptop, a hardware key). `credentialId` is GLOBALLY unique because
+ * discoverable login looks it up before the user is known. `publicKey` +
+ * `counter` are the verification material; the counter guards against
+ * cloned-authenticator replay. Binary fields are stored base64url as text
+ * (matches @simplewebauthn's isoBase64URL helpers + the rest of our text
+ * key storage).
+ */
+export const webauthnCredentials = pgTable(
+  'webauthn_credentials',
+  {
+    id: bigint('id', { mode: 'bigint' }).primaryKey(),
+    userId: bigint('user_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** base64url of the raw credential ID. Globally unique. */
+    credentialId: text('credential_id').notNull().unique(),
+    /** base64url of the COSE public key bytes. */
+    publicKey: text('public_key').notNull(),
+    /** Authenticator signature counter (replay guard). */
+    counter: bigint('counter', { mode: 'number' }).notNull().default(0),
+    /** JSON array string of transports, e.g. ["internal","hybrid"]. */
+    transports: text('transports'),
+    /** User-facing label, e.g. "iPhone". */
+    deviceName: text('device_name'),
+    /** credentialBackedUp hint (synced passkey) — for UX only. */
+    backedUp: boolean('backed_up').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  },
+  (t) => ({
+    byUser: index('webauthn_credentials_user_idx').on(t.userId),
+  }),
+);

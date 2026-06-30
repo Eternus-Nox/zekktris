@@ -652,6 +652,13 @@
       "when": 1784600218000,
       "tag": "0093_parent_link_initiated_by",
       "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1784600219000,
+      "tag": "0094_webauthn_credentials",
+      "breakpoints": true
     }
   ]
 }

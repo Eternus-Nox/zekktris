@@ -10,7 +10,7 @@
 import { Hono } from 'hono';
 import { validate } from '../lib/validate';
 import { z } from 'zod';
-import { and, eq, gt, isNull } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull } from 'drizzle-orm';
 import { db, schema, isUniqueViolation } from '../db';
 import { errors } from '../errors';
 import { log } from '../log';
@@ -34,6 +34,17 @@ import { gateSignup, refundSignupCode } from '../auth/signup';
 import { toSelfUser } from '../lib/dto';
 import { getClientIp, getUserAgent } from '../lib/request';
 import { requireAuth, requireUserId } from '../auth/middleware';
+import { snowflakeSchema } from '../lib/validation';
+import {
+  rpID,
+  rpName,
+  expectedOrigin,
+  generateRegistrationOptions,
+  verifyRegistrationResponse,
+  generateAuthenticationOptions,
+  verifyAuthenticationResponse,
+} from '../lib/webauthn';
+import { challengeStore, newChallengeId } from '../auth/webauthn-challenges';
 import { RateLimiter } from '../lib/rateLimit';
 import {
   emailSchema,
@@ -1050,3 +1061,200 @@ authRouter.post(
     return c.json({ ok: true, email });
   },
 );
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WebAuthn passkeys
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Two ceremonies, each two requests:
+//   register (authed): add a passkey to your account.
+//   login    (anon):   sign in with a passkey, then mint the SAME session a
+//                      password login would (createSession + access token +
+//                      refresh cookie). A passkey session is indistinguishable
+//                      from a password one downstream.
+// Plus list/delete for the Settings → Security management block. The per-
+// ceremony challenge is held single-use in the challenge store between the
+// options and verify calls. Binary fields are stored base64url (Buffer).
+
+const passkeyLoginByIp = new RateLimiter(50, 15 * 60_000, 'passkey-login-ip');
+
+const passkeyRegVerifySchema = z.object({
+  challengeId: z.string().min(1).max(64),
+  response: z.record(z.string(), z.unknown()), // RegistrationResponseJSON
+  deviceName: z.string().trim().max(60).optional(),
+});
+const passkeyLoginVerifySchema = z.object({
+  challengeId: z.string().min(1).max(64),
+  response: z.record(z.string(), z.unknown()), // AuthenticationResponseJSON
+});
+
+// 1) Register options (authed) — exclude already-registered credentials.
+authRouter.post('/passkey/register/options', requireAuth, async (c) => {
+  const userId = requireUserId(c);
+  const [user] = await db
+    .select({ id: schema.users.id, username: schema.users.username, displayName: schema.users.displayName })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .limit(1);
+  if (!user) throw errors.notFound('User');
+  const existing = await db
+    .select({ credentialId: schema.webauthnCredentials.credentialId, transports: schema.webauthnCredentials.transports })
+    .from(schema.webauthnCredentials)
+    .where(eq(schema.webauthnCredentials.userId, userId));
+  const options = await generateRegistrationOptions({
+    rpName,
+    rpID,
+    userName: user.username,
+    userDisplayName: user.displayName,
+    userID: new TextEncoder().encode(user.id.toString()),
+    attestationType: 'none',
+    excludeCredentials: existing.map((cr) => ({
+      id: cr.credentialId,
+      transports: cr.transports ? (JSON.parse(cr.transports) as never) : undefined,
+    })),
+    authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' },
+  });
+  const challengeId = newChallengeId();
+  await challengeStore.put(challengeId, options.challenge);
+  return c.json({ challengeId, options });
+});
+
+// 2) Register verify (authed) — store the new credential.
+authRouter.post('/passkey/register/verify', requireAuth, validate('json', passkeyRegVerifySchema), async (c) => {
+  const userId = requireUserId(c);
+  const body = c.req.valid('json');
+  const challenge = await challengeStore.take(body.challengeId);
+  if (!challenge) throw errors.badRequest('Passkey challenge expired — please try again.');
+  let verification;
+  try {
+    verification = await verifyRegistrationResponse({
+      response: body.response as never,
+      expectedChallenge: challenge,
+      expectedOrigin,
+      expectedRPID: rpID,
+      requireUserVerification: false,
+    });
+  } catch {
+    throw errors.badRequest('Could not verify the passkey.');
+  }
+  if (!verification.verified || !verification.registrationInfo) {
+    throw errors.badRequest('Passkey verification failed.');
+  }
+  const cred = verification.registrationInfo.credential;
+  try {
+    await db.insert(schema.webauthnCredentials).values({
+      id: nextSnowflake(),
+      userId,
+      credentialId: cred.id,
+      publicKey: Buffer.from(cred.publicKey).toString('base64url'),
+      counter: cred.counter,
+      transports: cred.transports ? JSON.stringify(cred.transports) : null,
+      deviceName: body.deviceName || null,
+      backedUp: verification.registrationInfo.credentialBackedUp ?? false,
+    });
+  } catch (e) {
+    if (isUniqueViolation(e)) throw errors.conflict('That passkey is already registered.');
+    throw e;
+  }
+  return c.json({ ok: true });
+});
+
+// 3) Login options (anonymous) — discoverable credentials (no allowCredentials).
+authRouter.post('/passkey/login/options', async (c) => {
+  const options = await generateAuthenticationOptions({ rpID, userVerification: 'preferred' });
+  const challengeId = newChallengeId();
+  await challengeStore.put(challengeId, options.challenge);
+  return c.json({ challengeId, options });
+});
+
+// 4) Login verify (anonymous) — verify the assertion, then mint a session.
+authRouter.post('/passkey/login/verify', validate('json', passkeyLoginVerifySchema), async (c) => {
+  const ip = getClientIp(c);
+  const ua = getUserAgent(c);
+  if (ip) {
+    const r = await passkeyLoginByIp.consume(ip);
+    if (!r.ok) throw errors.rateLimited(Math.ceil(r.retryAfterMs / 1000));
+  }
+  const body = c.req.valid('json');
+  const credentialId = body.response.id;
+  if (typeof credentialId !== 'string') throw errors.badRequest('Malformed passkey response.');
+
+  const [cred] = await db
+    .select()
+    .from(schema.webauthnCredentials)
+    .where(eq(schema.webauthnCredentials.credentialId, credentialId))
+    .limit(1);
+  if (!cred) throw errors.invalidCredentials();
+
+  const challenge = await challengeStore.take(body.challengeId);
+  if (!challenge) throw errors.badRequest('Passkey challenge expired — please try again.');
+
+  let verification;
+  try {
+    verification = await verifyAuthenticationResponse({
+      response: body.response as never,
+      expectedChallenge: challenge,
+      expectedOrigin,
+      expectedRPID: rpID,
+      credential: {
+        id: cred.credentialId,
+        publicKey: new Uint8Array(Buffer.from(cred.publicKey, 'base64url')),
+        counter: cred.counter,
+        transports: cred.transports ? (JSON.parse(cred.transports) as never) : undefined,
+      },
+      requireUserVerification: false,
+    });
+  } catch {
+    throw errors.badRequest('Could not verify the passkey.');
+  }
+  if (!verification.verified) throw errors.invalidCredentials();
+
+  // Bump the replay counter + last-used stamp.
+  await db
+    .update(schema.webauthnCredentials)
+    .set({ counter: verification.authenticationInfo.newCounter, lastUsedAt: new Date() })
+    .where(eq(schema.webauthnCredentials.id, cred.id));
+
+  const [user] = await db.select().from(schema.users).where(eq(schema.users.id, cred.userId)).limit(1);
+  if (!user || user.deletedAt || user.bannedAt) throw errors.invalidCredentials();
+
+  const { session, refreshToken } = await createSession({ userId: user.id, userAgent: ua, ipAddress: ip });
+  const accessToken = await signAccessToken({ userId: user.id, sessionId: session.id });
+  setRefreshCookie(c, refreshToken);
+  return c.json({ user: toSelfUser(user), accessToken, expiresIn: env.ACCESS_TOKEN_TTL_SECONDS });
+});
+
+// List the current user's passkeys (Settings → Security).
+authRouter.get('/passkey', requireAuth, async (c) => {
+  const userId = requireUserId(c);
+  const rows = await db
+    .select({
+      id: schema.webauthnCredentials.id,
+      deviceName: schema.webauthnCredentials.deviceName,
+      backedUp: schema.webauthnCredentials.backedUp,
+      createdAt: schema.webauthnCredentials.createdAt,
+      lastUsedAt: schema.webauthnCredentials.lastUsedAt,
+    })
+    .from(schema.webauthnCredentials)
+    .where(eq(schema.webauthnCredentials.userId, userId))
+    .orderBy(desc(schema.webauthnCredentials.createdAt));
+  return c.json({
+    passkeys: rows.map((r) => ({
+      id: r.id.toString(),
+      deviceName: r.deviceName,
+      backedUp: r.backedUp,
+      createdAt: r.createdAt,
+      lastUsedAt: r.lastUsedAt,
+    })),
+  });
+});
+
+// Remove one of the current user's passkeys.
+authRouter.delete('/passkey/:id', requireAuth, validate('param', z.object({ id: snowflakeSchema })), async (c) => {
+  const userId = requireUserId(c);
+  const { id } = c.req.valid('param');
+  await db
+    .delete(schema.webauthnCredentials)
+    .where(and(eq(schema.webauthnCredentials.id, BigInt(id)), eq(schema.webauthnCredentials.userId, userId)));
+  return c.json({ ok: true });
+});
