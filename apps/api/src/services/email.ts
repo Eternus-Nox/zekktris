@@ -165,6 +165,43 @@ export async function sendEmailVerification(args: {
 }
 
 /**
+ * A minor asked this address to supervise their Zekktris account, but the
+ * address has no account yet. Invite them to create one (then they can accept
+ * the supervision request from their Family settings). `childName` is a
+ * display name only — no account/contact details are leaked.
+ */
+export async function sendParentLinkInvitationEmail(args: {
+  to: string;
+  childName: string;
+}): Promise<void> {
+  const { to, childName } = args;
+  const registerUrl = `${env.PUBLIC_URL}/register`;
+  const subject = `${childName} asked you to supervise their Zekktris account`;
+  const text = [
+    `${childName} added your email as their guardian on Zekktris (a chat app) and is asking you to supervise their account.`,
+    '',
+    'To accept, create a Zekktris account with this email address, then open Settings → Family to approve the request:',
+    registerUrl,
+    '',
+    "If you don't recognize this, you can ignore this email — nothing happens without your approval.",
+  ].join('\n');
+  const html = `
+    <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; color: #1a1a1a; line-height: 1.5;">
+      <p><strong>${escapeHtml(childName)}</strong> added your email as their guardian on Zekktris and is asking you to supervise their account.</p>
+      <p>To accept, create a Zekktris account with this email address, then open <strong>Settings → Family</strong> to approve the request.</p>
+      <p style="margin: 24px 0;">
+        <a href="${escapeHtml(registerUrl)}" style="display: inline-block; padding: 10px 18px; background: #5865f2; color: white; text-decoration: none; border-radius: 6px; font-weight: 500;">
+          Create an account
+        </a>
+      </p>
+      <p style="font-size: 14px; color: #666;">Or copy this link:<br><span style="font-family: monospace; word-break: break-all;">${escapeHtml(registerUrl)}</span></p>
+      <p style="font-size: 13px; color: #888; margin-top: 24px;">If you don't recognize this, you can ignore this email — nothing happens without your approval.</p>
+    </div>
+  `;
+  await sendEmail({ to, subject, text, html });
+}
+
+/**
  * Verification email for an email-change request. Sent to the NEW
  * address (not the old one) because the user may be migrating
  * because they lost access to the old account.

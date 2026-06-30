@@ -17,7 +17,7 @@ import { and, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { nextSnowflake } from '../snowflake';
 import { errors } from '../errors';
-import { ageOnDate, adultCutoffDob, ADULT_AGE, MINOR_GRACE_DAYS } from '../lib/age';
+import { ageOnDate, adultCutoffDob, isMinorDob, ADULT_AGE, MINOR_GRACE_DAYS } from '../lib/age';
 import * as dispatch from '../gateway/dispatch';
 
 /**
@@ -135,11 +135,125 @@ export async function acceptLink(childId: bigint, parentId: bigint) {
         eq(schema.parentChildLinks.parentId, parentId),
         eq(schema.parentChildLinks.childId, childId),
         eq(schema.parentChildLinks.status, 'pending'),
+        // Only the CHILD accepts a PARENT-initiated request. A child-initiated
+        // request (initiated_by='child') is accepted by the parent via
+        // acceptChildInitiatedLink — guarding here stops a child "accepting"
+        // their own invite.
+        eq(schema.parentChildLinks.initiatedBy, 'parent'),
       ),
     )
     .returning({ childId: schema.parentChildLinks.childId });
   if (updated.length === 0) throw errors.badRequest('No pending request from that account');
   // Make sure a restrictions row exists with defaults.
+  await ensureRestrictions(childId);
+}
+
+/**
+ * Child invites a parent to supervise them, BY EMAIL (the reverse of
+ * requestLink). If the email already has an account, create a pending
+ * child-initiated link the PARENT must accept; otherwise email an invite to
+ * sign up. We never create a dangling link row for a non-existent account.
+ */
+export async function requestParentByEmail(
+  childId: bigint,
+  rawEmail: string,
+): Promise<{ status: 'pending' | 'awaiting_signup' }> {
+  const email = rawEmail.trim().toLowerCase(); // emails are stored lowercased
+  const parent = await db.query.users.findFirst({
+    where: and(eq(schema.users.email, email), eq(schema.users.isBot, false)),
+    columns: { id: true },
+  });
+
+  if (parent) {
+    if (parent.id === childId) throw errors.badRequest("You can't supervise your own account");
+    // Reject a duplicate (pending or active) link in either direction.
+    const existing = await db
+      .select({ status: schema.parentChildLinks.status })
+      .from(schema.parentChildLinks)
+      .where(
+        or(
+          and(
+            eq(schema.parentChildLinks.parentId, parent.id),
+            eq(schema.parentChildLinks.childId, childId),
+          ),
+          and(
+            eq(schema.parentChildLinks.parentId, childId),
+            eq(schema.parentChildLinks.childId, parent.id),
+          ),
+        ),
+      );
+    if (existing.some((r) => r.status !== 'revoked')) {
+      throw errors.conflict('A supervision link with this account already exists');
+    }
+    const [activeParents, activeChildren] = await Promise.all([
+      getActiveParentIds(childId),
+      getActiveChildIds(parent.id),
+    ]);
+    if (activeParents.length >= MAX_PARENTS_PER_CHILD) {
+      throw errors.badRequest(`You already have the maximum of ${MAX_PARENTS_PER_CHILD} guardians`);
+    }
+    if (activeChildren.length >= MAX_CHILDREN_PER_PARENT) {
+      throw errors.badRequest(
+        `That guardian is already supervising the maximum of ${MAX_CHILDREN_PER_PARENT} accounts`,
+      );
+    }
+    await db
+      .insert(schema.parentChildLinks)
+      .values({ parentId: parent.id, childId, status: 'pending', initiatedBy: 'child' })
+      .onConflictDoUpdate({
+        target: [schema.parentChildLinks.parentId, schema.parentChildLinks.childId],
+        set: {
+          status: 'pending',
+          initiatedBy: 'child',
+          createdAt: new Date(),
+          acceptedAt: null,
+          revokedAt: null,
+        },
+      });
+    return { status: 'pending' };
+  }
+
+  // No account with that email → invite them to sign up (needs email config).
+  const { isEmailConfigured, sendParentLinkInvitationEmail } = await import('./email');
+  if (!isEmailConfigured()) {
+    throw errors.badRequest(
+      "This server hasn't set up email, so a guardian who doesn't already have an account can't be invited by email. Ask them to create an account first.",
+    );
+  }
+  const childName = await displayNameFor(childId);
+  await sendParentLinkInvitationEmail({ to: email, childName }).catch(() => {
+    // Never leak SMTP details; the child still sees a generic "sent" state.
+  });
+  return { status: 'awaiting_signup' };
+}
+
+/** Parent accepts a CHILD-initiated supervision request, activating it. */
+export async function acceptChildInitiatedLink(parentId: bigint, childId: bigint) {
+  const [activeParents, activeChildren] = await Promise.all([
+    getActiveParentIds(childId),
+    getActiveChildIds(parentId),
+  ]);
+  if (activeParents.length >= MAX_PARENTS_PER_CHILD) {
+    throw errors.badRequest(
+      `That account already has the maximum of ${MAX_PARENTS_PER_CHILD} guardians`,
+    );
+  }
+  if (activeChildren.length >= MAX_CHILDREN_PER_PARENT) {
+    throw errors.badRequest(`You can supervise up to ${MAX_CHILDREN_PER_PARENT} accounts`);
+  }
+  const updated = await db
+    .update(schema.parentChildLinks)
+    .set({ status: 'active', acceptedAt: new Date() })
+    .where(
+      and(
+        eq(schema.parentChildLinks.parentId, parentId),
+        eq(schema.parentChildLinks.childId, childId),
+        eq(schema.parentChildLinks.status, 'pending'),
+        eq(schema.parentChildLinks.initiatedBy, 'child'),
+      ),
+    )
+    .returning({ childId: schema.parentChildLinks.childId });
+  if (updated.length === 0) throw errors.badRequest('No pending request from that account');
   await ensureRestrictions(childId);
 }
 
@@ -310,9 +424,15 @@ export async function buildE2eePolicy(
 /** Everything the /family/me endpoint needs for the current user. */
 export async function supervisionSummary(userId: bigint) {
   const myRestrictions = await getEffectiveRestrictions(userId);
+  const [me] = await db
+    .select({ dateOfBirth: schema.users.dateOfBirth, createdAt: schema.users.createdAt })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .limit(1);
   const asParent = await db
     .select({
       status: schema.parentChildLinks.status,
+      initiatedBy: schema.parentChildLinks.initiatedBy,
       createdAt: schema.parentChildLinks.createdAt,
       child: userSummary,
     })
@@ -328,6 +448,7 @@ export async function supervisionSummary(userId: bigint) {
   const asChild = await db
     .select({
       status: schema.parentChildLinks.status,
+      initiatedBy: schema.parentChildLinks.initiatedBy,
       createdAt: schema.parentChildLinks.createdAt,
       parent: userSummary,
     })
@@ -339,6 +460,20 @@ export async function supervisionSummary(userId: bigint) {
         inArray(schema.parentChildLinks.status, ['pending', 'active']),
       ),
     );
+
+  // Age-driven minor state (server-computed so the client does no clock math).
+  const now = new Date();
+  const dob = me?.dateOfBirth ?? null;
+  const minor = isMinorDob(dob, now);
+  const hasActiveParent = asChild.some((r) => r.status === 'active');
+  const createdMs = me ? now.getTime() - new Date(me.createdAt).getTime() : 0;
+  const graceMs = MINOR_GRACE_DAYS * 86_400_000;
+  const unlinkedMinor = minor && !hasActiveParent;
+  const graceActive = unlinkedMinor && createdMs <= graceMs;
+  const restrictedHeavily = unlinkedMinor && createdMs > graceMs;
+  const graceDaysRemaining = unlinkedMinor
+    ? Math.max(0, Math.ceil((graceMs - createdMs) / 86_400_000))
+    : null;
 
   return {
     // The current user's own restrictions, if they're a supervised
@@ -354,19 +489,32 @@ export async function supervisionSummary(userId: bigint) {
           allowCreateGuild: myRestrictions.allowCreateGuild,
         }
       : null,
-    // Children I supervise (active) + requests I've sent (pending).
+    // Age-driven supervision state for the current user.
+    isMinor: minor,
+    graceActive,
+    graceDaysRemaining,
+    restrictedHeavily,
+    // Children I supervise (active) + requests I sent that await the child.
     children: asParent
       .filter((r) => r.status === 'active')
       .map((r) => ({ ...r.child, id: String(r.child.id), since: r.createdAt })),
     outgoingRequests: asParent
-      .filter((r) => r.status === 'pending')
+      .filter((r) => r.status === 'pending' && r.initiatedBy === 'parent')
       .map((r) => ({ ...r.child, id: String(r.child.id) })),
-    // Parents supervising me (active) + requests awaiting my acceptance.
+    // Child-initiated requests awaiting MY (the parent's) acceptance.
+    incomingChildRequests: asParent
+      .filter((r) => r.status === 'pending' && r.initiatedBy === 'child')
+      .map((r) => ({ ...r.child, id: String(r.child.id) })),
+    // Parents supervising me (active) + parent-initiated requests awaiting me.
     supervisedBy: asChild
       .filter((r) => r.status === 'active')
       .map((r) => ({ ...r.parent, id: String(r.parent.id), since: r.createdAt })),
     incomingRequests: asChild
-      .filter((r) => r.status === 'pending')
+      .filter((r) => r.status === 'pending' && r.initiatedBy === 'parent')
+      .map((r) => ({ ...r.parent, id: String(r.parent.id) })),
+    // Parent invites I (the child) sent that await the parent's acceptance.
+    outgoingParentRequests: asChild
+      .filter((r) => r.status === 'pending' && r.initiatedBy === 'child')
       .map((r) => ({ ...r.parent, id: String(r.parent.id) })),
   };
 }

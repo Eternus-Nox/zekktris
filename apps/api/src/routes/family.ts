@@ -70,6 +70,36 @@ familyRouter.delete(
   },
 );
 
+// Child invites a parent to supervise them, BY EMAIL. If that email already
+// has an account, a pending child-initiated link is created for the parent to
+// accept; otherwise we email them an invite to sign up.
+familyRouter.post(
+  '/family/request-parent',
+  requireAuth,
+  validate('json', z.object({ email: z.string().trim().email().max(254) })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const rl = await linkRl.consume(userId.toString());
+    if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
+    const { email } = c.req.valid('json');
+    const result = await supervision.requestParentByEmail(userId, email);
+    return c.json(result, 201);
+  },
+);
+
+// Parent accepts a child-initiated supervision request.
+familyRouter.post(
+  '/family/child-requests/:childId/accept',
+  requireAuth,
+  validate('param', z.object({ childId: snowflakeSchema })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const { childId } = c.req.valid('param');
+    await supervision.acceptChildInitiatedLink(userId, BigInt(childId));
+    return c.json({ ok: true });
+  },
+);
+
 familyRouter.get('/family/me', requireAuth, async (c) => {
   const userId = requireUserId(c);
   return c.json(await supervision.supervisionSummary(userId));
