@@ -41,6 +41,7 @@ import {
   usernameSchema,
   displayNameSchema,
 } from '../lib/validation';
+import { ageOnDate, MIN_SIGNUP_AGE } from '../lib/age';
 import { env } from '../env';
 
 export const authRouter = new Hono();
@@ -93,24 +94,8 @@ async function issueEmailVerification(userId: bigint, email: string): Promise<vo
 // POST /register
 // ───────────────────────────────────────────────────────────────────────────
 
-// Minimum signup age. Under-13 is rejected outright (COPPA-style). 13–17
-// accounts are created but flagged for supervision downstream (age derived
-// from date_of_birth, so no separate flag is stored).
-const MIN_SIGNUP_AGE = 13;
-
-/** Whole years old on `on`, computed in UTC from a YYYY-MM-DD birth date.
-    Slice-based parse (vs split/destructure) so each part is a definite number
-    under strict index checks; the caller only passes regex-validated strings. */
-function ageOnDate(dob: string, on: Date): number {
-  const y = Number(dob.slice(0, 4));
-  const m = Number(dob.slice(5, 7));
-  const d = Number(dob.slice(8, 10));
-  let age = on.getUTCFullYear() - y;
-  const month = on.getUTCMonth() + 1;
-  const day = on.getUTCDate();
-  if (month < m || (month === m && day < d)) age -= 1;
-  return age;
-}
+// Age helpers (MIN_SIGNUP_AGE under-13 reject; ageOnDate) live in lib/age.ts
+// so the minor-supervision lifecycle reuses the exact same age math.
 
 // YYYY-MM-DD, a real calendar date, not in the future, sane lower bound, and
 // at least MIN_SIGNUP_AGE years old. The age check lives in the schema so it
