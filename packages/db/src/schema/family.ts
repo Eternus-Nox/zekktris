@@ -52,6 +52,11 @@ export const parentChildLinks = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     status: parentLinkStatusEnum('status').notNull().default('pending'),
+    /** Who started the link, so the accept path knows who must approve:
+        'parent' (legacy default — parent requests, CHILD accepts) or 'child'
+        (child invites a parent by email, PARENT accepts). `text` not an enum
+        to avoid a second enum migration; values are exactly parent|child. */
+    initiatedBy: text('initiated_by').notNull().default('parent'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     acceptedAt: timestamp('accepted_at', { withTimezone: true }),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
