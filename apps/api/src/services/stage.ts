@@ -118,7 +118,7 @@ export async function joinStage(args: {
   // Parental controls: barred from voice entirely, or limited sources
   // (audio-only / no screen share) — mirrors joinVoice exactly.
   let publishSources: TrackSource[] | undefined;
-  const childRestr = await supervision.getEnforcedRestrictions(args.userId);
+  const childRestr = await supervision.getEffectiveRestrictions(args.userId);
   if (childRestr) {
     if (!childRestr.allowVoice) {
       throw errors.forbidden('Voice calls are restricted by your parent');

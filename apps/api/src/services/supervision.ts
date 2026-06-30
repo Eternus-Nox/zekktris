@@ -13,10 +13,11 @@
  * Later phases layer monitoring, watch-word flagging, and restriction
  * enforcement on top of these primitives; this module is the foundation.
  */
-import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { nextSnowflake } from '../snowflake';
 import { errors } from '../errors';
+import { ageOnDate, adultCutoffDob, ADULT_AGE, MINOR_GRACE_DAYS } from '../lib/age';
 import * as dispatch from '../gateway/dispatch';
 
 /**
@@ -197,15 +198,25 @@ export async function ensureRestrictions(childId: bigint) {
     .onConflictDoNothing({ target: schema.childRestrictions.childId });
 }
 
-/** Active parent ids for a child (usually 0 or 1, up to 2 guardians). */
+/** Active parent ids for a child (usually 0 or 1, up to 2 guardians).
+ *
+ * 18+ release is computed HERE, on the fly: a link is ignored once the child
+ * turns 18 (DOB <= today-18y), so every consumer of "who supervises this
+ * child" — restrictions, E2EE, the parent's review access — sees the release
+ * immediately, independent of the periodic sweep. A null DOB is treated as
+ * still-supervised (we don't know the age, and the link was set up
+ * deliberately). */
 export async function getActiveParentIds(childId: bigint): Promise<bigint[]> {
+  const cutoff = adultCutoffDob();
   const rows = await db
     .select({ parentId: schema.parentChildLinks.parentId })
     .from(schema.parentChildLinks)
+    .innerJoin(schema.users, eq(schema.users.id, schema.parentChildLinks.childId))
     .where(
       and(
         eq(schema.parentChildLinks.childId, childId),
         eq(schema.parentChildLinks.status, 'active'),
+        or(isNull(schema.users.dateOfBirth), gt(schema.users.dateOfBirth, cutoff)),
       ),
     );
   return rows.map((r) => r.parentId);
@@ -263,16 +274,21 @@ export async function buildE2eePolicy(
   const ids = [...new Set([...userIds].map((u) => u.toString()))].map((s) => BigInt(s));
   const parentsByChild = new Map<string, Set<string>>();
   if (ids.length > 0) {
+    const cutoff = adultCutoffDob();
     const rows = await db
       .select({
         parentId: schema.parentChildLinks.parentId,
         childId: schema.parentChildLinks.childId,
       })
       .from(schema.parentChildLinks)
+      .innerJoin(schema.users, eq(schema.users.id, schema.parentChildLinks.childId))
       .where(
         and(
           eq(schema.parentChildLinks.status, 'active'),
           inArray(schema.parentChildLinks.childId, ids),
+          // 18+ release on the fly (mirror getActiveParentIds) so a just-adult
+          // user's DMs aren't kept plaintext by a stale link.
+          or(isNull(schema.users.dateOfBirth), gt(schema.users.dateOfBirth, cutoff)),
         ),
       );
     for (const r of rows) {
@@ -293,7 +309,7 @@ export async function buildE2eePolicy(
 
 /** Everything the /family/me endpoint needs for the current user. */
 export async function supervisionSummary(userId: bigint) {
-  const myRestrictions = await getEnforcedRestrictions(userId);
+  const myRestrictions = await getEffectiveRestrictions(userId);
   const asParent = await db
     .select({
       status: schema.parentChildLinks.status,
@@ -366,18 +382,69 @@ const DEFAULT_RESTRICTIONS = {
   allowCreateGuild: true,
 };
 
-/** Restrictions in effect for a user, or null if they aren't supervised. */
-export async function getEnforcedRestrictions(
+/** The "restrict heavily" profile applied to a 13–17 account that hasn't
+    linked a parent within the grace window. Everything off. */
+const STRICT_RESTRICTIONS = {
+  canAddFriends: false,
+  canRemoveFriends: false,
+  allowVoice: false,
+  allowVideo: false,
+  allowStream: false,
+  allowCreateGuild: false,
+};
+
+/**
+ * THE restriction chokepoint. Every restriction gate (create-guild, add/remove
+ * friend, voice/video/stream) calls this and only acts when it returns a row
+ * with the relevant field false; `null` means "no restrictions". The age-driven
+ * minor lifecycle is folded in here so all gates honor it with zero per-gate
+ * logic:
+ *
+ *   - 18+ (DOB present, age >= 18)            → null   (fully released)
+ *   - has an active parent link               → the parent's configured row
+ *                                                (DEFAULTS until they set any)
+ *   - no DOB (legacy account), unlinked       → null   (treated as adult)
+ *   - 13–17, unlinked, within grace (<=30d)   → null   (usable; client nudges)
+ *   - 13–17, unlinked, past grace (>30d)      → STRICT (restrict heavily)
+ *
+ * Grace returns null (not all-true) so gate semantics are byte-identical to an
+ * unsupervised user; the grace/restricted state is surfaced separately via the
+ * /family/me summary flags.
+ */
+export async function getEffectiveRestrictions(
   userId: bigint,
 ): Promise<typeof schema.childRestrictions.$inferSelect | null> {
-  const parents = await getActiveParentIds(userId);
-  if (parents.length === 0) return null;
-  const [row] = await db
-    .select()
-    .from(schema.childRestrictions)
-    .where(eq(schema.childRestrictions.childId, userId))
+  const [u] = await db
+    .select({ dateOfBirth: schema.users.dateOfBirth, createdAt: schema.users.createdAt })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
     .limit(1);
-  return row ?? { childId: userId, ...DEFAULT_RESTRICTIONS, updatedAt: new Date() };
+  const now = new Date();
+  const dob = u?.dateOfBirth ?? null;
+  const age = dob ? ageOnDate(dob, now) : null;
+
+  // 18+ → fully released regardless of any stale link/restriction row.
+  if (age !== null && age >= ADULT_AGE) return null;
+
+  // Linked → the parent's configured restrictions (defaults until they edit).
+  const parents = await getActiveParentIds(userId);
+  if (parents.length > 0) {
+    const [row] = await db
+      .select()
+      .from(schema.childRestrictions)
+      .where(eq(schema.childRestrictions.childId, userId))
+      .limit(1);
+    return row ?? { childId: userId, ...DEFAULT_RESTRICTIONS, updatedAt: new Date() };
+  }
+
+  // Unlinked from here.
+  if (age === null) return null; // legacy account, no DOB → treat as adult
+  // 13–17, unlinked: grace until 30 days after account creation, then strict.
+  const ageMs = u ? now.getTime() - new Date(u.createdAt).getTime() : 0;
+  if (ageMs > MINOR_GRACE_DAYS * 86_400_000) {
+    return { childId: userId, ...STRICT_RESTRICTIONS, updatedAt: new Date() };
+  }
+  return null; // within grace — usable; the summary flags drive the nudge
 }
 
 /** Parent-facing read of a child's restrictions (defaults if no row yet). */
@@ -474,7 +541,7 @@ export async function isGuildBlockedForChild(childId: bigint, guildId: bigint): 
 
 export async function createFriendApproval(childId: bigint, targetUserId: bigint, note?: string) {
   // Must actually be supervised + restricted, else there's nothing to approve.
-  const restr = await getEnforcedRestrictions(childId);
+  const restr = await getEffectiveRestrictions(childId);
   if (!restr || restr.canAddFriends) {
     throw errors.badRequest('You can add this friend yourself');
   }

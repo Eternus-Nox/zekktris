@@ -1451,7 +1451,7 @@ usersRouter.post(
     }
     // Parental controls: a supervised child barred from adding friends
     // gets a structured error the client turns into "ask your parent".
-    const restr = await supervision.getEnforcedRestrictions(userId);
+    const restr = await supervision.getEffectiveRestrictions(userId);
     if (restr && !restr.canAddFriends) {
       throw new AppError('FORBIDDEN', 'Adding friends is restricted by your parent', {
         supervisionRestricted: 'friend',
@@ -1530,7 +1530,7 @@ usersRouter.delete(
     // Parental controls: removing friends can be restricted too. No
     // request flow here — removal isn't something a parent pre-approves;
     // the child just can't do it while restricted.
-    const restr = await supervision.getEnforcedRestrictions(userId);
+    const restr = await supervision.getEffectiveRestrictions(userId);
     if (restr && !restr.canRemoveFriends) {
       throw new AppError('FORBIDDEN', 'Removing friends is restricted by your parent', {
         supervisionRestricted: 'friend_remove',

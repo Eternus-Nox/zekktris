@@ -38,3 +38,17 @@ export function isMinorDob(dob: string | null | undefined, on: Date = new Date()
   const age = ageOnDate(dob, on);
   return age >= MIN_SIGNUP_AGE && age < ADULT_AGE;
 }
+
+/**
+ * The latest YYYY-MM-DD birth date that still counts as ADULT (18+) as of
+ * `on` — i.e. `on` minus 18 years. A DOB `<=` this is an adult (auto-released
+ * from supervision); a DOB `>` this is a supervised minor. Used in SQL to do
+ * the 18+ release on the fly wherever "active parents" are read, so release
+ * never depends on the periodic sweep having run.
+ */
+export function adultCutoffDob(on: Date = new Date()): string {
+  const y = on.getUTCFullYear() - ADULT_AGE;
+  const m = String(on.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(on.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}

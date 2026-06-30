@@ -90,7 +90,7 @@ guildsRouter.post('/', validate('json', createGuildSchema), async (c) => {
   // Parental controls: a supervised child can be barred from creating
   // servers. Pure privilege toggle — no request flow (there's no
   // specific target for a parent to approve).
-  const restr = await supervision.getEnforcedRestrictions(userId);
+  const restr = await supervision.getEffectiveRestrictions(userId);
   if (restr && !restr.allowCreateGuild) {
     throw new AppError('FORBIDDEN', 'Creating servers is restricted by your parent', {
       supervisionRestricted: 'create_guild',
@@ -248,7 +248,7 @@ guildsRouter.post('/import', validate('json', guildBackupSchema), async (c) => {
   const body = c.req.valid('json');
 
   // Same supervision gate as create — import produces a new server.
-  const restr = await supervision.getEnforcedRestrictions(userId);
+  const restr = await supervision.getEffectiveRestrictions(userId);
   if (restr && !restr.allowCreateGuild) {
     throw new AppError('FORBIDDEN', 'Creating servers is restricted by your parent', {
       supervisionRestricted: 'create_guild',

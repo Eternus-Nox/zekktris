@@ -252,7 +252,7 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
   // with the wrong value type, previously granted zero sources and broke
   // calls for every supervised account.)
   let publishSources: TrackSource[] | undefined;
-  const childRestr = await supervision.getEnforcedRestrictions(userId);
+  const childRestr = await supervision.getEffectiveRestrictions(userId);
   if (childRestr) {
     if (!childRestr.allowVoice) {
       throw errors.forbidden('Voice calls are restricted by your parent');
