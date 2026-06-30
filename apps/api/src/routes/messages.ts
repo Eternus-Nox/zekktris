@@ -1303,8 +1303,17 @@ messagesRouter.get(
     // scan so opening a busy channel doesn't page through the whole backlog.
     // DMs have no join → no clamp. Pins / search / single-message jump-to use
     // other routes and are intentionally NOT clamped (explicit navigation).
+    //
+    // Threads are ALSO explicit navigation: you tap a specific thread to open
+    // it. They carry the parent's guildId, so without this exemption the
+    // join-floor clamp applies — and an ARCHIVED thread (entirely old
+    // messages, no recent activity by definition) has its whole timeline
+    // clamped away, opening blank. Visibility is already enforced upstream
+    // (VIEW_CHANNEL + READ_MESSAGE_HISTORY), so a thread the caller can open
+    // is one whose parent they can read; showing its full (bounded) history
+    // matches Discord and pins/search. The parent channel itself stays clamped.
     let sinceId: bigint | undefined;
-    if (!ctx.isDM && ctx.channel.guildId) {
+    if (!ctx.isDM && ctx.channel.guildId && ctx.channel.type !== 'public_thread') {
       sinceId = await messages.memberHistoryFloor(ctx.channel.guildId, userId);
     }
     const rows = await messages.listMessages(channelId, {
