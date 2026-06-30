@@ -638,6 +638,13 @@
       "when": 1784600216000,
       "tag": "0091_capitalize_display_names",
       "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1784600217000,
+      "tag": "0092_add_date_of_birth",
+      "breakpoints": true
     }
   ]
 }

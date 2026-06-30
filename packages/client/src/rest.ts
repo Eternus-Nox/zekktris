@@ -239,6 +239,8 @@ export class RestClient {
     username: string;
     displayName: string;
     password: string;
+    /** Date of birth, YYYY-MM-DD. Required: the server age-gates under-13. */
+    dateOfBirth: string;
     /** Signup code. Required when the instance is invite-only; ignored
         otherwise. */
     code?: string;

@@ -106,6 +106,68 @@ function Field({
   );
 }
 
+const DOB_MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+/** Month / Day / Year selects collected at signup. Reusable across the
+ *  register + invite forms. Compose the parts with `composeDob`; the server
+ *  age-gates under-13. */
+function DateOfBirthField({
+  month,
+  day,
+  year,
+  onMonth,
+  onDay,
+  onYear,
+}: {
+  month: string;
+  day: string;
+  year: string;
+  onMonth: (v: string) => void;
+  onDay: (v: string) => void;
+  onYear: (v: string) => void;
+}) {
+  const thisYear = new Date().getFullYear();
+  const years = Array.from({ length: 120 }, (_, i) => thisYear - i);
+  const days = Array.from({ length: 31 }, (_, i) => i + 1);
+  const selectCls =
+    'mt-1 w-full bg-bg-1/60 backdrop-blur-sm border rounded-md px-2 py-2 outline-none transition-all focus:shadow-[0_0_0_1px_var(--accent-glow)] text-ink-1';
+  return (
+    <div>
+      <span className="text-sm text-ink-2">Date of birth</span>
+      <div className="mt-1 grid grid-cols-3 gap-2">
+        <select aria-label="Birth month" className={selectCls} style={{ borderColor: 'var(--zk-line)' }} value={month} onChange={(e) => onMonth(e.target.value)} required>
+          <option value="">Month</option>
+          {DOB_MONTHS.map((m, i) => (
+            <option key={m} value={String(i + 1)}>{m}</option>
+          ))}
+        </select>
+        <select aria-label="Birth day" className={selectCls} style={{ borderColor: 'var(--zk-line)' }} value={day} onChange={(e) => onDay(e.target.value)} required>
+          <option value="">Day</option>
+          {days.map((d) => (
+            <option key={d} value={String(d)}>{d}</option>
+          ))}
+        </select>
+        <select aria-label="Birth year" className={selectCls} style={{ borderColor: 'var(--zk-line)' }} value={year} onChange={(e) => onYear(e.target.value)} required>
+          <option value="">Year</option>
+          {years.map((y) => (
+            <option key={y} value={String(y)}>{y}</option>
+          ))}
+        </select>
+      </div>
+    </div>
+  );
+}
+
+/** Compose Month/Day/Year selections into a YYYY-MM-DD string, or '' if any
+ *  part is unset (so callers can require a complete date before submit). */
+function composeDob(month: string, day: string, year: string): string {
+  if (!month || !day || !year) return '';
+  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+}
+
 function ErrorBanner({ message }: { message: string }) {
   return (
     <div className="bg-red-950/40 border border-red-900/60 text-red-200 rounded-md px-3 py-2 text-sm">
@@ -333,6 +395,9 @@ export function RegisterPage() {
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
   const [repeatPassword, setRepeatPassword] = useState('');
+  const [dobMonth, setDobMonth] = useState('');
+  const [dobDay, setDobDay] = useState('');
+  const [dobYear, setDobYear] = useState('');
   const [pending, setPending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [searchParams] = useSearchParams();
@@ -372,6 +437,11 @@ export function RegisterPage() {
       repeatRef.current?.focus();
       return;
     }
+    const dateOfBirth = composeDob(dobMonth, dobDay, dobYear);
+    if (!dateOfBirth) {
+      setErr('Enter your date of birth.');
+      return;
+    }
     setPending(true);
     setErr(null);
     try {
@@ -380,6 +450,7 @@ export function RegisterPage() {
         username,
         displayName: displayName || username,
         password,
+        dateOfBirth,
         code: code.trim() || undefined,
       });
       nav(nextPath, { replace: true });
@@ -456,6 +527,14 @@ export function RegisterPage() {
             </span>
           )}
         </div>
+        <DateOfBirthField
+          month={dobMonth}
+          day={dobDay}
+          year={dobYear}
+          onMonth={setDobMonth}
+          onDay={setDobDay}
+          onYear={setDobYear}
+        />
         <Field
           label="Invite code"
           value={code}

@@ -5,6 +5,7 @@ import {
   boolean,
   integer,
   timestamp,
+  date,
   primaryKey,
   uniqueIndex,
   index,
@@ -37,6 +38,12 @@ export const users = pgTable(
     /** Free-form display name. */
     displayName: text('display_name').notNull(),
     passwordHash: text('password_hash').notNull(),
+    /** Date of birth (YYYY-MM-DD), collected at signup. Drives the 13+ age
+        gate and the minor-supervision lifecycle (13–17 supervised, released
+        at 18 — age is derived from this on the fly, no separate flag). Stored
+        as a SQL `date` (no time/zone). Nullable: accounts created before this
+        field have none on record; new signups always supply it. */
+    dateOfBirth: date('date_of_birth'),
     avatarUrl: text('avatar_url'),
     bannerUrl: text('banner_url'),
     bio: text('bio'),
