@@ -82,6 +82,36 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
   // case); the modal still renders so an attentive user can answer.
   const ringing =
     getNotifyPrefs().notifyCalls && !!other && !myInThis && !declinedRef.current;
+  // Caller's display name, derived at render so the desktop notification can
+  // re-issue with the fresh name if the caller updates their profile mid-ring.
+  const callerName =
+    (other && (state.usersById[other.userId]?.displayName || state.usersById[other.userId]?.username)) ||
+    'Someone';
+
+  // Ringtone AUDIO — keyed on `ringing` only, so a caller-name change can't
+  // restart the sound (a phantom re-ring).
+  useEffect(() => {
+    if (!ringing) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { isNative } = await import('../lib/native');
+        if (isNative() || cancelled) return;
+      } catch {
+        // not native — proceed with the web ringtone
+      }
+      if (!cancelled) startRingtone();
+    })();
+    return () => {
+      cancelled = true;
+      stopRingtone();
+    };
+  }, [ringing]);
+
+  // Desktop pop-up (Electron only). Separate effect keyed ALSO on callerName so
+  // it closes + re-issues with the correct name when the caller's profile loads
+  // / changes mid-ring — without touching the audio above. (The Notification API
+  // can't update body text in place; close + recreate is the only way.)
   useEffect(() => {
     if (!ringing) return;
     let cancelled = false;
@@ -91,15 +121,9 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
         const { isNative } = await import('../lib/native');
         if (isNative() || cancelled) return;
       } catch {
-        // not native — proceed with the web ringtone
+        // not native
       }
-      if (!cancelled) startRingtone();
-      // Native desktop pop-up for the incoming call (Electron only).
       if (!cancelled) {
-        const callerName =
-          (other && state.usersById[other.userId]?.displayName) ||
-          (other && state.usersById[other.userId]?.username) ||
-          'Someone';
         callNotification = showDesktopNotification({
           title: 'Incoming call',
           body: `${callerName} is calling…`,
@@ -110,7 +134,6 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
     })();
     return () => {
       cancelled = true;
-      stopRingtone();
       if (callNotification) {
         try {
           callNotification.close();
@@ -119,7 +142,7 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
         }
       }
     };
-  }, [ringing]);
+  }, [ringing, callerName, channel.id]);
 
   // Native iOS CallKit presentation. When running inside the
   // Capacitor shell, fire the system incoming-call UI so the
@@ -177,7 +200,7 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
   useEffect(() => {
     if (!other) return;
     let cancelled = false;
-    let unsub: (() => void) | undefined;
+    let unsub: (() => void) | null = null;
     void (async () => {
       try {
         const { onCallAnswered, isNative } = await import('../lib/native');
@@ -185,14 +208,22 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
         unsub = await onCallAnswered(() => {
           acceptRef.current();
         });
-        if (cancelled) unsub();
+        // If we were torn down while subscribing, unsubscribe now and null it
+        // so the cleanup below can't double-call.
+        if (cancelled) {
+          unsub();
+          unsub = null;
+        }
       } catch {
         // ignore — the in-app Answer button still works
       }
     })();
     return () => {
       cancelled = true;
-      unsub?.();
+      if (unsub) {
+        unsub();
+        unsub = null;
+      }
     };
   }, [other, channel.id]);
 
@@ -224,7 +255,7 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
   if (declinedRef.current) return null;
 
   const caller = state.usersById[other.userId];
-  const callerName = caller?.displayName || caller?.username || 'Someone';
+  // callerName is derived once above (used by the ringtone/notification effects).
   const initials = callerName.slice(0, 1).toUpperCase();
   const tone = avatarColor(other.userId);
 

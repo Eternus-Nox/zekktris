@@ -392,7 +392,12 @@ voiceRouter.post(
     // Declining is a FORCED removal of the caller — evict them from the SFU
     // too, or a declined caller whose client doesn't process the leave event
     // (suspended socket) keeps streaming and ringing into a dead call.
-    const result = await voice.leaveVoice(otherUserId, { evictFromSfu: true });
+    const result = await voice.leaveVoice(otherUserId, {
+      evictFromSfu: true,
+      // Only evict from the channel we verified above — not one they may have
+      // raced into since.
+      expectedChannelId: channelId,
+    });
     if (result.priorState) {
       dispatch.voiceStateUpdate({
         guildId: result.priorState.guildId,

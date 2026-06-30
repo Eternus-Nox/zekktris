@@ -467,11 +467,21 @@ async function sfuRemoveParticipant(row: schema.VoiceState): Promise<void> {
 
 export async function leaveVoice(
   userId: bigint,
-  opts?: { evictFromSfu?: boolean },
+  opts?: { evictFromSfu?: boolean; expectedChannelId?: bigint },
 ): Promise<LeaveVoiceResult> {
+  // When `expectedChannelId` is given, only remove the user if they're still in
+  // THAT channel — so a forced leave (decline/kick) can't evict them from a
+  // different channel they raced into between the caller's check and this call.
   const [priorState] = await db
     .delete(schema.voiceStates)
-    .where(eq(schema.voiceStates.userId, userId))
+    .where(
+      opts?.expectedChannelId !== undefined
+        ? and(
+            eq(schema.voiceStates.userId, userId),
+            eq(schema.voiceStates.channelId, opts.expectedChannelId),
+          )
+        : eq(schema.voiceStates.userId, userId),
+    )
     .returning();
   if (!priorState) {
     return { priorState: null, systemCallMessage: null, systemCallChannelId: null };
@@ -556,11 +566,15 @@ async function endDmCallBookkeeping(
   const initiatorId = channelRow.initiatorId ?? leaverId;
 
   // Clear columns BEFORE writing so a retry can't double-write (a lost
-  // message is better than duplicate records). The IS NOT NULL guard +
-  // RETURNING makes the clear the gate: when both participants hang up
-  // near-simultaneously, both can observe remaining=0 above, but exactly
-  // one concurrent leaver wins this conditional UPDATE — the loser sees
-  // zero rows and skips the system_call write instead of duplicating it.
+  // message is better than duplicate records). The guard is keyed on the
+  // SPECIFIC call we're ending (`dmActiveCallStartedAt === channelRow.startedAt`),
+  // not just IS NOT NULL, which makes it the gate on TWO fronts:
+  //   - Two leavers of the SAME call both observe remaining=0; exactly one wins
+  //     this conditional UPDATE (matches the timestamp), the loser matches 0
+  //     rows and skips the system_call write — no duplicate record.
+  //   - A NEW call that started in this DM between our remaining-check and now
+  //     carries a DIFFERENT startedAt, so this UPDATE matches 0 rows and can't
+  //     clobber the new call's freshly-stamped columns.
   const cleared = await db
     .update(schema.channels)
     .set({
@@ -571,7 +585,7 @@ async function endDmCallBookkeeping(
     .where(
       and(
         eq(schema.channels.id, channelId),
-        isNotNull(schema.channels.dmActiveCallStartedAt),
+        eq(schema.channels.dmActiveCallStartedAt, channelRow.startedAt),
       ),
     )
     .returning({ id: schema.channels.id });

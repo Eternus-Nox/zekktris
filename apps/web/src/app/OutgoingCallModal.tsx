@@ -101,6 +101,10 @@ export function OutgoingCallModal({ channel }: { channel: Channel }) {
       }
       if (endedOk) toasts.push('Call ended', 'info');
     } finally {
+      // Stop the ringback audio defensively: if leaveVoice() failed, the server
+      // row persists → `ringing` stays true → the effect's cleanup never fires,
+      // so the ring would play indefinitely. stopRingback() is idempotent.
+      stopRingback();
       setBusy(false);
     }
   }
