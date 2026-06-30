@@ -46,6 +46,8 @@ import {
   formatKeyCode,
   getAudioMode,
   getPttKey,
+  getDeafenKey,
+  setDeafenKey,
   getSavedInputDeviceId,
   getSavedOutputDeviceId,
   getSavedCameraQuality,
@@ -832,6 +834,9 @@ function VoiceDeviceSettings() {
   const [mode, setMode] = useState<AudioMode>(getAudioMode());
   const [pttKey, setPttKeyState] = useState<string>(getPttKey());
   const [bindingKey, setBindingKey] = useState(false);
+  // Deafen hotkey (F7). Opt-in — empty string means unbound/disabled.
+  const [deafenKey, setDeafenKeyState] = useState<string>(getDeafenKey());
+  const [bindingDeafen, setBindingDeafen] = useState(false);
 
   // Capture the next key while the rebind UI is active. We use the
   // physical `code` (not `key`) so layouts don't matter — pressing
@@ -850,6 +855,21 @@ function VoiceDeviceSettings() {
     window.addEventListener('keydown', handler, { capture: true });
     return () => window.removeEventListener('keydown', handler, { capture: true });
   }, [bindingKey]);
+
+  // Same capture flow for the deafen hotkey, except Escape CLEARS the
+  // binding (the hotkey is opt-in, so Escape doubles as "disable it").
+  useEffect(() => {
+    if (!bindingDeafen) return;
+    const handler = (e: KeyboardEvent) => {
+      e.preventDefault();
+      const next = e.code === 'Escape' ? '' : e.code;
+      setDeafenKey(next);
+      setDeafenKeyState(next);
+      setBindingDeafen(false);
+    };
+    window.addEventListener('keydown', handler, { capture: true });
+    return () => window.removeEventListener('keydown', handler, { capture: true });
+  }, [bindingDeafen]);
 
   const refresh = async () => {
     try {
@@ -1093,6 +1113,32 @@ function VoiceDeviceSettings() {
             </span>
           </label>
         )}
+      </div>
+
+      {/* ── Deafen hotkey (F7) ──────────────────────────────────────── */}
+      <div className="pt-3 border-t border-line space-y-2">
+        <span className="text-xs text-ink-2 font-medium">Deafen hotkey</span>
+        <p className="text-xs text-ink-3">
+          A single key to toggle deafen while in a call — works from any screen.
+          Optional; leave unset to disable.
+        </p>
+        <label className="block">
+          <button
+            type="button"
+            onClick={() => setBindingDeafen(true)}
+            className={`mt-1 w-full px-3 py-2 bg-bg-1 border rounded-md text-sm text-left transition-colors ${
+              bindingDeafen ? 'border-accent ring-1 ring-accent/40' : 'border-line'
+            }`}
+          >
+            {bindingDeafen ? (
+              'Press any key… (Esc to clear)'
+            ) : deafenKey ? (
+              <span className="font-mono">{formatKeyCode(deafenKey)}</span>
+            ) : (
+              <span className="text-ink-3">Not set</span>
+            )}
+          </button>
+        </label>
       </div>
     </div>
   );

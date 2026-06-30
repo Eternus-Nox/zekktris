@@ -957,16 +957,46 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
       publishSpeakers(next);
     });
   };
+  // Per-participant connection quality (F5). LiveKit continuously
+  // re-estimates each link's health and fires ConnectionQualityChanged
+  // on every transition; we read `p.connectionQuality` and surface it
+  // per tile as signal bars. We track remotes AND the local participant
+  // (the SDK reports the local uplink quality too), seeding each with
+  // its current value on attach so a tile whose quality never changes
+  // still gets an initial reading.
+  type QualityParticipant = {
+    identity: string;
+    connectionQuality?: unknown;
+    on(ev: unknown, fn: () => void): void;
+  };
+  const attachQualityListener = (p: QualityParticipant) => {
+    const update = () => {
+      const next = new Map(currentQuality);
+      next.set(p.identity, normalizeVoiceQuality(p.connectionQuality));
+      publishQuality(next);
+    };
+    p.on(ParticipantEvent.ConnectionQualityChanged, update);
+    update();
+  };
+
   // Wire up any remotes that were already present when we connected
   // (the ParticipantConnected event won't fire retroactively for them).
-  for (const [, p] of r.remoteParticipants as Map<string, SpeakingParticipant>) {
+  for (const [, p] of r.remoteParticipants as Map<string, SpeakingParticipant & QualityParticipant>) {
     attachSpeakingListener(p);
+    attachQualityListener(p);
   }
+  attachQualityListener(r.localParticipant as unknown as QualityParticipant);
   r.on(RoomEvent.ParticipantConnected, ((p: unknown) => {
     attachSpeakingListener(p as SpeakingParticipant);
+    attachQualityListener(p as QualityParticipant);
   }) as never);
   r.on(RoomEvent.ParticipantDisconnected, ((p: unknown) => {
     const identity = (p as { identity: string }).identity;
+    if (currentQuality.has(identity)) {
+      const nextQ = new Map(currentQuality);
+      nextQ.delete(identity);
+      publishQuality(nextQ);
+    }
     if (!currentSpeakers.has(identity)) return;
     const next = new Set(currentSpeakers);
     next.delete(identity);
@@ -1753,6 +1783,7 @@ export async function disconnectVoice(opts: { keepAudioContext?: boolean } = {})
   // Clear pub/sub state so the UI's voice-view drops empty.
   publishSpeakers(new Set());
   publishTracks([]);
+  publishQuality(new Map());
   publishConnectionState('disconnected');
   deafenedFlag = false;
 }
@@ -1982,13 +2013,40 @@ type TrackListener = (tracks: VoiceTrackInfo[]) => void;
 export type VoiceConnectionState = 'connected' | 'reconnecting' | 'disconnected';
 type ConnectionStateListener = (state: VoiceConnectionState) => void;
 
+/** Per-user LiveKit connection quality, surfaced on voice tiles as
+    signal bars. Mirrors the SDK's ConnectionQuality enum; `unknown`
+    covers the brief window before LiveKit has an estimate. Keyed by
+    userId (= participant identity = snowflake string). */
+export type VoiceQuality = 'excellent' | 'good' | 'poor' | 'lost' | 'unknown';
+type QualityListener = (quality: Map<string, VoiceQuality>) => void;
+
 const speakerListeners = new Set<SpeakerListener>();
 const trackListeners = new Set<TrackListener>();
 const connectionStateListeners = new Set<ConnectionStateListener>();
+const qualityListeners = new Set<QualityListener>();
 let currentSpeakers: Set<string> = new Set();
 let remoteSpeakingPollInterval: number | null = null;
 let currentTracks: VoiceTrackInfo[] = [];
 let currentConnectionState: VoiceConnectionState = 'disconnected';
+let currentQuality: Map<string, VoiceQuality> = new Map();
+
+/** Coerce the SDK's ConnectionQuality (a string enum) into our union,
+    defaulting anything unexpected to 'unknown' so a future SDK value
+    can't leak through as an untyped string. */
+function normalizeVoiceQuality(q: unknown): VoiceQuality {
+  switch (q) {
+    case 'excellent':
+      return 'excellent';
+    case 'good':
+      return 'good';
+    case 'poor':
+      return 'poor';
+    case 'lost':
+      return 'lost';
+    default:
+      return 'unknown';
+  }
+}
 
 // ── Remote-track WebAudio speaker probes ───────────────────────────────────
 //
@@ -2158,6 +2216,20 @@ function publishConnectionState(state: VoiceConnectionState): void {
   if (state === currentConnectionState) return;
   currentConnectionState = state;
   for (const l of connectionStateListeners) l(state);
+}
+
+export function subscribeConnectionQuality(listener: QualityListener): () => void {
+  qualityListeners.add(listener);
+  return () => {
+    qualityListeners.delete(listener);
+  };
+}
+export function getConnectionQuality(): Map<string, VoiceQuality> {
+  return currentQuality;
+}
+function publishQuality(m: Map<string, VoiceQuality>): void {
+  currentQuality = m;
+  for (const l of qualityListeners) l(m);
 }
 
 function publishSpeakers(s: Set<string>): void {
@@ -2443,6 +2515,40 @@ export function setPttKey(code: string): void {
   } catch {}
 }
 
+// ── Deafen hotkey (F7) ───────────────────────────────────────────────────────
+//
+// A single configured key toggles deafen while in a call. Opt-in — the
+// default is the empty string (disabled), so a stray keypress can't deafen
+// someone who never bound it. Storage key 'zekktris.audio.deafenKey', a
+// KeyboardEvent.code (same rationale as the PTT key: layout-independent).
+//
+// The keydown is handled inside the same global listener as PTT (installed
+// once per session in installPttListeners), so the hotkey works from any
+// view while a call is live — not just the voice screen. The actual toggle
+// is delegated to a handler the voice UI registers, so it runs the FULL
+// deafen flow (mute coupling + server sync so other participants see the
+// deaf/mute icons). If no UI is mounted, we fall back to a local-only
+// setDeafened (deafens incoming audio without the server round-trip).
+const STORAGE_DEAFEN_KEY = 'zekktris.audio.deafenKey';
+export function getDeafenKey(): string {
+  try {
+    return localStorage.getItem(STORAGE_DEAFEN_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+export function setDeafenKey(code: string): void {
+  try {
+    localStorage.setItem(STORAGE_DEAFEN_KEY, code);
+  } catch {}
+}
+let deafenHotkeyHandler: (() => void) | null = null;
+/** Register the full deafen-toggle handler (mute coupling + server sync).
+    The voice UI sets this on mount and clears it on unmount. */
+export function setDeafenHotkeyHandler(fn: (() => void) | null): void {
+  deafenHotkeyHandler = fn;
+}
+
 let pttKeyDown = false;
 let pttListenersInstalled = false;
 
@@ -2457,6 +2563,16 @@ function installPttListeners(): void {
     if (target) {
       const tag = target.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return;
+    }
+    // Deafen hotkey (F7): works in any audio mode, only while in a call.
+    // Opt-in — empty key disables it. Delegates to the registered full
+    // toggle (server sync) when the voice UI is mounted, else local-only.
+    const deafenKey = getDeafenKey();
+    if (deafenKey && room && e.code === deafenKey) {
+      e.preventDefault();
+      if (deafenHotkeyHandler) deafenHotkeyHandler();
+      else void setDeafened(!deafenedFlag);
+      return;
     }
     if (getAudioMode() !== 'ptt') return;
     if (e.code !== getPttKey()) return;

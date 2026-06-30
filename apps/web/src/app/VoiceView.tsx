@@ -60,10 +60,14 @@ import {
   getCurrentTracks,
   subscribeConnectionState,
   getConnectionState,
+  subscribeConnectionQuality,
+  getConnectionQuality,
+  setDeafenHotkeyHandler,
   prepareVoiceAudio,
   VoiceError,
   type VoiceTrackInfo,
   type VoiceConnectionState,
+  type VoiceQuality,
 } from '../lib/voice';
 
 /**
@@ -230,6 +234,7 @@ export function VoiceView({
   const speakers = useSpeakers();
   const tracks = useTracks();
   const connState = useVoiceConnectionState();
+  const quality = useConnectionQuality();
 
   const [cameraOn, setCameraOn] = useState(false);
   const [screenOn, setScreenOn] = useState(false);
@@ -483,6 +488,20 @@ export function VoiceView({
       toasts.push(e instanceof ApiError ? e.message : 'Deafen sync failed', 'error');
     }
   }
+
+  // Deafen hotkey (F7) wiring. The global keydown listener lives in
+  // voice.ts (so the hotkey works from any view while a call is live);
+  // it calls back into this full toggle so the server + other tiles
+  // stay in sync. A ref keeps the latest closure (deafened/myVoice)
+  // without rebinding the global listener on every toggle.
+  const toggleDeafenRef = useRef(toggleDeafen);
+  toggleDeafenRef.current = toggleDeafen;
+  useEffect(() => {
+    setDeafenHotkeyHandler(() => {
+      void toggleDeafenRef.current();
+    });
+    return () => setDeafenHotkeyHandler(null);
+  }, []);
 
   // In-flight guard refs. setScreenShareEnabled / setCameraEnabled can
   // take 500ms-3s to resolve (OS picker, encoder negotiation). Without
@@ -851,6 +870,7 @@ export function VoiceView({
                         speaking={speakers.has(p.userId)}
                         muted={p.selfMute}
                         deaf={p.selfDeaf}
+                        quality={quality.get(p.userId)}
                         compact
                         isSelf={p.userId === user?.id}
                       />
@@ -1033,6 +1053,7 @@ export function VoiceView({
                           speaking={speakers.has(p.userId)}
                           muted={p.selfMute}
                           deaf={p.selfDeaf}
+                          quality={quality.get(p.userId)}
                           isSelf={isMe}
                           unwatchedStreams={unwatchedByUser.get(p.userId)}
                           onJoinStream={startViewing}
@@ -1205,6 +1226,7 @@ const ParticipantTile = memo(function ParticipantTile({
   compact,
   avatarUrl,
   hideName,
+  quality,
   unwatchedStreams,
   onJoinStream,
 }: {
@@ -1214,6 +1236,10 @@ const ParticipantTile = memo(function ParticipantTile({
   muted: boolean;
   deaf: boolean;
   isSelf?: boolean;
+  /** LiveKit connection quality for this participant (F5), rendered as
+      signal bars in the tile corner. Undefined / 'unknown' renders no
+      indicator (no estimate yet). */
+  quality?: VoiceQuality;
   /** When true, render as a small dock-style tile at the bottom rather
       than a full grid cell. Used when a featured video area is present. */
   compact?: boolean;
@@ -1375,6 +1401,11 @@ const ParticipantTile = memo(function ParticipantTile({
             <VolumeXIcon size={10} />
           </span>
         )}
+        {/* Connection-quality signal bars (F5), top-right corner. Hidden
+            while quality is unknown so a healthy call stays uncluttered. */}
+        <span className="absolute top-0 right-0">
+          <QualityBars quality={quality} />
+        </span>
       </div>
       {!hideName && (
         <span className="text-[0.7rem] sm:text-sm text-ink-1 truncate max-w-full leading-tight text-center">
@@ -1871,6 +1902,58 @@ function useVoiceConnectionState(): VoiceConnectionState {
     subscribeConnectionState,
     () => getConnectionState(),
     () => 'disconnected' as VoiceConnectionState,
+  );
+}
+
+const EMPTY_QUALITY: Map<string, VoiceQuality> = new Map();
+function useConnectionQuality(): Map<string, VoiceQuality> {
+  return useSyncExternalStore(
+    subscribeConnectionQuality,
+    () => getConnectionQuality(),
+    () => EMPTY_QUALITY,
+  );
+}
+
+// ── Connection-quality signal bars (F5) ──────────────────────────────────────
+//
+// Three ascending bars whose lit count + color reflect the LiveKit
+// ConnectionQuality for a participant: excellent = 3 green, good = 2
+// amber, poor = 1 red, lost = 0 (hollow red). 'unknown' renders nothing
+// (no estimate yet) so a healthy call isn't peppered with placeholder
+// icons. Purely informational — pointer-events off, sits in a tile corner.
+function QualityBars({ quality }: { quality: VoiceQuality | undefined }) {
+  if (!quality || quality === 'unknown') return null;
+  const lit = quality === 'excellent' ? 3 : quality === 'good' ? 2 : quality === 'poor' ? 1 : 0;
+  const color =
+    quality === 'excellent'
+      ? 'rgb(74 222 128)' // green-400
+      : quality === 'good'
+        ? 'rgb(250 204 21)' // yellow-400
+        : 'rgb(248 113 113)'; // red-400 (poor / lost)
+  const label =
+    quality === 'lost' ? 'Connection lost' : `Connection: ${quality}`;
+  return (
+    <div
+      className="flex items-end gap-[2px] pointer-events-none"
+      style={{ height: 12 }}
+      title={label}
+      aria-label={label}
+      role="img"
+    >
+      {[0, 1, 2].map((i) => (
+        <div
+          key={i}
+          style={{
+            width: 3,
+            height: 4 + i * 4,
+            borderRadius: 1,
+            background: i < lit ? color : 'transparent',
+            border: `1px solid ${i < lit ? color : 'rgb(248 113 113 / 0.45)'}`,
+            boxSizing: 'border-box',
+          }}
+        />
+      ))}
+    </div>
   );
 }
 

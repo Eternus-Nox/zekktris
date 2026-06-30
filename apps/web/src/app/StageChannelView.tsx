@@ -324,6 +324,16 @@ export function StageChannelView({ channel }: { channel: Channel }) {
                         <span aria-hidden>{initials}</span>
                         <AvatarImage src={u?.avatarUrl ?? null} />
                       </div>
+                      {/* Speaker role badge (F4) — a mic marker echoing the
+                          audience hand badge, so a tile's role reads at a
+                          glance even out of section context. */}
+                      <span
+                        className="absolute -bottom-0.5 -right-0.5 w-5 h-5 bg-bg-1 rounded-full flex items-center justify-center"
+                        aria-label="Speaker"
+                        title="Speaker"
+                      >
+                        <Mic size={11} className="text-accent" />
+                      </span>
                     </div>
                     <span className="text-xs text-ink-1 truncate max-w-full text-center">
                       {u?.displayName ?? '…'}
