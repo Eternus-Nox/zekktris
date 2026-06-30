@@ -29,7 +29,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ApiError, type InvitePreview } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { avatarColor, avatarInitials } from '../lib/avatar';
-import { UserPlus } from '../lib/icons';
+import { UserPlus, ExternalLink } from '../lib/icons';
 
 export function InvitePage() {
   const { code } = useParams<{ code: string }>();
@@ -152,11 +152,29 @@ export function InvitePage() {
 
   return (
     <Frame inShell={inShell}>
+      {/* Jump-to-desktop affordance (matches the mockup). The desktop app
+          registers the zekktris:// scheme, so this deep-links the invite
+          straight into the installed app. Anonymous landing only — an
+          authenticated web user is already where they want to be. */}
+      {!inShell && (
+        <a
+          href={`zekktris://invite/${code}`}
+          className="flex items-center justify-between gap-3 mb-5 rounded-lg border px-4 py-3 bg-bg-1/50 hover:bg-bg-1/70 transition-colors"
+          style={{ borderColor: 'var(--zk-line)' }}
+        >
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-ink-1">Open in Zekktris for desktop</div>
+            <div className="text-xs text-ink-3">Jump straight to the app to continue.</div>
+          </div>
+          <span className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-gradient-to-br from-accent to-accent-2 text-bg-0 text-sm font-semibold">
+            <ExternalLink size={14} /> Open Zekktris
+          </span>
+        </a>
+      )}
       {/* Banner — 16:9 to match the in-app guild banner shape on the
           channel list. Falls back to a tinted block when no banner
-          is set. object-cover for a polished marketing-card feel on
-          this surface (the live channel-list render also covers). */}
-      <div className={`-mx-8 -mt-2 mb-6 aspect-[16/9] ${preview.guild.bannerUrl ? '' : tone} overflow-hidden`}>
+          is set. object-cover for a polished marketing-card feel. */}
+      <div className={`mb-5 rounded-lg aspect-[16/9] ${preview.guild.bannerUrl ? '' : tone} overflow-hidden`}>
         {preview.guild.bannerUrl && (
           <img
             src={preview.guild.bannerUrl}
@@ -273,19 +291,28 @@ function Frame({ children, inShell }: { children: React.ReactNode; inShell: bool
       </div>
     );
   }
+  // Anonymous landing — split-panel shell matching the auth screens: a left
+  // brand pillar (desktop) beside the invite content, collapsing to a compact
+  // logo row on mobile. The full plasma + starfield sits behind, since this is
+  // often a user's first look at a Zekktris instance before they sign in.
   return (
-    <div className="min-h-screen flex items-center justify-center bg-bg-1 px-4 safe-area-padded relative overflow-hidden">
-      {/* Same ambient abyss as the auth screens — invite landings
-          are also a "first impression" surface (often a user's first
-          look at a Zekktris instance before they sign in), so they
-          get the full plasma + starfield treatment behind the card. */}
+    <div className="min-h-screen flex items-center justify-center bg-bg-1 px-4 py-8 safe-area-padded relative overflow-hidden">
       <div className="abyss" aria-hidden />
-      <div className="w-full max-w-md glass glass-edge rounded-xl px-8 pt-2 pb-8 shadow-2xl overflow-hidden relative z-10">
-        <div className="mb-2 flex items-center justify-center gap-3 pt-4">
-          <img src="/icon.svg?v=zk1" alt="" className="w-8 h-8 shrink-0" draggable={false} />
-          <span className="text-base font-semibold tracking-tight text-ink-1">Zekktris</span>
+      <div className="relative z-10 w-full max-w-3xl grid md:grid-cols-2 glass glass-edge rounded-2xl overflow-hidden shadow-2xl">
+        <div
+          className="hidden md:flex flex-col items-center justify-center gap-4 p-10 border-r"
+          style={{ borderColor: 'var(--zk-line-soft)' }}
+        >
+          <img src="/icon.svg?v=zk1" alt="" className="w-24 h-24 shrink-0" draggable={false} />
+          <span className="text-3xl font-bold tracking-tight text-ink-1">Zekktris</span>
         </div>
-        {children}
+        <div className="p-8 sm:p-10">
+          <div className="md:hidden flex items-center justify-center gap-2 mb-6">
+            <img src="/icon.svg?v=zk1" alt="" className="w-8 h-8 shrink-0" draggable={false} />
+            <span className="text-xl font-bold tracking-tight text-ink-1">Zekktris</span>
+          </div>
+          {children}
+        </div>
       </div>
     </div>
   );
