@@ -36,7 +36,7 @@ import type {
 } from '@zekktris/shared/events';
 import { verifyAccessToken } from '../auth/tokens';
 import { db, schema } from '../db';
-import { and, eq, ne } from 'drizzle-orm';
+import { and, eq, inArray, ne } from 'drizzle-orm';
 import { log } from '../log';
 import { Connection } from './connection';
 import { registry } from './registry';
@@ -193,21 +193,26 @@ export function attachGateway(httpServer: HttpServer): void {
           .delete(schema.stageParticipants)
           .where(eq(schema.stageParticipants.userId, userId))
           .returning({ channelId: schema.stageParticipants.channelId });
-        for (const r of removedStage) {
-          const [ch] = await db
-            .select({ guildId: schema.channels.guildId })
+        if (removedStage.length > 0) {
+          // Batch the channel→guild lookups (was one query per removed row) and
+          // hoist the dynamic imports out of the loop.
+          const stageChannels = await db
+            .select({ id: schema.channels.id, guildId: schema.channels.guildId })
             .from(schema.channels)
-            .where(eq(schema.channels.id, r.channelId))
-            .limit(1);
-          if (!ch?.guildId) continue;
+            .where(inArray(schema.channels.id, removedStage.map((r) => r.channelId)));
+          const guildByChannel = new Map(stageChannels.map((c) => [c.id, c.guildId]));
           const stageSvc = await import('../services/stage');
           const { toStageParticipant } = await import('../lib/dto');
-          const remaining = await stageSvc.listParticipants(r.channelId);
-          dispatch.stageParticipantsUpdate({
-            guildId: ch.guildId,
-            channelId: r.channelId,
-            participants: remaining.map(toStageParticipant),
-          });
+          for (const r of removedStage) {
+            const guildId = guildByChannel.get(r.channelId);
+            if (!guildId) continue;
+            const remaining = await stageSvc.listParticipants(r.channelId);
+            dispatch.stageParticipantsUpdate({
+              guildId,
+              channelId: r.channelId,
+              participants: remaining.map(toStageParticipant),
+            });
+          }
         }
       } catch (err) {
         log.warn('gateway: stage cleanup on disconnect failed', {

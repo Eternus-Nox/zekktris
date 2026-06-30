@@ -83,6 +83,9 @@ export class GatewayClient {
   /** Status change subscribers. */
   private statusHandlers = new Set<(s: ConnectionStatus) => void>();
   private lastSeq: number | null = null;
+  /** Reused for binary frames — TextDecoder is stateless, so one instance
+      avoids allocating a fresh decoder per ArrayBuffer message. */
+  private readonly decoder = new TextDecoder();
   /**
    * Logical session id from the last READY/RESUMED. Persisted across socket
    * drops so a reconnect can attempt RESUME; cleared on intentional stop or
@@ -311,7 +314,7 @@ export class GatewayClient {
   private handleFrame(raw: unknown): void {
     let frame: GatewayFrame;
     try {
-      const text = typeof raw === 'string' ? raw : new TextDecoder().decode(raw as ArrayBuffer);
+      const text = typeof raw === 'string' ? raw : this.decoder.decode(raw as ArrayBuffer);
       frame = JSON.parse(text) as GatewayFrame;
     } catch {
       this.log('warn', 'gateway: malformed frame');

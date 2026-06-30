@@ -476,16 +476,34 @@ function reconcileCategoryVisibility(
  * set (matches listViewableGuildChannelIds returning []).
  */
 /**
- * Snowflake ids of guild members who can VIEW a channel — the audience for an
- * @everyone mention. Loads the guild's member ids then filters by the batched
+ * Short-TTL cache for `listChannelViewerIds`. The ONLY caller is the notification
+ * push fan-out (one per guild message), which uses it purely to pick the push
+ * AUDIENCE — never for access control. So bounded staleness is safe: a member
+ * who just joined/gained-view misses pushes for at most TTL, and one who just
+ * left/lost-view may get them for at most TTL. A TTL (vs. event-based
+ * invalidation) sidesteps any missed-invalidation correctness bug — there are
+ * many ways the viewer set changes (role grant/revoke, override edit, member
+ * join/leave/kick/ban, channel create/delete) and a TTL covers them all.
+ */
+const VIEWER_CACHE_TTL_MS = 30_000;
+const channelViewerCache = new Map<string, { ids: bigint[]; expiresAt: number }>();
+
+/**
+ * Snowflake ids of guild members who can VIEW a channel — the audience for a
+ * guild-message push. Loads the guild's member ids then filters by the batched
  * viewability resolver, so members who can't see the channel (private/mod
- * channels) are never notified. Permission-gated + rare, so the per-mention
- * cost is acceptable.
+ * channels) are never notified. Cached for {@link VIEWER_CACHE_TTL_MS} since
+ * this now runs on every guild message (see the cache note above).
  */
 export async function listChannelViewerIds(
   guildId: bigint,
   channelId: bigint,
 ): Promise<bigint[]> {
+  const key = `${guildId}:${channelId}`;
+  const now = Date.now();
+  const cached = channelViewerCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.ids;
+
   const members = await db
     .select({ id: schema.guildMembers.userId })
     .from(schema.guildMembers)
@@ -493,7 +511,14 @@ export async function listChannelViewerIds(
   const ids = members.map((m) => m.id);
   if (ids.length === 0) return [];
   const viewable = await listViewableGuildChannelIdsForUsers(guildId, ids);
-  return ids.filter((id) => viewable.get(id)?.has(channelId));
+  const viewers = ids.filter((id) => viewable.get(id)?.has(channelId));
+
+  channelViewerCache.set(key, { ids: viewers, expiresAt: now + VIEWER_CACHE_TTL_MS });
+  // Bound memory: sweep expired entries when the map grows large.
+  if (channelViewerCache.size > 5000) {
+    for (const [k, v] of channelViewerCache) if (v.expiresAt <= now) channelViewerCache.delete(k);
+  }
+  return viewers;
 }
 
 export async function listViewableGuildChannelIdsForUsers(

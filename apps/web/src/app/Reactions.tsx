@@ -18,7 +18,7 @@
  * is fine for the click-feedback budget.
  */
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import type { Message } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
 import { useAppStateSelector } from '../state/AppState';
@@ -28,27 +28,20 @@ import { EmojiPicker } from './EmojiPicker';
 
 const EMOJI_NAME_RE = /^:([a-z0-9_]{2,32}):$/;
 
-export function Reactions({ message }: { message: Message }) {
+export function Reactions({ message, guildId }: { message: Message; guildId?: string }) {
   // Granular subscriptions (was `useAppState()`): a reaction row should not
   // re-render on unrelated dispatches (typing, presence, other channels'
-  // messages). Only these two slices drive its output.
-  const channelsByGuild = useAppStateSelector((v) => v.state.channelsByGuild);
+  // messages).
   const emojisByGuild = useAppStateSelector((v) => v.state.emojisByGuild);
   const restForChannel = useAppStateSelector((v) => v.restForChannel);
   const toasts = useToasts();
   const [pickerOpen, setPickerOpen] = useState(false);
 
-  // Resolve the message's owning guild so we can show custom emoji in
-  // the picker AND render `:name:` reactions as images. DMs have no
-  // guild — guildId stays undefined and the picker omits the Server
-  // section. Iterates each guild's channel list once; we don't have a
-  // global channel cache for v1.
-  const guildId = useMemo(() => {
-    for (const [gid, list] of Object.entries(channelsByGuild)) {
-      if (list.some((c) => c.id === message.channelId)) return gid;
-    }
-    return undefined;
-  }, [channelsByGuild, message.channelId]);
+  // guildId is passed by the parent (MessageItem already knows the channel's
+  // guild) so we can show custom emoji in the picker AND render `:name:`
+  // reactions as images — without re-scanning every guild's channel list on
+  // each reaction-row render (and without subscribing to channelsByGuild, whose
+  // reference churns on every channel event). DMs pass undefined.
   const guildEmojis = guildId ? emojisByGuild[guildId] ?? [] : [];
 
   async function toggle(emoji: string, currentlyMine: boolean) {

@@ -920,7 +920,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
         {/* Mount only when there ARE reactions — the component returns null
             otherwise, but mounting it still cost two state subscriptions + a
             scan per row. The hover "+react" picker is independent (above). */}
-        {message.reactions.length > 0 && <Reactions message={message} />}
+        {message.reactions.length > 0 && <Reactions message={message} guildId={guildId} />}
 
         {/* DM receipt indicator. Renders inside the message bubble at the
             bottom-right so it visually sits below the hover action strip
