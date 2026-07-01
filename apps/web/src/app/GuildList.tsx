@@ -56,6 +56,14 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
   const isAdminActive = location.pathname.startsWith('/admin');
   const isFamilyActive = location.pathname.startsWith('/family');
   const familyEnabled = useParentalControlsEnabled();
+  // Minors always get the Family entry (regardless of the opt-in toggle) so
+  // they can reach the "connect a guardian" flow; an unlinked/locked minor
+  // gets a red attention dot nudging them to do it.
+  const isMinor = useAppStateSelector((v) => v.state.supervision?.isMinor ?? false);
+  const needsGuardian = useAppStateSelector(
+    (v) => v.state.supervision?.restrictedHeavily ?? false,
+  );
+  const showFamilyEntry = familyEnabled || isMinor;
   // Right-click on a guild tile opens GuildInfoCard anchored to the click.
   // We hoist the state here because the cards are owned by GuildList (one
   // can be open at a time across all tiles). The chosen guild is found
@@ -345,20 +353,28 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
               <Shield size={18} />
             </Link>
           )}
-          {/* Family / parental controls — between Admin and Settings.
-              Opt-in: only shown once enabled in Settings (default off). */}
-          {familyEnabled && (
+          {/* Family / parental controls — between Admin and Settings. Opt-in
+              for adults (Settings toggle, default off), but ALWAYS shown to a
+              minor so they can reach the "connect a guardian" flow. A locked
+              (unlinked) minor gets a red attention dot. */}
+          {showFamilyEntry && (
             <Link
               to="/family"
-              title="Family"
-              aria-label="Family"
-              className={`w-12 h-12 zk-squircle flex items-center justify-center transition-all ${
+              title={needsGuardian ? 'Connect a guardian' : 'Family'}
+              aria-label={needsGuardian ? 'Connect a guardian' : 'Family'}
+              className={`relative w-12 h-12 zk-squircle flex items-center justify-center transition-all ${
                 isFamilyActive
                   ? 'bg-gradient-to-br from-accent to-accent-2 text-bg-0 shadow-[0_0_0_1px_var(--accent-glow),0_8px_28px_var(--accent-glow)]'
                   : 'bg-bg-2 hover:bg-accent/20 text-ink-2 hover:text-accent hover:shadow-[inset_0_0_0_1px_var(--accent-glow)]'
               }`}
             >
               <Users size={18} />
+              {needsGuardian && !isFamilyActive && (
+                <span
+                  aria-hidden
+                  className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-red-500 ring-2 ring-bg-1"
+                />
+              )}
             </Link>
           )}
           <Link

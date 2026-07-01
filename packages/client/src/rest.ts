@@ -2998,6 +2998,12 @@ export interface ChildRestrictions {
   allowVideo: boolean;
   allowStream: boolean;
   allowCreateGuild: boolean;
+  /** Accept invites / join discoverable servers. */
+  allowJoinGuilds: boolean;
+  /** Post in server channels. */
+  allowMessaging: boolean;
+  /** Who the child may direct-message. */
+  dmPolicy: 'none' | 'friends' | 'all';
 }
 
 export interface FamilyRequest {

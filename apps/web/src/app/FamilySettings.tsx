@@ -747,6 +747,20 @@ function ChildMonitor({
     }
   };
 
+  const chooseDmPolicy = async (dmPolicy: ChildRestrictions['dmPolicy']) => {
+    if (!restrictions || savingRestr || restrictions.dmPolicy === dmPolicy) return;
+    setRestrictions({ ...restrictions, dmPolicy });
+    setSavingRestr(true);
+    try {
+      const r = await rest.familySetRestrictions(child.id, { dmPolicy });
+      setRestrictions(r.restrictions);
+    } catch {
+      setRestrictions(restrictions); // revert
+    } finally {
+      setSavingRestr(false);
+    }
+  };
+
   const toggleGuildBlock = async (g: FamilyChildGuild) => {
     if (!guilds) return;
     const next = guilds.map((x) => (x.id === g.id ? { ...x, blocked: !x.blocked } : x));
@@ -1021,6 +1035,8 @@ function ChildMonitor({
                 { key: 'allowVoice', label: 'Voice calls' },
                 { key: 'allowVideo', label: 'Video' },
                 { key: 'allowStream', label: 'Screen sharing' },
+                { key: 'allowJoinGuilds', label: 'Join servers' },
+                { key: 'allowMessaging', label: 'Send messages in servers' },
                 { key: 'allowCreateGuild', label: 'Create servers' },
               ] as const
             ).map((r) => {
@@ -1050,6 +1066,40 @@ function ChildMonitor({
                 </div>
               );
             })}
+
+            {/* Direct messages — a 3-way policy, not a simple on/off. */}
+            <div className="pt-3 space-y-1.5">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
+                Direct messages
+              </h4>
+              <div className="flex gap-1.5">
+                {(
+                  [
+                    { value: 'none', label: 'No DMs' },
+                    { value: 'friends', label: 'Friends only' },
+                    { value: 'all', label: 'Anyone' },
+                  ] as const
+                ).map((opt) => {
+                  const active = restrictions.dmPolicy === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      disabled={savingRestr}
+                      aria-pressed={active}
+                      onClick={() => void chooseDmPolicy(opt.value)}
+                      className={`flex-1 text-sm px-2 py-1.5 rounded-md border transition-colors disabled:opacity-50 ${
+                        active
+                          ? 'border-accent bg-accent/10 text-accent'
+                          : 'border-line bg-bg-2 text-ink-2 hover:border-accent/40'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
 
             <div className="pt-3 space-y-1.5">
               <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
