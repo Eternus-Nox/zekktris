@@ -358,6 +358,15 @@ export class RestClient {
   }
 
   /**
+   * One-time self-service date-of-birth set / correction. Allowed only while
+   * `canChangeDob` is true; it re-locks after a successful change. Dedicated
+   * endpoint (not patchMe) because it's gated + single-use.
+   */
+  updateDateOfBirth(dateOfBirth: string): Promise<{ user: SelfUser }> {
+    return this.request('PATCH', '/users/@me/date-of-birth', { dateOfBirth });
+  }
+
+  /**
    * Persist the user's preferred guild rail ordering. Accepts the
    * FULL ordered list — not deltas — because the list is small and
    * the client always knows the canonical order it wants.
@@ -2696,6 +2705,11 @@ export class RestClient {
 
   adminUnbanUser(userId: string): Promise<{ ok: boolean }> {
     return this.request('POST', `/admin/users/${userId}/unban`);
+  }
+
+  /** Reopen a user's one-time date-of-birth change (e.g. wrong age at signup). */
+  adminResetDobLock(userId: string): Promise<{ ok: boolean }> {
+    return this.request('POST', `/admin/users/${userId}/reset-dob-lock`);
   }
 
   adminSetUserAdmin(userId: string, isAdmin: boolean): Promise<{ ok: boolean }> {

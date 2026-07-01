@@ -623,6 +623,18 @@ function UsersTab() {
     }
   }
 
+  async function resetDob(u: AdminUser) {
+    setPending(u.id);
+    try {
+      await rest.adminResetDobLock(u.id);
+      toasts.push(`${u.username} can change their date of birth once more`, 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Reset failed', 'error');
+    } finally {
+      setPending(null);
+    }
+  }
+
   async function removeUser(u: AdminUser) {
     if (
       !window.confirm(
@@ -740,6 +752,14 @@ function UsersTab() {
                         Sign out
                       </button>
                     )}
+                    <button
+                      onClick={() => resetDob(u)}
+                      disabled={pending === u.id}
+                      className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors"
+                      title="Let this user change their date of birth once more"
+                    >
+                      Reset DOB
+                    </button>
                     <button
                       onClick={() => toggleBan(u)}
                       disabled={pending === u.id}

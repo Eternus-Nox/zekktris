@@ -126,6 +126,13 @@ export interface SelfUser extends PublicUser {
       Toggle via `updateMe({ allowDmsFromServerMembers })`. Optional for
       back-compat with sessions from before the column existed. */
   allowDmsFromServerMembers?: boolean;
+  /** The account's date of birth (YYYY-MM-DD), or null for a legacy account
+      that never set one. Self-only. */
+  dateOfBirth?: string | null;
+  /** True while the user may still change their own DOB (unlocked). Drives the
+      one-time "confirm your date of birth" prompt. Locked (false) at signup and
+      after the one self-change; an admin can reopen it. */
+  canChangeDob?: boolean;
   createdAt: string;
 }
 

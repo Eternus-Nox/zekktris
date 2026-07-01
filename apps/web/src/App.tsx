@@ -20,6 +20,7 @@ import { TypingProvider } from './state/Typing';
 import { ToastProvider } from './state/Toasts';
 import { ErrorBoundary } from './lib/ErrorBoundary';
 import { PwaBanners } from './app/PwaBanners';
+import { DobBanner } from './app/DobBanner';
 
 /**
  * Picks the wrapper for `/invite/:code` based on auth state.
@@ -79,6 +80,7 @@ export function App() {
           <AppStateProvider>
             <TypingProvider>
               <PwaBanners />
+              <DobBanner />
               <Routes>
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/register" element={<RegisterPage />} />

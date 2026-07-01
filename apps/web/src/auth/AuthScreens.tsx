@@ -226,7 +226,7 @@ const DOB_MONTHS = [
 /** Month / Day / Year selects collected at signup. Reusable across the
  *  register + invite forms. Compose the parts with `composeDob`; the server
  *  age-gates under-13. */
-function DateOfBirthField({
+export function DateOfBirthField({
   month,
   day,
   year,
@@ -275,7 +275,7 @@ function DateOfBirthField({
 
 /** Compose Month/Day/Year selections into a YYYY-MM-DD string, or '' if any
  *  part is unset (so callers can require a complete date before submit). */
-function composeDob(month: string, day: string, year: string): string {
+export function composeDob(month: string, day: string, year: string): string {
   if (!month || !day || !year) return '';
   return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
 }
