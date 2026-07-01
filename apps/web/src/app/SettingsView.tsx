@@ -780,6 +780,30 @@ export function SettingsView() {
               <div className="text-sm text-ink-2 font-medium mb-2">Blocked users</div>
               <BlockedSettings />
             </div>
+            {/* Legal — reachable from inside the app, not just at signup. Open
+                in a new tab so Settings isn't unmounted underneath the reader. */}
+            <div className="pt-3 border-t border-line">
+              <div className="text-sm text-ink-2 font-medium mb-2">Legal</div>
+              <div className="flex items-center gap-2 text-sm">
+                <a
+                  href="/terms"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-accent hover:underline"
+                >
+                  Terms of Service
+                </a>
+                <span className="text-ink-3">·</span>
+                <a
+                  href="/privacy"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-accent hover:underline"
+                >
+                  Privacy Policy
+                </a>
+              </div>
+            </div>
           </section>
           </>
         )}
