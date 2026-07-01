@@ -15,7 +15,7 @@
 
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { errors } from '../errors';
+import { errors, AppError } from '../errors';
 import { requireAuth, requireUserId } from '../auth/middleware';
 import { validate } from '../lib/validate';
 import {
@@ -427,6 +427,18 @@ messagesRouter.post(
           throw errors.timedOut(until);
         }
       }
+      // Supervision: a restricted minor (unlinked, or a linked child whose
+      // guardian disabled messaging) can't post in servers.
+      if (ctx.channel.guildId) {
+        const restr = await supervision.getEffectiveRestrictions(userId);
+        if (restr && !restr.allowMessaging) {
+          throw new AppError(
+            'FORBIDDEN',
+            'Messaging is restricted — connect a guardian to continue',
+            { supervisionRestricted: 'messaging' },
+          );
+        }
+      }
       // Slowmode — bypassed for MANAGE_MESSAGES (mods).
       if (!hasPermission(ctx.channelPerms, Permissions.MANAGE_MESSAGES)) {
         await messages.enforceSlowmode(channelId, userId, ctx.channel.rateLimitPerUser);
@@ -556,6 +568,17 @@ messagesRouter.post(
         const { isBlockedEitherWay } = await import('../services/relationships');
         if (await isBlockedEitherWay(userId, other)) {
           throw errors.notFound('Channel');
+        }
+        // Supervision DM policy (symmetric — protects a minor on either end).
+        // Unlike DM *creation*, this re-checks on every send so a minor who
+        // loses a friend, or whose guardian tightens the policy, can't keep
+        // messaging in a DM opened earlier.
+        if (await supervision.dmBlockedBySupervision(userId, other)) {
+          throw new AppError(
+            'FORBIDDEN',
+            'Direct messages are restricted — connect a guardian to continue',
+            { supervisionRestricted: 'dm' },
+          );
         }
       }
     }

@@ -469,8 +469,13 @@ export async function supervisionSummary(userId: bigint) {
   const createdMs = me ? now.getTime() - new Date(me.createdAt).getTime() : 0;
   const graceMs = MINOR_GRACE_DAYS * 86_400_000;
   const unlinkedMinor = minor && !hasActiveParent;
-  const graceActive = unlinkedMinor && createdMs <= graceMs;
-  const restrictedHeavily = unlinkedMinor && createdMs > graceMs;
+  // An unlinked minor is restricted immediately now (no grace enforcement).
+  // graceDaysRemaining is kept purely informational — a soft "you have N days
+  // before this is permanent"-style countdown the client may show — but it no
+  // longer gates anything. graceActive stays false so clients don't render the
+  // old "you're fine for now" state.
+  const graceActive = false;
+  const restrictedHeavily = unlinkedMinor;
   const graceDaysRemaining = unlinkedMinor
     ? Math.max(0, Math.ceil((graceMs - createdMs) / 86_400_000))
     : null;
@@ -487,6 +492,9 @@ export async function supervisionSummary(userId: bigint) {
           allowVideo: myRestrictions.allowVideo,
           allowStream: myRestrictions.allowStream,
           allowCreateGuild: myRestrictions.allowCreateGuild,
+          allowJoinGuilds: myRestrictions.allowJoinGuilds,
+          allowMessaging: myRestrictions.allowMessaging,
+          dmPolicy: myRestrictions.dmPolicy,
         }
       : null,
     // Age-driven supervision state for the current user.
@@ -528,10 +536,16 @@ const DEFAULT_RESTRICTIONS = {
   allowVideo: true,
   allowStream: true,
   allowCreateGuild: true,
+  allowJoinGuilds: true,
+  allowMessaging: true,
+  // Friends-only by default for a supervised child; the parent can widen to
+  // 'all' or tighten to 'none'.
+  dmPolicy: 'friends' as string,
 };
 
-/** The "restrict heavily" profile applied to a 13–17 account that hasn't
-    linked a parent within the grace window. Everything off. */
+/** The "restrict heavily" profile for a 13–17 account with NO guardian link.
+    Everything off, no DMs — the only thing an unlinked minor can do is invite
+    a guardian. Applied immediately on account creation (no grace window). */
 const STRICT_RESTRICTIONS = {
   canAddFriends: false,
   canRemoveFriends: false,
@@ -539,6 +553,9 @@ const STRICT_RESTRICTIONS = {
   allowVideo: false,
   allowStream: false,
   allowCreateGuild: false,
+  allowJoinGuilds: false,
+  allowMessaging: false,
+  dmPolicy: 'none' as string,
 };
 
 /**
@@ -552,12 +569,12 @@ const STRICT_RESTRICTIONS = {
  *   - has an active parent link               → the parent's configured row
  *                                                (DEFAULTS until they set any)
  *   - no DOB (legacy account), unlinked       → null   (treated as adult)
- *   - 13–17, unlinked, within grace (<=30d)   → null   (usable; client nudges)
- *   - 13–17, unlinked, past grace (>30d)      → STRICT (restrict heavily)
+ *   - 13–17, unlinked                         → STRICT (restrict heavily NOW)
  *
- * Grace returns null (not all-true) so gate semantics are byte-identical to an
- * unsupervised user; the grace/restricted state is surfaced separately via the
- * /family/me summary flags.
+ * Unlinked minors are restricted IMMEDIATELY on account creation — no grace
+ * window. The only thing they can do is invite a guardian (the supervision
+ * routes aren't gated by this). The 30-day counter is now purely informational
+ * (surfaced via the summary) — it no longer relaxes enforcement.
  */
 export async function getEffectiveRestrictions(
   userId: bigint,
@@ -587,12 +604,36 @@ export async function getEffectiveRestrictions(
 
   // Unlinked from here.
   if (age === null) return null; // legacy account, no DOB → treat as adult
-  // 13–17, unlinked: grace until 30 days after account creation, then strict.
-  const ageMs = u ? now.getTime() - new Date(u.createdAt).getTime() : 0;
-  if (ageMs > MINOR_GRACE_DAYS * 86_400_000) {
-    return { childId: userId, ...STRICT_RESTRICTIONS, updatedAt: new Date() };
+  // 13–17, unlinked → strict lockdown immediately (connect a guardian to lift).
+  return { childId: userId, ...STRICT_RESTRICTIONS, updatedAt: new Date() };
+}
+
+/**
+ * DM-policy gate for supervised minors — symmetric, so it protects the minor
+ * whether they initiate the DM or receive it. Returns true if a DM between
+ * `a` and `b` is BLOCKED by either side's supervision:
+ *   - dmPolicy 'all'     → that side imposes no extra constraint
+ *   - dmPolicy 'friends' → the two must be mutual friends
+ *   - dmPolicy 'none'    → no DMs at all
+ * The stricter of the two policies wins. Adults / unsupervised users get a null
+ * restriction row and impose no constraint.
+ */
+export async function dmBlockedBySupervision(a: bigint, b: bigint): Promise<boolean> {
+  if (a === b) return false;
+  const [ra, rb] = await Promise.all([
+    getEffectiveRestrictions(a),
+    getEffectiveRestrictions(b),
+  ]);
+  const policies: string[] = [];
+  if (ra) policies.push(ra.dmPolicy);
+  if (rb) policies.push(rb.dmPolicy);
+  if (policies.length === 0) return false;
+  if (policies.includes('none')) return true;
+  if (policies.includes('friends')) {
+    const { areFriends } = await import('./relationships');
+    if (!(await areFriends(a, b))) return true;
   }
-  return null; // within grace — usable; the summary flags drive the nudge
+  return false;
 }
 
 /** Parent-facing read of a child's restrictions (defaults if no row yet). */
@@ -610,6 +651,9 @@ export async function getRestrictions(childId: bigint) {
     allowVideo: r.allowVideo,
     allowStream: r.allowStream,
     allowCreateGuild: r.allowCreateGuild,
+    allowJoinGuilds: r.allowJoinGuilds,
+    allowMessaging: r.allowMessaging,
+    dmPolicy: r.dmPolicy,
   };
 }
 
@@ -620,6 +664,9 @@ export type RestrictionPatch = Partial<{
   allowVideo: boolean;
   allowStream: boolean;
   allowCreateGuild: boolean;
+  allowJoinGuilds: boolean;
+  allowMessaging: boolean;
+  dmPolicy: 'none' | 'friends' | 'all';
 }>;
 
 export async function setRestrictions(parentId: bigint, childId: bigint, patch: RestrictionPatch) {

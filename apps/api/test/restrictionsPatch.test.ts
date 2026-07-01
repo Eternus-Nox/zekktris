@@ -19,8 +19,18 @@ describe('family restrictionsPatch validator', () => {
       allowVideo: false,
       allowStream: false,
       allowCreateGuild: false,
+      allowJoinGuilds: false,
+      allowMessaging: false,
+      dmPolicy: 'friends' as const,
     };
     expect(restrictionsPatch.parse(all)).toEqual(all);
+  });
+
+  it('accepts each dmPolicy value and rejects junk', () => {
+    for (const p of ['none', 'friends', 'all'] as const) {
+      expect(restrictionsPatch.parse({ dmPolicy: p })).toHaveProperty('dmPolicy', p);
+    }
+    expect(() => restrictionsPatch.parse({ dmPolicy: 'everyone' })).toThrow();
   });
 
   it('keeps fields optional (partial patch leaves others undefined)', () => {

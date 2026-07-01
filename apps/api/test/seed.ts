@@ -19,7 +19,7 @@ const _users: bigint[] = [];
 const _dmChannels: bigint[] = [];
 
 export async function createUser(
-  opts: { allowDmsFromServerMembers?: boolean } = {},
+  opts: { allowDmsFromServerMembers?: boolean; dateOfBirth?: string } = {},
 ): Promise<bigint> {
   const id = nextSnowflake();
   await db.insert(schema.users).values({
@@ -31,6 +31,7 @@ export async function createUser(
     ...(opts.allowDmsFromServerMembers !== undefined
       ? { allowDmsFromServerMembers: opts.allowDmsFromServerMembers }
       : {}),
+    ...(opts.dateOfBirth !== undefined ? { dateOfBirth: opts.dateOfBirth } : {}),
   });
   _users.push(id);
   return id;

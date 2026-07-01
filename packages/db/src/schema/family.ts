@@ -78,6 +78,12 @@ export const childRestrictions = pgTable('child_restrictions', {
   allowVideo: boolean('allow_video').notNull().default(true),
   allowStream: boolean('allow_stream').notNull().default(true),
   allowCreateGuild: boolean('allow_create_guild').notNull().default(true),
+  // Higher-traffic capability gates. join/messaging default on for a linked
+  // child (the parent tightens as needed); an UNLINKED minor is handed the
+  // STRICT profile in code, not a row. dm_policy: 'none' | 'friends' | 'all'.
+  allowJoinGuilds: boolean('allow_join_guilds').notNull().default(true),
+  allowMessaging: boolean('allow_messaging').notNull().default(true),
+  dmPolicy: text('dm_policy').notNull().default('friends'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

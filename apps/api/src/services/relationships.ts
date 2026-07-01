@@ -437,6 +437,27 @@ export async function isBlockedEitherWay(
 }
 
 /**
+ * Are `a` and `b` mutual friends? Both sides keep a 'friend' row in sync
+ * (accept/decline updates both), so reading one side is authoritative.
+ * Used by the supervision DM-policy gate (friends-only minors).
+ */
+export async function areFriends(a: bigint, b: bigint): Promise<boolean> {
+  if (a === b) return false;
+  const row = await db
+    .select({ type: schema.relationships.type })
+    .from(schema.relationships)
+    .where(
+      and(
+        eq(schema.relationships.userId, a),
+        eq(schema.relationships.targetId, b),
+        eq(schema.relationships.type, 'friend'),
+      ),
+    )
+    .limit(1);
+  return row.length > 0;
+}
+
+/**
  * Privacy policy check for DM creation + 1:1 voice ringing.
  *
  * Returns true iff `senderId` is allowed to initiate a DM with or ring

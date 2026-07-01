@@ -20,7 +20,7 @@
 
 import { and, desc, eq, ilike, isNull, or, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
-import { errors } from '../errors';
+import { errors, AppError } from '../errors';
 import { writeAudit } from './audit';
 import { assertJoinAllowed } from './raidProtection';
 import {
@@ -333,6 +333,18 @@ export async function joinPublic(args: {
       )
       .limit(1);
     if (banned[0]) throw errors.forbidden('You are banned from this guild');
+
+    // Supervision: an unlinked minor (or a guardian-restricted child) can't
+    // join servers — same capability gate as invite-accept.
+    const { getEffectiveRestrictions } = await import('./supervision');
+    const restr = await getEffectiveRestrictions(args.userId);
+    if (restr && !restr.allowJoinGuilds) {
+      throw new AppError(
+        'FORBIDDEN',
+        'Joining servers is restricted — connect a guardian to continue',
+        { supervisionRestricted: 'join_guild', guildId: args.guildId.toString() },
+      );
+    }
 
     // Raid protection — same gates as invite-accept.
     const [joiningUser] = await tx

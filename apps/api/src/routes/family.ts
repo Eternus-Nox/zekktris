@@ -313,6 +313,9 @@ export const restrictionsPatch = z.object({
   allowVideo: z.boolean().optional(),
   allowStream: z.boolean().optional(),
   allowCreateGuild: z.boolean().optional(),
+  allowJoinGuilds: z.boolean().optional(),
+  allowMessaging: z.boolean().optional(),
+  dmPolicy: z.enum(['none', 'friends', 'all']).optional(),
 });
 
 familyRouter.patch(

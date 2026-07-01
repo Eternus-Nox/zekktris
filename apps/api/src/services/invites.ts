@@ -222,6 +222,17 @@ export async function acceptInvite(
     // Parental controls: a supervised child may be barred from this
     // server. Skipped when the parent is approving an earlier request.
     if (!opts?.skipSupervisionCheck) {
+      // Blanket capability gate: an unlinked minor (or a linked child whose
+      // guardian disabled joining) can't join servers at all.
+      const restr = await supervision.getEffectiveRestrictions(userId);
+      if (restr && !restr.allowJoinGuilds) {
+        throw new AppError(
+          'FORBIDDEN',
+          'Joining servers is restricted — connect a guardian to continue',
+          { supervisionRestricted: 'join_guild', guildId: invite.guildId.toString(), inviteCode: code },
+        );
+      }
+      // Per-guild blocklist the guardian set for this specific server.
       const blocked = await supervision.isGuildBlockedForChild(userId, invite.guildId);
       if (blocked) {
         throw new AppError('FORBIDDEN', 'This server is restricted by your parent', {

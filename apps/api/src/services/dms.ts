@@ -101,6 +101,15 @@ export async function getOrCreateDM(
     throw errors.notFound('User');
   }
 
+  // Supervision DM policy — blocks stranger DMs to/from a friends-only or
+  // no-DM minor (symmetric, protects the minor on either end). Same generic
+  // notFound surface as the privacy gate so we don't leak the other user's
+  // supervision state.
+  const { dmBlockedBySupervision } = await import('./supervision');
+  if (await dmBlockedBySupervision(userA, userB)) {
+    throw errors.notFound('User');
+  }
+
   const existingId = await findExistingDM(userA, userB);
   if (existingId !== null) return { channelId: existingId, created: false };
 
