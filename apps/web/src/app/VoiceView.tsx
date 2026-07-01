@@ -1339,7 +1339,7 @@ const ParticipantTile = memo(function ParticipantTile({
        at 40×40 so the strip stays out of the way of the featured
        stream; tablet+ goes 56×56 for the more spacious treatment. */
     <div className="relative flex flex-col items-center gap-1 sm:gap-1.5 w-full">
-      <div className="relative w-7 h-7 sm:w-10 sm:h-10">
+      <div className="relative shrink-0 w-7 h-7 sm:w-10 sm:h-10">
         {/* Speaking indicator: brand-gradient ring BEHIND the avatar,
             peeking out past the edges via negative inset. Rendered
             first in DOM + avatar marked `relative` so the avatar
@@ -1350,7 +1350,9 @@ const ParticipantTile = memo(function ParticipantTile({
         <div
           className={`relative w-full h-full rounded-full text-sm sm:text-base font-bold flex items-center justify-center overflow-hidden ${tone}`}
         >
-          <span>{initials}</span>
+          <span className="absolute inset-0 flex items-center justify-center leading-none pointer-events-none">
+            {initials}
+          </span>
           <AvatarImage src={avatarUrl} />
         </div>
         {/* Voice status badge. Deafen implies mute (deafening couples
@@ -1392,13 +1394,15 @@ const ParticipantTile = memo(function ParticipantTile({
        sizes too so the tile doesn't look bottom-heavy. */
     <div className="relative flex flex-col items-center justify-center gap-1.5 sm:gap-2.5 w-full">
       <div
-        className="relative"
+        className="relative shrink-0"
         style={{
           // Auto-resize with the application window size rather than
           // fixed viewport breakpoints, so a single participant in a
           // small window doesn't get an oversized circle. vmin tracks
           // the smaller window dimension; clamped to a sane range.
           // ~30% smaller than before so the black-hole disk dominates.
+          // shrink-0 so the flex column (avatar + name below) can never
+          // compress the square shorter → oval/pill when space is tight.
           width: 'clamp(2.5rem, 7.7vmin, 4.9rem)',
           height: 'clamp(2.5rem, 7.7vmin, 4.9rem)',
         }}
@@ -1412,7 +1416,9 @@ const ParticipantTile = memo(function ParticipantTile({
         <div
           className={`relative w-full h-full rounded-full text-lg sm:text-2xl md:text-3xl font-bold flex items-center justify-center overflow-hidden ${tone}`}
         >
-          <span>{initials}</span>
+          <span className="absolute inset-0 flex items-center justify-center leading-none pointer-events-none">
+            {initials}
+          </span>
           <AvatarImage src={avatarUrl} />
         </div>
         {(muted || deaf) && (
