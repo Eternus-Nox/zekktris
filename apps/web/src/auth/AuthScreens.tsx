@@ -31,11 +31,18 @@ function AuthShell({
   children: React.ReactNode;
 }) {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-bg-1 px-4 py-8 safe-area-padded relative overflow-hidden">
+    // The document itself can't scroll (html/body is locked to the viewport),
+    // so the auth surface is its OWN scroll container — otherwise a tall form
+    // (register) gets clipped on short viewports with no way to reach the
+    // submit button. `.abyss` is position:fixed, so it stays put while the
+    // card scrolls. The inner min-h-full wrapper centers the card when it fits
+    // and lets it scroll (from the top, no clipping) when it doesn't.
+    <div className="h-screen overflow-y-auto bg-bg-1 relative">
       {/* Same ambient abyss the Shell mounts — auth is the user's first
           impression of Zekktris, so it gets the full plasma + starfield. */}
       <div className="abyss" aria-hidden />
-      <div className="relative z-10 w-full max-w-3xl grid md:grid-cols-2 glass glass-edge rounded-2xl overflow-hidden shadow-2xl">
+      <div className="relative z-10 min-h-full flex items-center justify-center px-4 py-8 safe-area-padded">
+        <div className="w-full max-w-3xl grid md:grid-cols-2 glass glass-edge rounded-2xl overflow-hidden shadow-2xl">
         {/* Brand pillar — desktop only. */}
         <div
           className="hidden md:flex flex-col items-center justify-center gap-4 p-10 border-r"
@@ -53,6 +60,7 @@ function AuthShell({
           </div>
           {heading && <h1 className="text-2xl font-bold text-center mb-6">{heading}</h1>}
           {children}
+        </div>
         </div>
       </div>
     </div>

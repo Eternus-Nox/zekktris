@@ -296,9 +296,13 @@ function Frame({ children, inShell }: { children: React.ReactNode; inShell: bool
   // logo row on mobile. The full plasma + starfield sits behind, since this is
   // often a user's first look at a Zekktris instance before they sign in.
   return (
-    <div className="min-h-screen flex items-center justify-center bg-bg-1 px-4 py-8 safe-area-padded relative overflow-hidden">
+    // Own scroll container — the document can't scroll (html/body is locked),
+    // so a tall invite would otherwise clip on short viewports. `.abyss` is
+    // position:fixed; the min-h-full wrapper centers-if-fits, scrolls if not.
+    <div className="h-screen overflow-y-auto bg-bg-1 relative">
       <div className="abyss" aria-hidden />
-      <div className="relative z-10 w-full max-w-3xl grid md:grid-cols-2 glass glass-edge rounded-2xl overflow-hidden shadow-2xl">
+      <div className="relative z-10 min-h-full flex items-center justify-center px-4 py-8 safe-area-padded">
+        <div className="w-full max-w-3xl grid md:grid-cols-2 glass glass-edge rounded-2xl overflow-hidden shadow-2xl">
         <div
           className="hidden md:flex flex-col items-center justify-center gap-4 p-10 border-r"
           style={{ borderColor: 'var(--zk-line-soft)' }}
@@ -312,6 +316,7 @@ function Frame({ children, inShell }: { children: React.ReactNode; inShell: bool
             <span className="text-xl font-bold tracking-tight text-ink-1">Zekktris</span>
           </div>
           {children}
+        </div>
         </div>
       </div>
     </div>
