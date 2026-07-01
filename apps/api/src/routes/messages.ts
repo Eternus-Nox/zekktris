@@ -1312,8 +1312,18 @@ messagesRouter.get(
     // (VIEW_CHANNEL + READ_MESSAGE_HISTORY), so a thread the caller can open
     // is one whose parent they can read; showing its full (bounded) history
     // matches Discord and pins/search. The parent channel itself stays clamped.
+    // A jump-to-message load (`around` set — from a mention, search hit, or a
+    // pinned/linked message) is explicit navigation to a specific message, so
+    // it's exempt from the clamp too: otherwise the anchor loads but its
+    // surrounding context is sparse/empty when the target predates the join
+    // floor. Same rationale as pins/search/threads above.
     let sinceId: bigint | undefined;
-    if (!ctx.isDM && ctx.channel.guildId && ctx.channel.type !== 'public_thread') {
+    if (
+      !ctx.isDM &&
+      ctx.channel.guildId &&
+      ctx.channel.type !== 'public_thread' &&
+      q.around === undefined
+    ) {
       sinceId = await messages.memberHistoryFloor(ctx.channel.guildId, userId);
     }
     const rows = await messages.listMessages(channelId, {
