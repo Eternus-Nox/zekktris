@@ -268,6 +268,10 @@ export function FamilySettings() {
     return <ChildMonitor child={viewingChild} onBack={() => setViewingChild(null)} nudge={state.familyNudge} />;
   }
 
+  // A minor (13–17) can't supervise anyone — they only get the child side
+  // (link a guardian, who supervises me). Hide every parent-side control.
+  const isMinor = !!sup.isMinor;
+
   return (
     <div className="space-y-6">
       {/* Header styled to match Settings — small accent icon + title over a
@@ -293,11 +297,23 @@ export function FamilySettings() {
       </header>
 
       <div className="rounded-xl border border-line bg-bg-1/60 p-3.5 text-xs text-ink-3 leading-relaxed">
-        Supervise a child account to help keep them safe. They must accept your
-        request, and a supervised account is always shown that it's supervised —
-        this is never hidden. While supervised, the child's direct messages
-        aren't end-to-end encrypted (so you can review them), except messages
-        between the two of you, which stay private.
+        {isMinor ? (
+          <>
+            Connect a parent or guardian to your account. A supervised account is
+            always shown that it&apos;s supervised — this is never hidden. While
+            supervised, your direct messages aren&apos;t end-to-end encrypted (so your
+            guardian can review them), except messages with your guardian, which
+            stay private.
+          </>
+        ) : (
+          <>
+            Supervise a child account to help keep them safe. They must accept your
+            request, and a supervised account is always shown that it&apos;s supervised —
+            this is never hidden. While supervised, the child&apos;s direct messages
+            aren&apos;t end-to-end encrypted (so you can review them), except messages
+            between the two of you, which stay private.
+          </>
+        )}
       </div>
 
       {/* Minor age-gate state (child POV). */}
@@ -370,7 +386,7 @@ export function FamilySettings() {
       )}
 
       {/* Child-initiated requests awaiting MY (the parent's) acceptance. */}
-      {(sup.incomingChildRequests?.length ?? 0) > 0 && (
+      {!isMinor && (sup.incomingChildRequests?.length ?? 0) > 0 && (
         <section className="space-y-2">
           <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
             Accounts asking you to supervise them
@@ -442,7 +458,7 @@ export function FamilySettings() {
       )}
 
       {/* Approval requests from supervised children */}
-      {requests.length > 0 && (
+      {!isMinor && requests.length > 0 && (
         <section className="space-y-2">
           <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
             Requests to approve
@@ -511,7 +527,8 @@ export function FamilySettings() {
         </section>
       )}
 
-      {/* Children I supervise */}
+      {/* Children I supervise — parent-side; hidden entirely for minors. */}
+      {!isMinor && (
       <section className="space-y-2">
         <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
           Children you supervise
@@ -576,9 +593,10 @@ export function FamilySettings() {
           </div>
         )}
       </section>
+      )}
 
-      {/* Outgoing requests */}
-      {sup.outgoingRequests.length > 0 && (
+      {/* Outgoing requests (parent-side; hidden for minors) */}
+      {!isMinor && sup.outgoingRequests.length > 0 && (
         <section className="space-y-2">
           <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
             Pending requests you've sent

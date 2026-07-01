@@ -50,7 +50,22 @@ const userSummary = {
 };
 
 /** Parent sends a supervision request to a child account (by username). */
+/** True if this user is a supervised-age minor (13–17) — a minor can only be
+ *  supervised, never act as a guardian. */
+async function isMinorUser(userId: bigint): Promise<boolean> {
+  const [u] = await db
+    .select({ dateOfBirth: schema.users.dateOfBirth })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .limit(1);
+  return isMinorDob(u?.dateOfBirth ?? null, new Date());
+}
+
 export async function requestLink(parentId: bigint, childUsername: string) {
+  // A minor can't supervise anyone — they can only be supervised.
+  if (await isMinorUser(parentId)) {
+    throw errors.forbidden('Minors cannot supervise other accounts');
+  }
   const handle = childUsername.trim();
   const child = await db.query.users.findFirst({
     where: and(
@@ -229,6 +244,10 @@ export async function requestParentByEmail(
 
 /** Parent accepts a CHILD-initiated supervision request, activating it. */
 export async function acceptChildInitiatedLink(parentId: bigint, childId: bigint) {
+  // A minor can't accept a guardian role over another account.
+  if (await isMinorUser(parentId)) {
+    throw errors.forbidden('Minors cannot supervise other accounts');
+  }
   const [activeParents, activeChildren] = await Promise.all([
     getActiveParentIds(childId),
     getActiveChildIds(parentId),
