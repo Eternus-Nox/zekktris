@@ -48,15 +48,15 @@ function AuthShell({
           className="hidden md:flex flex-col items-center justify-center gap-4 p-10 border-r"
           style={{ borderColor: 'var(--zk-line-soft)' }}
         >
-          <ZekktrisMark size={96} className="w-24 h-24 shrink-0" />
-          <span className="text-3xl font-bold tracking-tight">Zekktris</span>
+          <ZekktrisMark size={120} className="w-28 h-28 shrink-0" />
+          <span className="text-4xl font-bold tracking-tight">Zekktris</span>
         </div>
         {/* Form column. */}
         <div className="p-8 sm:p-10">
           {/* Compact brand row for mobile (pillar is hidden there). */}
           <div className="md:hidden flex items-center justify-center gap-2 mb-6">
-            <ZekktrisMark size={32} className="w-8 h-8 shrink-0" />
-            <span className="text-xl font-bold tracking-tight">Zekktris</span>
+            <ZekktrisMark size={40} className="w-10 h-10 shrink-0" />
+            <span className="text-2xl font-bold tracking-tight">Zekktris</span>
           </div>
           {heading && <h1 className="text-2xl font-bold text-center mb-6">{heading}</h1>}
           {children}

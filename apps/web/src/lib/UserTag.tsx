@@ -38,10 +38,9 @@ export function UserTag({
       }}
       title={label}
     >
-      {/* Optical nudge: shift the glyphs 1px right + 1px down inside the pill
-          so the short label reads visually centered. translate keeps the
-          pill's box unchanged (no layout shift). */}
-      <span style={{ display: 'inline-block', transform: 'translate(1px, 1px)' }}>{label}</span>
+      {/* Optical nudge for visual centering. translate keeps the pill's box
+          unchanged (no layout shift). */}
+      <span style={{ display: 'inline-block', transform: 'translate(0px, 0px)' }}>{label}</span>
     </span>
   );
 }
