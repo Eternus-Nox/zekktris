@@ -882,6 +882,16 @@ body.zk-keyboard-open .zk-rail-actions {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Avatar initials optical centering. Flexbox centers the glyphs
+ * geometrically, but capital letters render above their true optical
+ * center (and the font carries a hair of right-side bearing), so the
+ * abbreviation reads slightly high + right. Nudge it down + left so it
+ * sits dead-center in the circle. Applied via a shared class so the
+ * amount is tunable in one place across every avatar surface. */
+.zk-avatar-initials {
+  transform: translate(-2px, 2px);
+}
+
 /* Standalone-mode adjustments. When running as a PWA we hide any UI
  * affordances that only make sense in a browser tab (e.g. an "open in
  * browser" link), and tighten paddings since we're not competing with

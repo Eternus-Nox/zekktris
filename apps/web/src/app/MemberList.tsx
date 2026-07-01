@@ -328,7 +328,7 @@ const MemberRow = memo(function MemberRow({
         title={isSelf ? 'Open your profile' : `Open profile for ${display}`}
       >
         <span className="relative w-9 h-9 shrink-0">
-          <span className={`absolute inset-0 rounded-full text-xs flex items-center justify-center font-semibold ${tone}`}>
+          <span className={`zk-avatar-initials absolute inset-0 rounded-full text-xs flex items-center justify-center font-semibold ${tone}`}>
             {initials}
           </span>
           <AvatarImage src={m.user.avatarUrl} />
