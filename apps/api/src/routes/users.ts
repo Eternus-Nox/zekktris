@@ -31,6 +31,7 @@ import {
   revokeAllUserSessions,
 } from '../auth/sessions';
 import { toSelfUser, toPublicUser, toSession, toReadState } from '../lib/dto';
+import { ageOnDate, MIN_SIGNUP_AGE } from '../lib/age';
 import * as readStates from '../services/readStates';
 import * as supervision from '../services/supervision';
 import * as messages from '../services/messages';
@@ -405,6 +406,56 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
 
   return c.json({ user: toSelfUser(user) });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// PATCH /@me/date-of-birth — one-time self-service DOB set / correction
+// ───────────────────────────────────────────────────────────────────────────
+// Allowed only while the account is UNLOCKED (canChangeDob). It succeeds once
+// and then re-locks (dob_locked=true); further changes need an admin reset.
+// Legacy accounts were unlocked by migration 0096 (and defaulted to 18); new
+// accounts are locked at signup. Setting a minor age here immediately engages
+// supervision via the effective-restrictions chokepoint — no extra wiring.
+const selfDobSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Enter your date of birth.')
+  .refine((s) => {
+    const d = new Date(`${s}T00:00:00Z`);
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+  }, 'Enter a valid date of birth.')
+  .refine((s) => Number(s.slice(0, 4)) >= 1900, 'Enter a valid date of birth.')
+  .refine((s) => ageOnDate(s, new Date()) >= MIN_SIGNUP_AGE, {
+    message: `You must be at least ${MIN_SIGNUP_AGE} years old to use Zekktris.`,
+  });
+
+usersRouter.patch(
+  '/@me/date-of-birth',
+  requireAuth,
+  validate('json', z.object({ dateOfBirth: selfDobSchema })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const { dateOfBirth } = c.req.valid('json');
+    const [me] = await db
+      .select({ dobLocked: schema.users.dobLocked })
+      .from(schema.users)
+      .where(eq(schema.users.id, userId))
+      .limit(1);
+    if (!me) throw errors.notFound('User');
+    if (me.dobLocked) {
+      throw new AppError(
+        'FORBIDDEN',
+        'Your date of birth is locked. Ask an admin to reset it if you need to change it.',
+        { dobLocked: true },
+      );
+    }
+    const [user] = await db
+      .update(schema.users)
+      .set({ dateOfBirth, dobLocked: true, updatedAt: new Date() })
+      .where(eq(schema.users.id, userId))
+      .returning();
+    if (!user) throw errors.internal('Date of birth update returned no row');
+    return c.json({ user: toSelfUser(user) });
+  },
+);
 
 // ───────────────────────────────────────────────────────────────────────────
 // PATCH /@me/guild-order

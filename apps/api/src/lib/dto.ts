@@ -76,6 +76,13 @@ export interface SelfUserDTO {
       ≤4 chars). Carried on the self DTO so the settings editor pre-fills. */
   tagLabel: string | null;
   tagColor: string | null;
+  /** The account's date of birth (YYYY-MM-DD), or null for a legacy account
+      that never set one. Self-only (never on the public user DTO). */
+  dateOfBirth: string | null;
+  /** True when the user may still change their DOB themselves (unlocked). Once
+      they set it, or for accounts locked at signup, this is false until an
+      admin resets it. Drives the one-time "confirm your age" prompt. */
+  canChangeDob: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -138,6 +145,8 @@ export function toSelfUser(user: User): SelfUserDTO {
     publicKey: user.publicKey ?? null,
     tagLabel: user.tagLabel ?? null,
     tagColor: user.tagColor ?? null,
+    dateOfBirth: user.dateOfBirth ?? null,
+    canChangeDob: !user.dobLocked,
     createdAt: isoDate(user.createdAt),
     updatedAt: isoDate(user.updatedAt),
   };

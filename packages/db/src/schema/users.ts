@@ -44,6 +44,10 @@ export const users = pgTable(
         as a SQL `date` (no time/zone). Nullable: accounts created before this
         field have none on record; new signups always supply it. */
     dateOfBirth: date('date_of_birth'),
+    /** Once true, the user can't change their own DOB (admin reset only).
+        Defaults true so new signups lock immediately; legacy accounts were
+        unlocked by migration 0096 for a single self-correction. */
+    dobLocked: boolean('dob_locked').notNull().default(true),
     avatarUrl: text('avatar_url'),
     bannerUrl: text('banner_url'),
     bio: text('bio'),

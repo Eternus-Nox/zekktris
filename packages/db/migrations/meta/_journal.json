@@ -666,6 +666,13 @@
       "when": 1784600220000,
       "tag": "0095_supervision_capabilities",
       "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1784600221000,
+      "tag": "0096_dob_lock_and_backfill",
+      "breakpoints": true
     }
   ]
 }

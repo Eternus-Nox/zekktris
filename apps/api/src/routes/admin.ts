@@ -453,6 +453,21 @@ adminRouter.post(
 );
 
 // ───────────────────────────────────────────────────────────────────────────
+// POST /admin/users/:id/reset-dob-lock — allow the user one more DOB change
+// ───────────────────────────────────────────────────────────────────────────
+// Unlocks a user's date of birth so they can self-correct it once more (it
+// re-locks after they do). Used when someone entered a wrong age at signup, or
+// to re-open a legacy account's one-time correction.
+adminRouter.post('/users/:id/reset-dob-lock', validate('param', userIdParam), async (c) => {
+  const targetId = BigInt(c.req.valid('param').id);
+  await db
+    .update(schema.users)
+    .set({ dobLocked: false, updatedAt: new Date() })
+    .where(and(eq(schema.users.id, targetId), isNull(schema.users.deletedAt)));
+  return c.json({ ok: true });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
 // GET /admin/guilds — all guilds with member counts
 // ───────────────────────────────────────────────────────────────────────────
 

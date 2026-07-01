@@ -166,6 +166,9 @@ authRouter.post('/register', validate('json', registerSchema), async (c) => {
         displayName: body.displayName,
         passwordHash,
         dateOfBirth: body.dateOfBirth,
+        // Locked at signup — declared their age here; only an admin can reset
+        // it. (Prevents a minor signing up honestly then flipping to 18.)
+        dobLocked: true,
       })
       .returning();
     if (!user) throw errors.internal('User creation returned no row');
