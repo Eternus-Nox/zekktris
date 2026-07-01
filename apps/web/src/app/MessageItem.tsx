@@ -564,6 +564,20 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
     return null;
   }, [message.channelId, channelsByGuild]);
   const guild = guildIdForChannel ? guildsById[guildIdForChannel] : undefined;
+
+  // A "member joined" welcome (system_join) is authored, in the data, by the
+  // joining user — but it reads as the SERVER welcoming the newcomer, so we
+  // swap the author identity to the guild's name + icon (the welcome body
+  // still @-mentions the newcomer). isServerAuthor also suppresses the
+  // profile click, role color, clan tag, and avatar decoration for this row.
+  const isServerAuthor = message.type === 'system_join';
+  const authorDisplayName = isServerAuthor ? (guild?.name ?? 'Server') : displayName;
+  const authorAvatarUrl = isServerAuthor ? (guild?.iconUrl ?? null) : displayAvatarUrl;
+  const authorInitials = isServerAuthor ? avatarInitials(guild?.name ?? 'Server') : initials;
+  const authorAvatarTone = isServerAuthor ? avatarColor(guild?.id) : avatarTone;
+  // Whether the author name/avatar is an interactive (profile-opening) user.
+  const authorInteractive = !isWebhook && !isServerAuthor && !!author;
+
   const canPin =
     guild !== undefined &&
     selfId !== undefined &&
@@ -755,15 +769,15 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
           <div className="relative w-10 h-10 mt-0.5">
             <button
               type="button"
-              onClick={!isWebhook && author ? (e) => onAvatarClick(author, e) : undefined}
-              disabled={isWebhook || !author}
-              className={`relative w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold overflow-hidden ${avatarTone} ${!isWebhook && author ? 'cursor-pointer hover:ring-2 hover:ring-accent/50 transition' : 'cursor-default'}`}
-              aria-label={!isWebhook && author ? `Open profile for ${displayName}` : undefined}
+              onClick={authorInteractive && author ? (e) => onAvatarClick(author, e) : undefined}
+              disabled={!authorInteractive}
+              className={`relative w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold overflow-hidden ${authorAvatarTone} ${authorInteractive ? 'cursor-pointer hover:ring-2 hover:ring-accent/50 transition' : 'cursor-default'}`}
+              aria-label={authorInteractive ? `Open profile for ${authorDisplayName}` : undefined}
             >
-              <span aria-hidden="true">{initials}</span>
-              <AvatarImage src={displayAvatarUrl} />
+              <span aria-hidden="true">{authorInitials}</span>
+              <AvatarImage src={authorAvatarUrl} />
             </button>
-            {!isWebhook && <AvatarDecoration decoration={author?.avatarDecoration} />}
+            {!isWebhook && !isServerAuthor && <AvatarDecoration decoration={author?.avatarDecoration} />}
           </div>
         )}
       </div>
@@ -771,15 +785,15 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
       <div className="flex-1 min-w-0">
         {!continuation && (
           <div className="flex items-center gap-2">
-            {!isWebhook && author && <UserTag user={author} className="-mr-1" />}
+            {authorInteractive && author && <UserTag user={author} className="-mr-1" />}
             <button
               type="button"
-              onClick={!isWebhook && author ? (e) => onAvatarClick(author, e) : undefined}
-              disabled={isWebhook || !author}
-              style={!isWebhook && authorRoleColor ? { color: authorRoleColor } : undefined}
-              className={`font-medium ${!isWebhook && authorRoleColor ? '' : 'text-ink-1'} ${!isWebhook && author ? 'hover:underline cursor-pointer' : 'cursor-default'}`}
+              onClick={authorInteractive && author ? (e) => onAvatarClick(author, e) : undefined}
+              disabled={!authorInteractive}
+              style={authorInteractive && authorRoleColor ? { color: authorRoleColor } : undefined}
+              className={`font-medium ${authorInteractive && authorRoleColor ? '' : 'text-ink-1'} ${authorInteractive ? 'hover:underline cursor-pointer' : 'cursor-default'}`}
             >
-              {displayName}
+              {authorDisplayName}
             </button>
             {/* E2EE indicator. Small gradient shield to the right of
                 the author name on every successfully-decrypted
