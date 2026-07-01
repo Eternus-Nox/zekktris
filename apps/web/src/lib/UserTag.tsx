@@ -1,4 +1,5 @@
 import type { PublicUser } from '@zekktris/client';
+import { useHideClanTags } from './displayPrefs';
 
 /**
  * Custom name tag ("clan tag") — a small label-only pill rendered IN FRONT of
@@ -7,16 +8,25 @@ import type { PublicUser } from '@zekktris/client';
  * the text + border and a faint fill; it falls back to the theme accent when
  * unset. `self-center` keeps the pill vertically centered with the name even
  * inside baseline-aligned rows (e.g. the message header).
+ *
+ * When the viewer has turned on "Hide clan tags" in Settings, every tag is
+ * suppressed here in one place — except the live editor preview, which passes
+ * `ignoreHidePref` so you can still see the tag you're editing.
  */
 export function UserTag({
   user,
   className = '',
+  ignoreHidePref = false,
 }: {
   user: Pick<PublicUser, 'tagLabel' | 'tagColor'>;
   className?: string;
+  ignoreHidePref?: boolean;
 }) {
+  // Hook must run before any early return (Rules of Hooks).
+  const hidden = useHideClanTags();
   const label = user.tagLabel?.trim();
   if (!label) return null;
+  if (hidden && !ignoreHidePref) return null;
   const color = user.tagColor || 'var(--accent)';
   return (
     <span

@@ -21,6 +21,7 @@ import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
 import { AchievementsShelf } from './AchievementsShelf';
 import { useParentalControlsEnabled, setParentalControlsEnabled } from '../lib/familyPrefs';
+import { useHideClanTags, setHideClanTags } from '../lib/displayPrefs';
 import { isNative, requestNotificationPermission } from '../lib/native';
 import {
   getNotifyPrefs,
@@ -755,6 +756,9 @@ export function SettingsView() {
               <span className="text-[0.65rem] text-ink-3 shrink-0">Shown in front of your name</span>
             </div>
             <TagSettings />
+            <div className="mt-3">
+              <HideClanTagsToggle />
+            </div>
           </div>
         </section>
 
@@ -1530,7 +1534,9 @@ function TagSettings() {
         <div className="flex flex-col gap-1">
           <span className="text-[0.7rem] text-ink-3">Preview</span>
           <div className="h-9 flex items-center gap-1.5 px-2.5 rounded-md bg-bg-2 border border-line">
-            <UserTag user={preview} />
+            {/* ignoreHidePref: the editor preview stays visible even when the
+                viewer has "Hide clan tags" on — you're editing this tag. */}
+            <UserTag user={preview} ignoreHidePref />
             <span className="text-sm text-ink-1 font-medium truncate max-w-[10rem]">
               {user?.displayName ?? 'You'}
             </span>
@@ -1557,6 +1563,42 @@ function TagSettings() {
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Per-device declutter toggle: when on, every clan/name-tag pill is hidden in
+ * this user's own UI (their own included). Handled inside UserTag, so this
+ * just flips the reactive preference.
+ */
+function HideClanTagsToggle() {
+  const hidden = useHideClanTags();
+  return (
+    <div className="flex items-center justify-between gap-3 px-3 py-2.5 bg-bg-2 border border-line rounded-lg">
+      <div className="min-w-0">
+        <p className="text-sm text-ink-1">Hide clan tags</p>
+        <p className="text-xs text-ink-3 leading-relaxed mt-0.5">
+          Hides everyone's name-tag pills (yours too) throughout the app on this
+          device. Your tag is still visible to others.
+        </p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={hidden}
+        aria-label="Hide clan tags"
+        onClick={() => setHideClanTags(!hidden)}
+        className={`relative shrink-0 w-10 h-6 rounded-full transition-colors ${
+          hidden ? 'bg-accent/70' : 'bg-bg-3'
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
+            hidden ? 'left-[1.125rem]' : 'left-0.5'
+          }`}
+        />
+      </button>
     </div>
   );
 }
