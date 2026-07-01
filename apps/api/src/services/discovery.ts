@@ -23,6 +23,7 @@ import { db, schema } from '../db';
 import { errors, AppError } from '../errors';
 import { writeAudit } from './audit';
 import { assertJoinAllowed } from './raidProtection';
+import { seedGuildReadOnJoin } from './readStates';
 import {
   Permissions,
   computeMemberGuildPermissions,
@@ -399,6 +400,7 @@ export async function joinPublic(args: {
       targetId: args.userId,
       changes: { via: 'discovery' },
     });
+    await seedGuildReadOnJoin(tx, args.guildId, args.userId);
     return { alreadyMember: false };
   });
 }

@@ -19,6 +19,7 @@ import { db, schema, isUniqueViolation } from '../db';
 import { errors, AppError } from '../errors';
 import { writeAudit } from './audit';
 import { assertJoinAllowed } from './raidProtection';
+import { seedGuildReadOnJoin } from './readStates';
 import * as supervision from './supervision';
 import { INVITE_CODE_LENGTH } from '@zekktris/shared/constants';
 
@@ -355,6 +356,9 @@ export async function acceptInvite(
       targetId: userId,
       changes: { via: 'invite', code },
     });
+    // Join with a clean slate: mark existing channels read (no unread flood),
+    // while the (now unclamped) message list still lets them scroll up.
+    await seedGuildReadOnJoin(tx, invite.guildId, userId);
 
     return { guildId: invite.guildId, channelId: invite.channelId, alreadyMember: false };
   });
@@ -424,6 +428,7 @@ export async function joinGuildByApproval(
       targetId: userId,
       changes: { via: 'parent_approval' },
     });
+    await seedGuildReadOnJoin(tx, guildId, userId);
     return { guildId, alreadyMember: false };
   });
 }

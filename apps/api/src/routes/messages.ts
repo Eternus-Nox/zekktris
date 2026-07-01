@@ -1321,40 +1321,17 @@ messagesRouter.get(
     }
 
     const q = c.req.valid('query');
-    // Clamp guild scrollback to messages sent since the caller joined: new
-    // members don't load old history, and it bounds the (channel_id, id) index
-    // scan so opening a busy channel doesn't page through the whole backlog.
-    // DMs have no join → no clamp. Pins / search / single-message jump-to use
-    // other routes and are intentionally NOT clamped (explicit navigation).
-    //
-    // Threads are ALSO explicit navigation: you tap a specific thread to open
-    // it. They carry the parent's guildId, so without this exemption the
-    // join-floor clamp applies — and an ARCHIVED thread (entirely old
-    // messages, no recent activity by definition) has its whole timeline
-    // clamped away, opening blank. Visibility is already enforced upstream
-    // (VIEW_CHANNEL + READ_MESSAGE_HISTORY), so a thread the caller can open
-    // is one whose parent they can read; showing its full (bounded) history
-    // matches Discord and pins/search. The parent channel itself stays clamped.
-    // A jump-to-message load (`around` set — from a mention, search hit, or a
-    // pinned/linked message) is explicit navigation to a specific message, so
-    // it's exempt from the clamp too: otherwise the anchor loads but its
-    // surrounding context is sparse/empty when the target predates the join
-    // floor. Same rationale as pins/search/threads above.
-    let sinceId: bigint | undefined;
-    if (
-      !ctx.isDM &&
-      ctx.channel.guildId &&
-      ctx.channel.type !== 'public_thread' &&
-      q.around === undefined
-    ) {
-      sinceId = await messages.memberHistoryFloor(ctx.channel.guildId, userId);
-    }
+    // New members see the FULL channel history (no join-floor clamp) — the same
+    // as pins/search/threads/jump-to always did. Instead of hiding pre-join
+    // content, joining seeds read-states (services/readStates.seedGuildReadOnJoin)
+    // so a newcomer starts with a clean/read slate rather than a wall of unread
+    // badges, and can still scroll up to the beginning. Each page is bounded by
+    // LIMIT, so the default latest-N load stays a cheap top-of-index scan.
     const rows = await messages.listMessages(channelId, {
       before: q.before ? BigInt(q.before) : undefined,
       after: q.after ? BigInt(q.after) : undefined,
       around: q.around ? BigInt(q.around) : undefined,
       limit: q.limit ?? 50,
-      sinceId,
     });
 
     // DM viewed-at stamping. Stamps `viewed_at` on each non-self

@@ -24,13 +24,41 @@
  */
 
 import { and, eq, inArray, isNull, isNotNull, sql } from 'drizzle-orm';
+import type { Database } from '@zekktris/db';
 import { db, schema } from '../db';
 import { errors } from '../errors';
+
+/** Accepts either the pooled db or a transaction handle. */
+type DbHandle = Omit<Database, '$client'>;
 
 export interface ReadStateRow {
   channelId: bigint;
   lastMessageId: bigint | null;
   mentionCount: number;
+}
+
+/**
+ * Seed read-states for a user who just joined a guild: mark every channel that
+ * already has messages as read up to its current latest. A new member thus
+ * joins with a CLEAN slate — no wall of unread badges for history that predates
+ * them — while still being able to scroll up to the full history (the message
+ * list is no longer join-floor clamped). Runs inside the join transaction so
+ * it commits atomically with the membership row. Idempotent: a re-join keeps
+ * any existing marker (ON CONFLICT DO NOTHING), so unread accrued before a
+ * previous leave isn't wiped.
+ */
+export async function seedGuildReadOnJoin(
+  exec: DbHandle,
+  guildId: bigint,
+  userId: bigint,
+): Promise<void> {
+  await exec.execute(sql`
+    INSERT INTO read_states (user_id, channel_id, last_message_id, mention_count, updated_at)
+    SELECT ${userId}, c.id, c.last_message_id, 0, now()
+    FROM channels c
+    WHERE c.guild_id = ${guildId} AND c.last_message_id IS NOT NULL
+    ON CONFLICT (user_id, channel_id) DO NOTHING
+  `);
 }
 
 /**
