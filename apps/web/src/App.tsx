@@ -14,6 +14,7 @@ import { Shell } from './app/Shell';
 import { ConfirmEmailPage } from './app/ConfirmEmailPage';
 import { VerifyEmailPage } from './app/VerifyEmail';
 import { InvitePage } from './app/InvitePage';
+import { TermsPage, PrivacyPage } from './app/LegalPage';
 import { AppStateProvider } from './state/AppState';
 import { TypingProvider } from './state/Typing';
 import { ToastProvider } from './state/Toasts';
@@ -83,6 +84,8 @@ export function App() {
                 <Route path="/register" element={<RegisterPage />} />
                 <Route path="/forgot-password" element={<ForgotPasswordPage />} />
                 <Route path="/reset-password" element={<ResetPasswordPage />} />
+                <Route path="/terms" element={<TermsPage />} />
+                <Route path="/privacy" element={<PrivacyPage />} />
                 <Route path="/invite/:code" element={<InviteRoute />} />
                 <Route path="/admin" element={<Shell />} />
                 <Route path="/mentions" element={<Shell />} />

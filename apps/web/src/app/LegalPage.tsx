@@ -1,0 +1,306 @@
+/**
+ * Legal pages — Terms of Service + Privacy Policy.
+ *
+ * Public routes (/terms, /privacy) so they're reachable during signup (the
+ * "I agree" checkbox links here) and from anywhere in the app. Rendered as
+ * their own scroll container because the document (html/body) is locked to the
+ * viewport in this SPA.
+ *
+ * ⚠️ These are a good-faith starting point tailored to Zekktris's actual
+ * features — NOT legal advice. Have a lawyer review, and fill the
+ * [bracketed] placeholders (contact address, legal entity, jurisdiction),
+ * before relying on them for a public launch.
+ */
+import { Link } from 'react-router-dom';
+import { ZekktrisMark } from '../lib/ZekktrisMark';
+
+const LAST_UPDATED = 'July 1, 2026';
+const CONTACT_EMAIL = 'support@zekktris.com';
+const PRIVACY_EMAIL = 'privacy@zekktris.com';
+
+function LegalLayout({
+  title,
+  otherLabel,
+  otherTo,
+  children,
+}: {
+  title: string;
+  otherLabel: string;
+  otherTo: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="h-screen overflow-y-auto bg-bg-1 text-ink-1 relative">
+      <div className="abyss" aria-hidden />
+      <div className="relative z-10 mx-auto w-full max-w-2xl px-5 py-10 safe-area-padded">
+        <div className="flex items-center gap-2 mb-8">
+          <ZekktrisMark size={28} className="w-7 h-7 shrink-0" />
+          <span className="text-lg font-bold tracking-tight">Zekktris</span>
+          <span className="flex-1" />
+          <Link to="/" className="text-sm text-ink-3 hover:text-accent hover:underline">
+            Home
+          </Link>
+        </div>
+        <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
+        <p className="text-sm text-ink-3 mt-1 mb-8">Last updated: {LAST_UPDATED}</p>
+        <div className="legal-prose space-y-5 text-[0.95rem] leading-relaxed text-ink-2">
+          {children}
+        </div>
+        <div className="mt-12 pt-6 border-t text-sm" style={{ borderColor: 'var(--zk-line-soft)' }}>
+          <Link to={otherTo} className="text-accent hover:underline">
+            {otherLabel}
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Section heading — consistent spacing/weight across both documents. */
+function H({ children }: { children: React.ReactNode }) {
+  return <h2 className="text-lg font-semibold text-ink-1 pt-3">{children}</h2>;
+}
+
+export function TermsPage() {
+  return (
+    <LegalLayout title="Terms of Service" otherLabel="Read the Privacy Policy →" otherTo="/privacy">
+      <p>
+        These Terms of Service (the &ldquo;Terms&rdquo;) govern your access to and use of Zekktris
+        (the &ldquo;Service&rdquo;). By creating an account or using the Service you agree to these
+        Terms. If you do not agree, do not use the Service.
+      </p>
+
+      <H>1. Who may use Zekktris</H>
+      <p>
+        You must be at least 13 years old to create an account. If you are between 13 and 17, you
+        may use Zekktris only under the supervision of a parent or guardian: you are asked to
+        connect a guardian account, and if you do not do so within 30 days your account is
+        restricted until a guardian is linked. Supervised accounts are always shown that they are
+        supervised. When a supervised user turns 18, supervision ends automatically. By signing up
+        you confirm that the date of birth you provide is accurate and that you meet these
+        requirements. You may not use the Service if you are barred from doing so under applicable
+        law.
+      </p>
+
+      <H>2. Your account</H>
+      <p>
+        You are responsible for your account and for keeping your credentials secure — including
+        your password, any passkeys, and two-factor authentication. Notify us promptly of any
+        unauthorized use. You are responsible for all activity under your account. Accounts are for
+        individuals; do not share your account or impersonate others.
+      </p>
+
+      <H>3. Acceptable use</H>
+      <p>You agree not to use Zekktris to:</p>
+      <ul className="list-disc pl-6 space-y-1">
+        <li>break the law or facilitate illegal activity;</li>
+        <li>
+          upload, share, or solicit content that sexualizes minors — we have zero tolerance for
+          child sexual abuse material and will report it to the authorities;
+        </li>
+        <li>harass, threaten, defame, or incite violence against others;</li>
+        <li>distribute malware, spam, or engage in phishing or fraud;</li>
+        <li>infringe others&rsquo; intellectual property or privacy;</li>
+        <li>
+          scrape, overload, disrupt, reverse-engineer, or attempt to bypass the security,
+          rate limits, or parental-supervision features of the Service;
+        </li>
+        <li>evade a ban, or help a supervised minor circumvent guardian controls.</li>
+      </ul>
+      <p>
+        We may remove content and suspend or terminate accounts that violate these Terms. Community
+        (server) owners set additional rules for their spaces; we may still act on Service-wide
+        violations regardless of a server&rsquo;s own rules.
+      </p>
+
+      <H>4. Your content</H>
+      <p>
+        You retain ownership of the content you create — messages, media, and profile information
+        (&ldquo;Your Content&rdquo;). You grant us a worldwide, non-exclusive, royalty-free license
+        to host, store, reproduce, and transmit Your Content solely to operate, secure, and provide
+        the Service (for example, delivering your messages to their recipients). You are responsible
+        for Your Content and represent that you have the rights to share it.
+      </p>
+
+      <H>5. Messages, encryption, and voice</H>
+      <p>
+        Direct messages may be end-to-end encrypted, in which case we cannot read their contents.
+        End-to-end encryption is not available for a supervised minor&rsquo;s direct messages so
+        that a linked guardian can review them — except messages between the minor and their own
+        guardian, which remain private. Encryption is a feature, not a guarantee of secure
+        communications, and does not protect against a compromised device. Voice and video are
+        provided in real time through third-party infrastructure. Do not rely on the Service for
+        communications where failure or interception could cause harm.
+      </p>
+
+      <H>6. Service changes and availability</H>
+      <p>
+        We may change, suspend, or discontinue features at any time. The Service is provided without
+        any uptime guarantee, and features may vary between the web, desktop, and mobile apps.
+      </p>
+
+      <H>7. Termination</H>
+      <p>
+        You may stop using the Service and delete your account at any time. We may suspend or
+        terminate your access if you violate these Terms or to protect the Service or its users.
+        Some provisions survive termination (including ownership, disclaimers, and limitations of
+        liability).
+      </p>
+
+      <H>8. Disclaimers</H>
+      <p>
+        The Service is provided &ldquo;as is&rdquo; and &ldquo;as available,&rdquo; without
+        warranties of any kind, whether express or implied, to the maximum extent permitted by law.
+        We do not warrant that the Service will be uninterrupted, secure, or error-free.
+      </p>
+
+      <H>9. Limitation of liability</H>
+      <p>
+        To the maximum extent permitted by law, Zekktris and its operators will not be liable for
+        any indirect, incidental, special, consequential, or punitive damages, or any loss of data,
+        use, or goodwill, arising from your use of the Service.
+      </p>
+
+      <H>10. Changes to these Terms</H>
+      <p>
+        We may update these Terms from time to time. If we make material changes we will take
+        reasonable steps to notify you (for example, in-app). Your continued use after the changes
+        take effect constitutes acceptance.
+      </p>
+
+      <H>11. Governing law &amp; contact</H>
+      <p>
+        These Terms are governed by the laws of [your jurisdiction], without regard to conflict-of-
+        law rules. Questions about these Terms can be sent to{' '}
+        <a href={`mailto:${CONTACT_EMAIL}`} className="text-accent hover:underline">
+          {CONTACT_EMAIL}
+        </a>
+        .
+      </p>
+    </LegalLayout>
+  );
+}
+
+export function PrivacyPage() {
+  return (
+    <LegalLayout title="Privacy Policy" otherLabel="Read the Terms of Service →" otherTo="/terms">
+      <p>
+        This Privacy Policy explains what information Zekktris (the &ldquo;Service&rdquo;) collects,
+        how we use it, and the choices you have. By using the Service you agree to this policy.
+      </p>
+
+      <H>1. Information we collect</H>
+      <ul className="list-disc pl-6 space-y-1">
+        <li>
+          <strong>Account information</strong> you provide: email address, username, display name,
+          and date of birth. Passwords are never stored in plain text — only a salted hash.
+        </li>
+        <li>
+          <strong>Content</strong> you create: messages, attachments and media, reactions, server
+          and channel data, and (while active) voice/video streams.
+        </li>
+        <li>
+          <strong>Security &amp; authentication</strong> data: session records, and — if you enable
+          them — two-factor authentication settings and passkey public keys (we never receive your
+          biometrics or private keys).
+        </li>
+        <li>
+          <strong>Technical data</strong> needed to run and secure the Service: IP address, device
+          and browser information, and timestamps, used for delivery, abuse prevention, and
+          rate limiting.
+        </li>
+      </ul>
+
+      <H>2. How we use information</H>
+      <p>
+        We use your information to provide and maintain the Service (delivering messages, running
+        voice, syncing your account across devices); to secure it and prevent abuse; to enforce our
+        Terms; to operate age-gating and parental supervision; and to communicate with you about
+        your account (for example, verification and password-reset emails).
+      </p>
+
+      <H>3. Children and minors</H>
+      <p>
+        Zekktris is not for children under 13, and we reject signups that report an age under 13. We
+        collect date of birth to enforce this and to identify accounts aged 13–17, which are
+        supervised: a linked parent or guardian can review the minor&rsquo;s messages and contacts
+        and set restrictions, and the minor is always shown that their account is supervised. A
+        minor&rsquo;s direct messages are not end-to-end encrypted while supervised so the guardian
+        can review them — except messages between the minor and their own guardian, which stay
+        private. Supervision, and the associated guardian access, ends automatically when the user
+        turns 18. If you believe a child under 13 has created an account, contact us and we will
+        remove it.
+      </p>
+
+      <H>4. End-to-end encryption</H>
+      <p>
+        When end-to-end encryption is enabled for a direct message, its contents are encrypted on
+        your device and we cannot read them. Encryption does not apply to the exceptions described
+        above (a supervised minor&rsquo;s non-guardian DMs), and message metadata (such as who is
+        messaging whom and when) is still processed to deliver messages.
+      </p>
+
+      <H>5. How we share information</H>
+      <p>We do not sell your personal information. We share it only:</p>
+      <ul className="list-disc pl-6 space-y-1">
+        <li>
+          with other users as you direct — people in a server you join can see the messages and
+          profile you share there, and a linked guardian can see a supervised minor&rsquo;s activity
+          as described above;
+        </li>
+        <li>
+          with service providers that help us run the Service (for example, an email provider for
+          verification and reset messages, and real-time voice/video infrastructure), which may
+          process your data only on our behalf;
+        </li>
+        <li>when required by law, or to protect the rights, safety, and security of users and the Service.</li>
+      </ul>
+
+      <H>6. Cookies and local storage</H>
+      <p>
+        We use cookies and browser local storage for essential purposes only — keeping you signed
+        in (session/refresh tokens) and remembering your preferences. We do not use them for
+        third-party advertising or cross-site tracking.
+      </p>
+
+      <H>7. Data retention</H>
+      <p>
+        We keep your account and content until you delete them. Messages remain until you or a
+        space&rsquo;s moderators remove them; some direct messages may be set to auto-delete after a
+        period. Media and other data may be retained for a limited time for operational and safety
+        reasons and then removed. When you delete your account, we delete or de-identify your
+        personal information, except where we must retain it to comply with law or resolve disputes.
+      </p>
+
+      <H>8. Your rights and choices</H>
+      <p>
+        You can view and update your profile, change or delete your content, add security like
+        passkeys and two-factor authentication, and delete your account at any time from Settings.
+        Depending on where you live, you may have additional rights to access, correct, or delete
+        your personal information; contact us to exercise them.
+      </p>
+
+      <H>9. Security</H>
+      <p>
+        We protect your data with measures including encrypted transport (HTTPS), salted password
+        hashing, optional passkeys and two-factor authentication, and session controls. No system is
+        perfectly secure, but we work to safeguard your information.
+      </p>
+
+      <H>10. Changes to this policy</H>
+      <p>
+        We may update this policy from time to time and will take reasonable steps to notify you of
+        material changes. Your continued use after the changes take effect constitutes acceptance.
+      </p>
+
+      <H>11. Contact</H>
+      <p>
+        Questions about privacy can be sent to{' '}
+        <a href={`mailto:${PRIVACY_EMAIL}`} className="text-accent hover:underline">
+          {PRIVACY_EMAIL}
+        </a>
+        .
+      </p>
+    </LegalLayout>
+  );
+}

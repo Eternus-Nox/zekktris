@@ -137,9 +137,28 @@ function TosCheckbox({
       />
       <span>
         I agree to the{' '}
-        <Link to="/terms" className="text-accent hover:underline">Terms of Service</Link>{' '}
+        {/* open in a new tab + stopPropagation so reading the docs doesn't
+            navigate away from (and lose) the half-filled register form, nor
+            toggle this checkbox. */}
+        <a
+          href="/terms"
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="text-accent hover:underline"
+        >
+          Terms of Service
+        </a>{' '}
         and{' '}
-        <Link to="/privacy" className="text-accent hover:underline">Privacy Policy</Link>
+        <a
+          href="/privacy"
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="text-accent hover:underline"
+        >
+          Privacy Policy
+        </a>
       </span>
     </label>
   );
