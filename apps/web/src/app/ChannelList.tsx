@@ -1661,10 +1661,13 @@ function VoiceParticipant({ userId, muted, deaf }: { userId: string; muted: bool
             the Zekktris brand colors rotates slowly behind the avatar,
             peeking out from each edge. Wrapper is a fixed 24px so the
             row layout doesn't shift when speaking flips on. */}
-        <div className="relative w-6 h-6 shrink-0">
+        {/* Fixed 28px square (w-7): the SAME circle for every participant —
+            the initial is absolutely-overlaid at a smaller size so text can
+            never influence the box (a wider glyph must not make a pill). */}
+        <div className="relative w-7 h-7 shrink-0">
           {speaking && <SpeakingRing inset={2} />}
           <div
-            className={`relative w-6 h-6 rounded-full text-[0.7rem] flex items-center justify-center font-medium overflow-hidden ${tone}`}
+            className={`relative w-7 h-7 rounded-full text-[0.6rem] flex items-center justify-center font-medium overflow-hidden ${tone}`}
           >
             <span className="absolute inset-0 flex items-center justify-center leading-none pointer-events-none">
               <span className="zk-avatar-initials">{initials}</span>
