@@ -61,6 +61,9 @@ export const users = pgTable(
     isAdmin: boolean('is_admin').notNull().default(false),
     /** Achievements visibility: false = only the owner sees them. */
     achievementsPublic: boolean('achievements_public').notNull().default(false),
+    /** Supporter-tier visibility: false = the tier title is hidden on the
+        profile popup (the membership itself still works). */
+    showSubscriptionTier: boolean('show_subscription_tier').notNull().default(true),
     /** True for bot accounts. Bots are real user rows that authenticate
         via a static bot token rather than password+JWT. Drives the BOT
         badge + bot-only/human-only behavior gates. */

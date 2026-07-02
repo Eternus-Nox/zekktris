@@ -67,7 +67,11 @@ usersRouter.get('/@me', requireAuth, async (c) => {
     // The token was valid but the user was deleted. Treat as auth failure.
     throw errors.unauthenticated('Account no longer exists');
   }
-  return c.json({ user: toSelfUser(user) });
+  // Effective membership (own or inherited from a supervising parent) rides
+  // the self DTO so the client can gate the Appearance UI + show the tier.
+  const subs = await import('../services/subscriptions');
+  const membership = await subs.getEffectiveSubscription(userId);
+  return c.json({ user: toSelfUser(user, membership) });
 });
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -184,6 +188,8 @@ const patchMeSchema = z
     /** Achievements visibility: when true, anyone can view this user's
         achievements; when false (default) only the owner sees them. */
     achievementsPublic: z.boolean().optional(),
+    /** Whether the supporter tier title shows on the profile popup. */
+    showSubscriptionTier: z.boolean().optional(),
     /** DM read-receipts opt-out. When false, the server skips
         delivered_at/viewed_at stamping for messages this user
         receives — so senders to this user see "Sent" forever and
@@ -225,6 +231,27 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   const userId = requireUserId(c);
   const body = c.req.valid('json');
 
+  // Membership hard lock: SETTING an Appearance cosmetic (avatar frame, clan
+  // tag) requires an active supporter membership (own or inherited from a
+  // supervising parent). CLEARING is always allowed so a lapsed member can
+  // tidy up. Themes are client-local and gated in the UI only.
+  const wantsCosmetic =
+    (body.avatarDecoration !== undefined &&
+      !!body.avatarDecoration &&
+      body.avatarDecoration !== 'none') ||
+    (body.tagLabel !== undefined && (body.tagLabel?.trim() ?? '') !== '') ||
+    (body.tagColor !== undefined && body.tagColor !== null);
+  if (wantsCosmetic) {
+    const subs = await import('../services/subscriptions');
+    if (!(await subs.hasMembership(userId))) {
+      throw new AppError(
+        'FORBIDDEN',
+        'Appearance options are a supporter perk. Supporting helps Zekktris stay alive and strong!',
+        { membershipRequired: true },
+      );
+    }
+  }
+
   const update: Record<string, unknown> = { updatedAt: new Date() };
   if (body.displayName !== undefined) update.displayName = body.displayName;
   if (body.bio !== undefined) update.bio = body.bio;
@@ -248,6 +275,9 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   if (body.bannerUrl !== undefined) update.bannerUrl = body.bannerUrl;
   if (body.achievementsPublic !== undefined) {
     update.achievementsPublic = body.achievementsPublic;
+  }
+  if (body.showSubscriptionTier !== undefined) {
+    update.showSubscriptionTier = body.showSubscriptionTier;
   }
   if (body.dmReadReceiptsEnabled !== undefined) {
     update.dmReadReceiptsEnabled = body.dmReadReceiptsEnabled;
@@ -404,7 +434,13 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
     });
   }
 
-  return c.json({ user: toSelfUser(user) });
+  // Include the effective membership so the client's stored self-user doesn't
+  // lose the tier fields when it replaces itself with this response.
+  {
+    const subs = await import('../services/subscriptions');
+    const membership = await subs.getEffectiveSubscription(userId);
+    return c.json({ user: toSelfUser(user, membership) });
+  }
 });
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -453,7 +489,9 @@ usersRouter.patch(
       .where(eq(schema.users.id, userId))
       .returning();
     if (!user) throw errors.internal('Date of birth update returned no row');
-    return c.json({ user: toSelfUser(user) });
+    const subs = await import('../services/subscriptions');
+    const membership = await subs.getEffectiveSubscription(userId);
+    return c.json({ user: toSelfUser(user, membership) });
   },
 );
 
@@ -1122,7 +1160,15 @@ usersRouter.get(
     // so it never offers contact the server would reject.
     const { canReachByDmOrCall } = await import('../services/relationships');
     const canMessage = await canReachByDmOrCall(viewerId, targetId);
-    return c.json({ user: { ...toPublicUser(user), canMessage } });
+    // Supporter tier title for the profile popup. Hidden when the user opted
+    // out (show_subscription_tier=false); inherited (family pass-down) tiers
+    // show like owned ones. Self always sees their own tier.
+    const subs = await import('../services/subscriptions');
+    const showTier = user.showSubscriptionTier || targetId === viewerId;
+    const membership = showTier ? await subs.getEffectiveSubscription(targetId) : null;
+    return c.json({
+      user: { ...toPublicUser(user), canMessage, subscriptionTier: membership?.tier ?? null },
+    });
   },
 );
 

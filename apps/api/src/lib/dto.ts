@@ -76,6 +76,16 @@ export interface SelfUserDTO {
       ≤4 chars). Carried on the self DTO so the settings editor pre-fills. */
   tagLabel: string | null;
   tagColor: string | null;
+  /** Whether the supporter tier title shows on the profile popup. */
+  showSubscriptionTier: boolean;
+  /** Effective supporter tier (own or inherited from a supervising parent);
+      null/absent = no membership → Appearance perks locked. Populated only by
+      routes that fetch it (GET/PATCH /@me) — optional so hot paths skip it. */
+  subscriptionTier?: 'scout' | 'guardian' | 'legend' | null;
+  /** Membership expiry (ISO), null = unlimited. Only set alongside tier. */
+  subscriptionExpiresAt?: string | null;
+  /** True when the membership is inherited from a supervising parent. */
+  subscriptionInherited?: boolean;
   /** The account's date of birth (YYYY-MM-DD), or null for a legacy account
       that never set one. Self-only (never on the public user DTO). */
   dateOfBirth: string | null;
@@ -120,8 +130,24 @@ export interface PublicUserDTO {
   tagColor: string | null;
 }
 
-export function toSelfUser(user: User): SelfUserDTO {
+export function toSelfUser(
+  user: User,
+  /** Effective membership, when the route fetched it (GET/PATCH /@me). Pass
+      null for "looked up, none" — undefined omits the fields entirely. */
+  membership?: { tier: string; expiresAt: Date | null; inherited: boolean } | null,
+): SelfUserDTO {
+  const membershipFields =
+    membership === undefined
+      ? {}
+      : membership === null
+        ? { subscriptionTier: null, subscriptionExpiresAt: null, subscriptionInherited: false }
+        : {
+            subscriptionTier: membership.tier as 'scout' | 'guardian' | 'legend',
+            subscriptionExpiresAt: isoDate(membership.expiresAt),
+            subscriptionInherited: membership.inherited,
+          };
   return {
+    ...membershipFields,
     id: bigintStr(user.id),
     email: user.email,
     emailVerified: user.emailVerified,
@@ -145,6 +171,7 @@ export function toSelfUser(user: User): SelfUserDTO {
     publicKey: user.publicKey ?? null,
     tagLabel: user.tagLabel ?? null,
     tagColor: user.tagColor ?? null,
+    showSubscriptionTier: user.showSubscriptionTier,
     dateOfBirth: user.dateOfBirth ?? null,
     canChangeDob: !user.dobLocked,
     createdAt: isoDate(user.createdAt),

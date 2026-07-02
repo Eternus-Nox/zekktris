@@ -27,3 +27,4 @@ export * from './family';
 export * from './instanceSettings';
 export * from './reports';
 export * from './security';
+export * from './subscriptions';

@@ -257,6 +257,20 @@ async function main(): Promise<void> {
     log.info('supervision age sweep disabled (PARENT_LINK_AGE_CHECK_ENABLED=false)');
   }
 
+  // Expire lapsed supporter memberships (timed gifts): delete the row + clear
+  // the paid cosmetics — the same hard lock as an admin reset. Hygiene only;
+  // the entitlement reads already treat an expired row as no membership, so
+  // cadence isn't correctness-critical. Hourly, leading run 6 min after boot.
+  const runSubscriptionSweep = () =>
+    void import('./services/subscriptions')
+      .then((s) => s.sweepExpiredSubscriptions())
+      .then((expired) => {
+        if (expired > 0) log.info('supporter memberships expired', { expired });
+      })
+      .catch((err) => log.error('subscription expiry sweep failed', { err }));
+  setTimeout(runSubscriptionSweep, 6 * 60_000);
+  const subscriptionSweepTimer = setInterval(runSubscriptionSweep, 60 * 60 * 1000);
+
   // ── Discovery member-count refresh ────────────────────────────────────
   //
   // Recomputes the denormalized guilds.member_count for discoverable guilds so
@@ -667,6 +681,7 @@ async function main(): Promise<void> {
     if (compressTimer) clearInterval(compressTimer);
     if (invitePruneTimer) clearInterval(invitePruneTimer);
     if (parentLinkAgeTimer) clearInterval(parentLinkAgeTimer);
+    clearInterval(subscriptionSweepTimer);
     clearInterval(discoveryCountTimer);
     clearInterval(eventSweepTimer);
     clearInterval(pollSweepTimer);

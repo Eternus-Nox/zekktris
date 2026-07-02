@@ -248,6 +248,24 @@ adminRouter.get('/users', validate('query', listUsersQuery), async (c) => {
     }
   }
 
+  // Supporter memberships for the page (own rows only — inherited/family
+  // pass-down is a read-time entitlement, not an admin-managed row).
+  const subMap = new Map<string, { tier: string; expiresAt: string | null }>();
+  if (ids.length > 0) {
+    const subRows = await db
+      .select()
+      .from(schema.subscriptions)
+      .where(inArray(schema.subscriptions.userId, ids));
+    const now = Date.now();
+    for (const s of subRows) {
+      if (s.expiresAt && s.expiresAt.getTime() <= now) continue; // expired → not a member
+      subMap.set(s.userId.toString(), {
+        tier: s.tier,
+        expiresAt: s.expiresAt?.toISOString() ?? null,
+      });
+    }
+  }
+
   return c.json({
     users: rows.map((r) => ({
       id: r.id.toString(),
@@ -259,6 +277,8 @@ adminRouter.get('/users', validate('query', listUsersQuery), async (c) => {
       bannedAt: r.bannedAt?.toISOString() ?? null,
       createdAt: r.createdAt.toISOString(),
       lastSeenAt: seenMap.get(r.id.toString()) ?? null,
+      subscriptionTier: subMap.get(r.id.toString())?.tier ?? null,
+      subscriptionExpiresAt: subMap.get(r.id.toString())?.expiresAt ?? null,
     })),
   });
 });
@@ -464,6 +484,42 @@ adminRouter.post('/users/:id/reset-dob-lock', validate('param', userIdParam), as
     .update(schema.users)
     .set({ dobLocked: false, updatedAt: new Date() })
     .where(and(eq(schema.users.id, targetId), isNull(schema.users.deletedAt)));
+  return c.json({ ok: true });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Supporter memberships — admin gift / reset
+// ───────────────────────────────────────────────────────────────────────────
+// Gift: grant (or re-grant — overwrite) a tier for 1/3/6 months or forever.
+// Reset: remove the membership and clear the paid cosmetics (avatar frame +
+// clan tag) — the hard lock. A supervising parent's membership still passes
+// down to their children regardless of the child's own row.
+const giftSubscriptionBody = z.object({
+  tier: z.enum(['scout', 'guardian', 'legend']),
+  duration: z.enum(['1m', '3m', '6m', 'forever']),
+});
+
+adminRouter.post(
+  '/users/:id/subscription',
+  validate('param', userIdParam),
+  validate('json', giftSubscriptionBody),
+  async (c) => {
+    const selfId = requireUserId(c);
+    const targetId = BigInt(c.req.valid('param').id);
+    const { tier, duration } = c.req.valid('json');
+    const subs = await import('../services/subscriptions');
+    const row = await subs.giftSubscription(selfId, targetId, tier, duration);
+    return c.json({
+      ok: true,
+      subscription: { tier: row.tier, expiresAt: row.expiresAt?.toISOString() ?? null },
+    });
+  },
+);
+
+adminRouter.delete('/users/:id/subscription', validate('param', userIdParam), async (c) => {
+  const targetId = BigInt(c.req.valid('param').id);
+  const subs = await import('../services/subscriptions');
+  await subs.removeSubscription(targetId);
   return c.json({ ok: true });
 });
 
