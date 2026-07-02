@@ -23,6 +23,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { UserTag } from '../lib/UserTag';
+import { TierBadge } from '../lib/TierBadge';
 import { ApiError, type PublicUser, type Role } from '@zekktris/client';
 import { AchievementsShelf } from './AchievementsShelf';
 import { useAuth } from '../auth/AuthContext';
@@ -759,6 +760,9 @@ export function ProfileCard({
                     Bot
                   </span>
                 )}
+                {/* Supporter tier title — ships on the full-profile fetch only
+                    (and only when the user hasn't opted out of showing it). */}
+                <TierBadge tier={fullProfile?.subscriptionTier ?? user.subscriptionTier} />
               </div>
               <div className="text-xs text-ink-3 truncate">@{user.username}</div>
             </div>

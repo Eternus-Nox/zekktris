@@ -25,6 +25,10 @@ export interface PublicUser {
       populated by the single-profile fetch (GET /users/:id); undefined on
       list-derived users. The profile card uses it to gate Message + Call. */
   canMessage?: boolean;
+  /** Supporter tier title (Scout/Guardian/Legend). Only populated by the
+      single-profile fetch; null when the user has no membership or opted out
+      of showing it. */
+  subscriptionTier?: 'scout' | 'guardian' | 'legend' | null;
   /** Optional on PublicUser because most surfaces (member lists,
       message authors) don't carry banners — they're fetched on
       demand when the profile card opens. SelfUser narrows this
@@ -133,6 +137,15 @@ export interface SelfUser extends PublicUser {
       one-time "confirm your date of birth" prompt. Locked (false) at signup and
       after the one self-change; an admin can reopen it. */
   canChangeDob?: boolean;
+  /** Whether the supporter tier title shows on the profile popup. */
+  showSubscriptionTier?: boolean;
+  /** Effective supporter membership (own or inherited from a supervising
+      parent). Null/undefined = none → Appearance perks locked. */
+  subscriptionTier?: 'scout' | 'guardian' | 'legend' | null;
+  /** Membership expiry (ISO); null = unlimited/forever. */
+  subscriptionExpiresAt?: string | null;
+  /** True when the membership is inherited from a supervising parent. */
+  subscriptionInherited?: boolean;
   createdAt: string;
 }
 

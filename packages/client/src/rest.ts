@@ -349,6 +349,7 @@ export class RestClient {
         | 'allowDmsFromServerMembers'
         | 'publicKey'
         | 'achievementsPublic'
+        | 'showSubscriptionTier'
         | 'tagLabel'
         | 'tagColor'
       >
@@ -2712,6 +2713,20 @@ export class RestClient {
     return this.request('POST', `/admin/users/${userId}/reset-dob-lock`);
   }
 
+  /** Gift (or re-gift — overwrites) a supporter membership. */
+  adminGiftSubscription(
+    userId: string,
+    tier: 'scout' | 'guardian' | 'legend',
+    duration: '1m' | '3m' | '6m' | 'forever',
+  ): Promise<{ ok: boolean; subscription: { tier: string; expiresAt: string | null } }> {
+    return this.request('POST', `/admin/users/${userId}/subscription`, { tier, duration });
+  }
+
+  /** Reset: remove a user's membership (their paid cosmetics are cleared). */
+  adminRemoveSubscription(userId: string): Promise<{ ok: boolean }> {
+    return this.request('DELETE', `/admin/users/${userId}/subscription`);
+  }
+
   adminSetUserAdmin(userId: string, isAdmin: boolean): Promise<{ ok: boolean }> {
     return this.request('POST', `/admin/users/${userId}/admin`, { isAdmin });
   }
@@ -3188,6 +3203,11 @@ export interface AdminUser {
   createdAt: string;
   /** Approx last-active time (max session activity); null if never. */
   lastSeenAt: string | null;
+  /** Active supporter membership (own row; inherited family pass-down is not
+      an admin-managed row and doesn't show here). */
+  subscriptionTier?: 'scout' | 'guardian' | 'legend' | null;
+  /** Membership expiry (ISO); null = unlimited/forever. */
+  subscriptionExpiresAt?: string | null;
 }
 
 export interface AdminGuild {

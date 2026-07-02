@@ -22,6 +22,7 @@ import { useAppState } from '../state/AppState';
 import { AchievementsShelf } from './AchievementsShelf';
 import { useParentalControlsEnabled, setParentalControlsEnabled } from '../lib/familyPrefs';
 import { useHideClanTags, setHideClanTags } from '../lib/displayPrefs';
+import { TierBadge, TIER_META } from '../lib/TierBadge';
 import { isNative, requestNotificationPermission } from '../lib/native';
 import {
   getNotifyPrefs,
@@ -642,12 +643,16 @@ export function SettingsView() {
               look in settings. */}
           <InstallSection />
 
-        {/* Appearance — app-wide theme. Each card writes the theme to
-            <html data-theme> and persists it; the whole UI re-skins live. */}
+        {/* Appearance — a SUPPORTER PERK. Members (own membership or one
+            inherited from a supervising parent) get the full section; everyone
+            else sees the membership pitch. The server hard-locks the cosmetic
+            writes too, so this isn't just cosmetic gating. */}
+        {!user?.subscriptionTier && <MembershipPitch />}
+        {!!user?.subscriptionTier && (
         <section className="rounded-xl border border-line bg-bg-2 p-3">
           <div className="flex items-baseline justify-between gap-2">
             <h2 className="text-sm font-semibold text-ink-1">Appearance</h2>
-            <span className="text-[0.65rem] text-ink-3 shrink-0">Theme · OLED = true black</span>
+            <TierBadge tier={user.subscriptionTier} />
           </div>
 
           <h3 className="text-sm font-medium text-ink-1 mt-4 mb-1.5">Themes</h3>
@@ -761,6 +766,7 @@ export function SettingsView() {
             </div>
           </div>
         </section>
+        )}
 
           {/* ── Privacy ──────────────────────────────────────────────────
               At the bottom: who can reach you, parental controls, and
@@ -771,6 +777,10 @@ export function SettingsView() {
             <div className="pt-3 border-t border-line">
               <div className="text-sm text-ink-2 font-medium mb-1">Parental controls</div>
               <ParentalControlsToggle />
+            </div>
+            <div className="pt-3 border-t border-line">
+              <div className="text-sm text-ink-2 font-medium mb-1">Supporter tier</div>
+              <ShowTierToggle />
             </div>
             <div className="pt-3 border-t border-line">
               <div className="text-sm text-ink-2 font-medium mb-1">Achievements</div>
@@ -1563,6 +1573,99 @@ function TagSettings() {
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The membership pitch shown where Appearance would be, for non-members.
+ * Copy requirements (user-specified): supporting keeps Zekktris alive and
+ * strong; memberships are non-refundable. Card payments aren't wired yet —
+ * memberships are granted by admins until then.
+ */
+function MembershipPitch() {
+  return (
+    <section className="rounded-xl border border-line bg-bg-2 p-4">
+      <div className="flex items-baseline justify-between gap-2">
+        <h2 className="text-sm font-semibold text-ink-1">Appearance — a supporter perk</h2>
+        <span className="text-[0.65rem] text-ink-3 shrink-0">🔒 Members only</span>
+      </div>
+      <p className="text-xs text-ink-2 leading-relaxed mt-2">
+        Being a supporter helps Zekktris stay alive and strong. Members unlock the
+        Appearance options — themes, avatar frames, and name tags — and wear their
+        tier on their profile.
+      </p>
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        {(['scout', 'guardian', 'legend'] as const).map((t) => {
+          const meta = TIER_META[t]!;
+          return (
+            <div
+              key={t}
+              className="rounded-lg border p-2.5 text-center"
+              style={{
+                borderColor: `color-mix(in srgb, ${meta.color} 45%, transparent)`,
+                backgroundColor: `color-mix(in srgb, ${meta.color} 8%, transparent)`,
+              }}
+            >
+              <div className="text-sm font-bold" style={{ color: meta.color }}>
+                {meta.label}
+              </div>
+              <div className="text-xs text-ink-2 mt-0.5">{meta.price}</div>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-[0.68rem] text-ink-3 leading-relaxed mt-3">
+        Memberships are non-refundable. Card payments are coming soon — until then,
+        an admin can gift memberships. A supervising parent&apos;s membership also
+        covers their children.
+      </p>
+    </section>
+  );
+}
+
+/**
+ * Profile privacy: whether the supporter tier title shows on the profile
+ * popup. Only rendered for members (there's nothing to hide otherwise).
+ */
+function ShowTierToggle() {
+  const { user, rest, updateUser } = useAuth();
+  const [busy, setBusy] = useState(false);
+  if (!user?.subscriptionTier) return null;
+  const shown = user.showSubscriptionTier !== false;
+  return (
+    <div className="flex items-center justify-between gap-3 px-3 py-2.5 bg-bg-2 border border-line rounded-lg">
+      <div className="min-w-0">
+        <p className="text-sm text-ink-1">Show my supporter tier</p>
+        <p className="text-xs text-ink-3 leading-relaxed mt-0.5">
+          Displays your {TIER_META[user.subscriptionTier]?.label ?? 'supporter'} title on
+          your profile popup. Turning this off hides the title — your perks keep working.
+        </p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={shown}
+        aria-label="Show my supporter tier"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          rest
+            .patchMe({ showSubscriptionTier: !shown })
+            .then((r) => updateUser(r.user))
+            .catch(() => undefined)
+            .finally(() => setBusy(false));
+        }}
+        className={`relative shrink-0 w-10 h-6 rounded-full transition-colors disabled:opacity-50 ${
+          shown ? 'bg-accent/70' : 'bg-bg-3'
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
+            shown ? 'left-[1.125rem]' : 'left-0.5'
+          }`}
+        />
+      </button>
     </div>
   );
 }

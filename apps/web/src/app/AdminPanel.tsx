@@ -41,6 +41,7 @@ import { AdminSecurityTab } from './AdminSecurityTab';
 import { useToasts } from '../state/Toasts';
 import { AvatarImage } from '../lib/AvatarImage';
 import { avatarColor, avatarInitials } from '../lib/avatar';
+import { TierBadge } from '../lib/TierBadge';
 import { Hash, Lock, Search as SearchIcon, Shield, Volume2, X as CloseIcon, Users, Archive, BarChart, ChevronLeft } from '../lib/icons';
 
 type Tab = 'overview' | 'users' | 'guilds' | 'storage' | 'security' | 'backup';
@@ -542,6 +543,10 @@ function UsersTab() {
   const [q, setQ] = useState('');
   const [bannedOnly, setBannedOnly] = useState(false);
   const [pending, setPending] = useState<string | null>(null); // userId currently mutating
+  // Inline membership panel: which row is expanded + the pending gift choice.
+  const [giftFor, setGiftFor] = useState<string | null>(null);
+  const [giftTier, setGiftTier] = useState<'scout' | 'guardian' | 'legend'>('scout');
+  const [giftDuration, setGiftDuration] = useState<'1m' | '3m' | '6m' | 'forever'>('forever');
 
   // Debounce the search input — 250ms is long enough that quick typists
   // don't fire one request per keystroke, short enough that the user
@@ -635,6 +640,51 @@ function UsersTab() {
     }
   }
 
+  async function giftMembership(u: AdminUser) {
+    setPending(u.id);
+    try {
+      const r = await rest.adminGiftSubscription(u.id, giftTier, giftDuration);
+      toasts.push(
+        `Gifted ${u.username} ${giftTier} ${giftDuration === 'forever' ? 'forever' : `for ${giftDuration.replace('m', ' month(s)')}`}`,
+        'success',
+      );
+      setUsers((prev) =>
+        prev?.map((x) =>
+          x.id === u.id
+            ? {
+                ...x,
+                subscriptionTier: r.subscription.tier as AdminUser['subscriptionTier'],
+                subscriptionExpiresAt: r.subscription.expiresAt,
+              }
+            : x,
+        ) ?? null,
+      );
+      setGiftFor(null);
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Gift failed', 'error');
+    } finally {
+      setPending(null);
+    }
+  }
+
+  async function resetMembership(u: AdminUser) {
+    setPending(u.id);
+    try {
+      await rest.adminRemoveSubscription(u.id);
+      toasts.push(`Removed ${u.username}'s membership`, 'success');
+      setUsers((prev) =>
+        prev?.map((x) =>
+          x.id === u.id ? { ...x, subscriptionTier: null, subscriptionExpiresAt: null } : x,
+        ) ?? null,
+      );
+      setGiftFor(null);
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Remove failed', 'error');
+    } finally {
+      setPending(null);
+    }
+  }
+
   async function removeUser(u: AdminUser) {
     if (
       !window.confirm(
@@ -717,6 +767,14 @@ function UsersTab() {
                         banned
                       </span>
                     )}
+                    <TierBadge tier={u.subscriptionTier} />
+                    {u.subscriptionTier && (
+                      <span className="text-[0.6rem] text-ink-3">
+                        {u.subscriptionExpiresAt
+                          ? `until ${new Date(u.subscriptionExpiresAt).toLocaleDateString()}`
+                          : 'forever'}
+                      </span>
+                    )}
                   </div>
                   <div className="text-xs text-ink-3 truncate">
                     @{u.username} · {u.email}
@@ -761,6 +819,14 @@ function UsersTab() {
                       Reset DOB
                     </button>
                     <button
+                      onClick={() => setGiftFor(giftFor === u.id ? null : u.id)}
+                      disabled={pending === u.id}
+                      className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors"
+                      title="Gift or reset this user's supporter membership"
+                    >
+                      Membership
+                    </button>
+                    <button
                       onClick={() => toggleBan(u)}
                       disabled={pending === u.id}
                       className={`text-xs px-2.5 py-1.5 rounded disabled:opacity-50 transition-colors ${
@@ -784,6 +850,51 @@ function UsersTab() {
                 )}
                 {isSelf && (
                   <span className="text-xs text-ink-3 italic shrink-0 ml-auto">you</span>
+                )}
+                {/* Inline membership panel — gift a tier for a duration, or
+                    reset (remove + clear paid cosmetics). basis-full drops it
+                    onto its own row inside the flex-wrap li. */}
+                {giftFor === u.id && (
+                  <div className="basis-full flex flex-wrap items-center gap-1.5 pt-2 border-t border-line mt-1">
+                    <select
+                      value={giftTier}
+                      onChange={(e) => setGiftTier(e.target.value as typeof giftTier)}
+                      className="text-xs bg-bg-3 border border-line rounded px-1.5 py-1 text-ink-1"
+                      aria-label="Membership tier"
+                    >
+                      <option value="scout">Scout ($2)</option>
+                      <option value="guardian">Guardian ($5)</option>
+                      <option value="legend">Legend ($10)</option>
+                    </select>
+                    <select
+                      value={giftDuration}
+                      onChange={(e) => setGiftDuration(e.target.value as typeof giftDuration)}
+                      className="text-xs bg-bg-3 border border-line rounded px-1.5 py-1 text-ink-1"
+                      aria-label="Membership duration"
+                    >
+                      <option value="1m">1 month</option>
+                      <option value="3m">3 months</option>
+                      <option value="6m">6 months</option>
+                      <option value="forever">Forever</option>
+                    </select>
+                    <button
+                      onClick={() => void giftMembership(u)}
+                      disabled={pending === u.id}
+                      className="text-xs px-2.5 py-1 rounded border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40"
+                    >
+                      Gift
+                    </button>
+                    {u.subscriptionTier && (
+                      <button
+                        onClick={() => void resetMembership(u)}
+                        disabled={pending === u.id}
+                        className="text-xs px-2.5 py-1 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-40"
+                        title="Remove the membership and clear their paid cosmetics"
+                      >
+                        Reset membership
+                      </button>
+                    )}
+                  </div>
                 )}
               </li>
             );
