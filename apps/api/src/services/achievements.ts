@@ -8,14 +8,25 @@
  * always sees their own.
  *
  * Catalog:
- *   veteran          — one per full account year (year marker included)
- *   chatterbox       — messages sent: 100 / 1k / 10k / 100k
- *   social_circle    — friends: 5 / 10 / 25 / 50
- *   night_owl        — 500 messages sent between 01:00–05:00 (server time)
- *   first_responder  — 100 replies sent within 10s of the original
- *   marathon         — a 365-day messaging streak
- *   founder          — owns a server that reached 25 members
- *   voice_of_people  — 100 hours in 1:1 calls (sum of call durations)
+ *   veteran           — one per full account year (year marker included)
+ *   chatterbox        — messages sent: 100 / 1k / 10k / 100k
+ *   social_circle     — friends: 5 / 10 / 25 / 50
+ *   night_owl         — 500 messages sent between 01:00–05:00 (server time)
+ *   first_responder   — 100 replies sent within 10s of the original
+ *   marathon          — a 365-day messaging streak
+ *   founder           — owns a server that reached 25 members
+ *   voice_of_people   — 100 hours in 1:1 calls (sum of call durations)
+ *   locked_in         — added a passkey
+ *   double_locked     — passkey AND two-factor both enabled
+ *   tagged            — wearing a name tag
+ *   framed            — avatar frame equipped
+ *   signature_look    — avatar + banner + bio + name tag all set
+ *   welcome_committee — first to greet a newcomer after their welcome message
+ *   off_the_record    — in an end-to-end-encrypted DM
+ *   discovered        — joined a server through Discovery
+ *   guardian_angel    — actively supervising a child account
+ *   first_contact     — joined a voice channel (user_voice_stats)
+ *   event_horizon     — an hour of total voice time (user_voice_stats)
  */
 
 import { and, count, eq, isNull, sql } from 'drizzle-orm';
@@ -49,8 +60,18 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
   const out: Achievement[] = [];
 
   // ── Account age (veteran, one per year) ────────────────────────────────
+  // The same row also feeds the profile/security achievements below (tagged,
+  // framed, signature_look, double_locked) — one PK read for all of them.
   const [userRow] = await db
-    .select({ createdAt: schema.users.createdAt })
+    .select({
+      createdAt: schema.users.createdAt,
+      totpEnabled: schema.users.totpEnabled,
+      tagLabel: schema.users.tagLabel,
+      avatarDecoration: schema.users.avatarDecoration,
+      avatarUrl: schema.users.avatarUrl,
+      bannerUrl: schema.users.bannerUrl,
+      bio: schema.users.bio,
+    })
     .from(schema.users)
     .where(eq(schema.users.id, userId))
     .limit(1);
@@ -227,6 +248,183 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
     value: callHours,
     earned: callHours >= 100,
     goal: 100,
+  });
+
+  // ── One combined read for the newer families ───────────────────────────
+  // Scalar subqueries anchored on the user's own row: passkeys, E2EE DMs,
+  // discovery joins, guardian links, welcome-committee firsts, and the voice
+  // participation counters. Single round trip instead of six.
+  const [extra] = await db
+    .select({
+      passkeys: sql<number>`(
+        SELECT COUNT(*) FROM ${schema.webauthnCredentials}
+        WHERE ${schema.webauthnCredentials.userId} = ${userId}
+      )`,
+      e2eeDms: sql<number>`(
+        SELECT COUNT(*) FROM ${schema.channels} c
+        JOIN ${schema.dmRecipients} dr ON dr.channel_id = c.id
+        WHERE dr.user_id = ${userId} AND c.e2ee_enabled = true
+      )`,
+      discovered: sql<number>`(
+        SELECT COUNT(*) FROM ${schema.auditLogEntries}
+        WHERE ${schema.auditLogEntries.actorId} = ${userId}
+          AND ${schema.auditLogEntries.action} = 'member.join'
+          AND ${schema.auditLogEntries.changes} ->> 'via' = 'discovery'
+      )`,
+      guardianOf: sql<number>`(
+        SELECT COUNT(*) FROM ${schema.parentChildLinks}
+        WHERE ${schema.parentChildLinks.parentId} = ${userId}
+          AND ${schema.parentChildLinks.status} = 'active'
+      )`,
+      // "First to greet a newcomer": the user authored the first regular
+      // message following someone ELSE's welcome (system_join rows are rare —
+      // one per member join — so the LATERAL-ish correlated scan is bounded).
+      welcomes: sql<number>`(
+        SELECT COUNT(*) FROM ${schema.messages} sj
+        WHERE sj.type = 'system_join'
+          AND sj.deleted_at IS NULL
+          AND sj.author_id IS DISTINCT FROM ${userId}
+          AND (
+            SELECT m.author_id FROM ${schema.messages} m
+            WHERE m.channel_id = sj.channel_id AND m.id > sj.id
+              AND m.deleted_at IS NULL AND m.type IN ('default', 'reply')
+            ORDER BY m.id ASC LIMIT 1
+          ) = ${userId}
+      )`,
+      voiceJoins: sql<number>`COALESCE((
+        SELECT ${schema.userVoiceStats.joins} FROM ${schema.userVoiceStats}
+        WHERE ${schema.userVoiceStats.userId} = ${userId}
+      ), 0)`,
+      voiceSeconds: sql<number>`COALESCE((
+        SELECT ${schema.userVoiceStats.totalSeconds} FROM ${schema.userVoiceStats}
+        WHERE ${schema.userVoiceStats.userId} = ${userId}
+      ), 0)`,
+    })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .limit(1);
+
+  const passkeys = num(extra?.passkeys);
+  const hasTotp = userRow?.totpEnabled === true;
+  out.push({
+    id: 'locked_in',
+    name: 'Locked In',
+    description: 'Added a passkey to your account.',
+    marker: '🔑',
+    value: passkeys,
+    earned: passkeys >= 1,
+    goal: 1,
+  });
+  out.push({
+    id: 'double_locked',
+    name: 'Double Locked',
+    description: 'Passkey and two-factor authentication both enabled.',
+    marker: '🛡️',
+    value: (passkeys >= 1 ? 1 : 0) + (hasTotp ? 1 : 0),
+    earned: passkeys >= 1 && hasTotp,
+    goal: 2,
+  });
+
+  // Profile cosmetics — current-state achievements (clearing un-earns them,
+  // matching the compute-on-demand model).
+  const hasTag = !!userRow?.tagLabel;
+  const hasFrame = !!userRow?.avatarDecoration;
+  const lookParts =
+    (userRow?.avatarUrl ? 1 : 0) +
+    (userRow?.bannerUrl ? 1 : 0) +
+    (userRow?.bio ? 1 : 0) +
+    (hasTag ? 1 : 0);
+  out.push({
+    id: 'tagged',
+    name: 'Tagged',
+    description: 'Wearing a name tag.',
+    marker: '🏷️',
+    value: hasTag ? 1 : 0,
+    earned: hasTag,
+    goal: 1,
+  });
+  out.push({
+    id: 'framed',
+    name: 'Framed',
+    description: 'Avatar frame equipped.',
+    marker: '🖼️',
+    value: hasFrame ? 1 : 0,
+    earned: hasFrame,
+    goal: 1,
+  });
+  out.push({
+    id: 'signature_look',
+    name: 'Signature Look',
+    description: 'Avatar, banner, bio, and name tag all set.',
+    marker: '✨',
+    value: lookParts,
+    earned: lookParts >= 4,
+    goal: 4,
+  });
+
+  const welcomes = num(extra?.welcomes);
+  out.push({
+    id: 'welcome_committee',
+    name: 'Welcome Committee',
+    description: 'First to greet a newcomer after their welcome.',
+    marker: '👋',
+    value: welcomes,
+    earned: welcomes >= 1,
+    goal: 1,
+  });
+
+  const e2eeDms = num(extra?.e2eeDms);
+  out.push({
+    id: 'off_the_record',
+    name: 'Off the Record',
+    description: 'In an end-to-end encrypted DM.',
+    marker: '🔒',
+    value: e2eeDms,
+    earned: e2eeDms >= 1,
+    goal: 1,
+  });
+
+  const discovered = num(extra?.discovered);
+  out.push({
+    id: 'discovered',
+    name: 'Discovered',
+    description: 'Joined a server through Discovery.',
+    marker: '🧭',
+    value: discovered,
+    earned: discovered >= 1,
+    goal: 1,
+  });
+
+  const guardianOf = num(extra?.guardianOf);
+  out.push({
+    id: 'guardian_angel',
+    name: 'Guardian Angel',
+    description: 'Supervising a child account to keep them safe.',
+    marker: '👼',
+    value: guardianOf,
+    earned: guardianOf >= 1,
+    goal: 1,
+  });
+
+  const voiceJoins = num(extra?.voiceJoins);
+  const voiceMinutes = Math.floor(num(extra?.voiceSeconds) / 60);
+  out.push({
+    id: 'first_contact',
+    name: 'First Contact',
+    description: 'Joined a voice channel.',
+    marker: '📡',
+    value: voiceJoins,
+    earned: voiceJoins >= 1,
+    goal: 1,
+  });
+  out.push({
+    id: 'event_horizon',
+    name: 'Event Horizon',
+    description: 'Spent an hour in voice channels.',
+    marker: '⚫',
+    value: voiceMinutes,
+    earned: voiceMinutes >= 60,
+    goal: 60,
   });
 
   // Earned first (newest families intermixed is fine), then locked by

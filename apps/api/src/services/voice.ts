@@ -148,6 +148,12 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
     .where(eq(schema.voiceStates.userId, userId))
     .limit(1);
 
+  // Voice participation stats (achievements: first_contact/event_horizon).
+  // A fresh join bumps the join counter; a channel SWITCH banks the elapsed
+  // seconds of the previous segment instead (it's one continuing session).
+  // Best-effort — stats must never fail the join.
+  void recordVoiceJoinStats(userId, priorRow ?? null).catch(() => undefined);
+
   // The session ID is what an SFU webhook will reference when reporting
   // a participant left/joined. Generate it locally so we can correlate
   // events back to this row even before the SFU is wired up.
@@ -465,6 +471,46 @@ async function sfuRemoveParticipant(row: schema.VoiceState): Promise<void> {
   }
 }
 
+/**
+ * Bank the elapsed seconds of a finished voice segment into the per-user
+ * stats row (achievements: event_horizon). Upsert so the first segment
+ * creates the row. Callers fire-and-forget — stats never block voice flow.
+ */
+async function bankVoiceSeconds(userId: bigint, joinedAt: Date | null): Promise<void> {
+  if (!joinedAt) return;
+  const secs = Math.floor((Date.now() - joinedAt.getTime()) / 1000);
+  if (secs <= 0) return;
+  await db
+    .insert(schema.userVoiceStats)
+    .values({ userId, joins: 0, totalSeconds: secs })
+    .onConflictDoUpdate({
+      target: schema.userVoiceStats.userId,
+      set: {
+        totalSeconds: sql`${schema.userVoiceStats.totalSeconds} + ${secs}`,
+        updatedAt: new Date(),
+      },
+    });
+}
+
+/** Join-time stats: fresh join → +1 join; channel switch → bank the previous
+ *  segment (one continuing session, not a new join). */
+async function recordVoiceJoinStats(
+  userId: bigint,
+  prior: { joinedAt: Date } | null,
+): Promise<void> {
+  if (prior) {
+    await bankVoiceSeconds(userId, prior.joinedAt);
+    return;
+  }
+  await db
+    .insert(schema.userVoiceStats)
+    .values({ userId, joins: 1, totalSeconds: 0 })
+    .onConflictDoUpdate({
+      target: schema.userVoiceStats.userId,
+      set: { joins: sql`${schema.userVoiceStats.joins} + 1`, updatedAt: new Date() },
+    });
+}
+
 export async function leaveVoice(
   userId: bigint,
   opts?: { evictFromSfu?: boolean; expectedChannelId?: bigint },
@@ -486,6 +532,8 @@ export async function leaveVoice(
   if (!priorState) {
     return { priorState: null, systemCallMessage: null, systemCallChannelId: null };
   }
+  // Bank the session's seconds for the voice achievements. Best-effort.
+  void bankVoiceSeconds(userId, priorState.joinedAt).catch(() => undefined);
   // Forced removal (decline/kick): the target isn't the one initiating, so
   // their client won't disconnect itself — kick them off the SFU or they
   // keep streaming/ringing until the token expires.

@@ -110,10 +110,15 @@ export async function cleanupAll(): Promise<void> {
 
 export { Permissions };
 
-/** Insert a bare message. Optionally set authorId / createdAt / content. */
+/** Insert a bare message. Optionally set authorId / createdAt / content / type. */
 export async function createMessage(
   channelId: bigint,
-  opts: { authorId?: bigint; createdAt?: Date; content?: string } = {},
+  opts: {
+    authorId?: bigint;
+    createdAt?: Date;
+    content?: string;
+    type?: 'default' | 'reply' | 'system_join' | 'system_call';
+  } = {},
 ): Promise<bigint> {
   const id = nextSnowflake();
   await db.insert(schema.messages).values({
@@ -122,6 +127,7 @@ export async function createMessage(
     ...(opts.authorId !== undefined ? { authorId: opts.authorId } : {}),
     ...(opts.createdAt !== undefined ? { createdAt: opts.createdAt } : {}),
     ...(opts.content !== undefined ? { content: opts.content } : {}),
+    ...(opts.type !== undefined ? { type: opts.type } : {}),
   });
   return id;
 }

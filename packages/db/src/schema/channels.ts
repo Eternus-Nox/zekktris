@@ -337,6 +337,22 @@ export const voiceStates = pgTable(
   }),
 );
 
+/**
+ * Per-user voice participation counters, maintained by the voice service at
+ * join/leave (voice_states rows are live-only, so nothing else records that a
+ * session happened). Powers the first_contact / event_horizon achievements.
+ * Best-effort: a crash/eviction between join and leave drops that segment's
+ * seconds; joins are counted at join time.
+ */
+export const userVoiceStats = pgTable('user_voice_stats', {
+  userId: bigint('user_id', { mode: 'bigint' })
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  joins: integer('joins').notNull().default(0),
+  totalSeconds: bigint('total_seconds', { mode: 'number' }).notNull().default(0),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ───────────────────────────────────────────────────────────────────────────
 // stage_participants (Discord-style stage / town-hall channels)
 // ───────────────────────────────────────────────────────────────────────────
