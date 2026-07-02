@@ -17,13 +17,21 @@ import type { Achievement } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import {
   Activity,
+  Bookmark,
   Calendar,
+  Camera,
   Clock,
+  Compass,
   CornerUpLeft,
+  Hand,
+  Headphones,
+  Key,
   Lock,
   MessageSquare,
   Mic,
+  Radio,
   Shield,
+  Smile,
   Users,
 } from '../lib/icons';
 
@@ -62,6 +70,17 @@ function badgeIcon(id: string) {
   if (id.startsWith('marathon')) return Activity;
   if (id.startsWith('founder')) return Shield;
   if (id.startsWith('voice_of_people')) return Mic;
+  if (id === 'locked_in') return Key;
+  if (id === 'double_locked') return Shield;
+  if (id === 'tagged') return Bookmark;
+  if (id === 'framed') return Camera;
+  if (id === 'signature_look') return Smile;
+  if (id === 'welcome_committee') return Hand;
+  if (id === 'off_the_record') return Lock;
+  if (id === 'discovered') return Compass;
+  if (id === 'guardian_angel') return Users;
+  if (id === 'first_contact') return Radio;
+  if (id === 'event_horizon') return Headphones;
   return Activity;
 }
 
