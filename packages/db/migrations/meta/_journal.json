@@ -701,6 +701,20 @@
       "when": 1784600225000,
       "tag": "0100_subscriptions_stripe",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1784600226000,
+      "tag": "0101_moderator_role",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1784600227000,
+      "tag": "0102_achievements_public_default",
+      "breakpoints": true
     }
   ]
 }

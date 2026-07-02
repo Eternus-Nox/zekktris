@@ -1858,10 +1858,11 @@ function AchievementsVisibilityToggle() {
     rest
       .myAchievements()
       .then((r) => {
-        if (!cancelled) setPublicShelf(r.public ?? false);
+        // Achievements are shown by default — treat a missing flag as on.
+        if (!cancelled) setPublicShelf(r.public ?? true);
       })
       .catch(() => {
-        if (!cancelled) setPublicShelf(false);
+        if (!cancelled) setPublicShelf(true);
       });
     return () => {
       cancelled = true;

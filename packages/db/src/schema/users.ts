@@ -59,8 +59,12 @@ export const users = pgTable(
     customStatus: text('custom_status'),
     /** Instance-level admin (server owner / operator), not per-guild. */
     isAdmin: boolean('is_admin').notNull().default(false),
-    /** Achievements visibility: false = only the owner sees them. */
-    achievementsPublic: boolean('achievements_public').notNull().default(false),
+    /** Instance-level MODERATOR — a scoped staff tier below administrator:
+        ban/unban, sign-out, DOB reset, membership view + short gifts, guild
+        observe, Security Log. Enforced in the admin routes (requireStaff). */
+    isModerator: boolean('is_moderator').notNull().default(false),
+    /** Achievements visibility: SHOWN by default; false = owner-only. */
+    achievementsPublic: boolean('achievements_public').notNull().default(true),
     /** Supporter-tier visibility: false = the tier title is hidden on the
         profile popup (the membership itself still works). */
     showSubscriptionTier: boolean('show_subscription_tier').notNull().default(true),
