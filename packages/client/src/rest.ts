@@ -2713,6 +2713,23 @@ export class RestClient {
     return this.request('POST', `/admin/users/${userId}/reset-dob-lock`);
   }
 
+  // Billing (Stripe supporter memberships) --------------------------------
+
+  /** Whether card payments are configured on this server. */
+  billingStatus(): Promise<{ enabled: boolean }> {
+    return this.request('GET', '/billing/status');
+  }
+
+  /** Start a Stripe Checkout for a tier; redirect the browser to `url`. */
+  createCheckout(tier: 'scout' | 'guardian' | 'legend'): Promise<{ url: string }> {
+    return this.request('POST', '/billing/checkout', { tier });
+  }
+
+  /** Stripe Billing Portal (manage/cancel); redirect the browser to `url`. */
+  createBillingPortal(): Promise<{ url: string }> {
+    return this.request('POST', '/billing/portal');
+  }
+
   /** Gift (or re-gift — overwrites) a supporter membership. */
   adminGiftSubscription(
     userId: string,

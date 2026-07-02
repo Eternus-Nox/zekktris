@@ -149,6 +149,9 @@ export interface SelfUser extends PublicUser {
   /** Whether the tier TITLE applies. False for founder (grandfathered)
       memberships — perks without a title until a tier is chosen. */
   subscriptionTitled?: boolean;
+  /** 'gift' | 'founder' | 'stripe'. "Manage subscription" (Stripe portal)
+      shows only for own stripe memberships. */
+  subscriptionSource?: string | null;
   createdAt: string;
 }
 

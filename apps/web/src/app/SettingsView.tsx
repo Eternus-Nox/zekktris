@@ -99,6 +99,27 @@ export function SettingsView() {
   const { replaceUser, state } = useAppState();
   const toasts = useToasts();
 
+  // Returning from Stripe Checkout (?billing=success|canceled): toast + strip
+  // the param. The membership row lands via webhook within a moment, and the
+  // full page load that brought us back re-hydrated the auth user.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const billing = params.get('billing');
+    if (!billing) return;
+    if (billing === 'success') {
+      toasts.push(
+        'Welcome aboard — thank you for supporting Zekktris! Your membership activates within a few seconds.',
+        'success',
+      );
+    } else if (billing === 'canceled') {
+      toasts.push('Checkout canceled — no charge was made.', 'error');
+    }
+    params.delete('billing');
+    const qs = params.toString();
+    window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : ''));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [displayName, setDisplayName] = useState(user?.displayName ?? '');
   const [bio, setBio] = useState(user?.bio ?? '');
   const [status, setStatus] = useState<Status>(
@@ -770,6 +791,7 @@ export function SettingsView() {
               <HideClanTagsToggle />
             </div>
           </div>
+          <ManageMembership />
         </section>
         )}
 
@@ -1582,10 +1604,40 @@ function TagSettings() {
 /**
  * The membership pitch shown where Appearance would be, for non-members.
  * Copy requirements (user-specified): supporting keeps Zekktris alive and
- * strong; memberships are non-refundable. Card payments aren't wired yet —
- * memberships are granted by admins until then.
+ * strong; memberships are non-refundable. When Stripe is configured
+ * (GET /billing/status), the tier cards are live Subscribe buttons that
+ * redirect to Checkout; otherwise they're informational and admins gift.
  */
 function MembershipPitch() {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const [billingEnabled, setBillingEnabled] = useState(false);
+  const [busyTier, setBusyTier] = useState<string | null>(null);
+  useEffect(() => {
+    let off = false;
+    rest
+      .billingStatus()
+      .then((r) => !off && setBillingEnabled(r.enabled))
+      .catch(() => undefined);
+    return () => {
+      off = true;
+    };
+  }, [rest]);
+
+  const subscribe = (tier: 'scout' | 'guardian' | 'legend') => {
+    if (busyTier) return;
+    setBusyTier(tier);
+    rest
+      .createCheckout(tier)
+      .then((r) => {
+        window.location.href = r.url; // off to Stripe Checkout
+      })
+      .catch((e) => {
+        toasts.push(e instanceof ApiError ? e.message : 'Could not start checkout', 'error');
+        setBusyTier(null);
+      });
+  };
+
   return (
     <section className="rounded-xl border border-line bg-bg-2 p-4">
       <div className="flex items-baseline justify-between gap-2">
@@ -1601,9 +1653,14 @@ function MembershipPitch() {
         {(['scout', 'guardian', 'legend'] as const).map((t) => {
           const meta = TIER_META[t]!;
           return (
-            <div
+            <button
               key={t}
-              className="rounded-lg border p-2.5 text-center"
+              type="button"
+              disabled={!billingEnabled || busyTier !== null}
+              onClick={() => subscribe(t)}
+              className={`rounded-lg border p-2.5 text-center transition-transform ${
+                billingEnabled ? 'hover:scale-[1.03] cursor-pointer' : 'cursor-default'
+              } disabled:opacity-90`}
               style={{
                 borderColor: `color-mix(in srgb, ${meta.color} 45%, transparent)`,
                 backgroundColor: `color-mix(in srgb, ${meta.color} 8%, transparent)`,
@@ -1613,16 +1670,59 @@ function MembershipPitch() {
                 {meta.label}
               </div>
               <div className="text-xs text-ink-2 mt-0.5">{meta.price}</div>
-            </div>
+              {billingEnabled && (
+                <div className="text-[0.65rem] font-semibold mt-1.5" style={{ color: meta.color }}>
+                  {busyTier === t ? 'Opening…' : 'Subscribe'}
+                </div>
+              )}
+            </button>
           );
         })}
       </div>
       <p className="text-[0.68rem] text-ink-3 leading-relaxed mt-3">
-        Memberships are non-refundable. Card payments are coming soon — until then,
-        an admin can gift memberships. A supervising parent&apos;s membership also
-        covers their children.
+        {billingEnabled
+          ? 'Cancel anytime — you keep access until the end of the paid period. Memberships are non-refundable. A supervising parent’s membership also covers their children.'
+          : 'Memberships are non-refundable. Card payments are coming soon — until then, an admin can gift memberships. A supervising parent’s membership also covers their children.'}
       </p>
     </section>
+  );
+}
+
+/**
+ * "Manage subscription" — Stripe Billing Portal link for PAID members (own
+ * stripe membership only; gifts/founders/inherited have nothing to manage).
+ */
+function ManageMembership() {
+  const { user, rest } = useAuth();
+  const toasts = useToasts();
+  const [busy, setBusy] = useState(false);
+  if (user?.subscriptionSource !== 'stripe' || user.subscriptionInherited) return null;
+  return (
+    <div className="mt-4 pt-3 border-t border-line flex items-center justify-between gap-3">
+      <p className="text-xs text-ink-3">
+        Your {TIER_META[user.subscriptionTier ?? '']?.label ?? 'supporter'} membership renews
+        monthly. Thank you for keeping Zekktris alive and strong!
+      </p>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          rest
+            .createBillingPortal()
+            .then((r) => {
+              window.location.href = r.url;
+            })
+            .catch((e) => {
+              toasts.push(e instanceof ApiError ? e.message : 'Could not open the portal', 'error');
+              setBusy(false);
+            });
+        }}
+        className="shrink-0 text-sm px-3 py-1.5 rounded-md border border-line bg-bg-3 text-ink-1 hover:bg-bg-1 disabled:opacity-50 transition-colors"
+      >
+        {busy ? 'Opening…' : 'Manage subscription'}
+      </button>
+    </div>
   );
 }
 
