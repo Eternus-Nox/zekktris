@@ -508,6 +508,38 @@ function bumpDmRecency(
   return next;
 }
 
+/**
+ * Same forward-only lastMessageId bump for GUILD channels. Without this, a
+ * guild channel's lastMessageId was a point-in-time snapshot from the last
+ * channels fetch: the unread dot neither appeared live when a message arrived
+ * in a background channel, nor reliably cleared after reading (the auto-ack
+ * acks the newest LOADED id; a stale-but-higher snapshot elsewhere could
+ * out-compare it). Returns the same map reference when nothing changes.
+ */
+function bumpGuildRecency(
+  channelsByGuild: Record<string, Channel[]>,
+  channelId: string,
+  messageId: string,
+): Record<string, Channel[]> {
+  if (!/^\d+$/.test(messageId)) return channelsByGuild;
+  for (const [gid, list] of Object.entries(channelsByGuild)) {
+    const idx = list.findIndex((c) => c.id === channelId);
+    if (idx === -1) continue;
+    const ch = list[idx]!;
+    if (
+      ch.lastMessageId &&
+      /^\d+$/.test(ch.lastMessageId) &&
+      BigInt(ch.lastMessageId) >= BigInt(messageId)
+    ) {
+      return channelsByGuild;
+    }
+    const nextList = list.slice();
+    nextList[idx] = { ...ch, lastMessageId: messageId };
+    return { ...channelsByGuild, [gid]: nextList };
+  }
+  return channelsByGuild;
+}
+
 function applyReactionDelta(
   reactions: ReactionAggregate[],
   emoji: string,
@@ -904,6 +936,7 @@ function reducer(state: State, action: Action): State {
               [action.channelId]: cleaned,
             },
             dmChannels: bumpDmRecency(state.dmChannels, action.channelId, action.message.id),
+            channelsByGuild: bumpGuildRecency(state.channelsByGuild, action.channelId, action.message.id),
           };
           return upsertUsersFromMessages(next, [action.message]);
         }
@@ -917,6 +950,7 @@ function reducer(state: State, action: Action): State {
         ...state,
         messagesByChannel: { ...state.messagesByChannel, [action.channelId]: capped },
         dmChannels: bumpDmRecency(state.dmChannels, action.channelId, action.message.id),
+        channelsByGuild: bumpGuildRecency(state.channelsByGuild, action.channelId, action.message.id),
       };
       return upsertUsersFromMessages(next, [action.message]);
     }

@@ -823,8 +823,29 @@ export async function deleteMessage(messageId: bigint): Promise<void> {
     .update(schema.messages)
     .set({ deletedAt: new Date() })
     .where(and(eq(schema.messages.id, messageId), isNull(schema.messages.deletedAt)))
-    .returning({ id: schema.messages.id });
+    .returning({ id: schema.messages.id, channelId: schema.messages.channelId });
   if (!updated) throw errors.notFound('Message');
+  await rollbackChannelWatermark(updated.channelId, messageId);
+}
+
+/**
+ * If the channel's last_message_id watermark points at a just-deleted message,
+ * move it back to the newest NON-deleted message (or NULL when the channel is
+ * now empty). Without this, the unread comparison (`channel.lastMessageId >
+ * readState.lastMessageId`) references an id nobody can load — the newest
+ * ackable message is older — so the unread dot sticks FOREVER (until someone
+ * posts again). Conditional UPDATE: a no-op unless the deleted message WAS the
+ * watermark, so the common mid-history delete costs one indexed check.
+ */
+async function rollbackChannelWatermark(channelId: bigint, deletedId: bigint): Promise<void> {
+  await db.execute(sql`
+    UPDATE channels
+       SET last_message_id = (
+         SELECT max(id) FROM messages
+          WHERE channel_id = ${channelId} AND deleted_at IS NULL
+       )
+     WHERE id = ${channelId} AND last_message_id = ${deletedId}
+  `);
 }
 
 /**
@@ -883,6 +904,18 @@ export async function purgeChannel(channelId: bigint): Promise<bigint[]> {
   } catch (e) {
     console.warn('purgeChannel: attachment cleanup failed', e);
   }
+
+  // The watermark almost certainly pointed at a purged message — recompute it
+  // (newest surviving message, or NULL when the channel is now empty) so the
+  // unread dot doesn't chase an unloadable id forever.
+  await db.execute(sql`
+    UPDATE channels
+       SET last_message_id = (
+         SELECT max(id) FROM messages
+          WHERE channel_id = ${channelId} AND deleted_at IS NULL
+       )
+     WHERE id = ${channelId}
+  `);
 
   return ids;
 }
