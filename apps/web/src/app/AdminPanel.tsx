@@ -1,13 +1,17 @@
 /**
  * AdminPanel
  * ----------
- * Instance-admin dashboard. Lives at /admin and is gated to users with
- * `isAdmin === true` on their SelfUser. Non-admins (or unauthenticated
- * users) get bounced back to the home route.
+ * Instance-staff dashboard. Lives at /admin and is gated to users with
+ * `isAdmin` or `isModerator` on their SelfUser. Everyone else (or
+ * unauthenticated users) gets bounced back to the home route.
  *
- * Four tabs share a common header:
+ * Admins see every tab; moderators see the restricted set (Users /
+ * Servers / Security) with the reduced action set inside each — the API
+ * enforces the same boundary, this is presentation.
+ *
+ * The tabs share a common header:
  *   - Overview  → /admin/stats          (counts + recent activity)
- *   - Users     → /admin/users          (search + ban/admin actions)
+ *   - Users     → /admin/users          (search + ban/role actions)
  *   - Guilds    → /admin/guilds         (server list with member counts)
  *   - Storage   → /admin/storage        (attachment + avatar disk usage)
  *
@@ -74,7 +78,28 @@ export function AdminPanel() {
   // AdminPanel component directly without going through Shell would
   // otherwise skip the gate.
   if (!user) return <Navigate to="/login?next=/admin" replace />;
-  if (!user.isAdmin) return <Navigate to="/" replace />;
+  if (!user.isAdmin && !user.isModerator) return <Navigate to="/" replace />;
+
+  // Moderators see a restricted panel: Users / Servers / Security only.
+  // The API enforces the same boundary (allowlist middleware), so this is
+  // presentation, not security. Clamp the active tab rather than seeding
+  // state from the role — `user` can settle after the first render.
+  const isModeratorView = !user.isAdmin;
+  const tabs: { id: Tab; label: string }[] = isModeratorView
+    ? [
+        { id: 'users', label: 'Users' },
+        { id: 'guilds', label: 'Servers' },
+        { id: 'security', label: 'Security' },
+      ]
+    : [
+        { id: 'overview', label: 'Overview' },
+        { id: 'users', label: 'Users' },
+        { id: 'guilds', label: 'Servers' },
+        { id: 'storage', label: 'Storage' },
+        { id: 'security', label: 'Security' },
+        { id: 'backup', label: 'Backup' },
+      ];
+  const effectiveTab: Tab = tabs.some((t) => t.id === tab) ? tab : tabs[0]!.id;
 
   return (
     // No min-h-screen wrapper: AdminPanel now renders inside Shell's
@@ -109,17 +134,8 @@ export function AdminPanel() {
             role="tablist"
             aria-label="Admin sections"
           >
-            {(
-              [
-                { id: 'overview', label: 'Overview' },
-                { id: 'users', label: 'Users' },
-                { id: 'guilds', label: 'Servers' },
-                { id: 'storage', label: 'Storage' },
-                { id: 'security', label: 'Security' },
-                { id: 'backup', label: 'Backup' },
-              ] as { id: Tab; label: string }[]
-            ).map((t) => {
-              const active = tab === t.id;
+            {tabs.map((t) => {
+              const active = effectiveTab === t.id;
               return (
                 <button
                   key={t.id}
@@ -150,16 +166,16 @@ export function AdminPanel() {
           />
         ) : (
           <div className="px-4 sm:px-8 py-6">
-            {tab === 'overview' && <OverviewTab />}
-            {tab === 'users' && <UsersTab />}
-            {tab === 'guilds' && (
+            {effectiveTab === 'overview' && <OverviewTab />}
+            {effectiveTab === 'users' && <UsersTab />}
+            {effectiveTab === 'guilds' && (
               <GuildsTab
                 onObserve={(guildId, guildName) => setObserving({ guildId, guildName })}
               />
             )}
-            {tab === 'storage' && <StorageTab />}
-            {tab === 'security' && <AdminSecurityTab />}
-            {tab === 'backup' && <BackupAdminTab />}
+            {effectiveTab === 'storage' && <StorageTab />}
+            {effectiveTab === 'security' && <AdminSecurityTab />}
+            {effectiveTab === 'backup' && <BackupAdminTab />}
           </div>
         )}
       </main>
@@ -543,10 +559,27 @@ function UsersTab() {
   const [q, setQ] = useState('');
   const [bannedOnly, setBannedOnly] = useState(false);
   const [pending, setPending] = useState<string | null>(null); // userId currently mutating
-  // Inline membership panel: which row is expanded + the pending gift choice.
+  // Inline row panels (membership / role / DOB): at most one open at a time,
+  // keyed by userId. Opening one closes the others.
   const [giftFor, setGiftFor] = useState<string | null>(null);
+  const [roleFor, setRoleFor] = useState<string | null>(null);
+  const [dobFor, setDobFor] = useState<string | null>(null);
   const [giftTier, setGiftTier] = useState<'scout' | 'guardian' | 'legend'>('scout');
-  const [giftDuration, setGiftDuration] = useState<'1m' | '3m' | '6m' | 'forever'>('forever');
+  // Default duration must be one the caller can actually pick — moderators
+  // don't get the 6m/forever options.
+  const [giftDuration, setGiftDuration] = useState<'1m' | '3m' | '6m' | 'forever'>(
+    self?.isAdmin ? 'forever' : '3m',
+  );
+  // Moderators get the restricted view: no role/delete, gifting capped at 3
+  // months, no membership reset. The API enforces all of this server-side;
+  // the UI just doesn't show what a moderator can't do.
+  const selfIsAdmin = self?.isAdmin === true;
+
+  function openPanel(which: 'gift' | 'role' | 'dob', userId: string) {
+    setGiftFor(which === 'gift' ? (giftFor === userId ? null : userId) : null);
+    setRoleFor(which === 'role' ? (roleFor === userId ? null : userId) : null);
+    setDobFor(which === 'dob' ? (dobFor === userId ? null : userId) : null);
+  }
 
   // Debounce the search input — 250ms is long enough that quick typists
   // don't fire one request per keystroke, short enough that the user
@@ -593,14 +626,24 @@ function UsersTab() {
     }
   }
 
-  async function toggleAdmin(u: AdminUser) {
+  async function setRole(u: AdminUser, role: 'administrator' | 'moderator' | 'none') {
     setPending(u.id);
     try {
-      await rest.adminSetUserAdmin(u.id, !u.isAdmin);
-      toasts.push(`${u.username} is ${u.isAdmin ? 'no longer ' : ''}an admin`, 'success');
-      setUsers((prev) =>
-        prev?.map((x) => (x.id === u.id ? { ...x, isAdmin: !u.isAdmin } : x)) ?? null,
+      await rest.adminSetUserRole(u.id, role);
+      toasts.push(
+        role === 'none'
+          ? `${u.username} no longer has an instance role`
+          : `${u.username} is now ${role === 'administrator' ? 'an administrator' : 'a moderator'}`,
+        'success',
       );
+      setUsers((prev) =>
+        prev?.map((x) =>
+          x.id === u.id
+            ? { ...x, isAdmin: role === 'administrator', isModerator: role === 'moderator' }
+            : x,
+        ) ?? null,
+      );
+      setRoleFor(null);
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Action failed', 'error');
     } finally {
@@ -633,6 +676,7 @@ function UsersTab() {
     try {
       await rest.adminResetDobLock(u.id);
       toasts.push(`${u.username} can change their date of birth once more`, 'success');
+      setDobFor(null);
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Reset failed', 'error');
     } finally {
@@ -759,7 +803,12 @@ function UsersTab() {
                     </span>
                     {u.isAdmin && (
                       <span className="text-[0.6rem] uppercase font-bold tracking-wider bg-accent/20 text-accent px-1 py-0.5 rounded">
-                        admin
+                        administrator
+                      </span>
+                    )}
+                    {u.isModerator && (
+                      <span className="text-[0.6rem] uppercase font-bold tracking-wider bg-sky-500/20 text-sky-400 px-1 py-0.5 rounded">
+                        moderator
                       </span>
                     )}
                     {u.bannedAt && (
@@ -788,19 +837,41 @@ function UsersTab() {
                 </div>
                 {!isSelf && (
                   <div className="flex flex-wrap items-center gap-1.5 shrink-0 ml-auto">
+                    {/* Button order (operator spec): Role · DOB · Membership ·
+                        Sign out · Ban · Delete. Role + Delete are admin-only;
+                        moderators also can't ban/sign-out other staff. */}
+                    {selfIsAdmin && (
+                      <button
+                        onClick={() => openPanel('role', u.id)}
+                        disabled={pending === u.id}
+                        className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors"
+                        title="Set this user's instance role"
+                      >
+                        Role
+                      </button>
+                    )}
                     <button
-                      onClick={() => toggleAdmin(u)}
+                      onClick={() => openPanel('dob', u.id)}
                       disabled={pending === u.id}
                       className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors"
-                      title={u.isAdmin ? 'Remove admin' : 'Make admin'}
+                      title="View this user's date of birth"
                     >
-                      {u.isAdmin ? 'Demote' : 'Promote'}
+                      DOB
+                    </button>
+                    <button
+                      onClick={() => openPanel('gift', u.id)}
+                      disabled={pending === u.id}
+                      className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors"
+                      title="Gift or reset this user's supporter membership"
+                    >
+                      Membership
                     </button>
                     {/* Sign-out button — only shown when the user isn't
                         already banned, since banning revokes sessions
                         implicitly and a redundant "sign out a banned
-                        user" button is just noise. */}
-                    {!u.bannedAt && (
+                        user" button is just noise. Moderators can't act
+                        on staff accounts (server rejects it too). */}
+                    {!u.bannedAt && (selfIsAdmin || (!u.isAdmin && !u.isModerator)) && (
                       <button
                         onClick={() => forceLogout(u)}
                         disabled={pending === u.id}
@@ -810,42 +881,30 @@ function UsersTab() {
                         Sign out
                       </button>
                     )}
-                    <button
-                      onClick={() => resetDob(u)}
-                      disabled={pending === u.id}
-                      className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors"
-                      title="Let this user change their date of birth once more"
-                    >
-                      Reset DOB
-                    </button>
-                    <button
-                      onClick={() => setGiftFor(giftFor === u.id ? null : u.id)}
-                      disabled={pending === u.id}
-                      className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors"
-                      title="Gift or reset this user's supporter membership"
-                    >
-                      Membership
-                    </button>
-                    <button
-                      onClick={() => toggleBan(u)}
-                      disabled={pending === u.id}
-                      className={`text-xs px-2.5 py-1.5 rounded disabled:opacity-50 transition-colors ${
-                        u.bannedAt
-                          ? 'bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1'
-                          : 'bg-red-500/10 hover:bg-red-500/20 text-red-400'
-                      }`}
-                      title={u.bannedAt ? 'Unban' : 'Ban'}
-                    >
-                      {u.bannedAt ? 'Unban' : 'Ban'}
-                    </button>
-                    <button
-                      onClick={() => removeUser(u)}
-                      disabled={pending === u.id}
-                      className="text-xs px-2.5 py-1.5 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 disabled:opacity-50 transition-colors"
-                      title="Permanently delete this account"
-                    >
-                      Delete
-                    </button>
+                    {(selfIsAdmin || (!u.isAdmin && !u.isModerator)) && (
+                      <button
+                        onClick={() => toggleBan(u)}
+                        disabled={pending === u.id}
+                        className={`text-xs px-2.5 py-1.5 rounded disabled:opacity-50 transition-colors ${
+                          u.bannedAt
+                            ? 'bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1'
+                            : 'bg-red-500/10 hover:bg-red-500/20 text-red-400'
+                        }`}
+                        title={u.bannedAt ? 'Unban' : 'Ban'}
+                      >
+                        {u.bannedAt ? 'Unban' : 'Ban'}
+                      </button>
+                    )}
+                    {selfIsAdmin && (
+                      <button
+                        onClick={() => removeUser(u)}
+                        disabled={pending === u.id}
+                        className="text-xs px-2.5 py-1.5 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 disabled:opacity-50 transition-colors"
+                        title="Permanently delete this account"
+                      >
+                        Delete
+                      </button>
+                    )}
                   </div>
                 )}
                 {isSelf && (
@@ -853,7 +912,8 @@ function UsersTab() {
                 )}
                 {/* Inline membership panel — gift a tier for a duration, or
                     reset (remove + clear paid cosmetics). basis-full drops it
-                    onto its own row inside the flex-wrap li. */}
+                    onto its own row inside the flex-wrap li. Moderators can
+                    gift up to 3 months and can't reset (server-enforced). */}
                 {giftFor === u.id && (
                   <div className="basis-full flex flex-wrap items-center gap-1.5 pt-2 border-t border-line mt-1">
                     <select
@@ -874,8 +934,8 @@ function UsersTab() {
                     >
                       <option value="1m">1 month</option>
                       <option value="3m">3 months</option>
-                      <option value="6m">6 months</option>
-                      <option value="forever">Forever</option>
+                      {selfIsAdmin && <option value="6m">6 months</option>}
+                      {selfIsAdmin && <option value="forever">Forever</option>}
                     </select>
                     <button
                       onClick={() => void giftMembership(u)}
@@ -884,7 +944,7 @@ function UsersTab() {
                     >
                       Gift
                     </button>
-                    {u.subscriptionTier && (
+                    {selfIsAdmin && u.subscriptionTier && (
                       <button
                         onClick={() => void resetMembership(u)}
                         disabled={pending === u.id}
@@ -894,6 +954,74 @@ function UsersTab() {
                         Reset membership
                       </button>
                     )}
+                  </div>
+                )}
+                {/* Inline role panel — pick the instance role. Admin-only
+                    (the Role button is hidden for moderators). */}
+                {roleFor === u.id && (
+                  <div className="basis-full flex flex-wrap items-center gap-1.5 pt-2 border-t border-line mt-1">
+                    <span className="text-xs text-ink-3">
+                      Role:{' '}
+                      <span className="text-ink-1 font-medium">
+                        {u.isAdmin ? 'Administrator' : u.isModerator ? 'Moderator' : 'None'}
+                      </span>
+                    </span>
+                    {!u.isAdmin && (
+                      <button
+                        onClick={() => void setRole(u, 'administrator')}
+                        disabled={pending === u.id}
+                        className="text-xs px-2.5 py-1 rounded border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40"
+                        title="Full access to every admin tab and action"
+                      >
+                        Administrator
+                      </button>
+                    )}
+                    {!u.isModerator && (
+                      <button
+                        onClick={() => void setRole(u, 'moderator')}
+                        disabled={pending === u.id}
+                        className="text-xs px-2.5 py-1 rounded border border-sky-500/40 bg-sky-500/15 text-ink-1 hover:bg-sky-500/25 disabled:opacity-40"
+                        title="Security log, ban/unban, sign-out, membership gifts up to 3 months, DOB reset, and observing servers"
+                      >
+                        Moderator
+                      </button>
+                    )}
+                    {(u.isAdmin || u.isModerator) && (
+                      <button
+                        onClick={() => void setRole(u, 'none')}
+                        disabled={pending === u.id}
+                        className="text-xs px-2.5 py-1 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-40"
+                        title="Remove their instance role"
+                      >
+                        Remove role
+                      </button>
+                    )}
+                  </div>
+                )}
+                {/* Inline DOB panel — show the date of birth on record plus
+                    the reset button (reopens their one-time self-change). */}
+                {dobFor === u.id && (
+                  <div className="basis-full flex flex-wrap items-center gap-1.5 pt-2 border-t border-line mt-1">
+                    <span className="text-xs text-ink-3">
+                      Date of birth:{' '}
+                      <span className="text-ink-1 font-medium">
+                        {u.dateOfBirth
+                          ? new Date(`${u.dateOfBirth}T00:00:00`).toLocaleDateString(undefined, {
+                              year: 'numeric',
+                              month: 'long',
+                              day: 'numeric',
+                            })
+                          : 'Not on record'}
+                      </span>
+                    </span>
+                    <button
+                      onClick={() => void resetDob(u)}
+                      disabled={pending === u.id}
+                      className="text-xs px-2.5 py-1 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-40"
+                      title="Let this user change their date of birth once more"
+                    >
+                      Reset
+                    </button>
                   </div>
                 )}
               </li>
@@ -908,8 +1036,10 @@ function UsersTab() {
 // ── Guilds tab ────────────────────────────────────────────────────────────
 
 function GuildsTab({ onObserve }: { onObserve: (guildId: string, guildName: string) => void }) {
-  const { rest } = useAuth();
+  const { rest, user: self } = useAuth();
   const toasts = useToasts();
+  // Moderators can observe but not delete servers (server-enforced too).
+  const selfIsAdmin = self?.isAdmin === true;
   const [guilds, setGuilds] = useState<AdminGuild[] | null>(null);
   const [q, setQ] = useState('');
   const [pending, setPending] = useState<string | null>(null);
@@ -1038,14 +1168,16 @@ function GuildsTab({ onObserve }: { onObserve: (guildId: string, guildName: stri
                   >
                     Observe
                   </button>
-                  <button
-                    onClick={() => deleteGuild(g)}
-                    disabled={pending === g.id}
-                    className="text-xs px-2 py-1 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 disabled:opacity-50 transition-colors"
-                    title="Permanently delete this server"
-                  >
-                    Delete
-                  </button>
+                  {selfIsAdmin && (
+                    <button
+                      onClick={() => deleteGuild(g)}
+                      disabled={pending === g.id}
+                      className="text-xs px-2 py-1 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 disabled:opacity-50 transition-colors"
+                      title="Permanently delete this server"
+                    >
+                      Delete
+                    </button>
+                  )}
                 </div>
               </li>
             );

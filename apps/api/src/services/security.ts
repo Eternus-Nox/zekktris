@@ -16,7 +16,8 @@
  *     content snapshot for review.
  */
 
-import { and, desc, eq, lt } from 'drizzle-orm';
+import { and, desc, eq, like, lt } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { db, schema } from '../db';
 import { nextSnowflake } from '../snowflake';
 import { errors } from '../errors';
@@ -146,9 +147,27 @@ export async function addPresetWords(addedBy: bigint): Promise<number> {
 
 // ── Event log ───────────────────────────────────────────────────────────────
 
+/** Automated detections + staff-action audit kinds ('staff_' prefix). */
+export type SecurityEventKind =
+  | 'spam_limited'
+  | 'banned_word'
+  | 'staff_ban'
+  | 'staff_unban'
+  | 'staff_logout'
+  | 'staff_gift'
+  | 'staff_membership_reset'
+  | 'staff_dob_reset'
+  | 'staff_role_change'
+  | 'staff_observe'
+  | 'staff_guild_delete'
+  | 'staff_user_delete';
+
 export async function logEvent(input: {
-  kind: 'spam_limited' | 'banned_word';
-  userId: bigint;
+  kind: SecurityEventKind;
+  /** Event TARGET (message author / actioned user); null for guild-only. */
+  userId: bigint | null;
+  /** WHO performed a staff action; omit for automated detections. */
+  actorId?: bigint | null;
   guildId: bigint | null;
   channelId: bigint | null;
   detail: string;
@@ -158,6 +177,7 @@ export async function logEvent(input: {
     id: nextSnowflake(),
     kind: input.kind,
     userId: input.userId,
+    actorId: input.actorId ?? null,
     guildId: input.guildId,
     channelId: input.channelId,
     detail: input.detail,
@@ -166,12 +186,18 @@ export async function logEvent(input: {
 }
 
 export async function listEvents(opts: {
-  kind?: 'spam_limited' | 'banned_word';
+  /** Exact kind, or the 'staff' meta-filter (all staff_* audit kinds). */
+  kind?: string;
   before?: bigint;
   limit?: number;
 }) {
+  const actor = alias(schema.users, 'actor');
   const conds = [];
-  if (opts.kind) conds.push(eq(schema.securityEvents.kind, opts.kind));
+  if (opts.kind === 'staff') {
+    conds.push(like(schema.securityEvents.kind, 'staff\\_%'));
+  } else if (opts.kind) {
+    conds.push(eq(schema.securityEvents.kind, opts.kind));
+  }
   if (opts.before) conds.push(lt(schema.securityEvents.id, opts.before));
   const rows = await db
     .select({
@@ -185,9 +211,13 @@ export async function listEvents(opts: {
       createdAt: schema.securityEvents.createdAt,
       username: schema.users.username,
       displayName: schema.users.displayName,
+      actorId: schema.securityEvents.actorId,
+      actorUsername: actor.username,
+      actorDisplayName: actor.displayName,
     })
     .from(schema.securityEvents)
     .leftJoin(schema.users, eq(schema.securityEvents.userId, schema.users.id))
+    .leftJoin(actor, eq(schema.securityEvents.actorId, actor.id))
     .where(conds.length > 0 ? and(...conds) : undefined)
     .orderBy(desc(schema.securityEvents.id))
     .limit(Math.min(opts.limit ?? 50, 100));
@@ -197,6 +227,9 @@ export async function listEvents(opts: {
     userId: r.userId?.toString() ?? null,
     username: r.username,
     displayName: r.displayName,
+    actorId: r.actorId?.toString() ?? null,
+    actorUsername: r.actorUsername,
+    actorDisplayName: r.actorDisplayName,
     guildId: r.guildId?.toString() ?? null,
     channelId: r.channelId?.toString() ?? null,
     detail: r.detail,

@@ -8,8 +8,12 @@
  *   2. Banned words — instance-wide whole-word filter. Add words one at
  *      a time, browse the server's common preset list (add individually
  *      or all at once), remove via the pills.
- *   3. Security log — spam_limited / banned_word events with the
- *      offender, detail line, and content snapshot when present.
+ *   3. Security log — spam_limited / banned_word detections plus the
+ *      staff_* audit trail (every admin/moderator action), with the
+ *      actor, target, detail line, and content snapshot when present.
+ *
+ * Moderators see ONLY the security log — the config + word sections are
+ * admin-only (the API rejects those endpoints for moderators anyway).
  *
  * E2EE conversations are exempt by design — the server never inspects
  * encrypted content, so nothing from them can appear here.
@@ -21,19 +25,37 @@ import { useAuth } from '../auth/AuthContext';
 import { useToasts } from '../state/Toasts';
 import { Plus, Shield, X as CloseIcon } from '../lib/icons';
 
+type KindFilter = 'spam_limited' | 'banned_word' | 'staff' | undefined;
+
+/** Badge labels for the staff-action audit kinds. */
+const STAFF_KIND_LABELS: Record<string, string> = {
+  staff_ban: 'Ban',
+  staff_unban: 'Unban',
+  staff_logout: 'Sign-out',
+  staff_gift: 'Membership gift',
+  staff_membership_reset: 'Membership reset',
+  staff_dob_reset: 'DOB reset',
+  staff_role_change: 'Role change',
+  staff_observe: 'Observe',
+  staff_guild_delete: 'Server delete',
+  staff_user_delete: 'Account delete',
+};
+
 export function AdminSecurityTab() {
-  const { rest } = useAuth();
+  const { rest, user: self } = useAuth();
   const toasts = useToasts();
+  // Moderators only get the log; config + banned words are admin-only.
+  const selfIsAdmin = self?.isAdmin === true;
   const [config, setConfig] = useState<SecurityConfig | null>(null);
   const [words, setWords] = useState<string[]>([]);
   const [events, setEvents] = useState<SecurityEvent[]>([]);
-  const [kindFilter, setKindFilter] = useState<'spam_limited' | 'banned_word' | undefined>();
+  const [kindFilter, setKindFilter] = useState<KindFilter>();
   const [newWord, setNewWord] = useState('');
   const [showPreset, setShowPreset] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const loadEvents = useCallback(
-    async (kind?: 'spam_limited' | 'banned_word') => {
+    async (kind?: KindFilter) => {
       try {
         const r = await rest.adminSecurityEvents({ kind });
         setEvents(r.events);
@@ -47,6 +69,11 @@ export function AdminSecurityTab() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      if (!selfIsAdmin) {
+        // Moderator view: the log is the whole tab.
+        setLoading(false);
+        return;
+      }
       try {
         const [cfg, w] = await Promise.all([
           rest.adminSecurityConfig(),
@@ -65,7 +92,7 @@ export function AdminSecurityTab() {
     return () => {
       cancelled = true;
     };
-  }, [rest, loadEvents, toasts]);
+  }, [rest, loadEvents, toasts, selfIsAdmin]);
 
   const patch = async (p: Partial<SecurityConfig>) => {
     if (!config) return;
@@ -107,7 +134,8 @@ export function AdminSecurityTab() {
 
   return (
     <div className="max-w-3xl space-y-8">
-      {/* ── Spam protection ─────────────────────────────────────────── */}
+      {/* ── Spam protection (admin-only) ────────────────────────────── */}
+      {selfIsAdmin && (
       <section className="space-y-3">
         <h2 className="text-xs uppercase tracking-wider text-ink-3 font-semibold">
           Spam protection
@@ -148,8 +176,10 @@ export function AdminSecurityTab() {
           </div>
         )}
       </section>
+      )}
 
-      {/* ── Banned words ────────────────────────────────────────────── */}
+      {/* ── Banned words (admin-only) ───────────────────────────────── */}
+      {selfIsAdmin && (
       <section className="space-y-3">
         <h2 className="text-xs uppercase tracking-wider text-ink-3 font-semibold">Banned words</h2>
         {config && (
@@ -220,17 +250,19 @@ export function AdminSecurityTab() {
           </div>
         )}
       </section>
+      )}
 
       {/* ── Security log ────────────────────────────────────────────── */}
       <section className="space-y-3">
         <h2 className="text-xs uppercase tracking-wider text-ink-3 font-semibold">Security log</h2>
-        <div className="flex gap-1.5">
+        <div className="flex gap-1.5 flex-wrap">
           {(
             [
               [undefined, 'All'],
               ['spam_limited', 'Spam'],
               ['banned_word', 'Banned words'],
-            ] as Array<[typeof kindFilter, string]>
+              ['staff', 'Staff actions'],
+            ] as Array<[KindFilter, string]>
           ).map(([k, label]) => (
             <button
               key={label}
@@ -253,33 +285,54 @@ export function AdminSecurityTab() {
           <p className="text-sm text-ink-3 py-6 text-center">Nothing logged. That's a good sign.</p>
         ) : (
           <ul className="space-y-2">
-            {events.map((ev) => (
-              <li key={ev.id} className="bg-bg-2 border border-line rounded-lg px-3 py-2.5">
-                <div className="flex items-center gap-2 text-xs">
-                  <span
-                    className={`px-1.5 py-0.5 rounded font-medium ${
-                      ev.kind === 'spam_limited'
-                        ? 'bg-amber-500/15 text-amber-400'
-                        : 'bg-red-500/15 text-red-400'
-                    }`}
-                  >
-                    {ev.kind === 'spam_limited' ? 'Spam limited' : 'Banned word'}
-                  </span>
-                  <span className="text-ink-2 font-medium truncate">
-                    {ev.displayName ?? ev.username ?? 'Unknown user'}
-                  </span>
-                  <span className="text-ink-3 ml-auto shrink-0">
-                    {new Date(ev.createdAt).toLocaleString()}
-                  </span>
-                </div>
-                <p className="text-sm text-ink-2 mt-1">{ev.detail}</p>
-                {ev.contentSnapshot && (
-                  <p className="text-xs text-ink-3 font-mono mt-1 bg-bg-1 rounded px-2 py-1 break-words">
-                    {ev.contentSnapshot}
-                  </p>
-                )}
-              </li>
-            ))}
+            {events.map((ev) => {
+              const isStaff = ev.kind.startsWith('staff_');
+              const badge = isStaff
+                ? (STAFF_KIND_LABELS[ev.kind] ?? 'Staff action')
+                : ev.kind === 'spam_limited'
+                  ? 'Spam limited'
+                  : 'Banned word';
+              const actor = ev.actorDisplayName ?? ev.actorUsername;
+              const target = ev.displayName ?? ev.username;
+              return (
+                <li key={ev.id} className="bg-bg-2 border border-line rounded-lg px-3 py-2.5">
+                  <div className="flex items-center gap-2 text-xs">
+                    <span
+                      className={`px-1.5 py-0.5 rounded font-medium ${
+                        isStaff
+                          ? 'bg-sky-500/15 text-sky-400'
+                          : ev.kind === 'spam_limited'
+                            ? 'bg-amber-500/15 text-amber-400'
+                            : 'bg-red-500/15 text-red-400'
+                      }`}
+                    >
+                      {badge}
+                    </span>
+                    {/* Staff rows read "actor → target"; detection rows just
+                        name the offender. */}
+                    {isStaff ? (
+                      <span className="text-ink-2 font-medium truncate">
+                        {actor ?? 'Unknown staff'}
+                        {target && <span className="text-ink-3 font-normal"> → {target}</span>}
+                      </span>
+                    ) : (
+                      <span className="text-ink-2 font-medium truncate">
+                        {target ?? 'Unknown user'}
+                      </span>
+                    )}
+                    <span className="text-ink-3 ml-auto shrink-0">
+                      {new Date(ev.createdAt).toLocaleString()}
+                    </span>
+                  </div>
+                  <p className="text-sm text-ink-2 mt-1">{ev.detail}</p>
+                  {ev.contentSnapshot && (
+                    <p className="text-xs text-ink-3 font-mono mt-1 bg-bg-1 rounded px-2 py-1 break-words">
+                      {ev.contentSnapshot}
+                    </p>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>

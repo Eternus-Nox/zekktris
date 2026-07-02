@@ -26,6 +26,8 @@ declare module 'hono' {
     sessionId?: bigint;
     /** Set by requireNodeUser (node mode) when a backbone token is verified. */
     nodeUser?: { userId: bigint; guildId: bigint; roleIds: bigint[] };
+    /** Set by requireStaff: true = full admin, false = moderator. */
+    staffIsAdmin?: boolean;
   }
 }
 

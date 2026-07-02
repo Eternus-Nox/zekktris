@@ -715,6 +715,13 @@
       "when": 1784600227000,
       "tag": "0102_achievements_public_default",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1784600228000,
+      "tag": "0103_security_events_actor",
+      "breakpoints": true
     }
   ]
 }

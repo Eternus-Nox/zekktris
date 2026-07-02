@@ -2631,7 +2631,8 @@ export class RestClient {
     return this.request('PATCH', '/admin/security/config', patch);
   }
 
-  adminSecurityEvents(opts: { kind?: 'spam_limited' | 'banned_word'; before?: string; limit?: number } = {}): Promise<{ events: SecurityEvent[] }> {
+  /** `kind: 'staff'` is a meta-filter matching every staff_* audit kind. */
+  adminSecurityEvents(opts: { kind?: 'spam_limited' | 'banned_word' | 'staff'; before?: string; limit?: number } = {}): Promise<{ events: SecurityEvent[] }> {
     const q = new URLSearchParams();
     if (opts.kind) q.set('kind', opts.kind);
     if (opts.before) q.set('before', opts.before);
@@ -2744,8 +2745,13 @@ export class RestClient {
     return this.request('DELETE', `/admin/users/${userId}/subscription`);
   }
 
-  adminSetUserAdmin(userId: string, isAdmin: boolean): Promise<{ ok: boolean }> {
-    return this.request('POST', `/admin/users/${userId}/admin`, { isAdmin });
+  /** Set a user's instance role. The two flags are mutually exclusive
+   *  server-side; 'none' clears both. Admin-only. */
+  adminSetUserRole(
+    userId: string,
+    role: 'administrator' | 'moderator' | 'none',
+  ): Promise<{ ok: boolean }> {
+    return this.request('POST', `/admin/users/${userId}/role`, { role });
   }
 
   /** Force-logout: revoke all sessions for a user without banning them. */
@@ -3216,6 +3222,10 @@ export interface AdminUser {
   email: string;
   avatarUrl: string | null;
   isAdmin: boolean;
+  /** Instance moderator (restricted staff role). */
+  isModerator: boolean;
+  /** Date of birth (YYYY-MM-DD); null for legacy accounts that never set one. */
+  dateOfBirth: string | null;
   bannedAt: string | null;
   createdAt: string;
   /** Approx last-active time (max session activity); null if never. */

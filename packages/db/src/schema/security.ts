@@ -19,9 +19,15 @@ export const securityEvents = pgTable(
   'security_events',
   {
     id: bigint('id', { mode: 'bigint' }).primaryKey(),
-    /** 'spam_limited' | 'banned_word' — extend as detectors are added. */
-    kind: text('kind').$type<'spam_limited' | 'banned_word'>().notNull(),
+    /** Automated detectors ('spam_limited' | 'banned_word') plus staff-action
+        audit kinds ('staff_ban', 'staff_gift', …). Text — extend freely. */
+    kind: text('kind').notNull(),
+    /** The TARGET of the event (message author / actioned user). */
     userId: bigint('user_id', { mode: 'bigint' }).references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    /** WHO performed a staff action (null for automated detections). */
+    actorId: bigint('actor_id', { mode: 'bigint' }).references(() => users.id, {
       onDelete: 'set null',
     }),
     guildId: bigint('guild_id', { mode: 'bigint' }).references(() => guilds.id, {

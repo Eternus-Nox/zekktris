@@ -106,6 +106,10 @@ export interface SelfUser extends PublicUser {
       "access denied" message because the API will reject the
       requests anyway. */
   isAdmin?: boolean;
+  /** Instance moderator — restricted staff subset of the admin panel
+      (security log, ban/unban, sign-out, capped gifting, DOB reset,
+      server observe). */
+  isModerator?: boolean;
   /** Whether the user's achievements shelf is visible to others. */
   achievementsPublic?: boolean;
   /** Per-user guild rail ordering. Null = no preference; client falls
@@ -961,10 +965,17 @@ export interface SecurityConfig {
 
 export interface SecurityEvent {
   id: string;
-  kind: 'spam_limited' | 'banned_word';
+  /** Automated detections ('spam_limited' | 'banned_word') plus staff-action
+      audit kinds ('staff_ban', 'staff_gift', …). */
+  kind: string;
+  /** The TARGET of the event (message author / actioned user). */
   userId: string | null;
   username: string | null;
   displayName: string | null;
+  /** WHO performed a staff action (null for automated detections). */
+  actorId: string | null;
+  actorUsername: string | null;
+  actorDisplayName: string | null;
   guildId: string | null;
   channelId: string | null;
   detail: string;

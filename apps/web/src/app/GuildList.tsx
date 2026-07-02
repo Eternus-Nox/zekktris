@@ -339,7 +339,7 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
               Lands on /admin which renders inside Shell so the side
               rails stay visible. Gated again at the page level so a
               direct nav can't sneak past the UI check. */}
-          {user.isAdmin && (
+          {(user.isAdmin || user.isModerator) && (
             <Link
               to="/admin"
               title="Instance admin"

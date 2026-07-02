@@ -1,8 +1,9 @@
 /**
  * Admin routes
  * ------------
- * Instance-admin endpoints. Gated by users.is_admin via the
- * `requireAdmin` middleware. Designed for the self-hosted operator
+ * Instance-staff endpoints. Gated by `requireStaff` (users.is_admin OR
+ * users.is_moderator); moderators are further path-restricted to an
+ * explicit allowlist below. Designed for the self-hosted operator
  * use case: see who's on the instance, what's growing in size, and
  * have a way to act on bad actors.
  *
@@ -11,15 +12,17 @@
  *   GET    /api/v1/admin/users           list users (paginated, searchable)
  *   POST   /api/v1/admin/users/:id/ban   soft-ban a user (sets banned_at, revokes all sessions)
  *   POST   /api/v1/admin/users/:id/unban undo a soft-ban
- *   POST   /api/v1/admin/users/:id/admin grant or revoke instance admin
+ *   POST   /api/v1/admin/users/:id/role  set instance role (administrator/moderator/none)
  *   GET    /api/v1/admin/guilds          list all guilds with member counts
  *   GET    /api/v1/admin/storage         disk usage breakdown
  *
  * Permission model: NOT per-guild — these are server-operator
  * actions. The is_admin flag should be set by the operator directly
  * via SQL (`UPDATE users SET is_admin=true WHERE id=...`) for the
- * bootstrap admin; the admin-grant endpoint handles subsequent
- * promotions.
+ * bootstrap admin; the role endpoint handles subsequent promotions.
+ *
+ * Every staff action lands in the security_events audit log (see
+ * auditStaff below) so admins/moderators leave a reviewable trail.
  */
 
 import { Hono } from 'hono';
@@ -28,7 +31,7 @@ import { and, desc, eq, gt, ilike, inArray, isNotNull, isNull, or, sql } from 'd
 import { db, schema } from '../db';
 import { errors } from '../errors';
 import { validate } from '../lib/validate';
-import { requireAuth, requireAdmin, requireUserId } from '../auth/middleware';
+import { requireAuth, requireStaff, requireUserId, staffIsAdmin } from '../auth/middleware';
 import { revokeAllUserSessions } from '../auth/sessions';
 import * as voice from '../services/voice';
 import * as dispatch from '../gateway/dispatch';
@@ -40,12 +43,87 @@ import {
   compressStorageItem,
   runAttachmentGcSweep,
 } from '../services/uploads';
+import { logEvent, type SecurityEventKind } from '../services/security';
 
 export const adminRouter = new Hono();
 
-// All routes here require auth + admin. Compose once at the router
-// level so we can't accidentally forget the gate on a new endpoint.
-adminRouter.use('*', requireAuth, requireAdmin);
+// ── Staff gate + moderator allowlist ────────────────────────────────────────
+//
+// All routes require auth + staff (admin OR moderator). Moderators are then
+// path-restricted to an explicit allowlist — anything not listed is
+// admin-only, so a new endpoint added tomorrow is FAIL-SAFE (admin-only)
+// until someone deliberately opens it to moderators.
+//
+// Moderator scope (per operator spec): security log (read), ban/unban,
+// force sign-out, membership view + gifting capped at 3 months, DOB reset,
+// and observing servers (peek) — but NOT deleting them.
+const MODERATOR_ALLOWED: { method: string; pattern: RegExp }[] = [
+  { method: 'GET', pattern: /^\/users$/ },
+  { method: 'POST', pattern: /^\/users\/[0-9]+\/(ban|unban|logout|reset-dob-lock)$/ },
+  // Gift only — the DELETE (membership reset) stays admin-only. The 3-month
+  // duration cap is enforced in the handler.
+  { method: 'POST', pattern: /^\/users\/[0-9]+\/subscription$/ },
+  { method: 'GET', pattern: /^\/guilds$/ },
+  { method: 'GET', pattern: /^\/guilds\/[0-9]+\/peek$/ },
+  { method: 'GET', pattern: /^\/channels\/[0-9]+\/peek\/messages$/ },
+  { method: 'GET', pattern: /^\/security\/events$/ },
+];
+
+adminRouter.use('*', requireAuth, requireStaff, async (c, next) => {
+  if (!staffIsAdmin(c)) {
+    // Hono strips the router mount prefix, so c.req.path is the full URL
+    // path — normalize to router-relative before matching the allowlist.
+    const path = c.req.path.replace(/^\/api\/v1\/admin/, '') || '/';
+    const ok = MODERATOR_ALLOWED.some(
+      (r) => r.method === c.req.method && r.pattern.test(path),
+    );
+    if (!ok) throw errors.forbidden('Instance admin required');
+  }
+  await next();
+});
+
+// ── Staff audit log ─────────────────────────────────────────────────────────
+// Every admin/moderator action lands in the security_events log the Security
+// tab displays. Best-effort: a logging failure must never abort the action
+// itself (the ban/gift/etc. already landed), so errors are printed, not
+// thrown.
+async function auditStaff(
+  c: import('hono').Context,
+  kind: SecurityEventKind,
+  detail: string,
+  target?: { userId?: bigint | null; guildId?: bigint | null },
+) {
+  try {
+    await logEvent({
+      kind,
+      userId: target?.userId ?? null,
+      actorId: requireUserId(c),
+      guildId: target?.guildId ?? null,
+      channelId: null,
+      detail,
+    });
+  } catch (err) {
+    console.error('[admin] staff audit log failed:', err);
+  }
+}
+
+/**
+ * Moderators may not ban/unban/sign-out other staff — that would let a
+ * moderator lock out the admins who supervise them. Admin callers pass
+ * unconditionally (admins CAN act on each other, by design).
+ */
+async function assertModCanTouch(c: import('hono').Context, targetId: bigint) {
+  if (staffIsAdmin(c)) return;
+  const rows = await db
+    .select({ isAdmin: schema.users.isAdmin, isModerator: schema.users.isModerator })
+    .from(schema.users)
+    .where(eq(schema.users.id, targetId))
+    .limit(1);
+  const t = rows[0];
+  if (t && (t.isAdmin || t.isModerator)) {
+    throw errors.forbidden('Moderators cannot act on staff accounts');
+  }
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // GET /admin/stats — high-level instance health
@@ -219,6 +297,8 @@ adminRouter.get('/users', validate('query', listUsersQuery), async (c) => {
       email: schema.users.email,
       avatarUrl: schema.users.avatarUrl,
       isAdmin: schema.users.isAdmin,
+      isModerator: schema.users.isModerator,
+      dateOfBirth: schema.users.dateOfBirth,
       bannedAt: schema.users.bannedAt,
       createdAt: schema.users.createdAt,
     })
@@ -274,6 +354,8 @@ adminRouter.get('/users', validate('query', listUsersQuery), async (c) => {
       email: r.email,
       avatarUrl: r.avatarUrl,
       isAdmin: r.isAdmin,
+      isModerator: r.isModerator,
+      dateOfBirth: r.dateOfBirth ?? null,
       bannedAt: r.bannedAt?.toISOString() ?? null,
       createdAt: r.createdAt.toISOString(),
       lastSeenAt: seenMap.get(r.id.toString()) ?? null,
@@ -303,10 +385,12 @@ adminRouter.post('/users/:id/ban', validate('param', userIdParam), async (c) => 
   if (targetId === selfId) {
     throw errors.badRequest('You cannot ban yourself');
   }
+  await assertModCanTouch(c, targetId);
   await db
     .update(schema.users)
     .set({ bannedAt: new Date(), updatedAt: new Date() })
     .where(and(eq(schema.users.id, targetId), isNull(schema.users.deletedAt)));
+  await auditStaff(c, 'staff_ban', 'Banned account', { userId: targetId });
   // Force immediate logout across all devices. Token-level revocation
   // is up to 15 min lagged for currently-issued access tokens; this
   // additionally prevents refresh, so the lag is the worst case for
@@ -374,10 +458,12 @@ adminRouter.post('/users/:id/ban', validate('param', userIdParam), async (c) => 
 
 adminRouter.post('/users/:id/unban', validate('param', userIdParam), async (c) => {
   const targetId = BigInt(c.req.valid('param').id);
+  await assertModCanTouch(c, targetId);
   await db
     .update(schema.users)
     .set({ bannedAt: null, updatedAt: new Date() })
     .where(and(eq(schema.users.id, targetId), isNull(schema.users.deletedAt)));
+  await auditStaff(c, 'staff_unban', 'Unbanned account', { userId: targetId });
   return c.json({ ok: true });
 });
 
@@ -441,33 +527,50 @@ adminRouter.delete('/users/:id', validate('param', userIdParam), async (c) => {
   const deleted = await db
     .delete(schema.users)
     .where(eq(schema.users.id, targetId))
-    .returning({ id: schema.users.id });
+    .returning({ id: schema.users.id, username: schema.users.username });
 
   if (deleted.length === 0) throw errors.notFound('User');
+  // The user row is gone, so user_id can't reference it — the who/what
+  // lives in the detail text instead.
+  await auditStaff(
+    c,
+    'staff_user_delete',
+    `Deleted account @${deleted[0]!.username} (${targetId})`,
+  );
   return c.json({ deleted: true });
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// POST /admin/users/:id/admin — promote/demote
+// POST /admin/users/:id/role — set instance role (admin-only)
 // ───────────────────────────────────────────────────────────────────────────
+// Three-state: administrator | moderator | none. The two flags are mutually
+// exclusive — promoting to one clears the other. Moderators can't reach this
+// endpoint at all (not on the allowlist), so only admins hand out roles.
 
-const setAdminBody = z.object({ isAdmin: z.boolean() });
+const setRoleBody = z.object({ role: z.enum(['administrator', 'moderator', 'none']) });
 
 adminRouter.post(
-  '/users/:id/admin',
+  '/users/:id/role',
   validate('param', userIdParam),
-  validate('json', setAdminBody),
+  validate('json', setRoleBody),
   async (c) => {
     const selfId = requireUserId(c);
     const targetId = BigInt(c.req.valid('param').id);
-    const { isAdmin } = c.req.valid('json');
-    if (targetId === selfId && !isAdmin) {
+    const { role } = c.req.valid('json');
+    if (targetId === selfId && role !== 'administrator') {
       throw errors.badRequest('You cannot demote yourself');
     }
     await db
       .update(schema.users)
-      .set({ isAdmin, updatedAt: new Date() })
+      .set({
+        isAdmin: role === 'administrator',
+        isModerator: role === 'moderator',
+        updatedAt: new Date(),
+      })
       .where(and(eq(schema.users.id, targetId), isNull(schema.users.deletedAt)));
+    await auditStaff(c, 'staff_role_change', `Set instance role to ${role}`, {
+      userId: targetId,
+    });
     return c.json({ ok: true });
   },
 );
@@ -484,6 +587,9 @@ adminRouter.post('/users/:id/reset-dob-lock', validate('param', userIdParam), as
     .update(schema.users)
     .set({ dobLocked: false, updatedAt: new Date() })
     .where(and(eq(schema.users.id, targetId), isNull(schema.users.deletedAt)));
+  await auditStaff(c, 'staff_dob_reset', 'Unlocked date of birth for one change', {
+    userId: targetId,
+  });
   return c.json({ ok: true });
 });
 
@@ -507,8 +613,15 @@ adminRouter.post(
     const selfId = requireUserId(c);
     const targetId = BigInt(c.req.valid('param').id);
     const { tier, duration } = c.req.valid('json');
+    // Moderators can gift up to 3 months; 6m/forever are admin-only.
+    if (!staffIsAdmin(c) && duration !== '1m' && duration !== '3m') {
+      throw errors.forbidden('Moderators can gift up to 3 months');
+    }
     const subs = await import('../services/subscriptions');
     const row = await subs.giftSubscription(selfId, targetId, tier, duration);
+    await auditStaff(c, 'staff_gift', `Gifted ${tier} membership (${duration})`, {
+      userId: targetId,
+    });
     return c.json({
       ok: true,
       subscription: { tier: row.tier, expiresAt: row.expiresAt?.toISOString() ?? null },
@@ -520,6 +633,9 @@ adminRouter.delete('/users/:id/subscription', validate('param', userIdParam), as
   const targetId = BigInt(c.req.valid('param').id);
   const subs = await import('../services/subscriptions');
   await subs.removeSubscription(targetId);
+  await auditStaff(c, 'staff_membership_reset', 'Reset membership (removed tier)', {
+    userId: targetId,
+  });
   return c.json({ ok: true });
 });
 
@@ -723,6 +839,7 @@ adminRouter.post('/storage/gc', async (c) => {
 
 adminRouter.post('/users/:id/logout', validate('param', userIdParam), async (c) => {
   const targetId = BigInt(c.req.valid('param').id);
+  await assertModCanTouch(c, targetId);
   await revokeAllUserSessions(targetId);
   // Close live WebSockets so the in-flight session can't keep reading
   // events with a not-yet-expired access token. Without this the
@@ -739,6 +856,7 @@ adminRouter.post('/users/:id/logout', validate('param', userIdParam), async (c) 
       // Already closed.
     }
   }
+  await auditStaff(c, 'staff_logout', 'Signed out all sessions', { userId: targetId });
   return c.json({ ok: true });
 });
 
@@ -772,6 +890,14 @@ adminRouter.delete('/guilds/:id', validate('param', guildIdParam), async (c) => 
     .from(schema.guildMembers)
     .where(eq(schema.guildMembers.guildId, guildId));
 
+  // Name for the audit trail (soft delete keeps the row, but the log line
+  // should read well without a join).
+  const nameRows = await db
+    .select({ name: schema.guilds.name })
+    .from(schema.guilds)
+    .where(eq(schema.guilds.id, guildId))
+    .limit(1);
+
   // Evict every user currently in voice within this guild before
   // the delete lands. Without this, LiveKit tokens stay valid up
   // to ~1 hour and participants keep streaming audio in rooms that
@@ -802,6 +928,12 @@ adminRouter.delete('/guilds/:id', validate('param', guildIdParam), async (c) => 
     memberIds: memberRows.map((r) => r.userId),
   });
 
+  await auditStaff(
+    c,
+    'staff_guild_delete',
+    `Deleted server "${nameRows[0]?.name ?? guildId}"`,
+    { guildId },
+  );
   return c.json({ ok: true });
 });
 
@@ -945,6 +1077,11 @@ adminRouter.get('/guilds/:id/peek', validate('param', guildIdParam), async (c) =
   ]);
   const g = guildRows[0];
   if (!g) throw errors.notFound('Guild');
+
+  // One audit row per observe session (opening the peek view). The
+  // per-channel message fetches below aren't logged individually — that
+  // would flood the log with a row per channel click.
+  await auditStaff(c, 'staff_observe', `Observed server "${g.name}"`, { guildId });
 
   return c.json({
     guild: {
@@ -1101,7 +1238,8 @@ adminRouter.get(
 // ───────────────────────────────────────────────────────────────────────────
 
 const securityEventsQuery = z.object({
-  kind: z.enum(['spam_limited', 'banned_word']).optional(),
+  // 'staff' is a meta-filter matching every staff_* audit kind.
+  kind: z.enum(['spam_limited', 'banned_word', 'staff']).optional(),
   before: z.string().regex(/^[0-9]+$/).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });

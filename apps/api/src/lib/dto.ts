@@ -36,6 +36,8 @@ export interface SelfUserDTO {
       don't need a server cleanup job. */
   customStatusExpiresAt: string | null;
   isAdmin: boolean;
+  /** Instance moderator — restricted staff subset of the admin panel. */
+  isModerator: boolean;
   locale: string;
   /** Per-user guild rail ordering. Null = no preference (client uses
       natural API order). Always reflects the latest server state;
@@ -183,6 +185,7 @@ export function toSelfUser(
     customStatusEmoji: user.customStatusEmoji ?? null,
     customStatusExpiresAt: isoDate(user.customStatusExpiresAt),
     isAdmin: user.isAdmin,
+    isModerator: user.isModerator,
     locale: user.locale,
     guildOrder: user.guildOrder ?? null,
     guildFolders: user.guildFolders ?? [],

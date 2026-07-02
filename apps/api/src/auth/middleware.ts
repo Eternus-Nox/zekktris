@@ -124,3 +124,37 @@ export const requireAdmin: MiddlewareHandler = async (c, next) => {
   }
   await next();
 };
+
+/**
+ * Staff gate (admin OR moderator) for the admin router. Same fresh-DB
+ * semantics as requireAdmin. Sets `staffIsAdmin` in context so route
+ * handlers and the moderator allowlist can distinguish the two roles —
+ * moderators get a restricted subset (security log, ban/unban, sign-out,
+ * membership view + capped gifting, DOB reset, server observe).
+ *
+ * Must be composed AFTER requireAuth in the route chain.
+ */
+export const requireStaff: MiddlewareHandler = async (c, next) => {
+  const userId = requireUserId(c);
+  const rows = await db
+    .select({
+      isAdmin: schema.users.isAdmin,
+      isModerator: schema.users.isModerator,
+      bannedAt: schema.users.bannedAt,
+      deletedAt: schema.users.deletedAt,
+    })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .limit(1);
+  const u = rows[0];
+  if (!u || (!u.isAdmin && !u.isModerator) || u.bannedAt || u.deletedAt) {
+    throw errors.forbidden('Instance staff required');
+  }
+  c.set('staffIsAdmin', u.isAdmin);
+  await next();
+};
+
+/** True when requireStaff resolved the caller as a full admin. */
+export function staffIsAdmin(c: import('hono').Context): boolean {
+  return c.get('staffIsAdmin') === true;
+}
