@@ -66,7 +66,13 @@ describe.runIf(dbReady)('GET /users/:id/achievements (route)', () => {
   });
 
   it('returns an empty list to a non-owner viewing a PRIVATE profile', async () => {
-    const target = await createUser(); // achievementsPublic defaults to false
+    // achievementsPublic defaults to TRUE (migration 0102) — opt this
+    // account out explicitly to exercise the private path.
+    const target = await createUser();
+    await db
+      .update(schema.users)
+      .set({ achievementsPublic: false })
+      .where(eq(schema.users.id, target));
     const viewer = await createUser();
 
     const res = await get(`/users/${target}/achievements`, await tokenFor(viewer));

@@ -31,6 +31,15 @@ function patchMe(token: string, body: unknown) {
   });
 }
 
+/** Clan tags are a paid cosmetic (membership hard-lock) — a bare account gets
+ *  403 membershipRequired before validation runs. Grant a forever membership
+ *  so these tests exercise the profanity bar, not the paywall. */
+async function memberUser(): Promise<bigint> {
+  const uid = await createUser();
+  await db.insert(schema.subscriptions).values({ userId: uid, tier: 'scout', source: 'gift' });
+  return uid;
+}
+
 // The name tag renders right next to the username everywhere, so it must clear
 // the same profanity bar as messages. PATCH /users/@me rejects a tag that
 // matches the shared banned-words preset.
@@ -41,7 +50,7 @@ describe.runIf(dbReady)('PATCH /users/@me — clan tag profanity', () => {
   });
 
   it('rejects a vulgar tag with 400 and does not persist it', async () => {
-    const uid = await createUser();
+    const uid = await memberUser();
     const res = await patchMe(await tokenFor(uid), { tagLabel: 'fuck' });
     expect(res.status).toBe(400);
     const [row] = await db
@@ -52,13 +61,13 @@ describe.runIf(dbReady)('PATCH /users/@me — clan tag profanity', () => {
   });
 
   it('rejects regardless of case', async () => {
-    const uid = await createUser();
+    const uid = await memberUser();
     const res = await patchMe(await tokenFor(uid), { tagLabel: 'ShiT' });
     expect(res.status).toBe(400);
   });
 
   it('accepts a clean tag and stores it', async () => {
-    const uid = await createUser();
+    const uid = await memberUser();
     const res = await patchMe(await tokenFor(uid), { tagLabel: 'GG' });
     expect(res.status).toBe(200);
     const [row] = await db

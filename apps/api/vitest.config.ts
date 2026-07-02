@@ -9,5 +9,11 @@ export default defineConfig({
     environment: 'node',
     setupFiles: ['./test/setup.ts'],
     include: ['test/**/*.test.ts'],
+    // The repo lives on a slow SMB volume: the FIRST test in a file pays the
+    // dynamic-import transform cost of its route/service graph, which under a
+    // full parallel run can exceed the 5s default (and occasionally even 20s).
+    // A generous ceiling only affects genuinely hung tests — passing tests
+    // still finish in milliseconds.
+    testTimeout: 40_000,
   },
 });
