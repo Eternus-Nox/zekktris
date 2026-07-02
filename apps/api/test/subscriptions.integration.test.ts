@@ -53,7 +53,7 @@ describe.runIf(dbReady)('supporter memberships (integration)', () => {
 
     await giftSubscription(admin, user, 'guardian', 'forever');
     const eff = await getEffectiveSubscription(user);
-    expect(eff).toEqual({ tier: 'guardian', expiresAt: null, inherited: false });
+    expect(eff).toEqual({ tier: 'guardian', expiresAt: null, inherited: false, titled: true });
   });
 
   it('timed gift sets an expiry; re-gifting overwrites tier + duration', async () => {
@@ -66,7 +66,7 @@ describe.runIf(dbReady)('supporter memberships (integration)', () => {
 
     await giftSubscription(admin, user, 'legend', 'forever');
     const second = await getEffectiveSubscription(user);
-    expect(second).toEqual({ tier: 'legend', expiresAt: null, inherited: false });
+    expect(second).toEqual({ tier: 'legend', expiresAt: null, inherited: false, titled: true });
   });
 
   it("a supervising parent's membership passes down (highest tier wins)", async () => {
@@ -85,6 +85,30 @@ describe.runIf(dbReady)('supporter memberships (integration)', () => {
 
     // The child's OWN row (none) is what admin tooling manages; entitlement
     // is read-time so unlinking would end it implicitly (supervision-tested).
+  });
+
+  it('founder (grandfathered) memberships have the perks but NO title; re-gifting titles them', async () => {
+    const admin = await createUser();
+    const founder = await createUser();
+    // Simulate the 0097 backfill + 0098 founder marking: forever row, no
+    // gifting admin, source 'founder'.
+    await db.insert(schema.subscriptions).values({
+      userId: founder,
+      tier: 'scout',
+      source: 'founder',
+      expiresAt: null,
+    });
+
+    const eff = await getEffectiveSubscription(founder);
+    expect(eff).not.toBeNull();
+    expect(await hasMembership(founder)).toBe(true); // perks work
+    expect(eff!.titled).toBe(false); // …but no title
+
+    // Choosing a tier (admin gift here; a paid sub later) titles them.
+    await giftSubscription(admin, founder, 'guardian', 'forever');
+    const regifted = await getEffectiveSubscription(founder);
+    expect(regifted!.titled).toBe(true);
+    expect(regifted!.tier).toBe('guardian');
   });
 
   it('admin reset removes the membership AND clears paid cosmetics', async () => {

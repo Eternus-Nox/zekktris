@@ -652,7 +652,12 @@ export function SettingsView() {
         <section className="rounded-xl border border-line bg-bg-2 p-3">
           <div className="flex items-baseline justify-between gap-2">
             <h2 className="text-sm font-semibold text-ink-1">Appearance</h2>
-            <TierBadge tier={user.subscriptionTier} />
+            {/* Founder (grandfathered) members have the perks but no title. */}
+            {user.subscriptionTitled ? (
+              <TierBadge tier={user.subscriptionTier} />
+            ) : (
+              <span className="text-[0.65rem] text-ink-3 shrink-0">Theme · OLED = true black</span>
+            )}
           </div>
 
           <h3 className="text-sm font-medium text-ink-1 mt-4 mb-1.5">Themes</h3>
@@ -778,10 +783,7 @@ export function SettingsView() {
               <div className="text-sm text-ink-2 font-medium mb-1">Parental controls</div>
               <ParentalControlsToggle />
             </div>
-            <div className="pt-3 border-t border-line">
-              <div className="text-sm text-ink-2 font-medium mb-1">Supporter tier</div>
-              <ShowTierToggle />
-            </div>
+            <ShowTierToggle />
             <div className="pt-3 border-t border-line">
               <div className="text-sm text-ink-2 font-medium mb-1">Achievements</div>
               <AchievementsVisibilityToggle />
@@ -1626,14 +1628,18 @@ function MembershipPitch() {
 
 /**
  * Profile privacy: whether the supporter tier title shows on the profile
- * popup. Only rendered for members (there's nothing to hide otherwise).
+ * popup. Only rendered for TITLED members — founder (grandfathered)
+ * memberships have no title, so there's nothing to show or hide. Renders its
+ * own bordered wrapper so non-titled users don't get an empty headed block.
  */
 function ShowTierToggle() {
   const { user, rest, updateUser } = useAuth();
   const [busy, setBusy] = useState(false);
-  if (!user?.subscriptionTier) return null;
+  if (!user?.subscriptionTier || !user.subscriptionTitled) return null;
   const shown = user.showSubscriptionTier !== false;
   return (
+    <div className="pt-3 border-t border-line">
+      <div className="text-sm text-ink-2 font-medium mb-1">Supporter tier</div>
     <div className="flex items-center justify-between gap-3 px-3 py-2.5 bg-bg-2 border border-line rounded-lg">
       <div className="min-w-0">
         <p className="text-sm text-ink-1">Show my supporter tier</p>
@@ -1666,6 +1672,7 @@ function ShowTierToggle() {
           }`}
         />
       </button>
+    </div>
     </div>
   );
 }

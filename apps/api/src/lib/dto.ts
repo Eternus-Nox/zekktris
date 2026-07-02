@@ -86,6 +86,10 @@ export interface SelfUserDTO {
   subscriptionExpiresAt?: string | null;
   /** True when the membership is inherited from a supervising parent. */
   subscriptionInherited?: boolean;
+  /** Whether the tier TITLE applies. False for founder (grandfathered)
+      memberships — perks without a title until a tier is chosen. Drives the
+      tier badge + the show-tier toggle in Settings. */
+  subscriptionTitled?: boolean;
   /** The account's date of birth (YYYY-MM-DD), or null for a legacy account
       that never set one. Self-only (never on the public user DTO). */
   dateOfBirth: string | null;
@@ -134,17 +138,28 @@ export function toSelfUser(
   user: User,
   /** Effective membership, when the route fetched it (GET/PATCH /@me). Pass
       null for "looked up, none" — undefined omits the fields entirely. */
-  membership?: { tier: string; expiresAt: Date | null; inherited: boolean } | null,
+  membership?: {
+    tier: string;
+    expiresAt: Date | null;
+    inherited: boolean;
+    titled: boolean;
+  } | null,
 ): SelfUserDTO {
   const membershipFields =
     membership === undefined
       ? {}
       : membership === null
-        ? { subscriptionTier: null, subscriptionExpiresAt: null, subscriptionInherited: false }
+        ? {
+            subscriptionTier: null,
+            subscriptionExpiresAt: null,
+            subscriptionInherited: false,
+            subscriptionTitled: false,
+          }
         : {
             subscriptionTier: membership.tier as 'scout' | 'guardian' | 'legend',
             subscriptionExpiresAt: isoDate(membership.expiresAt),
             subscriptionInherited: membership.inherited,
+            subscriptionTitled: membership.titled,
           };
   return {
     ...membershipFields,

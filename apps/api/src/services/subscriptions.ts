@@ -39,6 +39,10 @@ export interface EffectiveSubscription {
   expiresAt: Date | null;
   /** True when the membership is inherited from a supervising parent. */
   inherited: boolean;
+  /** Whether the tier TITLE shows. Founder (grandfathered) memberships carry
+      the perks but no title — titles are for supporters who chose a tier
+      (paid or admin-gifted). */
+  titled: boolean;
 }
 
 /** WHERE clause for an active (unexpired) subscription row. */
@@ -66,7 +70,12 @@ export async function getEffectiveSubscription(
 ): Promise<EffectiveSubscription | null> {
   const own = await getOwnSubscription(userId);
   if (own) {
-    return { tier: (own.tier as Tier) ?? 'scout', expiresAt: own.expiresAt, inherited: false };
+    return {
+      tier: (own.tier as Tier) ?? 'scout',
+      expiresAt: own.expiresAt,
+      inherited: false,
+      titled: own.source !== 'founder',
+    };
   }
 
   // Parent pass-down. getActiveParentIds already excludes ended links and
@@ -82,7 +91,12 @@ export async function getEffectiveSubscription(
     if (!sub) continue;
     const tier = (sub.tier as Tier) ?? 'scout';
     if (!best || (TIER_RANK[tier] ?? 0) > (TIER_RANK[best.tier] ?? 0)) {
-      best = { tier, expiresAt: sub.expiresAt, inherited: true };
+      best = {
+        tier,
+        expiresAt: sub.expiresAt,
+        inherited: true,
+        titled: sub.source !== 'founder',
+      };
     }
   }
   return best;

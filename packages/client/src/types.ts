@@ -146,6 +146,9 @@ export interface SelfUser extends PublicUser {
   subscriptionExpiresAt?: string | null;
   /** True when the membership is inherited from a supervising parent. */
   subscriptionInherited?: boolean;
+  /** Whether the tier TITLE applies. False for founder (grandfathered)
+      memberships — perks without a title until a tier is chosen. */
+  subscriptionTitled?: boolean;
   createdAt: string;
 }
 

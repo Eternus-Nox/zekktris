@@ -1161,13 +1161,18 @@ usersRouter.get(
     const { canReachByDmOrCall } = await import('../services/relationships');
     const canMessage = await canReachByDmOrCall(viewerId, targetId);
     // Supporter tier title for the profile popup. Hidden when the user opted
-    // out (show_subscription_tier=false); inherited (family pass-down) tiers
-    // show like owned ones. Self always sees their own tier.
+    // out (show_subscription_tier=false) and for UNTITLED (founder) rows —
+    // grandfathered members carry the perks but no title until they choose a
+    // tier. Inherited (family pass-down) titles show like owned ones.
     const subs = await import('../services/subscriptions');
     const showTier = user.showSubscriptionTier || targetId === viewerId;
     const membership = showTier ? await subs.getEffectiveSubscription(targetId) : null;
     return c.json({
-      user: { ...toPublicUser(user), canMessage, subscriptionTier: membership?.tier ?? null },
+      user: {
+        ...toPublicUser(user),
+        canMessage,
+        subscriptionTier: membership && membership.titled ? membership.tier : null,
+      },
     });
   },
 );
