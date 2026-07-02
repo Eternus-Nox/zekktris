@@ -26,8 +26,9 @@
  *  diameters. Unifying on the mask makes every frame the same size.)
  *
  *  2px band at the element's farthest-side edge. With the default
- *  `-inset-[3px]` container this reproduces the old solid 2px ring exactly:
- *  the band sits 1–3px outside the avatar. */
+ *  `-inset-[2px]` container the band spans avatar-edge → avatar-edge+2px, so
+ *  the frame sits FLUSH against the avatar (no background gap between the
+ *  picture and its frame — the earlier -inset-[3px] left a 1px dark spacer). */
 const RING_MASK =
   'radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))';
 
@@ -80,7 +81,7 @@ const BY_ID = new Map(AVATAR_DECORATIONS.map((d) => [d.id, d]));
  */
 export function AvatarDecoration({
   decoration,
-  className = 'absolute -inset-[3px] rounded-full pointer-events-none',
+  className = 'absolute -inset-[2px] rounded-full pointer-events-none',
 }: {
   decoration?: string | null;
   className?: string;

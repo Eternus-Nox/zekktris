@@ -1666,8 +1666,8 @@ function VoiceParticipant({ userId, muted, deaf }: { userId: string; muted: bool
           <div
             className={`relative w-6 h-6 rounded-full text-[0.7rem] flex items-center justify-center font-medium overflow-hidden ${tone}`}
           >
-            <span className="zk-avatar-initials absolute inset-0 flex items-center justify-center leading-none pointer-events-none">
-              {initials}
+            <span className="absolute inset-0 flex items-center justify-center leading-none pointer-events-none">
+              <span className="zk-avatar-initials">{initials}</span>
             </span>
             <AvatarImage src={u?.avatarUrl} />
           </div>

@@ -1350,8 +1350,8 @@ const ParticipantTile = memo(function ParticipantTile({
         <div
           className={`relative w-full h-full rounded-full text-sm sm:text-base font-bold flex items-center justify-center overflow-hidden ${tone}`}
         >
-          <span className="zk-avatar-initials absolute inset-0 flex items-center justify-center leading-none pointer-events-none">
-            {initials}
+          <span className="absolute inset-0 flex items-center justify-center leading-none pointer-events-none">
+            <span className="zk-avatar-initials">{initials}</span>
           </span>
           <AvatarImage src={avatarUrl} />
         </div>
@@ -1416,8 +1416,8 @@ const ParticipantTile = memo(function ParticipantTile({
         <div
           className={`relative w-full h-full rounded-full text-lg sm:text-2xl md:text-3xl font-bold flex items-center justify-center overflow-hidden ${tone}`}
         >
-          <span className="zk-avatar-initials absolute inset-0 flex items-center justify-center leading-none pointer-events-none">
-            {initials}
+          <span className="absolute inset-0 flex items-center justify-center leading-none pointer-events-none">
+            <span className="zk-avatar-initials">{initials}</span>
           </span>
           <AvatarImage src={avatarUrl} />
         </div>
