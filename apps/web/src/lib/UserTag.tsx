@@ -38,9 +38,9 @@ export function UserTag({
       }}
       title={label}
     >
-      {/* Optical nudge for visual centering. translate keeps the pill's box
-          unchanged (no layout shift). */}
-      <span style={{ display: 'inline-block', transform: 'translate(0px, 0px)' }}>{label}</span>
+      {/* No optical nudges — the flex centering on the pill keeps the label
+          dead-center at every size (per user direction: always centered). */}
+      {label}
     </span>
   );
 }

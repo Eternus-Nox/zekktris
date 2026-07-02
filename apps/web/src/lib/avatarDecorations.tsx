@@ -69,6 +69,14 @@ export const AVATAR_DECORATIONS: DecoKind[] = [
     label: 'Emerald',
     fill: 'conic-gradient(from 120deg, #7ee787, #3dd7ec, #7ee787)',
   },
+  // Crimson + Ocean round the registry out to one frame per theme palette
+  // (Crimson theme's red; Forest theme's blue→green trio).
+  { id: 'crimson', label: 'Crimson', fill: '#ff4d4d', glow: 'rgba(255,77,77,0.6)' },
+  {
+    id: 'ocean',
+    label: 'Ocean',
+    fill: 'conic-gradient(from 160deg, #3d9bff, #3dd8c0, #4fdd8f, #3d9bff)',
+  },
 ];
 
 const BY_ID = new Map(AVATAR_DECORATIONS.map((d) => [d.id, d]));
