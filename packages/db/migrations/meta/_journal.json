@@ -694,6 +694,13 @@
       "when": 1784600224000,
       "tag": "0099_user_voice_stats",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1784600225000,
+      "tag": "0100_subscriptions_stripe",
+      "breakpoints": true
     }
   ]
 }

@@ -28,6 +28,7 @@ import { adminRouter } from './routes/admin';
 import { messagesRouter } from './routes/messages';
 import { webhooksAdminRouter, webhooksExecuteRouter } from './routes/webhooks';
 import { familyRouter } from './routes/family';
+import { billingRouter } from './routes/billing';
 import { dmsRouter } from './routes/dms';
 import { cdnRouter } from './routes/cdn';
 import { voiceRouter } from './routes/voice';
@@ -120,6 +121,10 @@ export function createApp() {
   // Parental controls — linking + supervision summary. Defines its own
   // /family/* paths so it mounts at the v1 root.
   v1.route('/', familyRouter);
+  // Stripe billing for supporter memberships (checkout/portal/webhook). The
+  // webhook (/api/v1/billing/webhook) is unauthenticated by design —
+  // authenticity comes from Stripe's signature over the raw body.
+  v1.route('/billing', billingRouter);
   app.route('/api/v1', v1);
 
   // Public webhook execute — outside /api/v1 so the auth middleware

@@ -43,6 +43,9 @@ export interface EffectiveSubscription {
       the perks but no title — titles are for supporters who chose a tier
       (paid or admin-gifted). */
   titled: boolean;
+  /** Where the membership came from: 'gift' | 'founder' | 'stripe'. The web
+      client shows "Manage subscription" only for own stripe rows. */
+  source: string;
 }
 
 /** WHERE clause for an active (unexpired) subscription row. */
@@ -75,6 +78,7 @@ export async function getEffectiveSubscription(
       expiresAt: own.expiresAt,
       inherited: false,
       titled: own.source !== 'founder',
+      source: own.source,
     };
   }
 
@@ -96,6 +100,7 @@ export async function getEffectiveSubscription(
         expiresAt: sub.expiresAt,
         inherited: true,
         titled: sub.source !== 'founder',
+        source: sub.source,
       };
     }
   }
@@ -126,6 +131,16 @@ export async function giftSubscription(
   if (!target) throw errors.notFound('User');
   if (target.isBot) throw errors.badRequest('Bots cannot hold memberships');
 
+  // Never silently clobber an active PAID subscription — the user would keep
+  // getting charged while their row says 'gift'. Reset it first (which also
+  // cancels it at Stripe), then gift.
+  const existing = await getOwnSubscription(userId);
+  if (existing?.source === 'stripe') {
+    throw errors.badRequest(
+      'This user has an active paid subscription. Reset their membership first (that cancels the Stripe subscription), then gift.',
+    );
+  }
+
   const expiresAt =
     duration === 'forever'
       ? null
@@ -144,11 +159,91 @@ export async function giftSubscription(
 /**
  * Admin reset: remove the user's membership AND hard-lock their paid
  * cosmetics (avatar frame + clan tag cleared; the client falls back to the
- * default theme when the entitlement is gone). Idempotent.
+ * default theme when the entitlement is gone). Idempotent. A paid (Stripe)
+ * membership is also canceled remotely — best-effort — so the user doesn't
+ * keep getting charged for an entitlement we just removed.
  */
 export async function removeSubscription(userId: bigint): Promise<void> {
-  await db.delete(schema.subscriptions).where(eq(schema.subscriptions.userId, userId));
+  const [row] = await db
+    .delete(schema.subscriptions)
+    .where(eq(schema.subscriptions.userId, userId))
+    .returning();
+  if (row?.source === 'stripe' && row.stripeSubscriptionId) {
+    const billing = await import('./billing');
+    await billing.cancelStripeSubscription(row.stripeSubscriptionId).catch(() => undefined);
+  }
   await clearPaidCosmetics(userId);
+}
+
+// ── Stripe row lifecycle (called by the billing webhook) ───────────────────
+// Pure DB mutations, kept here so they're testable without a Stripe client.
+// expiresAt = current period end + 24h grace: renewals (invoice.paid) push it
+// forward; if payments stop or a webhook is missed, the hourly expiry sweep
+// hard-locks automatically. Fail-safe by construction.
+
+const STRIPE_GRACE_MS = 24 * 60 * 60 * 1000;
+
+export async function activateStripeSubscription(input: {
+  userId: bigint;
+  tier: Tier;
+  stripeCustomerId: string;
+  stripeSubscriptionId: string;
+  currentPeriodEnd: Date;
+}) {
+  const [row] = await db
+    .insert(schema.subscriptions)
+    .values({
+      userId: input.userId,
+      tier: input.tier,
+      source: 'stripe',
+      giftedBy: null,
+      expiresAt: new Date(input.currentPeriodEnd.getTime() + STRIPE_GRACE_MS),
+      stripeCustomerId: input.stripeCustomerId,
+      stripeSubscriptionId: input.stripeSubscriptionId,
+    })
+    .onConflictDoUpdate({
+      target: schema.subscriptions.userId,
+      set: {
+        tier: input.tier,
+        source: 'stripe',
+        giftedBy: null,
+        expiresAt: new Date(input.currentPeriodEnd.getTime() + STRIPE_GRACE_MS),
+        stripeCustomerId: input.stripeCustomerId,
+        stripeSubscriptionId: input.stripeSubscriptionId,
+        updatedAt: new Date(),
+      },
+    })
+    .returning();
+  return row!;
+}
+
+/** Renewal / plan change: push expiry forward (and retier if changed). */
+export async function renewStripeSubscription(
+  stripeSubscriptionId: string,
+  currentPeriodEnd: Date,
+  tier?: Tier,
+): Promise<boolean> {
+  const updated = await db
+    .update(schema.subscriptions)
+    .set({
+      expiresAt: new Date(currentPeriodEnd.getTime() + STRIPE_GRACE_MS),
+      ...(tier ? { tier } : {}),
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.subscriptions.stripeSubscriptionId, stripeSubscriptionId))
+    .returning({ userId: schema.subscriptions.userId });
+  return updated.length > 0;
+}
+
+/** Stripe-side cancellation/deletion → hard-lock now (row + cosmetics). */
+export async function endStripeSubscription(stripeSubscriptionId: string): Promise<boolean> {
+  const [row] = await db
+    .delete(schema.subscriptions)
+    .where(eq(schema.subscriptions.stripeSubscriptionId, stripeSubscriptionId))
+    .returning({ userId: schema.subscriptions.userId });
+  if (!row) return false;
+  await clearPaidCosmetics(row.userId);
+  return true;
 }
 
 /** Strip the Appearance cosmetics a membership was paying for. */

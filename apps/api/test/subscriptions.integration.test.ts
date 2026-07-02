@@ -2,10 +2,13 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { db, schema } from '../src/db';
 import {
+  activateStripeSubscription,
+  endStripeSubscription,
   getEffectiveSubscription,
   giftSubscription,
   hasMembership,
   removeSubscription,
+  renewStripeSubscription,
   sweepExpiredSubscriptions,
 } from '../src/services/subscriptions';
 import { createUser, cleanupAll } from './seed';
@@ -53,7 +56,7 @@ describe.runIf(dbReady)('supporter memberships (integration)', () => {
 
     await giftSubscription(admin, user, 'guardian', 'forever');
     const eff = await getEffectiveSubscription(user);
-    expect(eff).toEqual({ tier: 'guardian', expiresAt: null, inherited: false, titled: true });
+    expect(eff).toEqual({ tier: 'guardian', expiresAt: null, inherited: false, titled: true, source: 'gift' });
   });
 
   it('timed gift sets an expiry; re-gifting overwrites tier + duration', async () => {
@@ -66,7 +69,7 @@ describe.runIf(dbReady)('supporter memberships (integration)', () => {
 
     await giftSubscription(admin, user, 'legend', 'forever');
     const second = await getEffectiveSubscription(user);
-    expect(second).toEqual({ tier: 'legend', expiresAt: null, inherited: false, titled: true });
+    expect(second).toEqual({ tier: 'legend', expiresAt: null, inherited: false, titled: true, source: 'gift' });
   });
 
   it("a supervising parent's membership passes down (highest tier wins)", async () => {
@@ -125,6 +128,49 @@ describe.runIf(dbReady)('supporter memberships (integration)', () => {
     const cosmetics = await userCosmetics(user);
     expect(cosmetics.avatarDecoration).toBeNull();
     expect(cosmetics.tagLabel).toBeNull();
+  });
+
+  it('stripe lifecycle: activate → titled member; renew extends; delete hard-locks', async () => {
+    const user = await createUser();
+    const periodEnd = new Date(Date.now() + 30 * 86_400_000);
+    await activateStripeSubscription({
+      userId: user,
+      tier: 'guardian',
+      stripeCustomerId: 'cus_test1',
+      stripeSubscriptionId: 'sub_test1',
+      currentPeriodEnd: periodEnd,
+    });
+    const eff = await getEffectiveSubscription(user);
+    expect(eff!.tier).toBe('guardian');
+    expect(eff!.titled).toBe(true);
+    expect(eff!.source).toBe('stripe');
+    // 24h grace beyond the period end.
+    expect(eff!.expiresAt!.getTime()).toBe(periodEnd.getTime() + 24 * 3_600_000);
+
+    // Renewal pushes the expiry forward (and can retier on plan change).
+    const nextEnd = new Date(Date.now() + 60 * 86_400_000);
+    expect(await renewStripeSubscription('sub_test1', nextEnd, 'legend')).toBe(true);
+    const renewed = await getEffectiveSubscription(user);
+    expect(renewed!.tier).toBe('legend');
+    expect(renewed!.expiresAt!.getTime()).toBe(nextEnd.getTime() + 24 * 3_600_000);
+
+    // Gifting over an active paid subscription is refused (would keep
+    // charging them while the row says gift).
+    const admin = await createUser();
+    await expect(giftSubscription(admin, user, 'scout', 'forever')).rejects.toThrow();
+
+    // Stripe-side deletion hard-locks: row gone + cosmetics cleared.
+    await db
+      .update(schema.users)
+      .set({ avatarDecoration: 'ocean', tagLabel: 'PAID' })
+      .where(eq(schema.users.id, user));
+    expect(await endStripeSubscription('sub_test1')).toBe(true);
+    expect(await hasMembership(user)).toBe(false);
+    const cosmetics = await userCosmetics(user);
+    expect(cosmetics.avatarDecoration).toBeNull();
+    expect(cosmetics.tagLabel).toBeNull();
+    // Unknown subscription id → no-op.
+    expect(await endStripeSubscription('sub_missing')).toBe(false);
   });
 
   it('expired rows grant nothing and the sweep hard-locks them', async () => {
