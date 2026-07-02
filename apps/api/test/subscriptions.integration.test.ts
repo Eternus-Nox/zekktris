@@ -47,9 +47,9 @@ describe.runIf(dbReady)('supporter memberships (integration)', () => {
     await closeDb();
   });
 
-  // 20s timeout: the first entitlement read pays the one-time dynamic import
+  // The first test in this file pays the one-time dynamic import
   // of the (large) supervision module — slow on the SMB-mounted repo.
-  it('no row → no membership; admin gift grants it; forever never expires', { timeout: 20_000 }, async () => {
+  it('no row → no membership; admin gift grants it; forever never expires', async () => {
     const admin = await createUser();
     const user = await createUser();
     expect(await hasMembership(user)).toBe(false);

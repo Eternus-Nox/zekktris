@@ -99,9 +99,9 @@ describe.runIf(dbReady)('bot slash-commands', () => {
     );
   });
 
-  // 20s timeout: this test pays the one-time dynamic-import transform cost
+  // The first test in this file pays the one-time dynamic-import transform cost
   // of the message/dispatch graph — slow on the SMB-mounted repo.
-  it('invoke resolves a command (delivers to the bot callback) and 404s unknown / 400s no-callback', { timeout: 20_000 }, async () => {
+  it('invoke resolves a command (delivers to the bot callback) and 404s unknown / 400s no-callback', async () => {
     const owner = await createUser();
     const g = await createGuild(owner, P.VIEW_CHANNEL);
     await addMember(g, owner);

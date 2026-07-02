@@ -24,7 +24,7 @@ describe.runIf(dbReady)('new achievements (integration)', () => {
     await closeDb();
   });
 
-  it('fresh account: every new family present, none earned', { timeout: 20_000 }, async () => {
+  it('fresh account: every new family present, none earned', async () => {
     const u = await createUser();
     const shelf = await achievementsForUser(u);
     for (const id of [

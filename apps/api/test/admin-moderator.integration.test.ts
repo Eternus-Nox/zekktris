@@ -51,9 +51,9 @@ describe.runIf(dbReady)('admin router: moderator authz + staff audit log', () =>
     await closeDb();
   });
 
-  // 20s timeout: first test pays the one-time dynamic-import transform cost
+  // The first test in this file pays the one-time dynamic-import transform cost
   // for the admin route graph — slow on the SMB-mounted repo.
-  it('non-staff is rejected everywhere; moderator passes the allowlist', { timeout: 20_000 }, async () => {
+  it('non-staff is rejected everywhere; moderator passes the allowlist', async () => {
     const nobody = await createUser();
     const mod = await createUser();
     await makeModerator(mod);

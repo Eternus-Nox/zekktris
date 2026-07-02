@@ -23,9 +23,9 @@ describe.runIf(dbReady)('achievementsForUser (integration)', () => {
     await closeDb();
   });
 
-  // 20s timeout: the first call pays the one-time dynamic import of the
+  // The first test in this file pays the one-time dynamic import of the
   // streaks module — slow on the SMB-mounted repo (same as other suites).
-  it('returns the full catalog with locked entries carrying progress for a fresh user', { timeout: 20_000 }, async () => {
+  it('returns the full catalog with locked entries carrying progress for a fresh user', async () => {
     const u = await createUser();
     const list = await achievementsForUser(u);
 
