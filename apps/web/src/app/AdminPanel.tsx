@@ -451,7 +451,7 @@ function ActivityList({
             return (
               <li key={it.key} className="flex items-center gap-2 min-w-0">
                 <div className={`relative w-7 h-7 rounded-full overflow-hidden shrink-0 ${tone} text-xs font-bold flex items-center justify-center`}>
-                  <span>{avatarInitials(it.avatarName)}</span>
+                  <span className="zk-avatar-initials">{avatarInitials(it.avatarName)}</span>
                   <AvatarImage src={it.avatarUrl} />
                 </div>
                 <div className="min-w-0 flex-1">
@@ -749,7 +749,7 @@ function UsersTab() {
                 className="flex flex-wrap items-center gap-x-3 gap-y-2.5 px-3 py-3.5 rounded-md bg-bg-2 border border-line"
               >
                 <div className={`relative w-10 h-10 rounded-full flex items-center justify-center text-xs font-bold shrink-0 overflow-hidden ${tone}`}>
-                  <span>{initials}</span>
+                  <span className="zk-avatar-initials">{initials}</span>
                   <AvatarImage src={u.avatarUrl} />
                 </div>
                 <div className="min-w-0 grow basis-48">
@@ -1000,7 +1000,7 @@ function GuildsTab({ onObserve }: { onObserve: (guildId: string, guildName: stri
                     <img src={g.iconUrl} alt="" className="w-10 h-10 rounded-lg object-cover shrink-0" />
                   ) : (
                     <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-sm font-bold shrink-0 ${tone}`}>
-                      {avatarInitials(g.name)}
+                      <span className="zk-avatar-initials">{avatarInitials(g.name)}</span>
                     </div>
                   )}
                   <div className="min-w-0 flex-1">
@@ -1664,7 +1664,7 @@ function ObserveView({
           <img src={guild.iconUrl} alt="" className="w-8 h-8 rounded-lg object-cover shrink-0" />
         ) : (
           <div className="w-8 h-8 rounded-lg bg-bg-3 flex items-center justify-center text-xs font-bold shrink-0">
-            {avatarInitials(guildName)}
+            <span className="zk-avatar-initials">{avatarInitials(guildName)}</span>
           </div>
         )}
         <div className="min-w-0">
@@ -1882,7 +1882,7 @@ function ObserveMessage({ message: m }: { message: AdminPeekMessage }) {
   return (
     <li className="flex gap-3 px-2 py-1.5 rounded-md hover:bg-bg-2 transition-colors">
       <div className={`relative w-8 h-8 rounded-full overflow-hidden shrink-0 ${tone} text-xs font-bold flex items-center justify-center`}>
-        <span>{initials}</span>
+        <span className="zk-avatar-initials">{initials}</span>
         <AvatarImage src={m.authorAvatarUrl} />
       </div>
       <div className="min-w-0 flex-1">

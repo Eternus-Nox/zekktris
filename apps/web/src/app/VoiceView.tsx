@@ -1782,7 +1782,7 @@ function FeaturedTile({
               track.userId,
             )}`}
           >
-            {avatarInitials(label)}
+            <span className="zk-avatar-initials">{avatarInitials(label)}</span>
           </div>
         </div>
       )}

@@ -1161,7 +1161,7 @@ function MembersTab({ guild }: { guild: Guild }) {
         return (
           <li key={m.userId} className="flex items-center gap-3 px-3 py-2.5">
             <div className={`relative w-8 h-8 rounded-full text-xs flex items-center justify-center font-semibold shrink-0 overflow-hidden ${avatarColor(m.userId)}`}>
-              <span aria-hidden="true">{avatarInitials(m.user?.displayName ?? m.user?.username)}</span>
+              <span aria-hidden="true" className="zk-avatar-initials">{avatarInitials(m.user?.displayName ?? m.user?.username)}</span>
               <AvatarImage src={m.user?.avatarUrl} />
             </div>
             <div className="flex-1 min-w-0">
@@ -1992,7 +1992,7 @@ function BanRow({
   return (
     <li className="flex items-center gap-3 px-3 py-3">
       <div className={`relative w-9 h-9 rounded-full text-xs flex items-center justify-center font-semibold shrink-0 overflow-hidden ${tone}`}>
-        <span aria-hidden="true">{initials}</span>
+        <span aria-hidden="true" className="zk-avatar-initials">{initials}</span>
         <AvatarImage src={ban.user.avatarUrl} />
       </div>
       <div className="flex-1 min-w-0">
@@ -3282,7 +3282,7 @@ function AuditLogEntryRow({
       >
         <span className="relative w-7 h-7 shrink-0 mt-0.5">
           <span className={`absolute inset-0 rounded-full text-xs flex items-center justify-center font-semibold ${tone}`}>
-            {initials}
+            <span className="zk-avatar-initials">{initials}</span>
           </span>
           {entry.actor?.avatarUrl && <AvatarImage src={entry.actor.avatarUrl} />}
         </span>

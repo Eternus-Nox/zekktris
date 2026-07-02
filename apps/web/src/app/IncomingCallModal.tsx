@@ -366,7 +366,7 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
             className={`relative w-24 h-24 rounded-full flex items-center justify-center text-3xl font-semibold overflow-hidden zk-alien-pulse ${tone}`}
             aria-hidden="true"
           >
-            <span>{initials}</span>
+            <span className="zk-avatar-initials">{initials}</span>
             <AvatarImage src={caller?.avatarUrl ?? null} alt="" />
           </div>
 

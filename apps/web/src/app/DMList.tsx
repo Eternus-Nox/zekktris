@@ -279,7 +279,7 @@ function DMSearchResult({ message, onClick }: { message: Message; onClick: () =>
         <div
           className={`relative w-7 h-7 rounded-full text-xs flex items-center justify-center font-medium shrink-0 overflow-hidden ${tone}`}
         >
-          <span>{avatarInitials(label)}</span>
+          <span className="zk-avatar-initials">{avatarInitials(label)}</span>
           <AvatarImage src={author?.avatarUrl} />
         </div>
         <div className="min-w-0 flex-1">

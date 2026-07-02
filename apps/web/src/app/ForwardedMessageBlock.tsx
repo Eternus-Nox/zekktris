@@ -98,7 +98,7 @@ export function ForwardedMessageBlock({ source }: Props) {
                 without dominating it. */}
             <div className="flex items-center gap-2 text-xs">
               <span className={`relative w-5 h-5 rounded-full flex items-center justify-center text-[0.6rem] font-semibold shrink-0 overflow-hidden ${tone}`}>
-                <span aria-hidden>{initials}</span>
+                <span aria-hidden className="zk-avatar-initials">{initials}</span>
                 <AvatarImage src={author?.avatarUrl ?? null} />
               </span>
               <span className="font-medium text-ink-2 truncate">

@@ -66,7 +66,7 @@ function PersonRow({
         className="relative overflow-hidden shrink-0 w-9 h-9 rounded-full grid place-items-center text-xs font-semibold text-white"
         style={{ background: avatarColor(user.id) }}
       >
-        {avatarInitials(name)}
+        <span className="zk-avatar-initials">{avatarInitials(name)}</span>
         <AvatarImage src={user.avatarUrl} alt={name} />
       </span>
       <span className="min-w-0 flex-1">
@@ -127,7 +127,7 @@ function ContactProfileModal({
             className="relative overflow-hidden inline-grid place-items-center -mt-9 w-16 h-16 rounded-full border-4 border-bg-1 text-lg font-semibold text-white"
             style={{ background: avatarColor(user.id) }}
           >
-            {avatarInitials(name)}
+            <span className="zk-avatar-initials">{avatarInitials(name)}</span>
             <AvatarImage src={avatarUrl} alt={name} />
           </span>
           <div className="mt-2 flex items-center gap-2">
@@ -841,7 +841,7 @@ function ChildMonitor({
           className="relative overflow-hidden shrink-0 w-10 h-10 rounded-full grid place-items-center text-sm font-semibold text-white"
           style={{ background: avatarColor(child.id) }}
         >
-          {avatarInitials(childName)}
+          <span className="zk-avatar-initials">{avatarInitials(childName)}</span>
           <AvatarImage src={child.avatarUrl} alt={childName} />
         </span>
         <div className="min-w-0">
@@ -1002,7 +1002,7 @@ function ChildMonitor({
                     className="relative overflow-hidden shrink-0 w-9 h-9 rounded-full grid place-items-center text-xs font-semibold text-white"
                     style={{ background: avatarColor(ch.recipient?.id ?? ch.id) }}
                   >
-                    {avatarInitials(ch.recipient?.displayName || ch.recipient?.username || '?')}
+                    <span className="zk-avatar-initials">{avatarInitials(ch.recipient?.displayName || ch.recipient?.username || '?')}</span>
                     <AvatarImage
                       src={ch.recipient?.avatarUrl}
                       alt={ch.recipient?.displayName || ch.recipient?.username || ''}

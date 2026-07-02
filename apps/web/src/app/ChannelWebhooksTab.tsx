@@ -227,7 +227,7 @@ function WebhookRow({
     <li className="bg-bg-2 border border-line rounded-lg p-3 space-y-3">
       <div className="flex items-start gap-3">
         <div className={`relative w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold shrink-0 overflow-hidden ${tone}`}>
-          <span aria-hidden="true">{initials}</span>
+          <span aria-hidden="true" className="zk-avatar-initials">{initials}</span>
           <AvatarImage src={webhook.avatarUrl} />
         </div>
         <div className="flex-1 min-w-0">

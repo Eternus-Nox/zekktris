@@ -636,7 +636,7 @@ function TargetPicker({
                       className="w-full text-left px-5 py-2.5 hover:bg-bg-3 text-sm flex items-center gap-2"
                     >
                       <div className={`relative w-6 h-6 rounded-full text-[0.65rem] flex items-center justify-center font-semibold shrink-0 overflow-hidden ${avatarColor(m.userId)}`}>
-                        <span aria-hidden="true">{avatarInitials(m.user?.displayName ?? m.user?.username)}</span>
+                        <span aria-hidden="true" className="zk-avatar-initials">{avatarInitials(m.user?.displayName ?? m.user?.username)}</span>
                         <AvatarImage src={m.user?.avatarUrl} />
                       </div>
                       <div className="flex-1 min-w-0">

@@ -196,7 +196,7 @@ export function InvitePage() {
           <div
             className={`w-14 h-14 rounded-lg flex items-center justify-center text-lg font-semibold shrink-0 ${tone}`}
           >
-            {initials}
+            <span className="zk-avatar-initials">{initials}</span>
           </div>
         )}
         <div className="min-w-0 flex-1">

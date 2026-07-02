@@ -193,7 +193,7 @@ function AttendeeRow({ rsvp }: { rsvp: EventRsvp }) {
           className="w-7 h-7 rounded-full shrink-0 flex items-center justify-center text-xs font-semibold text-bg-1"
           style={{ backgroundColor: swatch }}
         >
-          {avatarInitials(displayName)}
+          <span className="zk-avatar-initials">{avatarInitials(displayName)}</span>
         </span>
       )}
       <span className="text-sm text-ink-1 truncate flex-1">{displayName}</span>

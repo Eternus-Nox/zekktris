@@ -698,7 +698,7 @@ export function ProfileCard({
               <div
                 className={`relative w-20 h-20 rounded-full border-4 border-bg-1 flex items-center justify-center text-xl font-semibold overflow-hidden ${avatarColor(user.id)}`}
               >
-                <span aria-hidden="true">{avatarInitials(user.displayName)}</span>
+                <span aria-hidden="true" className="zk-avatar-initials">{avatarInitials(user.displayName)}</span>
                 <AvatarImage src={user.avatarUrl} />
               </div>
               <AvatarDecoration

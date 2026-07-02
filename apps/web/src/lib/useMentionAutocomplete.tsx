@@ -331,7 +331,7 @@ export function useMentionAutocomplete({
                   >
                     <span className="relative w-7 h-7 shrink-0 overflow-hidden rounded-full">
                       <span className={`absolute inset-0 rounded-full text-xs flex items-center justify-center font-semibold ${tone}`} aria-hidden="true">
-                        {initials}
+                        <span className="zk-avatar-initials">{initials}</span>
                       </span>
                       <AvatarImage src={u.avatarUrl} />
                     </span>

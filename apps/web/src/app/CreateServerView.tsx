@@ -232,7 +232,7 @@ export function CreateServerView() {
                     className={`w-full h-full flex items-center justify-center text-2xl font-bold ${tone}`}
                     aria-hidden
                   >
-                    {initials}
+                    <span className="zk-avatar-initials">{initials}</span>
                   </div>
                 )}
               </button>

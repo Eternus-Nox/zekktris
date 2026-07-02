@@ -321,7 +321,7 @@ export function StageChannelView({ channel }: { channel: Channel }) {
                   <div key={p.userId} className="flex flex-col items-center gap-1.5 w-20">
                     <div className="relative">
                       <div className={`w-16 h-16 rounded-full flex items-center justify-center text-lg font-semibold overflow-hidden ${tone}`}>
-                        <span aria-hidden>{initials}</span>
+                        <span aria-hidden className="zk-avatar-initials">{initials}</span>
                         <AvatarImage src={u?.avatarUrl ?? null} />
                       </div>
                       {/* Speaker role badge (F4) — a mic marker echoing the
@@ -368,7 +368,7 @@ export function StageChannelView({ channel }: { channel: Channel }) {
                     className="flex items-center gap-3 px-3 py-2 bg-bg-2 border border-accent/30 rounded-md"
                   >
                     <div className={`relative w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold overflow-hidden shrink-0 ${tone}`}>
-                      <span aria-hidden>{initials}</span>
+                      <span aria-hidden className="zk-avatar-initials">{initials}</span>
                       <AvatarImage src={u?.avatarUrl ?? null} />
                     </div>
                     <Hand size={14} className="text-accent shrink-0" />
@@ -403,7 +403,7 @@ export function StageChannelView({ channel }: { channel: Channel }) {
                   >
                     <div className="relative">
                       <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xs font-semibold overflow-hidden ${tone}`}>
-                        <span aria-hidden>{initials}</span>
+                        <span aria-hidden className="zk-avatar-initials">{initials}</span>
                         <AvatarImage src={u?.avatarUrl ?? null} />
                       </div>
                       {p.handRaised && (

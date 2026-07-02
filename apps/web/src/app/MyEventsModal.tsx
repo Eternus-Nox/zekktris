@@ -344,7 +344,7 @@ function MyEventCard({
               style={{ backgroundColor: avatarColor(item.event.guildId) }}
               aria-hidden
             >
-              {avatarInitials(guildName)}
+              <span className="zk-avatar-initials">{avatarInitials(guildName)}</span>
             </span>
           )}
           <button

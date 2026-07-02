@@ -774,7 +774,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
               className={`relative w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold overflow-hidden ${authorAvatarTone} ${authorInteractive ? 'cursor-pointer hover:ring-2 hover:ring-accent/50 transition' : 'cursor-default'}`}
               aria-label={authorInteractive ? `Open profile for ${authorDisplayName}` : undefined}
             >
-              <span aria-hidden="true">{authorInitials}</span>
+              <span aria-hidden="true" className="zk-avatar-initials">{authorInitials}</span>
               <AvatarImage src={authorAvatarUrl} />
             </button>
             {!isWebhook && !isServerAuthor && <AvatarDecoration decoration={author?.avatarDecoration} />}

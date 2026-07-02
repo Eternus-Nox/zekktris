@@ -274,7 +274,7 @@ function RowIcon({ entry }: { entry: Entry }) {
             entry.id,
           )}`}
         >
-          {avatarInitials(entry.label)}
+          <span className="zk-avatar-initials">{avatarInitials(entry.label)}</span>
         </span>
         {entry.iconUrl && (
           <img src={entry.iconUrl} alt="" className="absolute inset-0 w-full h-full rounded-md object-cover" />
@@ -294,7 +294,7 @@ function RowIcon({ entry }: { entry: Entry }) {
         entry.id,
       )}`}
     >
-      {avatarInitials(entry.label)}
+      <span className="zk-avatar-initials">{avatarInitials(entry.label)}</span>
     </span>
   );
 }

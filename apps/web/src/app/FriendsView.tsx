@@ -438,7 +438,7 @@ function FriendRow({
         aria-label={`Open profile for ${user.displayName}`}
       >
         <span className={`absolute inset-0 rounded-full text-sm flex items-center justify-center font-semibold ${tone}`} aria-hidden="true">
-          {initials}
+          <span className="zk-avatar-initials">{initials}</span>
         </span>
         <AvatarImage src={user.avatarUrl} />
         {/* Custom avatar frame/decoration, if the user picked one. Sits above

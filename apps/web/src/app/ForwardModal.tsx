@@ -295,7 +295,7 @@ function DestRow({
       >
         {isDM ? (
           <span className={`relative w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold shrink-0 overflow-hidden ${tone}`}>
-            <span aria-hidden>{initials}</span>
+            <span aria-hidden className="zk-avatar-initials">{initials}</span>
             <AvatarImage src={avatarUser?.avatarUrl ?? null} />
           </span>
         ) : (

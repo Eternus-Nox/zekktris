@@ -735,7 +735,7 @@ export function SettingsView() {
                           user?.id ?? '0',
                         )}`}
                       >
-                        {avatarInitials(user?.displayName ?? '?')}
+                        <span className="zk-avatar-initials">{avatarInitials(user?.displayName ?? '?')}</span>
                       </span>
                       <AvatarImage src={user?.avatarUrl} />
                       <AvatarDecoration decoration={d.id} />
@@ -2351,7 +2351,7 @@ function AvatarPicker({
             className={`absolute inset-0 rounded-full text-2xl font-semibold flex items-center justify-center border border-line ${tone}`}
             aria-hidden="true"
           >
-            {initials}
+            <span className="zk-avatar-initials">{initials}</span>
           </span>
           <AvatarImage
             src={displayUrl}
@@ -3819,7 +3819,7 @@ function BotsSection() {
                 <span
                   className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold overflow-hidden ${avatarColor(bot.id)}`}
                 >
-                  {avatarInitials(bot.displayName)}
+                  <span className="zk-avatar-initials">{avatarInitials(bot.displayName)}</span>
                   <AvatarImage src={bot.avatarUrl} />
                 </span>
                 <div className="min-w-0 flex-1">

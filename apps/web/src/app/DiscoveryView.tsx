@@ -271,7 +271,7 @@ function GuildCard({
           <div
             className={`w-12 h-12 rounded-lg flex items-center justify-center text-base font-semibold shrink-0 ${tone}`}
           >
-            {initials}
+            <span className="zk-avatar-initials">{initials}</span>
           </div>
         )}
         <span className="font-semibold text-ink-1 truncate text-base">

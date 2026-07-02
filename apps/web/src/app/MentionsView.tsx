@@ -362,7 +362,7 @@ function MentionRow({
           <span
             className={`w-full h-full rounded-full flex items-center justify-center text-xs font-bold overflow-hidden ${tone}`}
           >
-            <span>{initials}</span>
+            <span className="zk-avatar-initials">{initials}</span>
             <AvatarImage src={avatarUrl} />
           </span>
         </span>
