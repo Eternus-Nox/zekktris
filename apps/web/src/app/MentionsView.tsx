@@ -243,7 +243,9 @@ export function MentionsView() {
               key={m.id}
               message={m}
               channelName={m.channelName}
+              guildId={m.guildId ?? null}
               guildName={m.guildId ? state.guildsById[m.guildId]?.name ?? null : null}
+              guildIcon={m.guildId ? state.guildsById[m.guildId]?.iconUrl ?? null : null}
               onClick={() => goTo(m)}
               onDelete={() => void onDelete(m.id)}
             />
@@ -270,13 +272,17 @@ export function MentionsView() {
 function MentionRow({
   message,
   channelName,
+  guildId,
   guildName,
+  guildIcon,
   onClick,
   onDelete,
 }: {
   message: Message;
   channelName: string | null;
+  guildId: string | null;
   guildName: string | null;
+  guildIcon: string | null;
   onClick: () => void;
   onDelete: () => void;
 }) {
@@ -295,12 +301,21 @@ function MentionRow({
   const author =
     message.author ??
     (message.authorId ? state.usersById[message.authorId] ?? null : null);
-  const label =
-    author?.displayName ??
-    author?.username ??
-    (message.authorId ? `@${message.authorId.slice(-6)}` : '@system');
-  const tone = avatarColor(message.authorId ?? message.id);
+  // A system_join welcome @-mentions the newcomer but is authored, in the
+  // data, by the newcomer themself — so their own mentions inbox showed THEIR
+  // OWN name. Attribute it to the SERVER (guild name + icon) instead,
+  // matching the chat render of the same message.
+  const isServerAuthor = message.type === 'system_join';
+  const label = isServerAuthor
+    ? (guildName ?? 'Server')
+    : author?.displayName ??
+      author?.username ??
+      (message.authorId ? `@${message.authorId.slice(-6)}` : '@system');
+  const tone = avatarColor(
+    isServerAuthor ? (guildId ?? message.channelId) : (message.authorId ?? message.id),
+  );
   const initials = avatarInitials(label);
+  const avatarUrl = isServerAuthor ? guildIcon : (author?.avatarUrl ?? null);
 
   // Content preview — collapse newlines, trim, cap at ~140 chars so
   // the row stays one or two lines tall.
@@ -348,7 +363,7 @@ function MentionRow({
             className={`w-full h-full rounded-full flex items-center justify-center text-xs font-bold overflow-hidden ${tone}`}
           >
             <span>{initials}</span>
-            <AvatarImage src={author?.avatarUrl ?? null} />
+            <AvatarImage src={avatarUrl} />
           </span>
         </span>
         <span className="min-w-0 flex-1">
