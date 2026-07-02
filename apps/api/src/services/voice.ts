@@ -623,6 +623,14 @@ async function endDmCallBookkeeping(
   //   - A NEW call that started in this DM between our remaining-check and now
   //     carries a DIFFERENT startedAt, so this UPDATE matches 0 rows and can't
   //     clobber the new call's freshly-stamped columns.
+  //
+  // NOTE the millisecond truncation: the column is stamped with NOW()
+  // (microsecond precision) but round-trips through the JS driver as a
+  // ms-precision Date, so a plain eq() matched 0 rows almost always —
+  // silently skipping BOTH the clear and the system_call write (no
+  // missed-call/duration records; stranded columns misclassified the next
+  // call as answered). Same-ms aliasing of two DIFFERENT calls can't
+  // happen: a new call only starts after this one's columns are cleared.
   const cleared = await db
     .update(schema.channels)
     .set({
@@ -633,7 +641,7 @@ async function endDmCallBookkeeping(
     .where(
       and(
         eq(schema.channels.id, channelId),
-        eq(schema.channels.dmActiveCallStartedAt, channelRow.startedAt),
+        sql`date_trunc('milliseconds', ${schema.channels.dmActiveCallStartedAt}) = date_trunc('milliseconds', ${channelRow.startedAt.toISOString()}::timestamptz)`,
       ),
     )
     .returning({ id: schema.channels.id });
