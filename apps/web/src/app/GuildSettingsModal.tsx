@@ -1104,10 +1104,14 @@ function MembersTab({ guild }: { guild: Guild }) {
 
   // Quick role lookup — `member.roleIds` is just snowflake strings; we
   // need the role row to render name + color in the pill UI.
-  const rolesById = useMemo(
-    () => new Map<string, Role>(allRoles.map((r) => [r.id, r])),
-    [allRoles],
-  );
+  //
+  // Plain derivation, deliberately NOT useMemo: this sits AFTER the loading
+  // early-return above, so a hook here runs on the loaded render but not the
+  // loading one — the hook count changes between renders and React crashes
+  // with #310 the moment the fetch lands ("Members tab errors on load").
+  // Building a <=few-hundred-entry Map per render is trivial. Same class of
+  // bug as the ChannelList rail crash — never put hooks after an early return.
+  const rolesById = new Map<string, Role>(allRoles.map((r) => [r.id, r]));
 
   // Filter on display name OR username (case-insensitive). We don't
   // filter by role membership — could be a future enhancement, but
