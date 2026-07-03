@@ -261,13 +261,24 @@ async function main(): Promise<void> {
   // the paid cosmetics — the same hard lock as an admin reset. Hygiene only;
   // the entitlement reads already treat an expired row as no membership, so
   // cadence isn't correctness-critical. Hourly, leading run 6 min after boot.
-  const runSubscriptionSweep = () =>
+  const runSubscriptionSweep = () => {
     void import('./services/subscriptions')
       .then((s) => s.sweepExpiredSubscriptions())
       .then((expired) => {
         if (expired > 0) log.info('supporter memberships expired', { expired });
       })
       .catch((err) => log.error('subscription expiry sweep failed', { err }));
+    // Piggy-back the auto-unban sweep on the same hourly tick: lift timed
+    // instance bans (1/3/6-month) once their banned_until passes. The auth
+    // checks already treat an expired ban as not-banned, so this is hygiene
+    // (clears the columns) — cadence isn't correctness-critical.
+    void import('./services/instanceBans')
+      .then((b) => b.sweepExpiredInstanceBans())
+      .then((lifted) => {
+        if (lifted > 0) log.info('timed instance bans auto-lifted', { lifted });
+      })
+      .catch((err) => log.error('auto-unban sweep failed', { err }));
+  };
   setTimeout(runSubscriptionSweep, 6 * 60_000);
   const subscriptionSweepTimer = setInterval(runSubscriptionSweep, 60 * 60 * 1000);
 

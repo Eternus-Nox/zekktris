@@ -300,6 +300,7 @@ adminRouter.get('/users', validate('query', listUsersQuery), async (c) => {
       isModerator: schema.users.isModerator,
       dateOfBirth: schema.users.dateOfBirth,
       bannedAt: schema.users.bannedAt,
+      bannedUntil: schema.users.bannedUntil,
       createdAt: schema.users.createdAt,
     })
     .from(schema.users)
@@ -357,6 +358,7 @@ adminRouter.get('/users', validate('query', listUsersQuery), async (c) => {
       isModerator: r.isModerator,
       dateOfBirth: r.dateOfBirth ?? null,
       bannedAt: r.bannedAt?.toISOString() ?? null,
+      bannedUntil: r.bannedUntil?.toISOString() ?? null,
       createdAt: r.createdAt.toISOString(),
       lastSeenAt: seenMap.get(r.id.toString()) ?? null,
       subscriptionTier: subMap.get(r.id.toString())?.tier ?? null,
@@ -379,18 +381,36 @@ adminRouter.get('/users', validate('query', listUsersQuery), async (c) => {
 
 const userIdParam = z.object({ id: z.string().regex(/^[0-9]+$/) });
 
-adminRouter.post('/users/:id/ban', validate('param', userIdParam), async (c) => {
+const banBody = z.object({ duration: z.enum(['1m', '3m', '6m', 'perm']).optional() });
+
+adminRouter.post(
+  '/users/:id/ban',
+  validate('param', userIdParam),
+  validate('json', banBody),
+  async (c) => {
   const selfId = requireUserId(c);
   const targetId = BigInt(c.req.valid('param').id);
   if (targetId === selfId) {
     throw errors.badRequest('You cannot ban yourself');
   }
   await assertModCanTouch(c, targetId);
+  // Duration: 1/3/6 months or permanent (default). banExpiryFor returns null
+  // for 'perm'. Covers text AND voice — sessions revoked + voice evicted below.
+  const { banExpiryFor } = await import('../services/instanceBans');
+  const duration = c.req.valid('json').duration ?? 'perm';
+  const bannedUntil = banExpiryFor(duration);
   await db
     .update(schema.users)
-    .set({ bannedAt: new Date(), updatedAt: new Date() })
+    .set({ bannedAt: new Date(), bannedUntil, updatedAt: new Date() })
     .where(and(eq(schema.users.id, targetId), isNull(schema.users.deletedAt)));
-  await auditStaff(c, 'staff_ban', 'Banned account', { userId: targetId });
+  await auditStaff(
+    c,
+    'staff_ban',
+    duration === 'perm'
+      ? 'Banned account (permanent)'
+      : `Banned account (${duration}, until ${bannedUntil?.toISOString()})`,
+    { userId: targetId },
+  );
   // Force immediate logout across all devices. Token-level revocation
   // is up to 15 min lagged for currently-issued access tokens; this
   // additionally prevents refresh, so the lag is the worst case for
@@ -454,14 +474,15 @@ adminRouter.post('/users/:id/ban', validate('param', userIdParam), async (c) => 
   }
 
   return c.json({ ok: true });
-});
+  },
+);
 
 adminRouter.post('/users/:id/unban', validate('param', userIdParam), async (c) => {
   const targetId = BigInt(c.req.valid('param').id);
   await assertModCanTouch(c, targetId);
   await db
     .update(schema.users)
-    .set({ bannedAt: null, updatedAt: new Date() })
+    .set({ bannedAt: null, bannedUntil: null, updatedAt: new Date() })
     .where(and(eq(schema.users.id, targetId), isNull(schema.users.deletedAt)));
   await auditStaff(c, 'staff_unban', 'Unbanned account', { userId: targetId });
   return c.json({ ok: true });

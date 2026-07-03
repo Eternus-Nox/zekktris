@@ -2701,8 +2701,12 @@ export class RestClient {
     return this.request('GET', `/admin/users${qs ? `?${qs}` : ''}`);
   }
 
-  adminBanUser(userId: string): Promise<{ ok: boolean }> {
-    return this.request('POST', `/admin/users/${userId}/ban`);
+  /** Ban an account for a duration (default permanent). Covers text + voice. */
+  adminBanUser(
+    userId: string,
+    duration: '1m' | '3m' | '6m' | 'perm' = 'perm',
+  ): Promise<{ ok: boolean }> {
+    return this.request('POST', `/admin/users/${userId}/ban`, { duration });
   }
 
   adminUnbanUser(userId: string): Promise<{ ok: boolean }> {
@@ -3237,6 +3241,9 @@ export interface AdminUser {
   /** Date of birth (YYYY-MM-DD); null for legacy accounts that never set one. */
   dateOfBirth: string | null;
   bannedAt: string | null;
+  /** For a TIMED ban: when it auto-lifts (ISO). Null = permanent (when
+      bannedAt is set) or not banned. */
+  bannedUntil: string | null;
   createdAt: string;
   /** Approx last-active time (max session activity); null if never. */
   lastSeenAt: string | null;

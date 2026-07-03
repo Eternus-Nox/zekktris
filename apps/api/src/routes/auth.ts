@@ -12,6 +12,7 @@ import { validate } from '../lib/validate';
 import { z } from 'zod';
 import { and, desc, eq, gt, isNull } from 'drizzle-orm';
 import { db, schema, isUniqueViolation } from '../db';
+import { isCurrentlyBanned } from '../services/instanceBans';
 import { errors } from '../errors';
 import { log } from '../log';
 import { nextSnowflake } from '../snowflake';
@@ -295,7 +296,7 @@ authRouter.post('/login', validate('json', loginSchema), async (c) => {
   // rather than the generic "invalid credentials" — bans aren't a
   // password-guess concealment scenario, the admin who issued the
   // ban wants the user to know they're banned.
-  if (user.bannedAt) {
+  if (isCurrentlyBanned(user)) {
     throw errors.forbidden('This account has been disabled');
   }
 
@@ -396,12 +397,13 @@ authRouter.post('/refresh', async (c) => {
   const userRows = await db
     .select({
       bannedAt: schema.users.bannedAt,
+      bannedUntil: schema.users.bannedUntil,
       deletedAt: schema.users.deletedAt,
     })
     .from(schema.users)
     .where(eq(schema.users.id, session.userId))
     .limit(1);
-  if (!userRows[0] || userRows[0].bannedAt || userRows[0].deletedAt) {
+  if (!userRows[0] || isCurrentlyBanned(userRows[0]) || userRows[0].deletedAt) {
     clearRefreshCookie(c);
     throw errors.unauthenticated('Refresh token is no longer valid');
   }
@@ -427,11 +429,15 @@ authRouter.post('/refresh', async (c) => {
   // for a just-banned user. Re-reading after the rotate sees the committed ban;
   // if banned/deleted, revoke this session and fail.
   const recheck = await db
-    .select({ bannedAt: schema.users.bannedAt, deletedAt: schema.users.deletedAt })
+    .select({
+      bannedAt: schema.users.bannedAt,
+      bannedUntil: schema.users.bannedUntil,
+      deletedAt: schema.users.deletedAt,
+    })
     .from(schema.users)
     .where(eq(schema.users.id, session.userId))
     .limit(1);
-  if (!recheck[0] || recheck[0].bannedAt || recheck[0].deletedAt) {
+  if (!recheck[0] || isCurrentlyBanned(recheck[0]) || recheck[0].deletedAt) {
     await revokeSession(session.id).catch(() => undefined);
     clearRefreshCookie(c);
     throw errors.unauthenticated('Refresh token is no longer valid');

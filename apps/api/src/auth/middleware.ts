@@ -24,6 +24,7 @@ import { db, schema } from '../db';
 import { errors } from '../errors';
 import { verifyAccessToken } from './tokens';
 import { isSessionBlacklisted } from './session-blacklist';
+import { isCurrentlyBanned } from '../services/instanceBans';
 
 export const requireAuth: MiddlewareHandler = async (c, next) => {
   const header = c.req.header('authorization');
@@ -102,6 +103,7 @@ export const requireAdmin: MiddlewareHandler = async (c, next) => {
     .select({
       isAdmin: schema.users.isAdmin,
       bannedAt: schema.users.bannedAt,
+      bannedUntil: schema.users.bannedUntil,
       deletedAt: schema.users.deletedAt,
     })
     .from(schema.users)
@@ -119,7 +121,8 @@ export const requireAdmin: MiddlewareHandler = async (c, next) => {
   // 15-minute window during which a freshly-banned admin's valid
   // access token would otherwise still authenticate them on every
   // admin endpoint — ban/unban, force-signout, delete, etc.
-  if (u.bannedAt || u.deletedAt) {
+  // isCurrentlyBanned treats an EXPIRED timed ban as not-banned.
+  if (isCurrentlyBanned(u) || u.deletedAt) {
     throw errors.forbidden('Instance admin required');
   }
   await next();
@@ -141,13 +144,14 @@ export const requireStaff: MiddlewareHandler = async (c, next) => {
       isAdmin: schema.users.isAdmin,
       isModerator: schema.users.isModerator,
       bannedAt: schema.users.bannedAt,
+      bannedUntil: schema.users.bannedUntil,
       deletedAt: schema.users.deletedAt,
     })
     .from(schema.users)
     .where(eq(schema.users.id, userId))
     .limit(1);
   const u = rows[0];
-  if (!u || (!u.isAdmin && !u.isModerator) || u.bannedAt || u.deletedAt) {
+  if (!u || (!u.isAdmin && !u.isModerator) || isCurrentlyBanned(u) || u.deletedAt) {
     throw errors.forbidden('Instance staff required');
   }
   c.set('staffIsAdmin', u.isAdmin);

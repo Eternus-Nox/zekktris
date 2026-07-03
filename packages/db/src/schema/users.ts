@@ -144,6 +144,11 @@ export const users = pgTable(
         disabled" response. Soft-ban (timestamp) rather than hard
         delete preserves message attribution and audit trails. */
     bannedAt: timestamp('banned_at', { withTimezone: true }),
+    /** For a TIMED ban: when the ban auto-lifts. Null while bannedAt is set =
+        permanent. An hourly sweep clears bannedAt+bannedUntil once it passes;
+        auth checks also treat `bannedUntil <= now` as not-banned so an expired
+        timed ban never lags the sweep. */
+    bannedUntil: timestamp('banned_until', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     /** Soft delete; set when the user deletes their account. */
@@ -236,6 +241,10 @@ export const users = pgTable(
     botTokenHashIdx: uniqueIndex('users_bot_token_hash_idx')
       .on(t.botTokenHash)
       .where(sql`bot_token_hash IS NOT NULL`),
+    // Auto-unban sweep scans only currently-timed-banned rows.
+    bannedUntilIdx: index('users_banned_until_idx')
+      .on(t.bannedUntil)
+      .where(sql`banned_until IS NOT NULL`),
   }),
 );
 

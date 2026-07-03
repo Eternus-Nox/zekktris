@@ -564,6 +564,7 @@ function UsersTab() {
   const [giftFor, setGiftFor] = useState<string | null>(null);
   const [roleFor, setRoleFor] = useState<string | null>(null);
   const [dobFor, setDobFor] = useState<string | null>(null);
+  const [banFor, setBanFor] = useState<string | null>(null);
   const [giftTier, setGiftTier] = useState<'scout' | 'guardian' | 'legend'>('scout');
   // Default duration must be one the caller can actually pick — moderators
   // don't get the 6m/forever options.
@@ -575,10 +576,11 @@ function UsersTab() {
   // the UI just doesn't show what a moderator can't do.
   const selfIsAdmin = self?.isAdmin === true;
 
-  function openPanel(which: 'gift' | 'role' | 'dob', userId: string) {
+  function openPanel(which: 'gift' | 'role' | 'dob' | 'ban', userId: string) {
     setGiftFor(which === 'gift' ? (giftFor === userId ? null : userId) : null);
     setRoleFor(which === 'role' ? (roleFor === userId ? null : userId) : null);
     setDobFor(which === 'dob' ? (dobFor === userId ? null : userId) : null);
+    setBanFor(which === 'ban' ? (banFor === userId ? null : userId) : null);
   }
 
   // Debounce the search input — 250ms is long enough that quick typists
@@ -605,20 +607,47 @@ function UsersTab() {
     };
   }, [rest, trimmed, bannedOnly, toasts]);
 
-  async function toggleBan(u: AdminUser) {
+  async function unbanUser(u: AdminUser) {
     setPending(u.id);
     try {
-      if (u.bannedAt) {
-        await rest.adminUnbanUser(u.id);
-        toasts.push(`Unbanned ${u.username}`, 'success');
-      } else {
-        await rest.adminBanUser(u.id);
-        toasts.push(`Banned ${u.username}`, 'success');
-      }
-      // Optimistic refresh — reflect new state immediately.
+      await rest.adminUnbanUser(u.id);
+      toasts.push(`Unbanned ${u.username}`, 'success');
       setUsers((prev) =>
-        prev?.map((x) => (x.id === u.id ? { ...x, bannedAt: u.bannedAt ? null : new Date().toISOString() } : x)) ?? null,
+        prev?.map((x) => (x.id === u.id ? { ...x, bannedAt: null, bannedUntil: null } : x)) ?? null,
       );
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Action failed', 'error');
+    } finally {
+      setPending(null);
+    }
+  }
+
+  const BAN_DURATIONS: { value: '1m' | '3m' | '6m' | 'perm'; label: string }[] = [
+    { value: '1m', label: '1 month' },
+    { value: '3m', label: '3 months' },
+    { value: '6m', label: '6 months' },
+    { value: 'perm', label: 'Permanent' },
+  ];
+
+  async function banUser(u: AdminUser, duration: '1m' | '3m' | '6m' | 'perm') {
+    setPending(u.id);
+    try {
+      await rest.adminBanUser(u.id, duration);
+      const months = duration === '1m' ? 1 : duration === '3m' ? 3 : duration === '6m' ? 6 : 0;
+      const until =
+        months > 0 ? new Date(Date.now() + months * 30 * 86_400_000).toISOString() : null;
+      toasts.push(
+        duration === 'perm'
+          ? `Banned ${u.username} permanently`
+          : `Banned ${u.username} for ${BAN_DURATIONS.find((d) => d.value === duration)?.label}`,
+        'success',
+      );
+      setUsers((prev) =>
+        prev?.map((x) =>
+          x.id === u.id ? { ...x, bannedAt: new Date().toISOString(), bannedUntil: until } : x,
+        ) ?? null,
+      );
+      setBanFor(null);
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Action failed', 'error');
     } finally {
@@ -813,7 +842,9 @@ function UsersTab() {
                     )}
                     {u.bannedAt && (
                       <span className="text-[0.6rem] uppercase font-bold tracking-wider bg-red-500/20 text-red-400 px-1 py-0.5 rounded">
-                        banned
+                        {u.bannedUntil
+                          ? `banned · until ${new Date(u.bannedUntil).toLocaleDateString()}`
+                          : 'banned'}
                       </span>
                     )}
                     <TierBadge tier={u.subscriptionTier} />
@@ -883,14 +914,14 @@ function UsersTab() {
                     )}
                     {(selfIsAdmin || (!u.isAdmin && !u.isModerator)) && (
                       <button
-                        onClick={() => toggleBan(u)}
+                        onClick={() => (u.bannedAt ? unbanUser(u) : openPanel('ban', u.id))}
                         disabled={pending === u.id}
                         className={`text-xs px-2.5 py-1.5 rounded disabled:opacity-50 transition-colors ${
                           u.bannedAt
                             ? 'bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1'
                             : 'bg-red-500/10 hover:bg-red-500/20 text-red-400'
                         }`}
-                        title={u.bannedAt ? 'Unban' : 'Ban'}
+                        title={u.bannedAt ? 'Unban' : 'Ban (choose duration)'}
                       >
                         {u.bannedAt ? 'Unban' : 'Ban'}
                       </button>
@@ -1022,6 +1053,32 @@ function UsersTab() {
                     >
                       Reset
                     </button>
+                  </div>
+                )}
+                {/* Inline ban panel — pick a duration (covers text + voice).
+                    Only shown when starting a NEW ban (unban is a direct
+                    button). Timed bans auto-lift; permanent stays until unban. */}
+                {banFor === u.id && (
+                  <div className="basis-full flex flex-wrap items-center gap-1.5 pt-2 border-t border-line mt-1">
+                    <span className="text-xs text-ink-3 mr-1">Ban for:</span>
+                    {BAN_DURATIONS.map((d) => (
+                      <button
+                        key={d.value}
+                        onClick={() => void banUser(u, d.value)}
+                        disabled={pending === u.id}
+                        className={`text-xs px-2.5 py-1 rounded border disabled:opacity-40 ${
+                          d.value === 'perm'
+                            ? 'border-red-500/40 bg-red-500/15 text-red-300 hover:bg-red-500/25'
+                            : 'border-red-500/30 text-red-300 hover:bg-red-500/10'
+                        }`}
+                      >
+                        {d.label}
+                      </button>
+                    ))}
+                    <span className="basis-full text-[0.65rem] text-ink-3">
+                      Bans revoke sessions and evict from all voice — the account
+                      can’t use text or voice until it’s lifted.
+                    </span>
                   </div>
                 )}
               </li>
