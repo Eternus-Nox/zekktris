@@ -746,3 +746,46 @@ real + hot-at-scale + not-already-fixed after per-finding adversarial verificati
 - **Optional, still deferred:** Redis TTL cache for the achievements shelf;
   pg_trgm index for directory substring search (CREATE EXTENSION privilege
   risk on some self-hosters). Neither is a current bottleneck.
+
+---
+
+# 2026-07-03 session — deep two-track audit (bugs + performance, 15-dimension fan-out, adversarially verified)
+
+Fresh full-surface pass after the Moderator-role + memberships + Stripe waves. 15 dimension
+finders (10 bug + 5 perf) across server / web / iOS, each finding independently adversarially
+verified against the real code. **42 raw → 38 survived (32 confirmed, 6 plausible), 4 refuted.**
+Full write-ups with failure scenarios + fixes live in the Obsidian vault:
+`Documents/zekktris/Bug Audit 2026-07-03.md` and `Documents/zekktris/Performance Audit 2026-07-03.md`.
+**All OPEN — none fixed yet.** Highlights (highest severity first):
+
+## Bugs — High
+- **Single-choice poll allows double-vote under concurrent requests (DELETE-then-INSERT race)** — `apps/api/src/services/polls.ts:311` (confirmed)
+- **Stage promote bypasses parental-control track-source restrictions at the SFU** — `apps/api/src/services/stage.ts:240` (confirmed)
+- **Supervised-minor DM voice/video calls bypass the guardian's dmPolicy contact restriction** — `apps/api/src/services/voice.ts:261` (confirmed)
+- **Member-target permission overrides leak on kick/leave/ban and silently re-grant access on rejoin** — `apps/api/src/services/channels.ts:582` (confirmed)
+- **Multi-node: VIEW_CHANNEL revocation never reaches other replicas → member keeps receiving messages in a channel they can no longer see** — `apps/api/src/gateway/dispatch.ts:1051` (confirmed)
+- **AutoMod form never shows a Patterns input for regex_pattern or link_filter rules — both enforced types are unconfigurable** — `apps/web/src/app/GuildSettingsModal.tsx:2649` (confirmed)
+
+## Bugs — Medium/Low (see vault page for all 20)
+- Poll voting bypasses timeout (and onboarding/supervision) enforcement that send/react enforce — `apps/api/src/routes/messages.ts`
+- Message edit bypasses automod, banned-words, and spam checks — `apps/api/src/routes/messages.ts`
+- E2EE suppression for supervised DMs is a client-only hint; server never rejects zkE2EE ciphertext, defeating parental monitoring — `apps/api/src/routes/dms.ts`
+- customer.subscription.updated blindly extends expiry regardless of subscription status (past_due / unpaid entitlement) — `apps/api/src/services/billing.ts`
+- No webhook event de-duplication + userId-PK upsert lets a second Checkout orphan the first paid Stripe subscription (double-billing) — `apps/api/src/services/subscriptions.ts`
+- Gift/founder forever membership silently downgraded to paid monthly on a completed Stripe checkout — `apps/api/src/services/subscriptions.ts`
+- addMemberRole TOCTOU: concurrent kick/leave leaves an orphaned member_roles row that restores the role on rejoin — `apps/api/src/services/members.ts`
+- Deleting a category leaves grandchild threads orphaned (soft-delete leak) — `apps/api/src/services/channels.ts`
+- Pin/unpin broadcasts leak the moderator's poll votes and reaction highlights to the whole channel — `apps/api/src/routes/messages.ts`
+- Client counts @everyone/@here as a mention badge that the server never backs, producing a phantom unread-mention count — `apps/web/src/state/AppState.tsx`
+- Answering a never-unlocked E2EE DM call from CallKit silently dead-ends the call — `ios-native/Zekktris/AppStore.swift`
+- …plus 9 Low (moderator self-gift + staff-guard gaps, first_responder self-farm, GuildSettings tab, reports-queue button, etc. — full list in the vault).
+
+## Performance — High
+- **Every visible MessageItem re-renders on every message event in the open channel (whole per-channel array subscription defeats React.memo)** — `apps/web/src/app/MessageItem.tsx:119`
+- **Shared Media gallery decodes full-res E2EE photos on the main actor (inline paths were fixed, gallery paths were missed)** — `ios-native/Zekktris/MessageViews.swift:5458`
+
+## Performance — Medium/Low (see vault page for all 10)
+- Admin/moderator user search runs an unindexed leading-wildcard ILIKE over the whole users table (full sequential scan per keystroke) — `apps/api/src/routes/admin.ts`
+- MemberListView.sections fully recomputes (copy + per-member status lookup + multiple sorts) on every AppStore publish, driven by presence churn — `ios-native/Zekktris/MessageViews.swift`
+- …plus 8 Low (MessageItem/voice-row/toast re-renders, iOS messageCache unbounded, FriendsView eager render, listEvents kind-ordering, DM-send recipient re-queries, usersById growth).
+
