@@ -8,13 +8,13 @@
  *
  * ⚠️ These are a good-faith starting point tailored to Zekktris's actual
  * features — NOT legal advice. Have a lawyer review, and fill the
- * [bracketed] placeholders (contact address, legal entity, jurisdiction),
- * before relying on them for a public launch.
+ * [bracketed] placeholders (contact address, legal entity, jurisdiction,
+ * voice/video provider), before relying on them for a public launch.
  */
 import { Link } from 'react-router-dom';
 import { ZekktrisMark } from '../lib/ZekktrisMark';
 
-const LAST_UPDATED = 'July 1, 2026';
+const LAST_UPDATED = 'July 3, 2026';
 const CONTACT_EMAIL = 'support@zekktris.com';
 const PRIVACY_EMAIL = 'privacy@zekktris.com';
 
@@ -87,10 +87,61 @@ export function TermsPage() {
         You are responsible for your account and for keeping your credentials secure — including
         your password, any passkeys, and two-factor authentication. Notify us promptly of any
         unauthorized use. You are responsible for all activity under your account. Accounts are for
-        individuals; do not share your account or impersonate others.
+        individuals; do not share your account or impersonate others. If you create bot or automated
+        accounts, you remain responsible for everything they do, they must follow these Terms and
+        our rate limits, and they cannot hold a paid membership.
       </p>
 
-      <H>3. Acceptable use</H>
+      <H>3. Payments and memberships</H>
+      <p>
+        Every feature of Zekktris is free. Memberships are an entirely optional way to support the
+        Service. A membership unlocks <strong>cosmetic personalization only</strong> — such as
+        themes, avatar frames, and a name tag (also called a clan tag) — and it shows your supporter
+        tier on your profile. It never changes what you can say or do, gates no features, and gives
+        no advantage. If you never buy one, nothing is taken away.
+      </p>
+      <p>
+        Memberships are offered in tiers — currently Scout, Guardian, and Legend — at the monthly
+        prices shown in the app at the time of purchase, in U.S. dollars and exclusive of any
+        applicable taxes. A membership is a <strong>recurring monthly subscription that
+        automatically renews</strong> each month at the then-current price, using your saved payment
+        method, until you cancel. By subscribing you authorize these recurring charges.
+      </p>
+      <p>
+        Payments are processed on our website by our third-party payment processor,{' '}
+        <a href="https://stripe.com/privacy" className="text-accent hover:underline">
+          Stripe
+        </a>
+        , and are subject to Stripe&rsquo;s terms. We never receive or store your full card number
+        or other payment-instrument details — Stripe handles those. Purchases are made through the
+        website rather than through an app store.
+      </p>
+      <p>
+        You can cancel at any time from Settings or the payment processor&rsquo;s billing portal.
+        When you cancel, your membership stays active and you keep your cosmetic perks through the
+        end of the period you have already paid for; cancellation stops future renewals but is not a
+        refund of the current period. If a payment fails or lapses, your membership ends after a
+        short grace period and your cosmetics revert to the free defaults.
+      </p>
+      <p>
+        Except where a refund is required by law — including any statutory cancellation or
+        cooling-off rights you may have as a consumer in your jurisdiction — memberships and
+        membership payments, including partial months, are <strong>non-refundable</strong>. We may
+        change the tiers, perks, or prices from time to time; we will apply price changes only to
+        future renewals and will take reasonable steps to notify you in advance.
+      </p>
+      <p>
+        We may offer complimentary or gifted memberships (including free memberships granted to
+        early or existing accounts). These are promotional, are not a purchase by the recipient, are
+        non-transferable, and may be modified or withdrawn at our discretion. A supervising
+        parent&rsquo;s or guardian&rsquo;s membership also extends the cosmetic perks to the accounts
+        of the minors they supervise; that shared benefit ends automatically when the supervision
+        link ends (including when the minor turns 18). If a supervised minor makes a purchase, the
+        supervising adult is responsible for authorizing it and for the resulting charges; you must
+        not make purchases without the account holder having the legal capacity to do so.
+      </p>
+
+      <H>4. Acceptable use</H>
       <p>You agree not to use Zekktris to:</p>
       <ul className="list-disc pl-6 space-y-1">
         <li>break the law or facilitate illegal activity;</li>
@@ -113,7 +164,7 @@ export function TermsPage() {
         violations regardless of a server&rsquo;s own rules.
       </p>
 
-      <H>4. Your content</H>
+      <H>5. Your content</H>
       <p>
         You retain ownership of the content you create — messages, media, and profile information
         (&ldquo;Your Content&rdquo;). You grant us a worldwide, non-exclusive, royalty-free license
@@ -122,7 +173,7 @@ export function TermsPage() {
         for Your Content and represent that you have the rights to share it.
       </p>
 
-      <H>5. Messages, encryption, and voice</H>
+      <H>6. Messages, encryption, and voice</H>
       <p>
         Direct messages may be end-to-end encrypted, in which case we cannot read their contents.
         End-to-end encryption is not available for a supervised minor&rsquo;s direct messages so
@@ -133,42 +184,44 @@ export function TermsPage() {
         communications where failure or interception could cause harm.
       </p>
 
-      <H>6. Service changes and availability</H>
+      <H>7. Service changes and availability</H>
       <p>
         We may change, suspend, or discontinue features at any time. The Service is provided without
         any uptime guarantee, and features may vary between the web, desktop, and mobile apps.
       </p>
 
-      <H>7. Termination</H>
+      <H>8. Termination</H>
       <p>
         You may stop using the Service and delete your account at any time. We may suspend or
-        terminate your access if you violate these Terms or to protect the Service or its users.
-        Some provisions survive termination (including ownership, disclaimers, and limitations of
+        terminate your access — including issuing temporary or permanent instance-wide bans, at our
+        discretion and enforced by our staff and moderators — if you violate these Terms or to
+        protect the Service or its users. Attempting to evade a ban is itself a violation. Some
+        provisions survive termination (including ownership, disclaimers, and limitations of
         liability).
       </p>
 
-      <H>8. Disclaimers</H>
+      <H>9. Disclaimers</H>
       <p>
         The Service is provided &ldquo;as is&rdquo; and &ldquo;as available,&rdquo; without
         warranties of any kind, whether express or implied, to the maximum extent permitted by law.
         We do not warrant that the Service will be uninterrupted, secure, or error-free.
       </p>
 
-      <H>9. Limitation of liability</H>
+      <H>10. Limitation of liability</H>
       <p>
         To the maximum extent permitted by law, Zekktris and its operators will not be liable for
         any indirect, incidental, special, consequential, or punitive damages, or any loss of data,
         use, or goodwill, arising from your use of the Service.
       </p>
 
-      <H>10. Changes to these Terms</H>
+      <H>11. Changes to these Terms</H>
       <p>
         We may update these Terms from time to time. If we make material changes we will take
         reasonable steps to notify you (for example, in-app). Your continued use after the changes
         take effect constitutes acceptance.
       </p>
 
-      <H>11. Governing law &amp; contact</H>
+      <H>12. Governing law &amp; contact</H>
       <p>
         These Terms are governed by the laws of [your jurisdiction], without regard to conflict-of-
         law rules. Questions about these Terms can be sent to{' '}
@@ -205,18 +258,38 @@ export function PrivacyPage() {
           biometrics or private keys).
         </li>
         <li>
+          <strong>Billing &amp; subscription</strong> data, if you buy a membership: your membership
+          tier and status, subscription and expiry dates, and the customer and subscription
+          identifiers our payment processor assigns you. We do <strong>not</strong> collect or store
+          your card number or other payment-card details — those go directly to our payment
+          processor (see &ldquo;How we share information&rdquo;).
+        </li>
+        <li>
+          <strong>Notification tokens</strong>, if you turn on push notifications: the device or
+          browser push token or subscription (for example, an Apple, Google, or browser push
+          endpoint and its keys) needed to deliver notifications to your device.
+        </li>
+        <li>
           <strong>Technical data</strong> needed to run and secure the Service: IP address, device
           and browser information, and timestamps, used for delivery, abuse prevention, and
           rate limiting.
         </li>
       </ul>
+      <p>
+        We do not use any third-party advertising, analytics, telemetry, or cross-site tracking
+        services, and we do not sell your personal information. On the web, the app loads its display
+        fonts from Google&rsquo;s font service, which necessarily receives your IP address and browser
+        information to serve those fonts (see &ldquo;How we share information&rdquo;).
+      </p>
 
       <H>2. How we use information</H>
       <p>
         We use your information to provide and maintain the Service (delivering messages, running
-        voice, syncing your account across devices); to secure it and prevent abuse; to enforce our
-        Terms; to operate age-gating and parental supervision; and to communicate with you about
-        your account (for example, verification and password-reset emails).
+        voice, syncing your account across devices, and sending push notifications you have opted
+        into); to process membership payments and manage subscriptions; to secure it and prevent
+        abuse; to enforce our Terms; to operate age-gating and parental supervision; and to
+        communicate with you about your account (for example, verification and password-reset
+        emails).
       </p>
 
       <H>3. Children and minors</H>
@@ -224,12 +297,14 @@ export function PrivacyPage() {
         Zekktris is not for children under 13, and we reject signups that report an age under 13. We
         collect date of birth to enforce this and to identify accounts aged 13–17, which are
         supervised: a linked parent or guardian can review the minor&rsquo;s messages and contacts
-        and set restrictions, and the minor is always shown that their account is supervised. A
-        minor&rsquo;s direct messages are not end-to-end encrypted while supervised so the guardian
-        can review them — except messages between the minor and their own guardian, which stay
-        private. Supervision, and the associated guardian access, ends automatically when the user
-        turns 18. If you believe a child under 13 has created an account, contact us and we will
-        remove it.
+        and set restrictions, and the minor is always shown that their account is supervised. To
+        support this review, we store the supervision link, the guardian&rsquo;s restriction
+        settings, any watch words the guardian configures, and excerpts of messages those watch
+        words flag. A minor&rsquo;s direct messages are not end-to-end encrypted while supervised so
+        the guardian can review them — except messages between the minor and their own guardian,
+        which stay private. Supervision, and the associated guardian access, ends automatically when
+        the user turns 18. If you believe a child under 13 has created an account, contact us and we
+        will remove it.
       </p>
 
       <H>4. End-to-end encryption</H>
@@ -237,7 +312,9 @@ export function PrivacyPage() {
         When end-to-end encryption is enabled for a direct message, its contents are encrypted on
         your device and we cannot read them. Encryption does not apply to the exceptions described
         above (a supervised minor&rsquo;s non-guardian DMs), and message metadata (such as who is
-        messaging whom and when) is still processed to deliver messages.
+        messaging whom and when) is still processed to deliver messages. For notification previews of
+        encrypted messages, the encrypted content is passed through the push services below and
+        decrypted on your device — it is never readable by us or by those services.
       </p>
 
       <H>5. How we share information</H>
@@ -249,9 +326,21 @@ export function PrivacyPage() {
           as described above;
         </li>
         <li>
-          with service providers that help us run the Service (for example, an email provider for
-          verification and reset messages, and real-time voice/video infrastructure), which may
-          process your data only on our behalf;
+          with service providers that help us run the Service, which may process your data only on
+          our behalf, including:{' '}
+          <a href="https://stripe.com/privacy" className="text-accent hover:underline">
+            Stripe
+          </a>{' '}
+          for membership payments (which receives your email and the information needed to process
+          the payment, and to which your card details go directly); an email provider for
+          verification, reset, and guardian-invitation messages (a guardian invitation sends the
+          address you supply, along with the minor&rsquo;s display name, to the email provider);
+          real-time voice/video infrastructure ([LiveKit]) that carries your audio/video streams and
+          a participant identifier when you are in a call; push-notification gateways — Apple Push
+          Notification service, Google Firebase Cloud Messaging, and your browser&rsquo;s push
+          service — to deliver notifications you have enabled; and, on the web, Google&rsquo;s font
+          service (Google Fonts), which receives your IP address and browser information in order to
+          serve the app&rsquo;s display fonts;
         </li>
         <li>when required by law, or to protect the rights, safety, and security of users and the Service.</li>
       </ul>
@@ -267,24 +356,30 @@ export function PrivacyPage() {
       <p>
         We keep your account and content until you delete them. Messages remain until you or a
         space&rsquo;s moderators remove them; some direct messages may be set to auto-delete after a
-        period. Media and other data may be retained for a limited time for operational and safety
-        reasons and then removed. When you delete your account, we delete or de-identify your
-        personal information, except where we must retain it to comply with law or resolve disputes.
+        period. Media is stored on our own servers (not a third-party media host) and may be
+        retained for a limited time for operational and safety reasons and then removed. For safety
+        and abuse enforcement, we may retain snapshots of flagged non-encrypted content and records
+        of moderation actions, which can outlast the account for audit purposes. Accounts that stay
+        inactive for a long period (by default about a year) may be deleted automatically. Billing
+        and transaction records may be kept longer than other data to meet tax, accounting, and
+        legal obligations. When you delete your account, we delete or de-identify your personal
+        information, except where we must retain it to comply with law or resolve disputes.
       </p>
 
       <H>8. Your rights and choices</H>
       <p>
         You can view and update your profile, change or delete your content, add security like
-        passkeys and two-factor authentication, and delete your account at any time from Settings.
-        Depending on where you live, you may have additional rights to access, correct, or delete
-        your personal information; contact us to exercise them.
+        passkeys and two-factor authentication, manage or cancel a membership, and delete your
+        account at any time from Settings. Depending on where you live, you may have additional
+        rights to access, correct, or delete your personal information; contact us to exercise them.
       </p>
 
       <H>9. Security</H>
       <p>
         We protect your data with measures including encrypted transport (HTTPS), salted password
-        hashing, optional passkeys and two-factor authentication, and session controls. No system is
-        perfectly secure, but we work to safeguard your information.
+        hashing, optional passkeys and two-factor authentication, and session controls. Sensitive
+        credentials such as passwords, tokens, and recovery codes are stored only as hashes. No
+        system is perfectly secure, but we work to safeguard your information.
       </p>
 
       <H>10. Changes to this policy</H>
