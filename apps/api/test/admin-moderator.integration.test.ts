@@ -125,6 +125,24 @@ describe.runIf(dbReady)('admin router: moderator authz + staff audit log', () =>
     expect((await req('POST', `/users/${otherMod}/ban`, token)).status).toBe(403);
     expect((await req('POST', `/users/${admin}/unban`, token)).status).toBe(403);
     expect((await req('POST', `/users/${admin}/logout`, token)).status).toBe(403);
+    // DOB-lock reset and membership gifts are staff-guarded too.
+    expect((await req('POST', `/users/${admin}/reset-dob-lock`, token)).status).toBe(403);
+    expect(
+      (await req('POST', `/users/${admin}/subscription`, token, { tier: 'scout', duration: '1m' })).status,
+    ).toBe(403);
+  });
+
+  it('moderator cannot gift a membership to themselves (no self-grant of paid cosmetics)', async () => {
+    const mod = await createUser();
+    await makeModerator(mod);
+    const token = await tokenFor(mod);
+    // Self is a staff account → assertModCanTouch blocks it before the gift.
+    expect(
+      (await req('POST', `/users/${mod}/subscription`, token, { tier: 'legend', duration: '3m' })).status,
+    ).toBe(403);
+    expect(
+      (await req('POST', `/users/${mod}/reset-dob-lock`, token)).status,
+    ).toBe(403);
   });
 
   it('moderator gifting is capped at 3 months; admins are not', async () => {

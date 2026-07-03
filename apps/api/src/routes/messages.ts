@@ -102,6 +102,29 @@ async function loadChannelContext(channelId: bigint, userId: bigint): Promise<Ch
   throw errors.notFound('Channel');
 }
 
+/**
+ * Participation gates shared by the send, reaction, and poll-vote paths for a
+ * GUILD channel: a pending (un-onboarded) member, a timed-out member, or a
+ * supervision-restricted minor may not participate. No-op for DMs (no guild
+ * membership / timeout / server-messaging restriction applies). Call AFTER the
+ * per-action permission check. Kept as one helper so a new participation path
+ * (like poll voting, which previously bypassed these) can't drift from send.
+ */
+async function enforceGuildParticipationGates(guildId: bigint, userId: bigint): Promise<void> {
+  const state = await membersSvc.getMemberState(guildId, userId);
+  if (state === 'pending') throw errors.pendingAcknowledgment();
+  const until = await membersSvc.getActiveTimeout(guildId, userId);
+  if (until !== null) throw errors.timedOut(until);
+  const restr = await supervision.getEffectiveRestrictions(userId);
+  if (restr && !restr.allowMessaging) {
+    throw new AppError(
+      'FORBIDDEN',
+      'Messaging is restricted — connect a guardian to continue',
+      { supervisionRestricted: 'messaging' },
+    );
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /:channelId/messages
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2689,6 +2712,14 @@ messagesRouter.post(
   async (c) => {
     const userId = requireUserId(c);
     const params = c.req.valid('param');
+    // Voting is participation — enforce the same onboarding/timeout/supervision
+    // gates as send + react (polls.vote() only checks SEND_MESSAGES, which a
+    // timed-out or restricted member still holds). loadChannelContext also
+    // re-verifies VIEW_CHANNEL / DM-recipient before we do any work.
+    const ctx = await loadChannelContext(BigInt(params.channelId), userId);
+    if (!ctx.isDM && ctx.channel.guildId) {
+      await enforceGuildParticipationGates(ctx.channel.guildId, userId);
+    }
     const { channelId, messageId } = await polls.vote({
       pollId: BigInt(params.pollId),
       optionId: BigInt(params.optionId),

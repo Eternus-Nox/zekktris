@@ -583,6 +583,9 @@ adminRouter.post(
 // to re-open a legacy account's one-time correction.
 adminRouter.post('/users/:id/reset-dob-lock', validate('param', userIdParam), async (c) => {
   const targetId = BigInt(c.req.valid('param').id);
+  // A moderator can't clear a fellow-staff account's DOB lock (mirrors the
+  // ban/unban/logout guard — moderators may not act on admins/moderators).
+  await assertModCanTouch(c, targetId);
   await db
     .update(schema.users)
     .set({ dobLocked: false, updatedAt: new Date() })
@@ -613,6 +616,10 @@ adminRouter.post(
     const selfId = requireUserId(c);
     const targetId = BigInt(c.req.valid('param').id);
     const { tier, duration } = c.req.valid('json');
+    // A moderator can't gift a membership to themselves or to another staff
+    // account — otherwise a moderator could self-grant free paid cosmetics.
+    // (Admins pass through unconditionally inside assertModCanTouch.)
+    await assertModCanTouch(c, targetId);
     // Moderators can gift up to 3 months; 6m/forever are admin-only.
     if (!staffIsAdmin(c) && duration !== '1m' && duration !== '3m') {
       throw errors.forbidden('Moderators can gift up to 3 months');

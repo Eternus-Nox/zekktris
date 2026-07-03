@@ -242,6 +242,18 @@ export interface VoteInput {
  */
 export async function vote(input: VoteInput): Promise<{ channelId: bigint; messageId: bigint }> {
   return db.transaction(async (tx) => {
+    // Serialize concurrent votes by the SAME user on the SAME poll. Without
+    // this, a single-choice poll's clear-then-insert races under READ
+    // COMMITTED: two near-simultaneous votes for different options both run
+    // the DELETE (each sees no committed row, deletes nothing) then INSERT
+    // different (poll,option,user) PKs — leaving TWO votes from one user and
+    // corrupting the tallies. A transaction-scoped advisory lock keyed on
+    // (poll,user) makes the second vote wait until the first commits, so its
+    // DELETE then sees the committed row. Cheap: it's per-(poll,user), not
+    // a table lock, and released automatically at commit/rollback.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${input.pollId.toString() + ':' + input.userId.toString()}, 0))`,
+    );
     // Load the poll + verify the option belongs to it. A single query
     // because Postgres can join.
     const rows = await tx

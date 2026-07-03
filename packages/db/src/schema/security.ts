@@ -44,6 +44,12 @@ export const securityEvents = pgTable(
     index('security_events_created_idx').on(t.createdAt),
     index('security_events_user_idx').on(t.userId),
     index('security_events_kind_idx').on(t.kind),
+    // Serves the Admin → Security "Staff" audit view: listEvents filters
+    // `kind LIKE 'staff\_%'` and pages by id DESC. Partial (staff rows only)
+    // so it stays tiny and serves both the filter and the ordered keyset.
+    index('security_events_staff_id_idx')
+      .on(sql`${t.id} DESC`)
+      .where(sql`${t.kind} LIKE 'staff\\_%'`),
   ],
 );
 
