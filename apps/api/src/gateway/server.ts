@@ -39,6 +39,7 @@ import { db, schema } from '../db';
 import { and, eq, inArray, ne } from 'drizzle-orm';
 import { log } from '../log';
 import { Connection } from './connection';
+import { initInternalDispatchBus } from './dispatch';
 import { registry } from './registry';
 import {
   CloseCode,
@@ -71,6 +72,9 @@ export function attachGateway(httpServer: HttpServer): void {
     maxPayload: 64 * 1024,
   });
   registry.init();
+  // Consume internal cross-node viewability-invalidation signals so a
+  // permission/role change on one replica invalidates the cache on all of them.
+  initInternalDispatchBus();
 
   // ── Boot-time presence reset ───────────────────────────────────────
   // Presence (online/idle/dnd) is persisted on users.status and only

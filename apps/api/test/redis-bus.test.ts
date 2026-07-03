@@ -99,6 +99,23 @@ describe('RedisEventBus', () => {
     expect(pub.published[0]!.channel).toBe('test');
   });
 
+  it('publishRemote fans to Redis but SKIPS local delivery (no origin double-run)', () => {
+    const pub = fakeRedis();
+    const sub = fakeRedis();
+    const bus = new RedisEventBus(pub as RedisLike, sub as RedisLike, {
+      instanceId: 'A',
+      channel: 'test',
+    });
+    const got: PublishedEvent[] = [];
+    bus.subscribe((e) => got.push(e));
+
+    bus.publishRemote(ev({ d: { x: 2 }, audience: { kind: 'guild', guildId: 7n } }));
+
+    expect(got).toHaveLength(0); // NOT delivered locally — origin already handled it
+    expect(pub.published).toHaveLength(1); // but fanned out to other replicas
+    expect(pub.published[0]!.channel).toBe('test');
+  });
+
   it("ignores its own echo but delivers other instances' events", () => {
     const pub = fakeRedis();
     const sub = fakeRedis();

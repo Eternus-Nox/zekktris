@@ -33,6 +33,13 @@ export interface PublishedEvent {
 
 export interface EventBus {
   publish(event: PublishedEvent): void;
+  /**
+   * Fan an event to OTHER replicas only, skipping local delivery. Used for
+   * internal cross-node signals (e.g. cache invalidation) where the origin
+   * node already handled the effect locally and must NOT re-handle its own
+   * echo. On a single-node bus this is a no-op — there are no other nodes.
+   */
+  publishRemote(event: PublishedEvent): void;
   subscribe(handler: (event: PublishedEvent) => void): () => void;
 }
 
@@ -51,6 +58,11 @@ export class InMemoryEventBus implements EventBus {
         // Log via the handler's own surface — we have no log dep here.
       }
     }
+  }
+
+  /** No other nodes exist on the in-memory bus, so remote-only is a no-op. */
+  publishRemote(_event: PublishedEvent): void {
+    // intentionally empty
   }
 
   subscribe(handler: (event: PublishedEvent) => void): () => void {

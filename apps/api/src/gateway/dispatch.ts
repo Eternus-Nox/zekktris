@@ -1074,11 +1074,57 @@ async function refreshUserViewableChannels(args: {
  * Public helper: a single user's role set changed in this guild. Called
  * from the member-PATCH route after add/remove role.
  */
+/**
+ * Internal (non-client) bus event: a viewability change happened and every
+ * replica must recompute the per-connection channel cache for ITS OWN
+ * connections. The per-connection snapshot is deliberately node-local (see
+ * SHARDING.md), but the RECOMPUTE TRIGGER must fan out — otherwise a role/
+ * permission change handled on node A never invalidates the victim's cache on
+ * node B, and node B keeps delivering messages for a channel the user can no
+ * longer see (a private-channel leak until they reconnect). Distinguished by
+ * the `_zk.internal.` prefix; registry.onPublished ignores it (no client
+ * frame), and the subscriber below is the only consumer.
+ */
+const INTERNAL_VIEWABILITY_INVALIDATE = '_zk.internal.viewability_invalidate';
+
+let internalBusUnsub: (() => void) | null = null;
+
+/** Subscribe (once) to internal cross-node viewability invalidations. Called
+ *  from the gateway startup path alongside registry.init(). Idempotent. */
+export function initInternalDispatchBus(): void {
+  if (internalBusUnsub) return;
+  internalBusUnsub = eventBus().subscribe((event) => {
+    if (event.t !== (INTERNAL_VIEWABILITY_INVALIDATE as never)) return;
+    const d = event.d as { scope: 'guild' | 'user'; guildId: string; userId?: string };
+    // Run the recompute against THIS node's local connections. Nodes that
+    // don't hold the affected user/members no-op cheaply inside the helpers.
+    if (d.scope === 'guild') {
+      void applyGuildPermissionChangeLocal({ guildId: BigInt(d.guildId) });
+    } else if (d.scope === 'user' && d.userId) {
+      void refreshUserViewableChannels({ userId: BigInt(d.userId), guildId: BigInt(d.guildId) });
+    }
+  });
+}
+
+export function shutdownInternalDispatchBus(): void {
+  if (internalBusUnsub) {
+    internalBusUnsub();
+    internalBusUnsub = null;
+  }
+}
+
 export async function applyMemberRoleChange(args: {
   userId: bigint;
   guildId: bigint;
 }): Promise<void> {
+  // Recompute for THIS node's connections (synchronous for callers/tests)…
   await refreshUserViewableChannels(args);
+  // …then signal OTHER replicas to recompute their own copies of this user.
+  eventBus().publishRemote({
+    t: INTERNAL_VIEWABILITY_INVALIDATE as never,
+    d: { scope: 'user', guildId: args.guildId.toString(), userId: args.userId.toString() },
+    audience: { kind: 'guild', guildId: args.guildId },
+  });
 }
 
 /**
@@ -1096,6 +1142,24 @@ export async function applyMemberRoleChange(args: {
  * users are in the same guild.
  */
 export async function applyGuildPermissionChange(args: {
+  guildId: bigint;
+}): Promise<void> {
+  // Recompute for THIS node's connections (synchronous for callers/tests)…
+  await applyGuildPermissionChangeLocal(args);
+  // …then signal OTHER replicas to recompute their own connections. Without
+  // this, a permission/role/channel change handled here never invalidates the
+  // cache on a node holding an affected user, leaking a now-hidden channel's
+  // messages to them until they reconnect.
+  eventBus().publishRemote({
+    t: INTERNAL_VIEWABILITY_INVALIDATE as never,
+    d: { scope: 'guild', guildId: args.guildId.toString() },
+    audience: { kind: 'guild', guildId: args.guildId },
+  });
+}
+
+/** Node-local recompute worker — see applyGuildPermissionChange. Runs against
+ *  this replica's registry only; the cross-node trigger is the caller's job. */
+async function applyGuildPermissionChangeLocal(args: {
   guildId: bigint;
 }): Promise<void> {
   const userIds = registry.connectedUsersInGuild(args.guildId);

@@ -492,6 +492,11 @@ class Registry {
   // ── Bus delivery ─────────────────────────────────────────────────────────
 
   private onPublished(event: PublishedEvent): void {
+    // Internal cross-node signals (viewability invalidation, …) are NOT client
+    // frames — they carry a `_zk.internal.` event name and are consumed by
+    // dispatch's own subscriber. Never deliver them to a socket.
+    if (typeof event.t === 'string' && event.t.startsWith('_zk.internal.')) return;
+
     // Presence is delivered through a dedicated path: a single published
     // event expands into one frame per shared guild (each carrying its own
     // guild_id) plus a guild_id=null frame for DM peers. The generic

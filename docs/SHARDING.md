@@ -148,11 +148,21 @@ update their snapshots. **In a multi-node setup, this only updates
 the snapshot on the replica where the user is connected.** That's
 exactly what we want — other replicas don't need to know.
 
-Note that `applyGuildPermissionChange` and similar admin actions
-ALSO emit gateway events (CHANNEL_CREATE / CHANNEL_DELETE for
-newly visible/hidden channels). Those events ride the bus, so other
-replicas hosting connections for users affected by the change will
-receive the snapshot-update events naturally.
+Note that `applyGuildPermissionChange` / `applyMemberRoleChange`
+recompute the per-connection snapshot LOCALLY (`registry.byUserId()`
++ `conn.send()`), which is a node-local socket write — it does NOT
+ride the bus. So the recompute TRIGGER must be fanned out explicitly,
+or a change handled on node A would never invalidate the victim's
+cache on node B (and node B would keep delivering messages for a
+channel the user can no longer see — a private-channel leak until they
+reconnect). This is done via an internal cross-node signal: after the
+local recompute, dispatch calls `eventBus().publishRemote(...)` with a
+`_zk.internal.viewability_invalidate` event (Redis-only, no local echo,
+so the origin doesn't double-run). Every OTHER replica's dispatch
+subscriber (`initInternalDispatchBus`) re-runs the recompute against
+its own local connections; `registry.onPublished` skips the internal
+event so it's never delivered to a client socket. The per-connection
+snapshot stays node-local (as designed); only the trigger fans out.
 
 ## What doesn't need fixing for multi-node
 

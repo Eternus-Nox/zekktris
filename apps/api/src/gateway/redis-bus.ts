@@ -194,6 +194,20 @@ export class RedisEventBus implements EventBus {
     // Deliver to this instance's own connections immediately, independent of
     // Redis (so local realtime survives a Redis hiccup).
     this.local.publish(event);
+    this.fanToRedis(event);
+  }
+
+  /**
+   * Fan to OTHER replicas only (no local delivery). For internal cross-node
+   * signals where the origin already handled the effect locally and must not
+   * re-run on its own echo. Redis echoes our own publish back, but the
+   * subscriber self-skips by instanceId — so this never round-trips to us.
+   */
+  publishRemote(event: PublishedEvent): void {
+    this.fanToRedis(event);
+  }
+
+  private fanToRedis(event: PublishedEvent): void {
     let raw: string;
     try {
       raw = serializeEvent(this.instanceId, event);
