@@ -156,6 +156,9 @@ export interface SelfUser extends PublicUser {
   /** 'gift' | 'founder' | 'stripe'. "Manage subscription" (Stripe portal)
       shows only for own stripe memberships. */
   subscriptionSource?: string | null;
+  /** Own stripe membership scheduled to end at subscriptionExpiresAt (the user
+      cancelled). Settings shows "Cancels on <date> · Resume" when true. */
+  subscriptionCancelAtPeriodEnd?: boolean;
   createdAt: string;
 }
 

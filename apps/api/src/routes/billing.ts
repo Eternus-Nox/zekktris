@@ -66,6 +66,25 @@ billingRouter.post('/portal', requireAuth, async (c) => {
   return c.json({ url });
 });
 
+// In-app cancel: schedule the paid subscription to end at the period's end
+// (non-refundable, so they keep access until then). Reversible via /reactivate.
+billingRouter.post('/cancel', requireAuth, async (c) => {
+  if (!billing.billingEnabled()) {
+    throw errors.badRequest('Payments are not configured on this server yet.');
+  }
+  const { endsAt } = await billing.cancelOwnSubscriptionAtPeriodEnd(requireUserId(c));
+  return c.json({ ok: true, endsAt: endsAt?.toISOString() ?? null });
+});
+
+// Undo a scheduled cancel — resume auto-renew.
+billingRouter.post('/reactivate', requireAuth, async (c) => {
+  if (!billing.billingEnabled()) {
+    throw errors.badRequest('Payments are not configured on this server yet.');
+  }
+  await billing.reactivateOwnSubscription(requireUserId(c));
+  return c.json({ ok: true });
+});
+
 // ── Stripe webhook ──────────────────────────────────────────────────────────
 // NO auth (Stripe calls it); authenticity comes from the signature check over
 // the RAW body — don't parse/validate the JSON before verification. Returns

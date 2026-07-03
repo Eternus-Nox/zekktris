@@ -56,7 +56,7 @@ describe.runIf(dbReady)('supporter memberships (integration)', () => {
 
     await giftSubscription(admin, user, 'guardian', 'forever');
     const eff = await getEffectiveSubscription(user);
-    expect(eff).toEqual({ tier: 'guardian', expiresAt: null, inherited: false, titled: true, source: 'gift' });
+    expect(eff).toEqual({ tier: 'guardian', expiresAt: null, inherited: false, titled: true, source: 'gift', cancelAtPeriodEnd: false });
   });
 
   it('timed gift sets an expiry; re-gifting overwrites tier + duration', async () => {
@@ -69,7 +69,7 @@ describe.runIf(dbReady)('supporter memberships (integration)', () => {
 
     await giftSubscription(admin, user, 'legend', 'forever');
     const second = await getEffectiveSubscription(user);
-    expect(second).toEqual({ tier: 'legend', expiresAt: null, inherited: false, titled: true, source: 'gift' });
+    expect(second).toEqual({ tier: 'legend', expiresAt: null, inherited: false, titled: true, source: 'gift', cancelAtPeriodEnd: false });
   });
 
   it("a supervising parent's membership passes down (highest tier wins)", async () => {
@@ -147,12 +147,23 @@ describe.runIf(dbReady)('supporter memberships (integration)', () => {
     // 24h grace beyond the period end.
     expect(eff!.expiresAt!.getTime()).toBe(periodEnd.getTime() + 24 * 3_600_000);
 
+    // A fresh activation is auto-renewing (not scheduled to cancel).
+    expect(eff!.cancelAtPeriodEnd).toBe(false);
+
     // Renewal pushes the expiry forward (and can retier on plan change).
     const nextEnd = new Date(Date.now() + 60 * 86_400_000);
     expect(await renewStripeSubscription('sub_test1', nextEnd, 'legend')).toBe(true);
     const renewed = await getEffectiveSubscription(user);
     expect(renewed!.tier).toBe('legend');
     expect(renewed!.expiresAt!.getTime()).toBe(nextEnd.getTime() + 24 * 3_600_000);
+
+    // A cancel (cancel_at_period_end) is reflected in the entitlement read so
+    // Settings can show "Cancels on <date> · Resume".
+    expect(await renewStripeSubscription('sub_test1', nextEnd, undefined, true)).toBe(true);
+    expect((await getEffectiveSubscription(user))!.cancelAtPeriodEnd).toBe(true);
+    // Reactivate clears it.
+    expect(await renewStripeSubscription('sub_test1', nextEnd, undefined, false)).toBe(true);
+    expect((await getEffectiveSubscription(user))!.cancelAtPeriodEnd).toBe(false);
 
     // Gifting over an active paid subscription is refused (would keep
     // charging them while the row says gift).

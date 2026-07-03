@@ -46,6 +46,9 @@ export interface EffectiveSubscription {
   /** Where the membership came from: 'gift' | 'founder' | 'stripe'. The web
       client shows "Manage subscription" only for own stripe rows. */
   source: string;
+  /** OWN stripe rows only: scheduled to end at expiresAt (user cancelled).
+      Drives the Settings "Cancels on <date> · Resume" vs "Cancel" state. */
+  cancelAtPeriodEnd: boolean;
 }
 
 /** WHERE clause for an active (unexpired) subscription row. */
@@ -79,6 +82,7 @@ export async function getEffectiveSubscription(
       inherited: false,
       titled: own.source !== 'founder',
       source: own.source,
+      cancelAtPeriodEnd: own.cancelAtPeriodEnd,
     };
   }
 
@@ -101,6 +105,8 @@ export async function getEffectiveSubscription(
         inherited: true,
         titled: sub.source !== 'founder',
         source: sub.source,
+        // Inherited memberships aren't the child's to cancel.
+        cancelAtPeriodEnd: false,
       };
     }
   }
@@ -219,6 +225,7 @@ export async function activateStripeSubscription(input: {
       expiresAt: new Date(input.currentPeriodEnd.getTime() + STRIPE_GRACE_MS),
       stripeCustomerId: input.stripeCustomerId,
       stripeSubscriptionId: input.stripeSubscriptionId,
+      cancelAtPeriodEnd: false,
     })
     .onConflictDoUpdate({
       target: schema.subscriptions.userId,
@@ -229,6 +236,8 @@ export async function activateStripeSubscription(input: {
         expiresAt: new Date(input.currentPeriodEnd.getTime() + STRIPE_GRACE_MS),
         stripeCustomerId: input.stripeCustomerId,
         stripeSubscriptionId: input.stripeSubscriptionId,
+        // Fresh activation always starts auto-renewing.
+        cancelAtPeriodEnd: false,
         updatedAt: new Date(),
       },
     })
@@ -241,12 +250,14 @@ export async function renewStripeSubscription(
   stripeSubscriptionId: string,
   currentPeriodEnd: Date,
   tier?: Tier,
+  cancelAtPeriodEnd?: boolean,
 ): Promise<boolean> {
   const updated = await db
     .update(schema.subscriptions)
     .set({
       expiresAt: new Date(currentPeriodEnd.getTime() + STRIPE_GRACE_MS),
       ...(tier ? { tier } : {}),
+      ...(cancelAtPeriodEnd !== undefined ? { cancelAtPeriodEnd } : {}),
       updatedAt: new Date(),
     })
     .where(eq(schema.subscriptions.stripeSubscriptionId, stripeSubscriptionId))

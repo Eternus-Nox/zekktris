@@ -1689,39 +1689,117 @@ function MembershipPitch() {
 }
 
 /**
- * "Manage subscription" — Stripe Billing Portal link for PAID members (own
- * stripe membership only; gifts/founders/inherited have nothing to manage).
+ * Manage / cancel a PAID subscription (own stripe membership only;
+ * gifts/founders/inherited have nothing to manage). Offers an explicit in-app
+ * Cancel (schedules end-of-period) + Resume, plus the Stripe portal for card
+ * changes. Reflects a scheduled cancellation across reloads via the persisted
+ * subscriptionCancelAtPeriodEnd flag.
  */
 function ManageMembership() {
-  const { user, rest } = useAuth();
+  const { user, rest, updateUser } = useAuth();
   const toasts = useToasts();
-  const [busy, setBusy] = useState(false);
+  const [portalBusy, setPortalBusy] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
   if (user?.subscriptionSource !== 'stripe' || user.subscriptionInherited) return null;
+
+  // Pull the fresh membership state (cancel flag + expiry) after a mutation.
+  const syncUser = async () => {
+    try {
+      const r = await rest.getMe();
+      updateUser(r.user);
+    } catch {
+      // A failed refresh just leaves the optimistic toast; next getMe reconciles.
+    }
+  };
+
+  const tierLabel = TIER_META[user.subscriptionTier ?? '']?.label ?? 'supporter';
+  const scheduledCancel = user.subscriptionCancelAtPeriodEnd === true;
+  const endsOn = user.subscriptionExpiresAt
+    ? new Date(user.subscriptionExpiresAt).toLocaleDateString(undefined, {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      })
+    : null;
+
+  const openPortal = () => {
+    setPortalBusy(true);
+    rest
+      .createBillingPortal()
+      .then((r) => {
+        window.location.href = r.url;
+      })
+      .catch((e) => {
+        toasts.push(e instanceof ApiError ? e.message : 'Could not open the portal', 'error');
+        setPortalBusy(false);
+      });
+  };
+
+  const cancel = async () => {
+    if (!window.confirm(
+      `Cancel your ${tierLabel} membership? You'll keep your perks until the end of the paid period, then Appearance re-locks. Memberships are non-refundable.`,
+    )) return;
+    setCancelBusy(true);
+    try {
+      await rest.cancelSubscription();
+      await syncUser();
+      toasts.push('Your membership will end at the close of this period.', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not cancel', 'error');
+    } finally {
+      setCancelBusy(false);
+    }
+  };
+
+  const resume = async () => {
+    setCancelBusy(true);
+    try {
+      await rest.reactivateSubscription();
+      await syncUser();
+      toasts.push('Welcome back — your membership will keep renewing.', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not resume', 'error');
+    } finally {
+      setCancelBusy(false);
+    }
+  };
+
   return (
-    <div className="mt-4 pt-3 border-t border-line flex items-center justify-between gap-3">
+    <div className="mt-4 pt-3 border-t border-line space-y-2.5">
       <p className="text-xs text-ink-3">
-        Your {TIER_META[user.subscriptionTier ?? '']?.label ?? 'supporter'} membership renews
-        monthly. Thank you for keeping Zekktris alive and strong!
+        {scheduledCancel
+          ? `Your ${tierLabel} membership is set to end${endsOn ? ` on ${endsOn}` : ' at the end of the period'}. Thank you for supporting Zekktris — you can resume any time before then.`
+          : `Your ${tierLabel} membership renews monthly. Thank you for helping keep Zekktris alive and strong! Memberships are non-refundable.`}
       </p>
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => {
-          setBusy(true);
-          rest
-            .createBillingPortal()
-            .then((r) => {
-              window.location.href = r.url;
-            })
-            .catch((e) => {
-              toasts.push(e instanceof ApiError ? e.message : 'Could not open the portal', 'error');
-              setBusy(false);
-            });
-        }}
-        className="shrink-0 text-sm px-3 py-1.5 rounded-md border border-line bg-bg-3 text-ink-1 hover:bg-bg-1 disabled:opacity-50 transition-colors"
-      >
-        {busy ? 'Opening…' : 'Manage subscription'}
-      </button>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={portalBusy}
+          onClick={openPortal}
+          className="text-sm px-3 py-1.5 rounded-md border border-line bg-bg-3 text-ink-1 hover:bg-bg-1 disabled:opacity-50 transition-colors"
+        >
+          {portalBusy ? 'Opening…' : 'Manage payment'}
+        </button>
+        {scheduledCancel ? (
+          <button
+            type="button"
+            disabled={cancelBusy}
+            onClick={() => void resume()}
+            className="text-sm px-3 py-1.5 rounded-md border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-50 transition-colors"
+          >
+            {cancelBusy ? 'Resuming…' : 'Resume membership'}
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={cancelBusy}
+            onClick={() => void cancel()}
+            className="text-sm px-3 py-1.5 rounded-md border border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-50 transition-colors"
+          >
+            {cancelBusy ? 'Cancelling…' : 'Cancel subscription'}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

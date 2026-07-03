@@ -2731,6 +2731,16 @@ export class RestClient {
     return this.request('POST', '/billing/portal');
   }
 
+  /** Cancel own paid subscription at period end (keeps access until then). */
+  cancelSubscription(): Promise<{ ok: boolean; endsAt: string | null }> {
+    return this.request('POST', '/billing/cancel');
+  }
+
+  /** Undo a scheduled cancel — resume auto-renew. */
+  reactivateSubscription(): Promise<{ ok: boolean }> {
+    return this.request('POST', '/billing/reactivate');
+  }
+
   /** Gift (or re-gift — overwrites) a supporter membership. */
   adminGiftSubscription(
     userId: string,

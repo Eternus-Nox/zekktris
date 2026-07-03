@@ -1,4 +1,4 @@
-import { pgTable, bigint, text, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, bigint, boolean, text, timestamp, index } from 'drizzle-orm/pg-core';
 import { users } from './users';
 
 /**
@@ -31,6 +31,10 @@ export const subscriptions = pgTable(
     /** Stripe linkage (source='stripe' rows only). */
     stripeCustomerId: text('stripe_customer_id'),
     stripeSubscriptionId: text('stripe_subscription_id'),
+    /** Stripe rows: scheduled to end at period end (user cancelled in-app or
+     *  via the portal). They keep access until expiresAt; the UI shows a
+     *  "Cancels on <date> · Resume" state. Reset on fresh activation/reactivate. */
+    cancelAtPeriodEnd: boolean('cancel_at_period_end').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

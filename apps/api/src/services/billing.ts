@@ -151,6 +151,38 @@ export async function cancelStripeSubscription(stripeSubscriptionId: string): Pr
   await stripe().subscriptions.cancel(stripeSubscriptionId);
 }
 
+/**
+ * User-initiated in-app cancel: schedule the subscription to end at the current
+ * period's end (they keep access + cosmetics until then). Non-refundable, so we
+ * don't cancel immediately. Returns the effective end (period end + grace) for
+ * a "you're a member until <date>" message. Reversible via reactivate below.
+ */
+export async function cancelOwnSubscriptionAtPeriodEnd(
+  userId: bigint,
+): Promise<{ endsAt: Date | null }> {
+  const own = await subscriptions.getOwnSubscription(userId);
+  if (own?.source !== 'stripe' || !own.stripeSubscriptionId) {
+    throw errors.badRequest('You have no paid subscription to cancel.');
+  }
+  const sub = await stripe().subscriptions.update(own.stripeSubscriptionId, {
+    cancel_at_period_end: true,
+  });
+  // customer.subscription.updated fires and keeps the row's expiry current; the
+  // actual hard-lock happens on subscription.deleted at period end.
+  return { endsAt: periodEndOf(sub) };
+}
+
+/** Undo a scheduled cancel — resume auto-renew. */
+export async function reactivateOwnSubscription(userId: bigint): Promise<void> {
+  const own = await subscriptions.getOwnSubscription(userId);
+  if (own?.source !== 'stripe' || !own.stripeSubscriptionId) {
+    throw errors.badRequest('You have no paid subscription to resume.');
+  }
+  await stripe().subscriptions.update(own.stripeSubscriptionId, {
+    cancel_at_period_end: false,
+  });
+}
+
 /** Period end resolution across API versions (item-level fallback). */
 function periodEndOf(sub: Stripe.Subscription): Date {
   const raw =
@@ -235,7 +267,12 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<void> {
       // sweep hard-locks; if payment recovers, invoice.paid re-extends.
       const PAID_STATUSES = new Set(['active', 'trialing']);
       if (PAID_STATUSES.has(sub.status)) {
-        await subscriptions.renewStripeSubscription(sub.id, periodEndOf(sub), tier);
+        await subscriptions.renewStripeSubscription(
+          sub.id,
+          periodEndOf(sub),
+          tier,
+          sub.cancel_at_period_end === true,
+        );
       }
       return;
     }
