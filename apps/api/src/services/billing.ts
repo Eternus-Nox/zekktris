@@ -94,6 +94,17 @@ export async function createCheckoutSession(input: {
       'You already have an active subscription — use “Manage subscription” to change or cancel it.',
     );
   }
+  // Block subscribing OVER an active gift/founder membership. A completed
+  // checkout overwrites the single per-user row (source→stripe, expiresAt→
+  // period-end), which would silently destroy a forever gift or a
+  // grandfathered founder grant — the holder gains nothing by paying and
+  // could end up with nothing if they later cancel. They already have full
+  // perks; there's simply no action to take.
+  if (own && own.source !== 'stripe') {
+    throw errors.badRequest(
+      'You already have a membership (a gift or founder grant) with full perks — no need to subscribe. It stays active on its own.',
+    );
+  }
   const priceId = await priceIdForTier(input.tier);
   const session = await stripe().checkout.sessions.create({
     mode: 'subscription',
@@ -170,13 +181,33 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<void> {
       const subId =
         typeof session.subscription === 'string' ? session.subscription : session.subscription.id;
       const sub = await stripe().subscriptions.retrieve(subId);
-      await subscriptions.activateStripeSubscription({
+      const { supersededSubscriptionId } = await subscriptions.activateStripeSubscription({
         userId: BigInt(userIdStr),
         tier,
         stripeCustomerId: typeof session.customer === 'string' ? session.customer : (session.customer?.id ?? ''),
         stripeSubscriptionId: subId,
         currentPeriodEnd: periodEndOf(sub),
       });
+      // If this checkout replaced a DIFFERENT live stripe subscription (a
+      // double-checkout race), cancel the old one at Stripe so it doesn't keep
+      // billing as an orphan with no local record. Best-effort — a failure
+      // here must not fail the webhook (Stripe would retry the whole event).
+      if (supersededSubscriptionId) {
+        try {
+          await stripe().subscriptions.cancel(supersededSubscriptionId);
+          log.warn('stripe: cancelled superseded duplicate subscription', {
+            userId: userIdStr,
+            supersededSubscriptionId,
+            keptSubscriptionId: subId,
+          });
+        } catch (err) {
+          log.error('stripe: failed to cancel superseded duplicate subscription', {
+            userId: userIdStr,
+            supersededSubscriptionId,
+            err: (err as Error).message,
+          });
+        }
+      }
       log.info('stripe membership activated', { userId: userIdStr, tier });
       return;
     }
@@ -196,7 +227,16 @@ export async function handleWebhookEvent(event: Stripe.Event): Promise<void> {
       // cancel_at_period_end needs no action — the row simply expires.
       const sub = event.data.object;
       const tier = tierForLookupKey(sub.items?.data?.[0]?.price?.lookup_key) ?? undefined;
-      await subscriptions.renewStripeSubscription(sub.id, periodEndOf(sub), tier);
+      // ONLY extend entitlement for a paying status. On a failed renewal Stripe
+      // fires this with status='past_due'/'unpaid' (often advancing the period
+      // for dunning) before it eventually deletes the sub — extending here
+      // would keep a non-paying user's cosmetics/title alive. For those states
+      // we leave expiresAt as-is so the existing grace lapses and the hourly
+      // sweep hard-locks; if payment recovers, invoice.paid re-extends.
+      const PAID_STATUSES = new Set(['active', 'trialing']);
+      if (PAID_STATUSES.has(sub.status)) {
+        await subscriptions.renewStripeSubscription(sub.id, periodEndOf(sub), tier);
+      }
       return;
     }
     case 'customer.subscription.deleted': {

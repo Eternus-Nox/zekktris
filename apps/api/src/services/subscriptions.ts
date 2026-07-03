@@ -189,7 +189,26 @@ export async function activateStripeSubscription(input: {
   stripeCustomerId: string;
   stripeSubscriptionId: string;
   currentPeriodEnd: Date;
-}) {
+}): Promise<{
+  row: typeof schema.subscriptions.$inferSelect;
+  /** A DIFFERENT stripe subscription this activation replaces — the caller
+   *  must cancel it at Stripe or it keeps billing as an orphan. */
+  supersededSubscriptionId: string | null;
+}> {
+  // If the user already has a stripe row for a DIFFERENT subscription (two
+  // Checkout sessions completed before the first webhook landed), overwriting
+  // it here would orphan the old one — it keeps generating monthly charges
+  // with no local record. Report it so the caller cancels it at Stripe.
+  const [prior] = await db
+    .select({ stripeSubscriptionId: schema.subscriptions.stripeSubscriptionId })
+    .from(schema.subscriptions)
+    .where(eq(schema.subscriptions.userId, input.userId))
+    .limit(1);
+  const supersededSubscriptionId =
+    prior?.stripeSubscriptionId && prior.stripeSubscriptionId !== input.stripeSubscriptionId
+      ? prior.stripeSubscriptionId
+      : null;
+
   const [row] = await db
     .insert(schema.subscriptions)
     .values({
@@ -214,7 +233,7 @@ export async function activateStripeSubscription(input: {
       },
     })
     .returning();
-  return row!;
+  return { row: row!, supersededSubscriptionId };
 }
 
 /** Renewal / plan change: push expiry forward (and retier if changed). */

@@ -173,6 +173,42 @@ describe.runIf(dbReady)('supporter memberships (integration)', () => {
     expect(await endStripeSubscription('sub_missing')).toBe(false);
   });
 
+  it('activating a DIFFERENT stripe sub for the same user reports the superseded id', async () => {
+    const user = await createUser();
+    const periodEnd = new Date(Date.now() + 30 * 86_400_000);
+    const first = await activateStripeSubscription({
+      userId: user,
+      tier: 'scout',
+      stripeCustomerId: 'cus_dup',
+      stripeSubscriptionId: 'sub_A',
+      currentPeriodEnd: periodEnd,
+    });
+    // First activation supersedes nothing.
+    expect(first.supersededSubscriptionId).toBeNull();
+
+    // A second checkout (race) completes with a different subscription id →
+    // the old one is reported so the caller cancels it at Stripe (no orphan).
+    const second = await activateStripeSubscription({
+      userId: user,
+      tier: 'guardian',
+      stripeCustomerId: 'cus_dup',
+      stripeSubscriptionId: 'sub_B',
+      currentPeriodEnd: periodEnd,
+    });
+    expect(second.supersededSubscriptionId).toBe('sub_A');
+
+    // Re-activating the SAME subscription id (idempotent webhook redelivery)
+    // supersedes nothing.
+    const again = await activateStripeSubscription({
+      userId: user,
+      tier: 'guardian',
+      stripeCustomerId: 'cus_dup',
+      stripeSubscriptionId: 'sub_B',
+      currentPeriodEnd: periodEnd,
+    });
+    expect(again.supersededSubscriptionId).toBeNull();
+  });
+
   it('expired rows grant nothing and the sweep hard-locks them', async () => {
     const admin = await createUser();
     const user = await createUser();

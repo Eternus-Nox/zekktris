@@ -148,6 +148,12 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
       and(
         eq(schema.messages.authorId, userId),
         isNull(schema.messages.deletedAt),
+        // The badge is for fast replies to OTHER people. Exclude self-replies
+        // (author replying to their own message) so it can't be self-farmed by
+        // posting then quick-replying to yourself. Also ignore replies to a
+        // since-deleted parent.
+        sql`parent.author_id IS DISTINCT FROM ${schema.messages.authorId}`,
+        sql`parent.deleted_at IS NULL`,
         sql`${schema.messages.createdAt} - parent.created_at <= interval '10 seconds'`,
       ),
     );
