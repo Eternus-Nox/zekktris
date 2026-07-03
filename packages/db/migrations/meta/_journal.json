@@ -743,6 +743,13 @@
       "when": 1784600231000,
       "tag": "0106_banned_until",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1784600232000,
+      "tag": "0107_regrandfather_founders",
+      "breakpoints": true
     }
   ]
 }
