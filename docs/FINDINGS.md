@@ -789,3 +789,54 @@ Full write-ups with failure scenarios + fixes live in the Obsidian vault:
 - MemberListView.sections fully recomputes (copy + per-member status lookup + multiple sorts) on every AppStore publish, driven by presence churn — `ios-native/Zekktris/MessageViews.swift`
 - …plus 8 Low (MessageItem/voice-row/toast re-renders, iOS messageCache unbounded, FriendsView eager render, listEvents kind-ordering, DM-send recipient re-queries, usersById growth).
 
+
+---
+
+# 2026-07-03 follow-up — audit findings RESOLVED (same session)
+
+All 38 surviving findings from the two-track audit above were worked through.
+**34 fixed, 1 refuted-on-implementation (false positive), 3 deferred with
+rationale.** Full server suite + web/api/db/client typecheck + iOS build all
+green. Commits `86b21a5`..`41fbbf6`.
+
+## Fixed
+**Bugs (server):** poll single-choice double-vote race (advisory lock); poll
+voting now runs onboarding/timeout/supervision gates; message EDIT runs
+automod/banned-words; pin/unpin no longer leak the actor's votes/reactions;
+stage-promote re-applies the supervised track-source clamp; DM-call block +
+guardian dmPolicy enforced on answer; supervised-DM E2EE rejected server-side
+(enable + send); member permission_overrides purged on kick/leave/ban;
+category delete cascades grandchild threads; addMemberRole FOR UPDATE
+(TOCTOU); multi-node VIEW_CHANNEL revocation fans across replicas
+(publishRemote); moderator gift/dob-reset staff-guards; Stripe
+subscription.updated only extends for paying status; checkout blocked over
+gift/founder membership; double-checkout orphan cancelled; first_responder
+self-farm closed; deleteChannel deletes invites.
+**Bugs (web):** automod regex/link Patterns input; deep-link admin tab honored
+after late roles load; reports "Resolve & ban/delete" gated on caller perms.
+**Bugs (iOS):** CallKit answer of a never-unlocked E2EE call declines instead
+of dead-ending; markChannelRead uses the newest confirmed id (no UUID nonce).
+**Perf (server):** staff-audit partial index + best-effort pg_trgm user-search
+indexes (migration 0104); DM-push prefs+badges parallelized.
+**Perf (web):** MessageItem selects its reply-parent directly (no whole-array
+re-render storm); ToastProvider context memoized.
+**Perf (iOS):** Shared-Media gallery decodes off-main + downsampled;
+MemberListView.sections memoized on a version stamp; messageCache 48-channel
+LRU; FriendsView LazyVStack.
+
+## Refuted on implementation (false positive)
+- **"@everyone phantom mention badge" (web-state, was medium):** the server
+  DOES count @everyone via `bumpMentions(channelId, viewers)` in the send
+  route (routes/messages.ts) — the verifier only checked createMessage and
+  missed it. The client's `|| m.mentionsEveryone` correctly mirrors the
+  server; dropping it would UNDERcount. No change.
+
+## Deferred (with rationale)
+- **Voice-channel-row re-render (perf, low):** correct fix needs a
+  ref-preserving reducer-side channel index; intricate + in the fragile voice
+  subsystem, risk > reward for a few simple rows.
+- **usersById unbounded growth (perf, low, PLAUSIBLE):** the finding itself
+  recommends against an LRU — bounded by instance population, not a real leak.
+- **1:1 DM-send recipient re-queries (perf, low):** threading state through the
+  fire-and-forget IIFEs on the hottest send path is higher-risk than the
+  "wasted pool checkouts" it saves.
