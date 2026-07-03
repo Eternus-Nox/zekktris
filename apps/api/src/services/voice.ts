@@ -85,18 +85,30 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
     if (channel.type === 'dm') {
       const other = await dms.getOtherRecipient(channelId, userId);
       if (other !== null) {
-        // Only gate the INITIATOR of a DM call. canReachByDmOrCall is
-        // DIRECTIONAL — for non-friends it checks the *other* party's
-        // "allow DMs from server members" toggle. Re-running it when
-        // ANSWERING checks whether the callee can reach the CALLER, which
-        // fails whenever the caller hasn't opened up to server members
-        // (the default), even though the caller legitimately rang the
-        // callee. That's what surfaced as "Voice channel not found" on
-        // answer. If the other party is already in this DM's voice
-        // channel, this user is answering a ring they consented to by
-        // tapping Answer — so skip the reachability gate. (Blocks can't
-        // slip through: a block would have stopped the caller from
-        // ringing in the first place.)
+        const { isBlockedEitherWay, canReachByDmOrCall } = await import('./relationships');
+        // ALWAYS-ENFORCED gates (both ring and answer):
+        //  1. A block in EITHER direction always denies. This must not be
+        //     skipped on the answer path — a block placed DURING the ring
+        //     window (after the caller joined, before the callee answers)
+        //     would otherwise slip through and connect a blocked pair.
+        //  2. Supervision contact policy. dmBlockedBySupervision is symmetric;
+        //     a ring does not satisfy a guardian's dmPolicy the way tapping
+        //     Answer satisfies reachability consent, so it applies to the
+        //     answerer too. Mirrors the text-send + getOrCreateDM gates.
+        if (await isBlockedEitherWay(userId, other)) {
+          throw errors.notFound('Voice channel');
+        }
+        if (await supervision.dmBlockedBySupervision(userId, other)) {
+          throw errors.notFound('Voice channel');
+        }
+        // DIRECTIONAL reachability (server-member "allow DMs" toggle) is gated
+        // to the INITIATOR only. Re-running canReachByDmOrCall when ANSWERING
+        // checks whether the callee can reach the CALLER, which fails whenever
+        // the caller hasn't opened up to server members (the default) — that
+        // surfaced as "Voice channel not found" on answer. If the other party
+        // is already in this DM's voice channel, this user is answering a ring
+        // they consented to by tapping Answer, so skip the reachability gate.
+        // (Blocks + supervision are already enforced unconditionally above.)
         const [otherPresent] = await db
           .select({ userId: schema.voiceStates.userId })
           .from(schema.voiceStates)
@@ -108,7 +120,6 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
           )
           .limit(1);
         if (!otherPresent) {
-          const { canReachByDmOrCall } = await import('./relationships');
           if (!(await canReachByDmOrCall(userId, other))) {
             throw errors.notFound('Voice channel');
           }

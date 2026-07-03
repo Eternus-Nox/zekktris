@@ -39,6 +39,26 @@ import {
 } from './permissions';
 import * as supervision from './supervision';
 
+/**
+ * The LiveKit publish-source whitelist for a supervised participant, or
+ * `undefined` (no per-source restriction) for an unrestricted user. When the
+ * guardian disabled video and/or screen-share, publishing is clamped to the
+ * still-allowed sources so the SFU grant matches the token. Shared by joinStage
+ * (token mint) AND the promote path (setSpeaker's updateParticipant) so a stage
+ * moderator can't hand a restricted child full sources by promoting them —
+ * updateParticipant with canPublishSources omitted means "all sources allowed".
+ */
+function supervisedPublishSources(
+  restr: { allowVideo: boolean; allowStream: boolean } | null | undefined,
+): TrackSource[] | undefined {
+  if (!restr) return undefined;
+  if (restr.allowVideo && restr.allowStream) return undefined;
+  const sources: TrackSource[] = [TrackSource.MICROPHONE];
+  if (restr.allowVideo) sources.push(TrackSource.CAMERA);
+  if (restr.allowStream) sources.push(TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO);
+  return sources;
+}
+
 // ── Reads ────────────────────────────────────────────────────────────────
 
 /** Return all participants (speakers + audience) in a stage channel. */
@@ -117,20 +137,11 @@ export async function joinStage(args: {
 
   // Parental controls: barred from voice entirely, or limited sources
   // (audio-only / no screen share) — mirrors joinVoice exactly.
-  let publishSources: TrackSource[] | undefined;
   const childRestr = await supervision.getEffectiveRestrictions(args.userId);
-  if (childRestr) {
-    if (!childRestr.allowVoice) {
-      throw errors.forbidden('Voice calls are restricted by your parent');
-    }
-    if (!childRestr.allowVideo || !childRestr.allowStream) {
-      publishSources = [TrackSource.MICROPHONE];
-      if (childRestr.allowVideo) publishSources.push(TrackSource.CAMERA);
-      if (childRestr.allowStream) {
-        publishSources.push(TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO);
-      }
-    }
+  if (childRestr && !childRestr.allowVoice) {
+    throw errors.forbidden('Voice calls are restricted by your parent');
   }
+  const publishSources = supervisedPublishSources(childRestr);
 
   const existing = await getParticipant(args.channelId, args.userId);
   if (existing) return { participant: existing, isFirstJoiner: false, publishSources };
@@ -236,6 +247,14 @@ export async function setSpeaker(args: {
     if (chRow?.guildId) {
       const roomName = `g${chRow.guildId.toString()}-c${args.channelId.toString()}`;
       const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret);
+      // When promoting, re-derive the target's supervised source whitelist so a
+      // moderator's promote can't lift a restricted child's audio-only/no-stream
+      // clamp at the SFU. Omitting canPublishSources = "all sources allowed", so
+      // we MUST pass the same clamp joinStage's token mint uses. Demotion
+      // (canPublish:false) needs no source list.
+      const publishSources = args.isSpeaker
+        ? supervisedPublishSources(await supervision.getEffectiveRestrictions(args.targetUserId))
+        : undefined;
       try {
         await svc.updateParticipant(
           roomName,
@@ -245,6 +264,7 @@ export async function setSpeaker(args: {
             canPublish: args.isSpeaker,
             canSubscribe: true,
             canPublishData: false,
+            ...(publishSources ? { canPublishSources: publishSources } : {}),
           },
         );
       } catch (err) {
