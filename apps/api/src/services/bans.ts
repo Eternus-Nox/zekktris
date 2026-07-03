@@ -69,18 +69,12 @@ export async function banMember(input: BanInput): Promise<void> {
         ),
       );
 
-    // member_roles has FKs to guilds/users/roles but NOT to guild_members, so
-    // the delete above does not cascade the member's role assignments. Clear
-    // them explicitly — otherwise the rows linger and, after an unban + rejoin,
-    // the user silently regains their old roles (including moderator/admin).
-    await tx
-      .delete(schema.memberRoles)
-      .where(
-        and(
-          eq(schema.memberRoles.guildId, input.guildId),
-          eq(schema.memberRoles.userId, input.userId),
-        ),
-      );
+    // Neither member_roles nor member-target permission_overrides cascade off
+    // guild_members, so the delete above leaves them behind — after an unban +
+    // rejoin the user would silently regain their old roles (incl.
+    // moderator/admin) AND any explicit channel overrides. Purge both here.
+    const { purgeMemberGuildState } = await import('./members');
+    await purgeMemberGuildState(tx, input.guildId, input.userId);
 
     // Insert the ban. ON CONFLICT DO UPDATE so re-banning refreshes the
     // moderator/reason rather than 409'ing.

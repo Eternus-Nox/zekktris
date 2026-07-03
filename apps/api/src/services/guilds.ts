@@ -454,11 +454,12 @@ export async function leaveGuild(guildId: bigint, userId: bigint): Promise<void>
 
     if (result.length === 0) throw errors.notFound('Membership');
 
-    // member_roles has no FK to guild_members; clear the leaver's role rows
-    // explicitly so a later rejoin doesn't silently restore their old roles.
-    await tx
-      .delete(schema.memberRoles)
-      .where(and(eq(schema.memberRoles.guildId, guildId), eq(schema.memberRoles.userId, userId)));
+    // Clear the leaver's role rows AND member-target channel overrides (neither
+    // cascades off guild_members) so a later rejoin can't silently restore
+    // their old roles or explicit channel access. Dynamic import mirrors the
+    // getMemberDetailed pattern above (avoids a members↔guilds import cycle).
+    const { purgeMemberGuildState } = await import('./members');
+    await purgeMemberGuildState(tx, guildId, userId);
 
     await writeAudit({
       tx,

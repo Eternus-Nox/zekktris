@@ -13,6 +13,45 @@ import { db, schema } from '../db';
 import { errors } from '../errors';
 import { writeAudit } from './audit';
 
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Purge a departing member's guild-scoped access grants in one transaction:
+ * their role assignments AND their member-target channel permission overrides.
+ * Neither table FK-cascades off guild_members, so without this a user who
+ * rejoins silently regains their old roles AND any explicit channel overrides
+ * (e.g. an allow=VIEW_CHANNEL on a private channel) — a privilege-restoration
+ * bug. Shared by kick / leave / ban so the three paths can't drift.
+ */
+export async function purgeMemberGuildState(
+  tx: Tx,
+  guildId: bigint,
+  userId: bigint,
+): Promise<void> {
+  await tx
+    .delete(schema.memberRoles)
+    .where(
+      and(eq(schema.memberRoles.guildId, guildId), eq(schema.memberRoles.userId, userId)),
+    );
+  // permission_overrides has no guild_id column and no FK to guild_members;
+  // scope the member-target deletes to this guild's channels via a subquery.
+  await tx
+    .delete(schema.permissionOverrides)
+    .where(
+      and(
+        eq(schema.permissionOverrides.targetType, 'member'),
+        eq(schema.permissionOverrides.targetId, userId),
+        inArray(
+          schema.permissionOverrides.channelId,
+          tx
+            .select({ id: schema.channels.id })
+            .from(schema.channels)
+            .where(eq(schema.channels.guildId, guildId)),
+        ),
+      ),
+    );
+}
+
 export async function getMember(guildId: bigint, userId: bigint) {
   const row = await db
     .select()
@@ -288,7 +327,13 @@ export async function addMemberRole(input: {
       .limit(1);
     if (!role[0]) throw errors.notFound('Role');
 
-    // Validate member exists.
+    // Validate member exists — with a ROW LOCK so this serializes against a
+    // concurrent kick/leave/ban DELETE on the same guild_members row. Without
+    // FOR UPDATE, a kick committing between this check and the insert leaves an
+    // orphaned member_roles row that silently restores the role on rejoin. With
+    // it: if the kick commits first, this locked read returns no row → notFound
+    // (no orphan); if we lock first, the kick's DELETE waits, then its
+    // member_roles cleanup removes the row we just inserted.
     const m = await tx
       .select({ userId: schema.guildMembers.userId })
       .from(schema.guildMembers)
@@ -298,7 +343,8 @@ export async function addMemberRole(input: {
           eq(schema.guildMembers.userId, input.userId),
         ),
       )
-      .limit(1);
+      .limit(1)
+      .for('update');
     if (!m[0]) throw errors.notFound('Member');
 
     // Insert with ON CONFLICT DO NOTHING so re-grants are no-ops.
@@ -377,19 +423,10 @@ export async function kickMember(input: {
 
     if (result.length === 0) throw errors.notFound('Member');
 
-    // member_roles has FKs to guilds/users/roles but NOT to guild_members,
-    // so deleting the membership row does not cascade the member's role
-    // assignments. Clear them explicitly in the same transaction — otherwise
-    // the rows linger and a user who rejoins silently regains their old roles
-    // (including moderator/admin), which is a privilege-restoration bug.
-    await tx
-      .delete(schema.memberRoles)
-      .where(
-        and(
-          eq(schema.memberRoles.guildId, input.guildId),
-          eq(schema.memberRoles.userId, input.userId),
-        ),
-      );
+    // Clear role assignments AND member-target channel overrides in the same
+    // transaction — neither cascades off guild_members, so without this a
+    // rejoining user regains their old roles and explicit channel access.
+    await purgeMemberGuildState(tx, input.guildId, input.userId);
 
     await writeAudit({
       tx,

@@ -447,10 +447,7 @@ export async function deleteChannel(channelId: bigint, actorId: bigint): Promise
     // would survive their parent's deletion as orphans: parentId
     // pointing at a deleted channel, no UI bucket to render in,
     // but still appearing in listViewableGuildChannelIds and
-    // contributing to permission-refresh diffs. The cascade is
-    // scoped to a single level — categories have a separate
-    // top-level path that explicitly deletes children first; we
-    // don't recurse here.
+    // contributing to permission-refresh diffs.
     const cascaded = await tx
       .update(schema.channels)
       .set({ deletedAt: now })
@@ -461,6 +458,28 @@ export async function deleteChannel(channelId: bigint, actorId: bigint): Promise
         ),
       )
       .returning({ id: schema.channels.id });
+    const cascadedIds = cascaded.map((r) => r.id);
+
+    // Second level: when the deleted channel is a CATEGORY, its direct
+    // children are text/voice/forum channels which THEMSELVES parent threads
+    // (grandchildren of the category). A single-level cascade misses those,
+    // orphaning threads whose parentId points at a now-deleted text channel.
+    // Soft-delete any live channels parented by the just-cascaded set and add
+    // them to the returned id list so the client drops them too. Only
+    // categories reach a third level, so one extra pass suffices.
+    if (cascadedIds.length > 0) {
+      const grandchildren = await tx
+        .update(schema.channels)
+        .set({ deletedAt: now })
+        .where(
+          and(
+            inArray(schema.channels.parentId, cascadedIds),
+            isNull(schema.channels.deletedAt),
+          ),
+        )
+        .returning({ id: schema.channels.id });
+      cascadedIds.push(...grandchildren.map((r) => r.id));
+    }
 
     if (existing.guildId) {
       await writeAudit({
@@ -473,7 +492,7 @@ export async function deleteChannel(channelId: bigint, actorId: bigint): Promise
       });
     }
 
-    return { cascadedChildIds: cascaded.map((r) => r.id) };
+    return { cascadedChildIds: cascadedIds };
   });
 }
 
