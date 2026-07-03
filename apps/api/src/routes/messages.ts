@@ -199,6 +199,10 @@ async function enforceGuildContentModeration(args: {
 // POST /:channelId/messages
 // ═══════════════════════════════════════════════════════════════════════════
 
+/** Our E2EE wire format: `zkE2EE/<version>:<base64>`. Used server-side only to
+ *  REJECT ciphertext from a supervised DM (the server never decrypts). */
+const E2EE_CIPHERTEXT_RE = /^zkE2EE\/\d+:/;
+
 const pollInputSchema = z.object({
   question: z.string().min(1).max(300),
   options: z.array(z.string().min(1).max(80)).min(2).max(10),
@@ -583,6 +587,21 @@ messagesRouter.post(
             'FORBIDDEN',
             'Direct messages are restricted — connect a guardian to continue',
             { supervisionRestricted: 'dm' },
+          );
+        }
+        // Supervision E2EE enforcement: a supervised minor's DMs must stay
+        // plaintext (scannable + parent-readable). The channel "suppressed"
+        // flag is a client advisory only, so a modified/older client could
+        // send ciphertext directly. Reject any E2EE-shaped payload for a
+        // supervised pair server-side so the design invariant actually holds.
+        if (
+          E2EE_CIPHERTEXT_RE.test(payload.content) &&
+          !(await supervision.isE2eeAllowedBetween(userId, other))
+        ) {
+          throw new AppError(
+            'FORBIDDEN',
+            'Encrypted messages are unavailable while this conversation is supervised.',
+            { supervisionRestricted: 'e2ee' },
           );
         }
       }

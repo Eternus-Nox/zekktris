@@ -310,6 +310,21 @@ dmsRouter.put(
     const channelId = BigInt(c.req.valid('param').channelId);
     await dms.ensureRecipient(channelId, userId);
     const { salt, verifier } = c.req.valid('json');
+    // SERVER-SIDE supervision enforcement — a supervised minor's 1:1 DMs must
+    // stay plaintext so the guardian can review them. The "suppressed" flag on
+    // the channel DTO is only a client advisory; a modified/older client (or a
+    // direct API call) could otherwise persist real salt/verifier and start
+    // sending ciphertext the server can't scan or the parent can't read. Reject
+    // the enable outright for a supervised pair so it never persists.
+    const channelForCheck = await channelsSvc.getChannel(channelId);
+    if (channelForCheck?.type === 'dm') {
+      const others = await dms.loadOtherRecipients(channelId, userId);
+      if (others[0] && !(await supervision.isE2eeAllowedBetween(userId, others[0].id))) {
+        throw errors.forbidden(
+          'End-to-end encryption is unavailable for this conversation while it is supervised.',
+        );
+      }
+    }
     // First-writer-wins: a racing second enable can't clobber the first
     // party's salt/verifier (which would break their handshake).
     const result = await dms.enableE2ee(channelId, salt, verifier);
