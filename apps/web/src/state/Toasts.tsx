@@ -20,6 +20,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -106,8 +107,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     [dismiss],
   );
 
+  // Stable context value — `push` is a stable useCallback, so this object is
+  // permanently identity-stable. Without the memo the `{ push }` literal was
+  // fresh every render, making `useToasts()` an unstable dependency that
+  // re-ran every `[..., toasts]` effect/memo across the app on any re-render.
+  const value = useMemo(() => ({ push }), [push]);
+
   return (
-    <ToastContext.Provider value={{ push }}>
+    <ToastContext.Provider value={value}>
       {children}
       <div
         // pointer-events-none on the wrapper means clicks go through to the
