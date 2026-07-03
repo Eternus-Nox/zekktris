@@ -125,6 +125,76 @@ async function enforceGuildParticipationGates(guildId: bigint, userId: bigint): 
   }
 }
 
+/**
+ * Content moderation for GUILD plaintext: banned-words filter + automod rules
+ * (block / block-and-timeout / log_only, with the trigger audit + member-update
+ * dispatch on timeout). Throws on a blocking violation. Shared by the send AND
+ * edit paths so an edit faces the same gate as a fresh send — otherwise a user
+ * could post "hi" and edit it into banned content within the mutate window.
+ * Spam throttling stays send-only (it's rate-based; edits don't add volume).
+ * No-op for DMs / E2EE (never inspected).
+ */
+async function enforceGuildContentModeration(args: {
+  guildId: bigint;
+  channelId: bigint;
+  userId: bigint;
+  content: string;
+}): Promise<void> {
+  const { guildId, channelId, userId, content } = args;
+  const security = await import('../services/security');
+  await security.checkBannedWords({ userId, guildId, channelId, content });
+
+  const { checkMessage } = await import('../services/automod');
+  const roleIds = await membersSvc.getMemberRoleIds(guildId, userId);
+  const violation = await checkMessage({ guildId, channelId, userId, content, memberRoleIds: roleIds });
+  if (!violation) return;
+
+  let timeoutApplied = false;
+  if (violation.action === 'block_and_timeout' && violation.timeoutSeconds) {
+    try {
+      const until = new Date(Date.now() + violation.timeoutSeconds * 1000);
+      await membersSvc.setMemberTimeout({ guildId, userId, actorId: userId, until });
+      timeoutApplied = true;
+      const updated = await membersSvc.getMemberDetailed(guildId, userId);
+      if (updated) {
+        dispatch.guildMemberUpdate(
+          toGuildMember(updated.member, updated.user, updated.roleIds),
+          guildId,
+        );
+      }
+    } catch {
+      // Timeout failed but the message is still blocked — surfacing the block
+      // is the priority.
+    }
+  }
+
+  try {
+    const snippet = content.length > 80 ? content.slice(0, 80) + '…' : content;
+    const { writeAudit } = await import('../services/audit');
+    await writeAudit({
+      guildId,
+      actorId: userId,
+      action: 'automod.rule_triggered',
+      targetType: 'automod_rule',
+      targetId: violation.id,
+      changes: {
+        ruleName: violation.name,
+        ruleType: violation.ruleType,
+        snippet,
+        channelId: channelId.toString(),
+        timeoutApplied,
+        action: violation.action,
+      },
+    });
+  } catch {
+    // Audit write failed — don't surface to the user.
+  }
+
+  if (violation.action !== 'log_only') {
+    throw errors.automodBlocked(violation.name, timeoutApplied);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /:channelId/messages
 // ═══════════════════════════════════════════════════════════════════════════
@@ -468,6 +538,9 @@ messagesRouter.post(
       }
       // Instance security (Admin → Security): spam throttle + banned-word
       // gate. Guild plaintext only — E2EE/DMs are exempt by design.
+      // Spam throttle stays here (send-only); banned-words + automod run
+      // through the shared enforceGuildContentModeration helper so the edit
+      // path applies the exact same content gate.
       if (ctx.channel.guildId) {
         const security = await import('../services/security');
         await security.checkSpam({
@@ -475,103 +548,12 @@ messagesRouter.post(
           guildId: ctx.channel.guildId,
           channelId: ctx.channel.id,
         });
-        await security.checkBannedWords({
-          userId,
-          guildId: ctx.channel.guildId,
-          channelId: ctx.channel.id,
-          content: payload.content,
-        });
-      }
-      // Automod — last gate. Runs only for guild messages. Hits the
-      // partial enabled-index, so zero-rule guilds pay an index probe
-      // and bail. Rules can OPTIONALLY apply a timeout in addition
-      // to blocking the message; that side-effect happens here BEFORE
-      // the throw so the timeout is in place by the time the client
-      // sees the error.
-      if (ctx.channel.guildId) {
-        const { checkMessage } = await import('../services/automod');
-        const roleIds = await membersSvc.getMemberRoleIds(ctx.channel.guildId, userId);
-        const violation = await checkMessage({
+        await enforceGuildContentModeration({
           guildId: ctx.channel.guildId,
           channelId: ctx.channel.id,
           userId,
           content: payload.content,
-          memberRoleIds: roleIds,
         });
-        if (violation) {
-          let timeoutApplied = false;
-          if (violation.action === 'block_and_timeout' && violation.timeoutSeconds) {
-            try {
-              const until = new Date(Date.now() + violation.timeoutSeconds * 1000);
-              await membersSvc.setMemberTimeout({
-                guildId: ctx.channel.guildId,
-                userId,
-                actorId: userId,
-                until,
-              });
-              timeoutApplied = true;
-              const updated = await membersSvc.getMemberDetailed(ctx.channel.guildId, userId);
-              if (updated) {
-                dispatch.guildMemberUpdate(
-                  toGuildMember(updated.member, updated.user, updated.roleIds),
-                  ctx.channel.guildId,
-                );
-              }
-            } catch {
-              // Timeout failed but the message is still blocked.
-              // Don't let a timeout-apply error suppress the block
-              // — surfacing the automod block is the priority.
-            }
-          }
-
-          // Audit entry for the trigger event itself. Written in its
-          // own try so an audit-write failure can't suppress the
-          // block error. The actor is the sender (they performed
-          // the action that tripped the rule) and the target is the
-          // RULE — when reviewing audit logs, admins want to see
-          // "rule X was triggered N times" grouped by rule.
-          //
-          // Content snippet: first 80 chars give the reviewer
-          // enough context to understand WHAT tripped the rule
-          // without storing potentially-large message bodies in
-          // every audit row. Original messages may be deleted later;
-          // the snippet is the durable record.
-          try {
-            const snippet =
-              payload.content.length > 80
-                ? payload.content.slice(0, 80) + '…'
-                : payload.content;
-            const { writeAudit } = await import('../services/audit');
-            await writeAudit({
-              guildId: ctx.channel.guildId,
-              actorId: userId,
-              action: 'automod.rule_triggered',
-              targetType: 'automod_rule',
-              targetId: violation.id,
-              changes: {
-                ruleName: violation.name,
-                ruleType: violation.ruleType,
-                snippet,
-                channelId: ctx.channel.id.toString(),
-                timeoutApplied,
-                action: violation.action,
-              },
-            });
-          } catch {
-            // Audit write failed — log only at next sweep, don't
-            // surface to the user.
-          }
-
-          // log_only: the rule fired, we wrote an audit entry, but
-          // we let the message through. Admins use this to observe
-          // a rule's hit rate before promoting it to enforcement
-          // mode, or to track suspicious senders without alerting
-          // them. The audit log is the durable record; the message
-          // proceeds to be saved normally.
-          if (violation.action !== 'log_only') {
-            throw errors.automodBlocked(violation.name, timeoutApplied);
-          }
-        }
       }
     }
 
@@ -1700,6 +1682,15 @@ messagesRouter.patch(
     if (ctx.channel.guildId) {
       const until = await membersSvc.getActiveTimeout(ctx.channel.guildId, userId);
       if (until !== null) throw errors.timedOut(until);
+      // Content moderation — same banned-words + automod gate as send, so an
+      // edit can't slip banned/blocked content past the filter within the
+      // mutate window. (Guild plaintext only; DMs/E2EE are never inspected.)
+      await enforceGuildContentModeration({
+        guildId: ctx.channel.guildId,
+        channelId,
+        userId,
+        content: c.req.valid('json').content,
+      });
     }
 
     const allowEveryone = ctx.isDM
@@ -2343,9 +2334,15 @@ messagesRouter.put(
     await assertChannelPermission(channelId, callerId, Permissions.MANAGE_MESSAGES);
 
     const fresh = await messages.setPinned(channelId, messageId, true);
+    // The HTTP response is for the CALLER (their own reactions[].me / poll
+    // myVotes). The gateway broadcast goes to the whole channel and MUST carry
+    // no per-recipient self-state, or every recipient would see the pinner's
+    // ballot + reaction highlights as their own. selfId=0n (a snowflake no user
+    // holds) yields a clean no-self DTO — same split the edit path makes.
     const [messageDTO] = await messages.hydrateMessages([fresh], callerId);
+    const [broadcastDTO] = await messages.hydrateMessages([fresh], 0n);
     dispatch.messageUpdate({
-      messageDTO,
+      messageDTO: broadcastDTO,
       channelId,
       guildId: ctx.channel.guildId ?? null,
     });
@@ -2379,9 +2376,11 @@ messagesRouter.delete(
     await assertChannelPermission(channelId, callerId, Permissions.MANAGE_MESSAGES);
 
     const fresh = await messages.setPinned(channelId, messageId, false);
-    const [messageDTO] = await messages.hydrateMessages([fresh], callerId);
+    // Broadcast a no-self DTO (selfId=0n) so the unpinner's ballot/reaction
+    // highlights aren't fanned out as everyone's. See the pin handler above.
+    const [broadcastDTO] = await messages.hydrateMessages([fresh], 0n);
     dispatch.messageUpdate({
-      messageDTO,
+      messageDTO: broadcastDTO,
       channelId,
       guildId: ctx.channel.guildId ?? null,
     });
