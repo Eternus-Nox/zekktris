@@ -100,23 +100,48 @@ export function SettingsView() {
   const toasts = useToasts();
 
   // Returning from Stripe Checkout (?billing=success|canceled): toast + strip
-  // the param. The membership row lands via webhook within a moment, and the
-  // full page load that brought us back re-hydrated the auth user.
+  // the param. On success the membership row lands via the webhook a moment
+  // AFTER this redirect, so the page that brought us back hydrated the user
+  // with NO membership yet — Appearance would stay locked until a manual
+  // reload. Poll getMe() until the tier appears (or a timeout), then
+  // updateUser so Appearance unlocks on its own. Also jump to the Membership
+  // tab so the user lands on their freshly-unlocked options.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const billing = params.get('billing');
-    if (!billing) return;
+    let stopped = false;
     if (billing === 'success') {
       toasts.push(
-        'Welcome aboard — thank you for supporting Zekktris! Your membership activates within a few seconds.',
+        'Welcome aboard — thank you for supporting Zekktris! Unlocking your Appearance options…',
         'success',
       );
+      setActiveTab('membership');
+      // Poll until the webhook-written membership shows up, then unlock.
+      void (async () => {
+        for (let tries = 0; !stopped && tries < 12; tries++) {
+          try {
+            const r = await rest.getMe();
+            if (r.user.subscriptionTier) {
+              updateUser(r.user);
+              return;
+            }
+          } catch {
+            // transient — keep polling
+          }
+          await new Promise((res) => setTimeout(res, 1500));
+        }
+      })();
     } else if (billing === 'canceled') {
       toasts.push('Checkout canceled — no charge was made.', 'error');
     }
-    params.delete('billing');
-    const qs = params.toString();
-    window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : ''));
+    if (billing) {
+      params.delete('billing');
+      const qs = params.toString();
+      window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : ''));
+    }
+    return () => {
+      stopped = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -157,7 +182,7 @@ export function SettingsView() {
    *  Defaults to 'profile' so users land on the surface they're
    *  already used to. Transient state — not persisted; each visit
    *  starts on User Profile. */
-  const [activeTab, setActiveTab] = useState<'profile' | 'voice' | 'bots'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'membership' | 'voice' | 'bots'>('profile');
   const [theme, setTheme] = useState<ThemeId>(() => getStoredTheme());
 
   function chooseTheme(id: ThemeId) {
@@ -465,6 +490,7 @@ export function SettingsView() {
           {(
             [
               { id: 'profile', label: 'User Profile' },
+              { id: 'membership', label: 'Membership' },
               { id: 'voice', label: 'Voice & Video' },
               { id: 'bots', label: 'Bots' },
             ] as const
@@ -664,6 +690,68 @@ export function SettingsView() {
               look in settings. */}
           <InstallSection />
 
+
+          {/* ── Privacy ──────────────────────────────────────────────────
+              At the bottom: who can reach you, parental controls, and
+              blocked users, all in one place. */}
+          <section className="space-y-3">
+            <div className="text-xs uppercase tracking-wider text-ink-3">Privacy</div>
+            <PrivacySettings />
+            <div className="pt-3 border-t border-line">
+              <div className="text-sm text-ink-2 font-medium mb-1">Parental controls</div>
+              <ParentalControlsToggle />
+            </div>
+            <ShowTierToggle />
+            <div className="pt-3 border-t border-line">
+              <div className="text-sm text-ink-2 font-medium mb-1">Achievements</div>
+              <AchievementsVisibilityToggle />
+              {/* Full shelf (earned + in-progress) — mirrors the iOS Settings
+                  achievements gallery so in-progress badges stay visible even
+                  though the profile card itself shows earned-only. */}
+              <AchievementsShelf />
+            </div>
+            <div className="pt-3 border-t border-line">
+              <div className="text-sm text-ink-2 font-medium mb-2">Blocked users</div>
+              <BlockedSettings />
+            </div>
+            {/* Legal — reachable from inside the app, not just at signup. Open
+                in a new tab so Settings isn't unmounted underneath the reader. */}
+            <div className="pt-3 border-t border-line">
+              <div className="text-sm text-ink-2 font-medium mb-2">Legal</div>
+              <div className="flex items-center gap-2 text-sm">
+                <a
+                  href="/terms"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-accent hover:underline"
+                >
+                  Terms of Service
+                </a>
+                <span className="text-ink-3">·</span>
+                <a
+                  href="/privacy"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-accent hover:underline"
+                >
+                  Privacy Policy
+                </a>
+              </div>
+            </div>
+          </section>
+          </>
+        )}
+
+        {activeTab === 'membership' && (
+          <>
+            <div className="space-y-1">
+              <h2 className="text-sm font-semibold text-ink-1">Membership</h2>
+              <p className="text-xs text-ink-3 leading-relaxed">
+                Support keeps Zekktris alive and strong. Members unlock the Appearance
+                options below — themes, avatar frames, and name tags — and wear their tier
+                on their profile. Memberships are non-refundable.
+              </p>
+            </div>
         {/* Appearance — a SUPPORTER PERK. Members (own membership or one
             inherited from a supervising parent) get the full section; everyone
             else sees the membership pitch. The server hard-locks the cosmetic
@@ -794,55 +882,6 @@ export function SettingsView() {
           <ManageMembership />
         </section>
         )}
-
-          {/* ── Privacy ──────────────────────────────────────────────────
-              At the bottom: who can reach you, parental controls, and
-              blocked users, all in one place. */}
-          <section className="space-y-3">
-            <div className="text-xs uppercase tracking-wider text-ink-3">Privacy</div>
-            <PrivacySettings />
-            <div className="pt-3 border-t border-line">
-              <div className="text-sm text-ink-2 font-medium mb-1">Parental controls</div>
-              <ParentalControlsToggle />
-            </div>
-            <ShowTierToggle />
-            <div className="pt-3 border-t border-line">
-              <div className="text-sm text-ink-2 font-medium mb-1">Achievements</div>
-              <AchievementsVisibilityToggle />
-              {/* Full shelf (earned + in-progress) — mirrors the iOS Settings
-                  achievements gallery so in-progress badges stay visible even
-                  though the profile card itself shows earned-only. */}
-              <AchievementsShelf />
-            </div>
-            <div className="pt-3 border-t border-line">
-              <div className="text-sm text-ink-2 font-medium mb-2">Blocked users</div>
-              <BlockedSettings />
-            </div>
-            {/* Legal — reachable from inside the app, not just at signup. Open
-                in a new tab so Settings isn't unmounted underneath the reader. */}
-            <div className="pt-3 border-t border-line">
-              <div className="text-sm text-ink-2 font-medium mb-2">Legal</div>
-              <div className="flex items-center gap-2 text-sm">
-                <a
-                  href="/terms"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-accent hover:underline"
-                >
-                  Terms of Service
-                </a>
-                <span className="text-ink-3">·</span>
-                <a
-                  href="/privacy"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-accent hover:underline"
-                >
-                  Privacy Policy
-                </a>
-              </div>
-            </div>
-          </section>
           </>
         )}
 
