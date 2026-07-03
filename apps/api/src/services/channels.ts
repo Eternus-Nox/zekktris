@@ -481,6 +481,14 @@ export async function deleteChannel(channelId: bigint, actorId: bigint): Promise
       cascadedIds.push(...grandchildren.map((r) => r.id));
     }
 
+    // Delete invites pointing at the deleted channel (and any cascaded
+    // descendants). invites.channelId has no FK, so a soft-deleted channel
+    // would otherwise leave live invites that acceptInvite echoes back as a
+    // dead channel id. Deleting them makes those invites 404 cleanly.
+    await tx
+      .delete(schema.invites)
+      .where(inArray(schema.invites.channelId, [channelId, ...cascadedIds]));
+
     if (existing.guildId) {
       await writeAudit({
         tx,

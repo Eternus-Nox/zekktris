@@ -176,8 +176,12 @@ export const roles = pgTable(
     guildIdx: index('roles_guild_idx').on(t.guildId),
     // Partial index for "list self-assignable roles in this guild"
     // — used by the Browse Roles modal. Most roles are admin-only
-    // so the partial index stays small.
-    selfAssignableIdx: index('roles_self_assignable_idx').on(t.guildId, t.position),
+    // so the partial index stays small. Declared to MATCH migration 0035
+    // exactly (position DESC + WHERE self_assignable) so drizzle-kit generate
+    // never emits a spurious drop/recreate.
+    selfAssignableIdx: index('roles_self_assignable_idx')
+      .on(t.guildId, t.position.desc())
+      .where(sql`${t.selfAssignable} = true`),
   }),
 );
 
@@ -227,7 +231,11 @@ export const guildMembers = pgTable(
     userIdx: index('guild_members_user_idx').on(t.userId),
     // Partial index — most members are active, so the index stays
     // small while making "is this member pending?" lookups cheap.
-    pendingIdx: index('guild_members_pending_idx').on(t.guildId, t.userId),
+    // Declared to MATCH migration 0034 (WHERE membership_state='pending') so
+    // drizzle-kit generate doesn't emit a spurious drop/recreate.
+    pendingIdx: index('guild_members_pending_idx')
+      .on(t.guildId, t.userId)
+      .where(sql`${t.membershipState} = 'pending'`),
   }),
 );
 
