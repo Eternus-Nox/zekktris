@@ -834,6 +834,17 @@ body.zk-keyboard-open .zk-rail-actions {
   display: none;
 }
 
+/* While the on-screen keyboard is OPEN (detected via VisualViewport in
+ * lib/keyboardInset.ts, which sets .zk-vkb-open on <html>), collapse the
+ * message composer's home-indicator bottom padding. That ~40px floor keeps the
+ * textbox clear of the iOS home gesture area when idle, but with the keyboard
+ * up it's dead space between the textbox and the keyboard — the "textbox floats
+ * half an inch above the keyboard" gap on web mobile. The descendant selector
+ * outweighs the Tailwind arbitrary-value class, so no !important is needed. */
+html.zk-vkb-open .zk-composer {
+  padding-bottom: 0.5rem;
+}
+
 /* Apply this to the top-level Shell container (and the auth screens) so
  * chrome respects the notch + landscape sensor cutouts. We deliberately
  * DO NOT pad the bottom here — the elements that actually live against

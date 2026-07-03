@@ -15,6 +15,12 @@ import { initTheme } from './lib/theme';
 initTheme();
 import { App } from './App';
 import { configureStatusBar, configureKeyboard, hideSplash, isNative } from './lib/native';
+import { initKeyboardInset } from './lib/keyboardInset';
+
+// Track the on-screen keyboard on ALL platforms (web + Capacitor webview) so
+// the composer can drop its home-indicator padding while typing — closes the
+// "textbox floats above the keyboard" gap on web mobile.
+initKeyboardInset();
 
 // Native shell setup. Both calls no-op on web (where there's no
 // Capacitor runtime) so they're safe unconditionally. Order:

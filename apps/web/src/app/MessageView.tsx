@@ -28,7 +28,7 @@ import { MessageItem } from './MessageItem';
 import { PinPanel } from './PinPanel';
 import { SearchPanel } from './SearchPanel';
 import { useNavigate } from 'react-router-dom';
-import { Hash, AtSign, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronLeft, ChevronRight, CheckCircle, Lock, Users as UsersIcon, HandPointing } from '../lib/icons';
+import { Hash, AtSign, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronLeft, ChevronRight, CheckCircle, Lock, Users as UsersIcon } from '../lib/icons';
 import { SchedulePickerModal } from './SchedulePickerModal';
 // Lazy-loaded: the DM settings/privacy panel only mounts when opened.
 const DmSettingsPanel = lazy(() =>
@@ -1927,7 +1927,7 @@ function Composer({
       // exposes 0 so the 40px floor still keeps the composer clear
       // of the home gesture area. `sm:pb-4` reverts on desktop
       // where there's no system bar to dodge.
-      className="px-4 pt-2 pb-[max(calc(env(safe-area-inset-bottom)+0.75rem),2.5rem)] sm:pb-4 border-t relative"
+      className="zk-composer px-4 pt-2 pb-[max(calc(env(safe-area-inset-bottom)+0.75rem),2.5rem)] sm:pb-4 border-t relative"
       style={{ borderTopColor: 'var(--zk-line-soft)' }}
       onDragEnter={(e) => {
         if (!Array.from(e.dataTransfer?.types ?? []).includes('Files')) return;
@@ -2883,15 +2883,20 @@ function DmHeaderPokeButton({ channel }: { channel: Channel }) {
         type="button"
         onClick={() => setOpen((v) => !v)}
         disabled={busy}
-        className="w-8 h-8 flex items-center justify-center rounded text-ink-3 hover:text-ink-1 hover:bg-bg-3 transition-colors disabled:opacity-50"
+        className="group w-8 h-8 flex items-center justify-center rounded hover:bg-bg-3 transition-colors disabled:opacity-50"
         aria-label="Poke"
         title="Poke / nudge"
         aria-expanded={open}
       >
-        {/* Monochrome pointing-hand icon (not the 👉 emoji, not an open hand)
-            so it reads as a poke and matches the grayscale Search/Call/Settings
-            icons beside it. */}
-        <HandPointing size={16} />
+        {/* The 👉 pointing-hand emoji, greyed out (grayscale + dimmed) so it
+            sits quietly next to the grayscale Search/Call/Settings icons;
+            it regains its color on hover. */}
+        <span
+          aria-hidden
+          className="text-[16px] leading-none grayscale opacity-60 group-hover:grayscale-0 group-hover:opacity-100 transition"
+        >
+          👉
+        </span>
       </button>
       {open && (
         <>
