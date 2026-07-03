@@ -133,17 +133,20 @@ export function GuildSettingsModal({
 
   const isAdmin = memberIsAdmin(allRoles, guild.id, myRoleIds, isOwner);
 
+  // Caller's resolved guild permission bitfield (0 until roles cache loads).
+  const myPerms =
+    allRoles && myRoleIds ? computeMemberGuildPerms(allRoles, guild.id, myRoleIds, isOwner) : 0n;
+
   // Moderator = holds any moderation permission (admins/owners pass via the
   // ADMINISTRATOR short-circuit inside computeMemberGuildPerms). Drives the
   // Reports tab's visibility — the server enforces the same MOD_PERMS gate.
-  const isMod =
-    isAdmin ||
-    (() => {
-      if (!allRoles || !myRoleIds) return false;
-      const perms = computeMemberGuildPerms(allRoles, guild.id, myRoleIds, isOwner);
-      // MANAGE_MESSAGES(4), KICK(13), BAN(14), MODERATE(17), MANAGE_GUILD(18).
-      return [4, 13, 14, 17, 18].some((bit) => hasBit(perms, bit));
-    })();
+  // MANAGE_MESSAGES(4), KICK(13), BAN(14), MODERATE(17), MANAGE_GUILD(18).
+  const isMod = isAdmin || [4, 13, 14, 17, 18].some((bit) => hasBit(myPerms, bit));
+  // A report's "resolve & ban" needs BAN_MEMBERS; "delete message" needs
+  // MANAGE_MESSAGES. Gate the buttons on the CALLER's own perms (not just the
+  // report's shape) so we don't offer an action the server will 403.
+  const viewerCanBan = isAdmin || isOwner || hasBit(myPerms, 14);
+  const viewerCanDeleteMessage = isAdmin || isOwner || hasBit(myPerms, 4);
 
   const visibleTabs = TABS.filter((t) => {
     if (t.ownerOnly) return isOwner;
@@ -153,6 +156,20 @@ export function GuildSettingsModal({
   });
   const allowed = visibleTabs.find((t) => t.id === initialTab);
   const [active, setActive] = useState<TabId>(allowed ? initialTab : 'overview');
+
+  // Deep-link honoring across a late roles/members load. On first render the
+  // roles cache may be empty, so isAdmin/isMod are false and an admin-gated
+  // initialTab isn't in visibleTabs yet → we fell back to 'overview' and stuck
+  // there even after roles arrived. Promote to the requested tab ONCE it
+  // becomes allowed, without stomping a manual tab switch the user made first.
+  const deepLinkApplied = useRef(false);
+  useEffect(() => {
+    if (deepLinkApplied.current) return;
+    if (initialTab !== 'overview' && visibleTabs.some((t) => t.id === initialTab)) {
+      setActive(initialTab);
+      deepLinkApplied.current = true;
+    }
+  }, [initialTab, visibleTabs]);
 
   // Close on Escape — modals consistently honor this throughout the app.
   useEffect(() => {
@@ -215,7 +232,13 @@ export function GuildSettingsModal({
             {active === 'invites' && isAdmin && <InvitesTab guild={guild} />}
             {active === 'members' && <MembersTab guild={guild} />}
             {active === 'bans' && isAdmin && <BansTab guild={guild} />}
-            {active === 'reports' && isMod && <ReportsTab guild={guild} />}
+            {active === 'reports' && isMod && (
+              <ReportsTab
+                guild={guild}
+                viewerCanBan={viewerCanBan}
+                viewerCanDeleteMessage={viewerCanDeleteMessage}
+              />
+            )}
             {active === 'automod' && isAdmin && <AutomodTab guild={guild} />}
             {active === 'auditLog' && isAdmin && <AuditLogTab guild={guild} />}
             {active === 'emojis' && isAdmin && <EmojisTab guild={guild} />}
@@ -1612,7 +1635,15 @@ const REASON_LABELS: Record<string, string> = {
   other: 'Other',
 };
 
-function ReportsTab({ guild }: { guild: Guild }) {
+function ReportsTab({
+  guild,
+  viewerCanBan,
+  viewerCanDeleteMessage,
+}: {
+  guild: Guild;
+  viewerCanBan: boolean;
+  viewerCanDeleteMessage: boolean;
+}) {
   const { rest } = useAuth();
   const toasts = useToasts();
   const [reports, setReports] = useState<Report[]>([]);
@@ -1749,7 +1780,14 @@ function ReportsTab({ guild }: { guild: Guild }) {
       ) : (
         <ul className="space-y-2">
           {reports.map((r) => (
-            <ReportRow key={r.id} report={r} busy={busyId === r.id} onAct={act} />
+            <ReportRow
+              key={r.id}
+              report={r}
+              busy={busyId === r.id}
+              onAct={act}
+              viewerCanBan={viewerCanBan}
+              viewerCanDeleteMessage={viewerCanDeleteMessage}
+            />
           ))}
         </ul>
       )}
@@ -1771,10 +1809,14 @@ function ReportRow({
   report,
   busy,
   onAct,
+  viewerCanBan,
+  viewerCanDeleteMessage,
 }: {
   report: Report;
   busy: boolean;
   onAct: (r: Report, action: 'resolve' | 'dismiss', moderation: 'none' | 'ban' | 'delete_message') => void;
+  viewerCanBan: boolean;
+  viewerCanDeleteMessage: boolean;
 }) {
   const reporterName = report.reporter
     ? report.reporter.displayName || report.reporter.username
@@ -1785,8 +1827,11 @@ function ReportRow({
       ? 'Unknown user'
       : 'a message';
   const isOpen = report.status === 'open';
-  const canBan = report.targetUser !== null;
-  const canDelete = report.targetType === 'message' && report.messageId !== null;
+  // The action is offered only when the report supports it AND the caller holds
+  // the permission the server requires — otherwise the button 403s on click.
+  const canBan = report.targetUser !== null && viewerCanBan;
+  const canDelete =
+    report.targetType === 'message' && report.messageId !== null && viewerCanDeleteMessage;
 
   return (
     <li className="rounded-md border border-line bg-bg-2/40 p-3 space-y-2">
@@ -2442,7 +2487,9 @@ function AutomodRuleRow({
           </div>
           <div className="text-xs text-ink-3 truncate">
             {meta.label}
-            {rule.ruleType === 'word_blocklist' && (
+            {(rule.ruleType === 'word_blocklist' ||
+              rule.ruleType === 'regex_pattern' ||
+              rule.ruleType === 'link_filter') && (
               <> · {rule.patterns.length} pattern{rule.patterns.length === 1 ? '' : 's'}</>
             )}
             {rule.ruleType === 'mention_spam' && rule.threshold && (
@@ -2646,7 +2693,17 @@ function AutomodRuleForm({
 
   const isEdit = !!rule;
   const ruleTypeLocked = isEdit;
-  const showPatterns = ruleType === 'word_blocklist';
+  // All three pattern-based rule types need the Patterns input. Previously only
+  // word_blocklist showed it, so regex_pattern and link_filter — both ENFORCED
+  // — were unconfigurable (you could only ever save an empty, no-op rule).
+  const showPatterns =
+    ruleType === 'word_blocklist' || ruleType === 'regex_pattern' || ruleType === 'link_filter';
+  const patternsCopy =
+    ruleType === 'regex_pattern'
+      ? { label: 'Regular expressions', hint: 'Press Enter to add. Case-insensitive by default.', placeholder: 'Add a regex…' }
+      : ruleType === 'link_filter'
+        ? { label: 'Domains', hint: 'Press Enter to add. Use "zk:invite" to block all Zekktris invite links.', placeholder: 'Add a domain, or zk:invite…' }
+        : { label: 'Patterns', hint: 'Press Enter to add. Word-boundary, case-insensitive.', placeholder: 'Add a phrase…' };
   const showThreshold = ruleType === 'mention_spam' || ruleType === 'repeat_message';
   const showWindow = ruleType === 'repeat_message';
 
@@ -2706,7 +2763,7 @@ function AutomodRuleForm({
       </Field>
 
       {showPatterns && (
-        <Field label="Patterns" hint="Press Enter to add. Word-boundary, case-insensitive.">
+        <Field label={patternsCopy.label} hint={patternsCopy.hint}>
           <div className="space-y-2">
             <div className="flex flex-wrap gap-1.5">
               {patterns.map((p, i) => (
@@ -2725,7 +2782,7 @@ function AutomodRuleForm({
                 </span>
               ))}
               {patterns.length === 0 && (
-                <span className="text-xs text-ink-3 italic">No patterns yet — add one below.</span>
+                <span className="text-xs text-ink-3 italic">Nothing yet — add one below.</span>
               )}
             </div>
             <input
@@ -2739,7 +2796,7 @@ function AutomodRuleForm({
                 }
               }}
               maxLength={200}
-              placeholder="Add a phrase…"
+              placeholder={patternsCopy.placeholder}
               className="w-full px-3 py-1.5 bg-bg-2 border border-line rounded-md text-sm outline-none focus:border-accent"
             />
           </div>
