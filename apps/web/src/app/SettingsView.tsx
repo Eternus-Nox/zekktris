@@ -747,9 +747,11 @@ export function SettingsView() {
             <div className="space-y-1">
               <h2 className="text-sm font-semibold text-ink-1">Membership</h2>
               <p className="text-xs text-ink-3 leading-relaxed">
-                Support keeps Zekktris alive and strong. Members unlock the Appearance
-                options below — themes, avatar frames, and name tags — and wear their tier
-                on their profile. Memberships are non-refundable.
+                Support keeps Zekktris alive and strong. Membership unlocks{' '}
+                <span className="text-ink-2 font-medium">cosmetic customization only</span> — themes,
+                avatar frames, and name tags below — and wears your tier on your profile. It never
+                changes what you can say or do. Payments are handled here on the website; memberships
+                are non-refundable.
               </p>
             </div>
         {/* Appearance — a SUPPORTER PERK. Members (own membership or one
@@ -1684,9 +1686,10 @@ function MembershipPitch() {
         <span className="text-[0.65rem] text-ink-3 shrink-0">🔒 Members only</span>
       </div>
       <p className="text-xs text-ink-2 leading-relaxed mt-2">
-        Being a supporter helps Zekktris stay alive and strong. Members unlock the
-        Appearance options — themes, avatar frames, and name tags — and wear their
-        tier on their profile.
+        Being a supporter helps Zekktris stay alive and strong. Membership unlocks
+        <span className="text-ink-1 font-medium"> cosmetic customization only</span> —
+        themes, avatar frames, and name tags — and wears your tier on your profile.
+        It never changes what you can say or do. Payments are handled here on the website.
       </p>
       <div className="mt-3 grid grid-cols-3 gap-2">
         {(['scout', 'guardian', 'legend'] as const).map((t) => {
