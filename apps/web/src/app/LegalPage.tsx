@@ -277,9 +277,8 @@ export function PrivacyPage() {
       </ul>
       <p>
         We do not use any third-party advertising, analytics, telemetry, or cross-site tracking
-        services, and we do not sell your personal information. On the web, the app loads its display
-        fonts from Google&rsquo;s font service, which necessarily receives your IP address and browser
-        information to serve those fonts (see &ldquo;How we share information&rdquo;).
+        services, and we do not sell your personal information. Our display fonts are served from our
+        own servers, not a third-party font CDN.
       </p>
 
       <H>2. How we use information</H>
@@ -336,11 +335,9 @@ export function PrivacyPage() {
           verification, reset, and guardian-invitation messages (a guardian invitation sends the
           address you supply, along with the minor&rsquo;s display name, to the email provider);
           real-time voice/video infrastructure ([LiveKit]) that carries your audio/video streams and
-          a participant identifier when you are in a call; push-notification gateways — Apple Push
+          a participant identifier when you are in a call; and push-notification gateways — Apple Push
           Notification service, Google Firebase Cloud Messaging, and your browser&rsquo;s push
-          service — to deliver notifications you have enabled; and, on the web, Google&rsquo;s font
-          service (Google Fonts), which receives your IP address and browser information in order to
-          serve the app&rsquo;s display fonts;
+          service — to deliver notifications you have enabled;
         </li>
         <li>when required by law, or to protect the rights, safety, and security of users and the Service.</li>
       </ul>

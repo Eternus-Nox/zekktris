@@ -98,15 +98,12 @@
     <!-- Zekktris display + mono type. Space Grotesk for the bulk of the
          UI (humanist geometric sans with strong character at small sizes);
          JetBrains Mono for code blocks, message timestamps, and the
-         channel-id / monospace pill chrome. Preconnect to both font
-         origins so the connection handshake overlaps with the rest of
-         page bootstrap rather than blocking first text paint. -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
-      rel="stylesheet"
-    />
+         channel-id / monospace pill chrome. Fonts are SELF-HOSTED (@font-face
+         in src/index.css → /fonts/*.woff2) — never fetched from a third-party
+         CDN, so no visitor IP/User-Agent ever leaves for Google. Preload the
+         two base UI weights so first text paint isn't blocked on the swap. -->
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/SpaceGrotesk-Regular.woff2" crossorigin />
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/SpaceGrotesk-Medium.woff2" crossorigin />
 
     <title>Zekktris</title>
   </head>

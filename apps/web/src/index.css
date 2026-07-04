@@ -3,6 +3,65 @@
 @tailwind utilities;
 
 /* ════════════════════════════════════════════════════════════════════
+   ZEKKTRIS — SELF-HOSTED TYPE
+   ════════════════════════════════════════════════════════════════════
+   Space Grotesk (UI) + JetBrains Mono (code/monospace chrome), served
+   from our OWN origin (/fonts/*.woff2, copied verbatim from public/fonts)
+   — NEVER from Google's CDN, so a page load leaks no visitor IP/User-Agent
+   to a third party. `font-display: swap` keeps text visible during load;
+   the two base weights are <link rel=preload>ed in index.html. Weights map
+   1:1 to the .ttf files the iOS app already ships (Regular 400 … Bold 700). */
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/SpaceGrotesk-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/SpaceGrotesk-Medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/SpaceGrotesk-SemiBold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/SpaceGrotesk-Bold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/JetBrainsMono-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/JetBrainsMono-Medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/JetBrainsMono-SemiBold.woff2') format('woff2');
+}
+
+/* ════════════════════════════════════════════════════════════════════
    ZEKKTRIS — DESIGN TOKENS (CSS custom properties)
    ════════════════════════════════════════════════════════════════════
    These OKLCH values are the source of truth for the visual language.
