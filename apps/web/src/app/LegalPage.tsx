@@ -94,11 +94,16 @@ export function TermsPage() {
 
       <H>3. Payments and memberships</H>
       <p>
-        Every feature of Zekktris is free. Memberships are an entirely optional way to support the
-        Service. A membership unlocks <strong>cosmetic personalization only</strong> — such as
-        themes, avatar frames, and a name tag (also called a clan tag) — and it shows your supporter
-        tier on your profile. It never changes what you can say or do, gates no features, and gives
-        no advantage. If you never buy one, nothing is taken away.
+        Every core feature of Zekktris is free. Memberships are an entirely optional way to support
+        the Service. A membership unlocks <strong>cosmetic personalization</strong> — such as
+        themes, avatar frames, and a name tag (also called a clan tag) — shows your supporter tier
+        on your profile, and unlocks <strong>premium streaming quality</strong>: 2K video (screen
+        share and camera) on the Guardian tier and 4K on the Legend tier. Screen sharing and camera
+        video are free for everyone at up to 1080p (screen share at up to 60fps); a membership only
+        raises the maximum video quality. Beyond those cosmetic options and the higher maximum
+        video quality, a membership never changes what you can say, who you can talk to, or which
+        communities you can join, and gives no moderation or social advantage. If you never buy
+        one, nothing is taken away from the free experience.
       </p>
       <p>
         Memberships are offered in tiers — currently Scout, Guardian, and Legend — at the monthly
@@ -118,10 +123,11 @@ export function TermsPage() {
       </p>
       <p>
         You can cancel at any time from Settings or the payment processor&rsquo;s billing portal.
-        When you cancel, your membership stays active and you keep your cosmetic perks through the
-        end of the period you have already paid for; cancellation stops future renewals but is not a
-        refund of the current period. If a payment fails or lapses, your membership ends after a
-        short grace period and your cosmetics revert to the free defaults.
+        When you cancel, your membership stays active and you keep your membership perks (cosmetics
+        and premium video quality) through the end of the period you have already paid for;
+        cancellation stops future renewals but is not a refund of the current period. If a payment
+        fails or lapses, your membership ends after a short grace period, your cosmetics revert to
+        the free defaults, and your maximum video quality returns to the free 1080p.
       </p>
       <p>
         Except where a refund is required by law — including any statutory cancellation or
@@ -134,9 +140,9 @@ export function TermsPage() {
         We may offer complimentary or gifted memberships (including free memberships granted to
         early or existing accounts). These are promotional, are not a purchase by the recipient, are
         non-transferable, and may be modified or withdrawn at our discretion. A supervising
-        parent&rsquo;s or guardian&rsquo;s membership also extends the cosmetic perks to the accounts
-        of the minors they supervise; that shared benefit ends automatically when the supervision
-        link ends (including when the minor turns 18). If a supervised minor makes a purchase, the
+        parent&rsquo;s or guardian&rsquo;s membership also extends the membership perks to the
+        accounts of the minors they supervise; that shared benefit ends automatically when the
+        supervision link ends (including when the minor turns 18). If a supervised minor makes a purchase, the
         supervising adult is responsible for authorizing it and for the resulting charges; you must
         not make purchases without the account holder having the legal capacity to do so.
       </p>

@@ -466,6 +466,72 @@ export function setSavedScreenFps60(on: boolean): void {
   }
 }
 
+// ── Premium streaming entitlement (screen share AND camera) ────────────────
+//
+// 2K streaming is a Guardian perk; 4K is a Legend perk — for BOTH the screen
+// share and the camera. Everyone keeps 720p/1080p (including the screen 60fps
+// toggle) for free. The ceiling is PUSHED here from AuthContext whenever the
+// signed-in user's tier changes (login, getMe refresh, billing webhook
+// landing, admin gift), and the effective-params getters CLAMP to it — so a
+// saved 'k4' from a lapsed membership (or a hand-edited localStorage)
+// publishes at the entitled ceiling instead. The saved preference itself is
+// left untouched: when the tier comes back, the old choice simply works
+// again.
+//
+// Enforcement is client-side (like the rest of the quality pipeline — the
+// SFU has no per-publisher resolution caps to lean on), which is the same
+// posture Discord takes for stream quality.
+
+export type ScreenQualityCeiling = 'p1080' | 'k2' | 'k4';
+
+const SCREEN_QUALITY_RANK: Record<ScreenQuality, number> = {
+  p720: 0,
+  p1080: 1,
+  k2: 2,
+  k4: 3,
+};
+
+/** Locked-down until the session pushes the real tier — a signed-out or
+    not-yet-loaded state must not grant premium tiers. */
+let screenQualityCeiling: ScreenQualityCeiling = 'p1080';
+
+/** Map a subscription tier (SelfUser.subscriptionTier) to the streaming
+    ceiling it entitles. Family-inherited tiers count (the child holds the
+    tier value); founder grants are 'scout' → base ceiling. */
+export function screenQualityCeilingForTier(
+  tier: string | null | undefined,
+): ScreenQualityCeiling {
+  if (tier === 'legend') return 'k4';
+  if (tier === 'guardian') return 'k2';
+  return 'p1080';
+}
+
+/** Push the entitled ceiling (AuthContext effect owns calling this). */
+export function setScreenQualityCeiling(c: ScreenQualityCeiling): void {
+  screenQualityCeiling = c;
+}
+
+/** Whether the CURRENT session may publish at tier `q`. Drives both the
+    Settings lock pills and the publish-time clamp. */
+export function isScreenQualityAllowed(q: ScreenQuality): boolean {
+  return SCREEN_QUALITY_RANK[q] <= SCREEN_QUALITY_RANK[screenQualityCeiling];
+}
+
+/** The membership tier required to use screen quality `q`, or null if
+    it's free. For the Settings UI's lock pills. */
+export function requiredTierForScreenQuality(q: ScreenQuality): 'guardian' | 'legend' | null {
+  if (q === 'k4') return 'legend';
+  if (q === 'k2') return 'guardian';
+  return null;
+}
+
+/** Camera counterpart of the screen gate — same ceiling, same premium
+    tiers ('k2'/'k4'); 'auto'/'low'/'p720'/'p1080' are always free. */
+export function isCameraQualityAllowed(q: CameraQuality): boolean {
+  if (q === 'k2' || q === 'k4') return isScreenQualityAllowed(q);
+  return true;
+}
+
 /** Effective screen-share capture/encoder parameters: the saved quality
     tier with the "smooth motion" toggle folded in. 60fps costs bitrate
     headroom — inter frames arrive twice as fast — so eligible tiers get
@@ -479,7 +545,13 @@ function getEffectiveScreenShareParams(): {
   frameRate: number;
   maxBitrate: number;
 } {
-  const q = getSavedScreenQuality();
+  // Entitlement clamp: a saved premium tier without the membership to
+  // back it (lapsed, signed-out relogin as another account, hand-edited
+  // storage) publishes at the entitled ceiling. The saved PREFERENCE is
+  // intentionally not rewritten — restore the tier and the old choice
+  // works again.
+  const saved = getSavedScreenQuality();
+  const q = isScreenQualityAllowed(saved) ? saved : screenQualityCeiling;
   const preset = SCREEN_QUALITY_PRESETS[q];
   const smooth = getSavedScreenFps60() && q !== 'k4';
   return {
@@ -2051,7 +2123,12 @@ export async function setCameraEnabled(on: boolean): Promise<void> {
       // Resolve the user's saved quality preference and translate it
       // into a `resolution` option for LiveKit. 'auto' means we omit
       // the option and let the SDK + browser negotiate adaptively.
-      const q = getSavedCameraQuality();
+      // Entitlement clamp: 2K camera is a Guardian perk, 4K Legend —
+      // the same ceiling that governs screen share. A saved premium
+      // tier the membership no longer covers captures/publishes at the
+      // entitled ceiling; the preference survives for a re-upgrade.
+      const saved = getSavedCameraQuality();
+      const q: CameraQuality = isCameraQualityAllowed(saved) ? saved : screenQualityCeiling;
       const preset = CAMERA_QUALITY_PRESETS[q];
       // H.264 for the camera so it uses the browser's hardware encoder/decoder
       // (sharper, lower CPU) — overrides the VP8 publishDefault for THIS track

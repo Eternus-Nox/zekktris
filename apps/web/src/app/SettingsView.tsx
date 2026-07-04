@@ -750,8 +750,10 @@ export function SettingsView() {
               <h2 className="text-sm font-semibold text-ink-1">Membership</h2>
               <p className="text-xs text-ink-3 leading-relaxed">
                 Support keeps Zekktris alive and strong. Membership unlocks{' '}
-                <span className="text-ink-2 font-medium">cosmetic customization only</span> — themes,
-                avatar frames, and name tags below — and wears your tier on your profile. It never
+                <span className="text-ink-2 font-medium">cosmetic customization</span> — themes,
+                avatar frames, and name tags below — plus{' '}
+                <span className="text-ink-2 font-medium">premium streaming quality</span> (2K screen
+                share &amp; camera on Guardian, 4K on Legend; everyone streams free up to 1080p60). It never
                 changes what you can say or do. Payments are handled here on the website; memberships
                 are non-refundable.
               </p>
@@ -1689,13 +1691,17 @@ function MembershipPitch() {
       </div>
       <p className="text-xs text-ink-2 leading-relaxed mt-2">
         Being a supporter helps Zekktris stay alive and strong. Membership unlocks
-        <span className="text-ink-1 font-medium"> cosmetic customization only</span> —
-        themes, avatar frames, and name tags — and wears your tier on your profile.
+        <span className="text-ink-1 font-medium"> cosmetic customization</span> —
+        themes, avatar frames, and name tags — plus
+        <span className="text-ink-1 font-medium"> premium streaming quality</span>: 2K screen
+        share &amp; camera on Guardian, 4K on Legend (everyone streams free up to 1080p60).
         It never changes what you can say or do. Payments are handled here on the website.
       </p>
       <div className="mt-3 grid grid-cols-3 gap-2">
         {(['scout', 'guardian', 'legend'] as const).map((t) => {
           const meta = TIER_META[t]!;
+          // The one functional perk each tier adds beyond cosmetics.
+          const perk = t === 'guardian' ? '2K streaming' : t === 'legend' ? '4K streaming' : 'Cosmetics';
           return (
             <button
               key={t}
@@ -1714,6 +1720,7 @@ function MembershipPitch() {
                 {meta.label}
               </div>
               <div className="text-xs text-ink-2 mt-0.5">{meta.price}</div>
+              <div className="text-[0.62rem] text-ink-3 mt-0.5">{perk}</div>
               {billingEnabled && (
                 <div className="text-[0.65rem] font-semibold mt-1.5" style={{ color: meta.color }}>
                   {busyTier === t ? 'Opening…' : 'Subscribe'}
@@ -3255,6 +3262,8 @@ function PasswordSection() {
  * a surprise.
  */
 function VideoQualitySettings() {
+  const { user } = useAuth();
+  const toasts = useToasts();
   // getSavedScreenQuality runs its legacy-value migration on this first
   // read — keep it BEFORE the fps60 read below, since migrating the old
   // 'high_motion' tier flips the smooth-motion toggle on.
@@ -3275,7 +3284,22 @@ function VideoQualitySettings() {
     setSavedScreenFps60(on);
   }
 
-  const cameraOptions: Array<{ value: CameraQuality; label: string; description: string }> = [
+  // Premium streaming gate: 2K needs Guardian, 4K needs Legend — for BOTH
+  // camera and screen share (720p/1080p, incl. the 60fps toggle, stay free).
+  // Computed from the LIVE user tier so a gift or checkout landing unlocks
+  // the pills without a reload; the publish-time clamps in voice.ts are the
+  // enforcement, this is the honest UI for it.
+  const tier = user?.subscriptionTier;
+  const hasGuardian = tier === 'guardian' || tier === 'legend';
+  const hasLegend = tier === 'legend';
+
+  const cameraOptions: Array<{
+    value: CameraQuality;
+    label: string;
+    description: string;
+    /** Membership tier this option needs, when the user doesn't have it. */
+    lockedBehind?: 'guardian' | 'legend';
+  }> = [
     { value: 'auto', label: 'Auto', description: 'Let the network decide. Recommended for most users.' },
     {
       value: 'low',
@@ -3296,15 +3320,33 @@ function VideoQualitySettings() {
       value: 'k2',
       label: CAMERA_QUALITY_PRESETS.k2!.label,
       description: CAMERA_QUALITY_PRESETS.k2!.description,
+      ...(hasGuardian ? {} : { lockedBehind: 'guardian' as const }),
     },
     {
       value: 'k4',
       label: CAMERA_QUALITY_PRESETS.k4!.label,
       description: CAMERA_QUALITY_PRESETS.k4!.description,
+      ...(hasLegend ? {} : { lockedBehind: 'legend' as const }),
     },
   ];
 
-  const screenOptions: Array<{ value: ScreenQuality; label: string; description: string }> = [
+  // Camera counterpart of the lapsed-membership note below.
+  const savedCameraLocked = cameraOptions.find((o) => o.value === cameraQ)?.lockedBehind;
+
+  // What a locked saved setting ACTUALLY falls back to: the entitled ceiling
+  // (a Guardian with saved 4K publishes at 2K, not 1080p) — must match the
+  // clamps in voice.ts, which substitute the ceiling, not the free floor.
+  const clampCeilingLabel = hasGuardian
+    ? SCREEN_QUALITY_PRESETS.k2.label
+    : SCREEN_QUALITY_PRESETS.p1080.label;
+
+  const screenOptions: Array<{
+    value: ScreenQuality;
+    label: string;
+    description: string;
+    /** Membership tier this option needs, when the user doesn't have it. */
+    lockedBehind?: 'guardian' | 'legend';
+  }> = [
     {
       value: 'p720',
       label: SCREEN_QUALITY_PRESETS.p720.label,
@@ -3319,56 +3361,127 @@ function VideoQualitySettings() {
       value: 'k2',
       label: SCREEN_QUALITY_PRESETS.k2.label,
       description: SCREEN_QUALITY_PRESETS.k2.description,
+      ...(hasGuardian ? {} : { lockedBehind: 'guardian' as const }),
     },
     {
       value: 'k4',
       label: SCREEN_QUALITY_PRESETS.k4.label,
       description: SCREEN_QUALITY_PRESETS.k4.description,
+      ...(hasLegend ? {} : { lockedBehind: 'legend' as const }),
     },
   ];
+
+  // A saved premium tier the membership no longer covers (lapsed / different
+  // account): streams clamp to 1080p until the tier is back. Tell the user
+  // instead of silently downgrading.
+  const savedScreenLocked = screenOptions.find((o) => o.value === screenQ)?.lockedBehind;
 
   return (
     <div className="space-y-3 pt-1">
       <div>
         <div className="text-xs text-ink-2 mb-1.5">Camera quality</div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-          {cameraOptions.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => pickCamera(opt.value)}
-              className={`text-left px-3 py-2 rounded-md border transition-colors ${
-                cameraQ === opt.value
-                  ? 'border-accent bg-accent/10 text-ink-1'
-                  : 'border-line bg-bg-1 hover:border-ink-3/40 text-ink-2'
-              }`}
-            >
-              <div className="text-sm font-medium">{opt.label}</div>
-              <div className="text-xs text-ink-3 mt-0.5">{opt.description}</div>
-            </button>
-          ))}
+          {cameraOptions.map((opt) => {
+            const lockMeta = opt.lockedBehind ? TIER_META[opt.lockedBehind] : null;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => {
+                  if (opt.lockedBehind && lockMeta) {
+                    toasts.push(
+                      `${opt.label} camera is a ${lockMeta.label} perk (${lockMeta.price}) — see the Membership tab.`,
+                      'error',
+                    );
+                    return;
+                  }
+                  pickCamera(opt.value);
+                }}
+                className={`text-left px-3 py-2 rounded-md border transition-colors ${
+                  cameraQ === opt.value && !opt.lockedBehind
+                    ? 'border-accent bg-accent/10 text-ink-1'
+                    : 'border-line bg-bg-1 hover:border-ink-3/40 text-ink-2'
+                } ${opt.lockedBehind ? 'opacity-75' : ''}`}
+              >
+                <div className="text-sm font-medium flex items-center gap-1.5">
+                  {opt.label}
+                  {lockMeta && (
+                    <span
+                      className="inline-flex items-center gap-0.5 px-1.5 rounded text-[0.55rem] font-bold uppercase tracking-wider leading-[1.05rem]"
+                      style={{
+                        color: lockMeta.color,
+                        backgroundColor: `color-mix(in srgb, ${lockMeta.color} 18%, transparent)`,
+                      }}
+                    >
+                      🔒 {lockMeta.label}
+                    </span>
+                  )}
+                </div>
+                <div className="text-xs text-ink-3 mt-0.5">{opt.description}</div>
+              </button>
+            );
+          })}
         </div>
+        {savedCameraLocked && (
+          <p className="text-[0.7rem] text-amber-400/90 leading-relaxed mt-1.5">
+            Your saved {CAMERA_QUALITY_PRESETS[cameraQ]?.label ?? cameraQ} camera setting needs a{' '}
+            {TIER_META[savedCameraLocked]?.label} membership — the camera currently publishes at up
+            to {clampCeilingLabel}. It re-activates automatically if you re-join that tier.
+          </p>
+        )}
       </div>
 
       <div>
         <div className="text-xs text-ink-2 mb-1.5">Screen share quality</div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-          {screenOptions.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => pickScreen(opt.value)}
-              className={`text-left px-3 py-2 rounded-md border transition-colors ${
-                screenQ === opt.value
-                  ? 'border-accent bg-accent/10 text-ink-1'
-                  : 'border-line bg-bg-1 hover:border-ink-3/40 text-ink-2'
-              }`}
-            >
-              <div className="text-sm font-medium">{opt.label}</div>
-              <div className="text-xs text-ink-3 mt-0.5">{opt.description}</div>
-            </button>
-          ))}
+          {screenOptions.map((opt) => {
+            const lockMeta = opt.lockedBehind ? TIER_META[opt.lockedBehind] : null;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => {
+                  if (opt.lockedBehind && lockMeta) {
+                    toasts.push(
+                      `${opt.label} streaming is a ${lockMeta.label} perk (${lockMeta.price}) — see the Membership tab.`,
+                      'error',
+                    );
+                    return;
+                  }
+                  pickScreen(opt.value);
+                }}
+                className={`text-left px-3 py-2 rounded-md border transition-colors ${
+                  screenQ === opt.value && !opt.lockedBehind
+                    ? 'border-accent bg-accent/10 text-ink-1'
+                    : 'border-line bg-bg-1 hover:border-ink-3/40 text-ink-2'
+                } ${opt.lockedBehind ? 'opacity-75' : ''}`}
+              >
+                <div className="text-sm font-medium flex items-center gap-1.5">
+                  {opt.label}
+                  {lockMeta && (
+                    <span
+                      className="inline-flex items-center gap-0.5 px-1.5 rounded text-[0.55rem] font-bold uppercase tracking-wider leading-[1.05rem]"
+                      style={{
+                        color: lockMeta.color,
+                        backgroundColor: `color-mix(in srgb, ${lockMeta.color} 18%, transparent)`,
+                      }}
+                    >
+                      🔒 {lockMeta.label}
+                    </span>
+                  )}
+                </div>
+                <div className="text-xs text-ink-3 mt-0.5">{opt.description}</div>
+              </button>
+            );
+          })}
         </div>
+        {savedScreenLocked && (
+          <p className="text-[0.7rem] text-amber-400/90 leading-relaxed mt-1.5">
+            Your saved {SCREEN_QUALITY_PRESETS[screenQ].label} setting needs a{' '}
+            {TIER_META[savedScreenLocked]?.label} membership — shares currently run at up to{' '}
+            {clampCeilingLabel}. It re-activates automatically if you re-join that tier.
+          </p>
+        )}
         <label className="flex items-start gap-2 mt-2 text-xs text-ink-2 cursor-pointer">
           <input
             type="checkbox"

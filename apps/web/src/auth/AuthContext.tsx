@@ -28,6 +28,7 @@ import {
 } from 'react';
 import { GatewayClient, RestClient, type SelfUser } from '@zekktris/client';
 import { clearDecryptedMediaCache } from '../lib/e2ee';
+import { screenQualityCeilingForTier, setScreenQualityCeiling } from '../lib/voice';
 
 const TOKEN_STORAGE_KEY = 'zekktris.accessToken';
 const USER_STORAGE_KEY = 'zekktris.user';
@@ -313,6 +314,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     [],
   );
+
+  // Premium-streaming entitlement: push the signed-in tier's streaming
+  // ceiling into the voice lib (2K = Guardian perk, 4K = Legend). This is
+  // the single chokepoint every user change funnels through — login,
+  // getMe refresh, billing success poll, admin gift — so the publish-time
+  // clamp in voice.ts always reflects the current tier. Signed-out (null
+  // user) resets to the free ceiling.
+  useEffect(() => {
+    setScreenQualityCeiling(screenQualityCeilingForTier(state.user?.subscriptionTier));
+  }, [state.user?.subscriptionTier]);
 
   const value = useMemo<AuthContextValue>(
     () => ({ ...state, rest, gateway, login, loginWithPasskey, register, logout, updateUser, emailVerificationRequired }),
