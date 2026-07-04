@@ -26,7 +26,7 @@
 
 import http2 from 'node:http2';
 import { importPKCS8, SignJWT } from 'jose';
-import { and, eq, ne, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { env } from '../env';
 import { errors } from '../errors';
@@ -267,13 +267,24 @@ export async function hasVoipTokens(userId: bigint): Promise<boolean> {
   return rows.length > 0;
 }
 
+/**
+ * Ring the user's iPhones via PushKit. Returns the number of DELIVERED
+ * pushes (APNs 200s) so the caller can fall back to the plain alert ring
+ * when nothing actually went out — a dead-but-registered voip token used
+ * to mean total silence (the alert leg was skipped on row-existence alone).
+ * Never throws: unconfigured APNs, zero rows, a JWT/provider failure, or
+ * per-token errors all resolve to a count (0 in the worst case).
+ */
 export async function sendVoipToUser(
   userId: bigint,
   data: { channelId: string; callerName: string },
-): Promise<void> {
-  if (!(await initApns())) return;
+): Promise<number> {
+  if (!(await initApns())) return 0;
   const rows = await db
-    .select({ token: schema.apnsDeviceTokens.token })
+    .select({
+      token: schema.apnsDeviceTokens.token,
+      createdAt: schema.apnsDeviceTokens.createdAt,
+    })
     .from(schema.apnsDeviceTokens)
     .where(
       and(
@@ -281,8 +292,15 @@ export async function sendVoipToUser(
         eq(schema.apnsDeviceTokens.platform, 'ios_voip'),
       ),
     );
-  if (rows.length === 0) return;
-  const jwt = await providerToken();
+  if (rows.length === 0) return 0;
+  let jwt: string;
+  try {
+    jwt = await providerToken();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('APNs: voip provider token failed', err);
+    return 0;
+  }
   const payload = JSON.stringify({ kind: 'call', ...data });
   // How long APNs holds the VoIP push if it can't be delivered immediately.
   // A phone that's been closed a long time is often deep-asleep / on poor
@@ -290,38 +308,58 @@ export async function sendVoipToUser(
   // woke. 120s gives APNs a longer window to wake it. (0 would mean "discard
   // if not instantly deliverable" — worse for exactly this case.)
   const expiration = Math.floor(Date.now() / 1000) + 120;
-  await Promise.all(
+  const results = await Promise.all(
     rows.map(async (r) => {
-      const res = await sendOne(r.token, payload, jwt, {
-        topic: `${env.APNS_BUNDLE_ID as string}.voip`,
-        pushType: 'voip',
-        expiration,
-      });
-      if (!res.ok) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `APNs: voip send failed (status ${res.status}${res.reason ? `, ${res.reason}` : ''})`,
-        );
-        const permanentFailure =
-          res.status === 410 ||
-          res.reason === 'BadDeviceToken' ||
-          res.reason === 'Unregistered' ||
-          res.reason === 'DeviceTokenNotForTopic';
-        // Prune genuinely-dead tokens — but NEVER delete the user's LAST voip
-        // token on a single failure. A transient/over-eager 410 would
-        // otherwise strand the account at zero voip tokens, so the phone never
-        // rings again until the user reopens the app (the client re-registers
-        // on foreground). With ≥2 tokens, pruning a dead one is safe — the
-        // others still ring; the last dead one is cleaned up once a fresh
-        // token re-registers alongside it.
-        if (permanentFailure && rows.length > 1) {
-          await db
-            .delete(schema.apnsDeviceTokens)
-            .where(eq(schema.apnsDeviceTokens.token, r.token));
+      try {
+        const res = await sendOne(r.token, payload, jwt, {
+          topic: `${env.APNS_BUNDLE_ID as string}.voip`,
+          pushType: 'voip',
+          expiration,
+        });
+        if (!res.ok) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `APNs: voip send failed (status ${res.status}${res.reason ? `, ${res.reason}` : ''})`,
+          );
         }
+        const permanentFailure =
+          !res.ok &&
+          (res.status === 410 ||
+            res.reason === 'BadDeviceToken' ||
+            res.reason === 'Unregistered' ||
+            res.reason === 'DeviceTokenNotForTopic');
+        return { token: r.token, createdAt: r.createdAt, ok: res.ok, dead: permanentFailure };
+      } catch {
+        return { token: r.token, createdAt: r.createdAt, ok: false, dead: false };
       }
     }),
   );
+  // Prune genuinely-dead tokens AFTER all sends resolve — but NEVER prune the
+  // account down to zero voip rows. The old guard compared against the row
+  // SNAPSHOT length, so two-tokens-both-dead (a reinstall/migration leaving a
+  // stranded sibling) deleted BOTH in one ring and the phone never rang again
+  // until a foreground re-register. Now: if anything delivered, all dead rows
+  // go; if EVERYTHING failed permanently, keep the newest row as the re-ring
+  // anchor and delete only the older dead ones.
+  const delivered = results.filter((r) => r.ok).length;
+  let dead = results.filter((r) => r.dead);
+  if (delivered === 0 && dead.length === results.length && dead.length > 0) {
+    dead = [...dead]
+      .sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0))
+      .slice(1);
+  }
+  for (const r of dead) {
+    await db.delete(schema.apnsDeviceTokens).where(eq(schema.apnsDeviceTokens.token, r.token));
+  }
+  if (dead.length > 0 && delivered === 0) {
+    // The state the "CallKit stopped ringing" symptom depends on — make it
+    // visible in the logs when we get anywhere near it.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `APNs: pruned ${dead.length} dead voip token(s) for user ${userId} with zero delivered`,
+    );
+  }
+  return delivered;
 }
 
 // ── CRUD ───────────────────────────────────────────────────────────────────
@@ -381,17 +419,22 @@ export async function deleteDeviceTokenValue(token: string, userId: bigint): Pro
 export async function sendToUserApns(userId: bigint, payload: PushPayload): Promise<number> {
   if (!configured && !(await initApns())) return 0;
 
-  // APNs delivery tokens only — EXCLUDE 'android' (those are FCM registration
-  // tokens handled by services/fcm.ts). Sending an FCM token to Apple returns
-  // BadDeviceToken, which the cleanup below treats as permanent and would
-  // delete the row. (ios + ios_voip are kept as before.)
+  // ALERT delivery tokens only — platform 'ios' EXACTLY. 'android' rows are
+  // FCM registration tokens (services/fcm.ts). 'ios_voip' rows are PushKit
+  // tokens that are ONLY valid on the `<bundle>.voip` topic: sending them an
+  // alert push makes Apple answer DeviceTokenNotForTopic, which the cleanup
+  // below treats as a permanently-dead token and DELETES — this fan-out was
+  // silently destroying users' CallKit registration on every ordinary message
+  // push, so incoming calls fell back to the plain notification ring (or
+  // nothing) until the app re-registered on a foreground. Root cause of the
+  // recurring "CallKit stopped working" reports.
   const tokens = await db
     .select({ token: schema.apnsDeviceTokens.token })
     .from(schema.apnsDeviceTokens)
     .where(
       and(
         eq(schema.apnsDeviceTokens.userId, userId),
-        ne(schema.apnsDeviceTokens.platform, 'android'),
+        eq(schema.apnsDeviceTokens.platform, 'ios'),
       ),
     );
   if (tokens.length === 0) return 0;
@@ -421,9 +464,12 @@ export async function sendToUserApns(userId: bigint, payload: PushPayload): Prom
  * warn otherwise. Returns whether it delivered. Shared by the single-user and
  * bulk fan-out paths so the prune semantics can't drift between them.
  *
- * Defense-in-depth on the prune: token AND platform != 'android', so the APNs
- * cleanup can never delete an Android FCM row even if a caller regresses the
- * platform filter on the token query.
+ * Defense-in-depth on the prune: token AND platform == 'ios' EXACTLY, so the
+ * ALERT-path cleanup can never delete an Android FCM row NOR a PushKit voip
+ * row, even if a caller regresses the platform filter on the token query
+ * (voip rows are pruned only by sendVoipToUser, which has a never-to-zero
+ * guard — the alert path deleting them was how CallKit registration kept
+ * getting silently destroyed).
  */
 function applyApnsResult(token: string, res: ApnsResult): boolean {
   if (res.ok) {
@@ -445,7 +491,7 @@ function applyApnsResult(token: string, res: ApnsResult): boolean {
       .where(
         and(
           eq(schema.apnsDeviceTokens.token, token),
-          ne(schema.apnsDeviceTokens.platform, 'android'),
+          eq(schema.apnsDeviceTokens.platform, 'ios'),
         ),
       )
       .catch(() => undefined);
@@ -482,7 +528,10 @@ export async function sendToUsersApns(
     .where(
       and(
         inArray(schema.apnsDeviceTokens.userId, userIds),
-        ne(schema.apnsDeviceTokens.platform, 'android'),
+        // 'ios' EXACTLY — same rationale as sendToUserApns: alert pushes to
+        // 'ios_voip' PushKit rows are topic-invalid and got them pruned,
+        // destroying CallKit registration on every bulk mention.
+        eq(schema.apnsDeviceTokens.platform, 'ios'),
       ),
     );
   if (rows.length === 0) return 0;

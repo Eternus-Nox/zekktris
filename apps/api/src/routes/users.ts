@@ -1432,10 +1432,17 @@ usersRouter.post(
         );
       }
     } else {
+      // Best-effort config probe, NOT a gate: storing the row needs no APNs
+      // config, and 503ing here silently discarded the client's fire-and-
+      // forget (re)registration during a transient key-load hiccup — for
+      // 'ios_voip' that left the account with ZERO voip rows, so incoming
+      // calls stopped ringing CallKit until a luckier foreground. Sends
+      // already no-op safely when APNs is unconfigured.
       const { initApns } = await import('../services/apns');
       if (!(await initApns())) {
-        throw errors.serviceUnavailable(
-          'iOS push notifications are not configured on this server',
+        // eslint-disable-next-line no-console
+        console.warn(
+          `APNs not configured/loadable at ${body.platform} token registration — storing anyway`,
         );
       }
     }

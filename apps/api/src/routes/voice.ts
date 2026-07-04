@@ -169,24 +169,28 @@ voiceRouter.post(
           caller?.displayName ?? caller?.username ?? 'Someone';
 
         // PushKit VoIP ring: full native CallKit screen even when the
-        // app is closed/force-quit. When the callee has a voip token,
-        // the APNs alert leg below is SKIPPED — CallKit already rings,
-        // and a stacked banner would double-notify. Web Push always
-        // sends (it's the web client's ring).
+        // app is closed/force-quit. The APNs alert leg below is SKIPPED
+        // only when a VoIP push was ACTUALLY DELIVERED (APNs 200) — not
+        // merely because a voip row exists. Deciding on row-existence
+        // meant a dead-but-registered token produced total silence: the
+        // voip send failed AND the alert leg had already been skipped.
+        // Awaiting the send is safe — this whole ring block is a
+        // fire-and-forget IIFE, so the join response isn't delayed.
+        // Web Push always sends (it's the web client's ring).
         let calleeHasVoip = false;
         try {
           const apns = await import('../services/apns');
-          calleeHasVoip = await apns.hasVoipTokens(otherUserId);
-          if (calleeHasVoip) {
-            void apns
+          if (await apns.hasVoipTokens(otherUserId)) {
+            const delivered = await apns
               .sendVoipToUser(otherUserId, {
                 channelId: channelId.toString(),
                 callerName,
               })
-              .catch(() => undefined);
+              .catch(() => 0);
+            calleeHasVoip = delivered > 0;
           }
         } catch {
-          // best-effort
+          // best-effort — fall through to the alert ring
         }
 
         await sendToUser(otherUserId, {
