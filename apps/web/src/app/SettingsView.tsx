@@ -54,6 +54,7 @@ import {
   getSavedOutputDeviceId,
   getSavedCameraQuality,
   getSavedScreenQuality,
+  getSavedScreenFps60,
   listAudioDevices,
   requestMicPermission,
   setAudioMode,
@@ -62,6 +63,7 @@ import {
   setSavedOutputDeviceId,
   setSavedCameraQuality,
   setSavedScreenQuality,
+  setSavedScreenFps60,
   CAMERA_QUALITY_PRESETS,
   SCREEN_QUALITY_PRESETS,
   VoiceError,
@@ -3253,8 +3255,12 @@ function PasswordSection() {
  * a surprise.
  */
 function VideoQualitySettings() {
+  // getSavedScreenQuality runs its legacy-value migration on this first
+  // read — keep it BEFORE the fps60 read below, since migrating the old
+  // 'high_motion' tier flips the smooth-motion toggle on.
   const [cameraQ, setCameraQ] = useState<CameraQuality>(getSavedCameraQuality());
   const [screenQ, setScreenQ] = useState<ScreenQuality>(getSavedScreenQuality());
+  const [screenFps60, setScreenFps60] = useState<boolean>(getSavedScreenFps60());
 
   function pickCamera(q: CameraQuality) {
     setCameraQ(q);
@@ -3263,6 +3269,10 @@ function VideoQualitySettings() {
   function pickScreen(q: ScreenQuality) {
     setScreenQ(q);
     setSavedScreenQuality(q);
+  }
+  function toggleFps60(on: boolean) {
+    setScreenFps60(on);
+    setSavedScreenFps60(on);
   }
 
   const cameraOptions: Array<{ value: CameraQuality; label: string; description: string }> = [
@@ -3273,37 +3283,47 @@ function VideoQualitySettings() {
       description: CAMERA_QUALITY_PRESETS.low!.description,
     },
     {
-      value: 'medium',
-      label: CAMERA_QUALITY_PRESETS.medium!.label,
-      description: CAMERA_QUALITY_PRESETS.medium!.description,
+      value: 'p720',
+      label: CAMERA_QUALITY_PRESETS.p720!.label,
+      description: CAMERA_QUALITY_PRESETS.p720!.description,
     },
     {
-      value: 'high',
-      label: CAMERA_QUALITY_PRESETS.high!.label,
-      description: CAMERA_QUALITY_PRESETS.high!.description,
+      value: 'p1080',
+      label: CAMERA_QUALITY_PRESETS.p1080!.label,
+      description: CAMERA_QUALITY_PRESETS.p1080!.description,
+    },
+    {
+      value: 'k2',
+      label: CAMERA_QUALITY_PRESETS.k2!.label,
+      description: CAMERA_QUALITY_PRESETS.k2!.description,
+    },
+    {
+      value: 'k4',
+      label: CAMERA_QUALITY_PRESETS.k4!.label,
+      description: CAMERA_QUALITY_PRESETS.k4!.description,
     },
   ];
 
   const screenOptions: Array<{ value: ScreenQuality; label: string; description: string }> = [
     {
-      value: 'low',
-      label: SCREEN_QUALITY_PRESETS.low.label,
-      description: SCREEN_QUALITY_PRESETS.low.description,
+      value: 'p720',
+      label: SCREEN_QUALITY_PRESETS.p720.label,
+      description: SCREEN_QUALITY_PRESETS.p720.description,
     },
     {
-      value: 'standard',
-      label: SCREEN_QUALITY_PRESETS.standard.label,
-      description: SCREEN_QUALITY_PRESETS.standard.description,
-    },
-    {
-      value: 'high_motion',
-      label: SCREEN_QUALITY_PRESETS.high_motion.label,
-      description: SCREEN_QUALITY_PRESETS.high_motion.description,
+      value: 'p1080',
+      label: SCREEN_QUALITY_PRESETS.p1080.label,
+      description: SCREEN_QUALITY_PRESETS.p1080.description,
     },
     {
       value: 'k2',
       label: SCREEN_QUALITY_PRESETS.k2.label,
       description: SCREEN_QUALITY_PRESETS.k2.description,
+    },
+    {
+      value: 'k4',
+      label: SCREEN_QUALITY_PRESETS.k4.label,
+      description: SCREEN_QUALITY_PRESETS.k4.description,
     },
   ];
 
@@ -3349,6 +3369,20 @@ function VideoQualitySettings() {
             </button>
           ))}
         </div>
+        <label className="flex items-start gap-2 mt-2 text-xs text-ink-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={screenFps60}
+            onChange={(e) => toggleFps60(e.target.checked)}
+            className="mt-0.5 accent-accent"
+          />
+          <span>
+            Smooth motion (60 fps)
+            <span className="text-ink-3 block">
+              Applies up to 2K. Doubles bandwidth.
+            </span>
+          </span>
+        </label>
       </div>
 
       <p className="text-[0.7rem] text-ink-3 leading-relaxed">

@@ -35,7 +35,7 @@ type RoomLike = {
     // these per-call options let us switch quality between publishes
     // without reconnecting the Room.
     setCameraEnabled(on: boolean, opts?: VideoOpts, publishOpts?: VideoPublishOpts): Promise<unknown>;
-    setScreenShareEnabled(on: boolean, opts?: ScreenOpts): Promise<unknown>;
+    setScreenShareEnabled(on: boolean, opts?: ScreenOpts, publishOpts?: ScreenPublishOpts): Promise<unknown>;
     identity: string;
   };
   remoteParticipants: Map<string, unknown>;
@@ -48,13 +48,28 @@ interface VideoOpts {
   resolution?: { width: number; height: number; frameRate: number };
 }
 // Per-publish overrides (merged over the Room's publishDefaults). Used to give
-// the CAMERA an H.264 codec without changing screen share (which stays VP8).
+// the CAMERA an H.264 codec without changing screen share (which stays VP8),
+// and — for the non-'auto' camera tiers — a per-tier encoder budget so the
+// camera isn't capped by publishDefaults.videoEncoding (which comes from the
+// AUDIO quality preset and tops out at 1.5 Mbps — fine for 'auto', fatal
+// for 1080p+).
 interface VideoPublishOpts {
   videoCodec?: 'vp8' | 'h264' | 'vp9' | 'av1';
+  videoEncoding?: { maxBitrate: number; maxFramerate?: number };
+  // Type-only reference — erased at compile time, so the livekit-client
+  // chunk stays dynamically imported. Values come from the loaded module.
+  videoSimulcastLayers?: Array<import('livekit-client').VideoPreset>;
 }
 interface ScreenOpts {
   resolution?: { width: number; height: number; frameRate: number };
   audio?: boolean;
+}
+// Per-publish encoder budget for the screen track — merged over
+// publishDefaults.screenShareEncoding (which is frozen at Room
+// construction) so restarting the share re-applies the CURRENT tier +
+// smooth-motion setting without leaving the call.
+interface ScreenPublishOpts {
+  screenShareEncoding?: { maxBitrate: number; maxFramerate?: number };
 }
 
 interface ConnectArgs {
@@ -230,6 +245,7 @@ const STORAGE_INPUT = 'zekktris.audio.input';
 const STORAGE_OUTPUT = 'zekktris.audio.output';
 const STORAGE_CAMERA_QUALITY = 'zekktris.video.camera_quality';
 const STORAGE_SCREEN_QUALITY = 'zekktris.video.screen_quality';
+const STORAGE_SCREEN_FPS60 = 'zekktris.video.screen_fps60';
 
 // ── Video quality presets ──────────────────────────────────────────────────
 //
@@ -241,38 +257,72 @@ const STORAGE_SCREEN_QUALITY = 'zekktris.video.screen_quality';
 // Camera defaults to 720p at 30fps which strikes the right balance for
 // most webcams over residential uplinks. Screen defaults to 1080p at
 // 30fps — desktop content benefits more from resolution than motion
-// fluidity for typical use (chat, code, presentations).
+// fluidity for typical use (chat, code, presentations); the separate
+// "smooth motion" toggle bumps eligible tiers to 60fps for gaming /
+// video playback shares.
 
-export type CameraQuality = 'auto' | 'low' | 'medium' | 'high';
-export type ScreenQuality = 'low' | 'standard' | 'high_motion' | 'k2';
+export type CameraQuality = 'auto' | 'low' | 'p720' | 'p1080' | 'k2' | 'k4';
+export type ScreenQuality = 'p720' | 'p1080' | 'k2' | 'k4';
 
 export const CAMERA_QUALITY_PRESETS: Record<
   CameraQuality,
-  { width: number; height: number; frameRate: number; label: string; description: string } | null
+  {
+    width: number;
+    height: number;
+    frameRate: number;
+    /** Per-tier encoder maxBitrate in bits/sec. Applied as a per-publish
+        override in setCameraEnabled. Without it, every tier inherits
+        publishDefaults.videoEncoding from the AUDIO quality preset
+        (≤1.5 Mbps), which silently strangles 1080p and above — the
+        capture is sharp but the encoder smears it back to mush. */
+    maxBitrate: number;
+    label: string;
+    description: string;
+  } | null
 > = {
   // null means "let LiveKit pick" — we omit the resolution option entirely
-  // so the SDK's adaptive logic + browser hints decide.
+  // so the SDK's adaptive logic + browser hints decide, and the encoder
+  // budget stays on publishDefaults.videoEncoding (the audio preset's cap).
   auto: null,
   low: {
     width: 640,
     height: 480,
     frameRate: 15,
-    label: 'Low (480p, 15 fps)',
+    maxBitrate: 600_000,
+    label: 'Low (480p)',
     description: 'Saves bandwidth. Good for slow networks.',
   },
-  medium: {
+  p720: {
     width: 1280,
     height: 720,
     frameRate: 30,
-    label: 'Medium (720p, 30 fps)',
-    description: 'Balanced. Recommended.',
+    maxBitrate: 2_500_000,
+    label: '720p',
+    description: 'Balanced quality for most calls.',
   },
-  high: {
+  p1080: {
     width: 1920,
     height: 1080,
     frameRate: 30,
-    label: 'High (1080p, 30 fps)',
-    description: 'Best quality. Needs a strong uplink.',
+    maxBitrate: 4_000_000,
+    label: '1080p',
+    description: 'Sharp. Needs a solid uplink.',
+  },
+  k2: {
+    width: 2560,
+    height: 1440,
+    frameRate: 30,
+    maxBitrate: 8_000_000,
+    label: '2K (1440p)',
+    description: 'Very sharp — needs a camera that captures 1440p and a fast uplink.',
+  },
+  k4: {
+    width: 3840,
+    height: 2160,
+    frameRate: 30,
+    maxBitrate: 14_000_000,
+    label: '4K (2160p)',
+    description: 'Very sharp. Heavy on bandwidth and CPU — needs a fast uplink.',
   },
 };
 
@@ -281,6 +331,9 @@ export const SCREEN_QUALITY_PRESETS: Record<
   {
     width: number;
     height: number;
+    /** Base frame rate. The independent "smooth motion" toggle
+        (getSavedScreenFps60) bumps eligible tiers to 60fps — see
+        getEffectiveScreenShareParams for the fold-in. */
     frameRate: number;
     /** Encoder maxBitrate in bits/sec. Screen content needs MORE
         bitrate than camera at the same resolution because of sharp
@@ -294,47 +347,57 @@ export const SCREEN_QUALITY_PRESETS: Record<
     description: string;
   }
 > = {
-  low: {
+  p720: {
     width: 1280,
     height: 720,
-    frameRate: 15,
-    maxBitrate: 1_500_000,
-    label: 'Low (720p, 15 fps)',
-    description: 'Saves bandwidth. Best for static content like documents.',
+    frameRate: 30,
+    maxBitrate: 2_500_000,
+    label: '720p',
+    description: 'Saves bandwidth. Fine for documents and slides.',
   },
-  standard: {
+  p1080: {
     width: 1920,
     height: 1080,
     frameRate: 30,
-    maxBitrate: 3_000_000,
-    label: 'Standard (1080p, 30 fps)',
-    description: 'Balanced. Recommended for most use.',
-  },
-  high_motion: {
-    width: 1920,
-    height: 1080,
-    frameRate: 60,
     maxBitrate: 5_000_000,
-    label: 'High motion (1080p, 60 fps)',
-    description: 'Smooth motion. Best for gaming or video playback. Heavy on bandwidth.',
+    label: '1080p',
+    description: 'Balanced. Recommended for most sharing.',
   },
   k2: {
     width: 2560,
     height: 1440,
     frameRate: 30,
-    maxBitrate: 5_500_000,
-    label: '2K (1440p, 30 fps)',
-    description: 'Sharper than 1080p. Good for code, design work, or large monitors. Needs solid uplink.',
+    maxBitrate: 8_000_000,
+    label: '2K (1440p)',
+    description: 'Sharp text on large monitors. Needs a solid uplink.',
+  },
+  k4: {
+    width: 3840,
+    height: 2160,
+    frameRate: 30,
+    maxBitrate: 14_000_000,
+    label: '4K (2160p)',
+    description: 'Maximum sharpness. Heavy on bandwidth and CPU — needs a fast uplink.',
   },
 };
 
 export function getSavedCameraQuality(): CameraQuality {
   try {
-    const v = localStorage.getItem(STORAGE_CAMERA_QUALITY) ?? 'medium';
+    const v = localStorage.getItem(STORAGE_CAMERA_QUALITY);
+    // Nothing stored → 720p, same behavior the pre-4K default
+    // ('medium') gave users who never touched the setting.
+    if (v === null) return 'p720';
     if (v in CAMERA_QUALITY_PRESETS) return v as CameraQuality;
-    return 'medium';
+    // Legacy tier names from before the 4K-capable scheme. Map to the
+    // equivalent new tier and write the result back so the migration
+    // runs once per browser, not on every read. Anything else
+    // unrecognized normalizes to 'auto' (safest — SDK adapts).
+    const legacy: Record<string, CameraQuality> = { medium: 'p720', high: 'p1080' };
+    const mapped = legacy[v] ?? 'auto';
+    localStorage.setItem(STORAGE_CAMERA_QUALITY, mapped);
+    return mapped;
   } catch {
-    return 'medium';
+    return 'p720';
   }
 }
 
@@ -348,11 +411,28 @@ export function setSavedCameraQuality(q: CameraQuality): void {
 
 export function getSavedScreenQuality(): ScreenQuality {
   try {
-    const v = localStorage.getItem(STORAGE_SCREEN_QUALITY) ?? 'standard';
+    const v = localStorage.getItem(STORAGE_SCREEN_QUALITY);
+    // Nothing stored → 1080p, same behavior the pre-4K default
+    // ('standard') gave users who never touched the setting.
+    if (v === null) return 'p1080';
     if (v in SCREEN_QUALITY_PRESETS) return v as ScreenQuality;
-    return 'standard';
+    // Legacy tier names from before the 4K-capable scheme ('k2' maps
+    // to itself via the `in` check above). 'high_motion' baked 60fps
+    // into the tier; that's a separate toggle now, so migrating it
+    // also flips the toggle on to preserve what the user asked for.
+    // Write the result back so the migration runs once per browser.
+    const legacy: Record<string, ScreenQuality> = {
+      low: 'p720',
+      standard: 'p1080',
+      high_motion: 'p1080',
+    };
+    const mapped = legacy[v];
+    if (!mapped) return 'p1080';
+    if (v === 'high_motion') localStorage.setItem(STORAGE_SCREEN_FPS60, '1');
+    localStorage.setItem(STORAGE_SCREEN_QUALITY, mapped);
+    return mapped;
   } catch {
-    return 'standard';
+    return 'p1080';
   }
 }
 
@@ -364,20 +444,64 @@ export function setSavedScreenQuality(q: ScreenQuality): void {
   }
 }
 
-/** Encoder maxBitrate for screen share — pulled from the user's saved
-    quality preset. Read at Room construction time. If the user changes
-    their screen-quality preference, they need to leave and rejoin the
-    voice channel for the new bitrate to take effect (LiveKit doesn't
-    expose a runtime path to renegotiate publish defaults on an active
-    room). */
-function getScreenShareEncoderBitrate(): number {
+/** The "smooth motion" toggle: capture + encode screen share at 60fps
+    instead of the presets' base 30fps. Independent of the resolution
+    tier so users don't have to trade sharpness for fluidity. Default
+    off — 60fps roughly doubles bandwidth for content that's mostly
+    static in typical shares (code, docs, slides). */
+export function getSavedScreenFps60(): boolean {
+  try {
+    return localStorage.getItem(STORAGE_SCREEN_FPS60) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function setSavedScreenFps60(on: boolean): void {
+  try {
+    if (on) localStorage.setItem(STORAGE_SCREEN_FPS60, '1');
+    else localStorage.removeItem(STORAGE_SCREEN_FPS60);
+  } catch {
+    // ignore
+  }
+}
+
+/** Effective screen-share capture/encoder parameters: the saved quality
+    tier with the "smooth motion" toggle folded in. 60fps costs bitrate
+    headroom — inter frames arrive twice as fast — so eligible tiers get
+    a 1.5× budget bump. 4K stays pinned at 30fps regardless of the
+    toggle: 4K60 VP8 in a browser is not realistic (software encode
+    can't keep up; the result is dropped frames AND mushy text — worse
+    on both axes than 4K30). */
+function getEffectiveScreenShareParams(): {
+  width: number;
+  height: number;
+  frameRate: number;
+  maxBitrate: number;
+} {
   const q = getSavedScreenQuality();
-  return SCREEN_QUALITY_PRESETS[q].maxBitrate;
+  const preset = SCREEN_QUALITY_PRESETS[q];
+  const smooth = getSavedScreenFps60() && q !== 'k4';
+  return {
+    width: preset.width,
+    height: preset.height,
+    frameRate: smooth ? 60 : preset.frameRate,
+    maxBitrate: smooth ? Math.round(preset.maxBitrate * 1.5) : preset.maxBitrate,
+  };
+}
+
+/** Encoder maxBitrate for screen share — the user's saved quality tier
+    plus the smooth-motion bump. Read at Room construction time as the
+    publishDefaults BASELINE; the authoritative per-share values are
+    re-read and passed as per-publish options in setScreenShareEnabled,
+    so a tier / smooth-motion change applies the next time the share is
+    turned on — no need to leave and rejoin the call. */
+function getScreenShareEncoderBitrate(): number {
+  return getEffectiveScreenShareParams().maxBitrate;
 }
 
 function getScreenShareEncoderFramerate(): number {
-  const q = getSavedScreenQuality();
-  return SCREEN_QUALITY_PRESETS[q].frameRate;
+  return getEffectiveScreenShareParams().frameRate;
 }
 
 export function getSavedInputDeviceId(): string {
@@ -620,7 +744,7 @@ function mediaErrorToVoiceError(err: unknown): VoiceError {
  * display in a toast.
  */
 export async function connectToVoice(args: ConnectArgs): Promise<void> {
-  const { Room, RoomEvent, ParticipantEvent, ExternalE2EEKeyProvider, isE2EESupported } =
+  const { Room, RoomEvent, ParticipantEvent, ExternalE2EEKeyProvider, isE2EESupported, ScreenSharePresets } =
     await loadLivekit();
 
   // Pre-flight: do a getUserMedia ourselves with the user's saved
@@ -811,6 +935,10 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
         // the High preset's help text promises actually happen.
         ...(preset.audioChannels === 2 ? { dtx: false } : {}),
       },
+      // Governs the 'auto' camera tier only — every named camera tier
+      // (720p…4K) supplies its own per-publish videoEncoding override
+      // in setCameraEnabled, because this audio-preset cap (≤1.5 Mbps)
+      // would silently strangle 1080p and above.
       videoEncoding: {
         maxBitrate: preset.videoBitrate,
         maxFramerate: 30,
@@ -818,17 +946,23 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
       // Screen share gets its OWN encoder budget — separate from
       // camera (which is what `videoEncoding` above governs). Without
       // this, screen content was getting camera-grade bitrates
-      // applied to 1080p/60 frames, which left no headroom for
+      // applied to high-res/60fps frames, which left no headroom for
       // keyframes under packet loss. Viewers saw freezes that
-      // recovered only on the next IDR. Bitrate scales with the
-      // user's saved screen quality preset, and we cap framerate
-      // at the preset's value (the actual stream rate is set by
+      // recovered only on the next IDR. Bitrate + framerate come from
+      // the user's saved screen quality tier with the smooth-motion
+      // 60fps toggle folded in (the actual stream rate is set by
       // setScreenShareEnabled's resolution arg, but encoders also
       // need to know the cap to plan rate control).
       screenShareEncoding: {
         maxBitrate: getScreenShareEncoderBitrate(),
         maxFramerate: getScreenShareEncoderFramerate(),
       },
+      // One low simulcast rung under the (possibly 2K/4K) full-res
+      // share. A viewer whose downlink can't carry the full layer gets
+      // a decodable 720p15 picture instead of stalls; dynacast (on,
+      // above) stops encoding the rung whenever nobody subscribes to
+      // it, so the steady-state cost on strong-viewer calls is zero.
+      screenShareSimulcastLayers: [ScreenSharePresets.h720fps15],
       // VP8 is the most compatible codec across browsers (Safari
       // included) and handles screen content's sharp edges well
       // without the keyframe-latency penalties some VP9 hardware
@@ -1921,10 +2055,30 @@ export async function setCameraEnabled(on: boolean): Promise<void> {
       const preset = CAMERA_QUALITY_PRESETS[q];
       // H.264 for the camera so it uses the browser's hardware encoder/decoder
       // (sharper, lower CPU) — overrides the VP8 publishDefault for THIS track
-      // only; screen share keeps VP8. videoEncoding/simulcast still come from
-      // publishDefaults via the merge.
+      // only; screen share keeps VP8.
       const cameraPublish: VideoPublishOpts = { videoCodec: 'h264' };
       if (preset) {
+        // Named tiers carry their own encoder budget as a per-publish
+        // override (merged over publishDefaults). Without this the
+        // camera inherits publishDefaults.videoEncoding from the AUDIO
+        // quality preset — capped at ≤1.5 Mbps, which silently strangles
+        // 1080p and above no matter how sharp the capture is. 'auto'
+        // (the else branch) deliberately keeps the publishDefaults
+        // encoding — that's its whole contract.
+        cameraPublish.videoEncoding = {
+          maxBitrate: preset.maxBitrate,
+          maxFramerate: preset.frameRate,
+        };
+        if (q === 'k2' || q === 'k4') {
+          // Explicit simulcast rungs for the heavy tiers: 720p + 360p
+          // (LiveKit's own presets, 16:9). LiveKit's automatic layer
+          // selection scales rungs off the primary encoding, which at
+          // 8–14 Mbps produces mid layers that are still too fat for a
+          // weak downlink — pinning two modest rungs guarantees every
+          // viewer a decodable layer. Dynacast drops unwatched rungs.
+          const { VideoPresets } = await loadLivekit();
+          cameraPublish.videoSimulcastLayers = [VideoPresets.h360, VideoPresets.h720];
+        }
         await room.localParticipant.setCameraEnabled(
           true,
           {
@@ -1938,6 +2092,27 @@ export async function setCameraEnabled(on: boolean): Promise<void> {
         );
       } else {
         await room.localParticipant.setCameraEnabled(true, undefined, cameraPublish);
+      }
+      // contentHint='motion' on the published camera track — the mirror
+      // of the 'detail' hint on screen share (see setScreenShareEnabled).
+      // Camera feeds are continuous natural motion; the hint biases the
+      // encoder toward temporal smoothness over per-frame edge fidelity.
+      // Only fill the hint in when the SDK/browser left it empty — never
+      // fight an explicit value.
+      try {
+        const localPubs = room.localParticipant as unknown as {
+          trackPublications: Map<string, TrackPublicationLike>;
+        };
+        for (const [, pub] of localPubs.trackPublications) {
+          if (pub.source === 'camera' && pub.track?.mediaStreamTrack) {
+            const t = pub.track.mediaStreamTrack as MediaStreamTrack & {
+              contentHint?: string;
+            };
+            if ('contentHint' in t && !t.contentHint) t.contentHint = 'motion';
+          }
+        }
+      } catch {
+        // contentHint is a hint; failure to set it is harmless.
       }
     } else {
       await room.localParticipant.setCameraEnabled(false);
@@ -1972,24 +2147,40 @@ export async function setScreenShareEnabled(on: boolean): Promise<void> {
   if (!room) return;
   try {
     if (on) {
-      // Apply the saved screen-share quality. Unlike camera, there's
-      // no 'auto' for screen share — desktop content has consistent
-      // motion characteristics so a preset is always reasonable.
+      // Apply the saved screen-share quality — the tier's resolution
+      // with the smooth-motion 60fps toggle folded in (same effective
+      // params the Room's screenShareEncoding was built from). Unlike
+      // camera, there's no 'auto' for screen share — desktop content
+      // has consistent motion characteristics so a preset is always
+      // reasonable.
       // audio:true requests a system/tab audio track alongside the
       // video. In the Electron desktop app the main process supplies
       // a loopback audio source; in Chromium browsers this captures
       // tab audio (when the user picks a tab and ticks "share audio").
-      const q = getSavedScreenQuality();
-      const preset = SCREEN_QUALITY_PRESETS[q];
+      const params = getEffectiveScreenShareParams();
       await room.localParticipant.setScreenShareEnabled(
         true,
         {
           resolution: {
-            width: preset.width,
-            height: preset.height,
-            frameRate: preset.frameRate,
+            width: params.width,
+            height: params.height,
+            frameRate: params.frameRate,
           },
           audio: true,
+        },
+        // Per-publish encoder budget for THIS share. Without it the
+        // encoder caps come from publishDefaults.screenShareEncoding,
+        // which is frozen at Room construction — so a mid-call tier or
+        // smooth-motion change followed by a share restart would apply
+        // the new capture resolution but keep the OLD bitrate/framerate
+        // caps (1080p60 frames squeezed through a 30fps 5 Mbps budget).
+        // Passing it here makes "turn the share off and on" honestly
+        // re-apply the whole preset, matching the Settings help text.
+        {
+          screenShareEncoding: {
+            maxBitrate: params.maxBitrate,
+            maxFramerate: params.frameRate,
+          },
         },
       );
       // Set contentHint='detail' on the published screen track. The

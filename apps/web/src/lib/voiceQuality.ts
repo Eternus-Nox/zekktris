@@ -8,7 +8,7 @@
  * publishDefaults setter).
  *
  * Three presets:
- *   - high:   96 kbps stereo audio,  720p video, 1.5 Mbps cap
+ *   - high:  128 kbps stereo audio,  720p video, 1.5 Mbps cap
  *   - normal: 64 kbps mono   audio,  480p video, 800 kbps cap (default)
  *   - low:    24 kbps mono   audio,  360p video, 300 kbps cap
  *
@@ -44,13 +44,16 @@ interface QualityPreset {
 
 export const QUALITY_PRESETS: Record<VoiceQuality, QualityPreset> = {
   high: {
-    audioBitrate: 96_000,
+    // 128 kbps is Opus's sweet spot for stereo music — above it the
+    // quality gains are inaudible for streamed voice-chat music, below
+    // it stereo width starts costing clarity.
+    audioBitrate: 128_000,
     audioChannels: 2,
     videoWidth: 1280,
     videoHeight: 720,
     videoBitrate: 1_500_000,
     label: 'High',
-    help: 'Stereo 96 kbps audio, 720p video. Best on wifi.',
+    help: 'Stereo 128 kbps audio, 720p video. Best on wifi.',
   },
   normal: {
     audioBitrate: 64_000,
