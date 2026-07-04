@@ -123,6 +123,15 @@ services:
       DB_PREPARED: ${DB_PREPARED:-false}
       REDIS_URL: redis://cache:6379
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:5550}
+      # Stripe billing (supporter memberships). Both must be set for paid
+      # Checkout to turn on — the API gates billing on STRIPE_SECRET_KEY &&
+      # STRIPE_WEBHOOK_SECRET (billingEnabled()), and /billing/status returns
+      # enabled:false without them, which leaves the web tier cards inert
+      # (informational, not clickable Subscribe buttons). Values live in .env;
+      # empty default keeps a self-host without Stripe working (billing off).
+      # PUBLIC_URL (above) builds the Checkout success/cancel + portal return URLs.
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env (>=32 chars)}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET must be set in .env (>=32 chars, different from JWT_SECRET)}
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-open}
