@@ -66,6 +66,15 @@ import {
   setSavedScreenFps60,
   CAMERA_QUALITY_PRESETS,
   SCREEN_QUALITY_PRESETS,
+  highestAllowedCameraQuality,
+  highestAllowedScreenQuality,
+  getMonetizationVersion,
+  isCameraQualityAllowed,
+  isScreenQualityAllowed,
+  monetizeTierRank,
+  requiredTierForCameraQuality,
+  requiredTierForScreenQuality,
+  subscribeMonetization,
   VoiceError,
   type CameraQuality,
   type ScreenQuality,
@@ -3284,21 +3293,31 @@ function VideoQualitySettings() {
     setSavedScreenFps60(on);
   }
 
-  // Premium streaming gate: 2K needs Guardian, 4K needs Legend — for BOTH
-  // camera and screen share (720p/1080p, incl. the 60fps toggle, stay free).
-  // Computed from the LIVE user tier so a gift or checkout landing unlocks
-  // the pills without a reload; the publish-time clamps in voice.ts are the
-  // enforcement, this is the honest UI for it.
-  const tier = user?.subscriptionTier;
-  const hasGuardian = tier === 'guardian' || tier === 'legend';
-  const hasLegend = tier === 'legend';
+  // Premium streaming gate: which resolutions need which membership tier is
+  // ADMIN-CONFIGURABLE per instance (defaults: 2K = Guardian, 4K = Legend;
+  // 720p, incl. the 60fps toggle, is never gated — and 1080p can now carry a
+  // lock too). Computed from the LIVE user tier so a gift or checkout
+  // landing unlocks the pills without a reload; the publish-time clamps in
+  // voice.ts are the enforcement, this is the honest UI for it.
+  // Subscribe to the config store so the pills re-render when the instance
+  // config fetch lands after mount (module state is invisible to React).
+  useSyncExternalStore(subscribeMonetization, getMonetizationVersion, getMonetizationVersion);
+  const userRank = monetizeTierRank(user?.subscriptionTier);
+  const cameraLock = (q: CameraQuality) => {
+    const req = requiredTierForCameraQuality(q);
+    return req && !isCameraQualityAllowed(q, userRank) ? { lockedBehind: req } : {};
+  };
+  const screenLock = (q: ScreenQuality) => {
+    const req = requiredTierForScreenQuality(q);
+    return req && !isScreenQualityAllowed(q, userRank) ? { lockedBehind: req } : {};
+  };
 
   const cameraOptions: Array<{
     value: CameraQuality;
     label: string;
     description: string;
     /** Membership tier this option needs, when the user doesn't have it. */
-    lockedBehind?: 'guardian' | 'legend';
+    lockedBehind?: 'scout' | 'guardian' | 'legend';
   }> = [
     { value: 'auto', label: 'Auto', description: 'Let the network decide. Recommended for most users.' },
     {
@@ -3315,37 +3334,41 @@ function VideoQualitySettings() {
       value: 'p1080',
       label: CAMERA_QUALITY_PRESETS.p1080!.label,
       description: CAMERA_QUALITY_PRESETS.p1080!.description,
+      ...cameraLock('p1080'),
     },
     {
       value: 'k2',
       label: CAMERA_QUALITY_PRESETS.k2!.label,
       description: CAMERA_QUALITY_PRESETS.k2!.description,
-      ...(hasGuardian ? {} : { lockedBehind: 'guardian' as const }),
+      ...cameraLock('k2'),
     },
     {
       value: 'k4',
       label: CAMERA_QUALITY_PRESETS.k4!.label,
       description: CAMERA_QUALITY_PRESETS.k4!.description,
-      ...(hasLegend ? {} : { lockedBehind: 'legend' as const }),
+      ...cameraLock('k4'),
     },
   ];
 
   // Camera counterpart of the lapsed-membership note below.
   const savedCameraLocked = cameraOptions.find((o) => o.value === cameraQ)?.lockedBehind;
 
-  // What a locked saved setting ACTUALLY falls back to: the entitled ceiling
-  // (a Guardian with saved 4K publishes at 2K, not 1080p) — must match the
-  // clamps in voice.ts, which substitute the ceiling, not the free floor.
-  const clampCeilingLabel = hasGuardian
-    ? SCREEN_QUALITY_PRESETS.k2.label
-    : SCREEN_QUALITY_PRESETS.p1080.label;
+  // What a locked saved setting ACTUALLY falls back to: the highest tier the
+  // membership covers on that surface (a Guardian with saved 4K publishes at
+  // 2K, not 1080p) — must match the clamps in voice.ts, which substitute the
+  // best allowed tier, not the free floor. Per-surface because the admin can
+  // gate the camera and screen matrices differently.
+  const cameraClampLabel =
+    CAMERA_QUALITY_PRESETS[highestAllowedCameraQuality(userRank)]?.label ??
+    CAMERA_QUALITY_PRESETS.p720!.label;
+  const screenClampLabel = SCREEN_QUALITY_PRESETS[highestAllowedScreenQuality(userRank)].label;
 
   const screenOptions: Array<{
     value: ScreenQuality;
     label: string;
     description: string;
     /** Membership tier this option needs, when the user doesn't have it. */
-    lockedBehind?: 'guardian' | 'legend';
+    lockedBehind?: 'scout' | 'guardian' | 'legend';
   }> = [
     {
       value: 'p720',
@@ -3356,18 +3379,19 @@ function VideoQualitySettings() {
       value: 'p1080',
       label: SCREEN_QUALITY_PRESETS.p1080.label,
       description: SCREEN_QUALITY_PRESETS.p1080.description,
+      ...screenLock('p1080'),
     },
     {
       value: 'k2',
       label: SCREEN_QUALITY_PRESETS.k2.label,
       description: SCREEN_QUALITY_PRESETS.k2.description,
-      ...(hasGuardian ? {} : { lockedBehind: 'guardian' as const }),
+      ...screenLock('k2'),
     },
     {
       value: 'k4',
       label: SCREEN_QUALITY_PRESETS.k4.label,
       description: SCREEN_QUALITY_PRESETS.k4.description,
-      ...(hasLegend ? {} : { lockedBehind: 'legend' as const }),
+      ...screenLock('k4'),
     },
   ];
 
@@ -3426,7 +3450,7 @@ function VideoQualitySettings() {
           <p className="text-[0.7rem] text-amber-400/90 leading-relaxed mt-1.5">
             Your saved {CAMERA_QUALITY_PRESETS[cameraQ]?.label ?? cameraQ} camera setting needs a{' '}
             {TIER_META[savedCameraLocked]?.label} membership — the camera currently publishes at up
-            to {clampCeilingLabel}. It re-activates automatically if you re-join that tier.
+            to {cameraClampLabel}. It re-activates automatically if you re-join that tier.
           </p>
         )}
       </div>
@@ -3479,7 +3503,7 @@ function VideoQualitySettings() {
           <p className="text-[0.7rem] text-amber-400/90 leading-relaxed mt-1.5">
             Your saved {SCREEN_QUALITY_PRESETS[screenQ].label} setting needs a{' '}
             {TIER_META[savedScreenLocked]?.label} membership — shares currently run at up to{' '}
-            {clampCeilingLabel}. It re-activates automatically if you re-join that tier.
+            {screenClampLabel}. It re-activates automatically if you re-join that tier.
           </p>
         )}
         <label className="flex items-start gap-2 mt-2 text-xs text-ink-2 cursor-pointer">

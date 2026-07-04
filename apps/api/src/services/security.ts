@@ -158,6 +158,7 @@ export type SecurityEventKind =
   | 'staff_membership_reset'
   | 'staff_dob_reset'
   | 'staff_role_change'
+  | 'staff_monetization'
   | 'staff_observe'
   | 'staff_guild_delete'
   | 'staff_user_delete';

@@ -34,6 +34,8 @@ import {
   type InstanceMetrics,
   type LivekitDiagnostic,
   type InstanceRestoreResult,
+  type MonetizationConfig,
+  type MonetizationTier,
   type AdminStorage,
   type StorageItem,
   type StorageListing,
@@ -48,7 +50,7 @@ import { avatarColor, avatarInitials } from '../lib/avatar';
 import { TierBadge } from '../lib/TierBadge';
 import { Hash, Lock, Search as SearchIcon, Shield, Volume2, X as CloseIcon, Users, Archive, BarChart, ChevronLeft } from '../lib/icons';
 
-type Tab = 'overview' | 'users' | 'guilds' | 'storage' | 'security' | 'backup';
+type Tab = 'overview' | 'users' | 'guilds' | 'storage' | 'security' | 'monetization' | 'backup';
 
 export function AdminPanel() {
   const navigate = useNavigate();
@@ -97,6 +99,7 @@ export function AdminPanel() {
         { id: 'guilds', label: 'Servers' },
         { id: 'storage', label: 'Storage' },
         { id: 'security', label: 'Security' },
+        { id: 'monetization', label: 'Monetization' },
         { id: 'backup', label: 'Backup' },
       ];
   const effectiveTab: Tab = tabs.some((t) => t.id === tab) ? tab : tabs[0]!.id;
@@ -175,6 +178,7 @@ export function AdminPanel() {
             )}
             {effectiveTab === 'storage' && <StorageTab />}
             {effectiveTab === 'security' && <AdminSecurityTab />}
+            {effectiveTab === 'monetization' && <MonetizationTab />}
             {effectiveTab === 'backup' && <BackupAdminTab />}
           </div>
         )}
@@ -2299,6 +2303,219 @@ function BackupAdminTab() {
           </ul>
         )}
       </section>
+    </div>
+  );
+}
+
+// ── Monetization tab (admin-only feature gating) ─────────────────────────────
+//
+// Which membership tier (if any) each premium surface requires, plus per-tier
+// upload caps. Stored in instance_settings; every client fetches the config at
+// login (GET /instance/monetization) and gates locally. ADMIN-only: the tab is
+// absent from the moderator tab list above, and the API's admin-router
+// allowlist rejects moderators on the PUT anyway.
+
+const MONETIZE_TIER_OPTIONS: Array<{ value: MonetizationTier; label: string }> = [
+  { value: 'none', label: 'None (free for everyone)' },
+  { value: 'scout', label: 'Scout ($2)' },
+  { value: 'guardian', label: 'Guardian ($5)' },
+  { value: 'legend', label: 'Legend ($10)' },
+];
+
+const UPLOAD_CAP_TIERS: Array<{ key: keyof MonetizationConfig['uploadCapsMb']; label: string }> = [
+  { key: 'free', label: 'Free' },
+  { key: 'scout', label: 'Scout' },
+  { key: 'guardian', label: 'Guardian' },
+  { key: 'legend', label: 'Legend' },
+];
+
+/** One labeled row of a resolution matrix: "1080p → [tier select]". */
+function MonetizeTierRow({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: MonetizationTier;
+  onChange: (v: MonetizationTier) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-sm text-ink-2">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as MonetizationTier)}
+        className="text-xs bg-bg-3 border border-line rounded px-1.5 py-1 text-ink-1"
+        aria-label={`Minimum tier for ${label}`}
+      >
+        {MONETIZE_TIER_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function MonetizationTab() {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const [config, setConfig] = useState<MonetizationConfig | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void rest
+      .getMonetization()
+      .then((r) => {
+        if (cancelled) return;
+        setConfig(r.config);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(e instanceof ApiError ? e.message : 'Failed to load monetization settings');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rest]);
+
+  function setMatrix(
+    surface: 'stream' | 'camera',
+    row: 'p1080' | 'k2' | 'k4',
+    v: MonetizationTier,
+  ) {
+    setConfig((c) => (c ? { ...c, [surface]: { ...c[surface], [row]: v } } : c));
+  }
+
+  function setCap(tier: keyof MonetizationConfig['uploadCapsMb'], raw: string) {
+    setConfig((c) => {
+      if (!c) return c;
+      // Empty input = "use the server default" (null). Anything else is
+      // parsed as whole MB; junk parses to null rather than 0 so a stray
+      // keystroke can't accidentally set a zero cap.
+      const n = Number.parseInt(raw, 10);
+      const v = raw.trim() !== '' && Number.isFinite(n) && n > 0 ? n : null;
+      return { ...c, uploadCapsMb: { ...c.uploadCapsMb, [tier]: v } };
+    });
+  }
+
+  async function save() {
+    if (!config || saving) return;
+    setSaving(true);
+    try {
+      const r = await rest.adminUpdateMonetization(config);
+      setConfig(r.config);
+      toasts.push('Monetization settings saved', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Save failed', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (error) return <p className="text-sm text-red-400">{error}</p>;
+  if (!config) return <p className="text-sm text-ink-3">Loading…</p>;
+
+  return (
+    <div className="space-y-6 max-w-3xl">
+      <AdminTabHeader
+        icon={Lock}
+        title="Monetization"
+        subtitle="Choose which membership tier each premium feature requires on this instance. Clients pick the changes up at their next sign-in or refresh."
+      />
+
+      <section className="border border-line rounded-md p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-ink-1">Screen streaming</h3>
+        <p className="text-xs text-ink-3 leading-relaxed">
+          Minimum membership tier to share the screen at each resolution. 720p is always free.
+        </p>
+        <MonetizeTierRow
+          label="1080p"
+          value={config.stream.p1080}
+          onChange={(v) => setMatrix('stream', 'p1080', v)}
+        />
+        <MonetizeTierRow
+          label="2K (1440p)"
+          value={config.stream.k2}
+          onChange={(v) => setMatrix('stream', 'k2', v)}
+        />
+        <MonetizeTierRow
+          label="4K (2160p)"
+          value={config.stream.k4}
+          onChange={(v) => setMatrix('stream', 'k4', v)}
+        />
+      </section>
+
+      <section className="border border-line rounded-md p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-ink-1">Webcam</h3>
+        <p className="text-xs text-ink-3 leading-relaxed">
+          Minimum membership tier to publish the camera at each resolution. 720p and below are
+          always free.
+        </p>
+        <MonetizeTierRow
+          label="1080p"
+          value={config.camera.p1080}
+          onChange={(v) => setMatrix('camera', 'p1080', v)}
+        />
+        <MonetizeTierRow
+          label="2K (1440p)"
+          value={config.camera.k2}
+          onChange={(v) => setMatrix('camera', 'k2', v)}
+        />
+        <MonetizeTierRow
+          label="4K (2160p)"
+          value={config.camera.k4}
+          onChange={(v) => setMatrix('camera', 'k4', v)}
+        />
+      </section>
+
+      <section className="border border-line rounded-md p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-ink-1">Appearance (themes, frames, tags)</h3>
+        <p className="text-xs text-ink-3 leading-relaxed">
+          Minimum membership tier to use paid cosmetics. The default, Scout, means any membership
+          (founder grants count as Scout); None opens Appearance to everyone.
+        </p>
+        <MonetizeTierRow
+          label="Appearance"
+          value={config.appearance}
+          onChange={(v) => setConfig((c) => (c ? { ...c, appearance: v } : c))}
+        />
+      </section>
+
+      <section className="border border-line rounded-md p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-ink-1">Upload caps (MB)</h3>
+        <p className="text-xs text-ink-3 leading-relaxed">
+          Per-tier attachment size limits in MB. Leave a field empty to use the server default —
+          and either way the server&rsquo;s configured hard limit stays the ceiling.
+        </p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {UPLOAD_CAP_TIERS.map((t) => (
+            <label key={t.key} className="text-xs text-ink-2 space-y-1">
+              <span className="block">{t.label}</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                placeholder="default"
+                value={config.uploadCapsMb[t.key] ?? ''}
+                onChange={(e) => setCap(t.key, e.target.value)}
+                className="w-full bg-bg-3 border border-line rounded px-2 py-1 text-sm text-ink-1 placeholder:text-ink-3"
+              />
+            </label>
+          ))}
+        </div>
+      </section>
+
+      <button
+        onClick={() => void save()}
+        disabled={saving}
+        className="px-3 py-1.5 rounded-md text-sm font-medium bg-bg-2 text-ink-1 border border-line hover:border-accent transition-colors disabled:opacity-50"
+      >
+        {saving ? 'Saving…' : 'Save changes'}
+      </button>
     </div>
   );
 }

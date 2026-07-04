@@ -985,3 +985,44 @@ export interface SecurityEvent {
   contentSnapshot: string | null;
   createdAt: string;
 }
+
+// ── Instance monetization (Admin → Monetization) ────────────────────────────
+
+/** MINIMUM membership tier a gated feature requires; 'none' = free. */
+export type MonetizationTier = 'none' | 'scout' | 'guardian' | 'legend';
+
+/** Per-resolution tier requirements for one video surface (screen share or
+    webcam). 720p is always free and therefore not part of the matrix. */
+export interface MonetizationMatrix {
+  p1080: MonetizationTier;
+  k2: MonetizationTier;
+  k4: MonetizationTier;
+}
+
+/** Admin-configurable feature gating. Fetched by every client at login
+    (GET /instance/monetization); written by admins (PUT /admin/monetization). */
+export interface MonetizationConfig {
+  /** Screen-share resolution gates. Defaults: p1080 free, 2K Guardian, 4K Legend. */
+  stream: MonetizationMatrix;
+  /** Webcam resolution gates. Same defaults as `stream`. */
+  camera: MonetizationMatrix;
+  /** Tier required for Appearance cosmetics (themes/frames/tags).
+      Default 'scout' = any membership (founder grants are 'scout'). */
+  appearance: MonetizationTier;
+  /** Per-tier upload caps in MB; null = the server's env default
+      (MAX_UPLOAD_SIZE_MB). The env cap stays the hard ceiling either way. */
+  uploadCapsMb: {
+    free: number | null;
+    scout: number | null;
+    guardian: number | null;
+    legend: number | null;
+  };
+}
+
+/** PUT /admin/monetization accepts a full config or any subset of it. */
+export interface MonetizationConfigPatch {
+  stream?: Partial<MonetizationMatrix>;
+  camera?: Partial<MonetizationMatrix>;
+  appearance?: MonetizationTier;
+  uploadCapsMb?: Partial<MonetizationConfig['uploadCapsMb']>;
+}

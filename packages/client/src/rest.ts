@@ -26,6 +26,8 @@ import type {
   InvitePreview,
   Message,
   MessageEmbed,
+  MonetizationConfig,
+  MonetizationConfigPatch,
   PermissionOverride,
   PublicUser,
   Bot,
@@ -2757,6 +2759,23 @@ export class RestClient {
   /** Reset: remove a user's membership (their paid cosmetics are cleared). */
   adminRemoveSubscription(userId: string): Promise<{ ok: boolean }> {
     return this.request('DELETE', `/admin/users/${userId}/subscription`);
+  }
+
+  // Monetization (admin-configurable feature gating) -----------------------
+
+  /** The instance's monetization config — which membership tier (if any)
+      each premium surface requires. Any signed-in user may read it; clients
+      fetch it at login and gate locally. */
+  getMonetization(): Promise<{ config: MonetizationConfig }> {
+    return this.request('GET', '/instance/monetization');
+  }
+
+  /** ADMIN: update monetization settings (full config or any subset).
+      Responds with the post-update effective config. */
+  adminUpdateMonetization(
+    config: MonetizationConfigPatch,
+  ): Promise<{ config: MonetizationConfig }> {
+    return this.request('PUT', '/admin/monetization', { config });
   }
 
   /** Set a user's instance role. The two flags are mutually exclusive

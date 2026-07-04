@@ -28,7 +28,7 @@ import {
 } from 'react';
 import { GatewayClient, RestClient, type SelfUser } from '@zekktris/client';
 import { clearDecryptedMediaCache } from '../lib/e2ee';
-import { screenQualityCeilingForTier, setScreenQualityCeiling } from '../lib/voice';
+import { setMonetization, setUserTier } from '../lib/voice';
 
 const TOKEN_STORAGE_KEY = 'zekktris.accessToken';
 const USER_STORAGE_KEY = 'zekktris.user';
@@ -315,15 +315,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  // Premium-streaming entitlement: push the signed-in tier's streaming
-  // ceiling into the voice lib (2K = Guardian perk, 4K = Legend). This is
-  // the single chokepoint every user change funnels through — login,
-  // getMe refresh, billing success poll, admin gift — so the publish-time
-  // clamp in voice.ts always reflects the current tier. Signed-out (null
-  // user) resets to the free ceiling.
+  // Premium-streaming entitlement: push the signed-in tier into the voice
+  // lib, and fetch the instance's admin-configured monetization matrix
+  // (which resolutions need which tier). This is the single chokepoint
+  // every user change funnels through — login, getMe refresh, billing
+  // success poll, admin gift — so the publish-time clamp in voice.ts
+  // always reflects the current tier. Signed-out (null user) resets to
+  // rank 0 (free) — fail closed.
+  //
+  // The config fetch is fire-and-forget: until/unless it succeeds the
+  // voice lib keeps its baked-in defaults, which mirror the server's
+  // defaults — so offline or against an older server the gate behaves
+  // exactly like the old hardcoded one (2K = Guardian, 4K = Legend).
   useEffect(() => {
-    setScreenQualityCeiling(screenQualityCeilingForTier(state.user?.subscriptionTier));
-  }, [state.user?.subscriptionTier]);
+    setUserTier(state.user?.subscriptionTier ?? null);
+    if (!state.user) return;
+    rest
+      .getMonetization()
+      .then((r) => setMonetization(r.config))
+      .catch(() => {
+        // Keep the defaults — transient failure or a pre-monetization server.
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the
+    // fields that should trigger a re-push/refetch, not the user object.
+  }, [rest, state.user?.id, state.user?.subscriptionTier]);
 
   const value = useMemo<AuthContextValue>(
     () => ({ ...state, rest, gateway, login, loginWithPasskey, register, logout, updateUser, emailVerificationRequired }),

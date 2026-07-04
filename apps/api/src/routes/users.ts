@@ -242,13 +242,35 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
     (body.tagLabel !== undefined && (body.tagLabel?.trim() ?? '') !== '') ||
     (body.tagColor !== undefined && body.tagColor !== null);
   if (wantsCosmetic) {
-    const subs = await import('../services/subscriptions');
-    if (!(await subs.hasMembership(userId))) {
-      throw new AppError(
-        'FORBIDDEN',
-        'Appearance options are a supporter perk. Supporting helps Zekktris stay alive and strong!',
-        { membershipRequired: true },
+    // Admin-configurable gate (instance_settings via the monetization
+    // service). 'none' = Appearance is free on this instance; otherwise the
+    // user's effective tier (own or inherited, founder rows = scout) must
+    // meet the configured minimum. Default 'scout' preserves the original
+    // any-membership behavior.
+    const monetization = await import('../services/monetization');
+    // Fail-open ON PURPOSE: a settings read hiccup must degrade to the
+    // shipped default gate ('scout' = any membership, i.e. today's
+    // behavior), never 500 a cosmetic PATCH /@me.
+    let required = monetization.DEFAULTS.appearance;
+    try {
+      required = (await monetization.getConfig()).appearance;
+    } catch (err) {
+      console.error(
+        '[users] appearance gate config lookup failed; falling back to default:',
+        err,
       );
+    }
+    if (required !== 'none') {
+      const subs = await import('../services/subscriptions');
+      const sub = await subs.getEffectiveSubscription(userId);
+      if (!monetization.isAllowed(monetization.tierRank(sub?.tier ?? null), required)) {
+        const tierName = required.charAt(0).toUpperCase() + required.slice(1);
+        throw new AppError(
+          'FORBIDDEN',
+          `Appearance options are a supporter perk (${tierName} or higher). Supporting helps Zekktris stay alive and strong!`,
+          { membershipRequired: true },
+        );
+      }
     }
   }
 
@@ -1758,7 +1780,7 @@ usersRouter.post('/@me/avatar', requireAuth, async (c) => {
   // Save the new file to disk BEFORE entering the transaction —
   // disk IO is slow and we don't want to hold the row lock for
   // the duration. The transaction below just swaps the URL.
-  const saved = await saveUploadedFile(file);
+  const saved = await saveUploadedFile(file, { uploaderId: userId });
 
   // Atomic swap. SELECT FOR UPDATE serializes concurrent uploads
   // on the same user row — without this, two parallel uploads
@@ -1862,7 +1884,7 @@ usersRouter.post('/@me/banner', requireAuth, async (c) => {
   // this, two concurrent banner uploads on the same user can both
   // capture the same priorBannerId, both UPDATE, and the loser's
   // file orphans on disk.
-  const saved = await saveUploadedFile(file);
+  const saved = await saveUploadedFile(file, { uploaderId: userId });
 
   const { updated, priorBannerId } = await db.transaction(async (tx) => {
     const [prior] = await tx

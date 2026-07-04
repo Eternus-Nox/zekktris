@@ -25,6 +25,7 @@ import { stageRouter } from './routes/stage';
 import { discoveryRouter } from './routes/discovery';
 import { unfurlRouter } from './routes/unfurl';
 import { adminRouter } from './routes/admin';
+import { instanceRouter } from './routes/instance';
 import { messagesRouter } from './routes/messages';
 import { webhooksAdminRouter, webhooksExecuteRouter } from './routes/webhooks';
 import { familyRouter } from './routes/family';
@@ -113,6 +114,9 @@ export function createApp() {
   // Client-side link-preview resolution for E2EE messages (the server can't
   // unfurl ciphertext). See routes/unfurl.ts.
   v1.route('/unfurl', unfurlRouter);
+  // Instance-wide read-only config for any signed-in user (monetization
+  // paywall matrix) — the admin WRITE side lives under /admin.
+  v1.route('/instance', instanceRouter);
   v1.route('/admin', adminRouter);
   // Webhook admin endpoints — auth-gated, registered under /api/v1.
   // The router itself has /channels/:channelId/webhooks and /webhooks/:id

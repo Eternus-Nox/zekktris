@@ -468,68 +468,174 @@ export function setSavedScreenFps60(on: boolean): void {
 
 // ── Premium streaming entitlement (screen share AND camera) ────────────────
 //
-// 2K streaming is a Guardian perk; 4K is a Legend perk — for BOTH the screen
-// share and the camera. Everyone keeps 720p/1080p (including the screen 60fps
-// toggle) for free. The ceiling is PUSHED here from AuthContext whenever the
-// signed-in user's tier changes (login, getMe refresh, billing webhook
-// landing, admin gift), and the effective-params getters CLAMP to it — so a
-// saved 'k4' from a lapsed membership (or a hand-edited localStorage)
-// publishes at the entitled ceiling instead. The saved preference itself is
-// left untouched: when the tier comes back, the old choice simply works
-// again.
+// WHICH resolutions need WHICH membership tier is admin-configurable
+// (instance_settings, read via GET /instance/monetization). The defaults
+// below mirror the server's defaults — and the previously hardcoded
+// behavior — so until a config fetch succeeds (offline, older server) the
+// gate acts exactly as before: 2K = Guardian, 4K = Legend, 720p/1080p
+// (including the screen 60fps toggle) free. 720p is NEVER gated.
+//
+// AuthContext PUSHES both halves of the decision here: setUserTier() on
+// every user change (login, getMe refresh, billing webhook landing, admin
+// gift, sign-out) and setMonetization() once the instance config loads.
+// The effective-params getters CLAMP a disallowed saved choice down to the
+// highest tier the membership covers on that surface — so a saved 'k4'
+// from a lapsed membership (or a hand-edited localStorage) publishes at
+// the entitled ceiling instead. The saved preference itself is left
+// untouched: when the tier comes back, the old choice simply works again.
 //
 // Enforcement is client-side (like the rest of the quality pipeline — the
 // SFU has no per-publisher resolution caps to lean on), which is the same
 // posture Discord takes for stream quality.
 
-export type ScreenQualityCeiling = 'p1080' | 'k2' | 'k4';
+/** MINIMUM membership tier a gated resolution requires; 'none' = free. */
+export type MonetizeTier = 'none' | 'scout' | 'guardian' | 'legend';
 
-const SCREEN_QUALITY_RANK: Record<ScreenQuality, number> = {
-  p720: 0,
-  p1080: 1,
-  k2: 2,
-  k4: 3,
+export const MONETIZE_TIER_RANK: Record<MonetizeTier, number> = {
+  none: 0,
+  scout: 1,
+  guardian: 2,
+  legend: 3,
 };
+
+/** Rank of a SelfUser.subscriptionTier (null / unknown → 0 = free).
+    Family-inherited tiers count (the child holds the tier value);
+    founder grants are 'scout'. */
+export function monetizeTierRank(tier: string | null | undefined): number {
+  if (tier === 'scout' || tier === 'guardian' || tier === 'legend') {
+    return MONETIZE_TIER_RANK[tier];
+  }
+  return 0;
+}
+
+/** The stream/camera halves of the instance monetization config. Only
+    the three gateable rungs appear — 720p (and camera auto/low) never do. */
+interface StreamingGates {
+  stream: { p1080: MonetizeTier; k2: MonetizeTier; k4: MonetizeTier };
+  camera: { p1080: MonetizeTier; k2: MonetizeTier; k4: MonetizeTier };
+}
+
+/** Duplicates the server's defaults so behavior without a successful
+    config fetch is exactly the old hardcoded gate. */
+const DEFAULT_STREAMING_GATES: StreamingGates = {
+  stream: { p1080: 'none', k2: 'guardian', k4: 'legend' },
+  camera: { p1080: 'none', k2: 'guardian', k4: 'legend' },
+};
+
+let streamingGates: StreamingGates = DEFAULT_STREAMING_GATES;
 
 /** Locked-down until the session pushes the real tier — a signed-out or
     not-yet-loaded state must not grant premium tiers. */
-let screenQualityCeiling: ScreenQualityCeiling = 'p1080';
+let userTierRank = 0;
 
-/** Map a subscription tier (SelfUser.subscriptionTier) to the streaming
-    ceiling it entitles. Family-inherited tiers count (the child holds the
-    tier value); founder grants are 'scout' → base ceiling. */
-export function screenQualityCeilingForTier(
-  tier: string | null | undefined,
-): ScreenQualityCeiling {
-  if (tier === 'legend') return 'k4';
-  if (tier === 'guardian') return 'k2';
-  return 'p1080';
+// External-store subscription so React UIs (the Settings lock pills) re-render
+// when the instance config lands AFTER they mounted — module state alone is
+// invisible to React. Mirrors the voicePrefs subscribe pattern; consume with
+// useSyncExternalStore(subscribeMonetization, getMonetizationVersion, ...).
+let monetizationVersion = 0;
+const monetizationListeners = new Set<() => void>();
+export function subscribeMonetization(cb: () => void): () => void {
+  monetizationListeners.add(cb);
+  return () => monetizationListeners.delete(cb);
+}
+export function getMonetizationVersion(): number {
+  return monetizationVersion;
 }
 
-/** Push the entitled ceiling (AuthContext effect owns calling this). */
-export function setScreenQualityCeiling(c: ScreenQualityCeiling): void {
-  screenQualityCeiling = c;
+function normalizeMonetizeTier(v: unknown, dflt: MonetizeTier): MonetizeTier {
+  return v === 'none' || v === 'scout' || v === 'guardian' || v === 'legend' ? v : dflt;
 }
 
-/** Whether the CURRENT session may publish at tier `q`. Drives both the
-    Settings lock pills and the publish-time clamp. */
-export function isScreenQualityAllowed(q: ScreenQuality): boolean {
-  return SCREEN_QUALITY_RANK[q] <= SCREEN_QUALITY_RANK[screenQualityCeiling];
+/** Push the instance monetization config (AuthContext owns calling this
+    after GET /instance/monetization succeeds). Accepts the full config
+    object — only the stream/camera matrices matter here. Unknown values
+    fall back to the defaults rather than throwing. */
+export function setMonetization(config: {
+  stream: { p1080: string; k2: string; k4: string };
+  camera: { p1080: string; k2: string; k4: string };
+}): void {
+  const d = DEFAULT_STREAMING_GATES;
+  streamingGates = {
+    stream: {
+      p1080: normalizeMonetizeTier(config.stream?.p1080, d.stream.p1080),
+      k2: normalizeMonetizeTier(config.stream?.k2, d.stream.k2),
+      k4: normalizeMonetizeTier(config.stream?.k4, d.stream.k4),
+    },
+    camera: {
+      p1080: normalizeMonetizeTier(config.camera?.p1080, d.camera.p1080),
+      k2: normalizeMonetizeTier(config.camera?.k2, d.camera.k2),
+      k4: normalizeMonetizeTier(config.camera?.k4, d.camera.k4),
+    },
+  };
+  monetizationVersion++;
+  for (const cb of monetizationListeners) cb();
+}
+
+/** Push the signed-in user's subscription tier (AuthContext effect owns
+    calling this). Signed-out / unknown → rank 0 (free) — fail closed. */
+export function setUserTier(tier: string | null | undefined): void {
+  userTierRank = monetizeTierRank(tier);
 }
 
 /** The membership tier required to use screen quality `q`, or null if
-    it's free. For the Settings UI's lock pills. */
-export function requiredTierForScreenQuality(q: ScreenQuality): 'guardian' | 'legend' | null {
-  if (q === 'k4') return 'legend';
-  if (q === 'k2') return 'guardian';
-  return null;
+    it's free (720p always is). For the Settings UI's lock pills. */
+export function requiredTierForScreenQuality(
+  q: ScreenQuality,
+): Exclude<MonetizeTier, 'none'> | null {
+  if (q === 'p720') return null;
+  const t = streamingGates.stream[q];
+  return t === 'none' ? null : t;
 }
 
-/** Camera counterpart of the screen gate — same ceiling, same premium
-    tiers ('k2'/'k4'); 'auto'/'low'/'p720'/'p1080' are always free. */
-export function isCameraQualityAllowed(q: CameraQuality): boolean {
-  if (q === 'k2' || q === 'k4') return isScreenQualityAllowed(q);
-  return true;
+/** Camera counterpart — 'auto'/'low'/'p720' are always free; 1080p and up
+    read the admin-configured camera matrix. */
+export function requiredTierForCameraQuality(
+  q: CameraQuality,
+): Exclude<MonetizeTier, 'none'> | null {
+  if (q === 'auto' || q === 'low' || q === 'p720') return null;
+  const t = streamingGates.camera[q];
+  return t === 'none' ? null : t;
+}
+
+/** Whether a session at `tierRank` (default: the CURRENT session) may
+    publish screen share at `q`. Drives both the Settings lock pills and
+    the publish-time clamp. */
+export function isScreenQualityAllowed(
+  q: ScreenQuality,
+  tierRank: number = userTierRank,
+): boolean {
+  const req = requiredTierForScreenQuality(q);
+  return req === null || tierRank >= MONETIZE_TIER_RANK[req];
+}
+
+/** Camera counterpart of the screen check. */
+export function isCameraQualityAllowed(
+  q: CameraQuality,
+  tierRank: number = userTierRank,
+): boolean {
+  const req = requiredTierForCameraQuality(q);
+  return req === null || tierRank >= MONETIZE_TIER_RANK[req];
+}
+
+/** The best screen tier the session may publish — the clamp target when a
+    saved choice isn't covered. 720p is the floor (never gated). */
+export function highestAllowedScreenQuality(
+  tierRank: number = userTierRank,
+): ScreenQuality {
+  for (const q of ['k4', 'k2', 'p1080'] as const) {
+    if (isScreenQualityAllowed(q, tierRank)) return q;
+  }
+  return 'p720';
+}
+
+/** Camera counterpart of the screen clamp target. */
+export function highestAllowedCameraQuality(
+  tierRank: number = userTierRank,
+): CameraQuality {
+  for (const q of ['k4', 'k2', 'p1080'] as const) {
+    if (isCameraQualityAllowed(q, tierRank)) return q;
+  }
+  return 'p720';
 }
 
 /** Effective screen-share capture/encoder parameters: the saved quality
@@ -547,11 +653,11 @@ function getEffectiveScreenShareParams(): {
 } {
   // Entitlement clamp: a saved premium tier without the membership to
   // back it (lapsed, signed-out relogin as another account, hand-edited
-  // storage) publishes at the entitled ceiling. The saved PREFERENCE is
-  // intentionally not rewritten — restore the tier and the old choice
-  // works again.
+  // storage) publishes at the highest tier the membership covers. The
+  // saved PREFERENCE is intentionally not rewritten — restore the tier
+  // and the old choice works again.
   const saved = getSavedScreenQuality();
-  const q = isScreenQualityAllowed(saved) ? saved : screenQualityCeiling;
+  const q = isScreenQualityAllowed(saved) ? saved : highestAllowedScreenQuality();
   const preset = SCREEN_QUALITY_PRESETS[q];
   const smooth = getSavedScreenFps60() && q !== 'k4';
   return {
@@ -2123,12 +2229,15 @@ export async function setCameraEnabled(on: boolean): Promise<void> {
       // Resolve the user's saved quality preference and translate it
       // into a `resolution` option for LiveKit. 'auto' means we omit
       // the option and let the SDK + browser negotiate adaptively.
-      // Entitlement clamp: 2K camera is a Guardian perk, 4K Legend —
-      // the same ceiling that governs screen share. A saved premium
-      // tier the membership no longer covers captures/publishes at the
-      // entitled ceiling; the preference survives for a re-upgrade.
+      // Entitlement clamp: which camera resolutions need which tier is
+      // admin-configurable (defaults: 2K Guardian, 4K Legend). A saved
+      // premium tier the membership no longer covers captures/publishes
+      // at the highest allowed tier; the preference survives for a
+      // re-upgrade.
       const saved = getSavedCameraQuality();
-      const q: CameraQuality = isCameraQualityAllowed(saved) ? saved : screenQualityCeiling;
+      const q: CameraQuality = isCameraQualityAllowed(saved)
+        ? saved
+        : highestAllowedCameraQuality();
       const preset = CAMERA_QUALITY_PRESETS[q];
       // H.264 for the camera so it uses the browser's hardware encoder/decoder
       // (sharper, lower CPU) — overrides the VP8 publishDefault for THIS track

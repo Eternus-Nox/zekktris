@@ -96,11 +96,34 @@ function normalizeContentType(filename: string, claimed: string): string {
 
 export async function saveUploadedFile(
   file: File,
-  opts: { encryptedThumb?: File | null; makeServerThumbnail?: boolean } = {},
+  opts: {
+    encryptedThumb?: File | null;
+    makeServerThumbnail?: boolean;
+    /** Who is uploading — enables the admin-configured per-tier size cap
+     *  (min(env, configured cap for the uploader's membership tier)). Omitted
+     *  (webhooks, emojis/stickers, guild assets) → the env cap applies. */
+    uploaderId?: bigint | null;
+  } = {},
 ): Promise<SavedFile & { thumbnail: SavedFile | null }> {
-  const maxBytes = env.MAX_UPLOAD_SIZE_MB * 1024 * 1024;
+  // Per-file size cap. env.MAX_UPLOAD_SIZE_MB is the hard ceiling; when we
+  // know who's uploading, the admin-configured per-tier cap can lower it.
+  // The lookup is fail-open ON PURPOSE: a settings/subscription read hiccup
+  // must degrade to the env cap, never block uploads outright.
+  let capMb = env.MAX_UPLOAD_SIZE_MB;
+  if (opts.uploaderId != null) {
+    try {
+      const monetization = await import('./monetization');
+      const subs = await import('./subscriptions');
+      const sub = await subs.getEffectiveSubscription(opts.uploaderId);
+      capMb = await monetization.uploadCapMbForTier(sub?.tier ?? 'free');
+    } catch (err) {
+      console.error('[uploads] per-tier cap lookup failed; falling back to env cap:', err);
+      capMb = env.MAX_UPLOAD_SIZE_MB;
+    }
+  }
+  const maxBytes = capMb * 1024 * 1024;
   if (file.size > maxBytes) {
-    throw errors.payloadTooLarge(`file "${file.name}" exceeds ${env.MAX_UPLOAD_SIZE_MB} MB limit`);
+    throw errors.payloadTooLarge(`file "${file.name}" exceeds ${capMb} MB limit`);
   }
   if (file.size === 0) {
     throw errors.badRequest(`file "${file.name}" is empty`);

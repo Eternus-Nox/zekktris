@@ -668,6 +668,56 @@ adminRouter.delete('/users/:id/subscription', validate('param', userIdParam), as
 });
 
 // ───────────────────────────────────────────────────────────────────────────
+// PUT /admin/monetization — which tier unlocks each paid surface
+// ───────────────────────────────────────────────────────────────────────────
+// ADMIN ONLY: deliberately NOT on the moderator allowlist (fail-safe default)
+// — repricing the instance's paywalls is an operator decision, and a
+// moderator must not be able to zero out the caps/gates. Accepts a full or
+// partial config; only the provided leaves are written. The read side for
+// clients is GET /api/v1/instance/monetization (any authed user).
+const monetizeTier = z.enum(['none', 'scout', 'guardian', 'legend']);
+const qualityMatrixBody = z
+  .object({
+    p1080: monetizeTier.optional(),
+    k2: monetizeTier.optional(),
+    k4: monetizeTier.optional(),
+  })
+  .strict();
+const putMonetizationBody = z.object({
+  config: z
+    .object({
+      stream: qualityMatrixBody.optional(),
+      camera: qualityMatrixBody.optional(),
+      appearance: monetizeTier.optional(),
+      // Integer MB caps; null clears the override back to the env default.
+      // The env MAX_UPLOAD_SIZE_MB remains the hard ceiling regardless.
+      uploadCapsMb: z
+        .object({
+          free: z.number().int().min(1).max(10_000).nullable().optional(),
+          scout: z.number().int().min(1).max(10_000).nullable().optional(),
+          guardian: z.number().int().min(1).max(10_000).nullable().optional(),
+          legend: z.number().int().min(1).max(10_000).nullable().optional(),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict(),
+});
+
+adminRouter.put('/monetization', validate('json', putMonetizationBody), async (c) => {
+  const { config: patch } = c.req.valid('json');
+  const monetization = await import('../services/monetization');
+  const changedKeys = await monetization.saveConfig(patch);
+  await auditStaff(
+    c,
+    'staff_monetization',
+    `Updated monetization settings (${changedKeys.length ? changedKeys.join(', ') : 'no changes'})`,
+  );
+  const config = await monetization.getConfig();
+  return c.json({ config });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
 // GET /admin/guilds — all guilds with member counts
 // ───────────────────────────────────────────────────────────────────────────
 

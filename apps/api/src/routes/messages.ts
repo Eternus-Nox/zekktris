@@ -713,6 +713,7 @@ messagesRouter.post(
               uploads.saveUploadedFile(f, {
                 encryptedThumb: thumbFiles[i] ?? null,
                 makeServerThumbnail: !thumbFiles[i],
+                uploaderId: userId, // per-tier size cap
               }),
             ),
           )
@@ -1200,7 +1201,13 @@ messagesRouter.post(
           // ciphertext is only attached when it fits APNs' ~4 KB payload budget
           // with headroom; larger messages just show the fallback.
           const E2EE_PUSH_MAX = 3500;
-          const prefs = await dms.getDmNotificationPrefsForChannel(channelId, allowedTargets);
+          // Per-recipient preview prefs + app-icon badge counts are independent
+          // bulk reads — run them in parallel instead of serially. (Guild
+          // branch keeps its single badge await; nothing to parallelize there.)
+          const [prefs, badges] = await Promise.all([
+            dms.getDmNotificationPrefsForChannel(channelId, allowedTargets),
+            readStates.unreadBadgeCounts(allowedTargets),
+          ]);
           // Common fields so every DM notification carries an inline Reply
           // action: `kind: 'message'` → the Reply category on the client, and
           // `data` with the channel id + whether the conversation is encrypted
@@ -1209,10 +1216,6 @@ messagesRouter.post(
           // leaks nothing new.
           const replyData = { channelId: channelId.toString(), isE2EE: isE2EEContent };
           const common = { url, tag: channelId.toString(), kind: 'message' as const };
-          // App-icon badge = each recipient's total unread (so the iOS icon
-          // updates while the app is closed). Bulk lookup, mirroring the
-          // resolveLevelsBulk / getDmNotificationPrefsForChannel calls above.
-          const badges = await readStates.unreadBadgeCounts(allowedTargets);
           // Bulk fan-out: one token query per transport + bounded send burst,
           // with each recipient's own preview-pref / E2EE / badge payload.
           await sendToUsers(allowedTargets, (target): PushPayload => {
