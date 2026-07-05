@@ -519,8 +519,8 @@ export function Shell() {
               'grid-cols-[72px_1fr]'
             : 'grid-cols-[1fr] xl:grid-cols-[72px_1fr]'
           : railHiddenMobile
-            ? 'grid-cols-[1fr] xl:grid-cols-[72px_240px_1fr_300px]'
-            : 'grid-cols-[72px_1fr] xl:grid-cols-[72px_240px_1fr_300px]'
+            ? 'grid-cols-[1fr] xl:grid-cols-[72px_276px_1fr_300px]'
+            : 'grid-cols-[72px_1fr] xl:grid-cols-[72px_276px_1fr_300px]'
       } ${
         // The 4th column (member list) is dropped from the desktop
         // template when in DM mode (DMs have no member list) or
@@ -529,7 +529,7 @@ export function Shell() {
         // can use). Threads UNDER the forum still get the member
         // list since they're conversations.
         isDmLayout || activeChannel?.type === 'guild_forum'
-          ? 'xl:!grid-cols-[72px_240px_1fr]'
+          ? 'xl:!grid-cols-[72px_276px_1fr]'
           : ''
       }`}
     >
@@ -569,7 +569,7 @@ export function Shell() {
           column reservation for these modes so nothing reserves the
           width. */}
       <aside
-        className={`bg-bg-2/85 backdrop-blur-sm border-r h-full flex-col shrink-0 pb-[env(safe-area-inset-bottom)] xl:flex xl:w-60 ${
+        className={`bg-bg-2/85 backdrop-blur-sm h-full flex-col shrink-0 pb-[env(safe-area-inset-bottom)] xl:flex xl:w-[276px] ${
           // In any content mode the grid template only has two
           // columns (rail + main), so this aside must be display:none
           // at every viewport — xl:hidden is necessary to defeat the

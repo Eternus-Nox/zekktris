@@ -225,7 +225,10 @@ export function ChannelList({ guild, channels, activeChannelId, onOpenMembers }:
           aria-expanded={!!showInfo}
         >
           <span className="font-semibold text-sm text-ink-1 leading-tight flex-1 min-w-0 flex items-center gap-1.5">
-            <span className="truncate">{guild.name}</span>
+            {/* Wrap to up to 2 lines so longer server names show in full
+                (a hard single-line truncate cut them off); the wider rail
+                gives most names one line. */}
+            <span className="line-clamp-2 break-words">{guild.name}</span>
             {/* Guild-level mute indicator. Renders ONCE here when the
                 user has muted the whole server, instead of stamping
                 the same icon on every channel row in the list below.
