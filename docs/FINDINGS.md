@@ -840,3 +840,38 @@ LRU; FriendsView LazyVStack.
 - **1:1 DM-send recipient re-queries (perf, low):** threading state through the
   fire-and-forget IIFEs on the hottest send path is higher-risk than the
   "wasted pool checkouts" it saves.
+
+---
+
+# 2026-07-05 session — two hardening sweeps (find → adversarially verify → fix)
+
+Two multi-agent sweeps over the post-07-03 surface + a deep core pass. Every
+finding got an adversarial skeptic (refute-by-default); only CONFIRMED fixed.
+All typecheck/build-clean (api tsc, web tsc, iOS build). Integration suite could
+NOT run — local colima test-DB corrupted by a disk-full event (pg 58030).
+
+## Sweep 1 (post-07-03 surface) — 8 confirmed / 17 raw (commits 964635e, 2b850c6, 92293b2)
+- SEC: admin re-gift over an expired-unswept Stripe row left the sub billing (orphan) — cancel + clear pointer.
+- SEC: stale subscription.deleted/updated could clobber a gift/founder row — scoped webhook handlers to source='stripe'.
+- SEC: device-token/web-push upsert reassigned a token to the caller (hijack primitive) — ownership-scoped setWhere + 409.
+- SEC: instance ban closed sockets on the local node only — added cross-node forceDisconnectUser.
+- PERF: per-file upload-cap re-read (10-photo post = 10 sub reads) — resolve once + capMbOverride.
+- PERF(web): PRESENCE_PATCH re-rendered every MessageItem via usersById ref flip — split to userStatusById slice.
+- PERF(ios): E2EE gallery lightbox eagerly decoded every loaded photo on tap — lazy per-page decode.
+- (CallKit alert-fanout-deletes-voip-token was fixed just before this sweep — commit 1c101b0.)
+
+## Sweep 2 (deep core) — 15 confirmed / 21 raw (1 refuted) (commits 932ec69, 2b06e6a, b07930a)
+- SEC(high): session revocation (log-out-everywhere, single-session, password reset, change-password) never severed live gateway sockets — 3 were local-node-only. All → cross-node forceDisconnectUser.
+- SEC(high): thread/forum-post permission IDOR — one-level parent walk missed the grandparent category, leaking category-hidden channels' threads/posts (REST + gateway seed). Threads now inherit parent-channel perms in all 4 viewability paths.
+- SEC(med/low): passkey login required no user verification (requireUserVerification:false → true + options 'required'); /passkey/login/options unthrottled → own per-IP limit.
+- BUG(high): supervised-child allowVoice=false threw AFTER the voice_states upsert + DM-call stamp (autocommit) → ghost row. Gate hoisted above all writes.
+- BUG(med): sweepExpiredSubscriptions SELECT-then-delete TOCTOU could delete a just-renewed sub — atomic DELETE ... WHERE expiresAt<now RETURNING.
+- BUG(low): streaks recordDmMessage read-modify-write race dropped a day credit — txn + per-channel pg_advisory_xact_lock.
+- BUG(ios): CallManager providerDidReset no-op (CallKit desync) + unanswered-system-timeout leaked the channel UUID (blocked peer's next call) — both fixed + 45s ring safety timeout.
+- PERF: loadChannelContext double-fetched the channel row (preloaded param); web discardFailedMessage identity + MESSAGE_CREATE double-scan; ios emojiImages unbounded → bounded.
+
+## Plausible, NOT auto-fixed (no proven failure — tracked)
+- apns_device_tokens fan-out has no (user_id, platform) composite index (tiny per-user row counts make it low-value).
+- Passkey login challenge not consumed on unknown credential id (minor single-use weakening).
+- Guild events list is a 3N query fan-out; messagesByChannel/usersById grow per-session (bounded by population; prior-deferred class).
+- forceDisconnectUserLocal detaches (keeps 60s resume buffer) rather than hard-removing — benign (resume re-checks ban).
