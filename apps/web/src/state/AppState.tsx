@@ -99,6 +99,19 @@ interface State {
    * have a user we want to render, the renderer falls back to the raw id.
    */
   usersById: Record<string, PublicUser>;
+  /**
+   * Presence status keyed by user id, kept in a SEPARATE slice from
+   * `usersById` on purpose. PRESENCE_PATCH fires on every online/idle/dnd
+   * transition of any cached user; if it spread `usersById` (name/avatar/
+   * tag) to write status, that reference flip would re-render every visible
+   * MessageItem (which subscribes to the whole `usersById` map to resolve
+   * mention names — MessageItem.tsx:111/298) even though it never renders a
+   * status. Rendered status dots come from membersByGuild / dmChannels /
+   * relationships, which PRESENCE_PATCH patches directly; this map holds the
+   * status for any surface that wants to resolve a status by id without
+   * disturbing the identity slice.
+   */
+  userStatusById: Record<string, PublicUser['status']>;
   /** Member list per guild, loaded lazily by the right column. */
   membersByGuild: Record<string, GuildMember[]>;
   /** Per-guild "members fetched at least once" flag. */
@@ -249,6 +262,7 @@ const initialState: State = {
   olderExhausted: new Set(),
   loadingOlder: new Set(),
   usersById: {},
+  userStatusById: {},
   membersByGuild: {},
   loadedMembers: new Set(),
   emojisByGuild: {},
@@ -1299,20 +1313,33 @@ function reducer(state: State, action: Action): State {
       // server re-broadcasts presence on every IDENTIFY (to heal stale
       // member-list state across reconnects), so we get a flood of
       // redundant "user X is still online" updates that previously
-      // re-allocated state for no reason.
-      const cachedStatusMatches =
-        cachedUser === undefined || cachedUser.status === action.status;
+      // re-allocated state for no reason. The cached-status check reads
+      // the parallel userStatusById slice (below) rather than
+      // usersById[x].status — presence no longer writes into usersById,
+      // so its embedded status is not a reliable "current" value.
+      const statusMatches =
+        cachedUser === undefined || state.userStatusById[action.userId] === action.status;
       const memberStatusMatches =
         memberIdx === -1 || list![memberIdx]!.user.status === action.status;
-      if (cachedStatusMatches && memberStatusMatches) return state;
+      if (statusMatches && memberStatusMatches) return state;
 
-      const usersById =
-        cachedUser && cachedUser.status !== action.status
-          ? { ...state.usersById, [action.userId]: { ...cachedUser, status: action.status } }
-          : state.usersById;
+      // Write presence into a SEPARATE slice, never into usersById.
+      // usersById holds identity (name/avatar/tag) and is subscribed to
+      // wholesale by every visible MessageItem to resolve mention names
+      // (MessageItem.tsx:111, fed into its renderCtx useMemo dep at
+      // MessageItem.tsx:298). Spreading it on a status-only change would
+      // flip that map's reference and re-render every message row in the
+      // open channel on ANY cached user's online/idle/dnd transition —
+      // work that changes nothing MessageItem renders. Rendered status
+      // dots come from membersByGuild / dmChannels / relationships, which
+      // this reducer patches directly (below), so identity stays stable.
+      const userStatusById =
+        cachedUser && state.userStatusById[action.userId] !== action.status
+          ? { ...state.userStatusById, [action.userId]: action.status }
+          : state.userStatusById;
 
-      // No member entry to patch — just write back usersById (or skip
-      // it if usersById didn't change either). Previously this branch
+      // No member entry to patch — just write back the status slice (or
+      // skip it if it didn't change either). Previously this branch
       // fell through and allocated a fresh-but-identical member list,
       // spuriously invalidating every consumer of membersByGuild.
       if (memberIdx === -1) {
@@ -1321,8 +1348,8 @@ function reducer(state: State, action: Action): State {
         // Without this, a DM partner's dot froze at whatever the list
         // fetch returned (the web-side twin of the iOS stale-pin bug).
         const dmChannels = patchDmRecipientStatus(state.dmChannels, action.userId, action.status);
-        if (usersById === state.usersById && dmChannels === state.dmChannels) return state;
-        return { ...state, usersById, dmChannels };
+        if (userStatusById === state.userStatusById && dmChannels === state.dmChannels) return state;
+        return { ...state, userStatusById, dmChannels };
       }
 
       // Splice in place — O(1) work instead of .map's O(n) callback
@@ -1335,7 +1362,7 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         membersByGuild: { ...state.membersByGuild, [action.guildId]: nextList },
-        usersById,
+        userStatusById,
         dmChannels: patchDmRecipientStatus(state.dmChannels, action.userId, action.status),
       };
     }
