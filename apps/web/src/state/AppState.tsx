@@ -2744,8 +2744,11 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const discardFailedMessage = useCallback(
     (channelId: string, localId: string) => {
       dispatch({ type: 'MESSAGE_REMOVE', channelId, messageId: localId });
-      // Free any pending object URLs.
-      const existing = state.messagesByChannel[channelId];
+      // Free any pending object URLs. Read via stateRef (not the closure) so a
+      // stale callback instance can't miss the message in an old snapshot, and
+      // so this callback's identity never flips on message events (which would
+      // re-render every mounted MessageItem — see MessageItem.tsx:94-97).
+      const existing = stateRef.current.messagesByChannel[channelId];
       const m = existing?.find((m) => m.id === localId);
       if (m) {
         for (const att of m.attachments) {
@@ -2755,7 +2758,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       pendingFilesRef.current.delete(localId);
       pendingInputsRef.current.delete(localId);
     },
-    [state.messagesByChannel],
+    [],
   );
 
   // ── Initial bootstrap on auth ────────────────────────────────────────
@@ -2939,13 +2942,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         // resolve would fire-hose every guild message. Mirrors the server push.
         const chOverride = fresh.notificationOverrides[`channel:${m.channelId}`];
         let explicitAll = chOverride === 'all';
-        if (!chOverride && !isDM) {
-          for (const [gid, channels] of Object.entries(fresh.channelsByGuild)) {
-            if (channels.some((c) => c.id === m.channelId)) {
-              explicitAll = fresh.notificationOverrides[`guild:${gid}`] === 'all';
-              break;
-            }
-          }
+        // Reuse guildIdForChannel (already resolved above) instead of a second
+        // full channelsByGuild scan. The null-guard preserves the old loop's
+        // behavior: a channel not found in channelsByGuild never matched, so
+        // explicitAll stayed false.
+        if (!chOverride && !isDM && guildIdForChannel) {
+          explicitAll = fresh.notificationOverrides[`guild:${guildIdForChannel}`] === 'all';
         }
         // Device-local "Messages & mentions" toggle (Settings) gates BOTH
         // the audible ping and the desktop notification, mirroring the
@@ -2963,16 +2965,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           const author = m.authorId ? fresh.usersById[m.authorId] : undefined;
           const authorName =
             author?.displayName ?? author?.username ?? 'New message';
-          // Resolve a channel label for guild messages.
+          // Resolve a channel label for guild messages. Key directly off the
+          // guild id resolved above rather than scanning every guild's channels.
           let channelName: string | null = null;
-          if (!isDM) {
-            for (const channels of Object.values(fresh.channelsByGuild)) {
-              const ch = channels.find((c) => c.id === m.channelId);
-              if (ch) {
-                channelName = ch.name;
-                break;
-              }
-            }
+          if (!isDM && guildIdForChannel) {
+            channelName =
+              fresh.channelsByGuild[guildIdForChannel]?.find((c) => c.id === m.channelId)
+                ?.name ?? null;
           }
           // DMs are end-to-end encrypted; m.content here may be
           // ciphertext, so we don't surface DM bodies. Guild messages
