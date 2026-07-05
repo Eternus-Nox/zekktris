@@ -1931,6 +1931,25 @@ messagesRouter.post(
       } catch {
         // Audit failure shouldn't fail the purge.
       }
+
+      // Refresh the channel row on every client so the sidebar's
+      // last-message preview and the unread dot reconcile with the
+      // last_message_id the purge just recomputed (rolled back to the
+      // newest surviving message, or NULL for a now-empty channel).
+      // Without this the unread indicator keeps chasing a purged id that
+      // can never be marked read — the channel reads as "not purged"
+      // even though the messages are gone. Guild channels only (DMs are
+      // rejected above), so guildId is always set here.
+      if (ctx.channel.guildId) {
+        const refreshed = await channelsSvc.getChannel(channelId);
+        if (refreshed) {
+          dispatch.channelUpdate({
+            channelDTO: toChannel(refreshed),
+            channelId,
+            guildId: ctx.channel.guildId,
+          });
+        }
+      }
     }
     return c.json({ deleted: ids.length, done: ids.length < 1000 });
   },
