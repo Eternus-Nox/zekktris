@@ -147,16 +147,52 @@ export async function giftSubscription(
     );
   }
 
+  // A stripe row can be present but INACTIVE here (expiresAt lapsed, hourly
+  // sweep not yet run). getOwnSubscription's active-only filter hides it, so
+  // re-read unfiltered and cancel any lingering live Stripe sub before we
+  // overwrite the row as a gift — otherwise it keeps billing as an orphan
+  // that removeSubscription can never cancel (source would read 'gift').
+  const [physical] = await db
+    .select({ source: schema.subscriptions.source, stripeSubscriptionId: schema.subscriptions.stripeSubscriptionId })
+    .from(schema.subscriptions)
+    .where(eq(schema.subscriptions.userId, userId))
+    .limit(1);
+  if (physical?.source === 'stripe' && physical.stripeSubscriptionId) {
+    const billing = await import('./billing');
+    await billing.cancelStripeSubscription(physical.stripeSubscriptionId).catch(() => undefined);
+  }
+
   const expiresAt =
     duration === 'forever'
       ? null
       : new Date(Date.now() + DURATION_MONTHS[duration] * 30 * 86_400_000);
   const [row] = await db
     .insert(schema.subscriptions)
-    .values({ userId, tier, source: 'gift', giftedBy: adminId, expiresAt })
+    .values({
+      userId,
+      tier,
+      source: 'gift',
+      giftedBy: adminId,
+      expiresAt,
+      stripeCustomerId: null,
+      stripeSubscriptionId: null,
+      cancelAtPeriodEnd: false,
+    })
     .onConflictDoUpdate({
       target: schema.subscriptions.userId,
-      set: { tier, source: 'gift', giftedBy: adminId, expiresAt, updatedAt: new Date() },
+      set: {
+        tier,
+        source: 'gift',
+        giftedBy: adminId,
+        expiresAt,
+        // Clear any stale Stripe pointer so a re-gift can't leave a live
+        // subscriptionId on a source='gift' row (which removeSubscription and
+        // a late subscription.deleted webhook would both mishandle).
+        stripeCustomerId: null,
+        stripeSubscriptionId: null,
+        cancelAtPeriodEnd: false,
+        updatedAt: new Date(),
+      },
     })
     .returning();
   return row!;
@@ -260,7 +296,12 @@ export async function renewStripeSubscription(
       ...(cancelAtPeriodEnd !== undefined ? { cancelAtPeriodEnd } : {}),
       updatedAt: new Date(),
     })
-    .where(eq(schema.subscriptions.stripeSubscriptionId, stripeSubscriptionId))
+    // Scope to Stripe-sourced rows so a stale id can't re-tier/re-extend a
+    // gift or founder row that happens to carry an old stripeSubscriptionId.
+    .where(and(
+      eq(schema.subscriptions.stripeSubscriptionId, stripeSubscriptionId),
+      eq(schema.subscriptions.source, 'stripe'),
+    ))
     .returning({ userId: schema.subscriptions.userId });
   return updated.length > 0;
 }
@@ -269,7 +310,13 @@ export async function renewStripeSubscription(
 export async function endStripeSubscription(stripeSubscriptionId: string): Promise<boolean> {
   const [row] = await db
     .delete(schema.subscriptions)
-    .where(eq(schema.subscriptions.stripeSubscriptionId, stripeSubscriptionId))
+    // Scope to Stripe-sourced rows: a late/stale subscription.deleted for a
+    // superseded id must never clobber an admin gift or founder grant (which
+    // could carry a stale stripeSubscriptionId) and wipe the user's cosmetics.
+    .where(and(
+      eq(schema.subscriptions.stripeSubscriptionId, stripeSubscriptionId),
+      eq(schema.subscriptions.source, 'stripe'),
+    ))
     .returning({ userId: schema.subscriptions.userId });
   if (!row) return false;
   await clearPaidCosmetics(row.userId);

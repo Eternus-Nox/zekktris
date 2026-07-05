@@ -392,9 +392,15 @@ export async function upsertDeviceToken(input: UpsertTokenInput) {
         label: input.label ?? null,
         lastUsedAt: new Date(),
       },
+      // Only take the update if the row already belongs to the caller.
+      // A token already registered to a DIFFERENT user is left untouched
+      // (no ownership transfer): the UPDATE is skipped, .returning() yields
+      // no row, and we reject with a 409 below. A device legitimately moving
+      // accounts must DELETE its old token (scoped) before re-registering.
+      setWhere: eq(schema.apnsDeviceTokens.userId, input.userId),
     })
     .returning();
-  if (!row) throw errors.internal('Failed to upsert device token');
+  if (!row) throw errors.conflict('Device token is registered to another account');
   return row;
 }
 

@@ -103,6 +103,12 @@ export async function saveUploadedFile(
      *  (min(env, configured cap for the uploader's membership tier)). Omitted
      *  (webhooks, emojis/stickers, guild assets) → the env cap applies. */
     uploaderId?: bigint | null;
+    /** Pre-resolved per-tier cap (MB). When set, the subscription read is
+     *  skipped entirely — used by callers saving MANY files for the same
+     *  uploader in one request (e.g. a multi-photo message) so the tier is
+     *  looked up once instead of per file. Already min'd against the env
+     *  ceiling by uploadCapMbForTier, so the env clamp is preserved. */
+    capMbOverride?: number;
   } = {},
 ): Promise<SavedFile & { thumbnail: SavedFile | null }> {
   // Per-file size cap. env.MAX_UPLOAD_SIZE_MB is the hard ceiling; when we
@@ -110,7 +116,11 @@ export async function saveUploadedFile(
   // The lookup is fail-open ON PURPOSE: a settings/subscription read hiccup
   // must degrade to the env cap, never block uploads outright.
   let capMb = env.MAX_UPLOAD_SIZE_MB;
-  if (opts.uploaderId != null) {
+  if (opts.capMbOverride != null) {
+    // Caller already resolved the cap (fail-open to env on their side) and is
+    // saving multiple files for the same uploader — skip the per-file read.
+    capMb = opts.capMbOverride;
+  } else if (opts.uploaderId != null) {
     try {
       const monetization = await import('./monetization');
       const subs = await import('./subscriptions');

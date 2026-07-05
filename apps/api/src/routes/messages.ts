@@ -703,6 +703,22 @@ messagesRouter.post(
     // ── Save uploaded files to disk first; on any later failure we don't
     //    leak orphan files (a janitor cron is acceptable for v1; the message
     //    transaction failing is rare and recoverable). ────────────────────
+    // Resolve the per-tier upload cap ONCE for this request (the tier is
+    // invariant for its duration): a 10-photo post would otherwise fan out to
+    // 10 identical subscription reads. Same fail-open-to-env-cap semantics as
+    // saveUploadedFile's own lookup — any read hiccup degrades to the env cap,
+    // never blocks the upload.
+    let capMb = env.MAX_UPLOAD_SIZE_MB;
+    if (files.length > 0) {
+      try {
+        const monetization = await import('../services/monetization');
+        const subs = await import('../services/subscriptions');
+        const sub = await subs.getEffectiveSubscription(userId);
+        capMb = await monetization.uploadCapMbForTier(sub?.tier ?? 'free');
+      } catch {
+        capMb = env.MAX_UPLOAD_SIZE_MB;
+      }
+    }
     // Save mains; each call may ALSO produce a thumbnail (its own file/row):
     // the client's encrypted thumb for E2EE images, or a server-generated webp
     // for non-E2EE images (saveUploadedFile only thumbnails actual images).
@@ -713,7 +729,7 @@ messagesRouter.post(
               uploads.saveUploadedFile(f, {
                 encryptedThumb: thumbFiles[i] ?? null,
                 makeServerThumbnail: !thumbFiles[i],
-                uploaderId: userId, // per-tier size cap
+                capMbOverride: capMb, // per-tier size cap, resolved once above
               }),
             ),
           )

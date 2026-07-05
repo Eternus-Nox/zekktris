@@ -1087,6 +1087,46 @@ async function refreshUserViewableChannels(args: {
  */
 const INTERNAL_VIEWABILITY_INVALIDATE = '_zk.internal.viewability_invalidate';
 
+/**
+ * Cross-node force-disconnect signal. A ban/session-revocation handled on node
+ * A must close the target's gateway sockets on EVERY node, not just the local
+ * one — the gateway only re-checks ban state at IDENTIFY/RESUME, so a socket
+ * held by another replica keeps receiving live dispatches until it drops. Mirrors
+ * the viewability-invalidate plumbing above: `_zk.internal.` prefix so
+ * registry.onPublished never forwards it to clients; the subscriber below is the
+ * only consumer.
+ */
+const INTERNAL_FORCE_DISCONNECT = '_zk.internal.force_disconnect';
+
+/** Close every LOCAL gateway connection for this user. Shared by the direct
+ *  (local) path and the cross-node subscriber. */
+function forceDisconnectUserLocal(userId: bigint): void {
+  for (const conn of registry.byUserId(userId)) {
+    try {
+      // CloseCode 4004 = AUTHENTICATION_FAILED; generic "you've been signed
+      // out" without leaking the moderation context.
+      conn.close(4004, 'account disabled');
+    } catch {
+      // Already closed mid-iteration; cleanup will still fire.
+    }
+  }
+}
+
+/**
+ * Public helper: force-close a user's gateway sockets across the whole cluster.
+ * Closes this node's connections immediately, then signals other replicas to do
+ * the same. Used by the ban/disable path so a banned user can't keep reading on
+ * a still-open WebSocket held by any node.
+ */
+export function forceDisconnectUser(userId: bigint): void {
+  forceDisconnectUserLocal(userId);
+  eventBus().publishRemote({
+    t: INTERNAL_FORCE_DISCONNECT as never,
+    d: { userId: userId.toString() },
+    audience: { kind: 'user', userId },
+  });
+}
+
 let internalBusUnsub: (() => void) | null = null;
 
 /** Subscribe (once) to internal cross-node viewability invalidations. Called
@@ -1094,6 +1134,11 @@ let internalBusUnsub: (() => void) | null = null;
 export function initInternalDispatchBus(): void {
   if (internalBusUnsub) return;
   internalBusUnsub = eventBus().subscribe((event) => {
+    if (event.t === (INTERNAL_FORCE_DISCONNECT as never)) {
+      const d = event.d as { userId: string };
+      forceDisconnectUserLocal(BigInt(d.userId));
+      return;
+    }
     if (event.t !== (INTERNAL_VIEWABILITY_INVALIDATE as never)) return;
     const d = event.d as { scope: 'guild' | 'user'; guildId: string; userId?: string };
     // Run the recompute against THIS node's local connections. Nodes that

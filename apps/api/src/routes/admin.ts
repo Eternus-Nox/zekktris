@@ -456,22 +456,15 @@ adminRouter.post(
 
   // Force-close every open gateway connection for this user so they
   // can't keep reading messages on the still-open WebSocket with a
-  // not-yet-expired access token. The connection's own close handler
+  // not-yet-expired access token. This fans out ACROSS NODES: the
+  // gateway only re-checks ban state at IDENTIFY/RESUME, so a socket
+  // held by another replica would otherwise keep receiving live
+  // dispatches until it drops. Each connection's own close handler
   // fires onUserFullyDisconnected which sets users.status='offline'
   // and broadcasts presence — same path as the disconnect-beacon
   // endpoint uses. We DON'T need to manually broadcast presence
   // here; the close cascade handles it.
-  const conns = registry.byUserId(targetId);
-  for (const conn of conns) {
-    try {
-      // CloseCode 4004 = AUTHENTICATION_FAILED in the gateway types;
-      // generic enough to surface "you've been signed out" to the
-      // client without leaking the moderation context.
-      conn.close(4004, 'account disabled');
-    } catch {
-      // Already closed mid-iteration; cleanup will still fire.
-    }
-  }
+  dispatch.forceDisconnectUser(targetId);
 
   return c.json({ ok: true });
   },

@@ -101,9 +101,15 @@ export async function upsertSubscription(input: CreateSubscriptionInput) {
         label: input.label ?? null,
         lastUsedAt: new Date(),
       },
+      // Only take the update if the row already belongs to the caller.
+      // An endpoint already registered to a DIFFERENT user is left untouched
+      // (no ownership transfer): the UPDATE is skipped, .returning() yields
+      // no row, and we reject with a 409 below. A device legitimately moving
+      // accounts must unsubscribe the old endpoint (scoped) before re-subscribing.
+      setWhere: eq(schema.pushSubscriptions.userId, input.userId),
     })
     .returning();
-  if (!row) throw errors.internal('Failed to upsert push subscription');
+  if (!row) throw errors.conflict('Push subscription is registered to another account');
   return row;
 }
 
