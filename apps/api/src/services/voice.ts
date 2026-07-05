@@ -148,6 +148,20 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
     if (until !== null) throw errors.timedOut(until);
   }
 
+  // Parental controls: a supervised child can be barred from voice
+  // entirely. This gate is user-scoped (not channel-scoped), so it applies
+  // to both DM and guild paths, and it MUST run BEFORE any state is written
+  // (voice_states upsert + dmActiveCall* stamping). Because joinVoice has no
+  // enclosing transaction, every statement autocommits — throwing after the
+  // upsert would strand a ghost voice_states row and poison the DM call
+  // record. Mirrors joinStage's ordering (resolve + throw before the insert).
+  // The publishSources derivation from these same restrictions happens later,
+  // once canPublish is known.
+  const childRestr = await supervision.getEffectiveRestrictions(userId);
+  if (childRestr?.allowVoice === false) {
+    throw errors.forbidden('Voice calls are restricted by your parent');
+  }
+
   // Read the prior row (if any) so the route layer can dispatch a
   // leave event to the OLD channel's audience. We can't reuse the
   // upsert RETURNING for this because Postgres only returns the
@@ -268,18 +282,15 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
   // like a normal user. (Setting canPublishSources unconditionally, and
   // with the wrong value type, previously granted zero sources and broke
   // calls for every supervised account.)
+  // childRestr was already resolved (and the allowVoice bar enforced) above,
+  // before any voice_states/dmActiveCall* writes. Here we only derive the
+  // SFU-token publishable sources from it.
   let publishSources: TrackSource[] | undefined;
-  const childRestr = await supervision.getEffectiveRestrictions(userId);
-  if (childRestr) {
-    if (!childRestr.allowVoice) {
-      throw errors.forbidden('Voice calls are restricted by your parent');
-    }
-    if (!childRestr.allowVideo || !childRestr.allowStream) {
-      publishSources = [TrackSource.MICROPHONE];
-      if (childRestr.allowVideo) publishSources.push(TrackSource.CAMERA);
-      if (childRestr.allowStream) {
-        publishSources.push(TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO);
-      }
+  if (childRestr && (!childRestr.allowVideo || !childRestr.allowStream)) {
+    publishSources = [TrackSource.MICROPHONE];
+    if (childRestr.allowVideo) publishSources.push(TrackSource.CAMERA);
+    if (childRestr.allowStream) {
+      publishSources.push(TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO);
     }
   }
 

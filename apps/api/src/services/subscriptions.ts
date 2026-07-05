@@ -338,12 +338,28 @@ async function clearPaidCosmetics(userId: bigint): Promise<void> {
  * Returns the number of memberships expired for logging.
  */
 export async function sweepExpiredSubscriptions(): Promise<number> {
-  const expired = await db
-    .select({ userId: schema.subscriptions.userId })
-    .from(schema.subscriptions)
-    .where(and(sql`${schema.subscriptions.expiresAt} IS NOT NULL`, lt(schema.subscriptions.expiresAt, new Date())));
-  for (const row of expired) {
-    await removeSubscription(row.userId);
+  // Atomic, self-guarding delete: re-check the expiry predicate in the DELETE
+  // itself so a row renewed in the gap between a naive SELECT and DELETE (its
+  // expiresAt pushed into the future by a concurrent renewal webhook) no longer
+  // matches the WHERE and is preserved — the row-level lock serializes the
+  // renewal UPDATE and this DELETE. Legitimately-expired stripe rows are still
+  // canceled at Stripe + have their cosmetics cleared (never keep billing a
+  // hard-locked user).
+  const now = new Date();
+  const deleted = await db
+    .delete(schema.subscriptions)
+    .where(and(sql`${schema.subscriptions.expiresAt} IS NOT NULL`, lt(schema.subscriptions.expiresAt, now)))
+    .returning({
+      userId: schema.subscriptions.userId,
+      source: schema.subscriptions.source,
+      stripeSubscriptionId: schema.subscriptions.stripeSubscriptionId,
+    });
+  for (const row of deleted) {
+    if (row.source === 'stripe' && row.stripeSubscriptionId) {
+      const billing = await import('./billing');
+      await billing.cancelStripeSubscription(row.stripeSubscriptionId).catch(() => undefined);
+    }
+    await clearPaidCosmetics(row.userId);
   }
-  return expired.length;
+  return deleted.length;
 }

@@ -823,17 +823,16 @@ authRouter.post(
     // the sockets ensures the revocation takes effect immediately.
     //
     // Dynamic-imported so the auth router doesn't pull gateway/
-    // registry into its top-level import graph.
+    // dispatch into its top-level import graph.
+    //
+    // Use dispatch.forceDisconnectUser (not the node-local
+    // registry.byUserId loop) so the close fans out across every
+    // replica via the internal force-disconnect bus — a socket held
+    // on a DIFFERENT node is otherwise never closed and keeps
+    // reading until its access token expires.
     try {
-      const { registry } = await import('../gateway/registry');
-      const conns = registry.byUserId(row.userId);
-      for (const conn of conns) {
-        try {
-          conn.close(4000, 'password reset');
-        } catch {
-          // Already closed — gateway cleanup will still fire.
-        }
-      }
+      const dispatch = await import('../gateway/dispatch');
+      dispatch.forceDisconnectUser(row.userId);
     } catch (err) {
       // Connection close is best-effort; the access-token TTL is
       // still a finite-time cap on attacker reach even if this
@@ -1086,6 +1085,12 @@ authRouter.post(
 // options and verify calls. Binary fields are stored base64url (Buffer).
 
 const passkeyLoginByIp = new RateLimiter(50, 15 * 60_000, 'passkey-login-ip');
+// Separate per-IP budget for the anonymous options endpoint so an
+// options-flood can't drain the verify budget (or vice versa). Each
+// options call runs generateAuthenticationOptions + a challenge-store
+// write; without this it's the only anonymous auth entrypoint with no
+// throttle.
+const passkeyOptionsByIp = new RateLimiter(50, 15 * 60_000, 'passkey-options-ip');
 
 const passkeyRegVerifySchema = z.object({
   challengeId: z.string().min(1).max(64),
@@ -1170,7 +1175,17 @@ authRouter.post('/passkey/register/verify', requireAuth, validate('json', passke
 
 // 3) Login options (anonymous) — discoverable credentials (no allowCredentials).
 authRouter.post('/passkey/login/options', async (c) => {
-  const options = await generateAuthenticationOptions({ rpID, userVerification: 'preferred' });
+  // Throttle per-IP (mirrors the verify guard) so this anonymous endpoint
+  // can't be flooded. Guard on `ip` so a missing client IP doesn't hard-
+  // fail legitimate ceremonies.
+  const ip = getClientIp(c);
+  if (ip) {
+    const r = await passkeyOptionsByIp.consume(ip);
+    if (!r.ok) throw errors.rateLimited(Math.ceil(r.retryAfterMs / 1000));
+  }
+  // userVerification: 'required' so the client prompts for the biometric/
+  // PIN gesture; the verify step enforces UV, this makes the platform ask.
+  const options = await generateAuthenticationOptions({ rpID, userVerification: 'required' });
   const challengeId = newChallengeId();
   await challengeStore.put(challengeId, options.challenge);
   return c.json({ challengeId, options });
@@ -1211,7 +1226,12 @@ authRouter.post('/passkey/login/verify', validate('json', passkeyLoginVerifySche
         counter: cred.counter,
         transports: cred.transports ? (JSON.parse(cred.transports) as never) : undefined,
       },
-      requireUserVerification: false,
+      // Require UV at assert time: a passkey login mints a full primary
+      // session (createSession + access token + refresh cookie) just like
+      // a password login, so we demand the biometric/PIN gesture to keep
+      // possession+verification == the two-factor strength the password
+      // path gets. UV=0 assertions are rejected.
+      requireUserVerification: true,
     });
   } catch {
     throw errors.badRequest('Could not verify the passkey.');

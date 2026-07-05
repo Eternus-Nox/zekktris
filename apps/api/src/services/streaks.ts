@@ -39,55 +39,69 @@ export async function recordDmMessage(args: {
     : [args.recipientId, args.authorId];
   const authorIsA = args.authorId === a;
 
-  const [row] = await db
-    .select()
-    .from(schema.dmStreaks)
-    .where(eq(schema.dmStreaks.channelId, args.channelId))
-    .limit(1);
+  // Serialize the read-modify-write per channel. Without this, two concurrent
+  // first-of-day messages (one from each participant) both read the same
+  // pre-commit snapshot and each writes only its own side's lastDay stamp;
+  // whichever commits last clobbers the other back to null, so the
+  // "both messaged today" credit condition never fires. A transaction-scoped
+  // advisory lock keyed on channelId makes the second call block until the
+  // first commits, so its SELECT reads the first side's committed stamp.
+  // Cheap per-channel lock, auto-released at commit/rollback.
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${args.channelId.toString()}, 0))`,
+    );
 
-  let lastDayA = row?.lastDayA ?? null;
-  let lastDayB = row?.lastDayB ?? null;
-  let lastCountedDay = row?.lastCountedDay ?? null;
-  let streak = row?.streak ?? 0;
-  let bestStreak = row?.bestStreak ?? 0;
-  const prevStreak = streak;
+    const [row] = await tx
+      .select()
+      .from(schema.dmStreaks)
+      .where(eq(schema.dmStreaks.channelId, args.channelId))
+      .limit(1);
 
-  if (authorIsA) lastDayA = today;
-  else lastDayB = today;
+    let lastDayA = row?.lastDayA ?? null;
+    let lastDayB = row?.lastDayB ?? null;
+    let lastCountedDay = row?.lastCountedDay ?? null;
+    let streak = row?.streak ?? 0;
+    let bestStreak = row?.bestStreak ?? 0;
+    const prevStreak = streak;
 
-  // Credit today once both sides have messaged today.
-  if (lastDayA === today && lastDayB === today && lastCountedDay !== today) {
-    if (lastCountedDay === prevUtcDay(today)) {
-      streak = Math.min(streak + 1, CAP);
-    } else {
-      streak = 1; // chain broken (or first ever day) — restart
+    if (authorIsA) lastDayA = today;
+    else lastDayB = today;
+
+    // Credit today once both sides have messaged today.
+    if (lastDayA === today && lastDayB === today && lastCountedDay !== today) {
+      if (lastCountedDay === prevUtcDay(today)) {
+        streak = Math.min(streak + 1, CAP);
+      } else {
+        streak = 1; // chain broken (or first ever day) — restart
+      }
+      lastCountedDay = today;
+      bestStreak = Math.max(bestStreak, streak);
     }
-    lastCountedDay = today;
-    bestStreak = Math.max(bestStreak, streak);
-  }
 
-  await db
-    .insert(schema.dmStreaks)
-    .values({
-      channelId: args.channelId,
-      userAId: a,
-      userBId: b,
-      lastDayA,
-      lastDayB,
-      lastCountedDay,
-      streak,
-      bestStreak,
-      updatedAt: new Date(),
-    })
-    .onConflictDoUpdate({
-      target: schema.dmStreaks.channelId,
-      set: { lastDayA, lastDayB, lastCountedDay, streak, bestStreak, updatedAt: new Date() },
-    });
+    await tx
+      .insert(schema.dmStreaks)
+      .values({
+        channelId: args.channelId,
+        userAId: a,
+        userBId: b,
+        lastDayA,
+        lastDayB,
+        lastCountedDay,
+        streak,
+        bestStreak,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: schema.dmStreaks.channelId,
+        set: { lastDayA, lastDayB, lastCountedDay, streak, bestStreak, updatedAt: new Date() },
+      });
 
-  // `streak` is the live display value (the chain is alive — someone just
-  // messaged today). `changed` is true only when the credited count moved,
-  // so the caller dispatches at most once per day per channel.
-  return { streak, changed: streak !== prevStreak };
+    // `streak` is the live display value (the chain is alive — someone just
+    // messaged today). `changed` is true only when the credited count moved,
+    // so the caller dispatches at most once per day per channel.
+    return { streak, changed: streak !== prevStreak };
+  });
 }
 
 /**

@@ -146,19 +146,38 @@ export async function computeMemberGuildPermissions(
 export async function computeMemberChannelPermissions(
   channelId: bigint,
   userId: bigint,
+  // Optional pre-loaded channel row: lets a caller that already fetched the
+  // channel (e.g. loadChannelContext) skip a redundant SELECT on the hot
+  // guild-message path. Must carry exactly the fields this resolver reads.
+  preloaded?: { id: bigint; guildId: bigint | null; type: string; parentId: bigint | null },
 ): Promise<bigint> {
-  const channelRow = await db
-    .select({
-      id: schema.channels.id,
-      guildId: schema.channels.guildId,
-      type: schema.channels.type,
-      parentId: schema.channels.parentId,
-    })
-    .from(schema.channels)
-    .where(eq(schema.channels.id, channelId))
-    .limit(1);
-  const channel = channelRow[0];
+  const channel =
+    preloaded ??
+    (
+      await db
+        .select({
+          id: schema.channels.id,
+          guildId: schema.channels.guildId,
+          type: schema.channels.type,
+          parentId: schema.channels.parentId,
+        })
+        .from(schema.channels)
+        .where(eq(schema.channels.id, channelId))
+        .limit(1)
+    )[0];
   if (!channel) return 0n;
+
+  // Threads / forum posts (type='public_thread') are channels whose parentId
+  // points at their parent TEXT/FORUM channel, not the category — so the chain
+  // is thread → parentChannel → category and this resolver's one-level parent
+  // walk would never reach the grandparent category. A thread copies no
+  // overrides at creation and thread-specific overrides aren't a feature, so a
+  // thread's effective permissions ARE its parent channel's (whose own resolve
+  // already folds in the grandparent category). Delegate to the parent — this
+  // closes the category-cascade IDOR at the single REST chokepoint.
+  if (channel.type === 'public_thread' && channel.parentId) {
+    return computeMemberChannelPermissions(channel.parentId, userId);
+  }
 
   // DMs: not part of the guild permission model. The caller must be a
   // recipient of the DM (membership recorded in dm_recipients).
@@ -361,6 +380,12 @@ export async function listViewableGuildChannelIds(
 
   const out: bigint[] = [];
   for (const c of channels) {
+    // Threads copy no overrides; their visibility follows the parent
+    // channel's (a thread's parentId points at its parent text/forum
+    // channel, not the category, so evaluating it directly would miss the
+    // grandparent category cascade and leak the thread into the gateway's
+    // seeded viewable set). Handled in the second pass below.
+    if (c.type === 'public_thread' && c.parentId) continue;
     const own = byChannel.get(c.id)!;
     // If this channel has a parent category, look up the parent's
     // overrides bucket and pass them as the category-tier inputs.
@@ -379,6 +404,13 @@ export async function listViewableGuildChannelIds(
       categoryMemberOverride: parent?.memberOverride ?? null,
     });
     if (hasPermission(perms, Permissions.VIEW_CHANNEL)) out.push(c.id);
+  }
+  // Second pass: a thread is viewable iff its parent channel is viewable.
+  const outSet = new Set(out);
+  for (const c of channels) {
+    if (c.type === 'public_thread' && c.parentId && outSet.has(c.parentId)) {
+      out.push(c.id);
+    }
   }
   return reconcileCategoryVisibility(out, channels, {
     preserveEmptyCategories: hasPermission(guildPerms, Permissions.MANAGE_CHANNELS),
@@ -676,6 +708,12 @@ export async function listViewableGuildChannelIdsForUsers(
     }
 
     for (const c of channels) {
+      // Threads copy no overrides; their visibility follows the parent
+      // channel's (computed in this same pass), NOT their own buckets — a
+      // thread's parentId points at its parent text/forum channel, not the
+      // category, so evaluating it directly would miss the grandparent
+      // category cascade and leak the thread. Handled in the second pass.
+      if (c.type === 'public_thread' && c.parentId) continue;
       const own = buildBuckets(c.id);
       const parent = c.parentId ? buildBuckets(c.parentId) : null;
       const perms = computeChannelPermissions({
@@ -690,6 +728,12 @@ export async function listViewableGuildChannelIdsForUsers(
         categoryMemberOverride: parent?.memberOverride ?? null,
       });
       if (hasPermission(perms, Permissions.VIEW_CHANNEL)) viewable.add(c.id);
+    }
+    // Second pass: a thread is viewable iff its parent channel is viewable.
+    for (const c of channels) {
+      if (c.type === 'public_thread' && c.parentId && viewable.has(c.parentId)) {
+        viewable.add(c.id);
+      }
     }
     // MANAGE_CHANNELS holders keep empty categories visible so they
     // can place new channels into them from the sidebar; everyone
@@ -881,6 +925,11 @@ export async function listViewableGuildChannelIdsByGuild(
 
     const viewable: bigint[] = [];
     for (const c of channels) {
+      // Threads copy no overrides; their visibility follows the parent
+      // channel's (a thread's parentId points at its parent text/forum
+      // channel, not the category, so evaluating it directly would miss the
+      // grandparent category cascade and leak the thread). Handled below.
+      if (c.type === 'public_thread' && c.parentId) continue;
       const own = buildBuckets(c.id);
       const parent = c.parentId ? buildBuckets(c.parentId) : null;
       const perms = computeChannelPermissions({
@@ -895,6 +944,13 @@ export async function listViewableGuildChannelIdsByGuild(
         categoryMemberOverride: parent?.memberOverride ?? null,
       });
       if (hasPermission(perms, Permissions.VIEW_CHANNEL)) viewable.push(c.id);
+    }
+    // Second pass: a thread is viewable iff its parent channel is viewable.
+    const viewableSet = new Set(viewable);
+    for (const c of channels) {
+      if (c.type === 'public_thread' && c.parentId && viewableSet.has(c.parentId)) {
+        viewable.push(c.id);
+      }
     }
     out.set(
       guildId,

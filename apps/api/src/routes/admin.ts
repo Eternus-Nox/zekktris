@@ -915,18 +915,14 @@ adminRouter.post('/users/:id/logout', validate('param', userIdParam), async (c) 
   // Close live WebSockets so the in-flight session can't keep reading
   // events with a not-yet-expired access token. Without this the
   // forced logout takes up to 15 min (access token TTL) to actually
-  // sever the live connection. Close code 4000 = generic disconnect
-  // (vs 4004 = AUTHENTICATION_FAILED which the ban path uses); the
-  // client surfaces this as "you've been signed out" and falls back
-  // to the login screen.
-  const conns = registry.byUserId(targetId);
-  for (const conn of conns) {
-    try {
-      conn.close(4000, 'signed out by admin');
-    } catch {
-      // Already closed.
-    }
-  }
+  // sever the live connection. Use dispatch.forceDisconnectUser (same
+  // helper the ban path uses) so the close fans out across every
+  // replica via the internal force-disconnect bus — the node-local
+  // registry.byUserId loop only reaches sockets held by THIS API
+  // replica and silently misses connections on other nodes. It closes
+  // with code 4004 (AUTHENTICATION_FAILED); the client surfaces this
+  // as "you've been signed out" and falls back to the login screen.
+  dispatch.forceDisconnectUser(targetId);
   await auditStaff(c, 'staff_logout', 'Signed out all sessions', { userId: targetId });
   return c.json({ ok: true });
 });

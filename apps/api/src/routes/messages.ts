@@ -88,7 +88,9 @@ async function loadChannelContext(channelId: bigint, userId: bigint): Promise<Ch
   if (!channel) throw errors.notFound('Channel');
 
   if (channel.guildId) {
-    const perms = await computeMemberChannelPermissions(channelId, userId);
+    // Pass the already-fetched channel row so the resolver skips a redundant
+    // SELECT of the same row on this hot guild-message path.
+    const perms = await computeMemberChannelPermissions(channelId, userId, channel);
     if (!hasPermission(perms, Permissions.VIEW_CHANNEL)) throw errors.notFound('Channel');
     return { channel, channelPerms: perms, isDM: false };
   }

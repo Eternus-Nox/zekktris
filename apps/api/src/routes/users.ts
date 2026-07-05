@@ -897,16 +897,14 @@ usersRouter.post(
       // (still-valid) access token; the brief reconnect hiccup is
       // a better trade than leaving stale gateway connections
       // open on the now-revoked sessions.
+      //
+      // Use dispatch.forceDisconnectUser (not the node-local
+      // registry.byUserId loop) so the close reaches sockets held by
+      // OTHER replicas via the internal force-disconnect bus, not just
+      // this node's connections.
       try {
-        const { registry } = await import('../gateway/registry');
-        const conns = registry.byUserId(userId);
-        for (const conn of conns) {
-          try {
-            conn.close(4000, 'password changed');
-          } catch {
-            // Already closed.
-          }
-        }
+        const dispatch = await import('../gateway/dispatch');
+        dispatch.forceDisconnectUser(userId);
       } catch (err) {
         log.error('change-password: failed to close gateway connections', { err });
       }
@@ -1130,6 +1128,13 @@ usersRouter.delete('/@me/sessions', requireAuth, async (c) => {
   const userId = requireUserId(c);
   const sessionId = requireSessionId(c);
   await revokeAllUserSessions(userId, sessionId);
+  // The gateway only re-checks session revocation at IDENTIFY/RESUME, so
+  // already-open sockets belonging to now-revoked sessions would keep
+  // streaming live events indefinitely. Force-close the user's sockets
+  // cluster-wide (matching the ban path); the legit current client
+  // reconnects transparently with its still-valid access token.
+  const { forceDisconnectUser } = await import('../gateway/dispatch');
+  forceDisconnectUser(userId);
   return c.json({ ok: true });
 });
 
@@ -1151,6 +1156,13 @@ usersRouter.delete(
       throw errors.notFound('Session');
     }
     await revokeSession(targetSessionId);
+    // The gateway never re-checks revocation on the live dispatch path, so the
+    // revoked device's open socket would keep streaming events until it drops.
+    // Force-close the user's sockets cluster-wide (the connection can't be
+    // mapped to a single auth session); only the revoked session fails to
+    // re-IDENTIFY, the legit devices reconnect with their still-valid tokens.
+    const { forceDisconnectUser } = await import('../gateway/dispatch');
+    forceDisconnectUser(userId);
     return c.json({ ok: true });
   },
 );
