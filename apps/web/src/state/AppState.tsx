@@ -1952,6 +1952,34 @@ function familyNotifyOnce(key: string, windowMs = 6000): boolean {
   return true;
 }
 
+/**
+ * Close any delivered OS notifications for a channel when the user reads it,
+ * so Notification Center / the lock screen don't keep showing banners for a
+ * conversation that's already open. Mirrors the iOS clearDeliveredNotifications
+ * path. Message pushes tag their notification with the channelId AND carry
+ * channelId in `data` (see public/sw.js), so we match on either — the `data`
+ * match also catches pokes, whose tag is `poke-<channelId>`. Best-effort:
+ * silently no-ops where the service worker or getNotifications() is
+ * unavailable.
+ */
+function clearChannelNotifications(channelId: string): void {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.ready
+    .then((reg) => reg.getNotifications())
+    .then((notes) => {
+      for (const n of notes) {
+        const dataChannel =
+          n.data && typeof n.data === 'object'
+            ? (n.data as { channelId?: string }).channelId
+            : undefined;
+        if (n.tag === channelId || dataChannel === channelId) n.close();
+      }
+    })
+    .catch(() => {
+      /* getNotifications unsupported or SW not ready — ignore */
+    });
+}
+
 export function AppStateProvider({ children }: { children: ReactNode }) {
   const { rest, gateway, token, user } = useAuth();
   const toasts = useToasts();
@@ -2373,6 +2401,11 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
    */
   const ackChannel = useCallback(
     async (channelId: string, messageId: string) => {
+      // Reading a channel clears its delivered OS notifications from
+      // Notification Center / the lock screen. Done before the snowflake
+      // guard so it fires on every read, even if the marker id is somehow
+      // an optimistic placeholder.
+      clearChannelNotifications(channelId);
       // Defensive: reject any non-snowflake id outright. Optimistic
       // local-prefixed ids would crash the bigint comparison in the
       // READ_STATE_UPSERT reducer, AND would 400 on the server's ack
