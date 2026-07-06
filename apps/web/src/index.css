@@ -904,17 +904,23 @@ html.zk-vkb-open .zk-composer {
   padding-bottom: 0;
 }
 
-/* Safari-only name-tag ("clan tag") vertical nudge. With line-height:1 in a
- * tiny pill, Safari positions the glyph ~1px lower than Chrome/Firefox within
- * its line box (a known WebKit rounding difference), so the tag text drifts
- * down a pixel — most visible next to a name in DMs. `@supports
- * (-webkit-hyphens: none)` matches Safari (WebKit) ONLY, so we shift the text
- * back up there without touching other browsers (which are already centered).
- * Same total vertical padding as py-0.5, just biased upward. */
+/* Safari-only name-tag ("clan tag") vertical nudge. With line-height:1 in this
+ * tiny 10px pill, Chrome/Firefox center the label glyph correctly (measured
+ * ~0.17px high — effectively dead-center), but Safari/WebKit positions the same
+ * glyph ~2px LOWER within its line box (a WebKit sub-pixel rounding difference
+ * at small sizes), so the tag text sits noticeably low next to a name in DMs,
+ * text channels, and the member list. `@supports (-webkit-hyphens: none)` is
+ * false in Blink/Gecko and true only in WebKit, so this shifts the text back up
+ * in Safari ONLY (a blanket nudge would push Chrome/Firefox ~2px HIGH).
+ *
+ * Mechanism: in an items-center pill the glyph offset from the border-box
+ * center is exactly (padding-top − padding-bottom)/2. Base is py-0.5 (2/2 → 0
+ * shift); 0/4 keeps the same 4px total height but biases the glyph up 2px,
+ * canceling WebKit's ~2px drop. px-1.5 (left/right) is untouched. */
 @supports (-webkit-hyphens: none) {
   .zk-nametag {
-    padding-top: 1px !important;
-    padding-bottom: 3px !important;
+    padding-top: 0 !important;
+    padding-bottom: 4px !important;
   }
 }
 
