@@ -22,7 +22,7 @@
  */
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { UserTag } from '../lib/UserTag';
+import { UserTag, StaffBadge } from '../lib/UserTag';
 import { TierBadge } from '../lib/TierBadge';
 import { ApiError, type PublicUser, type Role } from '@zekktris/client';
 import { AchievementsShelf } from './AchievementsShelf';
@@ -752,6 +752,7 @@ export function ProfileCard({
               <div className="flex items-center gap-1.5">
                 <UserTag user={user} />
                 <div className="font-semibold text-base text-ink-1 truncate">{user.displayName}</div>
+                <StaffBadge user={user} />
                 {user.isBot && (
                   <span
                     className="shrink-0 inline-flex items-center px-1.5 rounded bg-violet-500/20 text-violet-300 text-[0.55rem] font-bold uppercase tracking-wider leading-[1.1rem]"

@@ -61,6 +61,11 @@ export interface PublicUser {
       #rrggbb hex (defaults to accent when null). */
   tagLabel?: string | null;
   tagColor?: string | null;
+  /** Instance staff role. Present (and true) only for administrators /
+      moderators — regular members omit both. Drives the subtle staff badge
+      next to the name. Admin takes precedence when both are somehow set. */
+  isAdmin?: boolean;
+  isModerator?: boolean;
 }
 
 /** A bot account owned by the current user. Like a PublicUser but with

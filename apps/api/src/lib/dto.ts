@@ -140,6 +140,13 @@ export interface PublicUserDTO {
       (clients default to the accent when null). */
   tagLabel: string | null;
   tagColor: string | null;
+  /** Instance staff role, surfaced so clients can render a subtle
+      administrator/moderator badge next to the name. Emitted ONLY when true
+      (regular members carry neither field), so the flags double as a lean
+      presence signal and never leak "not staff" enumeration. Admin takes
+      precedence over moderator; a user is at most one. */
+  isAdmin?: boolean;
+  isModerator?: boolean;
 }
 
 export function toSelfUser(
@@ -231,6 +238,10 @@ export function toPublicUser(user: User): PublicUserDTO {
     isBot: user.isBot,
     tagLabel: user.tagLabel ?? null,
     tagColor: user.tagColor ?? null,
+    // Emit-when-true: keeps regular-member payloads unchanged and avoids
+    // shipping a "false" staff flag for everyone.
+    ...(user.isAdmin ? { isAdmin: true } : {}),
+    ...(user.isModerator ? { isModerator: true } : {}),
   };
 }
 

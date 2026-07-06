@@ -18,7 +18,7 @@
 import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { UserTag } from '../lib/UserTag';
+import { UserTag, StaffBadge } from '../lib/UserTag';
 import type { Channel, Message, MessageEmbed } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
 import { useAppStateSelector, isUserBlocked } from '../state/AppState';
@@ -819,6 +819,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
                 Bot
               </span>
             )}
+            {!isWebhook && author && <StaffBadge user={author} />}
             <span className="text-xs text-ink-3">{formatTimestamp(message.createdAt)}</span>
             {message.pinned && (
               <span className="inline-flex items-center gap-0.5 text-[0.6rem] uppercase tracking-wider text-amber-400" title="Pinned message">

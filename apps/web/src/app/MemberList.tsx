@@ -20,7 +20,7 @@
 
 import { memo, useEffect, useMemo, useRef } from 'react';
 import { Virtualizer, type VirtualizerHandle } from 'virtua';
-import { UserTag } from '../lib/UserTag';
+import { UserTag, StaffBadge } from '../lib/UserTag';
 import { useAppStateSelector } from '../state/AppState';
 import { useAuth } from '../auth/AuthContext';
 import { avatarColor, avatarInitials } from '../lib/avatar';
@@ -347,6 +347,7 @@ const MemberRow = memo(function MemberRow({
         >
           {display}
         </span>
+        <StaffBadge user={m.user} />
         {m.user.isBot && (
           <span
             className="shrink-0 inline-flex items-center px-1.5 rounded bg-violet-500/20 text-violet-300 text-[0.5rem] font-bold uppercase tracking-wider leading-4"
