@@ -890,13 +890,19 @@ export function SettingsView() {
               <span className="text-[0.65rem] text-ink-3 shrink-0">Shown in front of your name</span>
             </div>
             <TagSettings />
-            <div className="mt-3">
-              <HideClanTagsToggle />
-            </div>
           </div>
           <ManageMembership />
         </section>
         )}
+        {/* Hide clan tags is a per-device VIEWER preference, not a supporter
+            perk — anyone can declutter names regardless of membership. Render
+            it in its own block so members AND non-members both get it. */}
+        <section className="rounded-xl border border-line bg-bg-2 p-3">
+          <h2 className="text-sm font-semibold text-ink-1">Display</h2>
+          <div className="mt-2">
+            <HideClanTagsToggle />
+          </div>
+        </section>
           </>
         )}
 
@@ -1760,7 +1766,30 @@ function ManageMembership() {
   const toasts = useToasts();
   const [portalBusy, setPortalBusy] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
-  if (user?.subscriptionSource !== 'stripe' || user.subscriptionInherited) return null;
+  const tierLabel = TIER_META[user?.subscriptionTier ?? '']?.label ?? 'supporter';
+  const endsOn = user?.subscriptionExpiresAt
+    ? new Date(user.subscriptionExpiresAt).toLocaleDateString(undefined, {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      })
+    : null;
+
+  // Gift / founder / family-inherited memberships have no Stripe subscription
+  // to self-manage. Explain WHY instead of rendering nothing — users reported
+  // "no Cancel option" because this component silently returned null for them.
+  if (user?.subscriptionSource !== 'stripe' || user.subscriptionInherited) {
+    const note = user?.subscriptionInherited
+      ? `Your ${tierLabel} membership comes from a family plan — the plan owner manages it, so there's nothing to cancel here.`
+      : endsOn
+        ? `Your ${tierLabel} membership was gifted and runs until ${endsOn}. There's no recurring payment to manage — it simply ends then.`
+        : `You have a founder ${tierLabel} membership — thank you! It doesn't expire, and there's no payment to manage or cancel.`;
+    return (
+      <div className="mt-4 pt-3 border-t border-line">
+        <p className="text-xs text-ink-3">{note}</p>
+      </div>
+    );
+  }
 
   // Pull the fresh membership state (cancel flag + expiry) after a mutation.
   const syncUser = async () => {
@@ -1772,15 +1801,7 @@ function ManageMembership() {
     }
   };
 
-  const tierLabel = TIER_META[user.subscriptionTier ?? '']?.label ?? 'supporter';
   const scheduledCancel = user.subscriptionCancelAtPeriodEnd === true;
-  const endsOn = user.subscriptionExpiresAt
-    ? new Date(user.subscriptionExpiresAt).toLocaleDateString(undefined, {
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-      })
-    : null;
 
   const openPortal = () => {
     setPortalBusy(true);
