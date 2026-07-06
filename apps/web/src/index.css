@@ -904,19 +904,23 @@ html.zk-vkb-open .zk-composer {
   padding-bottom: 0;
 }
 
-/* Safari-only name-tag ("clan tag") vertical nudge. With line-height:1 in this
- * tiny 10px pill, Chrome/Firefox center the label glyph correctly (measured
- * ~0.17px high — effectively dead-center), but Safari/WebKit positions the same
- * glyph ~2px LOWER within its line box (a WebKit sub-pixel rounding difference
- * at small sizes), so the tag text sits noticeably low next to a name in DMs,
- * text channels, and the member list. `@supports (-webkit-hyphens: none)` is
- * false in Blink/Gecko and true only in WebKit, so this shifts the text back up
- * in Safari ONLY (a blanket nudge would push Chrome/Firefox ~2px HIGH).
+/* Name-tag ("clan tag") vertical centering. At this tiny 10px pill with
+ * line-height:1, the label glyph renders ~1px low in Blink/Gecko (Chrome/
+ * Firefox) and ~2px low in WebKit (Safari) — a per-engine sub-pixel baseline
+ * rounding difference, most visible next to a name in DMs, text channels, and
+ * the member list. The glyph's offset from the pill's border-box center is
+ * exactly (padding-top − padding-bottom)/2, so we bias the padding upward
+ * (keeping the 4px total so pill height is unchanged) to cancel the drop.
  *
- * Mechanism: in an items-center pill the glyph offset from the border-box
- * center is exactly (padding-top − padding-bottom)/2. Base is py-0.5 (2/2 → 0
- * shift); 0/4 keeps the same 4px total height but biases the glyph up 2px,
- * canceling WebKit's ~2px drop. px-1.5 (left/right) is untouched. */
+ * Base: 1px up (top1/bot3) for every browser — fixes Chrome/Firefox.
+ * WebKit drops 1px more, so the Safari-only block below bumps it to 2px up
+ * (top0/bot4). `@supports (-webkit-hyphens: none)` is false in Blink/Gecko and
+ * true only in WebKit. !important beats the Tailwind py-0.5 utility; px-1.5
+ * (left/right) is untouched throughout. */
+.zk-nametag {
+  padding-top: 1px !important;
+  padding-bottom: 3px !important;
+}
 @supports (-webkit-hyphens: none) {
   .zk-nametag {
     padding-top: 0 !important;
