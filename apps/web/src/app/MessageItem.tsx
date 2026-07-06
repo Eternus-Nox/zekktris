@@ -786,7 +786,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
       <div className="flex-1 min-w-0">
         {!continuation && (
           <div className="flex items-center gap-2">
-            {authorInteractive && author && <UserTag user={author} className="-mr-1" />}
+            {authorInteractive && author && <UserTag user={author} className="-mr-1.5" />}
             <button
               type="button"
               onClick={authorInteractive && author ? (e) => onAvatarClick(author, e) : undefined}

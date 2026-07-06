@@ -401,7 +401,7 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
             </span>
           )}
         </span>
-        {recipient && <UserTag user={recipient} className="-mr-1" />}
+        {recipient && <UserTag user={recipient} className="-mr-1.5" />}
         <span className="truncate min-w-0 text-[15px]">{displayName}</span>
         {typeof channel.streak === 'number' && channel.streak > 0 && (
           // Messaging streak: consecutive UTC days both parties messaged.

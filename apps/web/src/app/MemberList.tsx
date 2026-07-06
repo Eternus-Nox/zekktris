@@ -340,7 +340,7 @@ const MemberRow = memo(function MemberRow({
             className={`absolute bottom-0 right-0 z-10 w-3 h-3 rounded-full border-2 border-bg-2 ${onlineDot}`}
           />
         </span>
-        <UserTag user={m.user} />
+        <UserTag user={m.user} className="-mr-1.5" />
         <StaffName
           user={m.user}
           text={display}

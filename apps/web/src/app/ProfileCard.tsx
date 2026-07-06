@@ -766,7 +766,7 @@ export function ProfileCard({
                 );
               })()}
               <div className="flex items-center gap-1.5">
-                <UserTag user={user} />
+                <UserTag user={user} className="-mr-1" />
                 <StaffName
                   user={user}
                   text={user.displayName}
