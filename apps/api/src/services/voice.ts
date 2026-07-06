@@ -225,20 +225,30 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
     // One atomic statement, with the channel row's OWN columns as the
     // caller-vs-answerer discriminator (every SET expression sees the
     // pre-update values, and the row lock serializes concurrent joins):
-    //   - startedAt null            → I'm first: stamp startedAt + initiator
-    //   - started by someone else,
-    //     not yet answered          → I'm answering: stamp answeredAt
-    //   - otherwise (rejoin/echo)   → no change
-    // The previous SELECT-voice_states-then-branch version raced: two
-    // near-simultaneous joins could both observe "no other participant",
-    // classify a connected call as missed, or strand answeredAt with no
-    // startedAt — which then poisoned the NEXT call's duration math.
+    //   - SOLO join (I'm the only voice participant) → fresh call: HARD-reset
+    //     startedAt=NOW, initiator=me, answeredAt=NULL. My own voice_state was
+    //     already inserted above, so "count(voice_states) <= 1" means nobody
+    //     else is here — you can't be mid-call alone in a 1:1 DM, so any call
+    //     columns still set are STRANDED from a prior call that failed to
+    //     clear. Inheriting them via COALESCE is what produced the "Call ended
+    //     · 113h 16m" bug (duration measured against a days-old answeredAt).
+    //   - started by someone else, not yet answered → I'm answering: stamp
+    //     answeredAt.
+    //   - otherwise (rejoin/echo) → no change.
+    // The solo test is a subquery INSIDE this single atomic UPDATE (evaluated
+    // under the channel row lock), so it can't race the way a separate
+    // read-then-clear would: the caller rings alone first (count 1 → reset),
+    // the answerer joins after (count 2 → answers). The prior
+    // SELECT-then-branch version raced two near-simultaneous joins into a
+    // missed/stranded classification, which is exactly what this avoids.
+    const soloCall = sql`(SELECT count(*) FROM ${schema.voiceStates} WHERE ${schema.voiceStates.channelId} = ${channelId}) <= 1`;
     await db
       .update(schema.channels)
       .set({
-        dmActiveCallStartedAt: sql`COALESCE(${schema.channels.dmActiveCallStartedAt}, NOW())`,
-        dmActiveCallInitiatorId: sql`COALESCE(${schema.channels.dmActiveCallInitiatorId}, ${userId})`,
+        dmActiveCallStartedAt: sql`CASE WHEN ${soloCall} THEN NOW() ELSE COALESCE(${schema.channels.dmActiveCallStartedAt}, NOW()) END`,
+        dmActiveCallInitiatorId: sql`CASE WHEN ${soloCall} THEN ${userId} ELSE COALESCE(${schema.channels.dmActiveCallInitiatorId}, ${userId}) END`,
         dmActiveCallAnsweredAt: sql`CASE
+          WHEN ${soloCall} THEN NULL
           WHEN ${schema.channels.dmActiveCallStartedAt} IS NOT NULL
            AND ${schema.channels.dmActiveCallInitiatorId} IS DISTINCT FROM ${userId}
            AND ${schema.channels.dmActiveCallAnsweredAt} IS NULL
@@ -630,8 +640,21 @@ async function endDmCallBookkeeping(
 
   // Last leaver → call ended. Compute duration / missed.
   const missed = channelRow.answeredAt === null;
+  // Two guards against an absurd duration (the "Call ended · 113h 16m" bug):
+  //   1. Floor answeredAt to startedAt — a stale answeredAt stranded from an
+  //      EARLIER call can predate this call's start; never measure from before
+  //      the call began.
+  //   2. Clamp to a 12h ceiling — if BOTH columns stranded (so even startedAt
+  //      is old), the raw span is days; cap it so a leftover row can never
+  //      render a multi-day duration. New strands are prevented by the
+  //      date_trunc'd guarded clear below (commit a288bcb); this is a backstop
+  //      for any row stranded before that fix shipped.
+  const MAX_CALL_MS = 12 * 60 * 60 * 1000;
+  const answeredMs = channelRow.answeredAt
+    ? Math.max(channelRow.answeredAt.getTime(), channelRow.startedAt.getTime())
+    : 0;
   const durationMs = channelRow.answeredAt
-    ? Math.max(0, Date.now() - channelRow.answeredAt.getTime())
+    ? Math.min(MAX_CALL_MS, Math.max(0, Date.now() - answeredMs))
     : 0;
   const initiatorId = channelRow.initiatorId ?? leaverId;
 
