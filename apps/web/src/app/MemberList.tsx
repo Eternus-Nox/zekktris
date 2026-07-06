@@ -345,7 +345,7 @@ const MemberRow = memo(function MemberRow({
           user={m.user}
           text={display}
           roleColor={roleColor}
-          className="truncate text-sm text-ink-1"
+          className="zk-memberlist-name truncate text-sm text-ink-1"
         />
         {m.user.isBot && (
           <span
