@@ -20,12 +20,13 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import type { SecurityConfig, SecurityEvent } from '@zekktris/client';
+import type { SecurityConfig, SecurityEvent, SecurityWord } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useToasts } from '../state/Toasts';
 import { Plus, Shield, X as CloseIcon } from '../lib/icons';
 
-type KindFilter = 'spam_limited' | 'banned_word' | 'staff' | undefined;
+type KindFilter = 'spam_limited' | 'banned_word' | 'watch_word' | 'staff' | undefined;
+type WordSeverity = SecurityWord['severity'];
 
 /** Badge labels for the staff-action audit kinds. */
 const STAFF_KIND_LABELS: Record<string, string> = {
@@ -47,10 +48,11 @@ export function AdminSecurityTab() {
   // Moderators only get the log; config + banned words are admin-only.
   const selfIsAdmin = self?.isAdmin === true;
   const [config, setConfig] = useState<SecurityConfig | null>(null);
-  const [words, setWords] = useState<string[]>([]);
+  const [words, setWords] = useState<SecurityWord[]>([]);
   const [events, setEvents] = useState<SecurityEvent[]>([]);
   const [kindFilter, setKindFilter] = useState<KindFilter>();
   const [newWord, setNewWord] = useState('');
+  const [newWordSeverity, setNewWordSeverity] = useState<WordSeverity>('blocked');
   const [showPreset, setShowPreset] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -107,15 +109,26 @@ export function AdminSecurityTab() {
     }
   };
 
-  const addWord = async () => {
+  const addWord = async (severity: WordSeverity = newWordSeverity) => {
     const word = newWord.trim();
     if (!word) return;
     setNewWord('');
     try {
-      const r = await rest.adminAddSecurityWord(word);
+      const r = await rest.adminAddSecurityWord(word, severity);
       setWords(r.words);
     } catch (e) {
       toasts.push(e instanceof Error ? e.message : 'Could not add word', 'error');
+    }
+  };
+
+  // Move a word to the other list (re-add with the flipped severity; the API
+  // upserts, so this just changes its tier).
+  const moveWord = async (word: string, severity: WordSeverity) => {
+    try {
+      const r = await rest.adminAddSecurityWord(word, severity);
+      setWords(r.words);
+    } catch (e) {
+      toasts.push(e instanceof Error ? e.message : 'Could not move word', 'error');
     }
   };
 
@@ -204,6 +217,25 @@ export function AdminSecurityTab() {
             autoCorrect="off"
             className="flex-1 px-3 py-2 text-sm bg-bg-2 border border-line rounded-lg text-ink-1 placeholder:text-ink-3 focus:outline-none focus:border-accent/60"
           />
+          {/* Severity picker: which list the new word joins. */}
+          <div className="flex rounded-lg border border-line overflow-hidden text-xs font-medium shrink-0">
+            {(['blocked', 'watch'] as WordSeverity[]).map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setNewWordSeverity(s)}
+                className={`px-2.5 ${
+                  newWordSeverity === s
+                    ? s === 'blocked'
+                      ? 'bg-red-500/20 text-red-300'
+                      : 'bg-amber-500/20 text-amber-300'
+                    : 'text-ink-3 hover:bg-bg-3'
+                }`}
+              >
+                {s === 'blocked' ? 'Block' : 'Watch'}
+              </button>
+            ))}
+          </div>
           <button
             type="button"
             onClick={() => void addWord()}
@@ -223,32 +255,55 @@ export function AdminSecurityTab() {
           Common wordlist…
         </button>
         <p className="text-xs text-ink-3">
-          Browse a standard profanity + slur list and add words individually, or add all at once.
+          <span className="text-red-300 font-medium">Blocked</span> words are rejected in messages
+          AND can't appear in usernames, display names, or clan tags.{' '}
+          <span className="text-amber-300 font-medium">Watch</span> words are logged only — the
+          message still sends. Guilds can add stricter rules via their own AutoMod.
         </p>
-        {words.length === 0 ? (
-          <p className="text-xs text-ink-3">
-            No banned words yet. Messages containing a banned word are rejected and reported here.
-          </p>
-        ) : (
-          <div className="flex flex-wrap gap-1.5">
-            {words.map((w) => (
-              <span
-                key={w}
-                className="flex items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-lg bg-bg-2 border border-line font-mono text-xs text-ink-1"
+        {(['blocked', 'watch'] as WordSeverity[]).map((sev) => {
+          const list = words.filter((w) => w.severity === sev);
+          return (
+            <div key={sev} className="space-y-1.5">
+              <h3
+                className={`text-[0.7rem] uppercase tracking-wider font-semibold ${
+                  sev === 'blocked' ? 'text-red-300' : 'text-amber-300'
+                }`}
               >
-                {w}
-                <button
-                  type="button"
-                  onClick={() => void removeWord(w)}
-                  className="text-ink-3 hover:text-red-400 transition-colors"
-                  aria-label={`Remove ${w}`}
-                >
-                  <CloseIcon size={12} />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
+                {sev === 'blocked' ? 'Blocked — hard block' : 'Watch — alert only'}
+              </h3>
+              {list.length === 0 ? (
+                <p className="text-xs text-ink-3">None.</p>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {list.map((w) => (
+                    <span
+                      key={w.word}
+                      className="flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-lg bg-bg-2 border border-line font-mono text-xs text-ink-1"
+                    >
+                      {w.word}
+                      <button
+                        type="button"
+                        onClick={() => void moveWord(w.word, sev === 'blocked' ? 'watch' : 'blocked')}
+                        title={sev === 'blocked' ? 'Move to Watch' : 'Move to Block'}
+                        className="text-ink-3 hover:text-accent transition-colors text-[10px] px-0.5"
+                      >
+                        {sev === 'blocked' ? '→watch' : '→block'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void removeWord(w.word)}
+                        className="text-ink-3 hover:text-red-400 transition-colors"
+                        aria-label={`Remove ${w.word}`}
+                      >
+                        <CloseIcon size={12} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </section>
       )}
 
@@ -260,7 +315,8 @@ export function AdminSecurityTab() {
             [
               [undefined, 'All'],
               ['spam_limited', 'Spam'],
-              ['banned_word', 'Banned words'],
+              ['banned_word', 'Blocked words'],
+              ['watch_word', 'Watch words'],
               ['staff', 'Staff actions'],
             ] as Array<[KindFilter, string]>
           ).map(([k, label]) => (
@@ -354,8 +410,8 @@ function PresetWordsModal({
   onWords,
   onClose,
 }: {
-  words: string[];
-  onWords: (w: string[]) => void;
+  words: SecurityWord[];
+  onWords: (w: SecurityWord[]) => void;
   onClose: () => void;
 }) {
   const { rest } = useAuth();
@@ -400,7 +456,7 @@ function PresetWordsModal({
     }
   };
 
-  const allAdded = preset !== null && preset.every((w) => words.includes(w));
+  const allAdded = preset !== null && preset.every((w) => words.some((x) => x.word === w));
 
   return (
     <div
@@ -441,7 +497,7 @@ function PresetWordsModal({
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5">
               {preset.map((w) => {
-                const added = words.includes(w);
+                const added = words.some((x) => x.word === w);
                 return (
                   <button
                     key={w}

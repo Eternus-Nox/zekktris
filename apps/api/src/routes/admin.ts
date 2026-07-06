@@ -1306,7 +1306,7 @@ adminRouter.get(
 
 const securityEventsQuery = z.object({
   // 'staff' is a meta-filter matching every staff_* audit kind.
-  kind: z.enum(['spam_limited', 'banned_word', 'staff']).optional(),
+  kind: z.enum(['spam_limited', 'banned_word', 'watch_word', 'staff']).optional(),
   before: z.string().regex(/^[0-9]+$/).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });
@@ -1329,11 +1329,19 @@ adminRouter.get('/security/words', async (c) => {
 
 adminRouter.post(
   '/security/words',
-  validate('json', z.object({ word: z.string().min(1).max(64) })),
+  validate(
+    'json',
+    z.object({
+      word: z.string().min(1).max(64),
+      // 'blocked' = hard block (default, back-compat), 'watch' = alert only.
+      severity: z.enum(['blocked', 'watch']).optional(),
+    }),
+  ),
   async (c) => {
     const userId = requireUserId(c);
+    const { word, severity } = c.req.valid('json');
     const security = await import('../services/security');
-    await security.addBannedWord(c.req.valid('json').word, userId);
+    await security.addBannedWord(word, severity ?? 'blocked', userId);
     return c.json({ words: await security.listBannedWords() }, 201);
   },
 );

@@ -34,7 +34,9 @@ interface SecurityConfig {
 
 let configCache: SecurityConfig | null = null;
 let configCacheAt = 0;
-let wordsCache: RegExp | null = null;
+// Two severity-tiered matchers: 'blocked' (hard block) + 'watch' (log only).
+let blockedCache: RegExp | null = null;
+let watchCache: RegExp | null = null;
 let wordsCacheAt = 0;
 const CACHE_MS = 15_000;
 
@@ -77,44 +79,62 @@ export async function updateConfig(patch: Partial<SecurityConfig>): Promise<Secu
   return getConfig();
 }
 
-/** Compiled whole-word matcher over the banned list, or null when empty. */
-async function bannedWordsRegex(): Promise<RegExp | null> {
-  if (Date.now() - wordsCacheAt < CACHE_MS) return wordsCache;
-  let rows: Array<{ word: string }> = [];
+export type WordSeverity = 'blocked' | 'watch';
+
+/** Compile a whole-word, case-insensitive matcher, or null for an empty list. */
+function compileWords(words: string[]): RegExp | null {
+  if (words.length === 0) return null;
+  const escaped = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp(`\\b(${escaped.join('|')})\\b`, 'i');
+}
+
+/**
+ * Refresh + return both severity-tiered matchers from the DB (cached ~15s).
+ * Unknown/missing severity is treated as 'blocked' so a half-migrated row can
+ * never silently stop being enforced.
+ */
+async function loadWordMatchers(): Promise<{ blocked: RegExp | null; watch: RegExp | null }> {
+  if (Date.now() - wordsCacheAt < CACHE_MS) return { blocked: blockedCache, watch: watchCache };
+  let rows: Array<{ word: string; severity: string }> = [];
   try {
-    rows = await db.select().from(schema.securityBannedWords);
+    rows = await db
+      .select({ word: schema.securityBannedWords.word, severity: schema.securityBannedWords.severity })
+      .from(schema.securityBannedWords);
   } catch {
-    // Table missing — treat as an empty list; never block sends.
+    // Table/column missing — treat as an empty list; never block sends.
     wordsCacheAt = Date.now();
-    wordsCache = null;
-    return null;
+    blockedCache = null;
+    watchCache = null;
+    return { blocked: null, watch: null };
   }
   wordsCacheAt = Date.now();
-  if (rows.length === 0) {
-    wordsCache = null;
-    return null;
-  }
-  const escaped = rows.map((r) => r.word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  wordsCache = new RegExp(`\\b(${escaped.join('|')})\\b`, 'i');
-  return wordsCache;
+  blockedCache = compileWords(rows.filter((r) => r.severity !== 'watch').map((r) => r.word));
+  watchCache = compileWords(rows.filter((r) => r.severity === 'watch').map((r) => r.word));
+  return { blocked: blockedCache, watch: watchCache };
 }
 
-export async function listBannedWords(): Promise<string[]> {
+export async function listBannedWords(): Promise<Array<{ word: string; severity: WordSeverity }>> {
   const rows = await db
-    .select()
+    .select({ word: schema.securityBannedWords.word, severity: schema.securityBannedWords.severity })
     .from(schema.securityBannedWords)
     .orderBy(schema.securityBannedWords.word);
-  return rows.map((r) => r.word);
+  return rows.map((r) => ({ word: r.word, severity: r.severity === 'watch' ? 'watch' : 'blocked' }));
 }
 
-export async function addBannedWord(word: string, addedBy: bigint): Promise<void> {
+export async function addBannedWord(
+  word: string,
+  severity: WordSeverity,
+  addedBy: bigint,
+): Promise<void> {
   const normalized = word.trim().toLowerCase();
   if (!normalized) throw errors.badRequest('Word is empty');
   if (normalized.length > 64) throw errors.badRequest('Word too long');
+  // Upsert so re-adding a word with a different severity MOVES it between the
+  // blocked and watch lists rather than silently doing nothing.
   await db
     .insert(schema.securityBannedWords)
-    .values({ word: normalized, addedBy })
-    .onConflictDoNothing();
+    .values({ word: normalized, severity, addedBy })
+    .onConflictDoUpdate({ target: schema.securityBannedWords.word, set: { severity } });
   wordsCacheAt = 0;
 }
 
@@ -126,15 +146,18 @@ export async function removeBannedWord(word: string): Promise<void> {
 }
 
 /**
- * Bulk-load the common preset list (insert-only; existing entries are
- * kept, duplicates skipped). Returns how many new words were added.
+ * Bulk-load the common preset (insert-only; existing entries keep their
+ * severity, duplicates skipped). Slurs file as 'blocked', general profanity as
+ * 'watch'. Returns how many new words were added.
  */
 export async function addPresetWords(addedBy: bigint): Promise<number> {
-  const { BANNED_WORDS_PRESET } = await import('../data/bannedWordsPreset');
-  const values = BANNED_WORDS_PRESET
-    .map((w) => w.trim().toLowerCase())
-    .filter((w) => w.length > 0 && w.length <= 64)
-    .map((word) => ({ word, addedBy }));
+  const { BLOCKED_WORDS_PRESET, WATCH_WORDS_PRESET } = await import('../data/bannedWordsPreset');
+  const mk = (list: string[], severity: WordSeverity) =>
+    list
+      .map((w) => w.trim().toLowerCase())
+      .filter((w) => w.length > 0 && w.length <= 64)
+      .map((word) => ({ word, severity, addedBy }));
+  const values = [...mk(BLOCKED_WORDS_PRESET, 'blocked'), ...mk(WATCH_WORDS_PRESET, 'watch')];
   if (values.length === 0) return 0;
   const inserted = await db
     .insert(schema.securityBannedWords)
@@ -145,12 +168,33 @@ export async function addPresetWords(addedBy: bigint): Promise<number> {
   return inserted.length;
 }
 
+/**
+ * True (returning the matched word) if `text` contains ANY listed word —
+ * blocked OR watch. Used to keep identity fields (usernames, display names,
+ * guild nicknames, clan tags) free of vulgar words entirely, per the
+ * instance-wide identity policy. Respects the master wordFilterEnabled switch.
+ */
+export async function containsListedWord(text: string | null | undefined): Promise<string | null> {
+  const cfg = await getConfig();
+  if (!cfg.wordFilterEnabled) return null;
+  const v = text ?? '';
+  if (!v) return null;
+  const { blocked, watch } = await loadWordMatchers();
+  for (const re of [blocked, watch]) {
+    if (!re) continue;
+    const m = re.exec(v);
+    if (m) return (m[1] ?? m[0]).toLowerCase();
+  }
+  return null;
+}
+
 // ── Event log ───────────────────────────────────────────────────────────────
 
 /** Automated detections + staff-action audit kinds ('staff_' prefix). */
 export type SecurityEventKind =
   | 'spam_limited'
   | 'banned_word'
+  | 'watch_word'
   | 'staff_ban'
   | 'staff_unban'
   | 'staff_logout'
@@ -349,17 +393,37 @@ export async function checkBannedWords(args: {
   if (!cfg.wordFilterEnabled) return;
   const content = args.content ?? '';
   if (!content) return;
-  const re = await bannedWordsRegex();
-  if (!re) return;
-  const match = re.exec(content);
-  if (!match) return;
-  void logEvent({
-    kind: 'banned_word',
-    userId: args.userId,
-    guildId: args.guildId,
-    channelId: args.channelId,
-    detail: `Blocked message containing banned word: "${(match[1] ?? match[0]).toLowerCase()}"`,
-    contentSnapshot: content.slice(0, 500),
-  }).catch(() => {});
-  throw errors.badRequest('Your message contains a word that is not allowed on this server.');
+  const { blocked, watch } = await loadWordMatchers();
+
+  // BLOCKED tier (slurs etc.) — reject the message.
+  if (blocked) {
+    const match = blocked.exec(content);
+    if (match) {
+      void logEvent({
+        kind: 'banned_word',
+        userId: args.userId,
+        guildId: args.guildId,
+        channelId: args.channelId,
+        detail: `Blocked message containing banned word: "${(match[1] ?? match[0]).toLowerCase()}"`,
+        contentSnapshot: content.slice(0, 500),
+      }).catch(() => {});
+      throw errors.badRequest('Your message contains a word that is not allowed on this server.');
+    }
+  }
+
+  // WATCH tier (general profanity) — log only, DO NOT block. Lets moderators
+  // see usage without gating the message.
+  if (watch) {
+    const match = watch.exec(content);
+    if (match) {
+      void logEvent({
+        kind: 'watch_word',
+        userId: args.userId,
+        guildId: args.guildId,
+        channelId: args.channelId,
+        detail: `Watch-word used: "${(match[1] ?? match[0]).toLowerCase()}"`,
+        contentSnapshot: content.slice(0, 500),
+      }).catch(() => {});
+    }
+  }
 }

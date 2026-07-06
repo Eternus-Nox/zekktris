@@ -153,6 +153,18 @@ authRouter.post('/register', validate('json', registerSchema), async (c) => {
   // registration is closed/invite-only).
   await gateSignup({ email: body.email, code: body.code });
 
+  // Identity fields must not contain vulgar words (blocked OR watch) — a
+  // username / display name is visible next to everything the user does.
+  {
+    const { containsListedWord } = await import('../services/security');
+    if (await containsListedWord(body.username)) {
+      throw errors.badRequest('That username contains a word that isn’t allowed.');
+    }
+    if (await containsListedWord(body.displayName)) {
+      throw errors.badRequest('That display name contains a word that isn’t allowed.');
+    }
+  }
+
   // Insert; rely on DB unique constraints to detect duplicates atomically.
   const passwordHash = await hashPassword(body.password);
   const id = nextSnowflake();

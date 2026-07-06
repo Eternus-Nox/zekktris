@@ -44,6 +44,7 @@ import type {
   DiscoverableGuild,
   SecurityConfig,
   SecurityEvent,
+  SecurityWord,
   SelfUser,
   VoiceState,
   Webhook,
@@ -2644,7 +2645,7 @@ export class RestClient {
   }
 
   /** `kind: 'staff'` is a meta-filter matching every staff_* audit kind. */
-  adminSecurityEvents(opts: { kind?: 'spam_limited' | 'banned_word' | 'staff'; before?: string; limit?: number } = {}): Promise<{ events: SecurityEvent[] }> {
+  adminSecurityEvents(opts: { kind?: 'spam_limited' | 'banned_word' | 'watch_word' | 'staff'; before?: string; limit?: number } = {}): Promise<{ events: SecurityEvent[] }> {
     const q = new URLSearchParams();
     if (opts.kind) q.set('kind', opts.kind);
     if (opts.before) q.set('before', opts.before);
@@ -2653,15 +2654,20 @@ export class RestClient {
     return this.request('GET', `/admin/security/events${qs ? `?${qs}` : ''}`);
   }
 
-  adminSecurityWords(): Promise<{ words: string[] }> {
+  adminSecurityWords(): Promise<{ words: SecurityWord[] }> {
     return this.request('GET', '/admin/security/words');
   }
 
-  adminAddSecurityWord(word: string): Promise<{ words: string[] }> {
-    return this.request('POST', '/admin/security/words', { word });
+  /** Add (or move) a word. severity 'blocked' = hard block; 'watch' = alert
+      only. Omitting severity defaults to 'blocked' (back-compat). */
+  adminAddSecurityWord(
+    word: string,
+    severity: SecurityWord['severity'] = 'blocked',
+  ): Promise<{ words: SecurityWord[] }> {
+    return this.request('POST', '/admin/security/words', { word, severity });
   }
 
-  adminRemoveSecurityWord(word: string): Promise<{ words: string[] }> {
+  adminRemoveSecurityWord(word: string): Promise<{ words: SecurityWord[] }> {
     return this.request('DELETE', `/admin/security/words/${encodeURIComponent(word)}`);
   }
 
@@ -2670,8 +2676,9 @@ export class RestClient {
     return this.request('GET', '/admin/security/words/preset');
   }
 
-  /** Bulk-load the common wordlist (insert-only, duplicates skipped). */
-  adminLoadSecurityWordPreset(): Promise<{ added: number; words: string[] }> {
+  /** Bulk-load the common wordlist (insert-only, duplicates skipped). Slurs
+      file as 'blocked', general profanity as 'watch'. */
+  adminLoadSecurityWordPreset(): Promise<{ added: number; words: SecurityWord[] }> {
     return this.request('POST', '/admin/security/words/preset');
   }
 

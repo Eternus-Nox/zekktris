@@ -2,16 +2,21 @@
  * Common banned-words preset (Admin → Security → "Load common wordlist").
  *
  * A starter moderation list in the spirit of the widely used open-source
- * blocklists (Shutterstock LDNOOBW and similar): strong profanity, sexual
- * terms, and slurs. The filter matches whole words case-insensitively, so
- * common variants/plurals are listed explicitly.
+ * blocklists (Shutterstock LDNOOBW and similar). The filter matches whole
+ * words case-insensitively, so common variants/plurals are listed explicitly.
  *
- * This is a STARTING POINT — admins can remove anything too strict for
- * their community and add anything missing. Loading the preset never
- * removes existing entries (insert-only, duplicates skipped).
+ * Split by severity so "Load preset" files each word into the right tier:
+ *   - WATCH_WORDS_PRESET: general profanity + sexual/explicit terms — alert
+ *     only by default (moderators see usage; the message still sends).
+ *   - BLOCKED_WORDS_PRESET: slurs — hard-blocked everywhere.
+ *
+ * This is a STARTING POINT — admins can move any word between the blocked and
+ * watch lists, remove anything too strict, and add anything missing. Loading
+ * the preset never removes existing entries (insert-only, duplicates skipped).
  */
 
-export const BANNED_WORDS_PRESET: string[] = [
+/** General profanity + sexual/explicit — default WATCH (alert only). */
+export const WATCH_WORDS_PRESET: string[] = [
   // Strong profanity + variants
   'fuck', 'fucks', 'fucked', 'fucker', 'fuckers', 'fucking', 'motherfucker',
   'motherfuckers', 'motherfucking', 'shit', 'shits', 'shitty', 'bullshit',
@@ -26,10 +31,19 @@ export const BANNED_WORDS_PRESET: string[] = [
   'jizz', 'tits', 'titties', 'boobs', 'dildo', 'porn', 'porno',
   'pornography', 'slut', 'sluts', 'slutty', 'whore', 'whores', 'hoe',
   'hoes', 'skank',
+];
 
-  // Slurs (racial, ethnic, homophobic, transphobic, ableist)
+/** Slurs (racial, ethnic, homophobic, transphobic, ableist) — default BLOCKED. */
+export const BLOCKED_WORDS_PRESET: string[] = [
   'nigger', 'niggers', 'nigga', 'niggas', 'chink', 'chinks', 'gook',
   'spic', 'spics', 'wetback', 'wetbacks', 'kike', 'kikes', 'beaner',
   'beaners', 'raghead', 'towelhead', 'faggot', 'faggots', 'fag', 'fags',
   'dyke', 'dykes', 'tranny', 'trannies', 'retard', 'retards', 'retarded',
+];
+
+/** Combined list — kept for back-compat with any caller that wants the whole
+    set (e.g. a coarse identity check that doesn't care about tier). */
+export const BANNED_WORDS_PRESET: string[] = [
+  ...BLOCKED_WORDS_PRESET,
+  ...WATCH_WORDS_PRESET,
 ];

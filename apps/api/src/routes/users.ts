@@ -35,8 +35,7 @@ import { ageOnDate, MIN_SIGNUP_AGE } from '../lib/age';
 import * as readStates from '../services/readStates';
 import * as supervision from '../services/supervision';
 import * as messages from '../services/messages';
-import { messageMatchesPatterns } from '../services/automod';
-import { BANNED_WORDS_PRESET } from '../data/bannedWordsPreset';
+import { containsListedWord } from '../services/security';
 import {
   bioSchema,
   cdnPathOrNullSchema,
@@ -275,7 +274,13 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   }
 
   const update: Record<string, unknown> = { updatedAt: new Date() };
-  if (body.displayName !== undefined) update.displayName = body.displayName;
+  if (body.displayName !== undefined) {
+    // Identity fields must not contain vulgar words (blocked OR watch) — a
+    // display name shows next to everyone everywhere.
+    const bad = await containsListedWord(body.displayName);
+    if (bad) throw errors.badRequest('That display name contains a word that isn’t allowed.');
+    update.displayName = body.displayName;
+  }
   if (body.bio !== undefined) update.bio = body.bio;
   if (body.status !== undefined) update.status = body.status;
   if (body.customStatus !== undefined) update.customStatus = body.customStatus;
@@ -315,9 +320,9 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   if (body.tagLabel !== undefined) {
     const v = body.tagLabel?.trim();
     // Block vulgar tags — the name tag renders next to the username
-    // everywhere, so it must clear the same profanity bar as the rest of the
-    // app. Reuses the shared banned-words preset + word-boundary matcher.
-    if (v && messageMatchesPatterns(v, BANNED_WORDS_PRESET)) {
+    // everywhere, so it must clear the identity profanity bar (blocked OR
+    // watch words). DB-backed so admin edits to the lists take effect.
+    if (v && (await containsListedWord(v))) {
       throw errors.badRequest('That name tag contains a word that isn’t allowed.');
     }
     update.tagLabel = v ? v : null;

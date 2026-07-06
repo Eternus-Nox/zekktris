@@ -987,6 +987,13 @@ export interface SecurityConfig {
   wordFilterEnabled: boolean;
 }
 
+/** A banned/watched word in the instance moderation lists. 'blocked' hard-
+    blocks messages + identity fields; 'watch' logs usage without blocking. */
+export interface SecurityWord {
+  word: string;
+  severity: 'blocked' | 'watch';
+}
+
 export interface SecurityEvent {
   id: string;
   /** Automated detections ('spam_limited' | 'banned_word') plus staff-action

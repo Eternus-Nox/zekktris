@@ -929,6 +929,14 @@ guildsRouter.patch(
         await assertGuildPermission(guildId, callerId, Permissions.MANAGE_NICKNAMES);
         await assertCanManageMember(guildId, callerId, targetId);
       }
+      // Identity gate: a nickname shows in place of the name in this guild, so
+      // it must be free of vulgar words (blocked OR watch).
+      if (body.nickname) {
+        const { containsListedWord } = await import('../services/security');
+        if (await containsListedWord(body.nickname)) {
+          throw errors.badRequest('That nickname contains a word that isn’t allowed.');
+        }
+      }
       await members.setNickname({
         guildId,
         userId: targetId,

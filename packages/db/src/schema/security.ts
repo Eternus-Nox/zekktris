@@ -56,6 +56,9 @@ export const securityEvents = pgTable(
 /** Instance-wide banned words (case-insensitive whole-word match). */
 export const securityBannedWords = pgTable('security_banned_words', {
   word: text('word').primaryKey(),
+  /** 'blocked' = hard-blocked everywhere (slurs); 'watch' = alert/log only
+      (general profanity). Defaults to 'blocked'. */
+  severity: text('severity').notNull().default('blocked').$type<'blocked' | 'watch'>(),
   addedBy: bigint('added_by', { mode: 'bigint' }).references(() => users.id, {
     onDelete: 'set null',
   }),
