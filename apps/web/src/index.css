@@ -904,6 +904,20 @@ html.zk-vkb-open .zk-composer {
   padding-bottom: 0;
 }
 
+/* Safari-only name-tag ("clan tag") vertical nudge. With line-height:1 in a
+ * tiny pill, Safari positions the glyph ~1px lower than Chrome/Firefox within
+ * its line box (a known WebKit rounding difference), so the tag text drifts
+ * down a pixel — most visible next to a name in DMs. `@supports
+ * (-webkit-hyphens: none)` matches Safari (WebKit) ONLY, so we shift the text
+ * back up there without touching other browsers (which are already centered).
+ * Same total vertical padding as py-0.5, just biased upward. */
+@supports (-webkit-hyphens: none) {
+  .zk-nametag {
+    padding-top: 1px !important;
+    padding-bottom: 3px !important;
+  }
+}
+
 /* Apply this to the top-level Shell container (and the auth screens) so
  * chrome respects the notch + landscape sensor cutouts. We deliberately
  * DO NOT pad the bottom here — the elements that actually live against

@@ -47,8 +47,22 @@ class MemoryQuickLoginStore implements QuickLoginStore {
   async create(userId: string): Promise<{ code: string; expiresIn: number }> {
     const prior = this.byUser.get(userId);
     if (prior) this.byCode.delete(prior);
-    const code = newQuickLoginCode();
     const now = Date.now();
+    // Guarantee the code is not already active for ANY user — two users must
+    // never hold the same code at once (a collision would let one redeem the
+    // other's session). A free-or-expired slot is claimable; retry on the
+    // (astronomically rare, ~1e-15/attempt) clash. Single-threaded JS + no
+    // await between check and set makes this atomic.
+    let code = '';
+    for (let i = 0; i < 6; i++) {
+      const candidate = newQuickLoginCode();
+      const ex = this.byCode.get(candidate);
+      if (!ex || ex.exp <= now) {
+        code = candidate;
+        break;
+      }
+    }
+    if (!code) throw new Error('quick-login: could not allocate a unique code');
     this.byCode.set(code, { userId, exp: now + TTL_SECONDS * 1000 });
     this.byUser.set(userId, code);
     // Opportunistic sweep so abandoned codes can't grow the map.
@@ -76,8 +90,19 @@ class RedisQuickLoginStore implements QuickLoginStore {
   async create(userId: string): Promise<{ code: string; expiresIn: number }> {
     const prior = await this.redis.get(USER_PREFIX + userId);
     if (prior) await this.redis.del(CODE_PREFIX + prior);
-    const code = newQuickLoginCode();
-    await this.redis.set(CODE_PREFIX + code, userId, 'EX', TTL_SECONDS);
+    // SET ... NX claims the code atomically ONLY if no other user already holds
+    // it, so two users can never share a code (which would cross their
+    // sessions). Retry on the astronomically rare clash.
+    let code = '';
+    for (let i = 0; i < 6; i++) {
+      const candidate = newQuickLoginCode();
+      const ok = await this.redis.set(CODE_PREFIX + candidate, userId, 'EX', TTL_SECONDS, 'NX');
+      if (ok) {
+        code = candidate;
+        break;
+      }
+    }
+    if (!code) throw new Error('quick-login: could not allocate a unique code');
     await this.redis.set(USER_PREFIX + userId, code, 'EX', TTL_SECONDS);
     return { code, expiresIn: TTL_SECONDS };
   }
