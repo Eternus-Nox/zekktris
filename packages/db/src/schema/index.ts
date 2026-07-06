@@ -28,3 +28,4 @@ export * from './instanceSettings';
 export * from './reports';
 export * from './security';
 export * from './subscriptions';
+export * from './pokes';

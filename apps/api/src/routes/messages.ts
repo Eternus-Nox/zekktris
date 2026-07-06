@@ -50,7 +50,8 @@ import {
   assertChannelPermission,
 } from '../services/permissions';
 import { db, schema } from '../db';
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { nextSnowflake } from '../snowflake';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { env } from '../env';
 import type { User } from '@zekktris/db';
 import { POKE_VARIANTS } from '@zekktris/db';
@@ -61,6 +62,11 @@ import { MESSAGE_CONTENT_MAX_LENGTH } from '@zekktris/shared/constants';
 // Per-poker throttle for the nudge/poke endpoint — pokes are lightweight, so
 // a generous 10/min keeps it playful without enabling buzz-spam.
 const pokeLimiter = new RateLimiter(10, 60_000, 'poke-user');
+// Per-(poker → target) throttle: at most one poke to a GIVEN person every 10s,
+// so a poke can nudge but never spam. Composite key makes it independent per
+// direction and per target, unlike the coarse global limiter above (which caps
+// a poker's total poke rate regardless of who they're poking).
+const pokeTargetLimiter = new RateLimiter(1, 10_000, 'poke-target');
 
 export const messagesRouter = new Hono();
 messagesRouter.use('*', requireAuth);
@@ -271,12 +277,14 @@ const sendMessageSchema = z.object({
 // POST /:channelId/poke — nudge the other party in a 1:1 DM
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// A poke is an EPHEMERAL nudge — purely a way to notify someone. It creates NO
-// message and leaves NO history (it must not clutter the DM), riding a
-// dedicated ephemeral POKE gateway event + a big-emoji push instead. Connected
-// clients surface it transiently (phone/web toast, watch big-emoji flash +
-// haptic); a closed app is reached by the push (body = the emoji, no text).
-// DM-1:1 only, rate-limited per poker.
+// A poke is a lightweight nudge — a way to notify someone. It creates NO
+// message and does NOT bump lastMessageId (it must not clutter the DM), riding
+// a dedicated POKE gateway event + a big-emoji push. Connected clients surface
+// it transiently (phone/web toast, watch big-emoji flash + haptic); a closed
+// app is reached by the push (body = the emoji, no text). A small bounded
+// history (newest 6 per recipient) IS kept so the poke button can show recent
+// pokes and offer a poke-back — read via GET /:channelId/pokes below.
+// DM-1:1 only; throttled to one poke per target per 10s.
 const pokeSchema = z.object({
   pokeType: z.enum(['poke', 'heart', 'wave', 'like', 'fire']),
 });
@@ -305,6 +313,14 @@ messagesRouter.post(
     const others = recipients.filter((r) => r !== userId);
     if (others.length === 0) throw errors.badRequest("You can't poke yourself");
 
+    // Per-target 10s throttle: at most one poke to a GIVEN person every 10s so
+    // it stays a nudge, never spam. A throttled poke neither notifies nor
+    // records. (A 1:1 DM has exactly one other party; the loop generalizes.)
+    for (const target of others) {
+      const trl = await pokeTargetLimiter.consume(`${userId}:${target}`);
+      if (!trl.ok) throw errors.rateLimited(Math.ceil(trl.retryAfterMs / 1000));
+    }
+
     const variant = POKE_VARIANTS[pokeType];
     const [poker] = await db
       .select()
@@ -313,9 +329,11 @@ messagesRouter.post(
       .limit(1);
     const pokerName = poker?.displayName ?? poker?.username ?? 'Someone';
 
-    // Ephemeral notification only — NO message row, NO lastMessageId bump, NO
-    // history. Connected recipients get the live POKE event; the sender is
-    // skipped client-side via initiator_id.
+    // A poke rides a live gateway event + a push (below); the sender is skipped
+    // client-side via initiator_id. It creates NO message and does NOT bump
+    // lastMessageId (it must not clutter the DM), but we DO keep a small bounded
+    // history (newest 6 per recipient) so the poke button can show recent pokes
+    // and offer a poke-back.
     dispatch.poke({
       channelId,
       pokeType,
@@ -323,6 +341,33 @@ messagesRouter.post(
       initiatorId: userId,
       initiatorName: pokerName,
     });
+
+    // Persist the poke + prune to the newest 6 for this (channel, recipient).
+    // Best-effort: a DB hiccup must never block the live nudge. Order/prune by
+    // the snowflake id (monotonic) to avoid the timestamptz µs/ms comparison
+    // foot-gun.
+    try {
+      for (const target of others) {
+        await db.insert(schema.pokes).values({
+          id: nextSnowflake(),
+          channelId,
+          initiatorId: userId,
+          recipientId: target,
+          pokeType,
+        });
+        await db.execute(sql`
+          DELETE FROM pokes
+           WHERE channel_id = ${channelId} AND recipient_id = ${target}
+             AND id NOT IN (
+               SELECT id FROM pokes
+                WHERE channel_id = ${channelId} AND recipient_id = ${target}
+                ORDER BY id DESC LIMIT 6
+             )
+        `);
+      }
+    } catch {
+      // History is best-effort — the live poke already fired.
+    }
 
     // Push the OTHER party (best-effort, mute-aware). The live POKE event
     // already reaches a connected client; this covers a closed app. A muted DM
@@ -354,6 +399,53 @@ messagesRouter.post(
     }
 
     return c.json({ ok: true }, 200);
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /:channelId/pokes — recent pokes RECEIVED by the caller on this DM
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Feeds the poke button's history popover: up to 6 pokes this user received on
+// this 1:1 DM, newest first, each with the poker's display name. DM-1:1 only.
+messagesRouter.get(
+  '/:channelId/pokes',
+  validate('param', z.object({ channelId: snowflakeSchema })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const channelId = BigInt(c.req.valid('param').channelId);
+
+    const ctx = await loadChannelContext(channelId, userId);
+    if (!ctx.isDM || ctx.channel.type !== 'dm') {
+      throw errors.badRequest('Pokes are only available in direct messages');
+    }
+
+    const rows = await db
+      .select({
+        id: schema.pokes.id,
+        pokeType: schema.pokes.pokeType,
+        initiatorId: schema.pokes.initiatorId,
+        recipientId: schema.pokes.recipientId,
+        createdAt: schema.pokes.createdAt,
+        displayName: schema.users.displayName,
+        username: schema.users.username,
+      })
+      .from(schema.pokes)
+      .innerJoin(schema.users, eq(schema.users.id, schema.pokes.initiatorId))
+      .where(and(eq(schema.pokes.channelId, channelId), eq(schema.pokes.recipientId, userId)))
+      .orderBy(desc(schema.pokes.id))
+      .limit(6);
+
+    return c.json({
+      pokes: rows.map((r) => ({
+        id: r.id.toString(),
+        pokeType: r.pokeType,
+        initiatorId: r.initiatorId.toString(),
+        recipientId: r.recipientId.toString(),
+        createdAt: r.createdAt.toISOString(),
+        initiatorName: r.displayName ?? r.username ?? 'Someone',
+      })),
+    });
   },
 );
 

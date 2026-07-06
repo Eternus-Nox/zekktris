@@ -17,7 +17,7 @@
 
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
-import type { Channel, Message } from '@zekktris/client';
+import type { Channel, Message, PokeHistoryEntry } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
 import { POKE_TYPES, POKE_VARIANTS, type PokeType } from '../lib/poke';
 import { useAuth } from '../auth/AuthContext';
@@ -2857,11 +2857,41 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
  * POST /channels/:id/poke. The poke is an ephemeral nudge — it leaves no
  * message; the recipient gets a transient toast (or big-emoji push when away).
  */
+/** Compact relative time for the poke-history lines ("just now", "2m", "3h", "5d"). */
+function pokeAgo(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return '';
+  const s = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (s < 45) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)}m`;
+  if (s < 86400) return `${Math.round(s / 3600)}h`;
+  return `${Math.round(s / 86400)}d`;
+}
+
 function DmHeaderPokeButton({ channel }: { channel: Channel }) {
   const restForChannel = useAppStateSelector((v) => v.restForChannel);
   const toasts = useToasts();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [history, setHistory] = useState<PokeHistoryEntry[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // Fetch the recent-pokes history each time the popover opens (refetch-on-open
+  // keeps it simple; the list is capped at 6 server-side).
+  const toggle = () => {
+    setOpen((wasOpen) => {
+      const next = !wasOpen;
+      if (next) {
+        setLoadingHistory(true);
+        void restForChannel(channel.id)
+          .then((rest) => rest.listPokes(channel.id))
+          .then((r) => setHistory(r.pokes))
+          .catch(() => setHistory([]))
+          .finally(() => setLoadingHistory(false));
+      }
+      return next;
+    });
+  };
 
   const send = async (pokeType: PokeType) => {
     if (busy) return;
@@ -2881,7 +2911,7 @@ function DmHeaderPokeButton({ channel }: { channel: Channel }) {
     <div className="relative">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         disabled={busy}
         className="group w-8 h-8 flex items-center justify-center rounded hover:bg-bg-3 transition-colors disabled:opacity-50"
         aria-label="Poke"
@@ -2902,19 +2932,54 @@ function DmHeaderPokeButton({ channel }: { channel: Channel }) {
         <>
           {/* Click-away backdrop (local, not a portal) */}
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden />
-          <div className="absolute right-0 top-9 z-20 flex items-center gap-0.5 rounded-lg border border-line bg-bg-2 p-1 shadow-lg">
-            {POKE_TYPES.map((t) => (
-              <button
-                key={t}
-                type="button"
-                onClick={() => void send(t)}
-                className="w-8 h-8 flex items-center justify-center rounded hover:bg-bg-3 text-[17px] leading-none"
-                aria-label={POKE_VARIANTS[t].label}
-                title={POKE_VARIANTS[t].label}
-              >
-                <span aria-hidden>{POKE_VARIANTS[t].emoji}</span>
-              </button>
-            ))}
+          <div className="absolute right-0 top-9 z-20 w-60 rounded-lg border border-line bg-bg-2 p-2 shadow-lg">
+            {/* Recent pokes from this person (max 6). */}
+            <div className="px-1 pb-1.5 text-[0.65rem] font-semibold uppercase tracking-wider text-ink-3">
+              Recent pokes
+            </div>
+            {loadingHistory ? (
+              <div className="px-1 pb-2 text-xs text-ink-3">Loading…</div>
+            ) : history.length === 0 ? (
+              <div className="px-1 pb-2 text-xs text-ink-3">No pokes yet — say hi below.</div>
+            ) : (
+              <ul className="pb-1.5 max-h-40 overflow-y-auto">
+                {history.map((p) => {
+                  const v = POKE_VARIANTS[p.pokeType as PokeType] ?? POKE_VARIANTS.poke;
+                  return (
+                    <li
+                      key={p.id}
+                      className="flex items-center gap-1.5 px-1 py-0.5 text-xs text-ink-1"
+                    >
+                      <span aria-hidden className="text-[15px] leading-none shrink-0">
+                        {v.emoji}
+                      </span>
+                      <span className="truncate">
+                        <span className="font-medium">{p.initiatorName}</span>{' '}
+                        <span className="text-ink-2">{v.verb}</span>
+                      </span>
+                      <span className="ml-auto shrink-0 text-[0.65rem] text-ink-3">
+                        {pokeAgo(p.createdAt)}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            {/* Poke palette — click an emoji to send. */}
+            <div className="flex items-center gap-0.5 border-t border-line pt-1.5">
+              {POKE_TYPES.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => void send(t)}
+                  className="w-8 h-8 flex items-center justify-center rounded hover:bg-bg-3 text-[17px] leading-none"
+                  aria-label={POKE_VARIANTS[t].label}
+                  title={POKE_VARIANTS[t].label}
+                >
+                  <span aria-hidden>{POKE_VARIANTS[t].emoji}</span>
+                </button>
+              ))}
+            </div>
           </div>
         </>
       )}

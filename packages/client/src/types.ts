@@ -68,6 +68,22 @@ export interface PublicUser {
   isModerator?: boolean;
 }
 
+/** A single entry in a DM's poke history (newest-first, capped at 6),
+    returned by GET /channels/:id/pokes. */
+export interface PokeHistoryEntry {
+  id: string;
+  /** poke | heart | wave | like | fire. */
+  pokeType: string;
+  /** The poker's user id (stringified BigInt). */
+  initiatorId: string;
+  /** Who was poked (the current user, for received-poke history). */
+  recipientId: string;
+  /** ISO 8601 timestamp. */
+  createdAt: string;
+  /** The poker's display name (username fallback). */
+  initiatorName: string;
+}
+
 /** A bot account owned by the current user. Like a PublicUser but with
     the owner id. Bots authenticate via a static token (returned only at
     create/regenerate, never on this DTO). */

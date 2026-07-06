@@ -29,6 +29,7 @@ import type {
   MonetizationConfig,
   MonetizationConfigPatch,
   PermissionOverride,
+  PokeHistoryEntry,
   PublicUser,
   Bot,
   BotCommand,
@@ -2006,13 +2007,22 @@ export class RestClient {
   }
 
   /**
-   * Poke/nudge the other party in a 1:1 DM. An EPHEMERAL notification — creates
-   * no message and leaves no history; it arrives back as a live POKE gateway
-   * event (+ a big-emoji push for a closed app). `pokeType` is one of
-   * poke | heart | wave | like | fire.
+   * Poke/nudge the other party in a 1:1 DM. Creates no message and doesn't
+   * clutter the DM; it arrives back as a live POKE gateway event (+ a big-emoji
+   * push for a closed app) and is recorded in a small bounded history (see
+   * listPokes). Server throttles to one poke per target per 10s. `pokeType` is
+   * one of poke | heart | wave | like | fire.
    */
   poke(channelId: string, pokeType: string): Promise<{ ok: boolean }> {
     return this.request('POST', `/channels/${channelId}/poke`, { pokeType });
+  }
+
+  /**
+   * Recent pokes RECEIVED by the current user on a 1:1 DM, newest first, capped
+   * at 6. Feeds the poke button's history popover.
+   */
+  listPokes(channelId: string): Promise<{ pokes: PokeHistoryEntry[] }> {
+    return this.request('GET', `/channels/${channelId}/pokes`);
   }
 
   /**
