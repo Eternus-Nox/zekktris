@@ -1299,6 +1299,18 @@ messagesRouter.post(
         const allowedTargets = [...allowed.values()];
         if (allowedTargets.length === 0) return;
 
+        // Routing data every message push carries so a tap can deep-link to the
+        // EXACT message (jump/scroll to it) and, in a guild, prefill a reply to
+        // the author. channelId is already in url/tag; messageId + author add a
+        // few small strings and leak nothing new (the recipient can already see
+        // the message + who sent it).
+        const routeData = {
+          channelId: channelId.toString(),
+          messageId: result.message.id.toString(),
+          authorId: userId.toString(),
+          authorName,
+        };
+
         if (isDM) {
           // Per-recipient preview preference. No explicit row → default:
           // E2EE generic, plaintext shows content (today's behavior). For an
@@ -1324,7 +1336,7 @@ messagesRouter.post(
           // (so the reply handler knows to encrypt on-device before sending).
           // The channel id is already in `url`/`tag`, so adding it to `data`
           // leaks nothing new.
-          const replyData = { channelId: channelId.toString(), isE2EE: isE2EEContent };
+          const replyData = { ...routeData, isE2EE: isE2EEContent };
           const common = { url, tag: channelId.toString(), kind: 'message' as const };
           // Bulk fan-out: one token query per transport + bounded send burst,
           // with each recipient's own preview-pref / E2EE / badge payload.
@@ -1372,7 +1384,7 @@ messagesRouter.post(
             kind: 'message' as const,
             badge: badges.get(target.toString()) ?? 0,
             ...(imageUrl ? { mutableContent: true } : {}),
-            data: { channelId: channelId.toString(), isE2EE: false, ...(imageUrl ? { imageUrl } : {}) },
+            data: { ...routeData, isE2EE: false, ...(imageUrl ? { imageUrl } : {}) },
           }));
         }
       } catch {
