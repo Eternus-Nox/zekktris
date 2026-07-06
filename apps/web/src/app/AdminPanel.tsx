@@ -873,8 +873,9 @@ function UsersTab() {
                 {!isSelf && (
                   <div className="flex flex-wrap items-center gap-1.5 shrink-0 ml-auto">
                     {/* Button order (operator spec): Role · DOB · Membership ·
-                        Sign out · Ban · Delete. Role + Delete are admin-only;
-                        moderators also can't ban/sign-out other staff. */}
+                        Sign out · Ban · Delete. Role, Membership (gifting) +
+                        Delete are admin-only; moderators also can't ban/
+                        sign-out other staff. */}
                     {selfIsAdmin && (
                       <button
                         onClick={() => openPanel('role', u.id)}
@@ -893,14 +894,16 @@ function UsersTab() {
                     >
                       DOB
                     </button>
-                    <button
-                      onClick={() => openPanel('gift', u.id)}
-                      disabled={pending === u.id}
-                      className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors"
-                      title="Gift or reset this user's supporter membership"
-                    >
-                      Membership
-                    </button>
+                    {selfIsAdmin && (
+                      <button
+                        onClick={() => openPanel('gift', u.id)}
+                        disabled={pending === u.id}
+                        className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors"
+                        title="Gift or reset this user's supporter membership"
+                      >
+                        Membership
+                      </button>
+                    )}
                     {/* Sign-out button — only shown when the user isn't
                         already banned, since banning revokes sessions
                         implicitly and a redundant "sign out a banned
@@ -947,8 +950,9 @@ function UsersTab() {
                 )}
                 {/* Inline membership panel — gift a tier for a duration, or
                     reset (remove + clear paid cosmetics). basis-full drops it
-                    onto its own row inside the flex-wrap li. Moderators can
-                    gift up to 3 months and can't reset (server-enforced). */}
+                    onto its own row inside the flex-wrap li. Admin-only: the
+                    Membership button above is gated on selfIsAdmin and the
+                    server rejects gifts/resets from moderators. */}
                 {giftFor === u.id && (
                   <div className="basis-full flex flex-wrap items-center gap-1.5 pt-2 border-t border-line mt-1">
                     <select

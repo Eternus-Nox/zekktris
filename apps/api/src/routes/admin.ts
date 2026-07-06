@@ -55,14 +55,12 @@ export const adminRouter = new Hono();
 // until someone deliberately opens it to moderators.
 //
 // Moderator scope (per operator spec): security log (read), ban/unban,
-// force sign-out, membership view + gifting capped at 3 months, DOB reset,
-// and observing servers (peek) — but NOT deleting them.
+// force sign-out, membership VIEW (in the user list), DOB reset, and observing
+// servers (peek) — but NOT deleting them. Anything monetization-related
+// (gifting/removing memberships, the monetization config) is admin-only.
 const MODERATOR_ALLOWED: { method: string; pattern: RegExp }[] = [
   { method: 'GET', pattern: /^\/users$/ },
   { method: 'POST', pattern: /^\/users\/[0-9]+\/(ban|unban|logout|reset-dob-lock)$/ },
-  // Gift only — the DELETE (membership reset) stays admin-only. The 3-month
-  // duration cap is enforced in the handler.
-  { method: 'POST', pattern: /^\/users\/[0-9]+\/subscription$/ },
   { method: 'GET', pattern: /^\/guilds$/ },
   { method: 'GET', pattern: /^\/guilds\/[0-9]+\/peek$/ },
   { method: 'GET', pattern: /^\/channels\/[0-9]+\/peek\/messages$/ },
@@ -630,14 +628,10 @@ adminRouter.post(
     const selfId = requireUserId(c);
     const targetId = BigInt(c.req.valid('param').id);
     const { tier, duration } = c.req.valid('json');
-    // A moderator can't gift a membership to themselves or to another staff
-    // account — otherwise a moderator could self-grant free paid cosmetics.
-    // (Admins pass through unconditionally inside assertModCanTouch.)
+    // Gifting is admin-only (not in MODERATOR_ALLOWED), so only admins reach
+    // here — no duration cap. assertModCanTouch stays as defense-in-depth in
+    // case the allowlist is ever widened to admit moderators again.
     await assertModCanTouch(c, targetId);
-    // Moderators can gift up to 3 months; 6m/forever are admin-only.
-    if (!staffIsAdmin(c) && duration !== '1m' && duration !== '3m') {
-      throw errors.forbidden('Moderators can gift up to 3 months');
-    }
     const subs = await import('../services/subscriptions');
     const row = await subs.giftSubscription(selfId, targetId, tier, duration);
     await auditStaff(c, 'staff_gift', `Gifted ${tier} membership (${duration})`, {
