@@ -904,27 +904,27 @@ html.zk-vkb-open .zk-composer {
   padding-bottom: 0;
 }
 
-/* Name-tag ("clan tag") vertical centering. At this tiny 10px pill with
- * line-height:1, the label glyph renders ~1px low in Blink/Gecko (Chrome/
- * Firefox) and ~2px low in WebKit (Safari) — a per-engine sub-pixel baseline
- * rounding difference, most visible next to a name in DMs, text channels, and
- * the member list. The glyph's offset from the pill's border-box center is
- * exactly (padding-top − padding-bottom)/2, so we bias the padding upward
- * (keeping the 4px total so pill height is unchanged) to cancel the drop.
+/* Name-tag ("clan tag") vertical position. At this tiny 10px pill with
+ * line-height:1 the label's offset from the pill's border-box center is exactly
+ * (padding-top − padding-bottom)/2, and WebKit renders the same CSS ~1px lower
+ * than Blink/Gecko — so the Safari-only block carries 1px less downward bias to
+ * keep BOTH engines visually identical. Total padding stays 4px (pill height
+ * unchanged); px-1.5 (left/right) untouched. Per-engine tuning is
+ * user-directed — nudge these ±1px to move the label up/down.
  *
- * Base: 1px up (top1/bot3) for every browser — fixes Chrome/Firefox.
- * WebKit drops 1px more, so the Safari-only block below bumps it to 2px up
- * (top0/bot4). `@supports (-webkit-hyphens: none)` is false in Blink/Gecko and
- * true only in WebKit. !important beats the Tailwind py-0.5 utility; px-1.5
- * (left/right) is untouched throughout. */
+ * Base (Chrome/Firefox): top3/bot1 → biases the label 1px below center.
+ * Safari (WebKit): top2/bot2 (symmetric) → 1px less CSS bias offsets WebKit's
+ * 1px-lower rendering, landing at the same spot as Chrome.
+ * `@supports (-webkit-hyphens: none)` is false in Blink/Gecko, true only in
+ * WebKit. !important beats the Tailwind py-0.5 utility. */
 .zk-nametag {
-  padding-top: 1px !important;
-  padding-bottom: 3px !important;
+  padding-top: 3px !important;
+  padding-bottom: 1px !important;
 }
 @supports (-webkit-hyphens: none) {
   .zk-nametag {
-    padding-top: 0 !important;
-    padding-bottom: 4px !important;
+    padding-top: 2px !important;
+    padding-bottom: 2px !important;
   }
 }
 
