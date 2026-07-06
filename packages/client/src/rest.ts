@@ -1086,6 +1086,25 @@ export class RestClient {
   }
 
   /**
+   * Personal DM nicknames — the current user's private map of
+   * { targetUserId: nickname }, shown in place of a user's name in direct
+   * messages only. Fetch once at login and apply client-side.
+   */
+  getDmNicknames(): Promise<{ nicknames: Record<string, string> }> {
+    return this.request('GET', '/users/@me/dm-nicknames');
+  }
+
+  /** Set (or replace) this user's personal DM nickname for `targetId`. */
+  setDmNickname(targetId: string, nickname: string): Promise<{ nickname: string }> {
+    return this.request('PUT', `/users/@me/dm-nicknames/${targetId}`, { nickname });
+  }
+
+  /** Clear this user's personal DM nickname for `targetId` (idempotent). */
+  clearDmNickname(targetId: string): Promise<{ ok: true }> {
+    return this.request('DELETE', `/users/@me/dm-nicknames/${targetId}`);
+  }
+
+  /**
    * Send (or auto-accept reciprocal of) a friend request.
    * Returns the new relationship type — 'outgoing_request' for a fresh
    * request, 'friend' if there was already an incoming one to accept.

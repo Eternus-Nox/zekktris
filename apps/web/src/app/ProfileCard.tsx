@@ -69,7 +69,8 @@ export function ProfileCard({
   onClose: () => void;
 }) {
   const { rest, user: self } = useAuth();
-  const { state, applyRelationship, loadMembers, mergeChannelVoiceStates } = useAppState();
+  const { state, applyRelationship, loadMembers, mergeChannelVoiceStates, setDmNickname } =
+    useAppState();
   const toasts = useToasts();
   const nav = useNavigate();
   const [rel, setRel] = useState<RelType>('none');
@@ -79,6 +80,10 @@ export function ProfileCard({
   // the server would reject. Fetched from the single-profile endpoint below.
   const [canMessage, setCanMessage] = useState<boolean | undefined>(undefined);
   const [pending, setPending] = useState(false);
+  // Personal DM-nickname editor (viewer-private label shown in DMs only).
+  const dmNickname = state.dmNicknames[user.id] ?? '';
+  const [editingDmNick, setEditingDmNick] = useState(false);
+  const [dmNickDraft, setDmNickDraft] = useState('');
   const isSelf = self?.id === user.id;
 
   // The user object passed in often comes from a list (relationships,
@@ -326,6 +331,17 @@ export function ProfileCard({
       toasts.push(e instanceof ApiError ? e.message : 'Could not update nickname', 'error');
     } finally {
       setNickPending(false);
+    }
+  }
+
+  /** Save (or clear) the personal DM nickname — viewer-private, shown in DMs. */
+  async function saveDmNickname() {
+    const next = dmNickDraft.trim();
+    setEditingDmNick(false);
+    try {
+      await setDmNickname(user.id, next.length === 0 ? null : next);
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not save nickname', 'error');
     }
   }
 
@@ -769,6 +785,61 @@ export function ProfileCard({
                 <TierBadge tier={fullProfile?.subscriptionTier ?? user.subscriptionTier} />
               </div>
               <div className="text-xs text-ink-3 truncate">@{user.username}</div>
+              {/* Personal DM nickname — viewer-private label shown in DMs only. */}
+              {!isSelf && !user.isBot && (
+                <div className="mt-1">
+                  {editingDmNick ? (
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        autoFocus
+                        value={dmNickDraft}
+                        maxLength={32}
+                        onChange={(e) => setDmNickDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') void saveDmNickname();
+                          if (e.key === 'Escape') setEditingDmNick(false);
+                        }}
+                        placeholder="Nickname (only you, in DMs)"
+                        className="min-w-0 flex-1 text-xs bg-bg-3 border border-line rounded px-1.5 py-1 text-ink-1"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void saveDmNickname()}
+                        className="shrink-0 text-xs px-2 py-1 rounded bg-accent/20 text-ink-1 hover:bg-accent/30"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingDmNick(false)}
+                        className="shrink-0 text-xs px-2 py-1 rounded text-ink-3 hover:bg-bg-3"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDmNickDraft(dmNickname);
+                        setEditingDmNick(true);
+                      }}
+                      className="text-[11px] text-ink-3 hover:text-ink-1 inline-flex items-center gap-1 truncate"
+                      title="A nickname only you see, shown in direct messages"
+                    >
+                      {dmNickname ? (
+                        <>
+                          <span className="text-ink-2">Nickname:</span>
+                          <span className="text-ink-1 truncate">{dmNickname}</span>
+                          <span className="text-ink-4">· edit</span>
+                        </>
+                      ) : (
+                        <span>+ Add nickname (only you)</span>
+                      )}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 

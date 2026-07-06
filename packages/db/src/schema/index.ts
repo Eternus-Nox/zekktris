@@ -30,3 +30,4 @@ export * from './security';
 export * from './subscriptions';
 export * from './pokes';
 export * from './achievements';
+export * from './dmNicknames';

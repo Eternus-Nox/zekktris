@@ -42,6 +42,7 @@ import {
   customStatusSchema,
   displayNameSchema,
   emailSchema,
+  nicknameSchema,
   passwordSchema,
   settableStatusSchema,
   snowflakeSchema,
@@ -1580,6 +1581,55 @@ usersRouter.get('/@me/relationships', requireAuth, async (c) => {
     })),
   });
 });
+
+/**
+ * Personal DM nicknames — a viewer-private label for another user, shown in
+ * place of their name in DIRECT MESSAGES only (Discord-style friend nicknames).
+ * One-directional: only the setter sees it, and it's independent of any DM
+ * channel. The client fetches the full map once at login (like relationships)
+ * and applies it wherever a DM peer renders.
+ */
+usersRouter.get('/@me/dm-nicknames', requireAuth, async (c) => {
+  const userId = requireUserId(c);
+  const dms = await import('../services/dms');
+  const nicknames = await dms.getNicknameMap(userId);
+  return c.json({ nicknames });
+});
+
+usersRouter.put(
+  '/@me/dm-nicknames/:targetId',
+  requireAuth,
+  validate('param', z.object({ targetId: snowflakeSchema })),
+  validate('json', z.object({ nickname: nicknameSchema })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const targetId = BigInt(c.req.valid('param').targetId);
+    if (targetId === userId) throw errors.badRequest('You can’t nickname yourself.');
+    const nickname = c.req.valid('json').nickname.trim();
+    if (!nickname) throw errors.badRequest('Enter a nickname, or remove it to clear.');
+    // Identity gate: a nickname stands in for a name, so hold it to the same
+    // profanity bar as guild nicknames / display names.
+    if (await containsListedWord(nickname)) {
+      throw errors.badRequest('That nickname contains a word that isn’t allowed.');
+    }
+    const dms = await import('../services/dms');
+    await dms.setNickname(userId, targetId, nickname);
+    return c.json({ nickname });
+  },
+);
+
+usersRouter.delete(
+  '/@me/dm-nicknames/:targetId',
+  requireAuth,
+  validate('param', z.object({ targetId: snowflakeSchema })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const targetId = BigInt(c.req.valid('param').targetId);
+    const dms = await import('../services/dms');
+    await dms.clearNickname(userId, targetId);
+    return c.json({ ok: true });
+  },
+);
 
 /**
  * Send a friend request. Idempotent — repeating with an already-pending

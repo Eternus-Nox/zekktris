@@ -235,6 +235,12 @@ interface State {
   }>;
   loadedRelationships: boolean;
   /**
+   * Personal DM nicknames: { targetUserId: nickname }. Viewer-private labels
+   * shown in place of a user's name in direct messages only. Hydrated once at
+   * login (like relationships) and applied wherever a DM peer renders.
+   */
+  dmNicknames: Record<string, string>;
+  /**
    * Parental-controls summary for the current user (who they supervise,
    * who supervises them, pending requests). Null until loaded. Drives
    * the supervision banner and the DM E2EE policy for supervised users.
@@ -281,6 +287,7 @@ const initialState: State = {
   loadedNotificationOverrides: false,
   relationships: [],
   loadedRelationships: false,
+  dmNicknames: {},
   supervision: null,
   familyNudge: 0,
   savedMessageIds: new Set(),
@@ -428,6 +435,8 @@ type Action =
         user: PublicUser;
       }>;
     }
+  | { type: 'DM_NICKNAMES_SET'; nicknames: Record<string, string> }
+  | { type: 'DM_NICKNAME_SET'; userId: string; nickname: string | null }
   | {
       type: 'RELATIONSHIP_UPSERT';
       relationship: {
@@ -1582,6 +1591,15 @@ function reducer(state: State, action: Action): State {
       else next[key] = action.level;
       return { ...state, notificationOverrides: next };
     }
+    case 'DM_NICKNAMES_SET': {
+      return { ...state, dmNicknames: action.nicknames };
+    }
+    case 'DM_NICKNAME_SET': {
+      const next = { ...state.dmNicknames };
+      if (action.nickname) next[action.userId] = action.nickname;
+      else delete next[action.userId];
+      return { ...state, dmNicknames: next };
+    }
     case 'RELATIONSHIPS_SET': {
       return { ...state, relationships: action.relationships, loadedRelationships: true };
     }
@@ -1885,6 +1903,11 @@ interface AppStateValue {
   ) => Promise<void>;
   /** Hydrate the relationships list from REST. Idempotent. */
   loadRelationships: () => Promise<void>;
+  /** Re-fetch the current user's personal DM-nickname map. */
+  loadDmNicknames: () => Promise<void>;
+  /** Set (non-empty) or clear (null) the personal DM nickname for a user.
+      Optimistic + fires the REST mutation; reverts on failure. */
+  setDmNickname: (userId: string, nickname: string | null) => Promise<void>;
   /** Re-fetch the current user's parental-controls summary. Call after
       a linking mutation so the banner / Family settings reflect it. */
   reloadSupervision: () => Promise<void>;
@@ -2283,6 +2306,30 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     const r = await rest.listRelationships();
     dispatch({ type: 'RELATIONSHIPS_SET', relationships: r.relationships });
   }, [rest]);
+
+  const loadDmNicknames = useCallback(async () => {
+    const r = await rest.getDmNicknames();
+    dispatch({ type: 'DM_NICKNAMES_SET', nicknames: r.nicknames });
+  }, [rest]);
+
+  /**
+   * Set (non-empty) or clear (null) a personal DM nickname for a user. Updates
+   * local state optimistically then fires the REST mutation; reverts on failure.
+   */
+  const setDmNickname = useCallback(
+    async (userId: string, nickname: string | null) => {
+      const prev = stateRef.current.dmNicknames[userId] ?? null;
+      dispatch({ type: 'DM_NICKNAME_SET', userId, nickname });
+      try {
+        if (nickname && nickname.trim()) await rest.setDmNickname(userId, nickname.trim());
+        else await rest.clearDmNickname(userId);
+      } catch (e) {
+        dispatch({ type: 'DM_NICKNAME_SET', userId, nickname: prev });
+        throw e;
+      }
+    },
+    [rest],
+  );
 
   const loadSupervision = useCallback(async () => {
     const r = await rest.familyMe();
@@ -2810,8 +2857,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     void loadReadStates().catch(() => undefined);
     void loadNotificationOverrides().catch(() => undefined);
     void loadRelationships().catch(() => undefined);
+    void loadDmNicknames().catch(() => undefined);
     void loadSupervision().catch(() => undefined);
-  }, [token, user, refreshGuilds, loadDMs, loadReadStates, loadNotificationOverrides, loadRelationships, loadSupervision]);
+  }, [token, user, refreshGuilds, loadDMs, loadReadStates, loadNotificationOverrides, loadRelationships, loadDmNicknames, loadSupervision]);
 
   // ── Voice-prefs sync ─────────────────────────────────────────────────
   //
@@ -3454,6 +3502,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         void loadReadStates().catch(() => undefined);
         void loadNotificationOverrides().catch(() => undefined);
         void loadRelationships().catch(() => undefined);
+        void loadDmNicknames().catch(() => undefined);
         void loadSupervision().catch(() => undefined);
         // For guilds the user has already opened (their channel list
         // or member list has been loaded), refresh both. This is what
@@ -3488,6 +3537,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       loadReadStates,
       loadNotificationOverrides,
       loadRelationships,
+      loadDmNicknames,
       loadSupervision,
       toasts.push,
       restForChannel,
@@ -3529,6 +3579,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       loadNotificationOverrides,
       setNotificationOverride,
       loadRelationships,
+      loadDmNicknames,
+      setDmNickname,
       reloadSupervision: loadSupervision,
       applyRelationship,
       replaceUser,
@@ -3560,6 +3612,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       loadNotificationOverrides,
       setNotificationOverride,
       loadRelationships,
+      loadDmNicknames,
+      setDmNickname,
       applyRelationship,
       replaceUser,
       mergeChannelVoiceStates,
@@ -3622,6 +3676,19 @@ export function useAppStateSelector<T>(selector: (v: AppStateValue) => T): T {
   // which is why we don't do that — the slot-type assertion keeps
   // the selector's return type flowing through cleanly.
   return useContextSelector(AppStateContext, (v) => selector(v as AppStateValue));
+}
+
+/**
+ * The viewer's personal DM nickname for a user, or undefined. Apply ONLY in
+ * DM contexts — the caller decides it's a DM before substituting the name.
+ */
+export function useDmNickname(userId: string | null | undefined): string | undefined {
+  return useAppStateSelector((v) => (userId ? v.state.dmNicknames[userId] : undefined));
+}
+
+/** The full personal DM-nickname map (for sites resolving several ids at once). */
+export function useDmNicknames(): Record<string, string> {
+  return useAppStateSelector((v) => v.state.dmNicknames);
 }
 
 /**

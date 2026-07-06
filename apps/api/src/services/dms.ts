@@ -660,6 +660,44 @@ export async function setDmNotificationPref(
     });
 }
 
+// ── Personal DM nicknames ───────────────────────────────────────────────────
+
+/** The current user's full personal-nickname map: { targetUserId: nickname }.
+ *  Fetched once at login and applied client-side wherever a DM peer renders. */
+export async function getNicknameMap(ownerId: bigint): Promise<Record<string, string>> {
+  const rows = await db
+    .select({ targetId: schema.dmNicknames.targetId, nickname: schema.dmNicknames.nickname })
+    .from(schema.dmNicknames)
+    .where(eq(schema.dmNicknames.ownerId, ownerId));
+  const out: Record<string, string> = {};
+  for (const r of rows) out[r.targetId.toString()] = r.nickname;
+  return out;
+}
+
+/** Set (upsert) the current user's personal nickname for a target user. */
+export async function setNickname(
+  ownerId: bigint,
+  targetId: bigint,
+  nickname: string,
+): Promise<void> {
+  await db
+    .insert(schema.dmNicknames)
+    .values({ ownerId, targetId, nickname, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: [schema.dmNicknames.ownerId, schema.dmNicknames.targetId],
+      set: { nickname, updatedAt: new Date() },
+    });
+}
+
+/** Clear the current user's personal nickname for a target user (idempotent). */
+export async function clearNickname(ownerId: bigint, targetId: bigint): Promise<void> {
+  await db
+    .delete(schema.dmNicknames)
+    .where(
+      and(eq(schema.dmNicknames.ownerId, ownerId), eq(schema.dmNicknames.targetId, targetId)),
+    );
+}
+
 /** Bulk-load several users' preview choices for one DM (push fan-out). Returns
  *  a map of userId → explicit choice; absence means "no row → use default". */
 export async function getDmNotificationPrefsForChannel(

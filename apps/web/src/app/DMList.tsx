@@ -16,7 +16,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import type { Channel, Message, PublicUser } from '@zekktris/client';
-import { useAppStateSelector, isChannelUnread, channelMentionCount, isChannelMuted } from '../state/AppState';
+import { useAppStateSelector, useDmNickname, isChannelUnread, channelMentionCount, isChannelMuted } from '../state/AppState';
 import { useAuth } from '../auth/AuthContext';
 import { useToasts } from '../state/Toasts';
 import { avatarColor, avatarInitials } from '../lib/avatar';
@@ -348,7 +348,9 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
     }
     return null;
   })();
-  const displayName = recipient?.displayName ?? channel.name ?? 'Direct message';
+  // Personal DM nickname (viewer-private) takes precedence over the real name.
+  const nickname = useDmNickname(recipient?.id);
+  const displayName = nickname ?? recipient?.displayName ?? channel.name ?? 'Direct message';
   const initials = avatarInitials(displayName);
   const tone = avatarColor(recipient?.id ?? channel.id);
   const status = recipient?.status ?? 'offline';

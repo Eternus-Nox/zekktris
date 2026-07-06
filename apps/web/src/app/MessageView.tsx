@@ -21,7 +21,7 @@ import type { Channel, Message, PokeHistoryEntry } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
 import { POKE_TYPES, POKE_VARIANTS, type PokeType } from '../lib/poke';
 import { useAuth } from '../auth/AuthContext';
-import { useAppStateSelector, voiceStatesForChannel, dmE2eeSuppressed } from '../state/AppState';
+import { useAppStateSelector, useDmNickname, voiceStatesForChannel, dmE2eeSuppressed } from '../state/AppState';
 import { useTypingPing, useTypingUsers } from '../state/Typing';
 import { useToasts } from '../state/Toasts';
 import { MessageItem } from './MessageItem';
@@ -295,6 +295,9 @@ export function MessageView({
     }
     return null;
   }, [isDM, channel.recipients, messages, user?.id]);
+  // Personal DM nickname (viewer-private) overrides the peer's real name.
+  const dmNick = useDmNickname(dmRecipient?.id);
+  const dmDisplayName = dmNick ?? dmRecipient?.displayName;
   // Thread parent — when viewing a thread, the breadcrumb in the header
   // shows the parent channel's name and lets the user navigate back. We
   // resolve via channelsByGuild so we don't need an extra REST call.
@@ -358,10 +361,10 @@ export function MessageView({
   ]);
 
   const headerLabel = isDM
-    ? (dmRecipient?.displayName ?? channel.name ?? 'Direct message')
+    ? (dmDisplayName ?? channel.name ?? 'Direct message')
     : (channel.name ?? '(unnamed)');
   const composerPlaceholder = isDM
-    ? `Message ${dmRecipient?.displayName ?? 'this conversation'}`
+    ? `Message ${dmDisplayName ?? 'this conversation'}`
     : isThread
       ? `Message thread`
       : `Message #${channel.name ?? ''}`;

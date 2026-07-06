@@ -21,7 +21,7 @@ import { useNavigate } from 'react-router-dom';
 import { UserTag, staffShimmerColor } from '../lib/UserTag';
 import type { Channel, Message, MessageEmbed } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
-import { useAppStateSelector, isUserBlocked } from '../state/AppState';
+import { useAppStateSelector, useDmNickname, isUserBlocked } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
 import { renderMessageContent } from '../lib/markdown';
 import { memberDisplayColor } from '../lib/permissions';
@@ -202,9 +202,13 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   // avatar (that's the owner row, kept only for audit/mention math). If the
   // webhook has no avatar set, displayAvatarUrl is null and the avatar gutter
   // renders neutral initials on a webhook-id tone instead of the owner's pic.
+  // Personal DM nickname (viewer-private): in a DM, the peer's messages show
+  // the nickname the viewer set for them, in place of their real name.
+  const isDmChannel = channel?.type === 'dm' || channel?.type === 'group_dm';
+  const authorDmNick = useDmNickname(!isWebhook ? author?.id : undefined);
   const displayName = isWebhook
     ? message.authorOverrideName || 'Webhook'
-    : (author?.displayName ?? 'Unknown');
+    : ((isDmChannel ? authorDmNick : undefined) ?? author?.displayName ?? 'Unknown');
   const displayAvatarUrl = isWebhook
     ? (message.authorOverrideAvatar ?? null)
     : (author?.avatarUrl ?? null);
