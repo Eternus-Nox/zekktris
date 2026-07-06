@@ -930,14 +930,14 @@ html.zk-vkb-open .zk-composer {
   }
 }
 
-/* Member-list only: the display name (text-sm) sits ~1px below the clan-tag
- * pill's center in Blink/Gecko (Chrome/Firefox); it's already centered in
- * WebKit (Safari). `@supports not (-webkit-hyphens: none)` matches Blink/Gecko
- * ONLY, so lift the name 1px there to center it with the tag, Safari untouched. */
+/* Member-list only: in Blink/Gecko (Chrome/Firefox) the display name (text-sm)
+ * needs to sit 1px BELOW its default to line up with the clan-tag pill's center;
+ * WebKit (Safari) is already centered. `@supports not (-webkit-hyphens: none)`
+ * matches Blink/Gecko ONLY, so nudge the name down there, Safari untouched. */
 @supports not (-webkit-hyphens: none) {
   .zk-memberlist-name {
     position: relative;
-    top: -1px;
+    top: 1px;
   }
 }
 
