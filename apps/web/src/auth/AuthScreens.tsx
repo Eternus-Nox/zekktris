@@ -11,7 +11,7 @@
 
 import { useState, useRef, useEffect, useCallback, type FormEvent, type KeyboardEventHandler, type Ref, type RefObject } from 'react';
 import { ZekktrisMark } from '../lib/ZekktrisMark';
-import { Eye, EyeOff, Key } from '../lib/icons';
+import { Eye, EyeOff, Key, QrCode } from '../lib/icons';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { ApiError } from '@zekktris/client';
 import { useAuth } from './AuthContext';
@@ -457,34 +457,37 @@ export function LoginPage() {
                 Forgot your password?
               </Link>
             </p>
-            <p className="text-sm text-center">
-              <Link
-                to="/login/device"
-                className="text-ink-3 hover:text-accent hover:underline"
-              >
-                Log in with another device
-              </Link>
-            </p>
-            {passkeySupported && (
-              <>
-                {/* OR divider + passkey sign-in. */}
-                <div className="flex items-center gap-3 pt-1" aria-hidden>
-                  <span className="h-px flex-1" style={{ background: 'var(--zk-line)' }} />
-                  <span className="text-xs text-ink-3">OR</span>
-                  <span className="h-px flex-1" style={{ background: 'var(--zk-line)' }} />
-                </div>
+            {/* OR divider + alternative sign-in methods, shown as side-by-side
+                buttons: a passkey on THIS device (when supported) and a code
+                shown on ANOTHER already-signed-in device. The device-code option
+                is always available; when passkeys aren't, it takes the full row. */}
+            <div className="flex items-center gap-3 pt-1" aria-hidden>
+              <span className="h-px flex-1" style={{ background: 'var(--zk-line)' }} />
+              <span className="text-xs text-ink-3">OR</span>
+              <span className="h-px flex-1" style={{ background: 'var(--zk-line)' }} />
+            </div>
+            <div className="flex items-stretch gap-2">
+              {passkeySupported && (
                 <button
                   type="button"
                   onClick={onPasskey}
                   disabled={passkeyPending}
-                  className="w-full flex items-center justify-center gap-2 bg-bg-1/60 border rounded-md py-2 text-sm font-medium hover:bg-bg-3 disabled:opacity-60 transition-colors"
+                  className="flex-1 flex items-center justify-center gap-2 bg-bg-1/60 border rounded-md py-2 text-sm font-medium hover:bg-bg-3 disabled:opacity-60 transition-colors"
                   style={{ borderColor: 'var(--zk-line)' }}
                 >
                   <Key size={16} />
-                  {passkeyPending ? 'Waiting for passkey…' : 'Log in with a passkey'}
+                  {passkeyPending ? 'Waiting…' : 'Passkey'}
                 </button>
-              </>
-            )}
+              )}
+              <Link
+                to="/login/device"
+                className="flex-1 flex items-center justify-center gap-2 bg-bg-1/60 border rounded-md py-2 text-sm font-medium hover:bg-bg-3 transition-colors"
+                style={{ borderColor: 'var(--zk-line)' }}
+              >
+                <QrCode size={16} />
+                Another device
+              </Link>
+            </div>
             <p className="text-sm text-ink-2 text-center pt-2">
               New here?{' '}
               <Link to="/register" className="text-accent hover:underline">
