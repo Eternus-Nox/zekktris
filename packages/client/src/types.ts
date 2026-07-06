@@ -71,6 +71,9 @@ export interface PublicUser {
       On SelfUser it's always present (null = off) so the settings toggle
       pre-fills. */
   staffColor?: string | null;
+  /** Optional soft glow layered on the staff shimmer. Present (with staffColor)
+      only for staff; on SelfUser it's always present so the toggle pre-fills. */
+  staffGlow?: boolean;
 }
 
 /** A single entry in a DM's poke history (newest-first, capped at 6),

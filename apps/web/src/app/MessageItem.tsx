@@ -800,7 +800,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
               }
               className={`font-medium ${
                 authorShimmer
-                  ? 'zk-staff-shimmer'
+                  ? `zk-staff-shimmer${author?.staffGlow ? ' zk-staff-glow' : ''}`
                   : authorInteractive && authorRoleColor
                     ? ''
                     : 'text-ink-1'

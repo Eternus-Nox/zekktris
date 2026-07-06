@@ -70,15 +70,16 @@ export function StaffName({
   roleColor,
   className = '',
 }: {
-  user: Pick<PublicUser, 'isAdmin' | 'isModerator' | 'staffColor'>;
+  user: Pick<PublicUser, 'isAdmin' | 'isModerator' | 'staffColor' | 'staffGlow'>;
   text: string;
   roleColor?: string | null;
   className?: string;
 }) {
   const shimmer = staffShimmerColor(user);
+  const glow = shimmer && user.staffGlow ? ' zk-staff-glow' : '';
   return (
     <span
-      className={shimmer ? `zk-staff-shimmer ${className}` : className}
+      className={shimmer ? `zk-staff-shimmer${glow} ${className}` : className}
       style={
         shimmer
           ? ({ ['--sc']: shimmer } as CSSProperties)

@@ -582,7 +582,6 @@ export function SettingsView() {
           <TwoFactorSection />
           <PasskeysSection />
           <QuickLoginSection />
-          <StaffShimmerSection />
 
           {/* ── Profile ────────────────────────────────────────────────── */}
           <section className="space-y-3">
@@ -770,6 +769,10 @@ export function SettingsView() {
                 are non-refundable.
               </p>
             </div>
+        {/* Staff name shimmer — an instance-STAFF perk (not membership-gated),
+            shown here alongside the other appearance/cosmetic options. Renders
+            nothing for non-staff. */}
+        <StaffShimmerSection />
         {/* Appearance — a SUPPORTER PERK. Members (own membership or one
             inherited from a supervising parent) get the full section; everyone
             else sees the membership pitch. The server hard-locks the cosmetic
@@ -3033,17 +3036,18 @@ function StaffShimmerSection() {
   const toasts = useToasts();
   const isStaff = user?.isAdmin === true || user?.isModerator === true;
   const enabled = !!user?.staffColor;
+  const glow = !!user?.staffGlow;
   const [color, setColor] = useState(user?.staffColor || '#f5c542');
   const [saving, setSaving] = useState(false);
 
   if (!isStaff) return null;
 
-  async function save(next: string | null) {
+  async function patch(body: { staffColor?: string | null; staffGlow?: boolean }) {
     setSaving(true);
     try {
-      const r = await rest.patchMe({ staffColor: next });
+      const r = await rest.patchMe(body);
       updateUser(r.user);
-      if (next) setColor(next);
+      if (body.staffColor) setColor(body.staffColor);
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Could not save shimmer', 'error');
     } finally {
@@ -3052,18 +3056,18 @@ function StaffShimmerSection() {
   }
 
   return (
-    <section className="space-y-2">
+    <section className="rounded-xl border border-line bg-bg-2 p-3 space-y-2">
       <div className="text-xs uppercase tracking-wider text-ink-3">Staff name shimmer</div>
       <p className="text-sm text-ink-3 leading-relaxed">
         Give your display name an animated shimmer in a color you choose — it
-        overrides your server role colors wherever your name appears. Only
-        instance staff can set this, and you can turn it off any time.
+        overrides your server role colors wherever your name appears. Add a slight
+        glow if you like. Instance staff only; turn it off any time.
       </p>
       <div className="flex items-center gap-3 flex-wrap">
         <button
           type="button"
           disabled={saving}
-          onClick={() => void save(enabled ? null : color)}
+          onClick={() => void patch({ staffColor: enabled ? null : color })}
           className={`text-sm px-3 py-2 rounded-md border disabled:opacity-50 ${
             enabled
               ? 'border-accent/40 bg-accent/15 text-ink-1'
@@ -3077,13 +3081,27 @@ function StaffShimmerSection() {
           value={color}
           onChange={(e) => setColor(e.target.value)}
           onBlur={() => {
-            if (enabled && color !== user?.staffColor) void save(color);
+            if (enabled && color !== user?.staffColor) void patch({ staffColor: color });
           }}
           className="w-9 h-9 rounded-md bg-transparent cursor-pointer border border-line"
           aria-label="Shimmer color"
         />
+        {/* Optional slight glow — only meaningful while the shimmer is on. */}
+        <button
+          type="button"
+          disabled={saving || !enabled}
+          onClick={() => void patch({ staffGlow: !glow })}
+          className={`text-sm px-3 py-2 rounded-md border disabled:opacity-40 ${
+            glow && enabled
+              ? 'border-accent/40 bg-accent/15 text-ink-1'
+              : 'border-line text-ink-2 hover:bg-bg-3'
+          }`}
+          title="Add a slight glow around your name"
+        >
+          {glow ? 'Glow on' : 'Add glow'}
+        </button>
         <span
-          className="zk-staff-shimmer text-base font-semibold"
+          className={`zk-staff-shimmer${glow ? ' zk-staff-glow' : ''} text-base font-semibold`}
           style={{ ['--sc']: color } as CSSProperties}
         >
           {user?.displayName || 'Preview'}

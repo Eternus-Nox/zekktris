@@ -199,6 +199,9 @@ export const users = pgTable(
         their display name shimmer in this color, overriding role colors. NULL =
         off. Only rendered for instance staff. */
     staffColor: text('staff_color'),
+    /** Optional soft glow (text-shadow in staff_color) layered on the shimmer.
+        Only meaningful when staff_color is set; rendered only for staff. */
+    staffGlow: boolean('staff_glow').notNull().default(false),
     /**
      * Privacy preference controlling who can open a DM with this user
      * and ring them for a 1:1 call.

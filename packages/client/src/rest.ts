@@ -377,6 +377,7 @@ export class RestClient {
         | 'tagLabel'
         | 'tagColor'
         | 'staffColor'
+        | 'staffGlow'
       >
     >,
   ): Promise<{ user: SelfUser }> {

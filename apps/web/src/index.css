@@ -958,6 +958,14 @@ html.zk-vkb-open .zk-composer {
     animation: none;
   }
 }
+/* Optional slight glow layered on the shimmer (opt-in per staff member) — a soft
+ * text-shadow in the same --sc color. text-shadow paints from the glyph shapes,
+ * so it glows even though the fill is transparent (background-clip:text). */
+.zk-staff-glow {
+  text-shadow:
+    0 0 4px color-mix(in srgb, var(--sc) 80%, transparent),
+    0 0 9px color-mix(in srgb, var(--sc) 45%, transparent);
+}
 
 /* Apply this to the top-level Shell container (and the auth screens) so
  * chrome respects the notch + landscape sensor cutouts. We deliberately

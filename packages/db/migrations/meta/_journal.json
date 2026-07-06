@@ -785,6 +785,13 @@
       "when": 1784600237000,
       "tag": "0112_dm_nicknames",
       "breakpoints": true
+    },
+    {
+      "idx": 112,
+      "version": "7",
+      "when": 1784600238000,
+      "tag": "0113_staff_glow",
+      "breakpoints": true
     }
   ]
 }

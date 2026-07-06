@@ -85,6 +85,8 @@ export interface SelfUserDTO {
       display name shimmer, overriding role colors. Null = off. Carried on the
       self DTO so the settings toggle pre-fills. */
   staffColor: string | null;
+  /** Optional soft glow layered on the shimmer (self DTO so the toggle pre-fills). */
+  staffGlow: boolean;
   /** Whether the supporter tier title shows on the profile popup. */
   showSubscriptionTier: boolean;
   /** Effective supporter tier (own or inherited from a supervising parent);
@@ -157,6 +159,8 @@ export interface PublicUserDTO {
   /** Staff "shimmer" color (#rrggbb). Emitted ONLY for instance staff who have
       set one — drives the animated name shimmer that overrides role colors. */
   staffColor?: string | null;
+  /** Optional soft glow on the shimmer. Emitted (with staffColor) only for staff. */
+  staffGlow?: boolean;
 }
 
 export function toSelfUser(
@@ -220,6 +224,7 @@ export function toSelfUser(
     tagLabel: user.tagLabel ?? null,
     tagColor: user.tagColor ?? null,
     staffColor: user.staffColor ?? null,
+    staffGlow: user.staffGlow ?? false,
     showSubscriptionTier: user.showSubscriptionTier,
     dateOfBirth: user.dateOfBirth ?? null,
     canChangeDob: !user.dobLocked,
@@ -257,7 +262,7 @@ export function toPublicUser(user: User): PublicUserDTO {
     // Staff shimmer color: only for actual staff who set one, so non-staff can
     // never make their name shimmer even if the column somehow got a value.
     ...((user.isAdmin || user.isModerator) && user.staffColor
-      ? { staffColor: user.staffColor }
+      ? { staffColor: user.staffColor, ...(user.staffGlow ? { staffGlow: true } : {}) }
       : {}),
   };
 }

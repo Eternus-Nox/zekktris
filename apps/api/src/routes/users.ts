@@ -229,6 +229,8 @@ const patchMeSchema = z
     staffColor: z
       .union([z.string().regex(/^#[0-9a-fA-F]{6}$/), z.null()])
       .optional(),
+    /** Optional soft glow layered on the staff shimmer. Staff-only, like color. */
+    staffGlow: z.boolean().optional(),
   })
   .refine((v) => Object.keys(v).length > 0, {
     message: 'At least one field is required',
@@ -342,16 +344,25 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   // Staff shimmer color. Only instance staff may SET a color; clearing (null)
   // is always allowed. The DTO also gates rendering to staff, so a stray value
   // never shows — this just keeps the column clean for regular members.
-  if (body.staffColor !== undefined) {
-    if (body.staffColor === null) {
-      update.staffColor = null;
-    } else {
+  if (body.staffColor !== undefined || body.staffGlow !== undefined) {
+    // Clearing the color needs no staff check.
+    if (body.staffColor === null) update.staffColor = null;
+    // Setting a color or toggling the glow does — only staff render either.
+    const needsStaffCheck =
+      (body.staffColor !== undefined && body.staffColor !== null) ||
+      body.staffGlow !== undefined;
+    if (needsStaffCheck) {
       const [me] = await db
         .select({ isAdmin: schema.users.isAdmin, isModerator: schema.users.isModerator })
         .from(schema.users)
         .where(eq(schema.users.id, userId))
         .limit(1);
-      if (me?.isAdmin || me?.isModerator) update.staffColor = body.staffColor;
+      if (me?.isAdmin || me?.isModerator) {
+        if (body.staffColor !== undefined && body.staffColor !== null) {
+          update.staffColor = body.staffColor;
+        }
+        if (body.staffGlow !== undefined) update.staffGlow = body.staffGlow;
+      }
     }
   }
 
