@@ -9,7 +9,7 @@
 
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './auth/AuthContext';
-import { LoginPage, RegisterPage, ForgotPasswordPage, ResetPasswordPage } from './auth/AuthScreens';
+import { LoginPage, RegisterPage, ForgotPasswordPage, ResetPasswordPage, DeviceLoginPage } from './auth/AuthScreens';
 import { Shell } from './app/Shell';
 import { ConfirmEmailPage } from './app/ConfirmEmailPage';
 import { VerifyEmailPage } from './app/VerifyEmail';
@@ -83,6 +83,7 @@ export function App() {
               <DobBanner />
               <Routes>
                 <Route path="/login" element={<LoginPage />} />
+                <Route path="/login/device" element={<DeviceLoginPage />} />
                 <Route path="/register" element={<RegisterPage />} />
                 <Route path="/forgot-password" element={<ForgotPasswordPage />} />
                 <Route path="/reset-password" element={<ResetPasswordPage />} />

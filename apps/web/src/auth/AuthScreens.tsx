@@ -9,7 +9,7 @@
  * Failure displays the server's error message in red.
  */
 
-import { useState, useRef, type FormEvent, type KeyboardEventHandler, type Ref, type RefObject } from 'react';
+import { useState, useRef, useEffect, useCallback, type FormEvent, type KeyboardEventHandler, type Ref, type RefObject } from 'react';
 import { ZekktrisMark } from '../lib/ZekktrisMark';
 import { Eye, EyeOff, Key } from '../lib/icons';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
@@ -457,6 +457,14 @@ export function LoginPage() {
                 Forgot your password?
               </Link>
             </p>
+            <p className="text-sm text-center">
+              <Link
+                to="/login/device"
+                className="text-ink-3 hover:text-accent hover:underline"
+              >
+                Log in with another device
+              </Link>
+            </p>
             {passkeySupported && (
               <>
                 {/* OR divider + passkey sign-in. */}
@@ -486,6 +494,178 @@ export function LoginPage() {
           </>
         )}
       </form>
+    </AuthShell>
+  );
+}
+
+/** Pull the 16-digit code out of a raw scan/paste: a `/login/device?c=…` URL,
+    or bare digits (spaces stripped). */
+function extractQuickLoginCode(raw: string): string {
+  const m = raw.match(/[?&]c=(\d{6,})/);
+  if (m) return m[1]!;
+  return raw.replace(/\D/g, '');
+}
+
+/**
+ * Redeem a quick-login code shown on another (already-signed-in) device.
+ * Reached via the "Log in with another device" link OR by scanning the QR
+ * (which points a phone camera at /login/device?c=… and auto-submits).
+ */
+export function DeviceLoginPage() {
+  const { loginWithDeviceCode, token, hydrating } = useAuth();
+  const nav = useNavigate();
+  const [searchParams] = useSearchParams();
+  const [code, setCode] = useState(() => extractQuickLoginCode(searchParams.get('c') ?? ''));
+  const [pending, setPending] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const barcodeSupported =
+    typeof window !== 'undefined' &&
+    'BarcodeDetector' in window &&
+    typeof navigator !== 'undefined' &&
+    !!navigator.mediaDevices?.getUserMedia;
+
+  const submit = useCallback(
+    async (raw: string) => {
+      const c = extractQuickLoginCode(raw);
+      if (c.length < 6) {
+        setErr('Enter the code shown on your other device.');
+        return;
+      }
+      setPending(true);
+      setErr(null);
+      try {
+        await loginWithDeviceCode(c);
+        nav('/', { replace: true });
+      } catch (e) {
+        setErr(e instanceof ApiError ? e.message : 'Could not sign in with that code.');
+      } finally {
+        setPending(false);
+      }
+    },
+    [loginWithDeviceCode, nav],
+  );
+
+  // Arriving from a scanned QR URL (?c=…) → sign in immediately.
+  const autoCode = searchParams.get('c');
+  useEffect(() => {
+    if (autoCode) void submit(autoCode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Camera QR scan (Chromium/desktop; feature-gated so Safari/iOS falls back to
+  // manual entry). Runs only while `scanning`; tears the camera down on exit.
+  useEffect(() => {
+    if (!scanning) return;
+    let raf = 0;
+    let cancelled = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const detector = new (window as any).BarcodeDetector({ formats: ['qr_code'] });
+    void (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' },
+        });
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+        const tick = async () => {
+          if (cancelled || !videoRef.current) return;
+          try {
+            const codes = await detector.detect(videoRef.current);
+            if (codes[0]?.rawValue) {
+              setScanning(false);
+              void submit(codes[0].rawValue as string);
+              return;
+            }
+          } catch {
+            /* per-frame detect can throw before the first frame — ignore */
+          }
+          raf = requestAnimationFrame(() => void tick());
+        };
+        raf = requestAnimationFrame(() => void tick());
+      } catch {
+        setErr('Could not open the camera. Type the code instead.');
+        setScanning(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    };
+  }, [scanning, submit]);
+
+  if (hydrating) return null;
+  if (token) return <Navigate to="/" replace />;
+
+  return (
+    <AuthShell heading="Log in with another device">
+      <div className="space-y-4">
+        <p className="text-sm text-ink-2 leading-snug">
+          On a device you&apos;re already signed in on, open{' '}
+          <span className="text-ink-1">Settings → Log in on another device</span> and enter the
+          16-digit code here — or scan the QR.
+        </p>
+        {scanning ? (
+          <div className="space-y-2">
+            <video
+              ref={videoRef}
+              playsInline
+              muted
+              className="w-full rounded-md bg-black aspect-square object-cover"
+            />
+            <button
+              type="button"
+              onClick={() => setScanning(false)}
+              className="block w-full text-center text-xs text-ink-3 hover:text-ink-2 underline"
+            >
+              Cancel scan
+            </button>
+          </div>
+        ) : (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void submit(code);
+            }}
+            className="space-y-4"
+          >
+            <Field
+              label="16-digit code"
+              type="text"
+              value={code}
+              onChange={setCode}
+              autoComplete="one-time-code"
+            />
+            {err && <ErrorBanner message={err} />}
+            <SubmitButton pending={pending}>Sign in</SubmitButton>
+            {barcodeSupported && (
+              <button
+                type="button"
+                onClick={() => {
+                  setErr(null);
+                  setScanning(true);
+                }}
+                className="w-full flex items-center justify-center gap-2 bg-bg-1/60 border rounded-md py-2 text-sm font-medium hover:bg-bg-3 transition-colors"
+                style={{ borderColor: 'var(--zk-line)' }}
+              >
+                Scan QR code
+              </button>
+            )}
+          </form>
+        )}
+        <p className="text-sm text-center">
+          <Link to="/login" className="text-ink-3 hover:text-accent hover:underline">
+            Back to sign in
+          </Link>
+        </p>
+      </div>
     </AuthShell>
   );
 }

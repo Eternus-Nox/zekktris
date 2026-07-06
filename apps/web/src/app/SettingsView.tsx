@@ -581,6 +581,7 @@ export function SettingsView() {
           <PasswordSection />
           <TwoFactorSection />
           <PasskeysSection />
+          <QuickLoginSection />
 
           {/* ── Profile ────────────────────────────────────────────────── */}
           <section className="space-y-3">
@@ -2868,6 +2869,100 @@ function PasskeysSection() {
         <Key size={15} />
         {adding ? 'Waiting for passkey…' : 'Add a passkey'}
       </button>
+    </section>
+  );
+}
+
+/**
+ * Quick-login generator: shows a one-time QR + 16-digit code so the user can
+ * sign in on another device. The code re-randomizes on each press, expires
+ * after ~90s, works once, and is invalidated on unmount (leaving the section).
+ * Generating a code does NOT touch this device's own session.
+ */
+function QuickLoginSection() {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const [code, setCode] = useState<string | null>(null);
+  const [svg, setSvg] = useState<string | null>(null);
+  const [secondsLeft, setSecondsLeft] = useState(0);
+  const [busy, setBusy] = useState(false);
+
+  // Invalidate the active code when the user leaves this settings view.
+  useEffect(() => {
+    return () => {
+      void rest.cancelQuickLoginCode().catch(() => {});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Countdown → drop the shown code once it expires server-side.
+  useEffect(() => {
+    if (!code) return;
+    if (secondsLeft <= 0) {
+      setCode(null);
+      setSvg(null);
+      return;
+    }
+    const t = setTimeout(() => setSecondsLeft((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [secondsLeft, code]);
+
+  async function generate() {
+    setBusy(true);
+    try {
+      const r = await rest.generateQuickLoginCode();
+      const url = `${window.location.origin}/login/device?c=${r.code}`;
+      setCode(r.code);
+      // Our own SVG string (numeric code only) — safe to inject.
+      setSvg(qrToSvg(qrEncode(url), 220));
+      setSecondsLeft(r.expiresIn);
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not generate a code', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="space-y-2">
+      <div className="text-xs uppercase tracking-wider text-ink-3">Log in on another device</div>
+      <p className="text-sm text-ink-3 leading-relaxed">
+        Show a one-time code to sign in on another device — on that device&apos;s login screen choose
+        &ldquo;Log in with another device&rdquo; and scan the QR or type the 16-digit code. It works
+        once, lasts ~90 seconds, and stops working the moment you leave this page. Anyone who sees it
+        can sign in as you, so don&apos;t share or screenshot it.
+      </p>
+      {!code ? (
+        <button
+          type="button"
+          onClick={generate}
+          disabled={busy}
+          className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-md border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-50"
+        >
+          {busy ? 'Generating…' : 'Show a quick-login code'}
+        </button>
+      ) : (
+        <div className="rounded-lg border border-line bg-bg-1/60 p-4 space-y-3 max-w-[16rem]">
+          {svg && (
+            <div
+              className="bg-white rounded-md p-2 flex justify-center"
+              dangerouslySetInnerHTML={{ __html: svg }}
+            />
+          )}
+          <div className="text-center font-mono text-base tracking-widest text-ink-1 break-all">
+            {code.replace(/(\d{4})(?=\d)/g, '$1 ')}
+          </div>
+          <div className="text-center text-xs text-ink-3">Expires in {secondsLeft}s · works once</div>
+          <button
+            type="button"
+            onClick={generate}
+            disabled={busy}
+            className="w-full text-sm px-3 py-1.5 rounded-md border border-line text-ink-2 hover:bg-bg-3 disabled:opacity-50"
+          >
+            New code
+          </button>
+        </div>
+      )}
     </section>
   );
 }

@@ -14,6 +14,7 @@ import type {
   AchievementsResponse,
   Attachment,
   AuthSession,
+  QuickLoginCode,
   AuditLogEntry,
   AutomodRule,
   Channel,
@@ -209,7 +210,8 @@ export class RestClient {
         !path.startsWith('/auth/refresh') &&
         !path.startsWith('/auth/login') &&
         !path.startsWith('/auth/logout') &&
-        !path.startsWith('/auth/register')
+        !path.startsWith('/auth/register') &&
+        !path.startsWith('/auth/quick-login/redeem')
       ) {
         const newToken = await this.tryRefresh();
         if (newToken) {
@@ -258,6 +260,23 @@ export class RestClient {
 
   logout(): Promise<{ ok: boolean }> {
     return this.request('POST', '/auth/logout');
+  }
+
+  // ── Quick login (log in on another device) ──────────────────────────────
+  /** [authed] Mint (or re-randomize) a short-lived, single-use quick-login
+      code for the current user. Does NOT change this device's session. */
+  generateQuickLoginCode(): Promise<QuickLoginCode> {
+    return this.request('POST', '/auth/quick-login/create');
+  }
+  /** [authed] Invalidate the current user's active quick-login code — call on
+      leaving the quick-login section. */
+  cancelQuickLoginCode(): Promise<{ ok: boolean }> {
+    return this.request('POST', '/auth/quick-login/cancel');
+  }
+  /** [public] Redeem a quick-login code on a logged-out device → a new session
+      (same envelope as login; the server also sets the refresh cookie). */
+  redeemQuickLoginCode(code: string): Promise<AuthSession> {
+    return this.request('POST', '/auth/quick-login/redeem', { code });
   }
 
   // ── WebAuthn passkeys ───────────────────────────────────────────────────

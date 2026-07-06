@@ -46,6 +46,7 @@ import {
   verifyAuthenticationResponse,
 } from '../lib/webauthn';
 import { challengeStore, newChallengeId } from '../auth/webauthn-challenges';
+import { quickLoginStore } from '../auth/quick-login-store';
 import { RateLimiter } from '../lib/rateLimit';
 import {
   emailSchema,
@@ -70,6 +71,11 @@ const registerByIp = new RateLimiter(5, 60 * 60_000, 'register-ip');
 // would double-charge it, and any path that refunds it for UX reopens
 // distributed brute-force of the 6-digit space.
 const twoFactorByUser = new RateLimiter(5, 15 * 60_000, 'login-2fa-user');
+// Quick-login (log in on another device): generating is per-USER (guards
+// re-randomize spam); redeeming is per-IP (brute-force guard on the 16-digit
+// code, on top of single-use + 90s TTL).
+const quickLoginCreateByUser = new RateLimiter(15, 60_000, 'quicklogin-create');
+const quickLoginRedeemByIp = new RateLimiter(15, 15 * 60_000, 'quicklogin-redeem-ip');
 
 // Email verification token lifetime.
 const EMAIL_VERIFICATION_EXPIRY_MS = 24 * 60 * 60_000; // 24h
@@ -367,6 +373,81 @@ authRouter.post('/login', validate('json', loginSchema), async (c) => {
     expiresIn: env.ACCESS_TOKEN_TTL_SECONDS,
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// Quick login — log in on another device via QR / 16-digit code
+// ───────────────────────────────────────────────────────────────────────────
+// A LOGGED-IN device mints a short-lived, single-use 16-digit code (shown as
+// digits + a QR that encodes a /login/device URL carrying the code). A
+// LOGGED-OUT device redeems it to receive a brand-new session. Minting a code
+// NEVER touches the generator's own session/cookie — it only writes to the
+// ephemeral store. Codes die after 90s, on redemption (single-use), or when the
+// generator leaves the section (cancel). This is an equivalent-to-password
+// entry point (like passkey login) and deliberately bypasses TOTP: the
+// generating device already proved possession + authentication.
+
+// POST /auth/quick-login/create — [authed] mint (or re-randomize) a code.
+authRouter.post('/quick-login/create', requireAuth, async (c) => {
+  const userId = requireUserId(c);
+  const rl = await quickLoginCreateByUser.consume(userId.toString());
+  if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
+  const { code, expiresIn } = await quickLoginStore.create(userId.toString());
+  // Never log the code — it's a bearer login credential.
+  return c.json({ code, expiresIn });
+});
+
+// POST /auth/quick-login/cancel — [authed] invalidate the caller's active code
+// (what "leaving the quick-login section" maps to server-side).
+authRouter.post('/quick-login/cancel', requireAuth, async (c) => {
+  const userId = requireUserId(c);
+  await quickLoginStore.cancel(userId.toString());
+  return c.json({ ok: true });
+});
+
+// POST /auth/quick-login/redeem — [PUBLIC] a logged-out device exchanges a code
+// for a new session. Single-use (atomic delete), rate-limited per IP.
+authRouter.post(
+  '/quick-login/redeem',
+  validate('json', z.object({ code: z.string().trim().min(1).max(64) })),
+  async (c) => {
+    const ip = getClientIp(c);
+    if (ip) {
+      const rl = await quickLoginRedeemByIp.consume(ip);
+      if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
+    }
+    // Manual entry may include spaces; the QR delivers bare digits. Strip
+    // whitespace only (don't strip other chars — that could corrupt the code).
+    const code = c.req.valid('json').code.replace(/\s+/g, '');
+    const userIdStr = code ? await quickLoginStore.consume(code) : null;
+    if (!userIdStr) throw errors.badRequest('That code is invalid or has expired.');
+
+    const [user] = await db
+      .select()
+      .from(schema.users)
+      .where(and(eq(schema.users.id, BigInt(userIdStr)), isNull(schema.users.deletedAt)))
+      .limit(1);
+    if (!user) throw errors.badRequest('That code is invalid or has expired.');
+    // Re-check ban AFTER loading the user so a just-banned account can't be
+    // handed a fresh session (mirrors /login).
+    if (isCurrentlyBanned(user)) {
+      throw errors.forbidden('This account has been disabled');
+    }
+
+    const { session, refreshToken } = await createSession({
+      userId: user.id,
+      userAgent: getUserAgent(c),
+      ipAddress: getClientIp(c),
+    });
+    const accessToken = await signAccessToken({ userId: user.id, sessionId: session.id });
+    setRefreshCookie(c, refreshToken);
+    log.info('quick-login redeemed', { userId: user.id.toString() });
+    return c.json({
+      user: toSelfUser(user),
+      accessToken,
+      expiresIn: env.ACCESS_TOKEN_TTL_SECONDS,
+    });
+  },
+);
 
 // Lazily-computed dummy hash so unknown-email logins still pay the scrypt
 // cost — this is what makes login timing roughly equal whether the email

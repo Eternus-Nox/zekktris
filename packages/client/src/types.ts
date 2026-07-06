@@ -626,6 +626,13 @@ export interface AuthSession {
   accessToken: string;
 }
 
+/** A short-lived, single-use quick-login code for logging in on another
+    device (shown as digits + encoded in a QR). `expiresIn` is seconds. */
+export interface QuickLoginCode {
+  code: string;
+  expiresIn: number;
+}
+
 /**
  * A guild ban — server-side this is a row in the `bans` table; the
  * matching guildMember row was deleted as part of the ban transaction.

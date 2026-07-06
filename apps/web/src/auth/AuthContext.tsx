@@ -49,6 +49,9 @@ interface AuthContextValue extends AuthState {
   /** Sign in with a passkey (WebAuthn). Runs the discoverable-credential
       ceremony then mints a session like a password login. */
   loginWithPasskey: () => Promise<void>;
+  /** Sign in by redeeming a quick-login code shown on another (logged-in)
+      device. Mints a session exactly like a password login. */
+  loginWithDeviceCode: (code: string) => Promise<void>;
   register: (input: { email: string; username: string; displayName: string; password: string; dateOfBirth: string; code?: string }) => Promise<void>;
   logout: () => Promise<void>;
   /**
@@ -281,6 +284,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(r.accessToken, r.user);
   }, [rest, setToken]);
 
+  const loginWithDeviceCode = useCallback<AuthContextValue['loginWithDeviceCode']>(
+    async (code) => {
+      const r = await rest.redeemQuickLoginCode(code);
+      setToken(r.accessToken, r.user);
+    },
+    [rest, setToken],
+  );
+
   const register = useCallback<AuthContextValue['register']>(
     async (input) => {
       const r = await rest.register(input);
@@ -341,8 +352,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [rest, state.user?.id, state.user?.subscriptionTier]);
 
   const value = useMemo<AuthContextValue>(
-    () => ({ ...state, rest, gateway, login, loginWithPasskey, register, logout, updateUser, emailVerificationRequired }),
-    [state, rest, gateway, login, loginWithPasskey, register, logout, updateUser, emailVerificationRequired],
+    () => ({ ...state, rest, gateway, login, loginWithPasskey, loginWithDeviceCode, register, logout, updateUser, emailVerificationRequired }),
+    [state, rest, gateway, login, loginWithPasskey, loginWithDeviceCode, register, logout, updateUser, emailVerificationRequired],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
