@@ -14,7 +14,7 @@
  * disables the save button; toasts surface success/failure.
  */
 
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import { ApiError, type PasskeyInfo } from '@zekktris/client';
 import { UserTag } from '../lib/UserTag';
 import { useAuth } from '../auth/AuthContext';
@@ -582,6 +582,7 @@ export function SettingsView() {
           <TwoFactorSection />
           <PasskeysSection />
           <QuickLoginSection />
+          <StaffShimmerSection />
 
           {/* ── Profile ────────────────────────────────────────────────── */}
           <section className="space-y-3">
@@ -2963,6 +2964,78 @@ function QuickLoginSection() {
           </button>
         </div>
       )}
+    </section>
+  );
+}
+
+/**
+ * Staff-only display-name shimmer. Instance moderators/admins can give their
+ * display name an animated shimmer in a chosen color that overrides any server
+ * role color everywhere their name renders. Setting a color turns it on; the
+ * toggle clears it (staffColor = null) to turn it off. Hidden entirely for
+ * non-staff so it never appears for regular members.
+ */
+function StaffShimmerSection() {
+  const { rest, user, updateUser } = useAuth();
+  const toasts = useToasts();
+  const isStaff = user?.isAdmin === true || user?.isModerator === true;
+  const enabled = !!user?.staffColor;
+  const [color, setColor] = useState(user?.staffColor || '#f5c542');
+  const [saving, setSaving] = useState(false);
+
+  if (!isStaff) return null;
+
+  async function save(next: string | null) {
+    setSaving(true);
+    try {
+      const r = await rest.patchMe({ staffColor: next });
+      updateUser(r.user);
+      if (next) setColor(next);
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not save shimmer', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="space-y-2">
+      <div className="text-xs uppercase tracking-wider text-ink-3">Staff name shimmer</div>
+      <p className="text-sm text-ink-3 leading-relaxed">
+        Give your display name an animated shimmer in a color you choose — it
+        overrides your server role colors wherever your name appears. Only
+        instance staff can set this, and you can turn it off any time.
+      </p>
+      <div className="flex items-center gap-3 flex-wrap">
+        <button
+          type="button"
+          disabled={saving}
+          onClick={() => void save(enabled ? null : color)}
+          className={`text-sm px-3 py-2 rounded-md border disabled:opacity-50 ${
+            enabled
+              ? 'border-accent/40 bg-accent/15 text-ink-1'
+              : 'border-line text-ink-2 hover:bg-bg-3'
+          }`}
+        >
+          {enabled ? 'Shimmer on' : 'Turn on shimmer'}
+        </button>
+        <input
+          type="color"
+          value={color}
+          onChange={(e) => setColor(e.target.value)}
+          onBlur={() => {
+            if (enabled && color !== user?.staffColor) void save(color);
+          }}
+          className="w-9 h-9 rounded-md bg-transparent cursor-pointer border border-line"
+          aria-label="Shimmer color"
+        />
+        <span
+          className="zk-staff-shimmer text-base font-semibold"
+          style={{ ['--sc']: color } as CSSProperties}
+        >
+          {user?.displayName || 'Preview'}
+        </span>
+      </div>
     </section>
   );
 }

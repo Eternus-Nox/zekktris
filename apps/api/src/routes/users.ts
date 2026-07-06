@@ -221,6 +221,11 @@ const patchMeSchema = z
     tagColor: z
       .union([z.string().regex(/^#[0-9a-fA-F]{6}$/), z.null()])
       .optional(),
+    /** Staff "shimmer" color; #rrggbb or null (off). Only rendered for instance
+        staff (enforced in the DTO), so a non-staff value is inert. */
+    staffColor: z
+      .union([z.string().regex(/^#[0-9a-fA-F]{6}$/), z.null()])
+      .optional(),
   })
   .refine((v) => Object.keys(v).length > 0, {
     message: 'At least one field is required',
@@ -328,6 +333,21 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
     update.tagLabel = v ? v : null;
   }
   if (body.tagColor !== undefined) update.tagColor = body.tagColor;
+  // Staff shimmer color. Only instance staff may SET a color; clearing (null)
+  // is always allowed. The DTO also gates rendering to staff, so a stray value
+  // never shows — this just keeps the column clean for regular members.
+  if (body.staffColor !== undefined) {
+    if (body.staffColor === null) {
+      update.staffColor = null;
+    } else {
+      const [me] = await db
+        .select({ isAdmin: schema.users.isAdmin, isModerator: schema.users.isModerator })
+        .from(schema.users)
+        .where(eq(schema.users.id, userId))
+        .limit(1);
+      if (me?.isAdmin || me?.isModerator) update.staffColor = body.staffColor;
+    }
+  }
 
   // Whether THIS patch touches the avatar/banner columns — used to gate
   // the prior-URL capture (avoids an unnecessary SELECT FOR UPDATE for

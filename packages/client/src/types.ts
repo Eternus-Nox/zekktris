@@ -66,6 +66,11 @@ export interface PublicUser {
       next to the name. Admin takes precedence when both are somehow set. */
   isAdmin?: boolean;
   isModerator?: boolean;
+  /** Staff "shimmer" color (#rrggbb). Present only for instance staff who set
+      one; makes the display name shimmer in this color, overriding role colors.
+      On SelfUser it's always present (null = off) so the settings toggle
+      pre-fills. */
+  staffColor?: string | null;
 }
 
 /** A single entry in a DM's poke history (newest-first, capped at 6),

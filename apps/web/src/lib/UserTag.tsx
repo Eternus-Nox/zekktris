@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import type { PublicUser } from '@zekktris/client';
 import { useHideClanTags } from './displayPrefs';
 
@@ -45,31 +46,49 @@ export function UserTag({
   );
 }
 
+/** The staff shimmer color for a user, or null when it shouldn't apply
+    (not staff, or no color set). Shared gate so display + settings agree. */
+export function staffShimmerColor(
+  user: Pick<PublicUser, 'isAdmin' | 'isModerator' | 'staffColor'>,
+): string | null {
+  return (user.isAdmin || user.isModerator) && user.staffColor ? user.staffColor : null;
+}
+
 /**
- * Subtle instance-staff badge — a small uppercase pill next to a user's name
- * marking an ADMINISTRATOR or MODERATOR. Renders nothing for regular members.
- * Reuses the admin panel's role colors (accent for admin, sky for moderator)
- * so the visual language is consistent app-wide. Admin takes precedence when
- * both flags are somehow set; a user is at most one. Sized to sit as a peer
- * beside the BOT pill.
+ * Display name that marks instance staff not with a label, but with an animated
+ * shimmer in their chosen `staffColor` — which OVERRIDES any guild role color.
+ * Regular members (and staff who haven't turned it on) render normally: role
+ * color when present, else the fallback color baked into `className`.
+ *
+ * `className` carries layout + the fallback text color (e.g. "truncate text-sm
+ * text-ink-1"); the shimmer's `color`/background-clip and the role-color inline
+ * style both override that fallback.
  */
-export function StaffBadge({
+export function StaffName({
   user,
+  text,
+  roleColor,
   className = '',
 }: {
-  user: Pick<PublicUser, 'isAdmin' | 'isModerator'>;
+  user: Pick<PublicUser, 'isAdmin' | 'isModerator' | 'staffColor'>;
+  text: string;
+  roleColor?: string | null;
   className?: string;
 }) {
-  if (!user.isAdmin && !user.isModerator) return null;
-  const admin = !!user.isAdmin;
+  const shimmer = staffShimmerColor(user);
   return (
     <span
-      className={`shrink-0 inline-flex items-center self-center rounded px-1.5 py-0.5 text-[0.6rem] font-bold uppercase tracking-wider leading-none ${
-        admin ? 'bg-accent/20 text-accent' : 'bg-sky-500/20 text-sky-400'
-      } ${className}`}
-      title={admin ? 'Instance administrator' : 'Instance moderator'}
+      className={shimmer ? `zk-staff-shimmer ${className}` : className}
+      style={
+        shimmer
+          ? ({ ['--sc']: shimmer } as CSSProperties)
+          : roleColor
+            ? { color: roleColor }
+            : undefined
+      }
+      title={shimmer ? (user.isAdmin ? 'Instance administrator' : 'Instance moderator') : undefined}
     >
-      {admin ? 'Admin' : 'Mod'}
+      {text}
     </span>
   );
 }

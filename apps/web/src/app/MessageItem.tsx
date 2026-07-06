@@ -15,10 +15,10 @@
  * as their own components below the text.
  */
 
-import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { UserTag, StaffBadge } from '../lib/UserTag';
+import { UserTag, staffShimmerColor } from '../lib/UserTag';
 import type { Channel, Message, MessageEmbed } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
 import { useAppStateSelector, isUserBlocked } from '../state/AppState';
@@ -232,6 +232,8 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
     guildId && author && guildRoles && authorMember
       ? memberDisplayColor(guildRoles, guildId, authorMember.roleIds)
       : null;
+  // Instance-staff shimmer overrides the role color entirely (null otherwise).
+  const authorShimmer = author ? staffShimmerColor(author) : null;
 
   // Block enforcement: precomputed here, applied at render time below
   // (after all hooks are declared so the hook order stays stable
@@ -785,8 +787,20 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
               type="button"
               onClick={authorInteractive && author ? (e) => onAvatarClick(author, e) : undefined}
               disabled={!authorInteractive}
-              style={authorInteractive && authorRoleColor ? { color: authorRoleColor } : undefined}
-              className={`font-medium ${authorInteractive && authorRoleColor ? '' : 'text-ink-1'} ${authorInteractive ? 'hover:underline cursor-pointer' : 'cursor-default'}`}
+              style={
+                authorShimmer
+                  ? ({ ['--sc']: authorShimmer } as CSSProperties)
+                  : authorInteractive && authorRoleColor
+                    ? { color: authorRoleColor }
+                    : undefined
+              }
+              className={`font-medium ${
+                authorShimmer
+                  ? 'zk-staff-shimmer'
+                  : authorInteractive && authorRoleColor
+                    ? ''
+                    : 'text-ink-1'
+              } ${authorInteractive ? 'hover:underline cursor-pointer' : 'cursor-default'}`}
             >
               {authorDisplayName}
             </button>
@@ -819,7 +833,6 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
                 Bot
               </span>
             )}
-            {!isWebhook && author && <StaffBadge user={author} />}
             <span className="text-xs text-ink-3">{formatTimestamp(message.createdAt)}</span>
             {message.pinned && (
               <span className="inline-flex items-center gap-0.5 text-[0.6rem] uppercase tracking-wider text-amber-400" title="Pinned message">

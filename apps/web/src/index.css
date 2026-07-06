@@ -918,6 +918,37 @@ html.zk-vkb-open .zk-composer {
   }
 }
 
+/* Instance-staff "shimmer" display name: an animated highlight sweeps across the
+ * text in the staff member's chosen color (--sc), OVERRIDING any role color.
+ * background-clip:text + transparent fill shows the gradient through the glyphs;
+ * the moving background-position is the shimmer. Set by <StaffName>. */
+.zk-staff-shimmer {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent;
+  background-image: linear-gradient(
+    100deg,
+    var(--sc) 0%,
+    var(--sc) 42%,
+    color-mix(in srgb, var(--sc) 45%, white) 50%,
+    var(--sc) 58%,
+    var(--sc) 100%
+  );
+  background-size: 220% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: zk-staff-shimmer 3s linear infinite;
+}
+@keyframes zk-staff-shimmer {
+  to {
+    background-position: -220% center;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .zk-staff-shimmer {
+    animation: none;
+  }
+}
+
 /* Apply this to the top-level Shell container (and the auth screens) so
  * chrome respects the notch + landscape sensor cutouts. We deliberately
  * DO NOT pad the bottom here — the elements that actually live against

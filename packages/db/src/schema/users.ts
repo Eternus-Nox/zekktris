@@ -189,6 +189,10 @@ export const users = pgTable(
      */
     tagLabel: text('tag_label'),
     tagColor: text('tag_color'),
+    /** Optional "staff shimmer" color (#rrggbb): admins/moderators can make
+        their display name shimmer in this color, overriding role colors. NULL =
+        off. Only rendered for instance staff. */
+    staffColor: text('staff_color'),
     /**
      * Privacy preference controlling who can open a DM with this user
      * and ring them for a 1:1 call.

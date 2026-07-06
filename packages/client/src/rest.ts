@@ -375,6 +375,7 @@ export class RestClient {
         | 'showSubscriptionTier'
         | 'tagLabel'
         | 'tagColor'
+        | 'staffColor'
       >
     >,
   ): Promise<{ user: SelfUser }> {

@@ -78,6 +78,10 @@ export interface SelfUserDTO {
       ≤4 chars). Carried on the self DTO so the settings editor pre-fills. */
   tagLabel: string | null;
   tagColor: string | null;
+  /** Staff "shimmer" color (#rrggbb) — set by admins/mods to make their
+      display name shimmer, overriding role colors. Null = off. Carried on the
+      self DTO so the settings toggle pre-fills. */
+  staffColor: string | null;
   /** Whether the supporter tier title shows on the profile popup. */
   showSubscriptionTier: boolean;
   /** Effective supporter tier (own or inherited from a supervising parent);
@@ -147,6 +151,9 @@ export interface PublicUserDTO {
       precedence over moderator; a user is at most one. */
   isAdmin?: boolean;
   isModerator?: boolean;
+  /** Staff "shimmer" color (#rrggbb). Emitted ONLY for instance staff who have
+      set one — drives the animated name shimmer that overrides role colors. */
+  staffColor?: string | null;
 }
 
 export function toSelfUser(
@@ -208,6 +215,7 @@ export function toSelfUser(
     publicKey: user.publicKey ?? null,
     tagLabel: user.tagLabel ?? null,
     tagColor: user.tagColor ?? null,
+    staffColor: user.staffColor ?? null,
     showSubscriptionTier: user.showSubscriptionTier,
     dateOfBirth: user.dateOfBirth ?? null,
     canChangeDob: !user.dobLocked,
@@ -242,6 +250,11 @@ export function toPublicUser(user: User): PublicUserDTO {
     // shipping a "false" staff flag for everyone.
     ...(user.isAdmin ? { isAdmin: true } : {}),
     ...(user.isModerator ? { isModerator: true } : {}),
+    // Staff shimmer color: only for actual staff who set one, so non-staff can
+    // never make their name shimmer even if the column somehow got a value.
+    ...((user.isAdmin || user.isModerator) && user.staffColor
+      ? { staffColor: user.staffColor }
+      : {}),
   };
 }
 
