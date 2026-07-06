@@ -912,14 +912,16 @@ html.zk-vkb-open .zk-composer {
  * unchanged); px-1.5 (left/right) untouched. Per-engine tuning is
  * user-directed — nudge these ±1px to move the label up/down.
  *
- * Base (Chrome/Firefox): top3/bot1 → biases the label 1px below center.
- * Safari (WebKit): top2/bot2 (symmetric) → 1px less CSS bias offsets WebKit's
- * 1px-lower rendering, landing at the same spot as Chrome.
- * `@supports (-webkit-hyphens: none)` is false in Blink/Gecko, true only in
- * WebKit. !important beats the Tailwind py-0.5 utility. */
+ * Base (Chrome/Firefox): top2/bot2 (symmetric) → label centered in the pill.
+ * Safari (WebKit): top2/bot2 too, but WebKit paints it ~1px lower, which the
+ * operator accepted — so the two blocks now carry the SAME values and Chrome
+ * sits ~1px higher than Safari by rendering alone. The @supports block is kept
+ * as the per-engine dial: nudge ITS padding to move Safari only, or the base to
+ * move Chrome/Firefox only. `@supports (-webkit-hyphens: none)` is false in
+ * Blink/Gecko, true only in WebKit. !important beats the Tailwind py-0.5. */
 .zk-nametag {
-  padding-top: 3px !important;
-  padding-bottom: 1px !important;
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
 }
 @supports (-webkit-hyphens: none) {
   .zk-nametag {
