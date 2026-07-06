@@ -178,6 +178,10 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
   // seconds of the previous segment instead (it's one continuing session).
   // Best-effort — stats must never fail the join.
   void recordVoiceJoinStats(userId, priorRow ?? null).catch(() => undefined);
+  // May unlock first_contact / event_horizon. Throttled + best-effort.
+  void import('./achievements')
+    .then((m) => m.syncAndNotifyAchievementsThrottled(userId))
+    .catch(() => {});
 
   // The session ID is what an SFU webhook will reference when reporting
   // a participant left/joined. Generate it locally so we can correlate
@@ -566,6 +570,10 @@ export async function leaveVoice(
   }
   // Bank the session's seconds for the voice achievements. Best-effort.
   void bankVoiceSeconds(userId, priorState.joinedAt).catch(() => undefined);
+  // Banked time may cross the event_horizon threshold. Throttled + best-effort.
+  void import('./achievements')
+    .then((m) => m.syncAndNotifyAchievementsThrottled(userId))
+    .catch(() => {});
   // Forced removal (decline/kick): the target isn't the one initiating, so
   // their client won't disconnect itself — kick them off the SFU or they
   // keep streaming/ringing until the token expires.

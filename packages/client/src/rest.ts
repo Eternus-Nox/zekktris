@@ -372,6 +372,7 @@ export class RestClient {
         | 'allowDmsFromServerMembers'
         | 'publicKey'
         | 'achievementsPublic'
+        | 'notifyAchievements'
         | 'showSubscriptionTier'
         | 'tagLabel'
         | 'tagColor'

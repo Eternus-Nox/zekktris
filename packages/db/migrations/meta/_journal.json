@@ -771,6 +771,13 @@
       "when": 1784600235000,
       "tag": "0110_staff_color",
       "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "7",
+      "when": 1784600236000,
+      "tag": "0111_user_achievements",
+      "breakpoints": true
     }
   ]
 }

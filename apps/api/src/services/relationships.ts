@@ -249,6 +249,14 @@ export async function acceptFriendRequest(userId: bigint, targetId: bigint): Pro
       throw errors.notFound('Friend request');
     }
   });
+  // Both sides are now 'friend' — either may cross a social_circle tier.
+  // Throttled + best-effort, for both users.
+  void import('./achievements')
+    .then((m) => {
+      m.syncAndNotifyAchievementsThrottled(userId);
+      m.syncAndNotifyAchievementsThrottled(targetId);
+    })
+    .catch(() => {});
 }
 
 /**

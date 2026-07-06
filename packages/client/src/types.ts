@@ -138,6 +138,8 @@ export interface SelfUser extends PublicUser {
   isModerator?: boolean;
   /** Whether the user's achievements shelf is visible to others. */
   achievementsPublic?: boolean;
+  /** Account-level toggle for achievement-unlock notifications (push + in-app). */
+  notifyAchievements?: boolean;
   /** Per-user guild rail ordering. Null = no preference; client falls
       back to the natural order returned by `listGuilds`. Authoritative
       across devices — written by `setGuildOrder`. Optional in the

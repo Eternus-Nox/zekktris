@@ -187,6 +187,8 @@ const patchMeSchema = z
     /** Achievements visibility: when true, anyone can view this user's
         achievements; when false (default) only the owner sees them. */
     achievementsPublic: z.boolean().optional(),
+    /** Account-level toggle for achievement-unlock notifications. */
+    notifyAchievements: z.boolean().optional(),
     /** Whether the supporter tier title shows on the profile popup. */
     showSubscriptionTier: z.boolean().optional(),
     /** DM read-receipts opt-out. When false, the server skips
@@ -307,6 +309,9 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   if (body.bannerUrl !== undefined) update.bannerUrl = body.bannerUrl;
   if (body.achievementsPublic !== undefined) {
     update.achievementsPublic = body.achievementsPublic;
+  }
+  if (body.notifyAchievements !== undefined) {
+    update.notifyAchievements = body.notifyAchievements;
   }
   if (body.showSubscriptionTier !== undefined) {
     update.showSubscriptionTier = body.showSubscriptionTier;
@@ -479,6 +484,20 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
       guildIds: memberRows.map((r) => r.guildId),
       userIds: dmPeerIds,
     });
+  }
+
+  // A cosmetic change may unlock tagged / framed / signature_look. Only sync
+  // when a relevant field was actually touched (not for e.g. a notify toggle).
+  if (
+    body.tagLabel !== undefined ||
+    body.avatarDecoration !== undefined ||
+    body.avatarUrl !== undefined ||
+    body.bannerUrl !== undefined ||
+    body.bio !== undefined
+  ) {
+    void import('../services/achievements')
+      .then((m) => m.syncAndNotifyAchievements(userId))
+      .catch(() => {});
   }
 
   // Include the effective membership so the client's stored self-user doesn't

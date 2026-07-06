@@ -188,6 +188,10 @@ authRouter.post('/register', validate('json', registerSchema), async (c) => {
         // Locked at signup — declared their age here; only an admin can reset
         // it. (Prevents a minor signing up honestly then flipping to 18.)
         dobLocked: true,
+        // Seed the achievement ledger as initialized: a brand-new account has
+        // nothing earned yet, so every achievement it earns from here on is a
+        // real, notifiable unlock (no silent backfill needed).
+        achievementsSeeded: true,
       })
       .returning();
     if (!user) throw errors.internal('User creation returned no row');
@@ -1263,6 +1267,10 @@ authRouter.post('/passkey/register/verify', requireAuth, validate('json', passke
     if (isUniqueViolation(e)) throw errors.conflict('That passkey is already registered.');
     throw e;
   }
+  // May unlock locked_in (first passkey) and double_locked (with 2FA on).
+  void import('../services/achievements')
+    .then((m) => m.syncAndNotifyAchievements(userId))
+    .catch(() => {});
   return c.json({ ok: true });
 });
 

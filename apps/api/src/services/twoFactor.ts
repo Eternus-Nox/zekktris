@@ -314,6 +314,10 @@ export async function confirmEnrollment(opts: {
     .update(schema.users)
     .set({ totpEnabled: true, totpVerifiedAt: new Date() })
     .where(eq(schema.users.id, opts.userId));
+  // May unlock double_locked (passkey + 2FA). Best-effort, non-blocking.
+  void import('./achievements')
+    .then((m) => m.syncAndNotifyAchievements(opts.userId))
+    .catch(() => {});
   return { recoveryCodes };
 }
 

@@ -65,6 +65,12 @@ export const users = pgTable(
     isModerator: boolean('is_moderator').notNull().default(false),
     /** Achievements visibility: SHOWN by default; false = owner-only. */
     achievementsPublic: boolean('achievements_public').notNull().default(true),
+    /** Whether this user's earned-achievement ledger has been seeded. false for
+        existing users (their backlog is recorded silently on first sync so a
+        rollout doesn't spam them); set true at signup for new users. */
+    achievementsSeeded: boolean('achievements_seeded').notNull().default(false),
+    /** Account-level toggle for achievement-unlock notifications (push + in-app). */
+    notifyAchievements: boolean('notify_achievements').notNull().default(true),
     /** Supporter-tier visibility: false = the tier title is hidden on the
         profile popup (the membership itself still works). */
     showSubscriptionTier: boolean('show_subscription_tier').notNull().default(true),

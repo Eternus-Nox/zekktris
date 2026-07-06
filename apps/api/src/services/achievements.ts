@@ -444,3 +444,120 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
   });
   return out;
 }
+
+// ── Unlock detection + notification ──────────────────────────────────────────
+//
+// Achievements are computed live (above), so there is no natural "unlock"
+// event. `user_achievements` is the ledger of what's already earned; syncing
+// diffs the live-earned set against it and the newly-inserted rows ARE the
+// just-unlocked achievements. We then notify (in-app gateway toast + push).
+//
+// Rollout safety: a user's FIRST sync is a SILENT backfill — we record their
+// existing backlog without notifying (else everyone gets spammed at launch).
+// `users.achievements_seeded` gates this; new users are seeded at signup so
+// they get notified from their very first earn.
+
+/**
+ * Recompute a user's achievements, record any newly-earned ones in the ledger,
+ * and — unless this is the silent first-sync backfill or the user has turned
+ * achievement notifications off — fire an in-app gateway toast + a push for
+ * each. Fully best-effort: never throws (callers fire-and-forget it).
+ */
+export async function syncAndNotifyAchievements(userId: bigint): Promise<void> {
+  const [u] = await db
+    .select({
+      seeded: schema.users.achievementsSeeded,
+      notify: schema.users.notifyAchievements,
+    })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .limit(1);
+  if (!u) return;
+
+  const shelf = await achievementsForUser(userId);
+  const earnedIds = shelf.filter((a) => a.earned).map((a) => a.id);
+
+  // Insert the currently-earned set; the composite PK rejects already-recorded
+  // ones, so RETURNING gives exactly the ids new to the ledger this call.
+  const inserted =
+    earnedIds.length > 0
+      ? await db
+          .insert(schema.userAchievements)
+          .values(earnedIds.map((achievementId) => ({ userId, achievementId })))
+          .onConflictDoNothing()
+          .returning({ id: schema.userAchievements.achievementId })
+      : [];
+
+  // First sync ever for this user → silent backfill: the backlog is now
+  // recorded, but we don't announce years-old achievements. Mark seeded so the
+  // NEXT earn is a real, notifiable unlock.
+  if (!u.seeded) {
+    await db
+      .update(schema.users)
+      .set({ achievementsSeeded: true })
+      .where(eq(schema.users.id, userId));
+    return;
+  }
+
+  if (inserted.length === 0 || !u.notify) return;
+
+  const newIds = new Set(inserted.map((r) => r.id));
+  const fresh = shelf.filter((a) => a.earned && newIds.has(a.id));
+  if (fresh.length === 0) return;
+
+  const dispatch = await import('../gateway/dispatch');
+  const { sendToUser } = await import('./push');
+  for (const a of fresh) {
+    // Live in-app celebration (only reaches this user's own connections).
+    try {
+      dispatch.achievementUnlock({
+        userId,
+        id: a.id,
+        name: a.name,
+        description: a.description,
+        marker: a.marker,
+      });
+    } catch (err) {
+      console.error('[achievements] live unlock dispatch failed:', err);
+    }
+    // Closed-app push (Web Push / APNs / FCM). data.kind routes the tap to the
+    // achievements gallery on the clients.
+    try {
+      await sendToUser(userId, {
+        title: 'Achievement unlocked 🏆',
+        body: `${a.name} — ${a.description}`,
+        tag: `achv-${a.id}`,
+        url: '/',
+        data: { kind: 'achievement', achievementId: a.id },
+      });
+    } catch (err) {
+      console.error('[achievements] unlock push failed:', err);
+    }
+  }
+}
+
+// Per-process throttle for the VERY-hot hook (every message send): at most one
+// full recompute per user per window. Bounded + self-pruning. Multi-node just
+// means one sync per node per window — harmless (sync is idempotent).
+const lastSyncAt = new Map<string, number>();
+const SYNC_THROTTLE_MS = 60_000;
+
+/**
+ * Throttled fire-and-forget sync for hot paths (message send). Skips if the
+ * user was synced within the last minute; otherwise runs in the background.
+ */
+export function syncAndNotifyAchievementsThrottled(userId: bigint): void {
+  const key = userId.toString();
+  const now = Date.now();
+  const prev = lastSyncAt.get(key);
+  if (prev !== undefined && now - prev < SYNC_THROTTLE_MS) return;
+  lastSyncAt.set(key, now);
+  if (lastSyncAt.size > 5000) {
+    for (const [k, t] of lastSyncAt) {
+      if (now - t > SYNC_THROTTLE_MS) lastSyncAt.delete(k);
+    }
+  }
+  void syncAndNotifyAchievements(userId).catch((err) => {
+    console.error('[achievements] throttled sync failed:', err);
+  });
+}

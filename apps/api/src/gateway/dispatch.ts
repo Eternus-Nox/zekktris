@@ -618,6 +618,22 @@ export function dmStreakUpdate(args: {
   }
 }
 
+/** A user just unlocked a new achievement — push it to their own connections
+ *  (multi-device) so the app can pop a celebratory in-app toast/banner live. */
+export function achievementUnlock(args: {
+  userId: bigint;
+  id: string;
+  name: string;
+  description: string;
+  marker: string;
+}): void {
+  publish(
+    GatewayEvent.ACHIEVEMENT_UNLOCK,
+    { id: args.id, name: args.name, description: args.description, marker: args.marker },
+    { kind: 'user', userId: args.userId },
+  );
+}
+
 /**
  * The current user has closed a DM. We strip the channel from their
  * connections' subscription set (so further events for the channel

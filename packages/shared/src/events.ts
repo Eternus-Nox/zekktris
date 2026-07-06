@@ -131,6 +131,11 @@ export const GatewayEvent = {
   // the next DM-list fetch / app relaunch.
   DM_STREAK_UPDATE: 'DM_STREAK_UPDATE',
 
+  // A new achievement was just unlocked by the current user. Sent ONLY to that
+  // user's own connections (user audience) so the app can pop a celebratory
+  // in-app toast/banner in real time. Payload: { id, name, description, marker }.
+  ACHIEVEMENT_UNLOCK: 'ACHIEVEMENT_UNLOCK',
+
   // DM read-receipt events. Both fire only on 1:1 DMs where the
   // recipient has dmReadReceiptsEnabled=true; suppressed otherwise.
   //

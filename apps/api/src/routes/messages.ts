@@ -1042,6 +1042,13 @@ messagesRouter.post(
       })
       .catch(() => undefined);
 
+    // Achievement unlocks driven by messaging (chatterbox tiers, night_owl,
+    // first_responder, welcome_committee). Throttled per-user + fire-and-forget
+    // so a burst of sends does at most one recompute a minute and never blocks.
+    void import('../services/achievements')
+      .then((m) => m.syncAndNotifyAchievementsThrottled(userId))
+      .catch(() => {});
+
     // DM read-receipt: delivered-at stamping. Only relevant on 1:1
     // DMs (group DMs and guild messages don't carry receipts). If
     // the recipient is currently connected to the gateway, the

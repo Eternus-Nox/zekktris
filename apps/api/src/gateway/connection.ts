@@ -174,6 +174,14 @@ export class Connection {
       clearTimeout(this.identifyTimer);
       this.identifyTimer = undefined;
     }
+    // Catch-all for achievement unlocks: on every fresh identify (app open /
+    // new session) reconcile the user's earned ledger and notify any newly-
+    // unlocked ones. Throttled + fire-and-forget so it never blocks the
+    // handshake; guarantees an unlock is announced by next connect even if no
+    // hotter hook fired for it.
+    void import('../services/achievements')
+      .then((m) => m.syncAndNotifyAchievementsThrottled(userId))
+      .catch(() => {});
   }
 
   /** Current outbound sequence number (last seq sent). */

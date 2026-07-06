@@ -3205,6 +3205,15 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           },
         });
       }),
+      // A new achievement just unlocked (sent only to this user's own
+      // connections) → celebratory toast. The server already gates this on the
+      // per-account notify_achievements preference, so if it arrives, show it.
+      gateway.on<{ id: string; name: string; description: string; marker: string }>(
+        GatewayEvent.ACHIEVEMENT_UNLOCK,
+        (a) => {
+          toasts.push(`🏆  Achievement unlocked — ${a.name}`, 'success', 6000);
+        },
+      ),
       gateway.on<Channel>(GatewayEvent.CHANNEL_DELETE, (ch) => {
         dispatch({ type: 'CHANNEL_REMOVE', channelId: ch.id, guildId: ch.guildId });
       }),
