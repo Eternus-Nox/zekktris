@@ -36,7 +36,7 @@
  *     are not feasible.
  */
 import { createHmac, randomBytes, createHash } from 'node:crypto';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, or, lt } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors } from '../errors';
 import { encryptField, decryptField } from '../lib/fieldCrypto';
@@ -111,19 +111,62 @@ export function totpCode(secret: string, atUnixSeconds: number): string {
   return String(slice % 10 ** TOTP_DIGITS).padStart(TOTP_DIGITS, '0');
 }
 
-/** Verify a user-supplied code against the secret, allowing ±1
-    period of clock skew. Returns true if any window matches. */
-export function verifyTotp(secret: string, code: string): boolean {
+/** Verify a user-supplied code against the secret, allowing ±1 period of clock
+    skew. Returns the matched STEP (the RFC 6238 counter, floor(time/30)) or
+    null if no window matches. The step is what the single-use gate records so a
+    captured code can't be replayed within its validity window. */
+export function verifyTotpStep(secret: string, code: string): number | null {
   const trimmed = code.replace(/\s+/g, '');
-  if (!/^\d{6}$/.test(trimmed)) return false;
-  const now = Math.floor(Date.now() / 1000);
+  if (!/^\d{6}$/.test(trimmed)) return null;
+  const currentStep = Math.floor(Date.now() / 1000 / TOTP_PERIOD_SECONDS);
   for (const offset of [-1, 0, 1]) {
-    const candidate = totpCode(secret, now + offset * TOTP_PERIOD_SECONDS);
+    const step = currentStep + offset;
+    const candidate = totpCode(secret, step * TOTP_PERIOD_SECONDS);
     // Constant-time compare to defeat timing oracles; for 6-digit
     // strings the practical risk is minimal but it costs nothing.
-    if (constantTimeEqual(candidate, trimmed)) return true;
+    if (constantTimeEqual(candidate, trimmed)) return step;
   }
-  return false;
+  return null;
+}
+
+/** Boolean convenience wrapper over {@link verifyTotpStep}. Used where no
+    single-use bookkeeping is needed (e.g. enrollment confirmation, which is
+    itself one-shot). Prefer {@link consumeTotpForUser} on the login / step-up
+    paths so codes are single-use. */
+export function verifyTotp(secret: string, code: string): boolean {
+  return verifyTotpStep(secret, code) !== null;
+}
+
+/**
+ * Verify a TOTP code AND atomically mark its step consumed, making codes
+ * single-use. Rejects (returns false) both a wrong code and a replay of a step
+ * at or below the last one this user consumed — closing the ~90s replay window
+ * a captured code otherwise had. The compare-and-set in the UPDATE WHERE means
+ * two concurrent logins with the same code can't both win: only the first to
+ * advance totp_last_step past `step` matches a row.
+ */
+export async function consumeTotpForUser(
+  userId: bigint,
+  secret: string,
+  code: string,
+): Promise<boolean> {
+  const step = verifyTotpStep(secret, code);
+  if (step === null) return false;
+  const stepBig = BigInt(step);
+  const res = await db
+    .update(schema.users)
+    .set({ totpLastStep: stepBig })
+    .where(
+      and(
+        eq(schema.users.id, userId),
+        or(
+          isNull(schema.users.totpLastStep),
+          lt(schema.users.totpLastStep, stepBig),
+        ),
+      ),
+    )
+    .returning({ id: schema.users.id });
+  return res.length > 0;
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -305,14 +348,17 @@ export async function confirmEnrollment(opts: {
   if (!user[0].totpSecret) {
     throw errors.badRequest('No enrollment in progress; call begin first');
   }
-  if (!verifyTotp(decryptField(user[0].totpSecret), opts.code)) {
+  const enrollStep = verifyTotpStep(decryptField(user[0].totpSecret), opts.code);
+  if (enrollStep === null) {
     throw errors.badRequest('Invalid code');
   }
   const recoveryCodes = generateRecoveryCodes();
   await persistRecoveryCodes(opts.userId, recoveryCodes);
   await db
     .update(schema.users)
-    .set({ totpEnabled: true, totpVerifiedAt: new Date() })
+    // Seed totp_last_step with the enrollment step so this very code can't be
+    // replayed at the first real login (single-use, same as verifyForLogin).
+    .set({ totpEnabled: true, totpVerifiedAt: new Date(), totpLastStep: BigInt(enrollStep) })
     .where(eq(schema.users.id, opts.userId));
   // May unlock double_locked (passkey + 2FA). Best-effort, non-blocking.
   void import('./achievements')
@@ -341,7 +387,7 @@ export async function disable(opts: {
     throw errors.badRequest('Two-factor authentication is not enabled');
   }
   const codeOk =
-    verifyTotp(decryptField(user[0].totpSecret), opts.code) ||
+    (await consumeTotpForUser(opts.userId, decryptField(user[0].totpSecret), opts.code)) ||
     (await consumeRecoveryCode(opts.userId, opts.code));
   if (!codeOk) throw errors.badRequest('Invalid code');
   await db.transaction(async (tx) => {
@@ -373,7 +419,7 @@ export async function verifyForLogin(opts: {
     return false;
   }
   const ok =
-    verifyTotp(decryptField(user[0].totpSecret), opts.code) ||
+    (await consumeTotpForUser(opts.userId, decryptField(user[0].totpSecret), opts.code)) ||
     (await consumeRecoveryCode(opts.userId, opts.code));
   if (ok) {
     await db

@@ -17,6 +17,7 @@ import { db, schema } from '../db';
 import { errors } from '../errors';
 import { requireAuth, requireUserId } from '../auth/middleware';
 import { validate } from '../lib/validate';
+import { RateLimiter } from '../lib/rateLimit';
 import {
   snowflakeSchema,
   channelNameSchema,
@@ -453,6 +454,13 @@ const createInviteSchema = z.object({
   ttlSeconds: inviteTtlSchema.nullable().optional(),
 });
 
+// Per-creator limit on invite minting. Without it a member with CREATE_INVITE
+// could script thousands of invite codes (each a DB row + a live join vector),
+// flooding storage and defeating any per-code max-uses/TTL controls. Keyed by
+// user so it bounds a single actor across every channel they can invite to.
+// Same shape/rationale as reportRl in routes/guilds.ts.
+const inviteCreateRl = new RateLimiter(30, 10 * 60_000, 'invite-create');
+
 channelsRouter.post(
   '/:channelId/invites',
   validate('param', z.object({ channelId: snowflakeSchema })),
@@ -463,6 +471,9 @@ channelsRouter.post(
     const channel = await channels.getChannel(channelId);
     if (!channel || !channel.guildId) throw errors.notFound('Channel');
     await assertChannelPermission(channelId, userId, Permissions.CREATE_INVITE);
+
+    const rl = await inviteCreateRl.consume(userId.toString());
+    if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
 
     const body =
       (c.req.valid('json') as { maxUses?: number | null; ttlSeconds?: number | null } | undefined) ?? {};

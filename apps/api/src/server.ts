@@ -12,7 +12,9 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { secureHeaders } from 'hono/secure-headers';
+import { bodyLimit } from 'hono/body-limit';
 import { timingSafeEqual } from 'node:crypto';
+import { errors } from './errors';
 import { healthRouter } from './routes/health';
 import { authRouter } from './routes/auth';
 import { usersRouter } from './routes/users';
@@ -43,6 +45,34 @@ export function createApp() {
   app.use('*', requestId);
   app.use('*', accessLog);
   app.use('*', secureHeaders());
+
+  // ── Request body size limit ────────────────────────────────────────────
+  // Bound how many bytes any single request can stream in, so a malicious or
+  // buggy client can't exhaust memory with an unbounded body. Two ceilings,
+  // dispatched by content-type because file uploads legitimately dwarf JSON:
+  //   • multipart/form-data → the upload ceiling (per-file cap × max files,
+  //     plus framing overhead). Per-file / per-message caps are still
+  //     enforced downstream in the upload service; this is the outer bound.
+  //   • everything else (JSON / urlencoded / text / Stripe webhook) → 8 MB,
+  //     comfortably above the largest legit JSON body (a guild-backup import:
+  //     ≤1000 roles + channels, low single-digit MB) while rejecting bombs.
+  // bodyLimit measures ACTUAL streamed bytes, so a spoofed/absent
+  // Content-Length can't slip past it.
+  const JSON_BODY_LIMIT = 8 * 1024 * 1024;
+  const UPLOAD_BODY_LIMIT =
+    env.MAX_UPLOAD_SIZE_MB * 1024 * 1024 * env.MAX_FILES_PER_MESSAGE +
+    4 * 1024 * 1024; // multipart framing + payload_json overhead
+  const onBodyTooLarge = () => {
+    throw errors.payloadTooLarge('Request body too large');
+  };
+  const jsonBodyLimit = bodyLimit({ maxSize: JSON_BODY_LIMIT, onError: onBodyTooLarge });
+  const uploadBodyLimit = bodyLimit({ maxSize: UPLOAD_BODY_LIMIT, onError: onBodyTooLarge });
+  app.use('*', (c, next) => {
+    const ct = c.req.header('content-type') ?? '';
+    return ct.includes('multipart/form-data')
+      ? uploadBodyLimit(c, next)
+      : jsonBodyLimit(c, next);
+  });
 
   // CORS: relaxed in dev (Vite at :5173); locked down in prod via reverse proxy.
   // The proxy serves the SPA from the same origin as /api, so CORS isn't

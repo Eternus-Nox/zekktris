@@ -14,8 +14,47 @@
 
 import { and, desc, eq, inArray, isNull, lt, or } from 'drizzle-orm';
 import { db, schema } from '../db';
+import { errors } from '../errors';
+import { hasPermission, Permissions } from '@zekktris/shared/permissions';
+import * as channels from './channels';
+import { computeMemberChannelPermissions } from './permissions';
 
 const PAGE_SIZE = 25;
+
+/**
+ * Can `userId` actually see the channel a message lives in? Mirrors the
+ * message-route viewability gate (loadChannelContext): a GUILD channel
+ * requires VIEW_CHANNEL; a DM/group-DM requires recipient membership.
+ * Anything else (deleted/unknown channel type) is not viewable.
+ *
+ * Used both to gate saving (you may only bookmark a message you can read)
+ * and to filter the saved list (access can be revoked AFTER a save — kicked
+ * from the guild, channel made private, removed from a group DM — and a
+ * bookmark must never become a back door to content you've lost access to).
+ */
+async function canViewChannelRow(
+  userId: bigint,
+  channel: typeof schema.channels.$inferSelect,
+): Promise<boolean> {
+  if (channel.guildId) {
+    const perms = await computeMemberChannelPermissions(channel.id, userId, channel);
+    return hasPermission(perms, Permissions.VIEW_CHANNEL);
+  }
+  if (channel.type === 'dm' || channel.type === 'group_dm') {
+    const r = await db
+      .select({ userId: schema.dmRecipients.userId })
+      .from(schema.dmRecipients)
+      .where(
+        and(
+          eq(schema.dmRecipients.channelId, channel.id),
+          eq(schema.dmRecipients.userId, userId),
+        ),
+      )
+      .limit(1);
+    return r.length > 0;
+  }
+  return false;
+}
 
 export interface SavedListItem {
   message: typeof schema.messages.$inferSelect;
@@ -27,6 +66,27 @@ export async function saveMessage(
   userId: bigint,
   messageId: bigint,
 ): Promise<{ created: boolean }> {
+  // Viewability gate (IDOR fix). Without this, any authenticated user could
+  // bookmark an arbitrary message by snowflake and then read its full content
+  // back through GET /@me/saved — the save was a bare INSERT with no check
+  // that the caller can see the target. Resolve the message → channel and
+  // enforce the same visibility as the message routes before inserting.
+  const msgRow = (
+    await db
+      .select({
+        channelId: schema.messages.channelId,
+        deletedAt: schema.messages.deletedAt,
+      })
+      .from(schema.messages)
+      .where(eq(schema.messages.id, messageId))
+      .limit(1)
+  )[0];
+  if (!msgRow || msgRow.deletedAt) throw errors.notFound('Message');
+  const channel = await channels.getChannel(msgRow.channelId);
+  if (!channel || !(await canViewChannelRow(userId, channel))) {
+    throw errors.notFound('Message');
+  }
+
   const result = await db
     .insert(schema.savedMessages)
     .values({ userId, messageId })
@@ -152,14 +212,28 @@ export async function listSavedMessages(
     .limit(limit + 1);
 
   const hasMore = rows.length > limit;
-  const items = (hasMore ? rows.slice(0, limit) : rows).map((r) => ({
-    savedAt: r.savedAt,
-    message: r.message,
-    channel: r.channel,
-  }));
-  const last = items[items.length - 1];
+  const windowRows = hasMore ? rows.slice(0, limit) : rows;
+
+  // Compute the keyset boundary from the last RAW row in the window, BEFORE
+  // the viewability filter below. If a whole page filters out, pagination
+  // must still advance past it — deriving the cursor from the filtered set
+  // could go null on an all-hidden page and strand viewable rows beyond it.
+  const boundary = windowRows[windowRows.length - 1];
   const nextCursor =
-    hasMore && last ? `${last.savedAt.toISOString()}_${last.message.id.toString()}` : null;
+    hasMore && boundary
+      ? `${boundary.savedAt.toISOString()}_${boundary.message.id.toString()}`
+      : null;
+
+  // Defense-in-depth: even a legitimately-saved message must be re-checked
+  // for current viewability, because access can be revoked after the save
+  // (kicked from the guild, channel turned private, removed from a group DM).
+  // Drop any row the caller can no longer see.
+  const items: SavedListItem[] = [];
+  for (const r of windowRows) {
+    if (r.channel && (await canViewChannelRow(userId, r.channel))) {
+      items.push({ savedAt: r.savedAt, message: r.message, channel: r.channel });
+    }
+  }
 
   return { items, nextCursor };
 }

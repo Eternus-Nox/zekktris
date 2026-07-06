@@ -89,8 +89,14 @@ export function extractUrls(content: string): string[] {
  * URLs" range.
  */
 export function isPrivateIp(ip: string): boolean {
+  // Tolerate a bracketed literal ([::1]) and an IPv6 zone id (fe80::1%eth0)
+  // so a hostname/URL-literal form can't slip an internal target past us.
+  let addr = ip.trim();
+  if (addr.startsWith('[') && addr.endsWith(']')) addr = addr.slice(1, -1);
+  const zoneIdx = addr.indexOf('%');
+  if (zoneIdx !== -1) addr = addr.slice(0, zoneIdx);
   // IPv4
-  const v4 = ip.split('.').map(Number);
+  const v4 = addr.split('.').map(Number);
   if (v4.length === 4 && v4.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)) {
     const [a, b] = v4 as [number, number, number, number];
     if (a === 10) return true; // 10.0.0.0/8
@@ -103,7 +109,7 @@ export function isPrivateIp(ip: string): boolean {
     return false;
   }
   // IPv6 — a few well-known prefixes.
-  const v6 = ip.toLowerCase();
+  const v6 = addr.toLowerCase();
   if (v6 === '::1' || v6 === '::') return true; // loopback / unspecified
   if (v6.startsWith('fc') || v6.startsWith('fd')) return true; // unique local fc00::/7
   // Link-local fe80::/10. The /10 prefix means the first 10 bits
@@ -120,12 +126,34 @@ export function isPrivateIp(ip: string): boolean {
     return true;
   }
   if (v6.startsWith('ff')) return true; // multicast ff00::/8
-  if (v6.startsWith('::ffff:')) {
-    // IPv4-mapped IPv6 — recurse on the v4 part.
-    const v4Part = v6.slice(7);
-    return isPrivateIp(v4Part);
-  }
+  // IPv4-mapped (::ffff:*) or IPv4-compatible (::*) IPv6. An attacker can
+  // encode a private IPv4 in EITHER the dotted (::ffff:127.0.0.1) OR the
+  // two-hextet (::ffff:7f00:1) textual form, and Node's dns.lookup returns the
+  // hextet form verbatim — so decode both and recurse. (The old code only
+  // stripped the `::ffff:` prefix, catching the dotted form and letting the
+  // hextet form — 127.0.0.1, 169.254.169.254 metadata, RFC1918 — through.)
+  const embedded = embeddedIpv4(v6);
+  if (embedded) return isPrivateIp(embedded);
+  // NAT64 well-known prefix 64:ff9b::/96 also embeds an IPv4 in its low 32
+  // bits; the server never legitimately fetches through NAT64, so block it.
+  if (v6.startsWith('64:ff9b:')) return true;
   return false;
+}
+
+/**
+ * The embedded dotted IPv4 of an IPv4-mapped/compatible IPv6, or null.
+ * Handles ::ffff:1.2.3.4, ::ffff:0102:0304, ::1.2.3.4, ::0102:0304.
+ */
+function embeddedIpv4(v6: string): string | null {
+  const dotted = v6.match(/^::(?:ffff:)?(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (dotted) return dotted[1]!;
+  const hex = v6.match(/^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (hex) {
+    const hi = parseInt(hex[1]!, 16);
+    const lo = parseInt(hex[2]!, 16);
+    return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+  }
+  return null;
 }
 
 /**

@@ -72,6 +72,59 @@ export const guildsRouter = new Hono();
 
 guildsRouter.use('*', requireAuth);
 
+/**
+ * Enforce the role-hierarchy ceiling on a set of TARGET positions. A
+ * non-owner without the ADMINISTRATOR bit cannot move — or PATCH — any role
+ * to a position at or above their own highest role: doing so would elevate
+ * that role's members above the actor and everyone in between, a privilege-
+ * escalation backdoor. Owners and admin-bit holders have no ceiling.
+ * Shared by the role-reorder endpoint and the single-role PATCH handler
+ * (which previously only checked a role's CURRENT position via
+ * assertCanManageRole, letting a moderator raise a managed role above
+ * themselves through body.position).
+ */
+async function assertTargetPositionsWithinCeiling(
+  guildId: bigint,
+  userId: bigint,
+  targets: Array<{ id: bigint; position: number }>,
+): Promise<void> {
+  const guildRow = await db
+    .select({ ownerId: schema.guilds.ownerId })
+    .from(schema.guilds)
+    .where(eq(schema.guilds.id, guildId))
+    .limit(1);
+  if (guildRow[0]?.ownerId === userId) return;
+
+  const callerPerms = await computeMemberGuildPermissions(guildId, userId);
+  if (hasPermission(callerPerms, Permissions.ADMINISTRATOR)) return;
+
+  const callerMember = await members.getMemberDetailed(guildId, userId);
+  const callerRoles = callerMember?.roleIds ?? [];
+  let actorTop = 0;
+  if (callerRoles.length > 0) {
+    const roleRows = await db
+      .select({ position: schema.roles.position })
+      .from(schema.roles)
+      .where(
+        and(
+          eq(schema.roles.guildId, guildId),
+          inArray(schema.roles.id, callerRoles),
+        ),
+      );
+    for (const r of roleRows) {
+      if (r.position > actorTop) actorTop = r.position;
+    }
+  }
+  for (const { id, position } of targets) {
+    if (id === guildId) continue;
+    if (position >= actorTop) {
+      throw errors.forbidden(
+        'You cannot move a role to a position at or above your highest role',
+      );
+    }
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Guild CRUD
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1197,6 +1250,16 @@ guildsRouter.patch(
     await assertCanManageRole(guildId, userId, roleId);
     const body = c.req.valid('json');
 
+    // Hierarchy ceiling on the TARGET position. assertCanManageRole above
+    // only proves the caller outranks the role at its CURRENT position; it
+    // does not stop a moderator from raising a managed role to (or above)
+    // their own top via body.position. Mirror the reorder-endpoint guard.
+    if (body.position !== undefined) {
+      await assertTargetPositionsWithinCeiling(guildId, userId, [
+        { id: roleId, position: body.position },
+      ]);
+    }
+
     if (body.permissions !== undefined) {
       const callerPerms = await computeMemberGuildPermissions(guildId, userId);
       if (!hasPermission(callerPerms, body.permissions)) {
@@ -1291,44 +1354,8 @@ guildsRouter.patch(
     // moderator and every role between 5 and 7, gaining ability
     // to act on them. Effectively the moderator has promoted X's
     // members above their own peers via the reorder backdoor.
-    // Compute the actor's top role once and check each target
-    // position against it. Owners and ADMINISTRATOR-bit holders
-    // skip this — they have no hierarchy ceiling.
-    const callerMember = await members.getMemberDetailed(guildId, userId);
-    const guildRow = await db
-      .select({ ownerId: schema.guilds.ownerId })
-      .from(schema.guilds)
-      .where(eq(schema.guilds.id, guildId))
-      .limit(1);
-    const isOwner = guildRow[0]?.ownerId === userId;
-    if (!isOwner) {
-      const callerPerms = await computeMemberGuildPermissions(guildId, userId);
-      const hasAdmin = hasPermission(callerPerms, Permissions.ADMINISTRATOR);
-      if (!hasAdmin) {
-        const callerRoles = callerMember?.roleIds ?? [];
-        let actorTop = 0;
-        if (callerRoles.length > 0) {
-          const roleRows = await db
-            .select({ position: schema.roles.position })
-            .from(schema.roles)
-            .where(and(
-              eq(schema.roles.guildId, guildId),
-              inArray(schema.roles.id, callerRoles),
-            ));
-          for (const r of roleRows) {
-            if (r.position > actorTop) actorTop = r.position;
-          }
-        }
-        for (const { id, position } of positions) {
-          if (id === guildId) continue;
-          if (position >= actorTop) {
-            throw errors.forbidden(
-              'You cannot move a role to a position at or above your highest role',
-            );
-          }
-        }
-      }
-    }
+    // Owners and ADMINISTRATOR-bit holders have no hierarchy ceiling.
+    await assertTargetPositionsWithinCeiling(guildId, userId, positions);
     await roles.reorderRoles(guildId, userId, positions);
     return c.json({ ok: true });
   },

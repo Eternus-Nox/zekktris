@@ -2,12 +2,24 @@
  * Request helpers
  * ---------------
  * Pull IP and User-Agent off the request consistently. Honors TRUST_PROXY:
- * when true, X-Forwarded-For (leftmost) and X-Real-IP are trusted as the
- * source of truth; when false, only the connection IP is used.
+ * when true, trust our reverse proxy's forwarding headers; when false, only
+ * the connection IP is used.
  *
  * Why bother: the api will run behind Caddy in production. Without proxy
  * trust we'd log Caddy's IP (e.g. 172.x.x.x on the docker network) in every
  * session row, which is useless for the user's sessions UI.
+ *
+ * SPOOFING: the LEFTMOST X-Forwarded-For entry is fully client-controlled —
+ * a client sends `X-Forwarded-For: 1.2.3.4` and Caddy simply appends the real
+ * peer to the right (`1.2.3.4, <realIP>`). Trusting the leftmost lets anyone
+ * forge their source IP, poisoning rate-limit keys, ban checks, audit logs and
+ * the sessions UI. With a single trusted hop (Caddy directly facing clients)
+ * the trustworthy signals are, in order:
+ *   1. X-Real-IP — Caddy sets this to the actual TCP peer and OVERWRITES any
+ *      client-supplied value, so it can't be forged.
+ *   2. the RIGHTMOST X-Forwarded-For entry — the one our own proxy appended,
+ *      i.e. the peer that actually connected to Caddy.
+ * We never trust the leftmost.
  */
 
 import type { Context } from 'hono';
@@ -16,14 +28,21 @@ import { env } from '../env';
 
 export function getClientIp(c: Context): string | null {
   if (env.TRUST_PROXY) {
+    // X-Real-IP first: Caddy sets it to the real peer and strips any inbound
+    // copy, so it is not client-spoofable.
+    const xri = c.req.header('x-real-ip');
+    if (xri) {
+      const v = xri.trim();
+      if (v) return v;
+    }
+    // Fall back to the RIGHTMOST X-Forwarded-For entry (appended by our own
+    // trusted proxy). Never the leftmost — that half is attacker-controlled.
     const xff = c.req.header('x-forwarded-for');
     if (xff) {
-      // Leftmost is the original client; intermediate proxies append themselves.
-      const first = xff.split(',')[0]?.trim();
-      if (first) return first;
+      const parts = xff.split(',');
+      const last = parts[parts.length - 1]?.trim();
+      if (last) return last;
     }
-    const xri = c.req.header('x-real-ip');
-    if (xri) return xri.trim();
   }
   try {
     return getConnInfo(c).remote.address ?? null;

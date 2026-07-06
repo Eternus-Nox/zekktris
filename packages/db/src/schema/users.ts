@@ -145,6 +145,11 @@ export const users = pgTable(
     totpSecret: text('totp_secret'),
     totpEnabled: boolean('totp_enabled').notNull().default(false),
     totpVerifiedAt: timestamp('totp_verified_at', { withTimezone: true }),
+    /** RFC 6238 step (floor(unixSeconds / 30)) of the last TOTP code this user
+     *  successfully consumed. Verification compare-and-sets this so a captured
+     *  code can't be replayed inside its ±1-window (~90s) validity. Null until
+     *  the first code is consumed. */
+    totpLastStep: bigint('totp_last_step', { mode: 'bigint' }),
     /** Instance-level ban marker. Null = normal user. When set, the
         login flow rejects the credentials with a generic "account
         disabled" response. Soft-ban (timestamp) rather than hard
@@ -274,6 +279,11 @@ export const sessions = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     /** SHA-256 hex of the opaque refresh token (never store the token itself). */
     refreshTokenHash: text('refresh_token_hash').notNull(),
+    /** SHA-256 hex of the token this session was rotated FROM (the immediately
+     *  preceding refresh token). Presenting this superseded token again —
+     *  outside a short concurrency grace — is a reuse/theft signal that revokes
+     *  the session. Null until the first rotation. */
+    previousRefreshTokenHash: text('previous_refresh_token_hash'),
     userAgent: text('user_agent'),
     /** IPv4 /24 or IPv6 /48 truncated for privacy. */
     ipAddress: text('ip_address'),

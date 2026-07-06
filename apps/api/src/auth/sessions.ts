@@ -112,6 +112,9 @@ export async function rotateSession(
     .update(schema.sessions)
     .set({
       refreshTokenHash: hash,
+      // Remember the hash we just replaced so a later reuse of that superseded
+      // token is detectable as theft (see detectRefreshTokenReuse).
+      previousRefreshTokenHash: expectedCurrentHash,
       lastUsedAt: new Date(),
       expiresAt,
     })
@@ -126,6 +129,53 @@ export async function rotateSession(
     .returning({ id: schema.sessions.id });
   if (result.length === 0) return null;
   return { refreshToken: token };
+}
+
+/**
+ * How long after a rotation a superseded (previous) refresh token is still
+ * tolerated as a benign double-submit rather than treated as theft. Concurrent
+ * multi-tab refreshes and lost-response retries legitimately replay the token
+ * that was just rotated away; only a reuse OUTSIDE this grace is a theft signal.
+ */
+const REFRESH_REUSE_GRACE_MS = 30_000;
+
+/**
+ * Refresh-token reuse detection. Given a presented token that did NOT match any
+ * active session's CURRENT hash, decide whether it matches a session's
+ * PREVIOUS (rotated-away) hash — i.e. a superseded token is being replayed.
+ *
+ * Returns:
+ *   - `{ theft: true, sessionId }`  when a superseded token is reused after the
+ *     grace window: a strong indication the token leaked and both parties are
+ *     racing. The caller should revoke that session family.
+ *   - `null` otherwise: unknown token, or a within-grace benign double-submit
+ *     (the common multi-tab / retry case) that should just 401 without nuking
+ *     the session.
+ *
+ * Only the IMMEDIATELY-preceding token is stored, so a 2+-generation-stale
+ * token won't match here (it already 401s as "unknown"); this catches the one
+ * dangerous case — replay of the token that was current one rotation ago.
+ */
+export async function detectRefreshTokenReuse(
+  token: string,
+): Promise<{ theft: true; sessionId: bigint } | null> {
+  const hash = hashRefreshToken(token);
+  const rows = await db
+    .select({ id: schema.sessions.id, lastUsedAt: schema.sessions.lastUsedAt })
+    .from(schema.sessions)
+    .where(
+      and(
+        eq(schema.sessions.previousRefreshTokenHash, hash),
+        isNull(schema.sessions.revokedAt),
+      ),
+    )
+    .limit(1);
+  const s = rows[0];
+  if (!s) return null;
+  // Within grace of the rotation that produced this "previous" hash → benign
+  // concurrency, not theft. lastUsedAt is stamped at each rotation.
+  if (Date.now() - s.lastUsedAt.getTime() < REFRESH_REUSE_GRACE_MS) return null;
+  return { theft: true, sessionId: s.id };
 }
 
 export async function revokeSession(sessionId: bigint): Promise<void> {

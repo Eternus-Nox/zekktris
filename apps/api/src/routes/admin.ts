@@ -1195,6 +1195,15 @@ adminRouter.get(
     const ch = channelRows[0];
     if (!ch) throw errors.notFound('Channel');
 
+    // Admin observe is a GUILD moderation tool only. DMs and group DMs are
+    // private conversations (and may be E2EE) — their backlog must never be
+    // exposed through peek, regardless of who holds the admin/mod bit. A
+    // null guildId also fences off any non-guild channel type. 404 (not 403)
+    // to avoid confirming a DM channel exists by id.
+    if (ch.guildId === null || ch.type === 'dm' || ch.type === 'group_dm') {
+      throw errors.notFound('Channel');
+    }
+
     // Voice and stage channels have no message backlog to observe.
     // Return an empty list with a hint rather than 400 so the UI can
     // render a sensible "no messages — voice channel" state.

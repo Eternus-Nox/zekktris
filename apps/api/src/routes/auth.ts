@@ -25,6 +25,7 @@ import {
   rotateSession,
   revokeSession,
   revokeAllUserSessions,
+  detectRefreshTokenReuse,
 } from '../auth/sessions';
 import {
   setRefreshCookie,
@@ -477,8 +478,19 @@ authRouter.post('/refresh', async (c) => {
 
   const session = await findActiveSessionByRefreshToken(token);
   if (!session) {
-    // Possible scenarios: token unknown, session revoked, session expired.
-    // All map to the same response — clear the bad cookie and 401.
+    // The token didn't match any active session's CURRENT hash. Before we
+    // treat it as a benign expired/unknown token, check whether it's a
+    // SUPERSEDED token being replayed (reuse detection). A reuse outside the
+    // concurrency grace means the token leaked and someone is racing the
+    // legitimate holder — revoke that session family so the stolen token (and
+    // whatever the thief already rotated it into) stops working.
+    const reuse = await detectRefreshTokenReuse(token);
+    if (reuse) {
+      await revokeSession(reuse.sessionId).catch(() => undefined);
+    }
+    // Possible scenarios: token unknown, session revoked, session expired, or
+    // detected reuse (now revoked). All map to the same response — clear the
+    // bad cookie and 401.
     clearRefreshCookie(c);
     throw errors.unauthenticated('Refresh token is no longer valid');
   }
