@@ -875,3 +875,79 @@ NOT run — local colima test-DB corrupted by a disk-full event (pg 58030).
 - Passkey login challenge not consumed on unknown credential id (minor single-use weakening).
 - Guild events list is a 3N query fan-out; messagesByChannel/usersById grow per-session (bounded by population; prior-deferred class).
 - forceDisconnectUserLocal detaches (keeps 60s resume buffer) rather than hard-removing — benign (resume re-checks ban).
+
+---
+
+# 2026-07-06 session — deep security audit (find → adversarially verify → fix)
+
+Multi-agent finder sweep + adversarial skeptic per finding; 9 confirmed / 6
+refuted. All fixed in ONE commit **cdaffc8** (`security(api): fix IDOR, SSRF,
+priv-esc + auth/DoS hardening`). db/client/shared/api/web typecheck clean; SSRF
+decoder validated standalone against the bypass vectors; runtime import smoke
+test confirms clean module init + correct TOTP step math. Integration suite not
+run (local pg down); changes are localized and mirror proven patterns.
+
+## HIGH
+- **H1 saved-message IDOR** (savedMessages.ts, users.ts saved routes): `saveMessage`
+  was a bare INSERT — any authed user could bookmark an arbitrary message by
+  snowflake and read full content via `GET /@me/saved`. Now gates the save on
+  channel viewability (guild→VIEW_CHANNEL via computeMemberChannelPermissions;
+  DM→dm_recipients membership), mirroring loadChannelContext, AND re-filters
+  `listSavedMessages` so access revoked after a save (kick / channel-privated /
+  group-DM removal) can't leak. Keyset cursor derived from the raw window so an
+  all-hidden page still paginates forward.
+- **H2 SSRF IPv4-mapped IPv6 hextet bypass** (embeds.ts `isPrivateIp`): only the
+  dotted `::ffff:127.0.0.1` form was decoded; the hextet form dns.lookup returns
+  verbatim (`::ffff:7f00:1`, `::ffff:a9fe:a9fe`=169.254.169.254 metadata,
+  RFC1918) slipped through to the unfurl/embed fetcher (reachable via
+  `GET /api/v1/unfurl`, requireAuth-only). New `embeddedIpv4` decodes both
+  mapped/compatible forms; also strips `[...]` + `%zone` and blocks NAT64
+  `64:ff9b::/96`.
+- **H3 role-position hierarchy bypass** (guilds.ts PATCH role): `assertCanManageRole`
+  proves only the role's CURRENT position is below the caller's top; `body.position`
+  let a moderator raise a managed role to/above themselves. Extracted the
+  reorder ceiling into `assertTargetPositionsWithinCeiling` and applied to both
+  the reorder endpoint and the single-role PATCH.
+
+## MEDIUM
+- **M4 mod-peek reads DMs** (admin.ts peek/messages): now 404s DM/group-DM and
+  null-guild channels — observe is a guild moderation tool, never a window into
+  private/E2EE conversations.
+- **M5 no request body limit** (server.ts): added a content-type-dispatched Hono
+  bodyLimit — 8 MB for JSON/urlencoded/webhook (above the largest legit guild-
+  backup import), a computed ceiling (MAX_UPLOAD_SIZE_MB × MAX_FILES + overhead)
+  for multipart. Measures actual bytes; Stripe webhook raw-body read (c.req.text)
+  stays intact.
+- **M6 X-Forwarded-For spoofing** (lib/request.ts `getClientIp`): trusted the
+  leftmost XFF entry (client-controlled — Caddy appends the real peer to the
+  RIGHT). Now prefers the Caddy-set non-spoofable X-Real-IP (`header_up X-Real-IP
+  {remote_host}` confirmed in ops/Caddyfile), else the rightmost XFF. Protects
+  rate-limit keys, ban checks, audit logs, sessions UI.
+
+## LOW
+- **L7 refresh-token reuse detection** (sessions.ts, auth.ts /refresh; migration
+  0114 `previous_refresh_token_hash`): rotation now records the rotated-away hash;
+  replaying a superseded token OUTSIDE a 30s concurrency grace revokes the session
+  family (theft containment) while benign multi-tab / lost-response double-submits
+  within grace just 401 as before. Single-session revoke (not revoke-all) to bound
+  false-positive blast radius on this mobile-heavy app.
+- **L8 TOTP replay** (twoFactor.ts; migration 0115 `totp_last_step`): codes were
+  valid for the whole ±1 window (~90s). `verifyTotpStep` returns the matched RFC
+  6238 step; `consumeTotpForUser` compare-and-sets `totp_last_step` (rejects step
+  <= last) making codes single-use across concurrent logins. Login + disable +
+  enrollment-seed all use it.
+- **L9 invite-create flood** (channels.ts): added per-user `inviteCreateRl`
+  (30 / 10 min) to `POST /:channelId/invites`, matching reportRl.
+
+## Refuted (6) — no proven exploit
+- Standard adversarial-skeptic drops; not carried as tracked items (either
+  behind an existing gate, non-reachable, or already-mitigated by a limiter /
+  DTO whitelist elsewhere).
+
+## Notes for future sessions
+- New internal columns `sessions.previous_refresh_token_hash` and
+  `users.totp_last_step` must NEVER enter a DTO (toSession / toSelfUser are
+  explicit whitelists — verified clean). If a raw-row serializer is ever added,
+  exclude both alongside refresh_token_hash / totp_secret.
+- Migrations 0114/0115 need applying to prod + the local/test DB before these
+  paths are exercised (pg was down this session).
