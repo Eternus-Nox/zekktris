@@ -901,7 +901,7 @@ body.zk-keyboard-open .zk-rail-actions {
  * half an inch above the keyboard" gap on web mobile. The descendant selector
  * outweighs the Tailwind arbitrary-value class, so no !important is needed. */
 html.zk-vkb-open .zk-composer {
-  padding-bottom: 0.5rem;
+  padding-bottom: 0;
 }
 
 /* Apply this to the top-level Shell container (and the auth screens) so

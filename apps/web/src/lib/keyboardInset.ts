@@ -21,10 +21,15 @@ export function initKeyboardInset(): void {
     // How much of the layout viewport the visual viewport no longer covers at
     // the bottom (the keyboard, mostly).
     const overlap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-    // >120px of overlap ⇒ a real keyboard, not a toolbar collapse.
-    const open = overlap > 120;
+    // >60px of overlap ⇒ a real keyboard, not a toolbar collapse. The old
+    // 120px threshold desynced from the grid-lift (which fires at any inset),
+    // so a short/split/floating keyboard would lift the layout but NOT collapse
+    // the composer's ~46px home-indicator padding, leaving the "half inch above
+    // the keyboard" gap. 60px still clears a collapsing URL bar while catching
+    // every real keyboard. The composer padding is now fully collapsed (0) when
+    // this fires, so there is no residual gap either.
+    const open = overlap > 60;
     root.classList.toggle('zk-vkb-open', open);
-    root.style.setProperty('--zk-vkb', `${open ? overlap : 0}px`);
   };
 
   vv.addEventListener('resize', apply);
