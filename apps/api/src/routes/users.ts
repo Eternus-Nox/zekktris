@@ -250,6 +250,12 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
       body.avatarDecoration !== 'none') ||
     (body.tagLabel !== undefined && (body.tagLabel?.trim() ?? '') !== '') ||
     (body.tagColor !== undefined && body.tagColor !== null);
+  // Cache the effective membership for this request. The cosmetic gate below
+  // and the toSelfUser response both need it; the PATCH between them only
+  // writes users.* (never subscriptions or supervision links), so one read is
+  // safe to reuse. undefined = not computed yet (keeps non-cosmetic PATCHes at
+  // exactly one read, at the response builder).
+  let effectiveSub: import('../services/subscriptions').EffectiveSubscription | null | undefined;
   if (wantsCosmetic) {
     // Admin-configurable gate (instance_settings via the monetization
     // service). 'none' = Appearance is free on this instance; otherwise the
@@ -271,8 +277,8 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
     }
     if (required !== 'none') {
       const subs = await import('../services/subscriptions');
-      const sub = await subs.getEffectiveSubscription(userId);
-      if (!monetization.isAllowed(monetization.tierRank(sub?.tier ?? null), required)) {
+      effectiveSub = await subs.getEffectiveSubscription(userId);
+      if (!monetization.isAllowed(monetization.tierRank(effectiveSub?.tier ?? null), required)) {
         const tierName = required.charAt(0).toUpperCase() + required.slice(1);
         throw new AppError(
           'FORBIDDEN',
@@ -516,7 +522,12 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   // lose the tier fields when it replaces itself with this response.
   {
     const subs = await import('../services/subscriptions');
-    const membership = await subs.getEffectiveSubscription(userId);
+    // Reuse the value computed by the cosmetic gate above when it ran; only
+    // read here on the (common) non-cosmetic path where it stayed undefined.
+    const membership =
+      effectiveSub !== undefined
+        ? effectiveSub
+        : await subs.getEffectiveSubscription(userId);
     return c.json({ user: toSelfUser(user, membership) });
   }
 });

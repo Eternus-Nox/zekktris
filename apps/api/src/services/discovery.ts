@@ -126,30 +126,32 @@ export async function listDiscoverable(args: {
   // browse default sort (member_count DESC, id DESC) is served by the partial
   // guilds_discoverable_rank_idx. Count is eventually-consistent (fresh to
   // the sweep interval), which is fine for a directory.
-  const rows = await db
-    .select({
-      id: schema.guilds.id,
-      name: schema.guilds.name,
-      description: schema.guilds.description,
-      discoveryDescription: schema.guilds.discoveryDescription,
-      discoveryCategory: schema.guilds.discoveryCategory,
-      iconUrl: schema.guilds.iconUrl,
-      bannerUrl: schema.guilds.bannerUrl,
-      vanityUrlCode: schema.guilds.vanityUrlCode,
-      memberCount: schema.guilds.memberCount,
-    })
-    .from(schema.guilds)
-    .where(where)
-    .orderBy(desc(schema.guilds.memberCount), desc(schema.guilds.id))
-    .limit(PAGE_LIMIT)
-    .offset(offset);
-
-  // Total count (separate query — fine for v1 since the dataset is
-  // small). Front-end uses this for the "X servers" header.
-  const totalRows = await db
-    .select({ n: sql<number>`COUNT(*)::int` })
-    .from(schema.guilds)
-    .where(where);
+  // Page rows and total count are independent (both derive only from `where`)
+  // — run them concurrently on the pool instead of serializing. Count is
+  // eventually-consistent (fresh to the sweep interval), fine for a directory.
+  const [rows, totalRows] = await Promise.all([
+    db
+      .select({
+        id: schema.guilds.id,
+        name: schema.guilds.name,
+        description: schema.guilds.description,
+        discoveryDescription: schema.guilds.discoveryDescription,
+        discoveryCategory: schema.guilds.discoveryCategory,
+        iconUrl: schema.guilds.iconUrl,
+        bannerUrl: schema.guilds.bannerUrl,
+        vanityUrlCode: schema.guilds.vanityUrlCode,
+        memberCount: schema.guilds.memberCount,
+      })
+      .from(schema.guilds)
+      .where(where)
+      .orderBy(desc(schema.guilds.memberCount), desc(schema.guilds.id))
+      .limit(PAGE_LIMIT)
+      .offset(offset),
+    db
+      .select({ n: sql<number>`COUNT(*)::int` })
+      .from(schema.guilds)
+      .where(where),
+  ]);
   const total = totalRows[0]?.n ?? 0;
 
   return { guilds: rows, total };

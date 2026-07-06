@@ -507,8 +507,8 @@ export async function syncAndNotifyAchievements(userId: bigint): Promise<void> {
 
   const dispatch = await import('../gateway/dispatch');
   const { sendToUser } = await import('./push');
+  // Live in-app celebration (only reaches this user's own connections).
   for (const a of fresh) {
-    // Live in-app celebration (only reaches this user's own connections).
     try {
       dispatch.achievementUnlock({
         userId,
@@ -520,20 +520,22 @@ export async function syncAndNotifyAchievements(userId: bigint): Promise<void> {
     } catch (err) {
       console.error('[achievements] live unlock dispatch failed:', err);
     }
-    // Closed-app push (Web Push / APNs / FCM). data.kind routes the tap to the
-    // achievements gallery on the clients.
-    try {
-      await sendToUser(userId, {
+  }
+  // Closed-app push (Web Push / APNs / FCM). data.kind routes the tap to the
+  // achievements gallery. Fired in parallel — each sendToUser is independent,
+  // so serializing them (and re-querying this user's token tables N times
+  // back-to-back on a multi-unlock) only added latency.
+  await Promise.all(
+    fresh.map((a) =>
+      sendToUser(userId, {
         title: 'Achievement unlocked 🏆',
         body: `${a.name} — ${a.description}`,
         tag: `achv-${a.id}`,
         url: '/',
         data: { kind: 'achievement', achievementId: a.id },
-      });
-    } catch (err) {
-      console.error('[achievements] unlock push failed:', err);
-    }
-  }
+      }).catch((err) => console.error('[achievements] unlock push failed:', err)),
+    ),
+  );
 }
 
 // Per-process throttle for the VERY-hot hook (every message send): at most one

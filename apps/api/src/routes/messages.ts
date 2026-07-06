@@ -757,12 +757,15 @@ messagesRouter.post(
     // feature if there's demand. Sticker + attachments + poll are
     // mutually exclusive (a message has one body shape).
     let stickerId: bigint | null = null;
+    // Hoisted so the DTO build below reuses this validated row instead of
+    // re-fetching the identical sticker within the same request.
+    let stickerRow: Awaited<ReturnType<typeof stickers.getSticker>> = null;
     if (payload.stickerId) {
       if (files.length > 0) throw errors.badRequest('Cannot combine sticker with attachments');
       if (payload.poll) throw errors.badRequest('Cannot combine sticker with a poll');
       if (forwardedFromMessageId) throw errors.badRequest('Cannot combine sticker with a forward');
       const sid = BigInt(payload.stickerId);
-      const stickerRow = await stickers.getSticker(sid);
+      stickerRow = await stickers.getSticker(sid);
       if (!stickerRow) throw errors.notFound('Sticker');
       if (!ctx.channel.guildId || stickerRow.guildId !== ctx.channel.guildId) {
         throw errors.badRequest('Sticker not available in this channel');
@@ -961,11 +964,10 @@ messagesRouter.post(
     // Resolve attached sticker for the DTO. The single-create path
     // doesn't need a batched loader — we already have the sticker
     // id from validation above. Skip if it's null.
+    // Reuse the row validated above (non-null iff stickerId is set) — no
+    // second fetch of the same immutable sticker.
     let stickerDTO: StickerDTO | null = null;
-    if (stickerId) {
-      const stickerRow = await stickers.getSticker(stickerId);
-      if (stickerRow) stickerDTO = toSticker(stickerRow);
-    }
+    if (stickerRow) stickerDTO = toSticker(stickerRow);
 
     // Load the forward source if this message is a forward. Same lookup
     // shape as the list-messages path uses; we batch with a single id
@@ -1009,9 +1011,15 @@ messagesRouter.post(
     // DM open. Guild channels don't need this (membership/viewability is fixed
     // at IDENTIFY and on join). Must run BEFORE the dispatch so THIS message is
     // delivered, not just future ones.
+    // Snapshot the DM recipient set ONCE for this request — reused by both the
+    // live re-subscribe loop (here) and the push fan-out IIFE below. Recipients
+    // don't change within a send, so one query is equivalent to the two
+    // identical ones we used to run.
+    let dmRecipients: bigint[] | null = null;
     if (ctx.isDM) {
       try {
-        for (const rid of await dms.listAllRecipients(channelId)) {
+        dmRecipients = await dms.listAllRecipients(channelId);
+        for (const rid of dmRecipients) {
           registry.addDMToUser(rid, channelId);
         }
       } catch {
@@ -1260,7 +1268,9 @@ messagesRouter.post(
         let targetUserIds: bigint[] = [];
         const mentioned = new Set<string>(); // who this message actually @mentions
         if (isDM) {
-          const recipients = await dms.listAllRecipients(channelId);
+          // Reuse the recipient snapshot from the sync path; only re-query if
+          // the re-subscribe block threw before populating it.
+          const recipients = dmRecipients ?? (await dms.listAllRecipients(channelId));
           targetUserIds = recipients.filter((id) => id !== userId);
         } else if (ctx.channel.guildId) {
           // NOTE: this is a full channel-viewer computation per message
@@ -2244,7 +2254,7 @@ messagesRouter.delete(
     if (ctx.isDM || ctx.channelPerms === null) {
       throw errors.forbidden('Cannot moderate reactions in a DM');
     }
-    await assertChannelPermission(channelId, callerId, Permissions.MANAGE_MESSAGES);
+    await assertChannelPermission(channelId, callerId, [Permissions.MANAGE_MESSAGES]);
     const m = await messages.getMessage(channelId, messageId);
     if (!m) throw errors.notFound('Message');
     await reactions.removeUserReaction(messageId, BigInt(uid), decodeURIComponent(emoji));
@@ -2278,7 +2288,7 @@ messagesRouter.delete(
     if (ctx.isDM || ctx.channelPerms === null) {
       throw errors.forbidden('Cannot moderate reactions in a DM');
     }
-    await assertChannelPermission(channelId, callerId, Permissions.MANAGE_MESSAGES);
+    await assertChannelPermission(channelId, callerId, [Permissions.MANAGE_MESSAGES]);
     const m = await messages.getMessage(channelId, messageId);
     if (!m) throw errors.notFound('Message');
     await reactions.clearEmoji(messageId, decodeURIComponent(emoji));
@@ -2304,7 +2314,7 @@ messagesRouter.delete(
     if (ctx.isDM || ctx.channelPerms === null) {
       throw errors.forbidden('Cannot moderate reactions in a DM');
     }
-    await assertChannelPermission(channelId, callerId, Permissions.MANAGE_MESSAGES);
+    await assertChannelPermission(channelId, callerId, [Permissions.MANAGE_MESSAGES]);
     const m = await messages.getMessage(channelId, messageId);
     if (!m) throw errors.notFound('Message');
     await reactions.clearAll(messageId);
@@ -2344,8 +2354,36 @@ messagesRouter.get(
     });
     if (userIds.length === 0) return c.json({ users: [] });
 
-    const userRows = await db.select().from(schema.users).where(inArray(schema.users.id, userIds));
-    return c.json({ users: userRows.map(toPublicUser) });
+    // Project only the columns toPublicUser reads — avoid SELECT *'ing the wide
+    // users row (incl. secret columns) for up to 100 reactors per call.
+    const userRows = await db
+      .select({
+        id: schema.users.id,
+        username: schema.users.username,
+        displayName: schema.users.displayName,
+        avatarUrl: schema.users.avatarUrl,
+        bannerUrl: schema.users.bannerUrl,
+        bio: schema.users.bio,
+        avatarDecoration: schema.users.avatarDecoration,
+        status: schema.users.status,
+        customStatus: schema.users.customStatus,
+        customStatusEmoji: schema.users.customStatusEmoji,
+        customStatusExpiresAt: schema.users.customStatusExpiresAt,
+        publicKey: schema.users.publicKey,
+        createdAt: schema.users.createdAt,
+        isBot: schema.users.isBot,
+        tagLabel: schema.users.tagLabel,
+        tagColor: schema.users.tagColor,
+        isAdmin: schema.users.isAdmin,
+        isModerator: schema.users.isModerator,
+        staffColor: schema.users.staffColor,
+        staffGlow: schema.users.staffGlow,
+      })
+      .from(schema.users)
+      .where(inArray(schema.users.id, userIds));
+    return c.json({
+      users: userRows.map((u) => toPublicUser(u as typeof schema.users.$inferSelect)),
+    });
   },
 );
 
@@ -2501,7 +2539,7 @@ messagesRouter.put(
       // Out of scope for v1; reject cleanly.
       throw errors.forbidden('Cannot pin messages in a DM');
     }
-    await assertChannelPermission(channelId, callerId, Permissions.MANAGE_MESSAGES);
+    await assertChannelPermission(channelId, callerId, [Permissions.MANAGE_MESSAGES]);
 
     const fresh = await messages.setPinned(channelId, messageId, true);
     // The HTTP response is for the CALLER (their own reactions[].me / poll
@@ -2543,7 +2581,7 @@ messagesRouter.delete(
     if (ctx.isDM || ctx.channelPerms === null) {
       throw errors.forbidden('Cannot pin messages in a DM');
     }
-    await assertChannelPermission(channelId, callerId, Permissions.MANAGE_MESSAGES);
+    await assertChannelPermission(channelId, callerId, [Permissions.MANAGE_MESSAGES]);
 
     const fresh = await messages.setPinned(channelId, messageId, false);
     // Broadcast a no-self DTO (selfId=0n) so the unpinner's ballot/reaction

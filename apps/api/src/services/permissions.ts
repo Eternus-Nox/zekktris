@@ -1006,9 +1006,13 @@ export async function assertAnyGuildPermission(
 export async function assertChannelPermission(
   channelId: bigint,
   userId: bigint,
-  ...required: bigint[]
+  required: bigint[],
+  // Optional pre-fetched channel row (id/guildId/type/parentId) forwarded to
+  // computeMemberChannelPermissions so a caller that already loaded the channel
+  // (e.g. via getChannel) skips a redundant SELECT of the same row.
+  preloaded?: { id: bigint; guildId: bigint | null; type: string; parentId: bigint | null },
 ): Promise<void> {
-  const perms = await computeMemberChannelPermissions(channelId, userId);
+  const perms = await computeMemberChannelPermissions(channelId, userId, preloaded);
   for (const p of required) {
     if (!hasPermission(perms, p)) {
       throw errors.missingPermissions(permissionNames(required.reduce((a, b) => a | b, 0n)));

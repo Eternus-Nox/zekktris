@@ -228,12 +228,17 @@ export async function listSavedMessages(
   // for current viewability, because access can be revoked after the save
   // (kicked from the guild, channel turned private, removed from a group DM).
   // Drop any row the caller can no longer see.
-  const items: SavedListItem[] = [];
-  for (const r of windowRows) {
-    if (r.channel && (await canViewChannelRow(userId, r.channel))) {
-      items.push({ savedAt: r.savedAt, message: r.message, channel: r.channel });
-    }
-  }
+  // Independent per-row permission checks — run them concurrently rather than
+  // one sequential round-trip at a time. Index-mapped Promise.all + filter/map
+  // preserves the exact rows, order, and DTO shape.
+  const oks = await Promise.all(
+    windowRows.map((r) =>
+      r.channel ? canViewChannelRow(userId, r.channel) : Promise.resolve(false),
+    ),
+  );
+  const items: SavedListItem[] = windowRows
+    .filter((_, i) => oks[i])
+    .map((r) => ({ savedAt: r.savedAt, message: r.message, channel: r.channel! }));
 
   return { items, nextCursor };
 }

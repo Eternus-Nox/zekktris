@@ -61,7 +61,7 @@ channelsRouter.get(
     if (!channel) throw errors.notFound('Channel');
 
     if (channel.guildId) {
-      await assertChannelPermission(channelId, userId, Permissions.VIEW_CHANNEL);
+      await assertChannelPermission(channelId, userId, [Permissions.VIEW_CHANNEL], channel);
     } else {
       // DM channel — handled in stage 5; for now fall through to permission denial.
       throw errors.notFound('Channel');
@@ -83,7 +83,7 @@ channelsRouter.post(
     // Permission gate: must be allowed to actually post here. Otherwise
     // someone could spam typing events into channels they can't see.
     if (channel.guildId) {
-      await assertChannelPermission(channelId, userId, Permissions.SEND_MESSAGES);
+      await assertChannelPermission(channelId, userId, [Permissions.SEND_MESSAGES], channel);
     } else if (channel.type === 'dm' || channel.type === 'group_dm') {
       await dms.ensureRecipient(channelId, userId);
     } else {
@@ -158,7 +158,7 @@ channelsRouter.patch(
     const channelId = BigInt(c.req.valid('param').channelId);
     const existing = await channels.getChannel(channelId);
     if (!existing || !existing.guildId) throw errors.notFound('Channel');
-    await assertChannelPermission(channelId, userId, Permissions.MANAGE_CHANNELS);
+    await assertChannelPermission(channelId, userId, [Permissions.MANAGE_CHANNELS], existing);
 
     const body = c.req.valid('json');
     // Type-specific validation. linkUrl only valid on guild_link
@@ -218,7 +218,7 @@ channelsRouter.delete(
     // denied VIEW_CHANNEL on a hidden channel can DELETE it —
     // catastrophic data loss on a channel they can't see. Same
     // family as #104.
-    await assertChannelPermission(channelId, userId, Permissions.MANAGE_CHANNELS);
+    await assertChannelPermission(channelId, userId, [Permissions.MANAGE_CHANNELS], existing);
     const { cascadedChildIds } = await channels.deleteChannel(channelId, userId);
 
     // Voice / stage eviction. Without this, anyone currently in the
@@ -299,7 +299,7 @@ channelsRouter.get(
     // ACL structure even when they can't see the channel itself.
     // See PUT/DELETE below for the deeper bypass these guards
     // close (deleting the @everyone-deny that hid the channel).
-    await assertChannelPermission(channelId, userId, Permissions.MANAGE_ROLES);
+    await assertChannelPermission(channelId, userId, [Permissions.MANAGE_ROLES], channel);
 
     const list = await channels.listOverrides(channelId);
     return c.json({ overrides: list.map(toPermissionOverride) });
@@ -334,7 +334,7 @@ channelsRouter.put(
     // (they don't have VIEW_CHANNEL on the channel) but the
     // channel-level gate is the cleaner primary defense and
     // matches Discord's semantics.
-    await assertChannelPermission(channelId, userId, Permissions.MANAGE_ROLES);
+    await assertChannelPermission(channelId, userId, [Permissions.MANAGE_ROLES], channel);
 
     const body = c.req.valid('json');
     const targetId = BigInt(tid);
@@ -420,7 +420,7 @@ channelsRouter.delete(
     // the @everyone-deny override that's the only thing hiding
     // the channel, unhiding it for themselves AND everyone else
     // simultaneously.
-    await assertChannelPermission(channelId, userId, Permissions.MANAGE_ROLES);
+    await assertChannelPermission(channelId, userId, [Permissions.MANAGE_ROLES], channel);
 
     const targetId = BigInt(tid);
     // Same hierarchy / member-management guards as PUT. Removing
@@ -470,7 +470,7 @@ channelsRouter.post(
     const channelId = BigInt(c.req.valid('param').channelId);
     const channel = await channels.getChannel(channelId);
     if (!channel || !channel.guildId) throw errors.notFound('Channel');
-    await assertChannelPermission(channelId, userId, Permissions.CREATE_INVITE);
+    await assertChannelPermission(channelId, userId, [Permissions.CREATE_INVITE], channel);
 
     const rl = await inviteCreateRl.consume(userId.toString());
     if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));

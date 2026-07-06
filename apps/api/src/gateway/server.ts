@@ -251,14 +251,16 @@ export function attachGateway(httpServer: HttpServer): void {
         // with a fresh reconnect — if the user reconnects before this
         // finishes, the IDENTIFY handler will flip them back online
         // and dispatch the appropriate transition.
-        const memberRows = await db
-          .select({ guildId: schema.guildMembers.guildId })
-          .from(schema.guildMembers)
-          .where(eq(schema.guildMembers.userId, userId));
-        const dmRows = await db
-          .select({ channelId: schema.dmRecipients.channelId })
-          .from(schema.dmRecipients)
-          .where(eq(schema.dmRecipients.userId, userId));
+        const [memberRows, dmRows] = await Promise.all([
+          db
+            .select({ guildId: schema.guildMembers.guildId })
+            .from(schema.guildMembers)
+            .where(eq(schema.guildMembers.userId, userId)),
+          db
+            .select({ channelId: schema.dmRecipients.channelId })
+            .from(schema.dmRecipients)
+            .where(eq(schema.dmRecipients.userId, userId)),
+        ]);
         if (memberRows.length > 0 || dmRows.length > 0) {
           dispatch.presenceUpdate({
             userId,
@@ -429,7 +431,7 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
   // Load the user's membership snapshot. We materialize sets that the
   // registry filter consults at fanout time — no DB queries on the hot
   // path.
-  const [user, guildIdRows, dmChannelIdRows] = await Promise.all([
+  const [user, guildIdRows, dmChannelIdRows, readStateRows] = await Promise.all([
     db.select().from(schema.users).where(eq(schema.users.id, userId)).limit(1),
     db
       .select({ guildId: schema.guildMembers.guildId })
@@ -439,6 +441,11 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
       .select({ channelId: schema.dmRecipients.channelId })
       .from(schema.dmRecipients)
       .where(eq(schema.dmRecipients.userId, userId)),
+    // Read states — userId-only read with no dependency on the guild/channel
+    // resolution below, so batch it here instead of a separate serial
+    // round-trip after the viewable-channel resolver (saves one RTT on every
+    // connect/reconnect, which iOS does on every background/foreground).
+    readStates.listMy(userId),
   ]);
   if (!user[0]) {
     conn.send(invalidSessionFrame(false));
@@ -492,10 +499,8 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
   );
   registry.index(conn);
 
-  // Read states for the user — small enough to ship in READY (one row per
-  // channel they've ever opened). Saves the client a round-trip and means
-  // unread badges can render before the first frame paint.
-  const readStateRows = await readStates.listMy(userId);
+  // (readStateRows was hoisted into the top Promise.all batch above — it's a
+  // userId-only read that need not wait on the channel-viewability resolver.)
 
   // Voice states relevant to the user — both guild voice (members in
   // any of the user's guilds' voice channels) AND DM voice (1-on-1 /

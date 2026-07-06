@@ -348,8 +348,11 @@ export async function sendVoipToUser(
       .sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0))
       .slice(1);
   }
-  for (const r of dead) {
-    await db.delete(schema.apnsDeviceTokens).where(eq(schema.apnsDeviceTokens.token, r.token));
+  if (dead.length > 0) {
+    // One set-based DELETE instead of a serial DELETE per dead token.
+    await db
+      .delete(schema.apnsDeviceTokens)
+      .where(inArray(schema.apnsDeviceTokens.token, dead.map((r) => r.token)));
   }
   if (dead.length > 0 && delivered === 0) {
     // The state the "CallKit stopped ringing" symptom depends on — make it

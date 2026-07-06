@@ -601,8 +601,14 @@ export function dmChannelCreated(args: {
 }): void {
   for (const userId of args.recipientIds) {
     registry.addDMToUser(userId, args.channelId);
-    publish(GatewayEvent.CHANNEL_CREATE, args.channelDTO, { kind: 'user', userId });
   }
+  // One 'users'-audience publish — the CHANNEL_CREATE frame is identical for
+  // every recipient, so the generic path serializes it once instead of N times
+  // (and one Redis round-trip instead of N under the multi-node bus).
+  publish(GatewayEvent.CHANNEL_CREATE, args.channelDTO, {
+    kind: 'users',
+    userIds: args.recipientIds,
+  });
 }
 
 /** A 1:1 DM's messaging streak changed — push the new value to both
@@ -613,9 +619,12 @@ export function dmStreakUpdate(args: {
   streak: number;
 }): void {
   const payload = { channel_id: args.channelId.toString(), streak: args.streak };
-  for (const userId of args.recipientIds) {
-    publish(GatewayEvent.DM_STREAK_UPDATE, payload, { kind: 'user', userId });
-  }
+  // Identical frame for both recipients → one 'users' publish (serialized once,
+  // one bus round-trip) instead of one per recipient.
+  publish(GatewayEvent.DM_STREAK_UPDATE, payload, {
+    kind: 'users',
+    userIds: args.recipientIds,
+  });
 }
 
 /** A user just unlocked a new achievement — push it to their own connections
@@ -747,9 +756,13 @@ export function familyRequestCreate(args: {
     kind: args.kind,
     label: args.label,
   };
-  for (const parentId of args.parentIds) {
-    publish(GatewayEvent.FAMILY_REQUEST_CREATE, payload, { kind: 'user', userId: parentId });
-  }
+  if (args.parentIds.length === 0) return;
+  // Identical frame per parent → one 'users' publish. Guard preserves the
+  // loop's zero-publish behavior on an empty parent set.
+  publish(GatewayEvent.FAMILY_REQUEST_CREATE, payload, {
+    kind: 'users',
+    userIds: args.parentIds,
+  });
 }
 
 export function familyFlagCreate(args: {
@@ -765,9 +778,11 @@ export function familyFlagCreate(args: {
     matchedWord: args.matchedWord,
     direction: args.direction,
   };
-  for (const parentId of args.parentIds) {
-    publish(GatewayEvent.FAMILY_FLAG_CREATE, payload, { kind: 'user', userId: parentId });
-  }
+  if (args.parentIds.length === 0) return;
+  publish(GatewayEvent.FAMILY_FLAG_CREATE, payload, {
+    kind: 'users',
+    userIds: args.parentIds,
+  });
 }
 
 /**

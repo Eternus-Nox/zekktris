@@ -298,7 +298,6 @@ function DMSearchResult({ message, onClick }: { message: Message; onClick: () =>
 
 function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
   const notificationOverrides = useAppStateSelector((v) => v.state.notificationOverrides);
-  const readStateByChannel = useAppStateSelector((v) => v.state.readStateByChannel);
   // Only subscribe to THIS DM's messages, and only as a legacy fallback when
   // the server didn't provide recipients. Subscribing to the whole
   // messagesByChannel map re-rendered every visible DM row on every message
@@ -310,7 +309,7 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
   );
   const ackChannel = useAppStateSelector((v) => v.ackChannel);
   const setNotificationOverride = useAppStateSelector((v) => v.setNotificationOverride);
-  const state = { notificationOverrides, readStateByChannel };
+  const state = { notificationOverrides };
   const { user, rest } = useAuth();
   const selfId = user?.id;
   const toasts = useToasts();
@@ -320,8 +319,17 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
   // rule as ChannelRow: muted suppresses the "unread" dimming but
   // mention badges still show.
   const muted = isChannelMuted(state.notificationOverrides, channel.id, null);
-  const rawUnread = !active && isChannelUnread(channel, state.readStateByChannel);
-  const mentions = channelMentionCount(channel.id, state.readStateByChannel);
+  // Per-channel selectors returning primitives (mirrors ChannelRow in
+  // ChannelList.tsx): useContextSelector bails unless THIS DM's own unread
+  // flag / mention count changes, instead of re-rendering every visible DM row
+  // whenever the whole readStateByChannel map's reference flips (any message
+  // anywhere).
+  const rawUnread = useAppStateSelector(
+    (v) => !active && isChannelUnread(channel, v.state.readStateByChannel),
+  );
+  const mentions = useAppStateSelector((v) =>
+    channelMentionCount(channel.id, v.state.readStateByChannel),
+  );
   const unread = muted ? false : rawUnread;
   const lastMessageId = channel.lastMessageId ?? null;
   // Resolve the displayed recipient. Priority order:

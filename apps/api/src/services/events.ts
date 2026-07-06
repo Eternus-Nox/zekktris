@@ -600,7 +600,7 @@ export async function runEventStatusSweep(): Promise<{
  */
 async function sendEventStartPushes(activated: schema.ScheduledEvent[]): Promise<void> {
   if (activated.length === 0) return;
-  const { sendToUser } = await import('./push');
+  const { sendToUsers } = await import('./push');
 
   // Batch-load guild names for the affected events.
   const guildIds = Array.from(new Set(activated.map((e) => e.guildId)));
@@ -643,16 +643,15 @@ async function sendEventStartPushes(activated: schema.ScheduledEvent[]): Promise
         kind: 'message' as const,
       };
 
-      // Parallel across recipients of THIS event. Failures are
-      // per-subscription and don't propagate.
-      await Promise.all(
-        rsvps.map((r) =>
-          sendToUser(r.userId, payload).catch(() => {
-            // sendToUser already handles its own error isolation
-            // and lastUsedAt updates; this catch is paranoid.
-          }),
-        ),
-      );
+      // Bulk fan-out across recipients of THIS event: one token query per
+      // transport + a bounded send burst, instead of 3×N token queries and an
+      // unbounded burst. The payload is identical for every RSVPer.
+      await sendToUsers(
+        rsvps.map((r) => r.userId),
+        () => payload,
+      ).catch(() => {
+        // Best-effort; sendToUsers isolates per-subscription failures.
+      });
     } catch {
       // Per-event failures (e.g. RSVP query timeout) don't block
       // pushes for other events. Already logged at the lower

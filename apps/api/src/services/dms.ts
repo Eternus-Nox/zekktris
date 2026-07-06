@@ -293,12 +293,39 @@ export async function listAllRecipients(channelId: bigint): Promise<bigint[]> {
  * except `selfId`. Returns full User rows so the route layer can pass
  * them to `toChannel(... , recipients)` for client hydration.
  */
+// Only the columns toPublicUser reads. The full users row carries ~20 unused
+// wide/jsonb/secret columns (voicePrefs/guildOrder/guildFolders blobs +
+// passwordHash/botTokenHash/botEventSecret/totpSecret/email) that were being
+// fetched and discarded for every DM peer on every DM-sidebar open.
+const PUBLIC_USER_COLS = {
+  id: schema.users.id,
+  username: schema.users.username,
+  displayName: schema.users.displayName,
+  avatarUrl: schema.users.avatarUrl,
+  bannerUrl: schema.users.bannerUrl,
+  bio: schema.users.bio,
+  avatarDecoration: schema.users.avatarDecoration,
+  status: schema.users.status,
+  customStatus: schema.users.customStatus,
+  customStatusEmoji: schema.users.customStatusEmoji,
+  customStatusExpiresAt: schema.users.customStatusExpiresAt,
+  publicKey: schema.users.publicKey,
+  createdAt: schema.users.createdAt,
+  isBot: schema.users.isBot,
+  tagLabel: schema.users.tagLabel,
+  tagColor: schema.users.tagColor,
+  isAdmin: schema.users.isAdmin,
+  isModerator: schema.users.isModerator,
+  staffColor: schema.users.staffColor,
+  staffGlow: schema.users.staffGlow,
+} as const;
+
 export async function loadOtherRecipients(
   channelId: bigint,
   selfId: bigint,
 ): Promise<typeof schema.users.$inferSelect[]> {
   const r = await db
-    .select({ user: schema.users })
+    .select({ user: PUBLIC_USER_COLS })
     .from(schema.dmRecipients)
     .innerJoin(schema.users, eq(schema.users.id, schema.dmRecipients.userId))
     .where(
@@ -307,7 +334,9 @@ export async function loadOtherRecipients(
         ne(schema.dmRecipients.userId, selfId),
       ),
     );
-  return r.map((row) => row.user);
+  // Narrowed projection carries exactly the fields toPublicUser reads; cast to
+  // the full row type the DTO mappers are annotated with.
+  return r.map((row) => row.user) as unknown as typeof schema.users.$inferSelect[];
 }
 
 /**
@@ -325,7 +354,7 @@ export async function loadRecipientsForChannels(
   const rows = await db
     .select({
       channelId: schema.dmRecipients.channelId,
-      user: schema.users,
+      user: PUBLIC_USER_COLS,
     })
     .from(schema.dmRecipients)
     .innerJoin(schema.users, eq(schema.users.id, schema.dmRecipients.userId))
@@ -342,7 +371,8 @@ export async function loadRecipientsForChannels(
       bucket = [];
       out.set(key, bucket);
     }
-    bucket.push(r.user);
+    // Narrowed projection → full row type the DTO mappers expect.
+    bucket.push(r.user as unknown as typeof schema.users.$inferSelect);
   }
   return out;
 }

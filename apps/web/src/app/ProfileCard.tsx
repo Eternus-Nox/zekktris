@@ -130,7 +130,11 @@ export function ProfileCard({
   );
   // Full role list including @everyone — used for perm compute. The
   // assignable subset (without @everyone) is derived in render.
-  const [allRoles, setAllRoles] = useState<Role[] | null>(null);
+  // Seed from the store: both guild-context openers (MemberList, ChannelList)
+  // eagerly loadRoles(guildId), so the slice is almost always already present.
+  const [allRoles, setAllRoles] = useState<Role[] | null>(
+    () => (guildId ? state.rolesByGuild[guildId] ?? null : null),
+  );
   const [rolePending, setRolePending] = useState<Set<string>>(new Set());
 
   // Re-sync the local roleIds whenever the cached member's role set
@@ -150,6 +154,13 @@ export function ProfileCard({
   // dispatch into a stale state.
   useEffect(() => {
     if (!guildId) return;
+    // Already have the guild's roles in the store (the opener — MemberList /
+    // ChannelList — loadRoles eagerly). ROLES_SET stores the identical
+    // listRoles shape, so skip the redundant round-trip on card open.
+    if (state.rolesByGuild[guildId]) {
+      setAllRoles(state.rolesByGuild[guildId]);
+      return;
+    }
     let cancelled = false;
     rest
       .listRoles(guildId)

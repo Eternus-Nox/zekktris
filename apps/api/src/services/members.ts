@@ -93,7 +93,32 @@ export async function listMembers(
   const rows = await db
     .select({
       member: schema.guildMembers,
-      user: schema.users,
+      // Project only the columns toPublicUser reads — the full users row carries
+      // ~20 unused wide/jsonb/secret columns (voicePrefs, guildFolders,
+      // guildOrder, passwordHash, totpSecret, email, ...) fetched and discarded
+      // ×up-to-1000 members per page.
+      user: {
+        id: schema.users.id,
+        username: schema.users.username,
+        displayName: schema.users.displayName,
+        avatarUrl: schema.users.avatarUrl,
+        bannerUrl: schema.users.bannerUrl,
+        bio: schema.users.bio,
+        avatarDecoration: schema.users.avatarDecoration,
+        status: schema.users.status,
+        customStatus: schema.users.customStatus,
+        customStatusEmoji: schema.users.customStatusEmoji,
+        customStatusExpiresAt: schema.users.customStatusExpiresAt,
+        publicKey: schema.users.publicKey,
+        createdAt: schema.users.createdAt,
+        isBot: schema.users.isBot,
+        tagLabel: schema.users.tagLabel,
+        tagColor: schema.users.tagColor,
+        isAdmin: schema.users.isAdmin,
+        isModerator: schema.users.isModerator,
+        staffColor: schema.users.staffColor,
+        staffGlow: schema.users.staffGlow,
+      },
     })
     .from(schema.guildMembers)
     .innerJoin(schema.users, eq(schema.users.id, schema.guildMembers.userId))
@@ -126,7 +151,9 @@ export async function listMembers(
 
   return rows.map((r) => ({
     member: r.member,
-    user: r.user,
+    // The narrowed projection carries exactly the columns toGuildMember →
+    // toPublicUser reads; cast back to the full row type the DTO mapper expects.
+    user: r.user as typeof schema.users.$inferSelect,
     roleIds: rolesByUser.get(r.member.userId) ?? [],
   }));
 }

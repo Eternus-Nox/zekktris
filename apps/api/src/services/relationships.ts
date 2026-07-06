@@ -83,8 +83,12 @@ export async function sendFriendRequest(userId: bigint, targetId: bigint): Promi
     .limit(1);
   if (!targetRow[0]) throw errors.notFound('User');
 
-  const existing = await getRow(userId, targetId);
-  const inverse = await getRow(targetId, userId);
+  // Independent point reads on the same table — fetch both directions
+  // concurrently instead of one round-trip after the other.
+  const [existing, inverse] = await Promise.all([
+    getRow(userId, targetId),
+    getRow(targetId, userId),
+  ]);
 
   if (existing?.type === 'blocked') {
     throw errors.forbidden('Unblock this user before sending a friend request');
