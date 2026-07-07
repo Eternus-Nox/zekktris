@@ -30,7 +30,6 @@ import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
 import { Portal } from '../lib/Portal';
-import { ChevronLeft } from '../lib/icons';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
 import { AvatarDecoration } from '../lib/avatarDecorations';
@@ -661,20 +660,25 @@ export function ProfileCard({
 
   return (
     <Portal>
-      {/* Profile is its OWN full-screen PAGE (was an anchored popover). A back
-          bar at the top-left dismisses it — the web back button (ChevronLeft),
-          matching the Shell's mobile back. Content is a centered page column. */}
-      <div className="fixed inset-0 z-[80] bg-bg-1 overflow-y-auto">
-        <div className="sticky top-0 z-10 flex items-center h-12 px-2 bg-bg-1/95 backdrop-blur border-b border-line">
+      {/* Profile is its own page OVERLAID on the main content — a server-
+          settings-style modal: a dimmed backdrop (click-outside or Esc closes)
+          and a centered panel with a floating X close button. */}
+      <div
+        className="fixed inset-0 bg-black/60 z-[80] flex items-stretch sm:items-center justify-center sm:p-4"
+        onClick={onClose}
+      >
+        <div
+          className="relative bg-bg-1 border border-line elevation-pop w-full h-full sm:h-auto sm:max-h-[85vh] overflow-y-auto overflow-x-hidden sm:rounded-lg"
+          style={{ maxWidth: CARD_WIDTH }}
+          onClick={(e) => e.stopPropagation()}
+        >
           <button
             onClick={onClose}
-            className="-ml-1 w-10 h-10 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3"
-            aria-label="Back"
+            className="absolute top-2 right-2 z-10 w-8 h-8 flex items-center justify-center rounded-full bg-black/40 text-white hover:bg-black/60 transition-colors"
+            aria-label="Close"
           >
-            <ChevronLeft size={20} />
+            <X size={16} />
           </button>
-        </div>
-        <div className="mx-auto w-full overflow-hidden" style={{ maxWidth: CARD_WIDTH }}>
         {/* Banner — container locked at 16:9 to match the guild
             banner shape on the channel list and invite cards. Users
             uploading at the recommended 1920×1080 get edge-to-edge
