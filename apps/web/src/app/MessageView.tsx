@@ -163,13 +163,16 @@ export function MessageView({
     };
     document.addEventListener('visibilitychange', reconcileIfVisible);
     window.addEventListener('focus', reconcileIfVisible);
-    // Safety net for a focused-but-stale tab: the socket can go silently
-    // half-dead (or a live event slip through) WITHOUT a focus/visibility
-    // change to trigger the reconcile above, leaving the open conversation
-    // sitting behind until the user navigates away and back. Poll the open
-    // channel every 12s while visible so it always converges. Cheap — a no-op
-    // `after` fetch returning zero rows in the common case.
-    const poll = window.setInterval(reconcileIfVisible, 12_000);
+    // Near-live convergence for the OPEN conversation. The live gateway push
+    // is the fast path, but it can silently fail to deliver (a half-dead
+    // socket, a reverse proxy that isn't upgrading the WebSocket, a missed
+    // frame) — and when it does, the ONLY thing that makes an incoming message
+    // appear is this reconcile. Poll every 3s while the tab is visible so a
+    // message from the other person (or another of your own devices) shows up
+    // within a few seconds even when the socket is dead, instead of the user
+    // having to reload. Cheap: an append-only `after` fetch that returns zero
+    // rows in the common (already-current) case.
+    const poll = window.setInterval(reconcileIfVisible, 3_000);
     return () => {
       document.removeEventListener('visibilitychange', reconcileIfVisible);
       window.removeEventListener('focus', reconcileIfVisible);
