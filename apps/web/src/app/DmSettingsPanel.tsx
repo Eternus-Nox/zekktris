@@ -440,7 +440,6 @@ function E2eeToggle({ channel, selfId }: { channel: Channel; selfId: string }) {
   const [disableModalOpen, setDisableModalOpen] = useState(false);
   const [unlockPassword, setUnlockPassword] = useState('');
   const [unlockError, setUnlockError] = useState<string | null>(null);
-  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   // Hide selfId — not used in the shared-key flow but keeps the
   // prop signature compatible with the panel's existing call site.
@@ -530,70 +529,9 @@ function E2eeToggle({ channel, selfId }: { channel: Channel; selfId: string }) {
     }
   }
 
-  async function downloadKeys() {
-    try {
-      const { exportAllDmKeys } = await import('../lib/e2ee');
-      const backup = exportAllDmKeys();
-      if (!backup) {
-        toasts.push(
-          'No encryption keys on this device yet.',
-          'error',
-        );
-        return;
-      }
-      const blob = new Blob([JSON.stringify(backup, null, 2)], {
-        type: 'application/json',
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      const datestamp = new Date().toISOString().slice(0, 10);
-      a.download = `zekktris-e2ee-keys-${datestamp}.json`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      const count = Object.keys(backup.keys).length;
-      toasts.push(
-        `Downloaded ${count} key${count === 1 ? '' : 's'}. Keep this file safe.`,
-        'success',
-      );
-    } catch {
-      toasts.push('Download failed', 'error');
-    }
-  }
-
-  async function onImportFile(file: File) {
-    if (pending) return;
-    const ok = window.confirm(
-      'Importing keys will replace any matching keys on this device. ' +
-        'Continue?',
-    );
-    if (!ok) return;
-    setPending(true);
-    try {
-      const raw = await file.text();
-      const { importAllDmKeys, hasLocalKey } = await import('../lib/e2ee');
-      const restored = importAllDmKeys(raw);
-      if (!restored) {
-        toasts.push("That file isn't a valid Zekktris keys backup.", 'error');
-        return;
-      }
-      setHaveLocalKey(hasLocalKey(channel.id));
-      toasts.push(
-        `Restored ${restored.length} key${restored.length === 1 ? '' : 's'}.`,
-        'success',
-      );
-    } catch (e) {
-      toasts.push(
-        e instanceof ApiError ? e.message : 'Import failed',
-        'error',
-      );
-    } finally {
-      setPending(false);
-      if (importInputRef.current) importInputRef.current.value = '';
-    }
-  }
+  // Key download / import-from-backup was removed: the conversation PASSWORD
+  // is the single unlock path (the per-DM key is re-derivable from it), so a
+  // key file is redundant. See unlockWithPassword() above.
 
   return (
     <div className="border-t border-line px-3 py-3 space-y-3">
@@ -683,67 +621,7 @@ function E2eeToggle({ channel, selfId }: { channel: Channel; selfId: string }) {
             >
               Unlock
             </button>
-            <button
-              type="button"
-              onClick={() => importInputRef.current?.click()}
-              disabled={pending}
-              className="px-3 py-1.5 rounded-md bg-bg-3 hover:bg-bg-1 disabled:opacity-60 text-ink-1 text-xs border border-line"
-            >
-              Or import from backup
-            </button>
-            <input
-              ref={importInputRef}
-              type="file"
-              accept="application/json,.json"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void onImportFile(f);
-              }}
-            />
           </div>
-        </div>
-      )}
-
-      {/* Enabled + key cached locally. Backup affordances. */}
-      {enabled && haveLocalKey && (
-        <div className="space-y-2">
-          <p className="text-xs text-ink-3 leading-snug">
-            Your local key is stored only on this device. Download a backup
-            so you can keep reading messages if you change devices or clear
-            your browser data.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => void downloadKeys()}
-              disabled={pending}
-              className="px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 disabled:opacity-60 text-white text-xs"
-            >
-              Download keys
-            </button>
-            <button
-              type="button"
-              onClick={() => importInputRef.current?.click()}
-              disabled={pending}
-              className="px-3 py-1.5 rounded-md bg-bg-3 hover:bg-bg-1 disabled:opacity-60 text-ink-1 text-xs border border-line"
-            >
-              Import from backup
-            </button>
-            <input
-              ref={importInputRef}
-              type="file"
-              accept="application/json,.json"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void onImportFile(f);
-              }}
-            />
-          </div>
-          <p className="text-[0.7rem] text-ink-3 italic leading-snug">
-            Anyone with this file can read your encrypted messages.
-          </p>
         </div>
       )}
 
