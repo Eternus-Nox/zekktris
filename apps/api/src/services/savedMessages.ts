@@ -12,7 +12,7 @@
  * UI that bounces back) without worrying about 409 noise.
  */
 
-import { and, desc, eq, inArray, isNull, lt, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors } from '../errors';
 import { hasPermission, Permissions } from '@zekktris/shared/permissions';
@@ -181,11 +181,16 @@ export async function listSavedMessages(
     isNull(schema.messages.deletedAt),
   ];
   if (opts?.before) {
+    // saved_at is a NOW()-stamped microsecond timestamptz, but the cursor came
+    // back through a JS Date (millisecond precision), so a bare eq() on the
+    // full-precision column would never match the truncated cursor and drop
+    // same-millisecond saves at the page boundary. Truncate BOTH comparison
+    // arms to ms so they align (same fix class as the DM call-record columns).
     conditions.push(
       or(
-        lt(schema.savedMessages.savedAt, opts.before.savedAt),
+        sql`date_trunc('milliseconds', ${schema.savedMessages.savedAt}) < date_trunc('milliseconds', ${opts.before.savedAt.toISOString()}::timestamptz)`,
         and(
-          eq(schema.savedMessages.savedAt, opts.before.savedAt),
+          sql`date_trunc('milliseconds', ${schema.savedMessages.savedAt}) = date_trunc('milliseconds', ${opts.before.savedAt.toISOString()}::timestamptz)`,
           lt(schema.savedMessages.messageId, opts.before.messageId),
         ),
       )!,

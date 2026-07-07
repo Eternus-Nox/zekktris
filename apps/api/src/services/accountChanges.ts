@@ -26,7 +26,7 @@
 
 import { and, eq, isNull, gt, sql } from 'drizzle-orm';
 import { createHash, randomBytes } from 'crypto';
-import { db, schema } from '../db';
+import { db, isUniqueViolation, schema } from '../db';
 import { errors } from '../errors';
 import { nextSnowflake } from '../snowflake';
 import { verifyPassword } from '../auth/passwords';
@@ -267,22 +267,40 @@ export async function confirmEmailChange(plainToken: string): Promise<{
     throw errors.badRequest('That email was claimed by another account.');
   }
 
-  // Atomically apply the change + mark the token used. We mark the
-  // token used FIRST so a double-click on the email link can't
-  // re-run a successful change (which would be a no-op anyway, but
-  // the audit trail looks cleaner this way).
-  await db
-    .update(schema.emailChangeRequests)
-    .set({ usedAt: new Date() })
-    .where(eq(schema.emailChangeRequests.id, row.id));
+  // Consume the token and apply the change in ONE transaction. The consume is
+  // a compare-and-swap (usedAt IS NULL) so two concurrent confirms of the same
+  // token can't both apply it — the loser matches 0 rows and returns the
+  // idempotent success without re-applying. A concurrent cross-user collision
+  // on the target email (two users each pending a change to the same address,
+  // confirming at once) surfaces as the clean 400 below instead of a raw
+  // Postgres 23505 → 500.
+  await db.transaction(async (tx) => {
+    const consumed = await tx
+      .update(schema.emailChangeRequests)
+      .set({ usedAt: new Date() })
+      .where(
+        and(
+          eq(schema.emailChangeRequests.id, row.id),
+          isNull(schema.emailChangeRequests.usedAt),
+        ),
+      )
+      .returning({ id: schema.emailChangeRequests.id });
+    // Loser of a double-click / retry: the winner already applied the
+    // identical change. Nothing more to do.
+    if (consumed.length === 0) return;
 
-  await db
-    .update(schema.users)
-    .set({
-      email: row.newEmail,
-      updatedAt: new Date(),
-    })
-    .where(eq(schema.users.id, row.userId));
+    try {
+      await tx
+        .update(schema.users)
+        .set({ email: row.newEmail, updatedAt: new Date() })
+        .where(eq(schema.users.id, row.userId));
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        throw errors.badRequest('That email was claimed by another account.');
+      }
+      throw err;
+    }
+  });
 
   return { userId: row.userId, newEmail: row.newEmail };
 }

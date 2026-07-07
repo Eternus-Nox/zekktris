@@ -130,6 +130,19 @@ export function dateBoundToSnowflake(
   const y = Number(m[1]),
     mo = Number(m[2]) - 1,
     d = Number(m[3]);
+  // Reject impossible calendar dates (Feb 31, Apr 31, Feb 29 in a non-leap
+  // year, month > 12, …). Date.UTC silently NORMALIZES out-of-range fields
+  // instead of returning NaN, so round-trip a canonical midnight through a Date
+  // and confirm the y/mo/d survive; otherwise the filter would silently roll
+  // over (e.g. "before:2024-02-31" quietly means "before Mar 2").
+  const canonical = new Date(Date.UTC(y, mo, d, 0, 0, 0, 0));
+  if (
+    canonical.getUTCFullYear() !== y ||
+    canonical.getUTCMonth() !== mo ||
+    canonical.getUTCDate() !== d
+  ) {
+    return null;
+  }
   // UTC: search filters anchor on the calendar day in UTC. Local-day
   // resolution would be more intuitive in a timezone-aware client but
   // also goes wrong across DST transitions and across users in

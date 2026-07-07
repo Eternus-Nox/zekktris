@@ -707,11 +707,11 @@ function formatRelativeStart(diffMs: number, status: ScheduledEvent['status']): 
   if (status === 'completed' || status === 'canceled') return null;
   if (status === 'active') return 'happening now';
   if (diffMs < 0) return 'starting now';
-  const minutes = Math.round(diffMs / 60000);
+  const minutes = Math.floor(diffMs / 60000);
   if (minutes < 60) return `in ${minutes} min${minutes === 1 ? '' : 's'}`;
-  const hours = Math.round(diffMs / 3600000);
+  const hours = Math.floor(diffMs / 3600000);
   if (hours < 24) return `in ${hours} hour${hours === 1 ? '' : 's'}`;
-  const days = Math.round(diffMs / 86400000);
+  const days = Math.floor(diffMs / 86400000);
   if (days < 14) return `in ${days} day${days === 1 ? '' : 's'}`;
   // Beyond two weeks, the absolute date does the work.
   return null;

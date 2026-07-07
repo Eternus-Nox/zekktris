@@ -893,13 +893,34 @@ function reducer(state: State, action: Action): State {
       // a channel, the head may have moved (this is rare but cheap).
       const exhausted = new Set(state.olderExhausted);
       exhausted.delete(action.channelId);
+      // Preserve live rows that arrived via MESSAGE_APPEND while this REST
+      // fetch was in flight: a message posted AFTER the fetch's snapshot but
+      // BEFORE its response lands isn't in `action.messages`, and a blind
+      // replace would drop it (invisible until the next reconcile poll). Union
+      // any existing row STRICTLY NEWER than the newest fetched row (by numeric
+      // snowflake, deduped) back onto the tail. Optimistic `local-` ids are
+      // ignored — they reconcile via their own nonce path.
+      const fetched = action.messages;
+      let maxFetched = 0n;
+      for (const m of fetched) {
+        if (/^\d+$/.test(m.id)) {
+          const n = BigInt(m.id);
+          if (n > maxFetched) maxFetched = n;
+        }
+      }
+      const fetchedIds = new Set(fetched.map((m) => m.id));
+      const prior = state.messagesByChannel[action.channelId] ?? [];
+      const survivors = prior.filter(
+        (m) => /^\d+$/.test(m.id) && !fetchedIds.has(m.id) && BigInt(m.id) > maxFetched,
+      );
+      const merged = survivors.length > 0 ? [...fetched, ...survivors] : fetched;
       const next: State = {
         ...state,
-        messagesByChannel: { ...state.messagesByChannel, [action.channelId]: action.messages },
+        messagesByChannel: { ...state.messagesByChannel, [action.channelId]: merged },
         loadedChannels: loaded,
         olderExhausted: exhausted,
       };
-      return upsertUsersFromMessages(next, action.messages);
+      return upsertUsersFromMessages(next, merged);
     }
     case 'MESSAGES_PREPEND': {
       const existing = state.messagesByChannel[action.channelId] ?? [];

@@ -51,10 +51,12 @@ function formatScheduledFor(iso: string): { relative: string; absolute: string }
   const d = new Date(iso);
   const now = new Date();
   const ms = d.getTime() - now.getTime();
-  const seconds = Math.round(ms / 1000);
-  const minutes = Math.round(seconds / 60);
-  const hours = Math.round(minutes / 60);
-  const days = Math.round(hours / 24);
+  // floor, not round: each unit is derived from the raw total, so Math.round
+  // of a 1.5 ratio would round UP into the next bucket (90 min → "2 hours").
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
 
   const absolute = d.toLocaleString(undefined, {
     weekday: 'short',

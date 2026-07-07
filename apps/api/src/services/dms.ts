@@ -115,8 +115,62 @@ export async function getOrCreateDM(
 
   // Create new DM channel.
   const channelId = nextSnowflake();
+  // Canonical, order-independent key for the unordered pair so both
+  // getOrCreateDM(A,B) and getOrCreateDM(B,A) contend on the same lock.
+  const [lo, hi] = userA < userB ? [userA, userB] : [userB, userA];
+  const pairKey = `dm:${lo}:${hi}`;
+  // Set to the winner's channel id if a concurrent caller created the DM first.
+  let createdExisting: bigint | null = null;
   try {
     await db.transaction(async (tx) => {
+      // Serialize creation for this pair (repo idiom — cf. streaks.ts,
+      // polls.ts). A concurrent caller blocks here until we commit, then its
+      // re-check below sees our committed channel and skips its own insert —
+      // so exactly one DM channel per pair is created even though there is no
+      // unique constraint on the unordered pair. Without this, two truly
+      // concurrent opens can each conclude they are the winner and both keep a
+      // channel (the post-create find can run before the other side commits).
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${pairKey}))`);
+
+      // Re-check under the lock: the loser of the create race sees the
+      // winner's committed channel here and returns it instead of inserting.
+      const [already] = await tx
+        .select({ id: schema.channels.id })
+        .from(schema.channels)
+        .where(
+          and(
+            eq(schema.channels.type, 'dm'),
+            exists(
+              tx
+                .select()
+                .from(schema.dmRecipients)
+                .where(
+                  and(
+                    eq(schema.dmRecipients.channelId, schema.channels.id),
+                    eq(schema.dmRecipients.userId, userA),
+                  ),
+                ),
+            ),
+            exists(
+              tx
+                .select()
+                .from(schema.dmRecipients)
+                .where(
+                  and(
+                    eq(schema.dmRecipients.channelId, schema.channels.id),
+                    eq(schema.dmRecipients.userId, userB),
+                  ),
+                ),
+            ),
+          ),
+        )
+        .orderBy(asc(schema.channels.id))
+        .limit(1);
+      if (already) {
+        createdExisting = already.id;
+        return;
+      }
+
       // Verify both users actually exist (and are not banned /
       // soft-deleted) before creating the channel. Without these
       // filters, a DM can be opened with a banned user: the channel
@@ -173,6 +227,10 @@ export async function getOrCreateDM(
     }
     throw err;
   }
+
+  // Lost the create race — the winner's committed channel was found under the
+  // lock; return it instead of the (never-inserted) fresh id.
+  if (createdExisting !== null) return { channelId: createdExisting, created: false };
 
   // Belt-and-suspenders: after a successful create, re-run the find.
   // If another concurrent caller's create won the lookup-race AND
@@ -806,7 +864,7 @@ export async function markMessagesViewed(
         eq(schema.messages.channelId, channelId),
         inArray(schema.messages.id, messageIds),
         sql`${schema.messages.viewedAt} IS NULL`,
-        sql`${schema.messages.authorId} <> ${viewerId} OR ${schema.messages.authorId} IS NULL`,
+        sql`(${schema.messages.authorId} <> ${viewerId} OR ${schema.messages.authorId} IS NULL)`,
       ),
     )
     .returning({
@@ -865,7 +923,7 @@ export async function markMessagesViewedUpTo(
         eq(schema.messages.channelId, channelId),
         sql`${schema.messages.id} <= ${upToMessageId}`,
         sql`${schema.messages.viewedAt} IS NULL`,
-        sql`${schema.messages.authorId} <> ${viewerId} OR ${schema.messages.authorId} IS NULL`,
+        sql`(${schema.messages.authorId} <> ${viewerId} OR ${schema.messages.authorId} IS NULL)`,
       ),
     )
     .returning({
@@ -913,7 +971,7 @@ export async function markMessageDelivered(
       and(
         eq(schema.messages.id, messageId),
         sql`${schema.messages.deliveredAt} IS NULL`,
-        sql`${schema.messages.authorId} <> ${recipientId} OR ${schema.messages.authorId} IS NULL`,
+        sql`(${schema.messages.authorId} <> ${recipientId} OR ${schema.messages.authorId} IS NULL)`,
       ),
     )
     .returning({ id: schema.messages.id });

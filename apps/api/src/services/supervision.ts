@@ -126,39 +126,51 @@ export async function requestLink(parentId: bigint, childUsername: string) {
 
 /** Child accepts a pending request, activating supervision. */
 export async function acceptLink(childId: bigint, parentId: bigint) {
-  // Re-check caps at accept time — counts can change between request and
-  // acceptance (two pending requests could otherwise both activate).
-  const [activeParents, activeChildren] = await Promise.all([
-    getActiveParentIds(childId),
-    getActiveChildIds(parentId),
-  ]);
-  if (activeParents.length >= MAX_PARENTS_PER_CHILD) {
-    throw errors.badRequest(
-      `You already have the maximum of ${MAX_PARENTS_PER_CHILD} guardians`,
-    );
-  }
-  if (activeChildren.length >= MAX_CHILDREN_PER_PARENT) {
-    throw errors.badRequest(
-      `That guardian is already supervising the maximum of ${MAX_CHILDREN_PER_PARENT} accounts`,
-    );
-  }
-  const updated = await db
-    .update(schema.parentChildLinks)
-    .set({ status: 'active', acceptedAt: new Date() })
-    .where(
-      and(
-        eq(schema.parentChildLinks.parentId, parentId),
-        eq(schema.parentChildLinks.childId, childId),
-        eq(schema.parentChildLinks.status, 'pending'),
-        // Only the CHILD accepts a PARENT-initiated request. A child-initiated
-        // request (initiated_by='child') is accepted by the parent via
-        // acceptChildInitiatedLink — guarding here stops a child "accepting"
-        // their own invite.
-        eq(schema.parentChildLinks.initiatedBy, 'parent'),
-      ),
-    )
-    .returning({ childId: schema.parentChildLinks.childId });
-  if (updated.length === 0) throw errors.badRequest('No pending request from that account');
+  await db.transaction(async (tx) => {
+    // Serialize concurrent accepts touching this child / this parent so the
+    // cap re-check and the activation UPDATE are effectively atomic. Without
+    // it, two simultaneous accepts each read the stale pre-accept count, both
+    // pass the cap gate, and both flip their own distinct pending row →
+    // guardian/child cap exceeded by one. Lock child THEN parent (distinct
+    // key namespaces ⇒ deadlock-free) — the loser blocks until the winner
+    // commits, then re-reads the now-current count and is correctly rejected.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`supchild:${childId}`}))`);
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`supparent:${parentId}`}))`);
+
+    // Committed reads — the advisory locks guarantee no competing accept sits
+    // between this count and our commit, so a plain db read is accurate here.
+    const [activeParents, activeChildren] = await Promise.all([
+      getActiveParentIds(childId),
+      getActiveChildIds(parentId),
+    ]);
+    if (activeParents.length >= MAX_PARENTS_PER_CHILD) {
+      throw errors.badRequest(
+        `You already have the maximum of ${MAX_PARENTS_PER_CHILD} guardians`,
+      );
+    }
+    if (activeChildren.length >= MAX_CHILDREN_PER_PARENT) {
+      throw errors.badRequest(
+        `That guardian is already supervising the maximum of ${MAX_CHILDREN_PER_PARENT} accounts`,
+      );
+    }
+    const updated = await tx
+      .update(schema.parentChildLinks)
+      .set({ status: 'active', acceptedAt: new Date() })
+      .where(
+        and(
+          eq(schema.parentChildLinks.parentId, parentId),
+          eq(schema.parentChildLinks.childId, childId),
+          eq(schema.parentChildLinks.status, 'pending'),
+          // Only the CHILD accepts a PARENT-initiated request. A child-initiated
+          // request (initiated_by='child') is accepted by the parent via
+          // acceptChildInitiatedLink — guarding here stops a child "accepting"
+          // their own invite.
+          eq(schema.parentChildLinks.initiatedBy, 'parent'),
+        ),
+      )
+      .returning({ childId: schema.parentChildLinks.childId });
+    if (updated.length === 0) throw errors.badRequest('No pending request from that account');
+  });
   // Make sure a restrictions row exists with defaults.
   await ensureRestrictions(childId);
 }
@@ -248,31 +260,38 @@ export async function acceptChildInitiatedLink(parentId: bigint, childId: bigint
   if (await isMinorUser(parentId)) {
     throw errors.forbidden('Minors cannot supervise other accounts');
   }
-  const [activeParents, activeChildren] = await Promise.all([
-    getActiveParentIds(childId),
-    getActiveChildIds(parentId),
-  ]);
-  if (activeParents.length >= MAX_PARENTS_PER_CHILD) {
-    throw errors.badRequest(
-      `That account already has the maximum of ${MAX_PARENTS_PER_CHILD} guardians`,
-    );
-  }
-  if (activeChildren.length >= MAX_CHILDREN_PER_PARENT) {
-    throw errors.badRequest(`You can supervise up to ${MAX_CHILDREN_PER_PARENT} accounts`);
-  }
-  const updated = await db
-    .update(schema.parentChildLinks)
-    .set({ status: 'active', acceptedAt: new Date() })
-    .where(
-      and(
-        eq(schema.parentChildLinks.parentId, parentId),
-        eq(schema.parentChildLinks.childId, childId),
-        eq(schema.parentChildLinks.status, 'pending'),
-        eq(schema.parentChildLinks.initiatedBy, 'child'),
-      ),
-    )
-    .returning({ childId: schema.parentChildLinks.childId });
-  if (updated.length === 0) throw errors.badRequest('No pending request from that account');
+  await db.transaction(async (tx) => {
+    // Serialize concurrent accepts (same rationale + deadlock-free lock order
+    // as acceptLink) so the cap re-check and activation UPDATE are atomic.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`supchild:${childId}`}))`);
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`supparent:${parentId}`}))`);
+
+    const [activeParents, activeChildren] = await Promise.all([
+      getActiveParentIds(childId),
+      getActiveChildIds(parentId),
+    ]);
+    if (activeParents.length >= MAX_PARENTS_PER_CHILD) {
+      throw errors.badRequest(
+        `That account already has the maximum of ${MAX_PARENTS_PER_CHILD} guardians`,
+      );
+    }
+    if (activeChildren.length >= MAX_CHILDREN_PER_PARENT) {
+      throw errors.badRequest(`You can supervise up to ${MAX_CHILDREN_PER_PARENT} accounts`);
+    }
+    const updated = await tx
+      .update(schema.parentChildLinks)
+      .set({ status: 'active', acceptedAt: new Date() })
+      .where(
+        and(
+          eq(schema.parentChildLinks.parentId, parentId),
+          eq(schema.parentChildLinks.childId, childId),
+          eq(schema.parentChildLinks.status, 'pending'),
+          eq(schema.parentChildLinks.initiatedBy, 'child'),
+        ),
+      )
+      .returning({ childId: schema.parentChildLinks.childId });
+    if (updated.length === 0) throw errors.badRequest('No pending request from that account');
+  });
   await ensureRestrictions(childId);
 }
 
