@@ -703,15 +703,49 @@ export function ProfileCard({
             />
           )}
 
+          {/* Custom status floats INSIDE the banner (bottom-left, cleared of the
+              avatar), its tail pointing left at the avatar — mirrors the iOS
+              profile card. Keeping it here (not in the name column) is what
+              keeps the display name OUT of the banner. */}
+          {(() => {
+            const cs = formatCustomStatus(user);
+            if (!cs.emoji && !cs.text) return null;
+            return (
+              <div className="absolute bottom-2 left-[96px] right-3 flex justify-start">
+                <div className="relative inline-flex items-center gap-1.5 max-w-full rounded-[11px] bg-bg-3 border border-line pl-3 pr-2.5 py-1 shadow-sm">
+                  {cs.emoji && <span className="text-sm leading-none shrink-0">{cs.emoji}</span>}
+                  {cs.text && (
+                    <span className="text-xs font-medium text-ink-1 line-clamp-2">{cs.text}</span>
+                  )}
+                  <svg
+                    width="9"
+                    height="14"
+                    viewBox="0 0 9 14"
+                    className="absolute right-full top-1/2 -translate-y-1/2 -mr-px"
+                    aria-hidden
+                  >
+                    <path d="M8 1 L0 7 L8 13 Z" style={{ fill: 'rgb(var(--c-bg-3))' }} />
+                    <path
+                      d="M8 1 L0 7 L8 13"
+                      fill="none"
+                      style={{ stroke: 'rgb(var(--c-line))' }}
+                      strokeWidth="1"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
-        <div className="px-4 -mt-10 pb-4">
-          {/* Avatar + identity row. Avatar overlaps the banner; the
-              display name + @username sit to its RIGHT, bottom-aligned
-              with the avatar so the name lines up with the lower half
-              of the picture. */}
-          <div className="flex items-end gap-3">
-            <div className="relative w-20 h-20 shrink-0">
+        <div className="px-4 pb-4">
+          {/* Avatar + identity row, BELOW the banner (mirrors iOS): ONLY the
+              avatar overhangs up into the banner (-mt-10); the name + @username
+              sit below the banner and flow downward, so a long name / multi-line
+              status can never spill onto the banner image. */}
+          <div className="flex items-start gap-3">
+            <div className="relative w-20 h-20 shrink-0 -mt-10">
               <div
                 className={`relative w-20 h-20 rounded-full border-4 border-bg-1 flex items-center justify-center text-xl font-semibold overflow-hidden ${avatarColor(user.id)}`}
               >
@@ -728,44 +762,9 @@ export function ProfileCard({
               />
             </div>
 
-            {/* Name + handle, to the right of the avatar. min-w-0 so
-                long names truncate instead of pushing the layout.
-                Nudged down a few px (translate-y) so it reads as
-                sitting slightly below the avatar's vertical centre. */}
-            <div className="min-w-0 flex-1 pb-1 translate-y-1.5">
-              {/* Custom status sits right above the name, its tail on the LEFT
-                  pointing back at the avatar — like the picture is speaking
-                  (mirrors the iOS profile card). */}
-              {(() => {
-                const cs = formatCustomStatus(user);
-                if (!cs.emoji && !cs.text) return null;
-                return (
-                  <div className="relative inline-flex items-center gap-1.5 max-w-full rounded-[11px] bg-bg-3 border border-line pl-3 pr-2.5 py-1 mb-1 shadow-sm">
-                    {cs.emoji && <span className="text-sm leading-none shrink-0">{cs.emoji}</span>}
-                    {cs.text && (
-                      <span className="text-xs font-medium text-ink-1 line-clamp-2">{cs.text}</span>
-                    )}
-                    {/* Left tail: base merges with the bubble's left edge, tip
-                        points left at the avatar. */}
-                    <svg
-                      width="9"
-                      height="14"
-                      viewBox="0 0 9 14"
-                      className="absolute right-full top-1/2 -translate-y-1/2 -mr-px"
-                      aria-hidden
-                    >
-                      <path d="M8 1 L0 7 L8 13 Z" style={{ fill: 'rgb(var(--c-bg-3))' }} />
-                      <path
-                        d="M8 1 L0 7 L8 13"
-                        fill="none"
-                        style={{ stroke: 'rgb(var(--c-line))' }}
-                        strokeWidth="1"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  </div>
-                );
-              })()}
+            {/* Name + handle, to the right of the avatar's lower half. min-w-0
+                so long names truncate instead of pushing the layout. */}
+            <div className="min-w-0 flex-1 pt-2">
               <div className="flex items-center gap-1.5">
                 <UserTag user={user} className="-mr-1" />
                 <StaffName
@@ -786,61 +785,6 @@ export function ProfileCard({
                 <TierBadge tier={fullProfile?.subscriptionTier ?? user.subscriptionTier} />
               </div>
               <div className="text-xs text-ink-3 truncate">@{user.username}</div>
-              {/* Personal DM nickname — viewer-private label shown in DMs only. */}
-              {!isSelf && !user.isBot && (
-                <div className="mt-1">
-                  {editingDmNick ? (
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        autoFocus
-                        value={dmNickDraft}
-                        maxLength={32}
-                        onChange={(e) => setDmNickDraft(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') void saveDmNickname();
-                          if (e.key === 'Escape') setEditingDmNick(false);
-                        }}
-                        placeholder="Nickname (only you, in DMs)"
-                        className="min-w-0 flex-1 text-xs bg-bg-3 border border-line rounded px-1.5 py-1 text-ink-1"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => void saveDmNickname()}
-                        className="shrink-0 text-xs px-2 py-1 rounded bg-accent/20 text-ink-1 hover:bg-accent/30"
-                      >
-                        Save
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEditingDmNick(false)}
-                        className="shrink-0 text-xs px-2 py-1 rounded text-ink-3 hover:bg-bg-3"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDmNickDraft(dmNickname);
-                        setEditingDmNick(true);
-                      }}
-                      className="text-[11px] text-ink-3 hover:text-ink-1 inline-flex items-center gap-1 truncate"
-                      title="A nickname only you see, shown in direct messages"
-                    >
-                      {dmNickname ? (
-                        <>
-                          <span className="text-ink-2">Nickname:</span>
-                          <span className="text-ink-1 truncate">{dmNickname}</span>
-                          <span className="text-ink-4">· edit</span>
-                        </>
-                      ) : (
-                        <span>+ Add nickname (only you)</span>
-                      )}
-                    </button>
-                  )}
-                </div>
-              )}
             </div>
           </div>
 
@@ -956,6 +900,56 @@ export function ProfileCard({
                   <span>Block</span>
                 </button>
               )}
+
+              {/* Personal DM nickname — a private label only you see, shown for
+                  this person in direct messages. A bottom action (was an inline
+                  line under the username). */}
+              {!user.isBot &&
+                (editingDmNick ? (
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      autoFocus
+                      value={dmNickDraft}
+                      maxLength={32}
+                      onChange={(e) => setDmNickDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') void saveDmNickname();
+                        if (e.key === 'Escape') setEditingDmNick(false);
+                      }}
+                      placeholder="Nickname (only you, in DMs)"
+                      className="min-w-0 flex-1 text-sm bg-bg-3 border border-line rounded-md px-2 py-2 text-ink-1"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void saveDmNickname()}
+                      className="shrink-0 text-sm px-3 py-2 rounded-md bg-accent/20 text-ink-1 hover:bg-accent/30"
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingDmNick(false)}
+                      className="shrink-0 text-sm px-3 py-2 rounded-md text-ink-3 hover:bg-bg-3"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDmNickDraft(dmNickname);
+                      setEditingDmNick(true);
+                    }}
+                    className="flex items-center gap-2 px-3 py-2 rounded-md bg-bg-3 hover:bg-bg-3/80 text-sm font-medium text-ink-1 transition-colors"
+                    title="A nickname only you see, shown in direct messages"
+                  >
+                    <Edit size={14} />
+                    <span className="truncate">
+                      {dmNickname ? `Nickname: ${dmNickname}` : 'Set nickname (only you)'}
+                    </span>
+                  </button>
+                ))}
             </div>
             </>
           )}

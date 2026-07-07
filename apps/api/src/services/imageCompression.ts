@@ -85,7 +85,7 @@ const LOSSY_QUALITY = Number(env.IMAGE_COMPRESS_QUALITY ?? 75);
 interface SharpModule {
   default: (
     input: string | Buffer,
-    opts?: { limitInputPixels?: number },
+    opts?: { limitInputPixels?: number | boolean },
   ) => SharpInstance;
 }
 
@@ -94,6 +94,8 @@ interface SharpInstance {
   webp: (opts: { quality: number }) => SharpInstance;
   png: (opts: { compressionLevel: number; palette?: boolean }) => SharpInstance;
   toBuffer: () => Promise<Buffer>;
+  // Header-only read (no pixel decode); used to enforce upload dimension caps.
+  metadata: () => Promise<{ width?: number; height?: number; format?: string }>;
 }
 
 let sharpLoadAttempted = false;
@@ -108,7 +110,7 @@ let sharp: SharpModule['default'] | null = null;
  * Cached after first attempt: if sharp isn't installed we don't
  * keep paying the import-error cost on every sweep tick.
  */
-async function loadSharp(): Promise<SharpModule['default'] | null> {
+export async function loadSharp(): Promise<SharpModule['default'] | null> {
   if (sharpLoadAttempted) return sharp;
   sharpLoadAttempted = true;
   try {

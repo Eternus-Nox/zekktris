@@ -1895,6 +1895,48 @@ const AVATAR_CONTENT_TYPES = new Set([
   'image/webp',
 ]);
 
+// Per-route caps for avatar/banner uploads, INDEPENDENT of the (much larger)
+// generic MAX_UPLOAD_SIZE_MB. The clients already downscale + size-check before
+// upload, but the server is the trust boundary — a direct API call bypasses the
+// browser, so re-enforce here (also a decompression-bomb / storage-abuse guard).
+const AVATAR_MAX_BYTES = 8 * 1024 * 1024;
+const AVATAR_MAX_DIM = 4096; // px per side; a raw phone photo fits, absurd/bomb images don't
+const BANNER_MAX_BYTES = 8 * 1024 * 1024;
+const BANNER_MAX_DIM = 8000; // banners can be wide
+
+/**
+ * Reject an avatar/banner upload that exceeds the byte cap, or — best-effort
+ * via sharp — the pixel-dimension cap. sharp.metadata() parses only the header
+ * (no full pixel decode) so a malformed/outsized image can't bomb us here; if
+ * sharp isn't installed the byte cap still applies.
+ */
+async function assertImageUploadWithinLimits(
+  file: File,
+  opts: { maxBytes: number; maxDim: number; label: string },
+): Promise<void> {
+  if (file.size > opts.maxBytes) {
+    throw errors.badRequest(
+      `${opts.label} is too large (max ${Math.round(opts.maxBytes / (1024 * 1024))} MB)`,
+    );
+  }
+  const { loadSharp } = await import('../services/imageCompression');
+  const sharp = await loadSharp();
+  if (!sharp) return;
+  let dims: { w: number; h: number } | null = null;
+  try {
+    const buf = Buffer.from(await file.arrayBuffer());
+    const meta = await sharp(buf, { limitInputPixels: false }).metadata();
+    dims = { w: meta.width ?? 0, h: meta.height ?? 0 };
+  } catch {
+    dims = null; // unreadable header — skip the dimension check
+  }
+  if (dims && (dims.w > opts.maxDim || dims.h > opts.maxDim)) {
+    throw errors.badRequest(
+      `${opts.label} dimensions are too large (max ${opts.maxDim}px per side; got ${dims.w}×${dims.h})`,
+    );
+  }
+}
+
 usersRouter.post('/@me/avatar', requireAuth, async (c) => {
   const userId = requireUserId(c);
 
@@ -1908,6 +1950,11 @@ usersRouter.post('/@me/avatar', requireAuth, async (c) => {
   if (!AVATAR_CONTENT_TYPES.has(file.type)) {
     throw errors.badRequest('Avatar must be a PNG, JPEG, GIF, or WebP image');
   }
+  await assertImageUploadWithinLimits(file, {
+    maxBytes: AVATAR_MAX_BYTES,
+    maxDim: AVATAR_MAX_DIM,
+    label: 'Avatar',
+  });
 
   const { saveUploadedFile, deleteAttachmentFile, parseCdnAttachmentId } =
     await import('../services/uploads');
@@ -2010,6 +2057,11 @@ usersRouter.post('/@me/banner', requireAuth, async (c) => {
   if (!AVATAR_CONTENT_TYPES.has(file.type)) {
     throw errors.badRequest('Banner must be a PNG, JPEG, GIF, or WebP image');
   }
+  await assertImageUploadWithinLimits(file, {
+    maxBytes: BANNER_MAX_BYTES,
+    maxDim: BANNER_MAX_DIM,
+    label: 'Banner',
+  });
 
   const { saveUploadedFile, deleteAttachmentFile, parseCdnAttachmentId } =
     await import('../services/uploads');
