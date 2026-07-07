@@ -119,11 +119,15 @@ async function loadChannelContext(channelId: bigint, userId: bigint): Promise<Ch
  * (like poll voting, which previously bypassed these) can't drift from send.
  */
 async function enforceGuildParticipationGates(guildId: bigint, userId: bigint): Promise<void> {
-  const state = await membersSvc.getMemberState(guildId, userId);
-  if (state === 'pending') throw errors.pendingAcknowledgment();
-  const until = await membersSvc.getActiveTimeout(guildId, userId);
-  if (until !== null) throw errors.timedOut(until);
-  const restr = await supervision.getEffectiveRestrictions(userId);
+  // One member-row read (pending + timeout) in parallel with the independent
+  // supervision read — 2 round-trips instead of 3 serial ones. Throw priority
+  // unchanged: pending → timeout → restricted.
+  const [part, restr] = await Promise.all([
+    membersSvc.getParticipationRow(guildId, userId),
+    supervision.getEffectiveRestrictions(userId),
+  ]);
+  if (part.state === 'pending') throw errors.pendingAcknowledgment();
+  if (part.timeoutUntil !== null) throw errors.timedOut(part.timeoutUntil);
   if (restr && !restr.allowMessaging) {
     throw new AppError(
       'FORBIDDEN',
@@ -600,28 +604,28 @@ messagesRouter.post(
       // client gets a distinct error code so it can surface the
       // rules-acknowledgment prompt rather than a generic permission
       // error.
+      //
+      // These three gates (pending-acknowledgment, active-timeout, supervision)
+      // used to run as three serial round-trips — and the first two point-read
+      // the SAME guild_members row. Fold them into one member-row read
+      // (getParticipationRow) run in parallel with the independent supervision
+      // read: 2 round-trips instead of 3 on this, the hottest write path. Throw
+      // priority is unchanged: pending → timeout → restricted.
+      //
+      // Timeout is NOT bypassed by MANAGE_MESSAGES (a timed-out mod stays timed
+      // out); the until-timestamp rides on the error so the client can render
+      // "you can send again at <time>". Supervision blocks a restricted minor.
       if (ctx.channel.guildId) {
-        const state = await membersSvc.getMemberState(ctx.channel.guildId, userId);
-        if (state === 'pending') {
+        const [part, restr] = await Promise.all([
+          membersSvc.getParticipationRow(ctx.channel.guildId, userId),
+          supervision.getEffectiveRestrictions(userId),
+        ]);
+        if (part.state === 'pending') {
           throw errors.pendingAcknowledgment();
         }
-      }
-      // Timeout enforcement. Unlike slowmode, this is NOT bypassed by
-      // MANAGE_MESSAGES — a moderator who's been timed out by a
-      // higher-ranked admin stays timed out. The until-timestamp is
-      // included in the error so the client can render "you can send
-      // again at <time>". Cheap PK lookup; no caching needed at this
-      // throughput.
-      if (ctx.channel.guildId) {
-        const until = await membersSvc.getActiveTimeout(ctx.channel.guildId, userId);
-        if (until !== null) {
-          throw errors.timedOut(until);
+        if (part.timeoutUntil !== null) {
+          throw errors.timedOut(part.timeoutUntil);
         }
-      }
-      // Supervision: a restricted minor (unlinked, or a linked child whose
-      // guardian disabled messaging) can't post in servers.
-      if (ctx.channel.guildId) {
-        const restr = await supervision.getEffectiveRestrictions(userId);
         if (restr && !restr.allowMessaging) {
           throw new AppError(
             'FORBIDDEN',

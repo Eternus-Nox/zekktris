@@ -359,6 +359,26 @@ export function countMentions(content: string): number {
  * Exported for unit testing — and so the future repeat_message rule
  * type can reuse the same primitive when it grows pattern support.
  */
+// Compiled word-boundary regexes for word_blocklist patterns, keyed by the
+// trimmed raw pattern. Mirrors compiledPatternCache (same size cap + clear on
+// overflow) so the far-more-common blocklist path stops recompiling every
+// pattern on every message. Escaped literals can't backtrack (no ReDoS/safe-
+// regex concern); the 'i'-only flag (no 'g'/'y') means a reused RegExp's
+// .test() is stateless, so caching is behavior-preserving.
+const blocklistPatternCache = new Map<string, RegExp>();
+const BLOCKLIST_PATTERN_CACHE_MAX = 2000;
+
+function compileWordBoundary(pat: string): RegExp {
+  const cached = blocklistPatternCache.get(pat);
+  if (cached !== undefined) return cached;
+  const rx = new RegExp(`\\b${escapeRegex(pat)}\\b`, 'i');
+  if (blocklistPatternCache.size >= BLOCKLIST_PATTERN_CACHE_MAX) {
+    blocklistPatternCache.clear();
+  }
+  blocklistPatternCache.set(pat, rx);
+  return rx;
+}
+
 export function messageMatchesPatterns(content: string, patterns: string[]): boolean {
   if (patterns.length === 0) return false;
   for (const raw of patterns) {
@@ -369,9 +389,8 @@ export function messageMatchesPatterns(content: string, patterns: string[]): boo
     // anchors at the spaces — \b doesn't fire mid-phrase the way
     // we'd want — so phrases match wherever they appear as a
     // contiguous substring with word boundaries at both ends.
-    const escaped = escapeRegex(pat);
-    const rx = new RegExp(`\\b${escaped}\\b`, 'i');
-    if (rx.test(content)) return true;
+    // Compiled once and cached (see compileWordBoundary).
+    if (compileWordBoundary(pat).test(content)) return true;
   }
   return false;
 }

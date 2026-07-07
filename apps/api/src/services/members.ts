@@ -581,3 +581,48 @@ export async function getMemberState(
   if (!ack || ack.getTime() < row.rulesUpdatedAt.getTime()) return 'pending';
   return 'active';
 }
+
+/**
+ * One guild_members row read (+ guilds join) that resolves BOTH the
+ * onboarding/pending gate AND the active-timeout gate — so the hot message-send
+ * path pays a single round-trip instead of two point reads of the same row
+ * (getMemberState + getActiveTimeout). Logic mirrors both exactly.
+ */
+export async function getParticipationRow(
+  guildId: bigint,
+  userId: bigint,
+): Promise<{ state: 'pending' | 'active' | null; timeoutUntil: Date | null }> {
+  const [row] = await db
+    .select({
+      membershipState: schema.guildMembers.membershipState,
+      rulesAcknowledgedAt: schema.guildMembers.rulesAcknowledgedAt,
+      communicationDisabledUntil: schema.guildMembers.communicationDisabledUntil,
+      rulesContent: schema.guilds.rulesContent,
+      rulesUpdatedAt: schema.guilds.rulesUpdatedAt,
+    })
+    .from(schema.guildMembers)
+    .innerJoin(schema.guilds, eq(schema.guilds.id, schema.guildMembers.guildId))
+    .where(
+      and(
+        eq(schema.guildMembers.guildId, guildId),
+        eq(schema.guildMembers.userId, userId),
+      ),
+    )
+    .limit(1);
+  if (!row) return { state: null, timeoutUntil: null };
+  // state — identical derivation to getMemberState.
+  let state: 'pending' | 'active' = 'active';
+  if (row.membershipState === 'pending') {
+    state = 'pending';
+  } else {
+    const hasRules = row.rulesContent && row.rulesContent.trim().length > 0;
+    if (hasRules && row.rulesUpdatedAt) {
+      const ack = row.rulesAcknowledgedAt;
+      if (!ack || ack.getTime() < row.rulesUpdatedAt.getTime()) state = 'pending';
+    }
+  }
+  // timeout — identical derivation to getActiveTimeout.
+  const until = row.communicationDisabledUntil;
+  const timeoutUntil = until && until.getTime() > Date.now() ? until : null;
+  return { state, timeoutUntil };
+}

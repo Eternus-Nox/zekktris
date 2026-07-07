@@ -91,6 +91,32 @@ export function MemberList({
    * then "Members", then "Offline".
    */
   type Section = { id: string; label: string; color: string | null; members: GuildMember[] };
+
+  // Cheap identity signature over the sort-relevant fields. Changes only when a
+  // member is added/removed or renamed; a presence flip (the hot event) leaves
+  // it identical even though PRESENCE_PATCH replaces the `members` array ref.
+  const nameSig = useMemo(
+    () =>
+      (members ?? []).map((m) => `${m.userId}:${m.nickname ?? m.user.displayName}`).join('\n'),
+    [members],
+  );
+
+  // Sort the roster ONCE, keyed on identity (nameSig), not presence — so the
+  // O(N log N) sort + per-comparison lowercasing is skipped on presence flips.
+  // Precompute lowercased keys once (was two .toLowerCase() allocations per
+  // comparator call).
+  const sortedMembers = useMemo<GuildMember[]>(() => {
+    if (!members) return [];
+    const key = new Map<string, string>();
+    for (const m of members) key.set(m.userId, (m.nickname ?? m.user.displayName).toLowerCase());
+    return [...members].sort((a, b) => {
+      const an = key.get(a.userId)!;
+      const bn = key.get(b.userId)!;
+      return an < bn ? -1 : an > bn ? 1 : 0;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nameSig]);
+
   const sections = useMemo<Section[]>(() => {
     if (!members) return [];
     const hoistedRoles = (guildRoles ?? [])
@@ -113,7 +139,11 @@ export function MemberList({
     const defaultBucket: Section = { id: 'default', label: 'Online', color: null, members: [] };
     const offlineBucket: Section = { id: 'offline', label: 'Offline', color: null, members: [] };
 
-    for (const m of members) {
+    // Iterate the ALREADY-SORTED roster and only PARTITION into buckets (O(N)).
+    // A stable partition of a sorted array keeps every bucket sorted-by-name, so
+    // the old per-bucket .sort() calls are output-identical and can be dropped —
+    // and the whole O(N log N) sort no longer re-runs on a presence flip.
+    for (const m of sortedMembers) {
       // Offline members go to the offline bucket regardless of their
       // hoisted role — Discord's rule. 'invisible' is masked to
       // 'offline' on the wire so we never see it client-side; check
@@ -133,15 +163,6 @@ export function MemberList({
       else buckets[bestIdx]!.members.push(m);
     }
 
-    const sortByName = (a: GuildMember, b: GuildMember) => {
-      const an = (a.nickname ?? a.user.displayName).toLowerCase();
-      const bn = (b.nickname ?? b.user.displayName).toLowerCase();
-      return an < bn ? -1 : an > bn ? 1 : 0;
-    };
-    for (const b of buckets) b.members.sort(sortByName);
-    defaultBucket.members.sort(sortByName);
-    offlineBucket.members.sort(sortByName);
-
     // Skip empty sections (Discord style — no point showing
     // "Moderators — 0"). Default and offline always show their count
     // when non-empty; same rule, just no early-return for them.
@@ -150,7 +171,7 @@ export function MemberList({
     if (defaultBucket.members.length > 0) out.push(defaultBucket);
     if (offlineBucket.members.length > 0) out.push(offlineBucket);
     return out;
-  }, [members, guildRoles, guildId]);
+  }, [members, sortedMembers, guildRoles, guildId]);
 
   // Flatten the grouped sections into a single ordered list so virtua can
   // virtualize at ROW granularity (a 500-member guild renders ~visible rows,

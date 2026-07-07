@@ -94,16 +94,22 @@ export function ProfileCard({
   useEffect(() => {
     let cancelled = false;
     setFullProfile(null);
+    setCanMessage(undefined);
     rest
       .getUser(user.id)
       .then((r) => {
-        if (!cancelled) setFullProfile(r.user);
+        if (cancelled) return;
+        setFullProfile(r.user);
+        // canMessage is server-computed (privacy policy + shared guilds) and
+        // rides on this same response — fold it in instead of firing a second
+        // identical GET /users/:id. Only consumed for non-self cards.
+        if (!isSelf) setCanMessage(r.user.canMessage ?? false);
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [user.id, rest]);
+  }, [user.id, rest, isSelf]);
   const bannerUrl = user.bannerUrl ?? fullProfile?.bannerUrl ?? null;
 
   // ── Guild-context state ─────────────────────────────────────────
@@ -433,13 +439,18 @@ export function ProfileCard({
     // We don't reset banPending on success — the card is closing.
   }
 
-  // Lazy fetch the relationship status. Listing all relationships is
-  // overkill for a single card, but the route returns a flat list and
-  // we only care about the entry that matches this card's user. If
-  // we ever build a relationship cache in AppState we could read from
-  // it instead. Skipped for self.
+  // Relationship status from the AppState store — hydrated on connect
+  // (loadRelationships) and kept live via RELATIONSHIP_UPSERT/REMOVE +
+  // optimistic applyRelationship. Avoids a per-open listRelationships()
+  // round-trip whose O(N) payload is already in memory. Falls back to a one-
+  // shot fetch only on the rare pre-bootstrap open. Skipped for self.
   useEffect(() => {
     if (isSelf) return;
+    if (state.loadedRelationships) {
+      const found = state.relationships.find((x) => x.user.id === user.id);
+      setRel((found?.type as RelType) ?? 'none');
+      return;
+    }
     let cancelled = false;
     rest
       .listRelationships()
@@ -450,33 +461,12 @@ export function ProfileCard({
       })
       .catch(() => {
         // Silent failure — the card still renders, action buttons just
-        // default to "Add friend" / "Block" which the server will
-        // reconcile correctly.
+        // default to "Add friend" / "Block" which the server reconciles.
       });
     return () => {
       cancelled = true;
     };
-  }, [rest, user.id, isSelf]);
-
-  // Fetch the single-profile view to learn whether the viewer may DM/ring
-  // this user (server-computed from privacy policy + shared guilds). Kept
-  // separate from the relationship list so each resolves independently.
-  useEffect(() => {
-    if (isSelf) return;
-    let cancelled = false;
-    rest
-      .getUser(user.id)
-      .then((r) => {
-        if (!cancelled) setCanMessage(r.user.canMessage ?? false);
-      })
-      .catch(() => {
-        // On failure, leave it undefined → Message/Call stay hidden rather
-        // than offering an action the server might reject.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [rest, user.id, isSelf]);
+  }, [rest, user.id, isSelf, state.loadedRelationships, state.relationships]);
 
   // Flip the card above/below the anchor based on remaining viewport
   // space. Also clamps horizontally so the card never overflows.

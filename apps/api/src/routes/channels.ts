@@ -77,7 +77,19 @@ channelsRouter.post(
   async (c) => {
     const userId = requireUserId(c);
     const channelId = BigInt(c.req.valid('param').channelId);
-    const channel = await channels.getChannel(channelId);
+    // The invisible-status lookup depends only on userId, so start it in
+    // parallel with the channel fetch instead of paying a fourth serial
+    // round-trip after the permission gate. Harmless if getChannel is null or
+    // the permission check throws — the throw still fires first and we simply
+    // discard the extra PK read.
+    const [channel, meRows] = await Promise.all([
+      channels.getChannel(channelId),
+      db
+        .select({ status: schema.users.status })
+        .from(schema.users)
+        .where(eq(schema.users.id, userId))
+        .limit(1),
+    ]);
     if (!channel) throw errors.notFound('Channel');
 
     // Permission gate: must be allowed to actually post here. Otherwise
@@ -94,16 +106,10 @@ channelsRouter.post(
     // presence broadcasts ("appears offline" to others), but without
     // also masking typing the user's activity still leaks — other
     // members see "User X is typing" which clearly signals "X is
-    // online right now," contradicting the presence broadcast. The
-    // lookup is one PK select and only suppresses the outbound
-    // dispatch; the user can keep typing normally, only the
-    // notification to others is dropped. Matches Discord's
-    // semantic.
-    const [me] = await db
-      .select({ status: schema.users.status })
-      .from(schema.users)
-      .where(eq(schema.users.id, userId))
-      .limit(1);
+    // online right now," contradicting the presence broadcast. Only
+    // suppresses the outbound dispatch; the user keeps typing normally.
+    // Matches Discord's semantic.
+    const me = meRows[0];
     if (me?.status === 'invisible') {
       return c.json({ ok: true });
     }

@@ -2372,25 +2372,55 @@ guildsRouter.get(
       includeArchived: q.includeArchived ?? false,
       limit: q.limit,
     });
-    // Resolve creators + RSVP aggregates + caller's RSVPs in
-    // parallel. For a typical guild with <50 events on the
-    // "upcoming" view this is a handful of cheap queries; if event
-    // counts grow we can batch the aggregates into one GROUP-BY.
-    const enriched = await Promise.all(
-      rows.map(async (ev) => {
-        const [creator, rsvpCounts, myRsvp] = await Promise.all([
-          ev.creatorId
-            ? db
-                .select()
-                .from(schema.users)
-                .where(eq(schema.users.id, ev.creatorId))
-                .limit(1)
-                .then((r) => r[0] ?? null)
-            : Promise.resolve(null),
-          events.countRsvpsByStatus(ev.id),
-          events.getUserRsvp(ev.id, userId),
-        ]);
-        return toScheduledEvent(ev, creator, { rsvpCounts, myRsvp });
+    // Batch creators + RSVP aggregates + caller's own RSVPs into a CONSTANT
+    // number of queries (was 3 per event, an N+1 that scales with events/page).
+    // event_rsvps PK is (eventId, userId) so both IN-queries use its eventId
+    // prefix; users.id is PK. Order of `rows` preserved by mapping in memory.
+    const eventIds = rows.map((ev) => ev.id);
+    const creatorIds = [
+      ...new Set(rows.map((ev) => ev.creatorId).filter((x): x is bigint => x != null)),
+    ];
+    const [creators, rsvpRows, myRsvpRows] = await Promise.all([
+      creatorIds.length
+        ? db.select().from(schema.users).where(inArray(schema.users.id, creatorIds))
+        : Promise.resolve([] as (typeof schema.users.$inferSelect)[]),
+      eventIds.length
+        ? db
+            .select({
+              eventId: schema.eventRsvps.eventId,
+              status: schema.eventRsvps.status,
+              count: sql<number>`count(*)::int`,
+            })
+            .from(schema.eventRsvps)
+            .where(inArray(schema.eventRsvps.eventId, eventIds))
+            .groupBy(schema.eventRsvps.eventId, schema.eventRsvps.status)
+        : Promise.resolve(
+            [] as { eventId: bigint; status: 'going' | 'maybe' | 'declined'; count: number }[],
+          ),
+      eventIds.length
+        ? db
+            .select({ eventId: schema.eventRsvps.eventId, status: schema.eventRsvps.status })
+            .from(schema.eventRsvps)
+            .where(
+              and(inArray(schema.eventRsvps.eventId, eventIds), eq(schema.eventRsvps.userId, userId)),
+            )
+        : Promise.resolve([] as { eventId: bigint; status: 'going' | 'maybe' | 'declined' }[]),
+    ]);
+    const creatorById = new Map(creators.map((u) => [u.id, u]));
+    const countsByEvent = new Map<bigint, { going: number; maybe: number; declined: number }>();
+    for (const r of rsvpRows) {
+      let c2 = countsByEvent.get(r.eventId);
+      if (!c2) {
+        c2 = { going: 0, maybe: 0, declined: 0 };
+        countsByEvent.set(r.eventId, c2);
+      }
+      c2[r.status] = r.count;
+    }
+    const myRsvpByEvent = new Map(myRsvpRows.map((r) => [r.eventId, r.status]));
+    const enriched = rows.map((ev) =>
+      toScheduledEvent(ev, ev.creatorId ? creatorById.get(ev.creatorId) ?? null : null, {
+        rsvpCounts: countsByEvent.get(ev.id) ?? { going: 0, maybe: 0, declined: 0 },
+        myRsvp: myRsvpByEvent.get(ev.id) ?? null,
       }),
     );
     return c.json({ events: enriched });

@@ -446,6 +446,11 @@ export const auditLogEntries = pgTable(
   },
   (t) => ({
     guildIdx: index('audit_log_guild_idx').on(t.guildId, t.createdAt),
+    // Backs the audit-log keyset pagination, which filters guild_id and
+    // orders/keysets by id (DESC in the view, ASC in export). The
+    // (guild_id, created_at) index can't serve ORDER BY id, so without this
+    // Postgres does a full guild-scoped Sort per page.
+    guildIdIdx: index('audit_log_guild_id_idx').on(t.guildId, t.id),
   }),
 );
 
