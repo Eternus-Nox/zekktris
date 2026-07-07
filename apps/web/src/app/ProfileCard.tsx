@@ -243,9 +243,13 @@ export function ProfileCard({
   // this target. The panel itself further filters per-role for
   // hierarchy (you can only assign roles below your highest).
   const showRolePanel = !!guildId && can.manageRoles;
-  // Show the moderation row (Edit Nickname / Kick) whenever any of
-  // those actions are available.
-  const showModRow = can.kick || can.ban || can.manageNicknames || can.changeOwnNickname || can.timeout;
+  // Show the moderation row (Kick / Ban / Timeout) whenever any of those
+  // actions are available. Nickname editing is NOT here anymore: managing
+  // ANOTHER member's server nickname now sits beside the private DM-nickname
+  // button up in the actions block, and editing your OWN nickname is added
+  // back below via `can.changeOwnNickname` — so an "only manage-nicknames"
+  // viewer doesn't get an empty bordered mod row.
+  const showModRow = can.kick || can.ban || can.timeout;
 
   // Current timeout state for the target. Returns the until-date if
   // still in the future, null otherwise. Re-derives on each render
@@ -763,8 +767,9 @@ export function ProfileCard({
             </div>
 
             {/* Name + handle, to the right of the avatar's lower half. min-w-0
-                so long names truncate instead of pushing the layout. */}
-            <div className="min-w-0 flex-1 pt-2">
+                so long names truncate instead of pushing the layout. Nudged a
+                touch tighter to the avatar (3px left, 2px up). */}
+            <div className="min-w-0 flex-1 pt-2 -ml-[3px] -mt-[2px]">
               <div className="flex items-center gap-1.5">
                 <UserTag user={user} className="-mr-1" />
                 <StaffName
@@ -901,10 +906,10 @@ export function ProfileCard({
                 </button>
               )}
 
-              {/* Personal DM nickname — a private label only you see, shown for
-                  this person in direct messages. A bottom action (was an inline
-                  line under the username). */}
-              {!user.isBot &&
+              {/* Nickname actions — the private DM nickname ("only you", shown
+                  for this person in DMs) and, with Manage Nicknames, this
+                  member's SERVER nickname, side by side on one row. */}
+              {(!user.isBot || can.manageNicknames) &&
                 (editingDmNick ? (
                   <div className="flex items-center gap-1.5">
                     <input
@@ -935,20 +940,42 @@ export function ProfileCard({
                     </button>
                   </div>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDmNickDraft(dmNickname);
-                      setEditingDmNick(true);
-                    }}
-                    className="flex items-center gap-2 px-3 py-2 rounded-md bg-bg-3 hover:bg-bg-3/80 text-sm font-medium text-ink-1 transition-colors"
-                    title="A nickname only you see, shown in direct messages"
-                  >
-                    <Edit size={14} />
-                    <span className="truncate">
-                      {dmNickname ? `Nickname: ${dmNickname}` : 'Set nickname (only you)'}
-                    </span>
-                  </button>
+                  <div className="flex gap-1.5">
+                    {/* Private DM nickname (only you) */}
+                    {!user.isBot && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDmNickDraft(dmNickname);
+                          setEditingDmNick(true);
+                        }}
+                        className="min-w-0 flex-1 flex items-center gap-2 px-3 py-2 rounded-md bg-bg-3 hover:bg-bg-3/80 text-sm font-medium text-ink-1 transition-colors"
+                        title="A nickname only you see, shown in direct messages"
+                      >
+                        <Edit size={14} className="shrink-0" />
+                        <span className="truncate">
+                          {dmNickname ? `Nickname: ${dmNickname}` : 'Set nickname (only you)'}
+                        </span>
+                      </button>
+                    )}
+                    {/* Server nickname (everyone sees it) — needs Manage Nicknames.
+                        Editing your OWN nickname stays in the moderation row below
+                        (this actions block only renders for OTHER users). */}
+                    {can.manageNicknames && !editingNick && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNickDraft(targetMember?.nickname ?? '');
+                          setEditingNick(true);
+                        }}
+                        className="min-w-0 flex-1 flex items-center gap-2 px-3 py-2 rounded-md bg-bg-3 hover:bg-bg-3/80 text-sm font-medium text-ink-1 transition-colors"
+                        title="This member's nickname on this server (everyone sees it)"
+                      >
+                        <Edit size={14} className="shrink-0" />
+                        <span className="truncate">Edit nickname</span>
+                      </button>
+                    )}
+                  </div>
                 ))}
             </div>
             </>
@@ -970,7 +997,10 @@ export function ProfileCard({
               right level of friction. */}
           {(showModRow || can.changeOwnNickname) && !editingNick && (
             <div className="mt-3 pt-3 border-t border-line flex flex-col gap-1.5">
-              {(can.manageNicknames || can.changeOwnNickname) && (
+              {/* Editing your OWN server nickname. (Managing another member's
+                  nickname lives beside the DM-nickname button in the actions
+                  block above.) */}
+              {can.changeOwnNickname && (
                 <button
                   onClick={() => {
                     setNickDraft(targetMember?.nickname ?? '');
