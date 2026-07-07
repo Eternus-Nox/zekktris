@@ -835,12 +835,12 @@ function UsersTab() {
                       {u.displayName ?? u.username}
                     </span>
                     {u.isAdmin && (
-                      <span className="text-[0.6rem] uppercase font-bold tracking-wider bg-accent/20 text-accent px-1 py-0.5 rounded">
+                      <span className="relative top-px text-[0.6rem] uppercase font-bold tracking-wider bg-accent/20 text-accent px-1 py-0.5 rounded">
                         administrator
                       </span>
                     )}
                     {u.isModerator && (
-                      <span className="text-[0.6rem] uppercase font-bold tracking-wider bg-sky-500/20 text-sky-400 px-1 py-0.5 rounded">
+                      <span className="relative top-px text-[0.6rem] uppercase font-bold tracking-wider bg-sky-500/20 text-sky-400 px-1 py-0.5 rounded">
                         moderator
                       </span>
                     )}
