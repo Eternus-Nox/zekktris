@@ -30,6 +30,7 @@ import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
 import { Portal } from '../lib/Portal';
+import { ChevronLeft } from '../lib/icons';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
 import { AvatarDecoration } from '../lib/avatarDecorations';
@@ -51,17 +52,17 @@ interface AnchorPoint {
 }
 
 const CARD_WIDTH = 340;
-const CARD_HEIGHT_ESTIMATE = 450;
-const VIEWPORT_PADDING = 8;
 
 export function ProfileCard({
   user,
-  anchor,
   guildId,
   onClose,
 }: {
   user: PublicUser;
-  anchor: AnchorPoint;
+  /** Vestigial — the card used to be a popover anchored to the click point;
+      it's now its own full-screen page, so the anchor is ignored. Kept in the
+      props (optional) so existing call sites don't need to change. */
+  anchor?: AnchorPoint;
   /** When set, the card is rendered in the context of a specific
       guild and exposes guild-management actions (notably role
       assignment) to viewers with the right permissions. */
@@ -472,18 +473,7 @@ export function ProfileCard({
     };
   }, [rest, user.id, isSelf, state.loadedRelationships, state.relationships]);
 
-  // Flip the card above/below the anchor based on remaining viewport
-  // space. Also clamps horizontally so the card never overflows.
-  const x = Math.min(
-    Math.max(anchor.x, VIEWPORT_PADDING),
-    window.innerWidth - CARD_WIDTH - VIEWPORT_PADDING,
-  );
-  const flipUp = anchor.y + CARD_HEIGHT_ESTIMATE > window.innerHeight - VIEWPORT_PADDING;
-  const positionStyle = flipUp
-    ? { left: x, bottom: window.innerHeight - anchor.y + 8 }
-    : { left: x, top: anchor.y + 8 };
-
-  // Esc + outside-click close.
+  // Esc closes the page.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') onClose();
@@ -671,21 +661,20 @@ export function ProfileCard({
 
   return (
     <Portal>
-      {/* Dismiss layer behind the card. Click-outside closes; the card
-          itself stops propagation so its own clicks don't bubble. */}
-      <div
-        className="fixed inset-0 z-[80]"
-        onClick={onClose}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          onClose();
-        }}
-      />
-      <div
-        className="fixed z-[81] bg-bg-1 border border-line rounded-lg elevation-modal overflow-hidden"
-        style={{ ...positionStyle, width: CARD_WIDTH }}
-        onClick={(e) => e.stopPropagation()}
-      >
+      {/* Profile is its OWN full-screen PAGE (was an anchored popover). A back
+          bar at the top-left dismisses it — the web back button (ChevronLeft),
+          matching the Shell's mobile back. Content is a centered page column. */}
+      <div className="fixed inset-0 z-[80] bg-bg-1 overflow-y-auto">
+        <div className="sticky top-0 z-10 flex items-center h-12 px-2 bg-bg-1/95 backdrop-blur border-b border-line">
+          <button
+            onClick={onClose}
+            className="-ml-1 w-10 h-10 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3"
+            aria-label="Back"
+          >
+            <ChevronLeft size={20} />
+          </button>
+        </div>
+        <div className="mx-auto w-full overflow-hidden" style={{ maxWidth: CARD_WIDTH }}>
         {/* Banner — container locked at 16:9 to match the guild
             banner shape on the channel list and invite cards. Users
             uploading at the recommended 1920×1080 get edge-to-edge
@@ -1297,6 +1286,7 @@ export function ProfileCard({
               })()}
             </div>
           )}
+        </div>
         </div>
       </div>
     </Portal>
