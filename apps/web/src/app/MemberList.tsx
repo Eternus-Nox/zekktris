@@ -97,7 +97,7 @@ export function MemberList({
   // it identical even though PRESENCE_PATCH replaces the `members` array ref.
   const nameSig = useMemo(
     () =>
-      (members ?? []).map((m) => `${m.userId}:${m.nickname ?? m.user.displayName}`).join('\n'),
+      (members ?? []).map((m) => `${m.userId}:${m.user.displayName}`).join('\n'),
     [members],
   );
 
@@ -108,7 +108,7 @@ export function MemberList({
   const sortedMembers = useMemo<GuildMember[]>(() => {
     if (!members) return [];
     const key = new Map<string, string>();
-    for (const m of members) key.set(m.userId, (m.nickname ?? m.user.displayName).toLowerCase());
+    for (const m of members) key.set(m.userId, m.user.displayName.toLowerCase());
     return [...members].sort((a, b) => {
       const an = key.get(a.userId)!;
       const bn = key.get(b.userId)!;
@@ -305,7 +305,7 @@ const MemberRow = memo(function MemberRow({
   guildRoles: Role[] | undefined;
   onAvatarClick: (user: PublicUser, e: React.MouseEvent<HTMLElement>) => void;
 }) {
-  const display = m.nickname ?? m.user.displayName;
+  const display = m.user.displayName;
   const initials = avatarInitials(display);
   const tone = avatarColor(m.userId);
   const onlineDot =
@@ -383,11 +383,6 @@ const MemberRow = memo(function MemberRow({
             aria-label={timeoutTitle}
           >
             <Clock size={12} />
-          </span>
-        )}
-        {m.nickname && (
-          <span className="ml-auto text-xs text-ink-3 truncate">
-            {m.user.username}
           </span>
         )}
       </button>

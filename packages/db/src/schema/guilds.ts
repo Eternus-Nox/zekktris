@@ -198,7 +198,6 @@ export const guildMembers = pgTable(
     userId: bigint('user_id', { mode: 'bigint' })
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    nickname: text('nickname'),
     /** Per-server avatar override. */
     avatarUrl: text('avatar_url'),
     joinedAt: timestamp('joined_at', { withTimezone: true }).notNull().defaultNow(),

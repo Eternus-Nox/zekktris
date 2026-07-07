@@ -430,7 +430,6 @@ export interface GuildMemberDTO {
   userId: string;
   /** Embedded user data — saves a round-trip per member listing. */
   user: PublicUserDTO;
-  nickname: string | null;
   avatarUrl: string | null;
   joinedAt: string;
   /** Snowflake ids of the roles this member has, excluding @everyone. */
@@ -462,7 +461,6 @@ export function toGuildMember(
     guildId: bigintStr(m.guildId),
     userId: bigintStr(m.userId),
     user: toPublicUser(user),
-    nickname: m.nickname,
     avatarUrl: m.avatarUrl,
     joinedAt: isoDate(m.joinedAt),
     roleIds: roleIds.map((r) => r.toString()),

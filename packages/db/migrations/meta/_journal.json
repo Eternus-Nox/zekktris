@@ -813,6 +813,13 @@
       "when": 1784600250000,
       "tag": "0116_audit_log_guild_id_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 116,
+      "version": "7",
+      "when": 1784600260000,
+      "tag": "0117_drop_member_nickname",
+      "breakpoints": true
     }
   ]
 }

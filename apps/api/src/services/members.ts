@@ -196,38 +196,6 @@ export async function getMemberRoleIds(guildId: bigint, userId: bigint): Promise
   return rows.map((r) => r.roleId);
 }
 
-export interface SetNicknameInput {
-  guildId: bigint;
-  userId: bigint;
-  actorId: bigint;
-  nickname: string | null;
-}
-
-export async function setNickname(input: SetNicknameInput) {
-  const result = await db
-    .update(schema.guildMembers)
-    .set({ nickname: input.nickname })
-    .where(
-      and(
-        eq(schema.guildMembers.guildId, input.guildId),
-        eq(schema.guildMembers.userId, input.userId),
-      ),
-    )
-    .returning();
-  if (!result[0]) throw errors.notFound('Member');
-
-  await writeAudit({
-    guildId: input.guildId,
-    actorId: input.actorId,
-    action: input.actorId === input.userId ? 'member.nickname_self' : 'member.nickname_set',
-    targetType: 'member',
-    targetId: input.userId,
-    changes: { nickname: input.nickname },
-  });
-
-  return result[0];
-}
-
 /**
  * Set or clear a member's timeout. While `communicationDisabledUntil`
  * is set to a future timestamp, the message-send + reaction + voice-

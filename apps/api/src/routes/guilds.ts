@@ -940,7 +940,6 @@ guildsRouter.get(
 
 const patchMemberSchema = z
   .object({
-    nickname: nicknameSchema.nullable().optional(),
     roleIds: z.array(snowflakeSchema).optional(),
     /**
      * ISO-8601 timestamp for the member's communication disable. null
@@ -973,30 +972,6 @@ guildsRouter.patch(
     const guildId = BigInt(gid);
     const targetId = uid === '@me' ? callerId : BigInt(uid);
     const body = c.req.valid('json');
-
-    // ── Nickname ──
-    if (body.nickname !== undefined) {
-      if (targetId === callerId) {
-        await assertGuildPermission(guildId, callerId, Permissions.CHANGE_NICKNAME);
-      } else {
-        await assertGuildPermission(guildId, callerId, Permissions.MANAGE_NICKNAMES);
-        await assertCanManageMember(guildId, callerId, targetId);
-      }
-      // Identity gate: a nickname shows in place of the name in this guild, so
-      // it must be free of vulgar words (blocked OR watch).
-      if (body.nickname) {
-        const { containsListedWord } = await import('../services/security');
-        if (await containsListedWord(body.nickname)) {
-          throw errors.badRequest('That nickname contains a word that isn’t allowed.');
-        }
-      }
-      await members.setNickname({
-        guildId,
-        userId: targetId,
-        actorId: callerId,
-        nickname: body.nickname,
-      });
-    }
 
     // ── Roles (replace whole set) ──
     if (body.roleIds !== undefined) {

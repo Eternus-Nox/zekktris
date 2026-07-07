@@ -508,7 +508,6 @@ export interface GuildMember {
   guildId: string;
   userId: string;
   user: PublicUser;
-  nickname: string | null;
   roleIds: string[];
   joinedAt: string;
   /**

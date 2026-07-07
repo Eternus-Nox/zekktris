@@ -1247,16 +1247,15 @@ export class RestClient {
   // ── Members ─────────────────────────────────────────────────────────────
 
   /**
-   * Edit a guild member: nickname and/or full role set. Pass `roleIds`
-   * to replace the entire role membership for that user (server diffs
-   * against current state and applies add/remove). `@me` can be passed
-   * as userId to edit your own member record (typically just nickname).
+   * Edit a guild member's role set and/or timeout. Pass `roleIds` to
+   * replace the entire role membership for that user (server diffs against
+   * current state and applies add/remove). (Server nicknames were removed —
+   * only the private DM nickname system remains.)
    */
   patchMember(
     guildId: string,
     userId: string,
     input: Partial<{
-      nickname: string | null;
       roleIds: string[];
       /**
        * Timeout end-timestamp as ISO-8601, or null to clear. Server

@@ -305,14 +305,7 @@ export function ProfileCard({
     }
   }
 
-  // ── Nickname edit + Kick ─────────────────────────────────────────
-  // Inline nickname editor: click "Edit nickname" → input replaces the
-  // mod-row buttons. Save fires PATCH /members/:id with { nickname };
-  // empty string is treated as "clear" (sends null to drop the
-  // override and revert to display name).
-  const [editingNick, setEditingNick] = useState(false);
-  const [nickDraft, setNickDraft] = useState<string>(targetMember?.nickname ?? '');
-  const [nickPending, setNickPending] = useState(false);
+  // ── Moderation (kick / ban / timeout) ────────────────────────────
   const [kickPending, setKickPending] = useState(false);
   const [banPending, setBanPending] = useState(false);
   const [banPromptOpen, setBanPromptOpen] = useState(false);
@@ -323,37 +316,6 @@ export function ProfileCard({
   // currently timed out" derived value below.
   const [timeoutPending, setTimeoutPending] = useState(false);
   const [timeoutPromptOpen, setTimeoutPromptOpen] = useState(false);
-
-  // Re-seed the draft when targetMember.nickname changes underneath us
-  // (e.g. another tab edited it). We use a non-state-tracked dep — the
-  // user typing into the input shouldn't be steamrolled by a refresh,
-  // so we only re-seed when the editor isn't open.
-  useEffect(() => {
-    if (!editingNick) {
-      setNickDraft(targetMember?.nickname ?? '');
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetMember?.nickname]);
-
-  async function saveNickname() {
-    if (!guildId || nickPending) return;
-    setNickPending(true);
-    const trimmed = nickDraft.trim();
-    // The PATCH endpoint accepts `@me` for self-edit; we always pass
-    // the explicit user id since the route handles both. Empty string
-    // clears the nickname (server normalizes null vs empty internally).
-    const payload = { nickname: trimmed.length === 0 ? null : trimmed };
-    try {
-      await rest.patchMember(guildId, isSelf ? '@me' : user.id, payload);
-      void loadMembers(guildId).catch(() => undefined);
-      setEditingNick(false);
-      toasts.push('Nickname updated', 'success');
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Could not update nickname', 'error');
-    } finally {
-      setNickPending(false);
-    }
-  }
 
   /** Save (or clear) the personal DM nickname — viewer-private, shown in DMs. */
   async function saveDmNickname() {
@@ -899,10 +861,11 @@ export function ProfileCard({
                 </button>
               )}
 
-              {/* Nickname actions — the private DM nickname ("only you", shown
-                  for this person in DMs) and, with Manage Nicknames, this
-                  member's SERVER nickname, side by side on one row. */}
-              {((!user.isBot && !guildId) || can.manageNicknames) &&
+              {/* Private DM nickname ("only you") — a viewer-private label
+                  shown for this person in DMs. Only in the friends list + DMs
+                  (guildId unset), never in a server context. (Server nicknames
+                  were removed.) */}
+              {!user.isBot && !guildId &&
                 (editingDmNick ? (
                   <div className="flex items-center gap-1.5">
                     <input
@@ -933,44 +896,20 @@ export function ProfileCard({
                     </button>
                   </div>
                 ) : (
-                  <div className="flex gap-1.5">
-                    {/* Private DM nickname (only you) — shown ONLY in the friends
-                        list + DMs (where guildId is unset), NOT in a server
-                        context (member list / guild message author). */}
-                    {!user.isBot && !guildId && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setDmNickDraft(dmNickname);
-                          setEditingDmNick(true);
-                        }}
-                        className="min-w-0 flex-1 flex items-center gap-2 px-3 py-2 rounded-md bg-bg-3 hover:bg-bg-3/80 text-sm font-medium text-ink-1 transition-colors"
-                        title="A nickname only you see, shown in direct messages"
-                      >
-                        <Edit size={14} className="shrink-0" />
-                        <span className="truncate">
-                          {dmNickname ? `Nickname: ${dmNickname}` : 'Set nickname (only you)'}
-                        </span>
-                      </button>
-                    )}
-                    {/* Server nickname (everyone sees it) — needs Manage Nicknames.
-                        Editing your OWN nickname stays in the moderation row below
-                        (this actions block only renders for OTHER users). */}
-                    {can.manageNicknames && !editingNick && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setNickDraft(targetMember?.nickname ?? '');
-                          setEditingNick(true);
-                        }}
-                        className="min-w-0 flex-1 flex items-center gap-2 px-3 py-2 rounded-md bg-bg-3 hover:bg-bg-3/80 text-sm font-medium text-ink-1 transition-colors"
-                        title="This member's nickname on this server (everyone sees it)"
-                      >
-                        <Edit size={14} className="shrink-0" />
-                        <span className="truncate">Edit nickname</span>
-                      </button>
-                    )}
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDmNickDraft(dmNickname);
+                      setEditingDmNick(true);
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-md bg-bg-3 hover:bg-bg-3/80 text-sm font-medium text-ink-1 transition-colors"
+                    title="A nickname only you see, shown in direct messages"
+                  >
+                    <Edit size={14} className="shrink-0" />
+                    <span className="truncate">
+                      {dmNickname ? `Nickname: ${dmNickname}` : 'Set nickname (only you)'}
+                    </span>
+                  </button>
                 ))}
             </div>
             </>
@@ -984,29 +923,12 @@ export function ProfileCard({
               it's instantly readable. The panel auto-hides when the
               guild has no assignable roles yet (other than @everyone). */}
           {/* ── Moderation row ────────────────────────────────────────
-              Edit nickname + Kick. Each gated independently. The
-              nickname editor turns the row into an inline input on
-              click; Save / Cancel return to the row. The kick action
-              uses a browser confirm() — disruptive but not catastrophic
-              (the user can be re-invited), so a one-tap confirm is the
-              right level of friction. */}
-          {(showModRow || can.changeOwnNickname) && !editingNick && (
+              Kick / Ban / Timeout. Each gated independently. The kick
+              action uses a browser confirm() — disruptive but not
+              catastrophic (the user can be re-invited), so a one-tap
+              confirm is the right level of friction. */}
+          {showModRow && (
             <div className="mt-3 pt-3 border-t border-line flex flex-col gap-1.5">
-              {/* Editing your OWN server nickname. (Managing another member's
-                  nickname lives beside the DM-nickname button in the actions
-                  block above.) */}
-              {can.changeOwnNickname && (
-                <button
-                  onClick={() => {
-                    setNickDraft(targetMember?.nickname ?? '');
-                    setEditingNick(true);
-                  }}
-                  className="flex items-center gap-2 px-3 py-2 rounded-md bg-bg-3 hover:bg-bg-3/80 text-sm font-medium text-ink-1 transition-colors"
-                >
-                  <Edit size={14} />
-                  <span>{isSelf ? 'Edit my nickname' : 'Edit nickname'}</span>
-                </button>
-              )}
               {can.timeout && !timeoutPromptOpen && (
                 timeoutActiveUntil ? (
                   // Already timed out — show a clear button instead.
@@ -1161,53 +1083,6 @@ export function ProfileCard({
               clear (PATCH nickname=null) so users can drop a custom
               nickname back to their display name without a separate
               affordance. */}
-          {editingNick && (
-            <div className="mt-3 pt-3 border-t border-line flex flex-col gap-2">
-              <label className="block">
-                <span className="text-xs text-ink-2">
-                  {isSelf ? 'Your nickname in ' : 'Nickname in '}
-                  {guild?.name ?? 'this server'}
-                </span>
-                <input
-                  type="text"
-                  autoFocus
-                  value={nickDraft}
-                  onChange={(e) => setNickDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      void saveNickname();
-                    } else if (e.key === 'Escape') {
-                      e.preventDefault();
-                      setEditingNick(false);
-                    }
-                  }}
-                  maxLength={32}
-                  placeholder={user.displayName}
-                  className="mt-1 w-full bg-bg-2 border border-line rounded-md px-3 py-1.5 text-sm outline-none focus:border-accent transition-colors"
-                />
-              </label>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  disabled={nickPending}
-                  onClick={() => void saveNickname()}
-                  className="flex-1 px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 text-white text-sm font-medium transition-colors disabled:opacity-60"
-                >
-                  {nickPending ? 'Saving…' : 'Save'}
-                </button>
-                <button
-                  type="button"
-                  disabled={nickPending}
-                  onClick={() => setEditingNick(false)}
-                  className="px-3 py-1.5 rounded-md bg-bg-3 hover:bg-bg-3/80 text-ink-2 text-sm transition-colors disabled:opacity-60"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* ── Roles (gated by MANAGE_ROLES + hierarchy) ─────────────
               Per-role hierarchy: each row is enabled only when the
               viewer can manage that specific role (role.position must
