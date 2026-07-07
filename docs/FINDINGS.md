@@ -951,3 +951,66 @@ run (local pg down); changes are localized and mirror proven patterns.
   exclude both alongside refresh_token_hash / totp_secret.
 - Migrations 0114/0115 need applying to prod + the local/test DB before these
   paths are exercised (pg was down this session).
+
+---
+
+# 2026-07-06 session — optimization / performance / bug runs (3 multi-agent sweeps)
+
+Three sequential find→adversarially-verify→fix sweeps (8/8/7 finder dimensions
+each), then fixes applied + typecheck + iOS build + commit per run. pg still
+down → verified by tsc/build/import-smoke + generated-SQL check, not the
+integration suite.
+
+## Run 1 — Optimization (27 behavior-preserving, commits 7e272ce api+web, d80de52 ios)
+Re-render/redundancy/batching/over-fetch/fan-out wins. Highlights: DMList
+per-channel selectors (was N-rows/msg re-render); assertChannelPermission
+preloaded-channel arg (drops a duplicate SELECT on 8 handlers incl /typing);
+6 await-parallelism batches; member-list/DM/reaction over-fetch → projection;
+4 gateway N-publishes → one 'users' audience; iOS repliedMessage O(1) index,
+cached emoji/sticker images, lazy E2EE lightbox, Voice feeds hoist, channel-
+grouping memoize.
+
+## Run 2 — Performance (17 hot-path, migration 0116, commits fc7bc10 api+web, 6da8d1f ios)
+Guild-events N+1 → batched IN/GROUP-BY; send-path participation gates 3→2 RTT
+(new members.getParticipationRow); automod word_blocklist compiled-pattern
+cache; mentions batched viewability resolver; typing status read parallelized;
+audit_log (guild_id,id) index (migration 0116). Web: ProfileCard double
+getUser → one + store-derived relationships; MemberList sort split off presence
+(sort keyed on nameSig, O(N) partition stays reactive). iOS: RetryingImage
+force-decode off-main; drop redundant gateway isValidJSONObject re-walk;
+reconcileOpenChannel coalescing; E2EE unfurl concurrent (index-preserving);
+O(1) channelById/roleById; speakingUserIds no-op guard.
+- **NOTE: Run 2 caught + fixed a regression Run 1 introduced** — the messages
+  `didSet { rebuildMessageIndex() }` fired an O(N) rebuild on every in-place
+  reaction/receipt/poll/pin write; fixed via a suppress-flag + mutateMessage(at:)
+  single-id patch + batched receipt loop.
+
+## Run 3 — Bug fixes (14, commits a15c621 api+web, 32d9dcd ios)
+- **HIGH data corruption (dms.ts 809/868/916):** a bare `OR` inside a raw
+  sql`` fragment passed to Drizzle `and()` escaped the AND chain (Drizzle
+  parenthesizes only the whole conjunction, not each operand), so
+  markMessagesViewed/…UpTo/markMessageDelivered ran a **table-wide** UPDATE
+  stamping viewed_at/delivered_at on every null-author (deleted-account)
+  message on every DM open/ack/send (+ reset TTL auto-delete clocks). Fixed by
+  parenthesizing the fragment; verified in the generated SQL.
+- MEDIUM: getOrCreateDM duplicate-channel race → per-pair advisory lock +
+  in-lock re-check; supervision guardian/child cap TOCTOU → txn + per-child/
+  per-parent advisory locks; web MESSAGES_SET clobbered a live MESSAGE_CREATE
+  that raced the open-channel fetch → union strictly-newer survivors.
+- LOW: confirmEmailChange atomic CAS consume + unique-violation→400; saved-
+  messages keyset date_trunc (µs-vs-ms); relative-time Math.round→floor (3
+  files); search invalid-calendar-date reject. iOS: READY reconcile no longer
+  tears down an in-flight join (!voiceConnecting guard); DM list re-sort on
+  live message; openMention loads a window when the target is off-screen.
+
+## REUSABLE INVARIANTS from these runs
+- **Drizzle `and()`/`or()` do NOT parenthesize a raw `sql`` operand** — only the
+  whole chain. Any `sql`` fragment containing a bare `OR` MUST wrap itself in
+  `(...)`, or use the `or(...)` helper (which parenthesizes). This bit 3 sites in
+  dms.ts with a table-wide-UPDATE blast radius; grep for bare ` OR ` in sql`` on
+  UPDATE/DELETE WHEREs before shipping.
+- **Migration 0116** (audit_log_guild_id_idx) joins 0114/0115 in the not-yet-
+  applied queue (pg down).
+- The DM-list-recency-sort asymmetry: guild channels are position-sorted (no
+  re-sort on new message) but the DM list is recency-sorted and MUST re-sort on
+  bumpChannelLastMessage.
