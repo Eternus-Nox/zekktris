@@ -20,7 +20,7 @@ import { db, schema } from '../db';
 import { errors } from '../errors';
 import { nextSnowflake } from '../snowflake';
 import { parseMentions, resolveMentions, writeMessageMentions } from './mentions';
-import { listViewableGuildChannelIds } from './permissions';
+import { listViewableGuildChannelIdsByGuild } from './permissions';
 import { deleteStorageItem } from './uploads';
 import type { Database, MessageEmbedJson } from '@zekktris/db';
 
@@ -1346,12 +1346,16 @@ export async function listUserMentions(
   // open. Cost: one resolver call per distinct guild in the page.
   const guildIds = [...new Set(rows.filter((r) => r.guildId !== null).map((r) => r.guildId!))];
   if (guildIds.length === 0) return rows.map((r) => r.msg);
+  // One set-based, constant-query resolver call instead of ~3 queries per
+  // distinct guild in the page. Byte-for-byte the same viewable set as the
+  // per-guild helper (see listViewableGuildChannelIdsByGuild); guilds where the
+  // user isn't a member are omitted → their rows filter out, matching the old
+  // per-guild [] behavior.
+  const viewableArraysByGuild = await listViewableGuildChannelIdsByGuild(guildIds, userId);
   const viewableByGuild = new Map<bigint, Set<bigint>>();
-  await Promise.all(
-    guildIds.map(async (gid) => {
-      viewableByGuild.set(gid, new Set(await listViewableGuildChannelIds(gid, userId)));
-    }),
-  );
+  for (const [gid, ids] of viewableArraysByGuild) {
+    viewableByGuild.set(gid, new Set(ids));
+  }
   return rows
     .filter((r) => r.guildId === null || viewableByGuild.get(r.guildId)?.has(r.msg.channelId))
     .map((r) => r.msg);
