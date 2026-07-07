@@ -193,7 +193,7 @@ export function SettingsView() {
    *  Defaults to 'profile' so users land on the surface they're
    *  already used to. Transient state — not persisted; each visit
    *  starts on User Profile. */
-  const [activeTab, setActiveTab] = useState<'profile' | 'membership' | 'voice' | 'bots'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'membership' | 'security' | 'voice' | 'bots'>('profile');
   const [theme, setTheme] = useState<ThemeId>(() => getStoredTheme());
 
   function chooseTheme(id: ThemeId) {
@@ -502,6 +502,7 @@ export function SettingsView() {
             [
               { id: 'profile', label: 'User Profile' },
               { id: 'membership', label: 'Membership' },
+              { id: 'security', label: 'Security' },
               { id: 'voice', label: 'Voice & Video' },
               { id: 'bots', label: 'Bots' },
             ] as const
@@ -558,30 +559,9 @@ export function SettingsView() {
           </section>
         )}
 
-        {/* ── Identity (username + email) ────────────────────────────
-            Each row shows the current value with a Change button
-            that expands an inline form. Both require the user's
-            current password as re-confirmation. Username has a
-            90-day cooldown; email goes through a verification
-            email sent to the new address. */}
-        <section className="space-y-2">
-          <div className="text-xs uppercase tracking-wider text-ink-3">Account</div>
-          <UserIdSection />
-          <UsernameSection />
-          <EmailSection />
-        </section>
-
-        {/* ── Password ───────────────────────────────────────────────────
-            Inline editor that expands when the user clicks "Change
-            password". Three fields (current / new / confirm) plus a
-            "sign out other sessions" toggle that defaults true — the
-            server treats it as the safe default after a password
-            rotation. Validation runs client-side for length + match
-              before firing the REST call. */}
-          <PasswordSection />
-          <TwoFactorSection />
-          <PasskeysSection />
-          <QuickLoginSection />
+          {/* Account + Security (identity, password, 2FA, passkeys, quick
+              login) moved to their own "Security" tab — see the
+              activeTab === 'security' block below. */}
 
           {/* ── Profile ────────────────────────────────────────────────── */}
           <section className="space-y-3">
@@ -909,6 +889,26 @@ export function SettingsView() {
             <HideClanTagsToggle />
           </div>
         </section>
+          </>
+        )}
+
+        {activeTab === 'security' && (
+          <>
+            {/* Account identity — username + email (credential changes, each
+                re-confirmed with the current password). */}
+            <section className="space-y-2">
+              <div className="text-xs uppercase tracking-wider text-ink-3">Account</div>
+              <UserIdSection />
+              <UsernameSection />
+              <EmailSection />
+            </section>
+
+            {/* Authentication — password, two-factor, passkeys, and quick
+                device login (QR / code). */}
+            <PasswordSection />
+            <TwoFactorSection />
+            <PasskeysSection />
+            <QuickLoginSection />
           </>
         )}
 
