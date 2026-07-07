@@ -902,7 +902,7 @@ export function ProfileCard({
               {/* Nickname actions — the private DM nickname ("only you", shown
                   for this person in DMs) and, with Manage Nicknames, this
                   member's SERVER nickname, side by side on one row. */}
-              {(!user.isBot || can.manageNicknames) &&
+              {((!user.isBot && !guildId) || can.manageNicknames) &&
                 (editingDmNick ? (
                   <div className="flex items-center gap-1.5">
                     <input
@@ -934,8 +934,10 @@ export function ProfileCard({
                   </div>
                 ) : (
                   <div className="flex gap-1.5">
-                    {/* Private DM nickname (only you) */}
-                    {!user.isBot && (
+                    {/* Private DM nickname (only you) — shown ONLY in the friends
+                        list + DMs (where guildId is unset), NOT in a server
+                        context (member list / guild message author). */}
+                    {!user.isBot && !guildId && (
                       <button
                         type="button"
                         onClick={() => {
