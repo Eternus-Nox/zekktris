@@ -904,6 +904,22 @@ html.zk-vkb-open .zk-composer {
   padding-bottom: 0;
 }
 
+/* Same collapse, keyed off :focus-within instead of the VisualViewport detector.
+ * index.html sets `interactive-widget=resizes-content`, so when the keyboard
+ * opens the browser shrinks the LAYOUT itself — which makes the VisualViewport
+ * overlap read ~0, so `.zk-vkb-open` above never fires and the ~40px safe-area
+ * floor lingers as a gap between the textbox and the keyboard (the reported
+ * "spacer under the text box"). Focusing the composer is a reliable proxy for
+ * "keyboard up" on touch screens, and works regardless of the viewport quirk.
+ * Scoped below the `sm` breakpoint, where the safe-area floor (not the flat
+ * `sm:pb-4`) applies — so desktop, which has no keyboard/safe-area gap, is
+ * untouched. 0.5rem matches the composer's `pt-2` top padding for symmetry. */
+@media (max-width: 639.98px) {
+  .zk-composer:focus-within {
+    padding-bottom: 0.5rem;
+  }
+}
+
 /* Name-tag ("clan tag") vertical position. At this tiny 10px pill with
  * line-height:1 the label's offset from the pill's border-box center is exactly
  * (padding-top − padding-bottom)/2, and WebKit renders the same CSS ~1px lower
