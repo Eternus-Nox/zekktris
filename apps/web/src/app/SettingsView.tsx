@@ -501,9 +501,9 @@ export function SettingsView() {
           {(
             [
               { id: 'profile', label: 'User Profile' },
-              { id: 'membership', label: 'Membership' },
               { id: 'security', label: 'Security' },
               { id: 'voice', label: 'Voice & Video' },
+              { id: 'membership', label: 'Membership' },
               { id: 'bots', label: 'Bots' },
             ] as const
           ).map((t) => {
