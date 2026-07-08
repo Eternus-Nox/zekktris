@@ -1641,9 +1641,10 @@ function TagSettings() {
             {/* ignoreHidePref: the editor preview stays visible even when the
                 viewer has "Hide clan tags" on — you're editing this tag. */}
             <UserTag user={preview} ignoreHidePref />
-            {/* `relative top-px` nudges the name down 1px so it sits level with
-                the tag pill's optical center. */}
-            <span className="relative top-px text-sm text-ink-1 font-medium truncate max-w-[10rem]">
+            {/* Nudge the name down 1px to sit level with the tag pill's optical
+                center — DESKTOP ONLY (`sm:top-px`). Mobile browsers already
+                render it aligned, so the nudge would over-correct there. */}
+            <span className="relative sm:top-px text-sm text-ink-1 font-medium truncate max-w-[10rem]">
               {user?.displayName ?? 'You'}
             </span>
           </div>
