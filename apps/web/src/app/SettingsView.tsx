@@ -753,6 +753,10 @@ export function SettingsView() {
                 are non-refundable.
               </p>
             </div>
+        {/* The full tier breakdown — shown to EVERYONE, member or not (mirrors
+            the iOS entitlementsSection), with a "Your tier" badge on the active
+            one so members can still see what their membership covers. */}
+        <WhatMembershipUnlocks />
         {/* Staff name shimmer — an instance-STAFF perk (not membership-gated),
             shown here alongside the other appearance/cosmetic options. Renders
             nothing for non-staff. */}
@@ -1681,6 +1685,83 @@ function TagSettings() {
  * (GET /billing/status), the tier cards are live Subscribe buttons that
  * redirect to Checkout; otherwise they're informational and admins gift.
  */
+/**
+ * WhatMembershipUnlocks — the per-tier perk breakdown, shown to EVERYONE in the
+ * Membership tab (members included). Web previously only showed the subscribe
+ * pitch to non-members, so members saw nothing recapping what their tier covers;
+ * iOS's `entitlementsSection` always shows this, so this brings web to parity.
+ * Copy mirrors the iOS rows exactly.
+ */
+function WhatMembershipUnlocks() {
+  const { user } = useAuth();
+  const tier = user?.subscriptionTier ?? null;
+  const rows = [
+    {
+      id: 'scout',
+      perks: ['Themes, avatar frames & name tags', 'Supporter tier on your profile', 'Streaming up to 1080p60'],
+    },
+    {
+      id: 'guardian',
+      perks: ['Everything in Scout', '2K camera & screen-share streaming', 'Covers your supervised children'],
+    },
+    { id: 'legend', perks: ['Everything in Guardian', '4K camera & screen-share streaming'] },
+  ] as const;
+
+  return (
+    <section className="space-y-2">
+      <div className="text-xs uppercase tracking-wider text-ink-3">What membership unlocks</div>
+      <div className="space-y-2">
+        {rows.map((r) => {
+          const meta = TIER_META[r.id]!;
+          const current = tier === r.id;
+          return (
+            <div
+              key={r.id}
+              className="rounded-xl border border-line p-3"
+              style={
+                current
+                  ? {
+                      borderColor: `color-mix(in srgb, ${meta.color} 50%, transparent)`,
+                      backgroundColor: `color-mix(in srgb, ${meta.color} 8%, transparent)`,
+                    }
+                  : undefined
+              }
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold" style={{ color: meta.color }}>
+                  {meta.label}
+                </span>
+                <span className="text-xs text-ink-3">{meta.price}</span>
+                {current && (
+                  <span
+                    className="ml-auto text-[0.6rem] font-bold tracking-wide px-1.5 py-0.5 rounded-full"
+                    style={{
+                      color: meta.color,
+                      backgroundColor: `color-mix(in srgb, ${meta.color} 20%, transparent)`,
+                    }}
+                  >
+                    YOUR TIER
+                  </span>
+                )}
+              </div>
+              <ul className="mt-1.5 space-y-1">
+                {r.perks.map((p) => (
+                  <li key={p} className="flex items-start gap-1.5 text-xs text-ink-2">
+                    <span className="mt-px font-bold shrink-0" style={{ color: meta.color }}>
+                      ✓
+                    </span>
+                    <span>{p}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function MembershipPitch() {
   const { rest } = useAuth();
   const toasts = useToasts();
