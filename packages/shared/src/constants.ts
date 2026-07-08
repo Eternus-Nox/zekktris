@@ -23,9 +23,6 @@ export const USERNAME_REGEX = /^(?!.*\.\.)[a-z0-9_.]+$/;
 export const GUILD_NAME_MIN_LENGTH = 2;
 export const GUILD_NAME_MAX_LENGTH = 100;
 export const GUILD_DESCRIPTION_MAX_LENGTH = 1024;
-export const MAX_ROLES_PER_GUILD = 250;
-export const MAX_CHANNELS_PER_GUILD = 500;
-export const MAX_MEMBERS_PER_GUILD_DEFAULT = 250_000;
 
 // ── Channels ─────────────────────────────────────────────────────────────
 export const CHANNEL_NAME_MIN_LENGTH = 1;
@@ -50,11 +47,6 @@ export const GROUP_DM_NAME_MAX_LENGTH = 100;
 export const INVITE_CODE_LENGTH = 8;
 export const INVITE_DEFAULT_TTL_SECONDS = 86_400; // 24h
 export const INVITE_MAX_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
-
-// ── Defaults ─────────────────────────────────────────────────────────────
-export const DEFAULT_AVATAR_COLORS = [
-  0x5865f2, 0xed4245, 0xfee75c, 0x57f287, 0xeb459e, 0xf26522, 0x9b59b6,
-] as const;
 
 // ── User status (mirrors the DB enum) ────────────────────────────────────
 export const UserStatus = {

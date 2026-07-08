@@ -35,21 +35,6 @@ export const WORKER_MASK = (1n << WORKER_BITS) - 1n;
 export const SEQUENCE_MASK = (1n << SEQUENCE_BITS) - 1n;
 export const MAX_WORKER_ID = WORKER_MASK; // 1023
 
-export interface DecodedSnowflake {
-  timestamp: number; // milliseconds since unix epoch
-  workerId: number;
-  sequence: number;
-}
-
-/** Decode a snowflake (string or bigint) into its components. */
-export function decodeSnowflake(id: string | bigint): DecodedSnowflake {
-  const big = typeof id === 'bigint' ? id : BigInt(id);
-  const timestamp = Number((big >> TIMESTAMP_SHIFT) + BigInt(SNOWFLAKE_EPOCH_MS));
-  const workerId = Number((big >> WORKER_SHIFT) & WORKER_MASK);
-  const sequence = Number(big & SEQUENCE_MASK);
-  return { timestamp, workerId, sequence };
-}
-
 /** True if the string looks like a valid snowflake. Used in input validation. */
 export function isSnowflake(value: string): boolean {
   if (!/^\d{1,20}$/.test(value)) return false;
