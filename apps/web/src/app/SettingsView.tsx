@@ -1640,8 +1640,10 @@ function TagSettings() {
           <div className="h-9 flex items-center gap-1.5 px-2.5 rounded-md bg-bg-2 border border-line">
             {/* ignoreHidePref: the editor preview stays visible even when the
                 viewer has "Hide clan tags" on — you're editing this tag. */}
-            <UserTag user={preview} ignoreHidePref className="-mr-1" />
-            <span className="text-sm text-ink-1 font-medium truncate max-w-[10rem]">
+            <UserTag user={preview} ignoreHidePref />
+            {/* `relative top-px` nudges the name down 1px so it sits level with
+                the tag pill's optical center. */}
+            <span className="relative top-px text-sm text-ink-1 font-medium truncate max-w-[10rem]">
               {user?.displayName ?? 'You'}
             </span>
           </div>
