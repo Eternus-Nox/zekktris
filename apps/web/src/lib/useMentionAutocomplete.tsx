@@ -51,16 +51,28 @@ interface Anchor {
 
 const MAX_RESULTS = 8;
 
+/** A row in the autocomplete: either a real member or a mass mention
+    (@everyone / @here). Mass mentions insert the literal `@everyone `/`@here `
+    text (which the server's mention parser matches), not a `<@id>` token. */
+type Suggestion =
+  | { kind: 'user'; user: PublicUser }
+  | { kind: 'mass'; token: 'everyone' | 'here' };
+
 export function useMentionAutocomplete({
   channel,
   textareaRef,
   setValue,
+  canMentionEveryone = false,
 }: {
   channel: Channel;
   textareaRef: React.MutableRefObject<HTMLTextAreaElement | null>;
   /** Caller's setter for the textarea's controlled value. We use it to
       apply the substitution after a selection. */
   setValue: (next: string) => void;
+  /** When true (guild channel + caller has MENTION_EVERYONE), the
+      @everyone / @here rows are offered. Hidden otherwise so we never
+      suggest a mention the server would 403. */
+  canMentionEveryone?: boolean;
 }) {
   // Narrow selector subscriptions: this hook lives inside the Composer,
   // which renders on every keystroke — a full useAppState() subscription
@@ -98,11 +110,20 @@ export function useMentionAutocomplete({
 
   // Filter + cap the candidate list against the active query. Kept
   // separate so it only recomputes when query or candidates change,
-  // not when the textarea itself updates.
-  const filtered = useMemo<PublicUser[]>(() => {
+  // not when the textarea itself updates. Mass mentions (@everyone/@here)
+  // sit at the TOP when offered — matching Discord.
+  const filtered = useMemo<Suggestion[]>(() => {
     if (!mention) return [];
     const q = mention.query.toLowerCase();
-    const matches = candidates.filter((u) => {
+
+    const mass: Suggestion[] = [];
+    if (canMentionEveryone && channel.guildId) {
+      for (const token of ['everyone', 'here'] as const) {
+        if (!q || token.startsWith(q)) mass.push({ kind: 'mass', token });
+      }
+    }
+
+    const users = candidates.filter((u) => {
       if (!q) return true;
       return (
         u.displayName.toLowerCase().includes(q) ||
@@ -110,14 +131,18 @@ export function useMentionAutocomplete({
       );
     });
     // Sort: exact prefix matches bubble to the top, alphabetical fallback.
-    matches.sort((a, b) => {
+    users.sort((a, b) => {
       const ap = a.displayName.toLowerCase().startsWith(q) ? 0 : 1;
       const bp = b.displayName.toLowerCase().startsWith(q) ? 0 : 1;
       if (ap !== bp) return ap - bp;
       return a.displayName.localeCompare(b.displayName);
     });
-    return matches.slice(0, MAX_RESULTS);
-  }, [mention, candidates]);
+
+    return [...mass, ...users.map((u) => ({ kind: 'user' as const, user: u }))].slice(
+      0,
+      MAX_RESULTS,
+    );
+  }, [mention, candidates, canMentionEveryone, channel.guildId]);
 
   // Re-clamp the highlighted index whenever the filtered list shrinks
   // beneath the current selection (e.g. the user typed another letter
@@ -207,12 +232,14 @@ export function useMentionAutocomplete({
    * typing after a mention without a manual space).
    */
   const select = useCallback(
-    (user: PublicUser) => {
+    (pick: Suggestion) => {
       const ta = textareaRef.current;
       if (!ta || !mention) return;
       const before = ta.value.slice(0, mention.start);
       const after = ta.value.slice(mention.start + 1 + mention.query.length);
-      const insert = `<@${user.id}> `;
+      // Mass mentions insert the literal `@everyone `/`@here ` — the server
+      // parser matches that text; users insert a `<@id> ` token.
+      const insert = pick.kind === 'mass' ? `@${pick.token} ` : `<@${pick.user.id}> `;
       const next = before + insert + after;
       setValue(next);
       // Move the cursor to just after the inserted mention. We do this
@@ -277,6 +304,8 @@ export function useMentionAutocomplete({
         if (pick) select(pick);
         return true;
       }
+      // (Enter with an empty list falls through to `return false` below so
+      //  the composer's own submit handler still sends the message.)
       if (e.key === 'Escape') {
         e.preventDefault();
         setMention(null);
@@ -310,25 +339,37 @@ export function useMentionAutocomplete({
           onMouseDown={(e) => e.preventDefault()}
         >
           <div className="px-3 py-1.5 text-[0.65rem] uppercase tracking-wider text-ink-3 bg-bg-2 border-b border-line">
-            Members matching @{mention.query}
+            {mention.query ? <>Mentions matching @{mention.query}</> : 'Mention someone'}
           </div>
           <ul>
-            {filtered.map((u, i) => {
+            {filtered.map((s, i) => {
+              const active = i === mention.index;
+              const rowCls = `w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors ${
+                active ? 'bg-bg-3 text-ink-1' : 'text-ink-2 hover:bg-bg-3/50'
+              }`;
+              const onEnter = () =>
+                setMention((prev) => (prev ? { ...prev, index: i } : prev));
+              if (s.kind === 'mass') {
+                return (
+                  <li key={`mass-${s.token}`}>
+                    <button type="button" onClick={() => select(s)} onMouseEnter={onEnter} className={rowCls}>
+                      <span className="w-7 h-7 shrink-0 rounded-full bg-amber-900/40 text-amber-200 flex items-center justify-center text-xs font-semibold">
+                        @
+                      </span>
+                      <span className="truncate flex-1 font-medium">@{s.token}</span>
+                      <span className="text-xs text-ink-3 truncate">
+                        {s.token === 'everyone' ? 'Notify everyone' : 'Notify those online'}
+                      </span>
+                    </button>
+                  </li>
+                );
+              }
+              const u = s.user;
               const tone = avatarColor(u.id);
               const initials = avatarInitials(u.displayName);
-              const active = i === mention.index;
               return (
                 <li key={u.id}>
-                  <button
-                    type="button"
-                    onClick={() => select(u)}
-                    onMouseEnter={() =>
-                      setMention((prev) => (prev ? { ...prev, index: i } : prev))
-                    }
-                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors ${
-                      active ? 'bg-bg-3 text-ink-1' : 'text-ink-2 hover:bg-bg-3/50'
-                    }`}
-                  >
+                  <button type="button" onClick={() => select(s)} onMouseEnter={onEnter} className={rowCls}>
                     <span className="relative w-7 h-7 shrink-0 overflow-hidden rounded-full">
                       <span className={`absolute inset-0 rounded-full text-xs flex items-center justify-center font-semibold ${tone}`} aria-hidden="true">
                         <span className="zk-avatar-initials">{initials}</span>

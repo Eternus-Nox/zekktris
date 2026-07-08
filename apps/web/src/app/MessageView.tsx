@@ -363,6 +363,26 @@ export function MessageView({
     messages,
   ]);
 
+  // Whether to offer @everyone / @here in the mention autocomplete. Guild
+  // channels only, and only when the caller actually has MENTION_EVERYONE
+  // (owner/ADMINISTRATOR short-circuit to all-bits inside the compute), so we
+  // never suggest a mention the server would 403. Guild-level perms — a
+  // per-channel overwrite granting it in an otherwise-denied channel isn't
+  // reflected, but the server stays the final authority either way.
+  const canMentionEveryone = useMemo(() => {
+    if (!channel.guildId || !user || !myMember) return false;
+    const guild = guildsById[channel.guildId];
+    if (!guild) return false;
+    const roles = rolesByGuild[channel.guildId] ?? [];
+    const perms = computeMemberGuildPerms(
+      roles,
+      channel.guildId,
+      myMember.roleIds,
+      guild.ownerId === user.id,
+    );
+    return hasBit(perms, 9 /* MENTION_EVERYONE */);
+  }, [channel.guildId, user, myMember, guildsById, rolesByGuild]);
+
   const headerLabel = isDM
     ? (dmDisplayName ?? channel.name ?? 'Direct message')
     : (channel.name ?? '(unnamed)');
@@ -847,6 +867,7 @@ export function MessageView({
             <Composer
               channel={channel}
               placeholder={composerPlaceholder}
+              canMentionEveryone={canMentionEveryone}
               replyTo={replyTo}
               onCancelReply={() => setReplyTo(null)}
               onSend={async (content, files, poll, stickerId, voiceMessage) => {
@@ -1664,6 +1685,7 @@ const MAX_FILES = 10;
 function Composer({
   channel,
   placeholder,
+  canMentionEveryone,
   replyTo,
   onCancelReply,
   onSend,
@@ -1671,6 +1693,9 @@ function Composer({
 }: {
   channel: Channel;
   placeholder?: string;
+  /** Offer @everyone / @here in the mention autocomplete (computed by the
+      parent from the caller's channel permissions). */
+  canMentionEveryone?: boolean;
   replyTo?: Message | null;
   onCancelReply?: () => void;
   /**
@@ -1792,6 +1817,7 @@ function Composer({
     channel,
     textareaRef: taRef,
     setValue: setText,
+    canMentionEveryone,
   });
   // `:name:` autocomplete — same shape as mentionAC. Both hooks expose
   // (onChange, onKeyDown, popover, active) so we forward textarea
