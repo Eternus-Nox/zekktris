@@ -71,6 +71,9 @@ export const users = pgTable(
     achievementsSeeded: boolean('achievements_seeded').notNull().default(false),
     /** Account-level toggle for achievement-unlock notifications (push + in-app). */
     notifyAchievements: boolean('notify_achievements').notNull().default(true),
+    /** Account-level toggle for reaction notifications — a push when someone
+        reacts to your message. Default true (opt-out). */
+    notifyReactions: boolean('notify_reactions').notNull().default(true),
     /** Supporter-tier visibility: false = the tier title is hidden on the
         profile popup (the membership itself still works). */
     showSubscriptionTier: boolean('show_subscription_tier').notNull().default(true),

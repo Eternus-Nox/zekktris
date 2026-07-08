@@ -67,6 +67,10 @@ const pokeLimiter = new RateLimiter(10, 60_000, 'poke-user');
 // direction and per target, unlike the coarse global limiter above (which caps
 // a poker's total poke rate regardless of who they're poking).
 const pokeTargetLimiter = new RateLimiter(1, 10_000, 'poke-target');
+// Per-(author → message) throttle for reaction notifications: at most one push
+// to the author about a GIVEN message every 15s, so a burst of reactions on one
+// message pings them once, not once per reactor.
+const reactionNotifyLimiter = new RateLimiter(1, 15_000, 'reaction-notify');
 
 export const messagesRouter = new Hono();
 messagesRouter.use('*', requireAuth);
@@ -2139,6 +2143,59 @@ messagesRouter.put(
         userId,
         emoji: decodeURIComponent(emoji),
       });
+
+      // Notify the message author that someone reacted (best-effort, fire and
+      // forget). PUSH ONLY — the service worker / iOS willPresent suppress it
+      // when the author is focused on this channel, so it never doubles the
+      // reaction they can already see live. Skips your own reactions, respects
+      // the author's `notifyReactions` toggle and channel/guild mute level, and
+      // is throttled per (author, message) so a burst of reactions pings once.
+      if (m.authorId !== null && m.authorId !== userId) {
+        const author = m.authorId;
+        void (async () => {
+          try {
+            if (!(await reactionNotifyLimiter.consume(`${author}:${messageId}`)).ok) return;
+            const [reactorRow, authorRow] = await Promise.all([
+              db
+                .select({ displayName: schema.users.displayName, username: schema.users.username })
+                .from(schema.users)
+                .where(eq(schema.users.id, userId))
+                .limit(1),
+              db
+                .select({ notifyReactions: schema.users.notifyReactions })
+                .from(schema.users)
+                .where(eq(schema.users.id, author))
+                .limit(1),
+            ]);
+            if (!authorRow[0]?.notifyReactions) return;
+            const { resolveLevelsBulk } = await import('../services/notifications');
+            const levels = await resolveLevelsBulk([author], channelId, ctx.channel.guildId ?? null);
+            if (levels.get(author.toString()) === 'nothing') return;
+            const reactorName =
+              reactorRow[0]?.displayName ?? reactorRow[0]?.username ?? 'Someone';
+            const emojiStr = decodeURIComponent(emoji);
+            const url = ctx.channel.guildId
+              ? `/channels/${ctx.channel.guildId.toString()}/${channelId.toString()}`
+              : `/channels/@me/${channelId.toString()}`;
+            await sendToUser(author, {
+              title: reactorName,
+              body: `reacted ${emojiStr} to your message`,
+              url,
+              // Replace a prior reaction ping for the same message rather than
+              // stacking a new banner per reactor.
+              tag: `reaction-${messageId.toString()}`,
+              data: {
+                kind: 'reaction',
+                channelId: channelId.toString(),
+                messageId: messageId.toString(),
+                emoji: emojiStr,
+              },
+            }).catch(() => undefined);
+          } catch {
+            /* best-effort: never let a notification failure break the reaction */
+          }
+        })();
+      }
       // Reaction-role hook. If this (message, emoji) is mapped to
       // a role in the reaction_roles table, grant that role to the
       // reacting user. Soft-fails on every error path — a bad

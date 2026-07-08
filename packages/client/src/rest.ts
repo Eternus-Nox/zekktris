@@ -373,6 +373,7 @@ export class RestClient {
         | 'publicKey'
         | 'achievementsPublic'
         | 'notifyAchievements'
+        | 'notifyReactions'
         | 'showSubscriptionTier'
         | 'tagLabel'
         | 'tagColor'

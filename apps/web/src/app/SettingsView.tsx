@@ -695,6 +695,10 @@ export function SettingsView() {
             </div>
             <ShowTierToggle />
             <div className="pt-3 border-t border-line">
+              <div className="text-sm text-ink-2 font-medium mb-1">Reactions</div>
+              <ReactionNotificationsToggle />
+            </div>
+            <div className="pt-3 border-t border-line">
               <div className="text-sm text-ink-2 font-medium mb-1">Achievements</div>
               <AchievementsVisibilityToggle />
               <AchievementNotificationsToggle />
@@ -2111,6 +2115,54 @@ function AchievementNotificationsToggle() {
         role="switch"
         aria-checked={enabled}
         aria-label="Achievement notifications"
+        disabled={busy}
+        onClick={() => void flip()}
+        className={`relative shrink-0 w-10 h-6 rounded-full transition-colors ${
+          enabled ? 'bg-accent/70' : 'bg-bg-3'
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
+            enabled ? 'left-[1.125rem]' : 'left-0.5'
+          }`}
+        />
+      </button>
+    </div>
+  );
+}
+
+function ReactionNotificationsToggle() {
+  const { rest, user, updateUser } = useAuth();
+  const enabled = user?.notifyReactions ?? true;
+  const [busy, setBusy] = useState(false);
+
+  const flip = async () => {
+    if (busy) return;
+    const next = !enabled;
+    setBusy(true);
+    try {
+      const r = await rest.patchMe({ notifyReactions: next });
+      updateUser(r.user);
+    } catch {
+      /* leave the switch as-is on failure */
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-between gap-3 px-3 py-2.5 bg-bg-2 border border-line rounded-lg mt-2">
+      <div className="min-w-0">
+        <p className="text-sm text-ink-1">Reaction notifications</p>
+        <p className="text-xs text-ink-3 leading-relaxed mt-0.5">
+          Get a notification when someone reacts to your message.
+        </p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        aria-label="Reaction notifications"
         disabled={busy}
         onClick={() => void flip()}
         className={`relative shrink-0 w-10 h-6 rounded-full transition-colors ${

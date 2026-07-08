@@ -190,6 +190,8 @@ const patchMeSchema = z
     achievementsPublic: z.boolean().optional(),
     /** Account-level toggle for achievement-unlock notifications. */
     notifyAchievements: z.boolean().optional(),
+    /** Account-level toggle for reaction notifications. */
+    notifyReactions: z.boolean().optional(),
     /** Whether the supporter tier title shows on the profile popup. */
     showSubscriptionTier: z.boolean().optional(),
     /** DM read-receipts opt-out. When false, the server skips
@@ -321,6 +323,9 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   }
   if (body.notifyAchievements !== undefined) {
     update.notifyAchievements = body.notifyAchievements;
+  }
+  if (body.notifyReactions !== undefined) {
+    update.notifyReactions = body.notifyReactions;
   }
   if (body.showSubscriptionTier !== undefined) {
     update.showSubscriptionTier = body.showSubscriptionTier;

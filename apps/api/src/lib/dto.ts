@@ -66,6 +66,9 @@ export interface SelfUserDTO {
   /** Account-level toggle for achievement-unlock notifications (push + in-app).
       Default true. */
   notifyAchievements: boolean;
+  /** Account-level toggle for reaction notifications (push when someone reacts
+      to your message). Default true. */
+  notifyReactions: boolean;
   /** Privacy: when true, anyone who shares a guild with this user can
       open a DM and ring them for a 1:1 call. When false (default),
       DMs/calls are friends-only. Blocks always override. Self-only
@@ -219,6 +222,7 @@ export function toSelfUser(
     dmReadReceiptsEnabled: user.dmReadReceiptsEnabled,
     achievementsPublic: user.achievementsPublic,
     notifyAchievements: user.notifyAchievements,
+    notifyReactions: user.notifyReactions,
     allowDmsFromServerMembers: user.allowDmsFromServerMembers,
     publicKey: user.publicKey ?? null,
     tagLabel: user.tagLabel ?? null,
