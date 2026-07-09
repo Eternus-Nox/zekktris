@@ -1119,6 +1119,38 @@ function ChildMonitor({
               </div>
             </div>
 
+            {/* Content filter — ON is more protective (mask swear words), so it
+                sits apart from the allow-toggles above, whose ON means allowed. */}
+            <div className="pt-3 space-y-1.5">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
+                Content
+              </h4>
+              <div className="flex items-center justify-between px-3 py-2 bg-bg-2 border border-line rounded-md">
+                <div className="pr-3">
+                  <span className="text-sm text-ink-1">Blur swear words</span>
+                  <p className="text-xs text-ink-3 leading-snug">
+                    Mask profanity in {childName}'s messages.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={restrictions.filterProfanity}
+                  disabled={savingRestr}
+                  onClick={() => void toggle('filterProfanity')}
+                  className={`relative w-10 h-6 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+                    restrictions.filterProfanity ? 'bg-accent/70' : 'bg-bg-3'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
+                      restrictions.filterProfanity ? 'left-[1.125rem]' : 'left-0.5'
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+
             <div className="pt-3 space-y-1.5">
               <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
                 Servers

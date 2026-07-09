@@ -533,6 +533,7 @@ export async function supervisionSummary(userId: bigint) {
           allowJoinGuilds: myRestrictions.allowJoinGuilds,
           allowMessaging: myRestrictions.allowMessaging,
           dmPolicy: myRestrictions.dmPolicy,
+          filterProfanity: myRestrictions.filterProfanity,
         }
       : null,
     // Age-driven supervision state for the current user.
@@ -579,6 +580,8 @@ const DEFAULT_RESTRICTIONS = {
   // Friends-only by default for a supervised child; the parent can widen to
   // 'all' or tighten to 'none'.
   dmPolicy: 'friends' as string,
+  // Mask swear words in the child's message views by default (parent can lift).
+  filterProfanity: true,
 };
 
 /** The "restrict heavily" profile for a 13–17 account with NO guardian link.
@@ -594,6 +597,8 @@ const STRICT_RESTRICTIONS = {
   allowJoinGuilds: false,
   allowMessaging: false,
   dmPolicy: 'none' as string,
+  // A locked-down unlinked minor also gets profanity masked.
+  filterProfanity: true,
 };
 
 /**
@@ -692,6 +697,7 @@ export async function getRestrictions(childId: bigint) {
     allowJoinGuilds: r.allowJoinGuilds,
     allowMessaging: r.allowMessaging,
     dmPolicy: r.dmPolicy,
+    filterProfanity: r.filterProfanity,
   };
 }
 
@@ -705,6 +711,7 @@ export type RestrictionPatch = Partial<{
   allowJoinGuilds: boolean;
   allowMessaging: boolean;
   dmPolicy: 'none' | 'friends' | 'all';
+  filterProfanity: boolean;
 }>;
 
 export async function setRestrictions(parentId: bigint, childId: bigint, patch: RestrictionPatch) {

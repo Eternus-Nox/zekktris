@@ -316,6 +316,7 @@ export const restrictionsPatch = z.object({
   allowJoinGuilds: z.boolean().optional(),
   allowMessaging: z.boolean().optional(),
   dmPolicy: z.enum(['none', 'friends', 'all']).optional(),
+  filterProfanity: z.boolean().optional(),
 });
 
 familyRouter.patch(

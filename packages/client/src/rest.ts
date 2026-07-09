@@ -3147,6 +3147,8 @@ export interface ChildRestrictions {
   allowMessaging: boolean;
   /** Who the child may direct-message. */
   dmPolicy: 'none' | 'friends' | 'all';
+  /** Mask swear/vulgar words (f•••) in the child's message views. */
+  filterProfanity: boolean;
 }
 
 export interface FamilyRequest {

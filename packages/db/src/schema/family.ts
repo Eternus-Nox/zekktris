@@ -84,6 +84,11 @@ export const childRestrictions = pgTable('child_restrictions', {
   allowJoinGuilds: boolean('allow_join_guilds').notNull().default(true),
   allowMessaging: boolean('allow_messaging').notNull().default(true),
   dmPolicy: text('dm_policy').notNull().default('friends'),
+  // Content filter: when on, swear/vulgar words are masked (f•••) in the
+  // child's message views on every client. Defaults ON (protective); the
+  // parent can turn it off. Purely a client-side render control — the server
+  // only stores + surfaces the flag.
+  filterProfanity: boolean('filter_profanity').notNull().default(true),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

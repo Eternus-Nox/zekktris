@@ -24,6 +24,7 @@ import { ApiError } from '@zekktris/client';
 import { useAppStateSelector, useDmNickname, isUserBlocked } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
 import { renderMessageContent } from '../lib/markdown';
+import { maskProfanity } from '../lib/profanity';
 import { memberDisplayColor } from '../lib/permissions';
 import { Reactions } from './Reactions';
 import { Attachments } from './Attachments';
@@ -107,6 +108,10 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   const rolesByGuild = useAppStateSelector((v) => v.state.rolesByGuild);
   const relationships = useAppStateSelector((v) => v.state.relationships);
   const channelsByGuild = useAppStateSelector((v) => v.state.channelsByGuild);
+  // Parental control: a supervised child's message views mask swear words.
+  const filterProfanity = useAppStateSelector(
+    (v) => v.state.supervision?.restrictions?.filterProfanity ?? false,
+  );
   const emojisByGuild = useAppStateSelector((v) => v.state.emojisByGuild);
   const usersById = useAppStateSelector((v) => v.state.usersById);
   // Resolve the reply-quote PARENT directly in the selector instead of
@@ -461,8 +466,12 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   // or raw content otherwise) and `renderCtx` (memoized just above),
   // so this memo bails on the common no-content-change render.
   const renderedContent = useMemo(
-    () => renderMessageContent(displayContent, renderCtx),
-    [displayContent, renderCtx],
+    () =>
+      renderMessageContent(
+        filterProfanity ? maskProfanity(displayContent) : displayContent,
+        renderCtx,
+      ),
+    [displayContent, renderCtx, filterProfanity],
   );
 
   async function saveEdit() {
