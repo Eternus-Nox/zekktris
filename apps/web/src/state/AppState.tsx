@@ -2692,6 +2692,31 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           toasts.push('Could not encrypt attachment — message not sent.', 'error');
           return localId;
         }
+      } else if (files.length > 0) {
+        // Non-E2EE: read pixel dims from the plaintext bitmap and send them so
+        // the server persists width/height and every client reserves the image
+        // box up front — no reflow-on-load that makes the virtualized list jump
+        // while scrolling. Best-effort; unreserved is the pre-existing behavior.
+        try {
+          const meta: ({ width?: number; height?: number } | null)[] = await Promise.all(
+            files.map(async (f) => {
+              if (!f.type.startsWith('image/') || typeof createImageBitmap !== 'function') {
+                return null;
+              }
+              try {
+                const bmp = await createImageBitmap(f);
+                const d = bmp.width && bmp.height ? { width: bmp.width, height: bmp.height } : null;
+                bmp.close();
+                return d;
+              } catch {
+                return null;
+              }
+            }),
+          );
+          if (meta.some((m) => m)) attachmentsMeta = meta;
+        } catch {
+          // best-effort — an unreserved box is the pre-existing behavior
+        }
       }
       pendingFilesRef.current.set(localId, uploadFiles);
 

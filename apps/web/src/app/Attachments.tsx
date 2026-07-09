@@ -123,8 +123,11 @@ export function Attachments({
               key={v.id}
               src={v.url}
               controls
-              preload="metadata"
-              className="rounded-md max-w-sm max-h-80 border border-line bg-black"
+              // preload="none" + a reserved aspect box: scrolling past a video
+              // no longer fires a metadata range-fetch, and the row height is
+              // stable before/after load (no reflow that jars the virtual list).
+              preload="none"
+              className="rounded-md w-full max-w-sm aspect-video object-contain border border-line bg-black"
             />
           ))}
         </div>
@@ -265,6 +268,7 @@ function EncryptedImageGallery({
                 src={url}
                 alt={realName}
                 loading="lazy"
+                decoding="async"
                 style={slot}
                 className="rounded-md max-w-sm max-h-80 border border-line group-hover/img:border-accent/60 transition-colors object-contain cursor-zoom-in"
               />
@@ -412,6 +416,8 @@ function EncryptedAttachment({
           <img
             src={objectUrl}
             alt={realName}
+            loading="lazy"
+            decoding="async"
             style={encSlotStyle(attachment, 320, 280)}
             className="max-w-[320px] max-h-[280px] rounded-lg border border-line object-contain group-hover/img:border-accent/60 transition-colors cursor-zoom-in"
           />

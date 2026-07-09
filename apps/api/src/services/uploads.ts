@@ -204,6 +204,28 @@ export async function saveUploadedFile(
     }
   }
 
+  // Always record pixel dims for a raster image so every client can reserve the
+  // layout box (no reflow-on-load that jars a scrolling message list). The
+  // re-encode branch above already set them for jpeg/png; an already-webp
+  // upload (the common client-compressed path) skips it, so read the header
+  // here — sharp.metadata() parses dims WITHOUT decoding pixels, so it's cheap.
+  // Clients also send dims (attachmentsMeta) as the primary source; this is the
+  // backstop for uploads that don't (a direct API call, another client).
+  if (width === null && /^image\//i.test(contentType)) {
+    const sharp = await loadSharp();
+    if (sharp) {
+      try {
+        const meta = await sharp(buf, { limitInputPixels: MAX_INPUT_PIXELS }).metadata();
+        if (meta.width && meta.height) {
+          width = meta.width;
+          height = meta.height;
+        }
+      } catch {
+        // best-effort — no dims just means the client-sent dims (or none) win
+      }
+    }
+  }
+
   const diskPath = path.join(dir, safeName);
   await fs.writeFile(diskPath, buf);
 
