@@ -278,12 +278,23 @@ export function VoiceView({
   // an unmounted component (no observable crash in modern React but
   // wasted work + a dev warning).
   const leavingTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  // Holds the disconnect closure while a 1:1 hangup swallow-animation is in
+  // flight. If the view unmounts mid-animation, the awaited timer below is
+  // cancelled and the post-await disconnect would never run — stranding a live
+  // call (ghost participant + open mic). The unmount cleanup runs it.
+  const pendingHangupRef = useRef<null | (() => Promise<void>)>(null);
   useEffect(() => {
     const timers = leavingTimersRef.current;
     return () => {
       // Clear every still-scheduled timer.
       for (const t of timers) clearTimeout(t);
       timers.clear();
+      // Complete a hangup that was mid-animation when we unmounted.
+      const pending = pendingHangupRef.current;
+      if (pending) {
+        pendingHangupRef.current = null;
+        void pending();
+      }
     };
   }, []);
 
@@ -415,13 +426,34 @@ export function VoiceView({
   async function leave() {
     const isDm1to1 = channel.type === 'dm';
     const otherInThis = participants.some((p) => p.userId !== user?.id);
+
+    // The actual teardown — captured once so it can run either after the
+    // animation (normal path) OR from the unmount cleanup (if we unmount during
+    // the animation). Idempotent so it runs at most once regardless of path.
+    let ran = false;
+    const doDisconnect = async () => {
+      if (ran) return;
+      ran = true;
+      pendingHangupRef.current = null;
+      await disconnectVoice();
+      if (myVoice?.channelId) {
+        try {
+          await (await restForChannel(myVoice.channelId)).leaveVoice(myVoice.channelId);
+        } catch (e) {
+          toasts.push(e instanceof ApiError ? e.message : 'Failed to leave', 'error');
+        }
+      }
+    };
+
     if (isDm1to1 && otherInThis && user?.id) {
-      // Mark self as hanging up so the JSX renders the swallow
-      // overlay on the local participant's tile.
+      // Mark self as hanging up so the JSX renders the swallow overlay on the
+      // local participant's tile.
       setSelfHangingUp(true);
-      // Wait one keyframe (1.2s, matching .zk-blackhole-swallow). Then
-      // do the actual disconnect; the Shell's MessageView re-renders
-      // moments after voice_state clears server-side.
+      // Register the disconnect so an unmount during the 1.2s swallow animation
+      // still tears the call down (the awaited timer gets cancelled on unmount).
+      pendingHangupRef.current = doDisconnect;
+      // Wait one keyframe (1.2s, matching .zk-blackhole-swallow), then
+      // disconnect; the Shell's MessageView re-renders once voice_state clears.
       await new Promise<void>((resolve) => {
         const t = setTimeout(() => {
           leavingTimersRef.current.delete(t);
@@ -429,14 +461,10 @@ export function VoiceView({
         }, 1200);
         leavingTimersRef.current.add(t);
       });
-    }
-    await disconnectVoice();
-    if (myVoice?.channelId) {
-      try {
-        await (await restForChannel(myVoice.channelId)).leaveVoice(myVoice.channelId);
-      } catch (e) {
-        toasts.push(e instanceof ApiError ? e.message : 'Failed to leave', 'error');
-      }
+      // No-op if the unmount cleanup already ran it (the `ran` guard).
+      await doDisconnect();
+    } else {
+      await doDisconnect();
     }
   }
 

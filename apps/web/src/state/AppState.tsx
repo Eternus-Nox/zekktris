@@ -1342,7 +1342,17 @@ function reducer(state: State, action: Action): State {
       // reference and React skips the re-render entirely.
       const list = state.membersByGuild[action.guildId];
       const cachedUser = state.usersById[action.userId];
-      if (!list && !cachedUser) return state;
+      if (!list && !cachedUser) {
+        // Neither a loaded member list nor a cached identity — but a DM partner
+        // you share this guild with (whose member list you never opened and
+        // whose messages you never loaded) is in NEITHER map, yet the DM-list
+        // dot still needs updating. Try the DM patch; patchDmRecipientStatus
+        // returns the SAME ref when no recipient matched, so we keep the cheap
+        // reference-preserving bail for the common no-DM case.
+        const dmChannels = patchDmRecipientStatus(state.dmChannels, action.userId, action.status);
+        if (dmChannels === state.dmChannels) return state;
+        return { ...state, dmChannels };
+      }
 
       // Single findIndex serves both the early-bail check AND the
       // splice below — the previous code walked the list twice (once

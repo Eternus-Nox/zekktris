@@ -193,12 +193,10 @@ export function MicLevelMeter() {
         }
       }
     }
-    void start();
-
-    return () => {
-      cancelled = true;
+    // Fully release the mic + AudioContext (not just pause metering) so the OS
+    // in-use indicator clears. Used on unmount AND when the tab/app backgrounds.
+    function releaseStream() {
       cancelAnimationFrame(rafHandle);
-      prefsUnsub();
       try {
         sourceNode?.disconnect();
         gainNode?.disconnect();
@@ -213,14 +211,45 @@ export function MicLevelMeter() {
           // ignore
         }
       });
-      // Closing the AudioContext fully releases its resources. We
-      // void the promise — there's nothing useful to do on close
-      // failure during teardown.
+      // Closing the AudioContext fully releases its resources.
       if (audioContext && audioContext.state !== 'closed') {
         void audioContext.close().catch(() => {
           // ignore
         });
       }
+      sourceNode = null;
+      gainNode = null;
+      analyser = null;
+      mediaStream = null;
+      audioContext = null;
+      timeData = null;
+      setActive(false);
+    }
+
+    // The tick loop only PAUSED on hide (kept the stream live), so a backgrounded
+    // Settings tab held the mic + OS in-use indicator open — contradicting the
+    // documented teardown. Release on hide, re-acquire on show.
+    let starting = false;
+    function onVisibility() {
+      if (document.visibilityState === 'visible') {
+        if (!cancelled && !mediaStream && !starting) {
+          starting = true;
+          void start().finally(() => {
+            starting = false;
+          });
+        }
+      } else {
+        releaseStream();
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility);
+    void start();
+
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', onVisibility);
+      prefsUnsub();
+      releaseStream();
     };
   }, []);
 
