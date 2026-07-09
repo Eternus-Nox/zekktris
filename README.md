@@ -1,9 +1,14 @@
 # Zekktris
 
-A self-hostable communications platform for communities — text chat, voice &
-video, and shared spaces. Open-source, with the full feature set and no paid
-tiers: no boosts, no shop, no premium-locked features. Every limit is a
-server-config knob. Runs on a single host with `docker compose up`.
+A cross-platform communications app for communities — text chat, voice & video,
+and shared spaces — with native iOS, web, Electron desktop and Android clients
+backed by a single hosted service. The core feature set is free; optional
+supporter memberships (Scout / Guardian / Legend) unlock cosmetic perks and
+higher streaming quality.
+
+> This repo is the private source for the hosted Zekktris service — the clients
+> are wired to the production host, so it isn't a drop-in self-host bundle. The
+> `docker compose` sections below are the operator's own deploy runbook.
 
 > **Status:** active development, but well past "skeleton" — Zekktris is a
 > working v1.x platform with voice/video calls, end-to-end-encrypted DMs,
@@ -282,4 +287,5 @@ that exists — `./data` inside the repo is a sensible choice.
 
 ## License
 
-AGPL-3.0
+Proprietary — © Zekktris. All rights reserved. No public license is granted
+(there is no `LICENSE` file, so the default "all rights reserved" applies).

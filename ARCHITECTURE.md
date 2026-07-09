@@ -1,9 +1,12 @@
 # Zekktris — Architecture
 
-This describes the system **as built**. Zekktris is a self-hostable
-communications platform for communities: text chat, voice/video, and shared
-spaces, deployable with a single `docker compose up`. Open-source, full feature
-set, no paid tiers — all limits are server-config knobs.
+This describes the system **as built**. Zekktris is a cross-platform
+communications app for communities — text chat, voice/video, and shared spaces
+— delivered as a single hosted service with native iOS, web, Electron desktop
+and Android clients. The core feature set is free; optional supporter
+memberships add cosmetic perks and higher streaming quality. (The clients are
+wired to the production host; the `docker compose` deploy is the operator's own
+runbook, not a self-host bundle.)
 
 > **Naming:** "Zekktris" is the working name; it only appears in branding
 > strings, `package.json`, and a few URLs.
