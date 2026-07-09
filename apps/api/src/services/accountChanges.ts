@@ -148,7 +148,7 @@ export async function requestEmailChange(args: {
   currentPassword: string;
   /** Already lowercased + validated by the route's zod schema. */
   newEmail: string;
-}): Promise<{ token: string; expiresInMinutes: number; newEmail: string }> {
+}): Promise<{ token: string | null; expiresInMinutes: number; newEmail: string }> {
   const [user] = await db
     .select()
     .from(schema.users)
@@ -170,13 +170,12 @@ export async function requestEmailChange(args: {
     .where(eq(schema.users.email, args.newEmail))
     .limit(1);
   if (conflict) {
-    // Note: we don't say "address is taken" because that's an info
-    // leak (lets you probe whether an email is registered). The
-    // route layer can map this to a generic "verification email
-    // sent" response and we just silently don't actually send
-    // anything, OR we can return the same generic error here and
-    // let the route map it. Caller decides.
-    throw errors.badRequest('Cannot use that email.');
+    // Anti-enumeration: the address is already registered, but a distinct error
+    // ("Cannot use that email") lets an authed user probe which emails exist.
+    // Return the SAME shape as success with a null token so the route responds
+    // identically ("verification email sent") and simply sends nothing —
+    // indistinguishable from the available case (mirrors forgot-password).
+    return { token: null, expiresInMinutes: EMAIL_CHANGE_EXPIRES_MINUTES, newEmail: args.newEmail };
   }
 
   // Invalidate any prior outstanding requests for this user. We don't

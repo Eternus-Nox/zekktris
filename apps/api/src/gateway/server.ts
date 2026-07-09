@@ -497,7 +497,10 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
     dmChannelIdRows.map((r) => r.channelId),
     viewableChannels,
   );
-  registry.index(conn);
+  // NOTE: indexing for live fan-out is deferred until AFTER the READY frame is
+  // sent (below) — see the comment there. Indexing here would let an event
+  // fanned out during the awaited voice-states read reach this socket with a
+  // seq LOWER than READY, violating the handshake.
 
   // (readStateRows was hoisted into the top Promise.all batch above — it's a
   // userId-only read that need not wait on the channel-viewability resolver.)
@@ -529,6 +532,14 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
       voice_states: voiceStateRows.map(toVoiceState),
     }),
   );
+
+  // Index for live fan-out only NOW that READY is on the wire (mirrors the
+  // RESUME path, which indexes via completeResume after RESUMED). An event
+  // arriving in the tiny pre-index window is simply not delivered live — the
+  // client reconciles channel contents via REST on open — which is strictly
+  // better than delivering a DISPATCH before READY.
+  if (conn.isClosed()) return;
+  registry.index(conn);
 
   // ── DM read-receipt: delivery backfill ──────────────────────────────────
   // For every 1:1 DM that landed while this user was offline, stamp

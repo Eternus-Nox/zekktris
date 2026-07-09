@@ -2447,24 +2447,27 @@ usersRouter.post(
       newEmail: body.newEmail,
     });
 
-    // Build the verification URL. PUBLIC_URL is the user-visible
-    // base for the web app; appending /confirm-email?token=... is
-    // the convention the web client handles on mount.
-    const publicUrl = process.env.PUBLIC_URL ?? '';
-    const confirmUrl = `${publicUrl.replace(/\/$/, '')}/confirm-email?token=${encodeURIComponent(token)}`;
-
-    try {
-      await emailSvc.sendEmailChangeVerification({
-        to: newEmail,
-        confirmUrl,
-        expiresInMinutes,
-      });
-    } catch (err) {
-      // Don't leak SMTP errors to the user — generic message keeps
-      // the security posture clean (an attacker probing the endpoint
-      // for whether an email exists shouldn't be able to detect
-      // SMTP failures either).
-      throw errors.internal('Could not send verification email.');
+    // token === null → the target email is already registered. Anti-enumeration:
+    // respond identically to the success case and send nothing. Only send when
+    // we actually have a token.
+    if (token) {
+      // Build the verification URL. PUBLIC_URL is the user-visible base for the
+      // web app; appending /confirm-email?token=... is the convention the web
+      // client handles on mount.
+      const publicUrl = process.env.PUBLIC_URL ?? '';
+      const confirmUrl = `${publicUrl.replace(/\/$/, '')}/confirm-email?token=${encodeURIComponent(token)}`;
+      try {
+        await emailSvc.sendEmailChangeVerification({
+          to: newEmail,
+          confirmUrl,
+          expiresInMinutes,
+        });
+      } catch (err) {
+        // Don't leak SMTP errors to the user — generic message keeps the
+        // security posture clean (an attacker probing the endpoint for whether
+        // an email exists shouldn't be able to detect SMTP failures either).
+        throw errors.internal('Could not send verification email.');
+      }
     }
 
     return c.json({ ok: true, expiresInMinutes });

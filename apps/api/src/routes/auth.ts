@@ -72,6 +72,10 @@ const registerByIp = new RateLimiter(5, 60 * 60_000, 'register-ip');
 // would double-charge it, and any path that refunds it for UX reopens
 // distributed brute-force of the 6-digit space.
 const twoFactorByUser = new RateLimiter(5, 15 * 60_000, 'login-2fa-user');
+// Confirm-email-change consumes a token — throttle per IP like verify-email so
+// the token space can't be brute-forced (every other token-consume endpoint has
+// a limiter; this one was missing).
+const confirmEmailChangeByIp = new RateLimiter(50, 60 * 60_000, 'confirm-email-change-ip');
 // Quick-login (log in on another device): generating is per-USER (guards
 // re-randomize spam); redeeming is per-IP (brute-force guard on the 16-digit
 // code, on top of single-use + 90s TTL).
@@ -982,6 +986,9 @@ authRouter.post(
   '/confirm-email-change',
   validate('json', confirmEmailChangeSchema),
   async (c) => {
+    const ip = getClientIp(c) ?? 'unknown';
+    const rl = await confirmEmailChangeByIp.consume(ip);
+    if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
     const { token } = c.req.valid('json');
     const accountSvc = await import('../services/accountChanges');
     const result = await accountSvc.confirmEmailChange(token);
@@ -1358,7 +1365,9 @@ authRouter.post('/passkey/login/verify', validate('json', passkeyLoginVerifySche
     .where(eq(schema.webauthnCredentials.id, cred.id));
 
   const [user] = await db.select().from(schema.users).where(eq(schema.users.id, cred.userId)).limit(1);
-  if (!user || user.deletedAt || user.bannedAt) throw errors.invalidCredentials();
+  // Use isCurrentlyBanned (not raw bannedAt) so an EXPIRED timed ban doesn't
+  // wrongly block passkey login — matches /login + /quick-login/redeem.
+  if (!user || user.deletedAt || isCurrentlyBanned(user)) throw errors.invalidCredentials();
 
   const { session, refreshToken } = await createSession({ userId: user.id, userAgent: ua, ipAddress: ip });
   const accessToken = await signAccessToken({ userId: user.id, sessionId: session.id });
