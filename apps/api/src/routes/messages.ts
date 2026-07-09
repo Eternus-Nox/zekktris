@@ -71,6 +71,10 @@ const pokeTargetLimiter = new RateLimiter(1, 10_000, 'poke-target');
 // to the author about a GIVEN message every 15s, so a burst of reactions on one
 // message pings them once, not once per reactor.
 const reactionNotifyLimiter = new RateLimiter(1, 15_000, 'reaction-notify');
+// DM send throttle. Guild sends go through security.checkSpam; DMs had NO
+// server-side rate limit, so a scripted client could flood a 1:1/group DM.
+// Per author+channel, generous enough for real chat (~2/s); fail-open on Redis.
+const dmSendLimiter = new RateLimiter(20, 10_000, 'dm-send');
 
 export const messagesRouter = new Hono();
 messagesRouter.use('*', requireAuth);
@@ -663,6 +667,13 @@ messagesRouter.post(
       }
     }
 
+    // DM send throttle — guild sends go through security.checkSpam above; DMs
+    // had no spam gate. Per author+channel, fail-open. Covers 1:1 + group DMs.
+    if (ctx.isDM) {
+      const rl = await dmSendLimiter.consume(`${userId}:${channelId}`);
+      if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
+    }
+
     // Block check on 1:1 DM sends. Without this, blocking the other
     // party in a pre-existing DM is purely cosmetic — they can keep
     // sending messages that arrive in the blocker's UI. Group DMs
@@ -696,8 +707,15 @@ messagesRouter.post(
         // flag is a client advisory only, so a modified/older client could
         // send ciphertext directly. Reject any E2EE-shaped payload for a
         // supervised pair server-side so the design invariant actually holds.
+        // Reject encrypted CONTENT *or* encrypted ATTACHMENTS for a supervised
+        // pair — the invariant is that a supervised minor's DMs stay plaintext
+        // + server-scannable. Testing only payload.content let an
+        // attachment-only encrypted message (empty content) slip through.
+        const hasEncryptedAttachment =
+          files.some((f) => f.name.toLowerCase().endsWith('.zke')) ||
+          thumbFiles.some((t) => t !== null);
         if (
-          E2EE_CIPHERTEXT_RE.test(payload.content) &&
+          (E2EE_CIPHERTEXT_RE.test(payload.content) || hasEncryptedAttachment) &&
           !(await supervision.isE2eeAllowedBetween(userId, other))
         ) {
           throw new AppError(
