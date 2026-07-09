@@ -502,6 +502,33 @@ async function main(): Promise<void> {
             if (!hasPermission(perms, Permissions.SEND_MESSAGES)) {
               throw new Error('No permission to send in this channel');
             }
+            // DM-only gates the interactive send enforces must be re-checked at
+            // fire time — a scheduled DM must NOT defeat a block, a guardian's
+            // DM policy, or the supervised-pair plaintext invariant that was set
+            // AFTER the message was scheduled (SEND_MESSAGES alone doesn't cover
+            // these; a block only mutates relationships, not dm_recipients).
+            if (channel.type === 'dm') {
+              const [dmsSvc, relationships, supervision] = await Promise.all([
+                import('./services/dms'),
+                import('./services/relationships'),
+                import('./services/supervision'),
+              ]);
+              const other = await dmsSvc.getOtherRecipient(row.channelId, row.authorId);
+              if (other !== null) {
+                if (await relationships.isBlockedEitherWay(row.authorId, other)) {
+                  throw new Error('Recipient is unavailable');
+                }
+                if (await supervision.dmBlockedBySupervision(row.authorId, other)) {
+                  throw new Error('Direct messages are restricted');
+                }
+                if (
+                  /^zkE2EE\/\d+:/.test(row.content) &&
+                  !(await supervision.isE2eeAllowedBetween(row.authorId, other))
+                ) {
+                  throw new Error('Encrypted messages are unavailable while supervised');
+                }
+              }
+            }
             // Scheduled messages can NEVER @everyone — even if the
             // user has the permission. A message firing at 3am to
             // ping the whole guild is a footgun; require it to be

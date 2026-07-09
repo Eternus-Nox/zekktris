@@ -98,6 +98,15 @@ channelsRouter.post(
       await assertChannelPermission(channelId, userId, [Permissions.SEND_MESSAGES], channel);
     } else if (channel.type === 'dm' || channel.type === 'group_dm') {
       await dms.ensureRecipient(channelId, userId);
+      // A blocked user must not leak "is typing" to someone who blocked them
+      // (the send path already returns notFound across a block; mirror it here).
+      if (channel.type === 'dm') {
+        const other = await dms.getOtherRecipient(channelId, userId);
+        if (other !== null) {
+          const { isBlockedEitherWay } = await import('../services/relationships');
+          if (await isBlockedEitherWay(userId, other)) return c.json({ ok: true });
+        }
+      }
     } else {
       throw errors.notFound('Channel');
     }

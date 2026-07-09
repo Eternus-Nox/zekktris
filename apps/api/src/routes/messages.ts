@@ -2116,18 +2116,13 @@ messagesRouter.put(
       if (!hasPermission(ctx.channelPerms, Permissions.ADD_REACTIONS)) {
         throw errors.missingPermissions(['ADD_REACTIONS']);
       }
-      // Onboarding gate.
+      // Reactions are participation too — apply the SAME pending/timeout/
+      // supervision(allowMessaging) gate as sending + poll-voting. Previously
+      // this inlined only pending + timeout, so a supervised child with
+      // messaging turned off could still react. Guild-only (DMs have no
+      // membership/timeout/supervision-messaging state).
       if (ctx.channel.guildId) {
-        const state = await membersSvc.getMemberState(ctx.channel.guildId, userId);
-        if (state === 'pending') throw errors.pendingAcknowledgment();
-      }
-      // Timeout enforcement — reactions are participation too. A
-      // timed-out user shouldn't be able to add reactions any more
-      // than they can send messages. Bypassed for DMs (no guild
-      // membership, no timeout state).
-      if (ctx.channel.guildId) {
-        const until = await membersSvc.getActiveTimeout(ctx.channel.guildId, userId);
-        if (until !== null) throw errors.timedOut(until);
+        await enforceGuildParticipationGates(ctx.channel.guildId, userId);
       }
     }
     // Verify the message belongs to this channel — prevents reaction-on-other-channel attacks.
