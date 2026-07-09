@@ -762,7 +762,8 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
             @{repliedTo.author?.displayName ?? repliedTo.author?.username ?? 'unknown'}
           </span>
           <span className="truncate">
-            {repliedTo.content || (repliedTo.attachments && repliedTo.attachments.length > 0 ? '(attachment)' : '')}
+            {(filterProfanity && repliedTo.content ? maskProfanity(repliedTo.content) : repliedTo.content) ||
+              (repliedTo.attachments && repliedTo.attachments.length > 0 ? '(attachment)' : '')}
           </span>
         </div>
       )}

@@ -66,7 +66,22 @@ function maskMatch(word: string): string {
   return out;
 }
 
+// Custom-emoji shortcodes (:name:) and mention/channel tokens (<…>) must NOT be
+// masked — rewriting their inner text (e.g. :cum: → :c••:) corrupts the token so
+// it no longer resolves. Mask only the text OUTSIDE these spans.
+const PROTECTED = /:[A-Za-z0-9_]+:|<[^>]+>/g;
+
 export function maskProfanity(text: string): string {
   if (!text) return text;
-  return text.replace(PATTERN, (m) => maskMatch(m));
+  let out = '';
+  let last = 0;
+  PROTECTED.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = PROTECTED.exec(text)) !== null) {
+    out += text.slice(last, m.index).replace(PATTERN, (w) => maskMatch(w));
+    out += m[0]; // leave the token untouched
+    last = m.index + m[0].length;
+  }
+  out += text.slice(last).replace(PATTERN, (w) => maskMatch(w));
+  return out;
 }

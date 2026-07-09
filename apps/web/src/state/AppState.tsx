@@ -309,7 +309,16 @@ type Action =
       changes: Array<{ id: string; position: number; parentId?: string | null }>;
     }
   | { type: 'CHANNEL_REMOVE'; channelId: string; guildId: string | null }
-  | { type: 'MESSAGES_SET'; channelId: string; messages: Message[] }
+  | {
+      type: 'MESSAGES_SET';
+      channelId: string;
+      messages: Message[];
+      // loadMessages (newest window) unions any newer optimistic/live row back
+      // on so a mid-flight send isn't dropped. loadMessagesAround (a jump to an
+      // arbitrary OLDER window) must NOT — unioning the newest tail onto a
+      // middle window creates a disjoint list with a gap. Defaults true.
+      preserveNewerSurvivors?: boolean;
+    }
   | {
       type: 'MESSAGES_PREPEND';
       channelId: string;
@@ -910,9 +919,12 @@ function reducer(state: State, action: Action): State {
       }
       const fetchedIds = new Set(fetched.map((m) => m.id));
       const prior = state.messagesByChannel[action.channelId] ?? [];
-      const survivors = prior.filter(
-        (m) => /^\d+$/.test(m.id) && !fetchedIds.has(m.id) && BigInt(m.id) > maxFetched,
-      );
+      const keepSurvivors = action.preserveNewerSurvivors ?? true;
+      const survivors = keepSurvivors
+        ? prior.filter(
+            (m) => /^\d+$/.test(m.id) && !fetchedIds.has(m.id) && BigInt(m.id) > maxFetched,
+          )
+        : [];
       const merged = survivors.length > 0 ? [...fetched, ...survivors] : fetched;
       const next: State = {
         ...state,
@@ -2176,7 +2188,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       // first) — no reverse needed. We REPLACE the current window
       // because mixing two disjoint windows would create gaps that
       // the scroll-up paginator can't bridge.
-      dispatch({ type: 'MESSAGES_SET', channelId, messages: r.messages });
+      // A jump lands on an arbitrary older window — replace, don't union the
+      // newest tail on (that would leave a gap between the two windows).
+      dispatch({
+        type: 'MESSAGES_SET',
+        channelId,
+        messages: r.messages,
+        preserveNewerSurvivors: false,
+      });
       const found = r.messages.some((m) => m.id === messageId);
       return { found };
     },
@@ -2823,7 +2842,17 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           content: input.content,
           replyToId: input.replyToId,
           files,
+          // Dedupe against a first attempt that actually landed server-side but
+          // whose response was lost (marked failed) — avoids a double-send.
+          nonce: localId,
         });
+        // Revoke the placeholder's blob: previews before we replace it, or they
+        // leak (mirrors the first-send success path + discardFailedMessage).
+        stateRef.current.messagesByChannel[channelId]
+          ?.find((m) => m.id === localId)
+          ?.attachments?.forEach((a) => {
+            if (a.url?.startsWith('blob:')) URL.revokeObjectURL(a.url);
+          });
         dispatch({
           type: 'MESSAGE_REPLACE_LOCAL',
           channelId,
