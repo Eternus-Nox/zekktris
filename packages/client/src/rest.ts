@@ -290,6 +290,9 @@ export class RestClient {
     challengeId: string;
     response: unknown;
     deviceName?: string;
+    /** Step-up: the account password, re-verified server-side before the
+        new credential is stored (adding a login factor is sensitive). */
+    currentPassword: string;
   }): Promise<{ ok: boolean }> {
     return this.request('POST', '/auth/passkey/register/verify', input);
   }
@@ -302,8 +305,9 @@ export class RestClient {
   listPasskeys(): Promise<{ passkeys: PasskeyInfo[] }> {
     return this.request('GET', '/auth/passkey');
   }
-  deletePasskey(id: string): Promise<{ ok: boolean }> {
-    return this.request('DELETE', `/auth/passkey/${id}`);
+  /** Step-up: removing a login factor requires the account password. */
+  deletePasskey(id: string, currentPassword: string): Promise<{ ok: boolean }> {
+    return this.request('DELETE', `/auth/passkey/${id}`, { currentPassword });
   }
 
   /**
@@ -2223,8 +2227,8 @@ export class RestClient {
   /** Confirm enrollment with a TOTP code. On success, 2FA is enabled
       and recovery codes are returned. Show the codes to the user
       ONCE; the server only stores their hashes. */
-  confirmTwoFactor(code: string): Promise<{ recoveryCodes: string[] }> {
-    return this.request('POST', '/users/@me/totp/confirm', { code });
+  confirmTwoFactor(code: string, currentPassword: string): Promise<{ recoveryCodes: string[] }> {
+    return this.request('POST', '/users/@me/totp/confirm', { code, currentPassword });
   }
 
   /** Disable 2FA. Requires a current TOTP code OR a recovery code. */

@@ -24,6 +24,7 @@ import {
   requireSessionId,
 } from '../auth/middleware';
 import { hashPassword, verifyPassword } from '../auth/passwords';
+import { consumeStepUp, assertStepUpPassword } from '../auth/stepUp';
 import {
   listUserSessions,
   getSession,
@@ -905,16 +906,9 @@ usersRouter.delete(
 // POST /@me/password
 // ───────────────────────────────────────────────────────────────────────────
 
-// One per-user budget shared by every "step-up" endpoint that verifies the
-// current password or a TOTP code on an already-authenticated request
-// (password/username/email change, 2FA confirm/disable). Without this, a
-// stolen access token can brute-force the password or the 6-digit TOTP —
-// the exact secrets these checks exist to demand.
-const stepUpRl = new RateLimiter(10, 15 * 60_000, 'step-up-verify');
-async function consumeStepUp(userId: bigint): Promise<void> {
-  const r = await stepUpRl.consume(userId.toString());
-  if (!r.ok) throw errors.rateLimited(Math.ceil(r.retryAfterMs / 1000));
-}
+// Step-up re-verification (rate-limited password/TOTP re-checks on an already-
+// authed request) lives in ../auth/stepUp so the passkey routes in auth.ts can
+// share the same per-user budget. `consumeStepUp` is imported at the top.
 
 const passwordChangeSchema = z.object({
   currentPassword: z.string().min(1).max(1024),
@@ -1148,11 +1142,20 @@ usersRouter.post('/@me/totp/begin', requireAuth, async (c) => {
 usersRouter.post(
   '/@me/totp/confirm',
   requireAuth,
-  validate('json', z.object({ code: z.string().min(1).max(32) })),
+  validate(
+    'json',
+    z.object({
+      code: z.string().min(1).max(32),
+      // Enrolling 2FA is a login-factor mutation: a transient stolen token
+      // could otherwise bind attacker-controlled 2FA and lock the owner out.
+      // Re-verify the account password (step-up) before arming it.
+      currentPassword: z.string().min(1).max(1024),
+    }),
+  ),
   async (c) => {
     const userId = requireUserId(c);
-    const { code } = c.req.valid('json');
-    await consumeStepUp(userId);
+    const { code, currentPassword } = c.req.valid('json');
+    await assertStepUpPassword(userId, currentPassword);
     const twoFactor = await import('../services/twoFactor');
     const r = await twoFactor.confirmEnrollment({ userId, code });
     return c.json(r);

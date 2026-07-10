@@ -94,6 +94,7 @@ import {
   subscribeVoicePrefs,
 } from '../lib/voicePrefs';
 import { MicLevelMeter } from '../lib/MicLevelMeter';
+import { useStepUpPassword } from '../lib/StepUpPassword';
 
 type Status = 'online' | 'idle' | 'dnd' | 'invisible';
 
@@ -2974,6 +2975,7 @@ function BannerPicker({
 function PasskeysSection() {
   const { rest } = useAuth();
   const toasts = useToasts();
+  const stepUp = useStepUpPassword();
   const [passkeys, setPasskeys] = useState<PasskeyInfo[] | null>(null);
   const [adding, setAdding] = useState(false);
   const supported =
@@ -2993,12 +2995,18 @@ function PasskeysSection() {
   }, []);
 
   async function addPasskey() {
+    // Step-up: a passkey is a login factor that survives password reset, so the
+    // server requires the account password. Collect it before the OS ceremony.
+    const currentPassword = await stepUp.request({
+      message: 'Enter your account password to add a passkey to your account.',
+    });
+    if (!currentPassword) return;
     setAdding(true);
     try {
       const { startRegistration } = await import('@simplewebauthn/browser');
       const { challengeId, options } = await rest.passkeyRegisterOptions();
       const response = await startRegistration({ optionsJSON: options as never });
-      await rest.passkeyRegisterVerify({ challengeId, response });
+      await rest.passkeyRegisterVerify({ challengeId, response, currentPassword });
       toasts.push('Passkey added', 'success');
       await refresh();
     } catch (e) {
@@ -3013,8 +3021,12 @@ function PasskeysSection() {
   }
 
   async function removePasskey(id: string) {
+    const currentPassword = await stepUp.request({
+      message: 'Enter your account password to remove this passkey.',
+    });
+    if (!currentPassword) return;
     try {
-      await rest.deletePasskey(id);
+      await rest.deletePasskey(id, currentPassword);
       setPasskeys((p) => (p ?? []).filter((k) => k.id !== id));
       toasts.push('Passkey removed', 'success');
     } catch (e) {
@@ -3062,6 +3074,7 @@ function PasskeysSection() {
         <Key size={15} />
         {adding ? 'Waiting for passkey…' : 'Add a passkey'}
       </button>
+      {stepUp.element}
     </section>
   );
 }
@@ -3255,6 +3268,9 @@ function TwoFactorSection() {
     secret: string;
     otpauthUri: string;
     code: string;
+    // Step-up: arming 2FA is a login-factor change, so the server re-verifies
+    // the account password alongside the authenticator code.
+    password: string;
     submitting: boolean;
   } | null>(null);
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
@@ -3277,7 +3293,7 @@ function TwoFactorSection() {
   async function beginSetup() {
     try {
       const r = await rest.beginTwoFactor();
-      setSetup({ ...r, code: '', submitting: false });
+      setSetup({ ...r, code: '', password: '', submitting: false });
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Failed to start enrollment', 'error');
     }
@@ -3287,7 +3303,7 @@ function TwoFactorSection() {
     if (!setup || setup.submitting) return;
     setSetup({ ...setup, submitting: true });
     try {
-      const r = await rest.confirmTwoFactor(setup.code.trim());
+      const r = await rest.confirmTwoFactor(setup.code.trim(), setup.password);
       setRecoveryCodes(r.recoveryCodes);
       setSetup(null);
       toasts.push('Two-factor authentication enabled', 'success');
@@ -3384,6 +3400,19 @@ function TwoFactorSection() {
               className="w-full px-3 py-2 bg-bg-1 border border-line rounded-md text-sm text-ink-1 font-mono tracking-widest text-center"
             />
           </label>
+          <label className="block">
+            <span className="block text-xs uppercase tracking-wider text-ink-3 font-semibold mb-1">
+              Confirm your account password
+            </span>
+            <input
+              type="password"
+              value={setup.password}
+              onChange={(e) => setSetup({ ...setup, password: e.target.value })}
+              placeholder="Account password"
+              autoComplete="current-password"
+              className="w-full px-3 py-2 bg-bg-1 border border-line rounded-md text-sm text-ink-1"
+            />
+          </label>
           <div className="flex justify-end gap-2">
             <button
               onClick={() => setSetup(null)}
@@ -3393,7 +3422,7 @@ function TwoFactorSection() {
             </button>
             <button
               onClick={confirmSetup}
-              disabled={setup.submitting || setup.code.length !== 6}
+              disabled={setup.submitting || setup.code.length !== 6 || !setup.password}
               className="px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 text-white text-sm font-medium disabled:opacity-50"
             >
               {setup.submitting ? 'Verifying…' : 'Verify & enable'}

@@ -17,6 +17,7 @@ import { errors } from '../errors';
 import { log } from '../log';
 import { nextSnowflake } from '../snowflake';
 import { hashPassword, verifyPassword } from '../auth/passwords';
+import { assertStepUpPassword } from '../auth/stepUp';
 import { signAccessToken } from '../auth/tokens';
 import * as twoFactor from '../services/twoFactor';
 import {
@@ -1212,6 +1213,13 @@ const passkeyRegVerifySchema = z.object({
   challengeId: z.string().min(1).max(64),
   response: z.record(z.string(), z.unknown()), // RegistrationResponseJSON
   deviceName: z.string().trim().max(60).optional(),
+  // Step-up: enrolling a passkey plants a permanent login factor that survives
+  // password reset + "log out everywhere", so require the account password on
+  // this already-authed request. Gated here at verify (the credential-insert
+  // point) rather than only at /options, because the anonymous /passkey/login/
+  // options endpoint writes to the same challenge store — a challenge minted
+  // there could otherwise be redeemed at an ungated verify to bypass /options.
+  currentPassword: z.string().min(1).max(1024),
 });
 const passkeyLoginVerifySchema = z.object({
   challengeId: z.string().min(1).max(64),
@@ -1253,6 +1261,9 @@ authRouter.post('/passkey/register/options', requireAuth, async (c) => {
 authRouter.post('/passkey/register/verify', requireAuth, validate('json', passkeyRegVerifySchema), async (c) => {
   const userId = requireUserId(c);
   const body = c.req.valid('json');
+  // Re-verify the password before consuming the single-use challenge, so a
+  // wrong password doesn't burn the ceremony.
+  await assertStepUpPassword(userId, body.currentPassword);
   const challenge = await challengeStore.take(body.challengeId);
   if (!challenge) throw errors.badRequest('Passkey challenge expired — please try again.');
   let verification;
@@ -1400,12 +1411,22 @@ authRouter.get('/passkey', requireAuth, async (c) => {
   });
 });
 
-// Remove one of the current user's passkeys.
-authRouter.delete('/passkey/:id', requireAuth, validate('param', z.object({ id: snowflakeSchema })), async (c) => {
-  const userId = requireUserId(c);
-  const { id } = c.req.valid('param');
-  await db
-    .delete(schema.webauthnCredentials)
-    .where(and(eq(schema.webauthnCredentials.id, BigInt(id)), eq(schema.webauthnCredentials.userId, userId)));
-  return c.json({ ok: true });
-});
+// Remove one of the current user's passkeys. Step-up gated: stripping a login
+// factor is as sensitive as adding one (an attacker with a transient token
+// could otherwise remove the owner's passkeys), so require the account password.
+authRouter.delete(
+  '/passkey/:id',
+  requireAuth,
+  validate('param', z.object({ id: snowflakeSchema })),
+  validate('json', z.object({ currentPassword: z.string().min(1).max(1024) })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const { id } = c.req.valid('param');
+    const { currentPassword } = c.req.valid('json');
+    await assertStepUpPassword(userId, currentPassword);
+    await db
+      .delete(schema.webauthnCredentials)
+      .where(and(eq(schema.webauthnCredentials.id, BigInt(id)), eq(schema.webauthnCredentials.userId, userId)));
+    return c.json({ ok: true });
+  },
+);
