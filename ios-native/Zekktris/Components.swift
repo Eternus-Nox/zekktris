@@ -38,6 +38,35 @@ enum DecodedImageCache {
     }
 }
 
+/// Decoded UIImages for E2EE THUMBNAILS, keyed by attachmentId+maxPixels. The
+/// byte LRU (AppStore.decryptedMedia) already avoids re-download + re-AES, but
+/// the ImageIO decode re-ran on every LazyVStack recycle — flashing the lock
+/// placeholder and burning CPU on scroll-back. Caching the decoded bitmap lets a
+/// recycled E2EE-image row paint instantly with no re-decode (mirrors what
+/// DecodedImageCache does for plain images; that cache is URL-keyed and can't be
+/// used here because encrypted attachments have no stable decoded-URL).
+/// SECURITY: this holds decrypted plaintext pixels, so it MUST be cleared on
+/// relock / sign-out — AppStore.clearDecryptedMedia() calls clear().
+enum EncryptedThumbCache {
+    private static let cache: NSCache<NSString, UIImage> = {
+        let c = NSCache<NSString, UIImage>()
+        c.countLimit = 256
+        c.totalCostLimit = 128 * 1024 * 1024 // 128 MB of decoded thumbnails
+        return c
+    }()
+    private static func key(_ attId: String, _ maxPixels: Int) -> NSString {
+        "\(attId):\(maxPixels)" as NSString
+    }
+    static func image(_ attId: String, _ maxPixels: Int) -> UIImage? {
+        cache.object(forKey: key(attId, maxPixels))
+    }
+    static func store(_ image: UIImage, _ attId: String, _ maxPixels: Int) {
+        let px = image.size.width * image.size.height * image.scale * image.scale
+        cache.setObject(image, forKey: key(attId, maxPixels), cost: Int(px) * 4)
+    }
+    static func clear() { cache.removeAllObjects() }
+}
+
 struct RetryingImage: View {
     let url: URL
     @State private var image: UIImage?
@@ -81,9 +110,17 @@ struct RetryingImage: View {
     }
 
     /// Fetch with up to 3 attempts (0.6s / 1.2s backoff between them).
-    static func load(_ url: URL, attempts: Int = 3) async -> UIImage? {
+    static func load(_ url: URL, attempts: Int = 3, maxPixels: CGFloat = 1024) async -> UIImage? {
         guard let data = await loadData(url, attempts: attempts) else { return nil }
-        return UIImage(data: data)
+        // Force-decode + downsample OFF the main actor so the bitmap is realized
+        // before SwiftUI ever draws it — a bare UIImage(data:) defers the CGImage
+        // decode to draw time on the main thread, dropping frames during scroll.
+        // maxPixels 1024 ≥ every on-screen target (inline media ≤240pt, avatars
+        // ≤40pt). The raw-bytes loadData path (Save-to-Photos / GIF frames) is
+        // untouched. Mirrors the E2EE lightbox decode path.
+        return await Task.detached(priority: .userInitiated) {
+            ImageDownsampler.decode(data, maxPixels: maxPixels) ?? UIImage(data: data)
+        }.value
     }
 
     /// Fetch the RAW image bytes (same retry/backoff as `load`), without
@@ -177,11 +214,19 @@ struct CachedImage<Placeholder: View, Failure: View>: View {
 struct NameTag: View {
     let label: String?
     let color: String?
+    /// The tag editor's own preview passes true so it stays visible even when
+    /// the viewer has "Hide clan tags" on (you're editing this tag).
+    let ignoreHidePref: Bool
+    // Viewer-side declutter toggle (Settings › Appearance). Reads the same
+    // UserDefaults key the Settings switch writes; @AppStorage re-renders every
+    // pill the moment it flips.
+    @AppStorage("zk.hideClanTags") private var hideClanTags = false
 
-    init(label: String?, color: String?) {
+    init(label: String?, color: String?, ignoreHidePref: Bool = false) {
         let l = label?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.label = (l?.isEmpty == false) ? l : nil
         self.color = color
+        self.ignoreHidePref = ignoreHidePref
     }
 
     /// Convenience for any PublicUser.
@@ -190,17 +235,146 @@ struct NameTag: View {
     }
 
     var body: some View {
-        if let label {
+        if let label, !(hideClanTags && !ignoreHidePref) {
             let tint = color.flatMap { Color(hexString: $0) } ?? Theme.accent
             Text(label)
                 .font(.zkSans(10, weight: .semibold))
                 .foregroundColor(tint)
+                // Symmetric padding — the label stays dead-center in the pill
+                // at every size (per user direction: always centered).
                 .padding(.horizontal, 5)
                 .padding(.vertical, 2)
                 .background(RoundedRectangle(cornerRadius: 5).fill(tint.opacity(0.14)))
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(tint, lineWidth: 1))
                 .fixedSize()
         }
+    }
+}
+
+/// Supporter tier title badge — Scout / Guardian / Legend. Mirrors the web
+/// TierBadge pill (uppercase, tier-tinted). Renders nothing for nil/unknown.
+struct TierBadge: View {
+    let tier: String?
+
+    static func meta(_ tier: String) -> (label: String, color: Color)? {
+        switch tier {
+        case "scout": return ("SCOUT", Color(hex: 0x3D9BFF))
+        case "guardian": return ("GUARDIAN", Color(hex: 0x9D7BFF))
+        case "legend": return ("LEGEND", Color(hex: 0xF4C95B))
+        default: return nil
+        }
+    }
+
+    var body: some View {
+        if let tier, let meta = Self.meta(tier) {
+            Text(meta.label)
+                .font(.zkSans(8.5, weight: .bold))
+                .tracking(0.5)
+                .foregroundColor(meta.color)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1.5)
+                .background(meta.color.opacity(0.18))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
+    }
+}
+
+/// Instance-staff display name. Staff (admin/moderator) are marked NOT by a
+/// label but by an animated shimmer sweeping across their display name in a
+/// color THEY chose (`staffColor`), which OVERRIDES any guild role color.
+/// Regular members — and staff who haven't turned it on — render as plain
+/// `Text` in `color` (the role/member color, else the fallback). Drop-in for
+/// the old StaffBadge: callers render the name through this instead of a badge.
+struct StaffName: View {
+    let text: String
+    /// #rrggbb shimmer color, or nil to render plainly. Pre-gated to staff.
+    let staffColor: String?
+    /// Optional soft glow layered on the shimmer (only when staffColor is set).
+    var glow: Bool = false
+    var color: Color = Theme.ink1
+    var font: Font = .zkSans(15, weight: .medium)
+    var lineLimit: Int? = 1
+
+    /// Direct init — pass a `#rrggbb` to shimmer, or nil for plain. Used by the
+    /// settings live-preview (where the color is always present).
+    init(text: String, staffColor: String?, glow: Bool = false, color: Color = Theme.ink1,
+         font: Font = .zkSans(15, weight: .medium), lineLimit: Int? = 1) {
+        self.text = text
+        self.staffColor = staffColor
+        self.glow = glow
+        self.color = color
+        self.font = font
+        self.lineLimit = lineLimit
+    }
+
+    /// Convenience: gate the shimmer on the user actually being staff with a
+    /// color set. Pass `nil` to force plain (e.g. webhook / server author).
+    init(_ user: PublicUser?, text: String, color: Color = Theme.ink1,
+         font: Font = .zkSans(15, weight: .medium), lineLimit: Int? = 1) {
+        self.text = text
+        if let u = user, u.isAdmin == true || u.isModerator == true,
+           let c = u.staffColor, !c.isEmpty {
+            self.staffColor = c
+            self.glow = u.staffGlow == true
+        } else {
+            self.staffColor = nil
+            self.glow = false
+        }
+        self.color = color
+        self.font = font
+        self.lineLimit = lineLimit
+    }
+
+    var body: some View {
+        if let hex = staffColor, let base = Color(hexString: hex) {
+            ShimmerText(text: text, base: base, glow: glow, font: font, lineLimit: lineLimit)
+        } else {
+            Text(text).font(font).foregroundColor(color).lineLimit(lineLimit)
+        }
+    }
+}
+
+/// The animated part of `StaffName`: base-colored glyphs with a soft highlight
+/// band sweeping left→right on a loop, the whole thing masked to the text so
+/// only the letters shimmer. Mirrors the web `.zk-staff-shimmer` gradient.
+private struct ShimmerText: View {
+    let text: String
+    let base: Color
+    var glow: Bool = false
+    let font: Font
+    let lineLimit: Int?
+    @State private var phase: CGFloat = -1
+
+    var body: some View {
+        Text(text)
+            .font(font)
+            .lineLimit(lineLimit)
+            .foregroundColor(base)
+            .overlay(
+                GeometryReader { geo in
+                    LinearGradient(
+                        gradient: Gradient(stops: [
+                            .init(color: .clear, location: 0.0),
+                            .init(color: Color.white.opacity(0.75), location: 0.5),
+                            .init(color: .clear, location: 1.0),
+                        ]),
+                        startPoint: .leading, endPoint: .trailing
+                    )
+                    .frame(width: max(geo.size.width, 1) * 0.55)
+                    .offset(x: phase * max(geo.size.width, 1) * 1.7)
+                    .allowsHitTesting(false)
+                }
+            )
+            .mask(Text(text).font(font).lineLimit(lineLimit))
+            // Optional slight glow: a soft shadow of the glyph shapes in the
+            // staff color, layered for a fuller halo (mirrors the web glow).
+            .shadow(color: glow ? base.opacity(0.9) : .clear, radius: glow ? 3 : 0)
+            .shadow(color: glow ? base.opacity(0.5) : .clear, radius: glow ? 7 : 0)
+            .onAppear {
+                withAnimation(.linear(duration: 2.4).repeatForever(autoreverses: false)) {
+                    phase = 1
+                }
+            }
     }
 }
 
@@ -280,6 +454,7 @@ struct Avatar: View {
         ("none", "None"), ("ring", "Accent"), ("glow", "Accent glow"), ("gold", "Gold"),
         ("rose", "Rose"), ("violet", "Violet"), ("lime", "Lime"),
         ("aurora", "Aurora"), ("sunset", "Sunset"), ("emerald", "Emerald"),
+        ("crimson", "Crimson"), ("ocean", "Ocean"),
     ]
     static func decoColor(_ id: String) -> Color? {
         switch id {
@@ -288,6 +463,7 @@ struct Avatar: View {
         case "rose": return Color(hex: 0xEC5FB5)
         case "violet": return Color(hex: 0x9D7BFF)
         case "lime": return Color(hex: 0x7EE787)
+        case "crimson": return Color(hex: 0xFF4D4D)
         default: return nil
         }
     }
@@ -296,6 +472,7 @@ struct Avatar: View {
         case "aurora": return [Color(hex: 0x3DD7EC), Color(hex: 0x9D7BFF), Color(hex: 0xEC5FB5), Color(hex: 0x3DD7EC)]
         case "sunset": return [Color(hex: 0xFFD13D), Color(hex: 0xEC5FB5), Color(hex: 0x9D7BFF), Color(hex: 0xFFD13D)]
         case "emerald": return [Color(hex: 0x7EE787), Color(hex: 0x3DD7EC), Color(hex: 0x7EE787)]
+        case "ocean": return [Color(hex: 0x3D9BFF), Color(hex: 0x3DD8C0), Color(hex: 0x4FDD8F), Color(hex: 0x3D9BFF)]
         default: return nil
         }
     }
@@ -311,6 +488,8 @@ struct Avatar: View {
             Text(avatarInitials(name))
                 .font(.zkSans(size * 0.36, weight: .semibold))
                 .foregroundColor(tone.fg)
+                .lineLimit(1)
+                .frame(width: size, height: size, alignment: .center)
         }
     }
 }
@@ -534,7 +713,12 @@ func messageDate(_ iso: String) -> Date? {
     guard let d = isoFormatter.date(from: iso) ?? isoFormatterNoFraction.date(from: iso) else {
         return nil
     }
-    if messageDateCache.count > 8000 { messageDateCache.removeAll(keepingCapacity: true) }
+    // Raised from 8000 so realistic sessions never flush — a flush discards the
+    // visible working set and forces re-parsing the hottest timestamps through
+    // the slow ISO8601DateFormatter. Entries are immutable String→Date (~40B),
+    // so even 50k ≈ ~2MB. Pure memoization: raising the cap changes nothing
+    // observable.
+    if messageDateCache.count > 50_000 { messageDateCache.removeAll(keepingCapacity: true) }
     messageDateCache[iso] = d
     return d
 }
@@ -574,17 +758,22 @@ struct AlienPulse: ViewModifier {
     func body(content: Content) -> some View {
         content
             .overlay {
-                if active {
-                    ZStack {
-                        pulseRing(Theme.accent, alpha: 0.55, spread: 5)
-                        pulseRing(Theme.accent2, alpha: 0.40, spread: 10)
-                        pulseRing(Theme.accent3, alpha: 0.25, spread: 16)
-                        // Resting edge so the avatar reads "live" between pulses.
-                        Circle().strokeBorder(Theme.accent.opacity(0.7), lineWidth: 2)
-                    }
-                    .onAppear { animating = true }
-                    .onDisappear { animating = false }
+                // Kept ALWAYS mounted and gated by opacity so the indicator
+                // eases in/out when `active` flips instead of popping (web F6
+                // parity). The rings keep cycling underneath; the opacity gate
+                // hides them when not speaking. Never hit-testable, so the
+                // animated overlay can't swallow taps mid-transition.
+                ZStack {
+                    pulseRing(Theme.accent, alpha: 0.55, spread: 5)
+                    pulseRing(Theme.accent2, alpha: 0.40, spread: 10)
+                    pulseRing(Theme.accent3, alpha: 0.25, spread: 16)
+                    // Resting edge so the avatar reads "live" between pulses.
+                    Circle().strokeBorder(Theme.accent.opacity(0.7), lineWidth: 2)
                 }
+                .opacity(active ? 1 : 0)
+                .animation(.easeInOut(duration: 0.35), value: active)
+                .allowsHitTesting(false)
+                .onAppear { animating = true }
             }
     }
 

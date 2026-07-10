@@ -78,6 +78,25 @@ final class VoiceManager: ObservableObject {
     /// User ids the local user has muted for themselves only (persisted).
     @Published private(set) var mutedForMe: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "zk.mutedForMe") ?? [])
 
+    /// Push-to-talk: when on, the mic stays muted and only transmits while the
+    /// talk button is held. Persisted so the preference survives relaunch.
+    @Published var pushToTalkEnabled = UserDefaults.standard.bool(forKey: "zk.pushToTalk")
+    /// True while the PTT talk button is physically held (drives the live-mic
+    /// visual on the mic control).
+    @Published private(set) var pttHeld = false
+    /// Guards the PTT mic reconcile loop so rapid press/release can't race two
+    /// setMicrophone calls into a stuck-open mic.
+    private var pttReconciling = false
+
+    /// F10 — cross-device mute sync. Cached copy of the server's opaque
+    /// voice-prefs blob (web-owned: per-user volumes, master volume, audio
+    /// processing). We round-trip the WHOLE blob on every write so a mute
+    /// never clobbers the web's fields. `voicePrefsHydrated` gates the first
+    /// push so we never PATCH from an empty cache (which would wipe the blob).
+    private var voicePrefsBlob: [String: Any] = [:]
+    private var voicePrefsHydrated = false
+    private var voicePrefsPushTask: Task<Void, Never>?
+
     /// Captured remote audio publications, keyed by user id, so we can
     /// enable/disable them per-user. Cleared on disconnect to release refs.
     private var audioPubs: [String: RemoteTrackPublication] = [:]
@@ -100,7 +119,9 @@ final class VoiceManager: ObservableObject {
         // voice-message playback/recording is blocked from re-categorizing or
         // deactivating the shared session for the call's lifetime.
         state = .connecting
-        isMuted = !publishMic
+        // Push-to-talk starts muted regardless of publishMic — the mic only
+        // opens while the talk button is held.
+        isMuted = pushToTalkEnabled ? true : !publishMic
         // Route to the loudspeaker by default — set BEFORE connecting so LiveKit
         // configures the session for speaker when the audio engine starts.
         // Without this, calls default to the earpiece and sound silent unless
@@ -132,7 +153,8 @@ final class VoiceManager: ObservableObject {
         room = r
         do {
             try await r.connect(url: url, token: token)
-            if publishMic { try await r.localParticipant.setMicrophone(enabled: true) }
+            // In PTT mode the mic stays off at connect — it opens only on hold.
+            if publishMic && !pushToTalkEnabled { try await r.localParticipant.setMicrophone(enabled: true) }
             state = .connected
         } catch {
             lastError = error.localizedDescription
@@ -176,6 +198,59 @@ final class VoiceManager: ObservableObject {
         _ = try? await room.localParticipant.setMicrophone(enabled: true)
     }
 
+    // ── Push-to-talk ──────────────────────────────────────────────────────
+    //
+    // When PTT mode is on, the mic is muted by default and opens only while
+    // the talk button is held. Press/release just set `pttHeld`; the mic is
+    // driven by a single reconcile loop so a rapid press→release can't land
+    // its enable AFTER its disable and leave the mic stuck open.
+
+    /// Flip the PTT preference and reconcile the in-call mic. Entering PTT
+    /// mutes immediately; leaving it returns to a live (VAD) mic unless deaf.
+    func setPushToTalk(_ on: Bool) {
+        pushToTalkEnabled = on
+        UserDefaults.standard.set(on, forKey: "zk.pushToTalk")
+        pttHeld = false
+        Task {
+            guard isConnected, !isTearingDown, let room = self.room else { return }
+            if on {
+                _ = try? await room.localParticipant.setMicrophone(enabled: false)
+                if !isTearingDown { isMuted = true }
+            } else if !isDeafened {
+                _ = try? await room.localParticipant.setMicrophone(enabled: true)
+                if !isTearingDown { isMuted = false }
+            }
+        }
+    }
+
+    /// Called by the talk button on press (held=true) and release (held=false).
+    func pttSetHeld(_ held: Bool) async {
+        guard pushToTalkEnabled else { return }
+        pttHeld = held
+        await reconcilePttMic()
+    }
+
+    /// Drive the mic toward the desired PTT state, re-reading `pttHeld` after
+    /// every await so coalesced rapid taps converge on the final state. A
+    /// single in-flight loop owns the mic; concurrent callers just update
+    /// `pttHeld` and return — the running loop picks up the new value.
+    private func reconcilePttMic() async {
+        if pttReconciling { return }
+        pttReconciling = true
+        defer { pttReconciling = false }
+        var lastApplied: Bool? = nil
+        while true {
+            let desired = pushToTalkEnabled && pttHeld && !isDeafened && isConnected && !isTearingDown
+            if lastApplied == desired { break }
+            guard let room = self.room, !isTearingDown else { break }
+            _ = try? await room.localParticipant.setMicrophone(enabled: desired)
+            if isTearingDown { break }
+            isMuted = !desired
+            lastApplied = desired
+            // Loop: if pttHeld flipped during the await, re-apply.
+        }
+    }
+
     /// Toggle deafen: mute/unmute every remote participant's audio for the local
     /// listener, and mute the mic while deafened (restoring it on undeafen).
     /// Per-user "muted for me" choices are preserved when undeafening.
@@ -184,11 +259,13 @@ final class VoiceManager: ObservableObject {
         let next = !isDeafened
         if next {
             wasMutedBeforeDeafen = isMuted
-            for pub in audioPubs.values { try? await pub.set(enabled: false) }
+            // Snapshot before the awaits: a concurrent disconnect() clears
+            // audioPubs (mid-iteration mutation is undefined / can skip entries).
+            for pub in Array(audioPubs.values) { try? await pub.set(enabled: false) }
             _ = try? await room.localParticipant.setMicrophone(enabled: false)
             isMuted = true
         } else {
-            for (uid, pub) in audioPubs { try? await pub.set(enabled: !mutedForMe.contains(uid)) }
+            for (uid, pub) in Array(audioPubs) { try? await pub.set(enabled: !mutedForMe.contains(uid)) }
             if !wasMutedBeforeDeafen {
                 _ = try? await room.localParticipant.setMicrophone(enabled: true)
                 isMuted = false
@@ -206,11 +283,38 @@ final class VoiceManager: ObservableObject {
         catch { lastError = error.localizedDescription }
     }
 
-    /// The user's saved camera quality (Settings → Preferences). Defaults to
-    /// high (1080p). Read at publish time, so a change applies on the next
-    /// camera-on (matches web).
+    /// Live camera-quality entitlement check, wired by AppStore.start() to
+    /// the admin-configured monetization matrix (server config, or built-in
+    /// defaults: 1080p free, 2K Guardian, 4K Legend) against the signed-in
+    /// user's membership. Drives the premium camera-quality clamp below;
+    /// nil (signed out / not wired yet) fails closed to the default free
+    /// ceiling (1080p).
+    var cameraQualityAllowed: ((CameraQuality) -> Bool)?
+
+    /// Clamp to the HIGHEST quality the membership entitles, per the
+    /// admin-configured matrix. Applied at PUBLISH time so a lapsed
+    /// membership (or a hand-edited default) publishes at the entitled
+    /// ceiling; the saved preference is untouched and simply re-activates if
+    /// the tier comes back. Walks down the ladder (4K → 2K → 1080p) to the
+    /// first allowed rung — e.g. a Guardian with 4K saved gets 2K (their
+    /// ceiling) under the default matrix, not a hard drop to 1080p. If even
+    /// 1080p is gated above the user's tier, clamps to 720p — 720p and
+    /// below are always free.
+    private func entitledCameraQuality(_ q: CameraQuality) -> CameraQuality {
+        let ladder: [CameraQuality] = [.k4, .k2, .high]
+        guard let start = ladder.firstIndex(of: q) else { return q } // ≤720p: free
+        let allowed = cameraQualityAllowed ?? { $0 == .high } // unwired: defaults, no tier
+        for rung in ladder[start...] where allowed(rung) { return rung }
+        return .medium
+    }
+
+    /// The user's saved camera quality (Settings → Preferences), clamped to
+    /// the membership entitlement. Defaults to high (1080p). Read at publish
+    /// time, so a change applies on the next camera-on (matches web).
     private var savedCameraQuality: CameraQuality {
-        CameraQuality(rawValue: UserDefaults.standard.string(forKey: "zk.cameraQuality") ?? "high") ?? .high
+        entitledCameraQuality(
+            CameraQuality(rawValue: UserDefaults.standard.string(forKey: "zk.cameraQuality") ?? "high") ?? .high
+        )
     }
 
     /// Capture dimensions + fps for the chosen quality.
@@ -221,6 +325,8 @@ final class VoiceManager: ObservableObject {
         case .low: dims = Dimensions(width: 640, height: 480); fps = 15
         case .medium, .auto: dims = .h720_169; fps = 30
         case .high: dims = .h1080_169; fps = 30
+        case .k2: dims = .h1440_169; fps = 30   // 2560x1440
+        case .k4: dims = .h2160_169; fps = 30   // 3840x2160
         }
         return CameraCaptureOptions(position: .front, dimensions: dims, fps: fps)
     }
@@ -242,6 +348,11 @@ final class VoiceManager: ObservableObject {
         case .medium: bitrate = 2_000_000
         case .auto: bitrate = 2_500_000
         case .high: bitrate = 3_000_000
+        // VP8 is software-encoded, so 4K is best-effort: under thermal load the
+        // encoder degrades fps rather than failing, and SFU simulcast still
+        // hands weak viewers a lower layer.
+        case .k2: bitrate = 6_000_000
+        case .k4: bitrate = 10_000_000
         }
         return VideoPublishOptions(
             encoding: VideoEncoding(maxBitrate: bitrate, maxFps: q == .low ? 15 : 30),
@@ -293,6 +404,79 @@ final class VoiceManager: ObservableObject {
         if let pub = audioPubs[userId] {
             try? await pub.set(enabled: !muted)
         }
+        // F10: sync the change to other devices (debounced).
+        scheduleVoicePrefsPush()
+    }
+
+    /// F10 — fetch the shared voice-prefs blob at login and seed the per-user
+    /// mute set from it. The server is authoritative for the cross-device set,
+    /// so this REPLACES the local set (mutes AND unmutes propagate). Applies
+    /// the result to any live remote audio (a no-op outside a call).
+    func loadVoicePrefs() async {
+        guard let blob = try? await APIClient.shared.getVoicePrefs() else { return }
+        voicePrefsBlob = blob
+        voicePrefsHydrated = true
+        let perUser = (blob["perUser"] as? [String: Any]) ?? [:]
+        var serverMuted = Set<String>()
+        for (uid, v) in perUser {
+            if let e = v as? [String: Any], (e["muted"] as? Bool) == true { serverMuted.insert(uid) }
+        }
+        // Migration: this device's pre-sync mutes lived only in UserDefaults.
+        // On the FIRST hydrate, union them with the server set and push the
+        // merge up so we don't silently drop them (the server has never seen
+        // them). After that the server is authoritative, so a remote unmute
+        // can actually remove an entry here.
+        if UserDefaults.standard.bool(forKey: "zk.voicePrefsMigrated") {
+            mutedForMe = serverMuted
+        } else {
+            let merged = serverMuted.union(mutedForMe)
+            mutedForMe = merged
+            UserDefaults.standard.set(true, forKey: "zk.voicePrefsMigrated")
+            if merged != serverMuted { scheduleVoicePrefsPush() }
+        }
+        UserDefaults.standard.set(Array(mutedForMe), forKey: "zk.mutedForMe")
+        if !isDeafened, !isTearingDown {
+            for (uid, pub) in Array(audioPubs) { try? await pub.set(enabled: !mutedForMe.contains(uid)) }
+        }
+    }
+
+    /// Debounced PATCH of the mute set into the shared blob (500ms, matching
+    /// web). Coalesces rapid toggles into one request.
+    private func scheduleVoicePrefsPush() {
+        voicePrefsPushTask?.cancel()
+        voicePrefsPushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled, let self else { return }
+            await self.pushVoicePrefs()
+        }
+    }
+
+    private func pushVoicePrefs() async {
+        // Never PATCH from an empty cache — that would wipe web-owned fields.
+        // Pull the current blob first if we haven't hydrated this session.
+        if !voicePrefsHydrated {
+            if let blob = try? await APIClient.shared.getVoicePrefs() {
+                voicePrefsBlob = blob
+                voicePrefsHydrated = true
+            }
+        }
+        var blob = voicePrefsBlob
+        var perUser = (blob["perUser"] as? [String: Any]) ?? [:]
+        // Re-stamp `muted` on every existing entry (preserving its volume and
+        // any other web fields), then add bare entries for muted users not yet
+        // present. We never delete entries — that would drop web-set volumes.
+        for (uid, v) in perUser {
+            if var e = v as? [String: Any] {
+                e["muted"] = mutedForMe.contains(uid)
+                perUser[uid] = e
+            }
+        }
+        for uid in mutedForMe where perUser[uid] == nil {
+            perUser[uid] = ["muted": true]
+        }
+        blob["perUser"] = perUser
+        voicePrefsBlob = blob
+        try? await APIClient.shared.setVoicePrefs(blob)
     }
 
     /// Rebuild the remote track maps from the room's source of truth.
@@ -412,7 +596,12 @@ extension VoiceManager: RoomDelegate {
             for p in room.activeSpeakers {
                 if let identity = p.identity { ids.insert("\(identity)") }
             }
-            self.speakingUserIds = ids
+            // didUpdateSpeakingParticipants fires on audio-LEVEL ticks (several
+            // times a second) even when the speaker MEMBERSHIP is unchanged.
+            // Only republish when the set actually changed — an unchanged
+            // reassignment still re-renders every speakingUserIds observer.
+            // Mirrors the sameTracks/sameAudio guards in syncRemoteTracks.
+            if ids != self.speakingUserIds { self.speakingUserIds = ids }
             // Frequent during calls — doubles as the remote-track refresh.
             self.syncRemoteTracks()
         }
@@ -523,14 +712,20 @@ struct VoiceChannelView: View {
             StarfieldView().ignoresSafeArea()
 
             VStack(spacing: 0) {
+                // Compute the live feeds ONCE per body pass and thread them into
+                // videoStage/audioOnlyStrip — `feeds` re-runs both the
+                // screenSharers and videoParticipants filters on every read, and
+                // it was read 3× per render (hasAnyVideo + videoStage +
+                // audioOnlyStrip). !feedItems.isEmpty == the old hasAnyVideo.
+                let feedItems = feeds
                 header
                 ZStack {
-                    if hasAnyVideo {
+                    if !feedItems.isEmpty {
                         VStack(spacing: 0) {
-                            videoStage
+                            videoStage(items: feedItems)
                                 .padding(.horizontal, 10)
                                 .padding(.top, 10)
-                            audioOnlyStrip
+                            audioOnlyStrip(items: feedItems)
                         }
                     } else {
                         arena
@@ -559,7 +754,7 @@ struct VoiceChannelView: View {
             withAnimation(.linear(duration: 60).repeatForever(autoreverses: false)) { ringSpin = true }
             previousStates = store.voiceStates
         }
-        .onChange(of: store.voiceStates) { newStates in
+        .onChange(of: store.voiceStates) { _, newStates in
             let old = previousStates
             previousStates = newStates
             let remaining = Set(newStates.map { $0.userId })
@@ -611,10 +806,6 @@ struct VoiceChannelView: View {
         store.voiceStates.filter { voice.screenTracks[$0.userId] != nil }
     }
 
-    private var hasAnyVideo: Bool {
-        !videoParticipants.isEmpty || !screenSharers.isEmpty
-    }
-
     /// Every live feed in display order: screens first, then cameras (max 8).
     private var feeds: [(vs: VoiceState, isScreen: Bool)] {
         let screens = screenSharers.map { ($0, true) }
@@ -624,9 +815,9 @@ struct VoiceChannelView: View {
 
     /// Full-screen feed grid replacing the arena: 1 fills the stage,
     /// 2 stack top/bottom, 3-4 form 2x2, 5-6 2x3, 7-8 2x4.
-    private var videoStage: some View {
+    /// Takes the per-render `feeds` snapshot so it isn't recomputed here.
+    private func videoStage(items: [(vs: VoiceState, isScreen: Bool)]) -> some View {
         GeometryReader { geo in
-            let items = feeds
             let cols = items.count <= 2 ? 1 : 2
             let rows = Int(ceil(Double(items.count) / Double(cols)))
             let spacing: CGFloat = 8
@@ -655,8 +846,8 @@ struct VoiceChannelView: View {
     /// Participants with no live feed: a static avatar row under the grid
     /// (no orbiting while video is on stage).
     @ViewBuilder
-    private var audioOnlyStrip: some View {
-        let feedIds = Set(feeds.map { $0.vs.userId })
+    private func audioOnlyStrip(items: [(vs: VoiceState, isScreen: Bool)]) -> some View {
+        let feedIds = Set(items.map { $0.vs.userId })
         let rest = store.voiceStates.filter { !feedIds.contains($0.userId) }
         if !rest.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -1020,16 +1211,7 @@ struct VoiceChannelView: View {
 
     private var controls: some View {
         HStack(spacing: 16) {
-            Button { Task { await store.toggleVoiceMute() } } label: {
-                Image(systemName: voice.isMuted ? "mic.slash.fill" : "mic.fill")
-                    .font(.system(size: 20))
-                    .foregroundColor(voice.isMuted ? Theme.danger : Theme.ink1)
-                    .frame(width: 54, height: 54)
-                    .background(Theme.bg3)
-                    .clipShape(Circle())
-            }
-            .disabled(!voice.isConnected)
-            .opacity(voice.isConnected ? 1 : 0.5)
+            MicControlButton(voice: voice, onToggle: { await store.toggleVoiceMute() })
 
             Button { Task { await store.toggleVoiceDeafen() } } label: {
                 Image(systemName: voice.isDeafened ? "speaker.slash.fill" : "headphones")
@@ -1182,6 +1364,64 @@ enum Ringtone {
     }
 }
 
+/// Mic control shared across the in-call surfaces. In push-to-talk mode it
+/// becomes a press-and-hold "talk" button (hold to open the mic, release to
+/// re-mute); otherwise it's the normal tap-to-toggle mute button. The hold
+/// gesture lives here once so every surface behaves identically.
+struct MicControlButton: View {
+    @ObservedObject var voice: VoiceManager
+    /// VAD-mode tap action (normally store.toggleVoiceMute()).
+    let onToggle: () async -> Void
+    var iconSize: CGFloat = 20
+    var frameW: CGFloat = 54
+    var frameH: CGFloat = 54
+    var background: Color? = Theme.bg3
+    var unmutedColor: Color = Theme.ink1
+    @State private var pressing = false
+
+    var body: some View {
+        Group {
+            if voice.pushToTalkEnabled {
+                icon
+                    .scaleEffect(voice.pttHeld ? 1.06 : 1.0)
+                    .animation(.easeInOut(duration: 0.1), value: voice.pttHeld)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        // minimumDistance 0 = fires on touch-down. We latch on
+                        // the first onChanged and unlatch on onEnded so press
+                        // and release each fire exactly once.
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { _ in
+                                guard !pressing else { return }
+                                pressing = true
+                                Haptics.light()
+                                Task { await voice.pttSetHeld(true) }
+                            }
+                            .onEnded { _ in
+                                pressing = false
+                                Task { await voice.pttSetHeld(false) }
+                            }
+                    )
+                    .accessibilityLabel("Push to talk")
+                    .accessibilityHint("Hold to transmit")
+            } else {
+                Button { Task { await onToggle() } } label: { icon }
+            }
+        }
+        .disabled(!voice.isConnected)
+        .opacity(voice.isConnected ? 1 : 0.5)
+    }
+
+    private var icon: some View {
+        Image(systemName: voice.isMuted ? "mic.slash.fill" : "mic.fill")
+            .font(.system(size: iconSize))
+            .foregroundColor(voice.isMuted ? Theme.danger : unmutedColor)
+            .frame(width: frameW, height: frameH)
+            .background(background ?? Color.clear)
+            .clipShape(Circle())
+    }
+}
+
 /// Pinned strip at the bottom of the channel list while connected to a voice
 /// channel — mirrors the web's VoicePanel so mute / leave stay reachable while
 /// you browse other channels. Tap the label to re-open the voice screen.
@@ -1223,16 +1463,8 @@ struct VoicePanel: View {
             }
             .buttonStyle(.plain)
 
-            Button { Task { await store.toggleVoiceMute() } } label: {
-                Image(systemName: voice.isMuted ? "mic.slash.fill" : "mic.fill")
-                    .font(.system(size: 15))
-                    .foregroundColor(voice.isMuted ? Theme.danger : Theme.ink1)
-                    .frame(width: 32, height: 32)
-                    .background(Theme.bg3)
-                    .clipShape(Circle())
-            }
-            .disabled(!voice.isConnected)
-            .opacity(voice.isConnected ? 1 : 0.5)
+            MicControlButton(voice: voice, onToggle: { await store.toggleVoiceMute() },
+                             iconSize: 15, frameW: 32, frameH: 32)
 
             Button { Task { await store.toggleVoiceDeafen() } } label: {
                 Image(systemName: voice.isDeafened ? "speaker.slash.fill" : "headphones")
@@ -1331,7 +1563,7 @@ struct StageChannelView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Button { store.clearChannel() } label: {
-                Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold)).foregroundColor(Theme.ink2).padding(.leading, 14).frame(width: 44, height: 44, alignment: .leading).contentShape(Rectangle())
+                Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold)).foregroundColor(Theme.ink2).frame(width: 44, height: 44).contentShape(Rectangle()).padding(.leading, 6)
             }
             Image(systemName: "person.wave.2.fill").font(.system(size: 15)).foregroundColor(Theme.accent)
             VStack(alignment: .leading, spacing: 1) {
@@ -1519,11 +1751,9 @@ struct MinimizedCallBar: View {
             .buttonStyle(.plain)
 
             if !isStage || store.myStageSpeaker {
-                Button { Task { await store.toggleVoiceMute() } } label: {
-                    Image(systemName: voice.isMuted ? "mic.slash.fill" : "mic.fill")
-                        .font(.system(size: 15)).foregroundColor(voice.isMuted ? Theme.danger : Theme.ink2)
-                        .frame(width: 36, height: 32)
-                }
+                MicControlButton(voice: voice, onToggle: { await store.toggleVoiceMute() },
+                                 iconSize: 15, frameW: 36, frameH: 32,
+                                 background: nil, unmutedColor: Theme.ink2)
             }
             Button { Task { await store.leaveActiveCall() } } label: {
                 Image(systemName: "phone.down.fill")

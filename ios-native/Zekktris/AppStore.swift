@@ -3,6 +3,7 @@ import SwiftUI
 import UIKit
 import UserNotifications
 import Photos
+import WidgetKit
 import os
 
 /// Diagnostic log for the 1:1 call ring path. Visible in Console.app
@@ -26,6 +27,13 @@ enum Haptics {
     /// A single firm tap when a poke arrives.
     @MainActor static func poke() {
         let gen = UIImpactFeedbackGenerator(style: .heavy)
+        gen.prepare()
+        gen.impactOccurred()
+    }
+
+    /// A light tap — used for push-to-talk press/release feedback.
+    @MainActor static func light() {
+        let gen = UIImpactFeedbackGenerator(style: .light)
         gen.prepare()
         gen.impactOccurred()
     }
@@ -117,6 +125,16 @@ struct PokeBanner: Identifiable, Equatable {
     let pokeType: String
 }
 
+/// An achievement that just unlocked — the transient top celebration banner
+/// shown on the phone (mirrors the poke banner). Purely a nudge; the badge
+/// itself lives in the achievements gallery.
+struct AchievementBanner: Identifiable, Equatable {
+    let id = UUID()
+    let achievementId: String
+    let name: String
+    let detail: String
+}
+
 /// Holds the live application data — the user's guilds, the selected guild's
 /// channels, and the selected channel's messages — and wires the gateway so
 /// incoming `MESSAGE_CREATE` events append in real time.
@@ -189,18 +207,83 @@ final class AppStore: ObservableObject {
                 let pa = a.position ?? 0, pb = b.position ?? 0
                 return pa != pb ? pa < pb : a.id < b.id
             }
+            // Group the sorted channels once (single order-preserving pass) so
+            // the sidebar indexes per-category instead of re-filtering
+            // sortedChannels for every category on every render. Same predicates
+            // as ChannelListView's sortedCategories / uncategorizedChannels /
+            // channels(in:).
+            var cats: [Channel] = []
+            var uncat: [Channel] = []
+            var byParent: [String: [Channel]] = [:]
+            for c in sortedChannels {
+                if c.isCategory { cats.append(c); continue }
+                if c.isThread { continue }
+                if let pid = c.parentId { byParent[pid, default: []].append(c) }
+                else { uncat.append(c) }
+            }
+            categoryChannels = cats
+            uncategorizedChannels = uncat
+            channelsByCategory = byParent
+            // id → Channel for O(1) <#channel> mention-label resolution (was a
+            // linear store.channels.first(where:) per mention token per render).
+            // All channels incl. categories/threads so any id resolves.
+            var byId: [String: Channel] = [:]
+            byId.reserveCapacity(channels.count)
+            for c in channels { byId[c.id] = c }
+            channelById = byId
             // Channel renames feed <#channel> mention labels in message rows.
             mentionContextVersion &+= 1
         }
     }
+    /// id → Channel for O(1) mention-label lookup — see the `channels` didSet.
+    @Published private(set) var channelById: [String: Channel] = [:]
     /// `channels` pre-sorted by (position, id) — see the didSet on `channels`.
     @Published private(set) var sortedChannels: [Channel] = []
-    @Published var messages: [Message] = []
+    /// Sidebar groupings derived once in the `channels` didSet (single pass) so
+    /// ChannelListView indexes into them instead of re-filtering sortedChannels
+    /// per category on every render.
+    @Published private(set) var categoryChannels: [Channel] = []
+    @Published private(set) var uncategorizedChannels: [Channel] = []
+    @Published private(set) var channelsByCategory: [String: [Channel]] = [:]
+    @Published var messages: [Message] = [] {
+        didSet { if !suppressIndexRebuild { rebuildMessageIndex() } }
+    }
+    /// id → Message lookup kept in lockstep with `messages`. Whole-array
+    /// assignments/insert/remove rebuild it (didSet); in-place single-element
+    /// subscript writes go through `mutateMessage(at:)`, which patches only the
+    /// touched id — avoiding an O(N) rebuild per reaction/receipt/poll/pin.
+    private var messagesById: [String: Message] = [:]
+    private var suppressIndexRebuild = false
+
+    private func rebuildMessageIndex() {
+        var idx = [String: Message](minimumCapacity: messages.count)
+        // first(where:) returns the FIRST match; preserve that by not
+        // overwriting an id already inserted from an earlier element.
+        for m in messages where idx[m.id] == nil { idx[m.id] = m }
+        messagesById = idx
+    }
+
+    /// Mutate one already-present message in place WITHOUT a full index rebuild.
+    /// The element's id is unchanged, so it maps to the same slot — the
+    /// first-occurrence invariant holds. The @Published republish still fires
+    /// (SwiftUI sees the array write) exactly as before.
+    private func mutateMessage(at idx: Int, _ body: (inout Message) -> Void) {
+        suppressIndexRebuild = true
+        body(&messages[idx])
+        suppressIndexRebuild = false
+        messagesById[messages[idx].id] = messages[idx]
+    }
     /// Per-channel snapshot of the last-viewed message list, keyed by channel id.
     /// Seeds `messages` synchronously on reopen so a revisited conversation paints
     /// instantly while loadMessages refreshes in the background. Not @Published
     /// (views read `messages`, never this); per-session, cleared on stop().
     private var messageCache: [String: [Message]] = [:]
+    /// Channel-id recency for messageCache, most-recent last. Bounds the cache
+    /// to MESSAGE_CACHE_MAX channels so a long session that visits hundreds of
+    /// conversations doesn't grow the cache without limit (each entry is up to
+    /// 100 Message structs). The selected channel is never evicted.
+    private var messageCacheLRU: [String] = []
+    private let messageCacheMax = 48
     /// True for the single render in which we open a channel we already have
     /// cached — lets MainView skip the route cross-fade so a cached open POPS
     /// instead of fading. Set in selectChannel before the push, reset in openChannel.
@@ -213,9 +296,17 @@ final class AppStore: ObservableObject {
     /// The watch gets the big-emoji flash; the phone shows this small banner.
     @Published var pokeBanner: PokeBanner?
 
+    /// An achievement just unlocked — drives the transient top celebration
+    /// banner (foreground only). Set by the ACHIEVEMENT_UNLOCK gateway event.
+    @Published var achievementBanner: AchievementBanner?
+
     /// Direct-message channels for the current user.
     @Published var dms: [Channel] = []
     @Published var relationships: [Relationship] = []
+    /// Personal DM nicknames: [targetUserId: nickname]. Viewer-private labels
+    /// shown in place of a user's name in direct messages only. Hydrated at
+    /// login (like relationships) and applied wherever a DM peer renders.
+    @Published var dmNicknames: [String: String] = [:]
     @Published var loadingRelationships = false
     @Published var mentions: [Mention] = []
     @Published var loadingMentions = false
@@ -323,6 +414,19 @@ final class AppStore: ObservableObject {
             // the key (keychain, AfterFirstUnlock — readable here) at connect
             // time, exactly like the in-app path.
             if let call = self.incomingCall, call.channelId == channelId {
+                // Locked E2EE with NO key on this device (never unlocked): openVoice
+                // would just set e2eeError and return, leaving the CallKit call
+                // "answered" but connected to nothing while the caller keeps
+                // ringing. End the CallKit call + decline server-side instead so
+                // the caller stops. Uses the SAME keychain-backed e2eeKey check
+                // openVoice uses at connect time, so a key that IS present (just
+                // not in memory yet) still answers normally — no regression to the
+                // old "E2EE calls unanswerable" guard.
+                if call.channel.isE2EE && self.e2eeKey(for: call.channel) == nil {
+                    self.e2eeError = "Unlock this conversation to answer the encrypted call."
+                    CallManager.shared.endFromApp(channelId: channelId)
+                    return
+                }
                 self.incomingCall = nil
                 self.openVoice(call.channel)
             } else if let dm = self.dms.first(where: { $0.id == channelId }) {
@@ -380,7 +484,10 @@ final class AppStore: ObservableObject {
             guard let dict = note.object as? [String: Any],
                   let channelId = dict["channelId"] as? String else { return }
             let autojoin = (dict["autojoin"] as? Bool) ?? false
-            Task { @MainActor in self?.openFromPush(channelId: channelId, autojoin: autojoin) }
+            let messageId = dict["messageId"] as? String
+            Task { @MainActor in
+                self?.openFromPush(channelId: channelId, messageId: messageId, autojoin: autojoin)
+            }
         }
         NotificationCenter.default.addObserver(
             forName: .zkCallAction, object: nil, queue: .main
@@ -401,12 +508,62 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// Debounce so a notification tap and the scenePhase .active handler —
+    /// which fire within the same wake — don't tear the socket down twice.
+    private var lastForegroundReconnectAt: Date = .distantPast
+
+    /// foregroundReconnect(), debounced (1.5s). Safe to call from every wake
+    /// signal; only the first caller in the window does the work.
+    func foregroundReconnectDebounced() {
+        guard Date().timeIntervalSince(lastForegroundReconnectAt) > 1.5 else { return }
+        lastForegroundReconnectAt = Date()
+        foregroundReconnect()
+    }
+
     /// Navigate to a channel from a notification tap; loads DMs first when
     /// the target isn't in memory yet (cold launch).
-    func openFromPush(channelId: String, autojoin: Bool) {
+    func openFromPush(channelId: String, messageId: String?, autojoin: Bool) {
+        // A notification tap IS a foreground wake — but it can race the
+        // scenePhase .active transition (navigation runs first on some paths),
+        // and the tapped conversation must not depend on that ordering. Revive
+        // the socket + run the full REST resync NOW so the chat we're about to
+        // open loads fresh and the next send has a live session behind it.
+        foregroundReconnectDebounced()
         func open(_ ch: Channel) {
             if ch.isDM { showDMs() }
-            if autojoin { openVoice(ch) } else { selectChannel(ch) }
+            if autojoin { openVoice(ch); return }
+            let alreadyOpen = selectedChannel?.id == ch.id
+            // Deep-link to the exact message the tapped notification is for, and
+            // (guild only) prefill a reply to its author.
+            if let messageId {
+                if alreadyOpen {
+                    // Already open — scroll to it now; reply to it if it's loaded.
+                    pendingScrollAnchorId = messageId
+                    if !ch.isDM, let m = messages.first(where: { $0.id == messageId }) {
+                        replyingTo = m
+                    }
+                } else {
+                    // loadMessages will fetch a window AROUND this id, scroll to
+                    // it, and (guild) set replyingTo once it's loaded.
+                    pendingJumpMessageId = messageId
+                    if !ch.isDM { pendingReplyMessageId = messageId }
+                    selectChannel(ch)
+                }
+            } else if !alreadyOpen {
+                selectChannel(ch)
+            }
+            // If the channel was ALREADY the selected one (its message view is
+            // still on screen from before we suspended), re-selecting does NOT
+            // re-run that view's on-appear load — so the message this
+            // notification is FOR, which arrived while we were suspended, never
+            // gets fetched. That's the "tapped the notification, it opened the
+            // DM, but the new message wasn't there until I backed out and
+            // reopened it" bug. Re-run the same load a reopen does. loadMessages
+            // merges in-flight/optimistic sends and retries on a waking radio;
+            // when we're already current it's a cheap refetch.
+            if alreadyOpen {
+                Task { await loadMessages(ch) }
+            }
         }
         if let dm = dms.first(where: { $0.id == channelId }) { open(dm); return }
         if let ch = channels.first(where: { $0.id == channelId }) { open(ch); return }
@@ -472,12 +629,28 @@ final class AppStore: ObservableObject {
     @Published var roles: [Role] = [] {
         // Role renames feed <@&role> mention labels, and role colors feed name
         // colors, in message rows.
-        didSet { mentionContextVersion &+= 1 }
+        didSet {
+            // id → Role for O(1) <@&role> mention-label resolution (was a linear
+            // store.roles.first(where:) per mention token per render).
+            var rb: [String: Role] = [:]
+            rb.reserveCapacity(roles.count)
+            for r in roles { rb[r.id] = r }
+            roleById = rb
+            mentionContextVersion &+= 1
+        }
     }
+    /// id → Role for O(1) mention-label lookup — see the `roles` didSet.
+    @Published private(set) var roleById: [String: Role] = [:]
     /// When non-nil, a ProfileCard sheet is shown for this user.
     @Published var profileUser: PublicUser?
     /// Drives the guild member-list sheet.
     @Published var showMembers = false
+    /// Drives the self-profile / Settings pop-up sheet. Settings presents as a
+    /// sheet (like Friends / Saved) instead of a rail page so it reads as a
+    /// pop-up over the app rather than a full-screen takeover. Opened from the
+    /// rail avatar; closed via the "<" back button (interactive drag-dismiss is
+    /// disabled — see the presenter in MainView for the hit-test rationale).
+    @Published var showSettingsSheet = false
     /// The message the composer is currently replying to (nil = not replying).
     @Published var replyingTo: Message?
     /// Pinned messages for the open channel + its loading flag.
@@ -490,7 +663,16 @@ final class AppStore: ObservableObject {
     @Published var loadingSaved = false
     @Published var savedIds: Set<String> = []
     /// Live presence map: userId → status ("online"/"idle"/"dnd"/"offline").
-    @Published var presence: [String: String] = [:]
+    @Published var presence: [String: String] = [:] {
+        // A cheap monotonic stamp so views can memoize presence-derived work
+        // (e.g. MemberListView.sections) and recompute only when presence
+        // actually flushed, not on every unrelated AppStore publish. Plain var
+        // (not @Published) — it rides the presence change that already
+        // re-evaluates observing views.
+        didSet { presenceVersion &+= 1 }
+    }
+    /// Bumped whenever `presence` flushes. See presence.didSet.
+    private(set) var presenceVersion = 0
     /// Coalescing buffer for live PRESENCE_UPDATE events. On a cold-launch READY
     /// burst (and on busy instances) presence is by far the most frequent event;
     /// writing `presence` per-event re-ran the whole MainView body (incl. the
@@ -551,8 +733,14 @@ final class AppStore: ObservableObject {
     @Published var pendingScrollAnchorId: String?
     /// When set, the next channel load fetches messages AROUND this id (instead
     /// of the most recent page) and then scrolls to it — used by "jump to
-    /// mention". Consumed by loadMessages.
+    /// mention" and by a notification tap deep-linking to a specific message.
+    /// Consumed by loadMessages.
     var pendingJumpMessageId: String?
+    /// Set from a notification tap in a GUILD channel: once the target message
+    /// loads, the composer prefills a reply to it (so a response goes back as a
+    /// reply to that user). DMs skip this — there's only one other person.
+    /// Consumed by loadMessages; cleared on leaving a channel.
+    var pendingReplyMessageId: String?
     /// Per-channel read markers (channelId → ReadState), driving unread dots
     /// and mention badges on channels and DMs.
     @Published var readStates: [String: ReadState] = [:]
@@ -622,6 +810,54 @@ final class AppStore: ObservableObject {
     /// The signed-in user, used to author optimistic message placeholders.
     @Published var currentUser: SelfUser?
 
+    // MARK: Monetization gates (admin-configurable)
+
+    /// Admin-configured monetization matrix, fetched fire-and-forget on
+    /// start() and every foreground reconnect. nil (old server / fetch
+    /// failed / not yet loaded) → the built-in defaults below, which are
+    /// exactly today's hardcoded behavior, so nothing changes against a
+    /// server that doesn't have the endpoint.
+    @Published var monetizationConfig: MonetizationConfig?
+
+    /// Tier ladder: none=0 scout=1 guardian=2 legend=3 (unknown → 0).
+    static func tierRank(_ tier: String?) -> Int {
+        switch tier {
+        case "scout": return 1
+        case "guardian": return 2
+        case "legend": return 3
+        default: return 0
+        }
+    }
+
+    /// Minimum membership tier required to publish the camera at `q`, per
+    /// the admin-configured matrix — or the built-in defaults (1080p free,
+    /// 2K Guardian, 4K Legend) when no config is loaded. nil = free.
+    /// 720p and below are ALWAYS free (never configurable).
+    func requiredCameraTier(for q: CameraQuality) -> String? {
+        let required: String
+        switch q {
+        case .high: required = monetizationConfig?.camera.p1080 ?? "none"
+        case .k2: required = monetizationConfig?.camera.k2 ?? "guardian"
+        case .k4: required = monetizationConfig?.camera.k4 ?? "legend"
+        default: return nil
+        }
+        return required == "none" ? nil : required
+    }
+
+    /// True when the signed-in user's membership meets the configured
+    /// minimum for camera quality `q`.
+    func cameraQualityAllowed(_ q: CameraQuality) -> Bool {
+        guard let required = requiredCameraTier(for: q) else { return true }
+        return Self.tierRank(currentUser?.subscriptionTier) >= Self.tierRank(required)
+    }
+
+    /// Refresh the monetization matrix. Failures are swallowed and keep the
+    /// last good config (or nil → defaults), so an old server or a flaky
+    /// network never changes entitlement behavior mid-session.
+    func loadMonetizationConfig() async {
+        if let cfg = try? await api.monetization() { monetizationConfig = cfg }
+    }
+
     // MARK: Automatic presence (online ↔ idle)
     //
     // "Online" is an AUTOMATIC mode: while the chosen status is online the app
@@ -649,6 +885,13 @@ final class AppStore: ObservableObject {
     private var autoPresenceTimer: Timer?
     /// Safety-net poll for the OPEN conversation (see startOpenChannelPolling).
     private var openChannelPollTimer: Timer?
+    /// Coalesce the many reconcileOpenChannel triggers that pile up on a single
+    /// foreground (immediate + +1.3s/+4s timed + RESUMED + 12s poll). A short
+    /// in-flight guard + min-interval collapses the near-simultaneous duplicates
+    /// to one while preserving every safety-net trigger: a call landing after
+    /// the window (the +4s reconcile, a later RESUMED, the next poll tick) runs.
+    private var reconcileInFlight = false
+    private var lastReconcileAt: Date = .distantPast
     /// Becomes true after the first gateway READY. A later READY means we
     /// reconnected after a drop, so we re-sync state (events were missed while
     /// disconnected) — mirroring the web client re-bootstrapping on reconnect.
@@ -671,6 +914,26 @@ final class AppStore: ObservableObject {
         // the watch whenever it refreshes (so a watch poke never uses a stale,
         // expired token). The targets ride along on each DM (re)load.
         WatchSync.shared.start()
+        // PULL path: let the watch fetch LIVE credentials on demand (right
+        // before it sends / pokes / loads) instead of only receiving whatever
+        // we last pushed. Answers with the current token + the same DM targets
+        // syncWatch() builds, so a rotated/stale token never blocks a wrist send.
+        WatchSync.shared.snapshotProvider = { [weak self] in
+            guard let self else { return (nil, []) }
+            return (self.api.token, self.watchTargets())
+        }
+        // Premium camera-quality gate: give the voice layer a LIVE read of
+        // the admin-configured monetization matrix vs the signed-in tier, so
+        // its publish-time clamp always reflects the current membership
+        // (gift, lapse, renewal) AND the current server config without any
+        // sync choreography. nil self (signed out) → built-in defaults with
+        // no membership (1080p ceiling), same as today.
+        voice.cameraQualityAllowed = { [weak self] q in
+            guard let self else { return q != .k2 && q != .k4 }
+            return self.cameraQualityAllowed(q)
+        }
+        // Fetch the matrix itself fire-and-forget; failure keeps defaults.
+        Task { await loadMonetizationConfig() }
         if !watchTokenObserverInstalled {
             watchTokenObserverInstalled = true
             NotificationCenter.default.addObserver(
@@ -692,6 +955,15 @@ final class AppStore: ObservableObject {
         // Load relationships up front so friend-aware UI (e.g. hiding "Report"
         // for friends) is correct anywhere, not just after visiting DMs.
         Task { await loadRelationships() }
+        // Load supervision up front so a supervised child's parental controls
+        // (e.g. filterProfanity → mask swear words) apply from the first render,
+        // not only after they open Parental Controls. Mirrors web's startup
+        // loadSupervision().
+        Task { await loadFamily() }
+        Task { await loadDmNicknames() }
+        // F10: hydrate the per-user mute list from the shared voice-prefs blob
+        // so a mute made on another device (or web) takes effect here.
+        Task { await voice.loadVoicePrefs() }
         // Default landing: open to the Direct Messages page on a fresh launch
         // (once). Skipped when a notification/deep-link has already navigated
         // somewhere (a pushed route, an open channel, or a rail page), and never
@@ -731,6 +1003,21 @@ final class AppStore: ObservableObject {
     func foregroundReconnect() {
         guard currentUserId != nil else { return }
         gateway.forceReconnect()
+        // Full lightweight REST re-sync on EVERY foreground — do not depend on
+        // the gateway resume/replay landing. A short background resolves to
+        // RESUMED (not READY), which only reconciles the OPEN channel: the DM
+        // list order/previews, unread dots, and — critically — mention badges
+        // never arrive from live events (MESSAGE_CREATE always writes
+        // mentionCount:0), so they'd stay stale until a full READY or a manual
+        // re-entry. A push-only message delivered while the socket was dead is
+        // invisible to the lists entirely. REST is independent of the socket,
+        // so mirror the READY reconnect re-sync here (all idempotent): lists +
+        // read state converge within ~1s regardless of what the socket does.
+        Task { await loadDMs() }
+        Task { await loadReadStates() } // also refreshes the app-icon badge
+        Task { await loadGuilds() }
+        // Admin may have retuned the monetization matrix while backgrounded.
+        Task { await loadMonetizationConfig() }
         // Recover messages that arrived in the OPEN conversation while we were
         // backgrounded. The gateway RESUME replays missed frames just before
         // RESUMED (and we reconcile on RESUMED/READY too) — but this immediate
@@ -813,9 +1100,11 @@ final class AppStore: ObservableObject {
         autoPresenceTimer?.invalidate()
         // Re-check periodically so the idle transition fires without a UI event
         // (and talking/idle changes are caught within the interval).
-        autoPresenceTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        let presence = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.evaluateAutoPresence() }
         }
+        RunLoop.main.add(presence, forMode: .common)
+        autoPresenceTimer = presence
         evaluateAutoPresence()
     }
 
@@ -834,12 +1123,26 @@ final class AppStore: ObservableObject {
     /// Cheap: an `after`-cursor fetch that returns zero rows in the common case.
     private func startOpenChannelPolling() {
         openChannelPollTimer?.invalidate()
-        openChannelPollTimer = Timer.scheduledTimer(withTimeInterval: 12, repeats: true) { [weak self] _ in
+        // Near-live convergence for the OPEN conversation. The live gateway push
+        // is the fast path, but when it silently fails to deliver (dead socket,
+        // proxy not upgrading the WebSocket, missed frame) this reconcile is the
+        // ONLY thing that surfaces an incoming message. Poll every 3s (was 12s)
+        // so a message from the other person — or another of your own devices —
+        // appears within a few seconds instead of only after a reload. Cheap:
+        // an append-only `after` fetch returning zero rows when already current.
+        // `.common` mode, NOT the default `Timer.scheduledTimer` (.default): the
+        // main run loop switches to .eventTracking while a scroll drag or
+        // deceleration is in flight, which suspends a .default timer. That is
+        // precisely when the user is reading the chat and most likely to notice a
+        // missing message. Same for `autoPresenceTimer`.
+        let poll = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.appActive, self.selectedChannel != nil else { return }
                 await self.reconcileOpenChannel()
             }
         }
+        RunLoop.main.add(poll, forMode: .common)
+        openChannelPollTimer = poll
     }
 
     private func stopOpenChannelPolling() {
@@ -859,6 +1162,17 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// Show the transient achievement-unlock celebration banner for ~5s. The id
+    /// guard means a newer unlock landing mid-display owns the dismissal.
+    func showAchievementBanner(id: String, name: String, detail: String) {
+        let banner = AchievementBanner(achievementId: id, name: name, detail: detail)
+        achievementBanner = banner
+        Task {
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            if achievementBanner?.id == banner.id { achievementBanner = nil }
+        }
+    }
+
     /// Tapped the poke banner → open the DM with the sender (the poke arrived on
     /// their DM channel). Cold-launch safe: reload DMs if it isn't in memory yet.
     func openPokeSender(_ banner: PokeBanner) {
@@ -869,6 +1183,25 @@ final class AppStore: ObservableObject {
         Task {
             await loadDMs()
             if let dm = dms.first(where: { $0.id == cid }) { jumpToDM(dm) }
+        }
+    }
+
+    /// Handle a `zekktris://` deep link (currently from the Home/Lock-Screen
+    /// widget). `zekktris://dm/<channelId>` opens that DM at the composer.
+    func handleDeepLink(_ url: URL) {
+        guard url.scheme == "zekktris", url.host == "dm" else { return }
+        let cid = url.pathComponents.first(where: { $0 != "/" }) ?? ""
+        openDMById(cid)
+    }
+
+    /// Open a DM by channel id — resolve locally, else reload the DM list then
+    /// jump. Mirrors openPokeSender's resolve-or-load pattern.
+    func openDMById(_ channelId: String) {
+        guard !channelId.isEmpty else { return }
+        if let dm = dms.first(where: { $0.id == channelId }) { jumpToDM(dm); return }
+        Task {
+            await loadDMs()
+            if let dm = dms.first(where: { $0.id == channelId }) { jumpToDM(dm) }
         }
     }
 
@@ -918,8 +1251,10 @@ final class AppStore: ObservableObject {
         channels = []
         messages = []
         messageCache = [:]
+        messageCacheLRU = []
         dms = []
         relationships = []
+        dmNicknames = [:]
         typing = [:]
         searchResults = []
         dmSearchResults = []
@@ -963,6 +1298,11 @@ final class AppStore: ObservableObject {
         decrypted = [:]
         e2eeKeyCache = [:]
         clearDecryptedMedia()
+        // Emoji bitmaps are per-session public assets with no ceiling; drop them
+        // (and in-flight markers, so cleared emojis re-fetch) on sign-out so the
+        // cache doesn't survive account switches unbounded.
+        emojiImages = [:]
+        emojiInFlight = []
         e2eeError = nil
     }
 
@@ -1067,9 +1407,10 @@ final class AppStore: ObservableObject {
     }
     func pop() {
         if !stack.isEmpty { stack.removeLast() }
-        // Leaving a channel cancels any not-yet-consumed "jump to mention"
-        // target, so it can't apply to the next channel we open.
+        // Leaving a channel cancels any not-yet-consumed "jump to mention" /
+        // notification deep-link target, so it can't apply to the next channel.
         pendingJumpMessageId = nil
+        pendingReplyMessageId = nil
         // Leaving ANY conversation closes the members view. Must run on every
         // pop (not just to root): a thread's people-icon tap sets showMembers
         // but can't present there; without clearing it on the way out it would
@@ -1095,21 +1436,39 @@ final class AppStore: ObservableObject {
             unreadBoundaryId = nil
         }
     }
-    private func resetStack() { stack = []; threadList = []; showMembers = false; pendingJumpMessageId = nil }
+    private func resetStack() { stack = []; threadList = []; showMembers = false; pendingJumpMessageId = nil; pendingReplyMessageId = nil }
 
     /// Called by MessageListView.onAppear to load the channel it shows.
     /// Guarded by id so a re-appear (keyboard etc.) doesn't reload.
     func openChannel(_ channel: Channel) {
-        guard selectedChannel?.id != channel.id else { return }
+        guard selectedChannel?.id != channel.id else {
+            // The view remounted for the channel that's ALREADY selected — e.g.
+            // tapping a push notification INTO the open channel, or (wide layout)
+            // Threads → re-tapping the same channel. We keep scroll/decrypt state
+            // (no reset), but still top up from the server: otherwise this path
+            // leaves only the after-cursor reconcile from foregroundReconnect,
+            // which can lose the read-replica race right after a cold foreground
+            // and strand the just-arrived message until the 12s poll. Dedup-safe
+            // (upsert), and reconcileOpenChannel falls back to a full loadMessages
+            // when nothing numeric is loaded yet.
+            Task { await reconcileOpenChannel() }
+            return
+        }
         // The route animation has already consumed the cache-hit hint; clear it
         // so later non-cached navigations cross-fade normally.
         openingCachedChannel = false
-        selectedChannel = channel
-        // Snapshot the channel we're leaving, then seed the new one from cache so
-        // a revisited conversation paints on THIS frame (no empty→spinner→fade).
-        // loadMessages still runs below to refresh + merge server truth.
+        // Snapshot the channel we're LEAVING first — while `selectedChannel`
+        // still points at it. snapshotCurrentChannel() reads selectedChannel?.id
+        // and caches the resident `messages`; if we reassign selectedChannel
+        // first, it would cache the OLD channel's messages under the NEW id
+        // (cross-channel contamination). Mirrors what pop() already does.
         snapshotCurrentChannel()
+        selectedChannel = channel
+        // Seed the new one from cache so a revisited conversation paints on THIS
+        // frame (no empty→spinner→fade). loadMessages still runs below to
+        // refresh + merge server truth.
         messages = messageCache[channel.id] ?? []
+        if messageCache[channel.id] != nil { touchMessageCache(channel.id) }
         // Drop decrypted E2EE plaintext from the channel we're leaving —
         // it otherwise stayed resident for the whole session (only relock/
         // sign-out cleared it), defeating the "plaintext doesn't linger in
@@ -1181,8 +1540,13 @@ final class AppStore: ObservableObject {
             guilds = try await api.guilds()
             // Auto-select the first guild for a faster first paint — but NOT
             // when we've intentionally landed on DMs (the default launch view),
-            // or this late guilds response would stomp the DMs landing.
-            if selectedGuild == nil, !inDMs, let first = guilds.first {
+            // or this late guilds response would stomp the DMs landing. Also
+            // require nothing to be open (selectedChannel == nil): on a resume,
+            // foregroundReconnect re-runs loadGuilds, and reselecting a guild
+            // here NILS selectedChannel (selectGuild), so a send fired into an
+            // already-open DM would silently no-op (guard in send()). This is
+            // the reported "message won't send / no bubble after resume" bug.
+            if selectedGuild == nil, !inDMs, selectedChannel == nil, let first = guilds.first {
                 selectGuild(first)
             }
         } catch {
@@ -1304,14 +1668,44 @@ final class AppStore: ObservableObject {
         syncWatch()
     }
 
+    /// The recent 1:1 DM peers the watch can poke / message, newest first.
+    /// Shared by the proactive push (`syncWatch`) and the on-demand pull
+    /// (`WatchSync.snapshotProvider`) so both hand the watch the same list.
+    func watchTargets() -> [WatchTargetTuple] {
+        dms
+            .filter { $0.type == "dm" }
+            .prefix(12)
+            .map { dm -> WatchTargetTuple in
+                // For E2EE DMs, relay the (verified) 32-byte key as base64 so the
+                // watch can encrypt outgoing + decrypt incoming itself. The e2ee
+                // flag rides along even when we have no key, so the watch knows to
+                // refuse a plaintext send rather than leak. The streak lets the
+                // wrist show what level you're at.
+                let keyB64 = dm.isE2EE ? e2eeKey(for: dm)?.base64EncodedString() : nil
+                return (id: dm.id, name: dm.dmTitle, streak: dm.streak ?? 0, e2ee: dm.isE2EE, e2eeKeyBase64: keyB64)
+            }
+    }
+
     /// Push the current auth token + recent 1:1 DM peers to the Apple Watch
     /// poke app over WatchConnectivity. Cheap + coalesced (latest-wins).
     func syncWatch() {
-        let targets = dms
+        WatchSync.shared.sync(token: api.token, targets: watchTargets())
+        // The Home/Lock-Screen widget shares the same trigger (DM list / token
+        // changed) — publish to the App Group + reload its timeline.
+        syncWidgets()
+    }
+
+    /// Publish the recent DMs + token to the App Group so the WidgetKit
+    /// extension can render the "Quick DM" widget and fire a one-tap poke, then
+    /// nudge WidgetKit to reload. Cheap + idempotent (latest-wins).
+    func syncWidgets() {
+        let items = dms
             .filter { $0.type == "dm" }
             .prefix(12)
-            .map { (id: $0.id, name: $0.dmTitle) }
-        WatchSync.shared.sync(token: api.token, targets: Array(targets))
+            .map { WidgetDM(id: $0.id, name: $0.dmTitle, streak: $0.streak ?? 0,
+                            avatarURL: assetURL($0.dmAvatarUser?.avatarUrl)?.absoluteString) }
+        WidgetBridge.publish(dms: Array(items), token: api.token)
+        WidgetCenter.shared.reloadAllTimelines()
     }
 
     /// Reorder sibling channels within a group (a category, or the
@@ -1382,7 +1776,13 @@ final class AppStore: ObservableObject {
             let cutoff = merged.last?.createdAt
             let live = messages.filter {
                 $0.channelId == channel.id && !fetchedIds.contains($0.id)
-                    && (cutoff == nil || $0.createdAt > cutoff!)
+                    // ALWAYS keep in-flight / failed optimistic sends (sendState
+                    // != nil), regardless of the createdAt cutoff — otherwise a
+                    // resume-triggered refresh landing while a placeholder is
+                    // on screen could drop it (a whole-second placeholder
+                    // timestamp string-compares as older than a same-second
+                    // server row with millis), making the send silently vanish.
+                    && ($0.sendState != nil || cutoff == nil || $0.createdAt > cutoff!)
             }
             if !live.isEmpty {
                 merged.append(contentsOf: live)
@@ -1394,6 +1794,12 @@ final class AppStore: ObservableObject {
             decryptVisible()
             // Jumped-to message is now loaded — scroll to it.
             if let jumpId { pendingScrollAnchorId = jumpId }
+            // Notification tap into a guild channel — prefill a reply to the
+            // message we deep-linked to, now that it's loaded.
+            if let replyId = pendingReplyMessageId {
+                pendingReplyMessageId = nil
+                if let m = messages.first(where: { $0.id == replyId }) { replyingTo = m }
+            }
             // Self-heal a stale open: a MESSAGE_CREATE that arrived in the gap
             // between tap and openChannel was dropped from `messages` (it only
             // bumped the channel's lastMessageId), and/or this page read a
@@ -1426,9 +1832,26 @@ final class AppStore: ObservableObject {
                 // Drop any cached history so a revoked/private channel can't
                 // repaint it from cache on a later reopen.
                 messageCache.removeValue(forKey: channel.id)
+                messageCacheLRU.removeAll { $0 == channel.id }
                 clearChannel()
             } else {
                 errorText = (error as? APIError)?.message ?? error.localizedDescription
+                // Transient failure — e.g. opening a chat seconds after
+                // foregrounding while the radio is still waking. The cache seed
+                // stays on screen and nothing retried until the 12s poll: the
+                // "I opened the chat and the new messages aren't there" gap.
+                // Retry shortly (twice), guarded on this channel still being
+                // open. reconcileOpenChannel falls back to a full load when
+                // nothing is loaded yet, and upserts are dedup-safe.
+                let cid = channel.id
+                Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    guard let self, self.selectedChannel?.id == cid else { return }
+                    await self.reconcileOpenChannel()
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                    guard self.selectedChannel?.id == cid else { return }
+                    await self.reconcileOpenChannel()
+                }
             }
         }
     }
@@ -1470,6 +1893,21 @@ final class AppStore: ObservableObject {
     /// the now-discarded suspended socket) can otherwise be missed.
     func reconcileOpenChannel() async {
         guard let channel = selectedChannel else { return }
+        // Foregrounding back into an already-open channel (no re-open, so
+        // markChannelRead won't fire) should still clear any notifications
+        // that landed for it while we were backgrounded. Kept BEFORE the
+        // coalescing guard so it fires on every trigger, not just the winner.
+        clearDeliveredNotifications(forChannel: channel.id)
+        // Coalesce the storm of triggers one foreground produces: skip if a
+        // reconcile is already running, or one completed within the last ~1.2s
+        // (the immediate + RESUMED calls collide here). 1.2s is below the +1.3s
+        // timer gap, so the intended second safety-net reconcile still fires;
+        // the +4s call, a later RESUMED, and the 12s poll all fall outside and
+        // still run — the safety net is intact.
+        if reconcileInFlight { return }
+        if Date().timeIntervalSince(lastReconcileAt) < 1.2 { return }
+        reconcileInFlight = true
+        defer { reconcileInFlight = false; lastReconcileAt = Date() }
         // Cursor on the newest SERVER-confirmed message (a numeric snowflake);
         // skip optimistic placeholders, whose ids are send nonces the server
         // can't page from. Nothing loaded yet → a normal load instead.
@@ -1505,7 +1943,20 @@ final class AppStore: ObservableObject {
 
     /// Mark a channel read up to its newest known message and ack server-side.
     func markChannelRead(_ channel: Channel) {
-        let newest = (channel.id == selectedChannel?.id ? messages.last?.id : nil) ?? channel.lastMessageId
+        // Opening/seeing a channel clears any of its delivered push
+        // notifications from Notification Center (and the lock screen) so the
+        // user isn't left staring at a banner for a conversation they've
+        // already read. Runs before the early-returns below so it fires on
+        // every open — DMs, text channels, and forum posts alike — even when
+        // the read marker is already current.
+        clearDeliveredNotifications(forChannel: channel.id)
+        // Use the newest CONFIRMED (numeric-id) message — an in-flight optimistic
+        // send carries a UUID nonce as its id, which must never be written to
+        // readStates or POSTed as the ack messageId. Mirrors reconcileOpenChannel.
+        let newestConfirmed = channel.id == selectedChannel?.id
+            ? messages.last(where: { $0.id.allSatisfy(\.isNumber) })?.id
+            : nil
+        let newest = newestConfirmed ?? channel.lastMessageId
         guard let last = newest, !last.isEmpty else { return }
         if let rs = readStates[channel.id], rs.lastMessageId == last, (rs.mentionCount ?? 0) == 0 { return }
         readStates[channel.id] = ReadState(channelId: channel.id, lastMessageId: last, mentionCount: 0)
@@ -1568,6 +2019,35 @@ final class AppStore: ObservableObject {
         UNUserNotificationCenter.current().setBadgeCount(unreadBadgeCount) { _ in }
     }
 
+    /// Remove any delivered notifications for a channel from Notification
+    /// Center when the user opens/reads it. Message pushes set
+    /// aps['thread-id'] = channelId AND carry channelId in their top-level
+    /// data (see services/apns.ts + routes/messages.ts), so a delivered
+    /// notification for this channel matches either on `threadIdentifier`
+    /// or via the shared `channelId(from:)` extractor — the latter also
+    /// catches pokes, whose thread-id is `poke-<channelId>` but whose data
+    /// still carries the channelId.
+    ///
+    /// The getDeliveredNotifications completion is `@Sendable` and runs off
+    /// the main actor, so it captures nothing non-Sendable: it re-acquires
+    /// `UNUserNotificationCenter.current()` rather than closing over an outer
+    /// reference, and skips the badge (the open channel never counts toward
+    /// it — `isChannelUnread` is false for the selected channel — and
+    /// markChannelRead already refreshes it on the read path).
+    func clearDeliveredNotifications(forChannel channelId: String) {
+        UNUserNotificationCenter.current().getDeliveredNotifications { delivered in
+            let ids = delivered
+                .filter { note in
+                    let content = note.request.content
+                    if content.threadIdentifier == channelId { return true }
+                    return NotificationDelegate.channelId(from: content.userInfo) == channelId
+                }
+                .map { $0.request.identifier }
+            guard !ids.isEmpty else { return }
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ids)
+        }
+    }
+
     /// Keep a channel/DM's lastMessageId current as messages arrive, so unread
     /// indicators react even for channels that aren't open.
     private func bumpChannelLastMessage(_ channelId: String, _ messageId: String) {
@@ -1586,6 +2066,16 @@ final class AppStore: ObservableObject {
         if let i = dms.firstIndex(where: { $0.id == channelId }),
            (dms[i].lastMessageId.map { snowflakeGreater(messageId, than: $0) } ?? true) {
             dms[i].lastMessageId = messageId
+            // The DM list is recency-sorted (see performLoadDMs) — unlike the
+            // position-sorted channel list, a new message DOES change DM order.
+            // Re-sort so the just-active conversation jumps to the top; republish
+            // only when the order actually changed to avoid needless re-renders.
+            let resorted = dms.sorted {
+                snowflakeGreater($0.lastMessageId ?? $0.id, than: $1.lastMessageId ?? $1.id)
+            }
+            if resorted.map(\.id) != dms.map(\.id) {
+                dms = resorted
+            }
         }
     }
 
@@ -1913,11 +2403,6 @@ final class AppStore: ObservableObject {
             .sorted { $0.userId < $1.userId }
     }
 
-    /// Total unread mention count across all channels (rail badge).
-    var totalMentionCount: Int {
-        readStates.values.reduce(0) { $0 + ($1.mentionCount ?? 0) }
-    }
-
     /// If the gateway reports OUR voice state moved to a channel different from
     /// the one we're connected to, a moderator dragged us (the server already
     /// evicted us from the old SFU room). Disconnect and rejoin the new one,
@@ -1964,11 +2449,16 @@ final class AppStore: ObservableObject {
         // snapshot doesn't list us there, it ended while we were suspended —
         // tear the dead call down locally so the stale voiceChannelId stops
         // swallowing future rings (and our own call button works again).
-        if let active = voiceChannelId,
+        // Skip the reconcile-leave while a join is actively in flight: joinVoice
+        // sets voiceChannelId BEFORE awaiting api.joinVoice, so a READY landing
+        // in that window has no voice_state row for us yet and would tear down a
+        // call we're mid-answering. voiceConnecting is false for a genuinely
+        // stale call from a suspended session, so those are still torn down.
+        if let active = voiceChannelId, !voiceConnecting,
            !states.contains(where: { $0.userId == currentUserId && $0.channelId == active }) {
             callLog.info("READY: reconcile stale voiceChannelId \(active, privacy: .public) (not in snapshot) — leaving")
             Task { await leaveCurrentVoice() }
-        } else if let active = voiceChannelId,
+        } else if let active = voiceChannelId, !voiceConnecting,
                   let dm = dms.first(where: { $0.id == active }), dm.type == "dm",
                   states.contains(where: { $0.userId == currentUserId && $0.channelId == active }),
                   !states.contains(where: { $0.userId != currentUserId && $0.channelId == active }) {
@@ -2175,14 +2665,19 @@ final class AppStore: ObservableObject {
         } else if delta > 0 {
             reactions.append(ReactionAggregate(emoji: emoji, count: 1, me: isMe))
         }
-        messages[mi].reactions = reactions
+        mutateMessage(at: mi) { $0.reactions = reactions }
     }
 
     // MARK: Sending
 
-    func send(_ raw: String) async {
+    func send(_ raw: String, in channel: Channel) async {
         let content = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty, let channel = selectedChannel else { return }
+        // Target the channel the composer is displaying — NOT selectedChannel,
+        // which can be transiently niled by a foreground loadGuilds reselect
+        // (see performLoadGuilds). Relying on selectedChannel here silently
+        // dropped sends after a resume-from-suspension, with the composer draft
+        // already cleared → message vanished with no bubble.
+        guard !content.isEmpty else { return }
         noteInteraction()
         let nonce = UUID().uuidString
 
@@ -2223,10 +2718,24 @@ final class AppStore: ObservableObject {
 
         do {
             let message = try await api.sendMessage(channelId: channel.id, content: wire, nonce: nonce, replyToId: replyId)
-            if channel.id == selectedChannel?.id {
+            // Land the confirmed message when we're still viewing this channel,
+            // OR when selection is momentarily unknown (nil) — the placeholder
+            // lives in `messages` for the displayed channel, so replacing it in
+            // place is correct. A genuine navigate-away (selectedChannel is a
+            // DIFFERENT channel) correctly skips; the gateway echo + loadMessages
+            // will surface it on return.
+            if selectedChannel == nil || channel.id == selectedChannel?.id {
                 decrypted[message.id] = content
                 upsert(message)
             }
+            // Re-sort this DM to the top of the recency-sorted list IMMEDIATELY
+            // off the REST response — don't wait on the gateway echo (~1s later,
+            // or absent while the socket is reconnecting / just resumed). Uses
+            // the confirmed server snowflake (not the UUID nonce) so the numeric
+            // compare works; idempotent + forward-only so the later echo is a
+            // no-op. Outside the selection guard: a DM you navigated away from
+            // mid-send should still bump.
+            bumpChannelLastMessage(channel.id, message.id)
         } catch {
             markSendFailed(nonce)
             errorText = (error as? APIError)?.message ?? error.localizedDescription
@@ -2254,13 +2763,16 @@ final class AppStore: ObservableObject {
             }
             wire = enc
         }
-        messages[idx].sendState = "sending"
+        mutateMessage(at: idx) { $0.sendState = "sending" }
         do {
             let message = try await api.sendMessage(channelId: channel.id, content: wire, nonce: messageId, replyToId: placeholder.replyToId)
             if channel.id == selectedChannel?.id {
                 decrypted[message.id] = plaintext
                 upsert(message)
             }
+            // A retried send that finally lands should also bump the DM to the
+            // top immediately (see send()), not wait on the gateway echo.
+            bumpChannelLastMessage(channel.id, message.id)
         } catch {
             markSendFailed(messageId)
             errorText = (error as? APIError)?.message ?? error.localizedDescription
@@ -2274,7 +2786,7 @@ final class AppStore: ObservableObject {
 
     private func markSendFailed(_ id: String) {
         if let idx = messages.firstIndex(where: { $0.id == id }) {
-            messages[idx].sendState = "failed"
+            mutateMessage(at: idx) { $0.sendState = "failed" }
         }
     }
 
@@ -2294,9 +2806,19 @@ final class AppStore: ObservableObject {
     /// @MainActor so single-threaded reuse is safe.
     private static let iso8601 = ISO8601DateFormatter()
 
+    /// Millisecond-precision ISO formatter used ONLY for optimistic-send
+    /// timestamps, so a placeholder created in the same second as a server row
+    /// still sorts AFTER it (the server emits fractional seconds; a
+    /// whole-second placeholder would string-compare as earlier).
+    private static let iso8601Millis: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
     /// Current time as an ISO-8601 string for optimistic placeholders.
     private func isoNow() -> String {
-        Self.iso8601.string(from: Date())
+        Self.iso8601Millis.string(from: Date())
     }
 
     /// Send a sticker as its own message. Not available in E2EE channels
@@ -2361,8 +2883,14 @@ final class AppStore: ObservableObject {
         if !emojiInFlight.contains(emoji.id), let url = assetURL(emoji.url) {
             emojiInFlight.insert(emoji.id)
             Task { [weak self] in
-                let data = try? await URLSession.shared.data(from: url).0
-                let img = data.flatMap { AppStore.resizedEmoji($0, points: 20) }
+                // Decode + resize OFF the main actor — AppStore is @MainActor, so
+                // a plain Task would run the download + UIImage decode + render on
+                // main and hitch the emoji picker / inline-emoji scroll. Hop back
+                // only to store the result.
+                let img: UIImage? = await Task.detached(priority: .userInitiated) {
+                    let data = try? await URLSession.shared.data(from: url).0
+                    return data.flatMap { AppStore.resizedEmoji($0, points: 20) }
+                }.value
                 self?.emojiInFlight.remove(emoji.id)
                 if let img { self?.emojiImages[emoji.id] = img }
             }
@@ -2372,7 +2900,7 @@ final class AppStore: ObservableObject {
 
     /// Downscale raw image data to a square `points`-pt image at screen scale,
     /// so it renders at a sensible size when interpolated inline in `Text`.
-    static func resizedEmoji(_ data: Data, points: CGFloat) -> UIImage? {
+    nonisolated static func resizedEmoji(_ data: Data, points: CGFloat) -> UIImage? {
         guard let img = UIImage(data: data) else { return nil }
         let target = CGSize(width: points, height: points)
         let fmt = UIGraphicsImageRendererFormat.default()
@@ -2653,6 +3181,13 @@ final class AppStore: ObservableObject {
         decryptedMedia = [:]
         decryptedMediaLRU = []
         decryptedMediaBytes = 0
+        // Decoded E2EE thumbnail bitmaps are plaintext pixels too — drop them on
+        // relock/sign-out so they never outlive the key.
+        EncryptedThumbCache.clear()
+        // Link-preview embeds resolved from decrypted E2EE plaintext are also
+        // derived plaintext — drop them (and the in-flight set) too.
+        e2eeEmbeds = [:]
+        e2eeEmbedResolving = []
     }
 
     /// Send a recorded voice message: the audio file plus its duration and
@@ -2738,7 +3273,22 @@ final class AppStore: ObservableObject {
     private func snapshotCurrentChannel() {
         guard let id = selectedChannel?.id, !messages.isEmpty else { return }
         let confirmed = messages.filter { $0.sendState == nil }
-        if !confirmed.isEmpty { messageCache[id] = confirmed }
+        if !confirmed.isEmpty {
+            messageCache[id] = confirmed
+            touchMessageCache(id)
+        }
+    }
+
+    /// Mark a channel most-recently-used and evict the least-recently-used
+    /// channels once the cache exceeds its budget (never the selected one).
+    private func touchMessageCache(_ id: String) {
+        if let i = messageCacheLRU.firstIndex(of: id) { messageCacheLRU.remove(at: i) }
+        messageCacheLRU.append(id)
+        while messageCacheLRU.count > messageCacheMax {
+            guard let victim = messageCacheLRU.first(where: { $0 != selectedChannel?.id }) else { break }
+            messageCacheLRU.removeAll { $0 == victim }
+            messageCache.removeValue(forKey: victim)
+        }
     }
 
     private func removeMessage(id: String) {
@@ -2772,7 +3322,7 @@ final class AppStore: ObservableObject {
                     if !p.multipleChoice { p.myVotes = [] }
                     p.myVotes.append(option.id)
                 }
-                messages[mi].poll = p
+                mutateMessage(at: mi) { $0.poll = p }
             }
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
@@ -2883,6 +3433,46 @@ final class AppStore: ObservableObject {
             relationships = try await api.listRelationships()
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
+        }
+    }
+
+    // MARK: Personal DM nicknames
+
+    func loadDmNicknames() async {
+        if let map = try? await api.getDmNicknames() { dmNicknames = map }
+    }
+
+    /// The viewer's personal nickname for a user (non-empty), or nil.
+    func dmNickname(_ userId: String?) -> String? {
+        guard let userId, let n = dmNicknames[userId], !n.isEmpty else { return nil }
+        return n
+    }
+
+    /// Nickname-aware DM title: the peer's nickname for a 1:1 DM if set, else
+    /// the channel's normal dmTitle. Use everywhere a DM peer's name shows.
+    func dmDisplayTitle(_ channel: Channel) -> String {
+        if channel.isDM, let peer = channel.recipients?.first, let n = dmNickname(peer.id) {
+            return n
+        }
+        return channel.dmTitle
+    }
+
+    /// Set (non-empty) or clear (nil/empty) the personal DM nickname for a user.
+    /// Optimistic; reverts on failure. Returns nil on success or an error string.
+    func setDmNickname(userId: String, to nickname: String?) async -> String? {
+        let trimmed = nickname?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let prev = dmNicknames[userId]
+        if trimmed.isEmpty { dmNicknames[userId] = nil } else { dmNicknames[userId] = trimmed }
+        do {
+            if trimmed.isEmpty {
+                try await api.clearDmNickname(userId: userId)
+            } else {
+                try await api.setDmNickname(userId: userId, nickname: trimmed)
+            }
+            return nil
+        } catch {
+            dmNicknames[userId] = prev  // revert
+            return (error as? APIError)?.message ?? error.localizedDescription
         }
     }
 
@@ -3060,6 +3650,11 @@ final class AppStore: ObservableObject {
         catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
 
+    /// Recent pokes received on this DM (max 6), for the poke history popover.
+    func pokeHistory(_ channel: Channel) async -> [PokeHistoryEntry] {
+        (try? await api.listPokes(channelId: channel.id)) ?? []
+    }
+
 
     /// Best-effort navigation to a mention's channel (works when it's already
     /// loaded among the current guild's channels or the DM list).
@@ -3067,8 +3662,19 @@ final class AppStore: ObservableObject {
         guard let ch = channels.first(where: { $0.id == mention.channelId })
             ?? dms.first(where: { $0.id == mention.channelId }) else { return }
         if selectedChannel?.id == ch.id {
-            // Already in the channel — just scroll to the message if it's loaded.
-            pendingScrollAnchorId = mention.id
+            if messages.contains(where: { $0.id == mention.id }) {
+                // Already loaded — just scroll to it.
+                pendingScrollAnchorId = mention.id
+            } else {
+                // Same channel but the mention is outside the loaded window —
+                // fetch a window AROUND it, then scroll. Drive loadMessages
+                // directly: selectChannel/openChannel is id-guarded and would
+                // NOT reload the already-open channel (leaving a silent no-op).
+                // loadMessages consumes pendingJumpMessageId as the `around:`
+                // cursor and sets pendingScrollAnchorId once merged.
+                pendingJumpMessageId = mention.id
+                Task { await loadMessages(ch) }
+            }
         } else {
             // Land ON the mentioned message: load a window around it, then scroll.
             pendingJumpMessageId = mention.id
@@ -3215,19 +3821,37 @@ final class AppStore: ObservableObject {
     private func patchAdminUser(_ id: String, _ mutate: (inout AdminUser) -> Void) {
         if let i = adminUsers.firstIndex(where: { $0.id == id }) { mutate(&adminUsers[i]) }
     }
-    func adminBan(_ u: AdminUser) async {
-        do { try await api.adminBanUser(userId: u.id)
-             patchAdminUser(u.id) { $0.bannedAt = Self.iso8601.string(from: Date()) } }
-        catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
+    /// Ban for a duration ("1m"|"3m"|"6m"|"perm"). Covers text + voice.
+    func adminBan(_ u: AdminUser, duration: String = "perm") async {
+        do {
+            try await api.adminBanUser(userId: u.id, duration: duration)
+            let months = duration == "1m" ? 1 : duration == "3m" ? 3 : duration == "6m" ? 6 : 0
+            let until = months > 0
+                ? Self.iso8601.string(from: Date().addingTimeInterval(Double(months) * 30 * 86_400))
+                : nil
+            patchAdminUser(u.id) {
+                $0.bannedAt = Self.iso8601.string(from: Date())
+                $0.bannedUntil = until
+            }
+        } catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
     func adminUnban(_ u: AdminUser) async {
-        do { try await api.adminUnbanUser(userId: u.id); patchAdminUser(u.id) { $0.bannedAt = nil } }
+        do {
+            try await api.adminUnbanUser(userId: u.id)
+            patchAdminUser(u.id) { $0.bannedAt = nil; $0.bannedUntil = nil }
+        }
         catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
-    func adminToggleAdmin(_ u: AdminUser) async {
-        let newVal = !u.isAdmin
-        do { try await api.adminSetAdmin(userId: u.id, isAdmin: newVal); patchAdminUser(u.id) { $0.isAdmin = newVal } }
-        catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
+    /// Set an instance role: "administrator" | "moderator" | "none". The two
+    /// flags are mutually exclusive (mirrors the server).
+    func adminSetRole(_ u: AdminUser, role: String) async {
+        do {
+            try await api.adminSetRole(userId: u.id, role: role)
+            patchAdminUser(u.id) {
+                $0.isAdmin = role == "administrator"
+                $0.isModerator = role == "moderator"
+            }
+        } catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
     func adminLogout(_ u: AdminUser) async {
         do { try await api.adminLogoutUser(userId: u.id) }
@@ -3236,6 +3860,25 @@ final class AppStore: ObservableObject {
     func adminDeleteUser(_ u: AdminUser) async {
         do { try await api.adminDeleteUser(userId: u.id); adminUsers.removeAll { $0.id == u.id } }
         catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
+    }
+    /// Reopen the user's one-time DOB change.
+    func adminResetDob(_ u: AdminUser) async {
+        do { try await api.adminResetDobLock(userId: u.id) }
+        catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
+    }
+    /// Gift a membership ("scout"|"guardian"|"legend" × "1m"|"3m"|"6m"|"forever").
+    func adminGift(_ u: AdminUser, tier: String, duration: String) async {
+        do {
+            try await api.adminGiftSubscription(userId: u.id, tier: tier, duration: duration)
+            patchAdminUser(u.id) { $0.subscriptionTier = tier }
+        } catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
+    }
+    /// Reset (remove) a user's membership + clear paid cosmetics.
+    func adminRemoveMembership(_ u: AdminUser) async {
+        do {
+            try await api.adminRemoveSubscription(userId: u.id)
+            patchAdminUser(u.id) { $0.subscriptionTier = nil }
+        } catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
 
     func loadAdminGuilds(q: String) async {
@@ -3326,6 +3969,18 @@ final class AppStore: ObservableObject {
         do { try await api.familyRemoveLink(otherId: user.id); await loadFamily() }
         catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
+    /// Child invites a guardian by email. Returns a user-facing status string
+    /// ("pending" | "awaiting_signup") on success, nil on error.
+    func familyRequestParent(email: String) async -> String? {
+        let e = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !e.isEmpty else { return nil }
+        do { let status = try await api.familyRequestParent(email: e); await loadFamily(); return status }
+        catch { errorText = (error as? APIError)?.message ?? error.localizedDescription; return nil }
+    }
+    func familyAcceptChild(_ user: FamilyUser) async {
+        do { try await api.familyAcceptChildRequest(childId: user.id); await loadFamily() }
+        catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
+    }
 
     func loadChildRestrictions(_ childId: String) async {
         do { childRestrictions[childId] = try await api.familyChildRestrictions(childId: childId) }
@@ -3360,11 +4015,12 @@ final class AppStore: ObservableObject {
         }
     }
 
-    /// Display name for a user id from the loaded guild members (nickname wins),
-    /// or nil if we don't have them.
+    /// Display name for a user id from the loaded guild members, or nil if we
+    /// don't have them. (Server nicknames were removed — DM nicknames are
+    /// resolved separately via dmNickname.)
     func memberName(_ userId: String) -> String? {
         guard let m = members[userId] else { return nil }
-        return m.nickname ?? m.user.name
+        return m.user.name
     }
     func memberUser(_ userId: String) -> PublicUser? { members[userId]?.user }
 
@@ -3643,6 +4299,25 @@ final class AppStore: ObservableObject {
         } catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
 
+    /// Purge (soft-delete) every message in a text channel/thread. Loops the
+    /// endpoint until the server reports done (each call caps at 1000 rows).
+    /// Returns (totalDeleted, nil) on success or (nil, errorMessage). The
+    /// server's MESSAGE_DELETE_BULK clears the open view and CHANNEL_UPDATE
+    /// refreshes the sidebar/unread, so no manual cleanup is needed here.
+    func purgeChannel(_ channel: Channel) async -> (Int?, String?) {
+        do {
+            var total = 0
+            for _ in 0..<50 {
+                let r = try await api.purgeChannel(channelId: channel.id)
+                total += r.deleted
+                if r.done { break }
+            }
+            return (total, nil)
+        } catch {
+            return (nil, (error as? APIError)?.message ?? error.localizedDescription)
+        }
+    }
+
     // MARK: Roles
 
     func loadRoles(_ guild: Guild) async {
@@ -3903,14 +4578,23 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func openLightbox(_ url: URL) { lightbox = LightboxImage(url: url) }
-    /// Open the full-screen viewer for an already-decoded image (E2EE images,
-    /// which have no plaintext URL).
-    func openLightbox(image: UIImage) { lightbox = LightboxImage(image: image) }
+    /// RE-ENTRANCY GUARD for every lightbox opener. `.fullScreenCover(item:)`
+    /// re-presents whenever the item's identity changes, so a second open while
+    /// one is already up (double-tap, or two async opens both completing) made
+    /// the viewer flicker/stack — dismissing one revealed another. A lightbox is
+    /// full-screen, so there's never a legitimate reason to open a second one
+    /// on top; ignore the extra open. Dismissal sets `lightbox = nil`, which
+    /// re-arms this.
+    private var lightboxIsUp: Bool { lightbox != nil }
+
+    func openLightbox(_ url: URL) {
+        guard !lightboxIsUp else { return }
+        lightbox = LightboxImage(url: url)
+    }
     /// Open the viewer on a SET of images (a message's gallery), paged from
     /// startIndex — swipe left/right between them.
     func openLightbox(items: [LightboxItem], startIndex: Int) {
-        guard !items.isEmpty else { return }
+        guard !items.isEmpty, !lightboxIsUp else { return }
         lightbox = LightboxImage(items: items, startIndex: startIndex)
     }
 
@@ -3923,12 +4607,12 @@ final class AppStore: ObservableObject {
         for att in images {
             let item: LightboxItem?
             if channel.isE2EE, att.filename?.hasSuffix(".zke") == true {
-                if let data = await decryptedAttachmentData(att, in: channel),
-                   let img = UIImage(data: data) {
-                    item = LightboxItem(image: img)
-                } else {
-                    item = nil
-                }
+                // Carry a LAZY encrypted reference — the visible LightboxPage
+                // decrypts + downsamples on-appear, so only the current/adjacent
+                // pages decrypt (not the whole message's photo set up front). The
+                // decrypt cache dedups repeat access. Mirrors the gallery
+                // lightbox (MessageViews.openGalleryLightbox).
+                item = LightboxItem(encrypted: (att, channel))
             } else if let url = assetURL(att.url) {
                 item = LightboxItem(url: url)
             } else {
@@ -3939,8 +4623,9 @@ final class AppStore: ObservableObject {
                 items.append(item)
             }
         }
-        guard !items.isEmpty else { return }
-        lightbox = LightboxImage(items: items, startIndex: startIndex)
+        // Route through the guarded setter so a double-tap (two Tasks) can't
+        // present two stacked lightboxes.
+        openLightbox(items: items, startIndex: startIndex)
     }
 
     /// Save every photo/video in a message to the Photos library; returns how
@@ -4040,7 +4725,7 @@ final class AppStore: ObservableObject {
     /// rendering the small quoted preview). Nil if it isn't loaded.
     func repliedMessage(for message: Message) -> Message? {
         guard let rid = message.replyToId else { return nil }
-        return messages.first(where: { $0.id == rid })
+        return messagesById[rid]
     }
 
     // MARK: Pins
@@ -4063,7 +4748,7 @@ final class AppStore: ObservableObject {
             // Refresh both the pin list and the message's own pinned flag.
             await loadPins(channel)
             if let idx = messages.firstIndex(where: { $0.id == message.id }) {
-                messages[idx].pinned = !(message.pinned == true)
+                mutateMessage(at: idx) { $0.pinned = !(message.pinned == true) }
             }
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
@@ -4174,6 +4859,19 @@ final class AppStore: ObservableObject {
             if message.channelId == selectedChannel?.id {
                 upsert(message)
                 if let c = selectedChannel { markChannelRead(c) }
+            } else if var cached = messageCache[message.channelId] {
+                // Keep an existing cache CURRENT for closed channels. Without
+                // this, a live/RESUME-replayed message for a channel you're not
+                // viewing was dropped entirely (only the unread dot bumped) —
+                // so re-opening that chat seeded a stale cache and the newest
+                // messages didn't paint until the refresh fetch landed (or, if
+                // that fetch failed right after foregrounding, until the 12s
+                // poll). Dedup by id; cap from the front to bound memory.
+                if !cached.contains(where: { $0.id == message.id }) {
+                    cached.append(message)
+                    if cached.count > 100 { cached.removeFirst(cached.count - 100) }
+                    messageCache[message.channelId] = cached
+                }
             }
             // Tactile feedback for a message from SOMEONE ELSE. The phone buzzes
             // (2–3 taps) when the message lands in the channel you're viewing and
@@ -4189,9 +4887,15 @@ final class AppStore: ObservableObject {
                 }
             }
             // (Pokes are no longer messages — see the POKE event case below.)
-            // Reflect the new unread on the home-screen badge (no-op while the
-            // message is in the open channel — markChannelRead already cleared it).
-            updateAppBadge()
+            // Reflect the new unread on the home-screen badge. For a message in
+            // the OPEN channel, markChannelRead already refreshed the badge (and
+            // the open channel never counts toward it — isChannelUnread is false
+            // for the selected channel), so this only matters for closed
+            // channels. Gating it avoids a second full recompute + system
+            // setBadgeCount per inbound message in a busy open channel.
+            if message.channelId != selectedChannel?.id {
+                updateAppBadge()
+            }
         case "MESSAGE_UPDATE":
             // Payload is the full Message DTO (camelCase), e.g. edits/pins.
             if let m = try? JSONDecoder().decode(Message.self, from: data),
@@ -4220,6 +4924,15 @@ final class AppStore: ObservableObject {
                 let pokeType = (d["poke_type"] as? String) ?? "poke"
                 WatchSync.shared.sendPoke(emoji: emoji, name: name)
                 showPokeBanner(channelId: channelId, emoji: emoji, name: name, pokeType: pokeType)
+                Haptics.poke()
+            }
+        case "ACHIEVEMENT_UNLOCK":
+            // A new achievement just unlocked (only sent to our own connections).
+            // Payload snake-free: { id, name, description, marker }. Celebrate.
+            if let d = jsonDict(data), let name = d["name"] as? String {
+                let id = (d["id"] as? String) ?? ""
+                let detail = (d["description"] as? String) ?? ""
+                showAchievementBanner(id: id, name: name, detail: detail)
                 Haptics.poke()
             }
         case "MESSAGE_DELETE":
@@ -4292,7 +5005,7 @@ final class AppStore: ObservableObject {
             if let d = jsonDict(data), (d["channel_id"] as? String) == selectedChannel?.id,
                let mid = d["message_id"] as? String,
                let idx = messages.firstIndex(where: { $0.id == mid }) {
-                messages[idx].reactions = []
+                mutateMessage(at: idx) { $0.reactions = [] }
             }
         case "MESSAGE_POLL_UPDATE":
             // Poll closed/updated (payload: { channel_id, message_id, closed_at }).
@@ -4307,7 +5020,7 @@ final class AppStore: ObservableObject {
                let idx = messages.firstIndex(where: { $0.id == messageId }),
                var poll = messages[idx].poll, poll.closedAt != closedAt {
                 poll.closedAt = closedAt
-                messages[idx].poll = poll
+                mutateMessage(at: idx) { $0.poll = poll }
             }
         case "CHANNEL_PINS_UPDATE":
             // Pins changed (payload: { channel_id, last_pin_timestamp }).
@@ -4461,16 +5174,26 @@ final class AppStore: ObservableObject {
                let cid = d["channel_id"] as? String, cid == selectedChannel?.id,
                let ids = d["message_ids"] as? [String] {
                 let idSet = Set(ids)
-                for i in messages.indices where idSet.contains(messages[i].id) {
+                // Batch all receipt patches into a SINGLE array republish:
+                // mutating messages[i] in a loop fires the didSet index rebuild
+                // AND an objectWillChange per element — O(N·K) rebuilds + K list
+                // re-renders for one receipt event. Mirror the USER_UPDATE batch
+                // pattern: mutate a local copy, assign once (guarded so a
+                // no-match event doesn't republish).
+                var newMessages = messages
+                var changed = false
+                for i in newMessages.indices where idSet.contains(newMessages[i].id) {
                     if name == "MESSAGE_VIEWED" {
-                        messages[i].viewedAt = d["viewed_at"] as? String
-                        if messages[i].deliveredAt == nil {
-                            messages[i].deliveredAt = messages[i].viewedAt
+                        newMessages[i].viewedAt = d["viewed_at"] as? String
+                        if newMessages[i].deliveredAt == nil {
+                            newMessages[i].deliveredAt = newMessages[i].viewedAt
                         }
                     } else {
-                        messages[i].deliveredAt = d["delivered_at"] as? String
+                        newMessages[i].deliveredAt = d["delivered_at"] as? String
                     }
+                    changed = true
                 }
+                if changed { messages = newMessages }
             }
         case "DM_SETTINGS_UPDATE":
             // Cross-device sync of the DM auto-delete TTL. Payload is
@@ -4530,34 +5253,63 @@ final class AppStore: ObservableObject {
 
     /// Insert a message keeping the list sorted, replacing any existing row
     /// with the same id (prevents duplicate REST + gateway echoes).
+    /// Carry this device's per-self message state (poll votes, reaction `me`
+    /// flags) from a row we already hold onto an incoming DTO that lacks it.
+    ///
+    /// Server DTOs that fan out to every channel member carry no per-recipient
+    /// state: `poll.myVotes` arrives empty and `reactions[].me` arrives false for
+    /// everyone. REST loads, reaction events and `togglePollVote` are the
+    /// per-self truth, so preserve what we know.
+    private func preservingSelfState(_ incoming: Message, from prev: Message) -> Message {
+        var out = incoming
+        if var p = out.poll, let oldP = prev.poll, p.id == oldP.id, !oldP.myVotes.isEmpty {
+            p.myVotes = oldP.myVotes
+            out.poll = p
+        }
+        if var rs = out.reactions, let oldRs = prev.reactions {
+            let mine = Set(oldRs.filter { $0.me }.map { $0.emoji })
+            if !mine.isEmpty {
+                for i in rs.indices where mine.contains(rs[i].emoji) { rs[i].me = true }
+                out.reactions = rs
+            }
+        }
+        return out
+    }
+
     private func upsert(_ message: Message) {
         // If this confirmed message echoes the nonce of an optimistic
         // placeholder, replace the placeholder in place (its id == the nonce).
         if let nonce = message.nonce,
            let phIdx = messages.firstIndex(where: { $0.id == nonce && $0.sendState != nil }) {
-            messages[phIdx] = message
-            decryptOne(message)
+            var confirmed = message
+            // A racing REST reconcile may ALREADY have appended this same server
+            // message: the GET-list DTO carries no `nonce` (only the POST reply
+            // and the gateway fan-out do), so it missed the arm above and fell
+            // through to `append`. Two rows would now share `message.id`, and the
+            // list renders `ForEach(…, id: \.element.id)` — duplicate ids there
+            // misrender and log "ID … occurs multiple times". The 3s open-channel
+            // poll makes this race routine, so evict the twin — but carry over any
+            // per-self state it accumulated first (a reaction can land inside the
+            // window), since `message` is the creation-time DTO and has none.
+            if let dupIdx = messages.indices.first(where: {
+                $0 != phIdx && messages[$0].id == message.id
+            }) {
+                confirmed = preservingSelfState(confirmed, from: messages[dupIdx])
+                messages.remove(at: dupIdx)
+            }
+            // `remove(at:)` may have shifted the placeholder, so re-find it rather
+            // than trusting the stale `phIdx`.
+            if let idx = messages.firstIndex(where: { $0.id == nonce && $0.sendState != nil }) {
+                messages[idx] = confirmed
+            } else {
+                messages.append(confirmed)
+                messages.sort { $0.createdAt < $1.createdAt }
+            }
+            decryptOne(confirmed)
             return
         }
         if let idx = messages.firstIndex(where: { $0.id == message.id }) {
-            // Gateway MESSAGE_UPDATE fans ONE DTO to every channel member, so
-            // it carries no per-recipient state: poll.myVotes arrives empty
-            // and reactions[].me arrives false for everyone. Keep what this
-            // device already knows about the current user (REST loads,
-            // reaction events, and togglePollVote are the per-self truth).
-            var incoming = message
-            let prev = messages[idx]
-            if var p = incoming.poll, let oldP = prev.poll, p.id == oldP.id, !oldP.myVotes.isEmpty {
-                p.myVotes = oldP.myVotes
-                incoming.poll = p
-            }
-            if var rs = incoming.reactions, let oldRs = prev.reactions {
-                let mine = Set(oldRs.filter { $0.me }.map { $0.emoji })
-                if !mine.isEmpty {
-                    for i in rs.indices where mine.contains(rs[i].emoji) { rs[i].me = true }
-                    incoming.reactions = rs
-                }
-            }
+            let incoming = preservingSelfState(message, from: messages[idx])
             messages[idx] = incoming
         } else {
             messages.append(message)
@@ -4763,14 +5515,6 @@ final class AppStore: ObservableObject {
         keychain.delete(account)
     }
 
-    /// Union of both stores' entries for `prefix`; app-group wins on duplicates.
-    private func e2eeKeychainAll(prefix: String) -> [(account: String, value: String)] {
-        var map: [String: String] = [:]
-        for (a, v) in keychain.allValues(prefix: prefix) { map[a] = v }
-        for (a, v) in e2eeKeychain.allValues(prefix: prefix) { map[a] = v }
-        return map.map { (account: $0.key, value: $0.value) }
-    }
-
     /// One-time sweep copying legacy default-group E2EE keys into the app-group
     /// keychain, so the NSE can decrypt previews for conversations unlocked
     /// before this build. Idempotent; only marks itself done once the app-group
@@ -4789,41 +5533,9 @@ final class AppStore: ObservableObject {
         if allOK { defaults.set(true, forKey: flag) }
     }
 
-    // MARK: E2EE key backup / restore (cross-client with web)
-
-    /// Bundle every stored DM key for this account into the web-compatible
-    /// backup format (E2EE.encodeKeyBackup). Returns nil when this device has
-    /// no keys. The Keychain is the source of truth — storeKey always writes
-    /// there — so this captures keys even for DMs not currently loaded.
-    func exportE2EEKeysJSON() -> Data? {
-        let prefix = "e2ee.\(currentUserId ?? "anon")."
-        var keys: [String: Data] = [:]
-        for (account, b64) in e2eeKeychainAll(prefix: prefix) {
-            let channelId = String(account.dropFirst(prefix.count))
-            guard !channelId.isEmpty,
-                  let bytes = Data(base64Encoded: b64), bytes.count == E2EE.keyBytes else { continue }
-            keys[channelId] = bytes
-        }
-        guard !keys.isEmpty else { return nil }
-        let exportedAt = Self.iso8601.string(from: Date())
-        return E2EE.encodeKeyBackup(keys: keys, exportedAt: exportedAt)
-    }
-
-    /// Restore keys from a backup file. Returns the channel ids restored, or
-    /// nil when the file isn't a valid Zekktris keys backup. Each restored key
-    /// is written to both the cache and the Keychain (storeKey). Mirrors web's
-    /// importAllDmKeys.
-    @discardableResult
-    func importE2EEKeysJSON(_ data: Data) -> [String]? {
-        guard let keys = E2EE.decodeKeyBackup(data) else { return nil }
-        var restored: [String] = []
-        for (channelId, bytes) in keys {
-            storeKey(bytes, for: channelId)
-            restored.append(channelId)
-        }
-        if !restored.isEmpty { decryptVisible() }
-        return restored
-    }
+    // E2EE key backup/restore (exportE2EEKeysJSON / importE2EEKeysJSON +
+    // E2EE.encodeKeyBackup/decodeKeyBackup) was removed — the shared password
+    // is the only unlock path now, so a key-file bundle is dead weight.
 
     private func decryptVisible() {
         guard let ch = selectedChannel, let key = e2eeKey(for: ch) else { return }
@@ -4892,11 +5604,21 @@ final class AppStore: ObservableObject {
         let urls = Self.extractURLs(from: plaintext)
         guard !urls.isEmpty else { return }
         e2eeEmbedResolving.insert(messageId)
+        let targets = Array(urls.prefix(5))
         Task { @MainActor in
-            var found: [MessageEmbed] = []
-            for u in urls.prefix(5) {
-                if let e = try? await api.unfurl(url: u) { found.append(e) }
+            // Fan the independent GET /unfurl calls out concurrently, then
+            // reassemble in URL order so preview order is unchanged (a plain
+            // task group would collect in completion order).
+            let unfurl = self.api
+            let slots: [MessageEmbed?] = await withTaskGroup(of: (Int, MessageEmbed?).self) { group in
+                for (i, u) in targets.enumerated() {
+                    group.addTask { (i, try? await unfurl.unfurl(url: u)) }
+                }
+                var acc = [MessageEmbed?](repeating: nil, count: targets.count)
+                for await (i, e) in group { acc[i] = e }
+                return acc
             }
+            let found = slots.compactMap { $0 }
             e2eeEmbedResolving.remove(messageId)
             // Record the result even when empty so we don't re-fetch on every
             // re-decrypt / re-render.

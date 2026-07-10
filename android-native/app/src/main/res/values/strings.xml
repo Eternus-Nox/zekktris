@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Zekktris</string>
+    <!-- Default FCM notification channel id (referenced from the manifest
+         meta-data and created in NotificationHelper). -->
+    <string name="default_notification_channel_id" translatable="false">zekktris_messages</string>
+</resources>

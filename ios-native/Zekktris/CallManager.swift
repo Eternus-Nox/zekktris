@@ -33,6 +33,12 @@ final class CallManager: NSObject, ObservableObject {
     private var channelByUUID: [UUID: String] = [:]
     /// UUIDs still in the ringing (unanswered) state.
     private var ringing: Set<UUID> = []
+    /// Per-ring safety-net timeouts. iOS fires no delegate method when an
+    /// incoming call it displayed simply times out unanswered and the system
+    /// auto-dismisses the UI — the app must proactively end it. Normally the
+    /// gateway CANCEL (remoteCancelled) does that; if that's missed, this
+    /// bounds the leak so the peer's NEXT call can still ring.
+    private var ringTimeouts: [UUID: Task<Void, Never>] = [:]
 
     override private init() {
         let config = CXProviderConfiguration()
@@ -59,6 +65,7 @@ final class CallManager: NSObject, ObservableObject {
         if let u = uuidByChannel.removeValue(forKey: channelId) {
             channelByUUID.removeValue(forKey: u)
             ringing.remove(u)
+            ringTimeouts.removeValue(forKey: u)?.cancel()
         }
         // Safety: ensure the engine gate isn't left closed if a call ended
         // before CallKit's didActivate/didDeactivate fired (e.g. the caller
@@ -73,7 +80,29 @@ final class CallManager: NSObject, ObservableObject {
     /// answer paths converge on `onAnswer`.
     func reportIncoming(channelId: String, callerName: String) {
         let u = uuid(for: channelId)
-        guard !ringing.contains(u) else { return }
+        guard !ringing.contains(u) else {
+            // Apple REQUIRES every received VoIP push to report a CallKit
+            // call. Silently swallowing a duplicate (caller cancel+redial
+            // racing the gateway cancel while the first ring is still up)
+            // is the one thing that gets the app killed and — repeated —
+            // gets VoIP delivery throttled/blacklisted, which permanently
+            // breaks CallKit until reinstall. Satisfy the contract with a
+            // THROWAWAY call: report it, then end it immediately; the
+            // visible ring for the channel is untouched.
+            let throwaway = UUID()
+            let update = CXCallUpdate()
+            update.remoteHandle = CXHandle(type: .generic, value: callerName)
+            update.localizedCallerName = callerName
+            update.hasVideo = false
+            provider.reportNewIncomingCall(with: throwaway, update: update) { [weak self] _ in
+                // CallKit invokes this off-main; provider is main-actor
+                // isolated — hop back (same idiom as the error path below).
+                Task { @MainActor in
+                    self?.provider.reportCall(with: throwaway, endedAt: nil, reason: .answeredElsewhere)
+                }
+            }
+            return
+        }
         ringing.insert(u)
         let update = CXCallUpdate()
         update.remoteHandle = CXHandle(type: .generic, value: callerName)
@@ -88,6 +117,20 @@ final class CallManager: NSObject, ObservableObject {
                 // CallKit refused (call restrictions, etc.) — the in-app
                 // overlay remains the answer surface.
                 Task { @MainActor in self?.forget(channelId) }
+                return
+            }
+            // Safety net: if this ring is never answered/ended and the gateway
+            // CANCEL is missed, iOS auto-dismisses the UI silently, leaving the
+            // UUID stuck in `ringing` forever (blocking the peer's next call).
+            // Bound the leak: end the stale call after ~45s if still ringing.
+            Task { @MainActor in
+                guard let self, self.ringing.contains(u) else { return }
+                self.ringTimeouts[u] = Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 45_000_000_000)
+                    guard let self, self.ringing.contains(u) else { return }
+                    self.provider.reportCall(with: u, endedAt: nil, reason: .unanswered)
+                    if let cid = self.channelByUUID[u] { self.forget(cid) }
+                }
             }
         }
     }
@@ -110,6 +153,7 @@ final class CallManager: NSObject, ObservableObject {
             if error != nil {
                 Task { @MainActor in
                     self?.ringing.remove(u)
+                    self?.ringTimeouts.removeValue(forKey: u)?.cancel()
                     self?.onAnswer?(channelId)
                 }
             }
@@ -140,7 +184,20 @@ final class CallManager: NSObject, ObservableObject {
 }
 
 extension CallManager: CXProviderDelegate {
-    nonisolated func providerDidReset(_ provider: CXProvider) {}
+    nonisolated func providerDidReset(_ provider: CXProvider) {
+        // CallKit tore down every call system-side (telephony daemon restart,
+        // another VoIP app misbehaving, or the OS invalidating all calls). The
+        // contract: discard ALL our call bookkeeping here, or stale entries
+        // suppress future rings for those channels.
+        Task { @MainActor in
+            for t in ringTimeouts.values { t.cancel() }
+            ringTimeouts.removeAll()
+            uuidByChannel.removeAll()
+            channelByUUID.removeAll()
+            ringing.removeAll()
+            try? AudioManager.shared.setEngineAvailability(.default)
+        }
+    }
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         // CallKit answer audio handoff. Two failures bracket this path:
@@ -174,6 +231,7 @@ extension CallManager: CXProviderDelegate {
         Task { @MainActor in
             if let channelId = channelByUUID[action.callUUID] {
                 ringing.remove(action.callUUID)
+                ringTimeouts.removeValue(forKey: action.callUUID)?.cancel()
                 onAnswer?(channelId)
             }
             action.fulfill()

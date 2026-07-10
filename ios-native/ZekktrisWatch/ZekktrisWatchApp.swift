@@ -12,6 +12,7 @@ struct ZekktrisWatchApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(sync)
+                .onOpenURL { sync.handleURL($0) }
         }
     }
 }

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Navy ladder bg0 (#0A0F1C) — window background so there's no white flash
+         before Compose draws. Mirrors ios-native Theme.swift ThemePalette. -->
+    <color name="zk_bg0">#FF0A0F1C</color>
+    <color name="zk_accent">#FF3DD7EC</color>
+</resources>

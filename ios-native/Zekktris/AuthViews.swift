@@ -1,5 +1,26 @@
 import SwiftUI
 import UIKit
+import SafariServices
+import AVFoundation
+
+/// The canonical hosted legal-doc URLs. Single source of truth is the web app
+/// (zekktris.com/terms, /privacy) so the text never drifts between platforms.
+enum LegalURL {
+    static let terms = URL(string: "https://zekktris.com/terms")!
+    static let privacy = URL(string: "https://zekktris.com/privacy")!
+}
+
+/// In-app browser sheet (SFSafariViewController) — opens the hosted legal
+/// pages without kicking the user out to Safari (so a half-filled register
+/// form isn't lost). Defined here so both the auth screens and Settings
+/// (same module) can present it.
+struct SafariView: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        SFSafariViewController(url: url)
+    }
+    func updateUIViewController(_ vc: SFSafariViewController, context: Context) {}
+}
 
 /// Styled text/secure field used across the auth screens.
 struct AuthField: View {
@@ -54,16 +75,16 @@ private struct AuthHeader: View {
                         colors: [Color(hex: 0x0A0F1C), Color(hex: 0x131A2A)],
                         startPoint: .top, endPoint: .bottom
                     ))
-                    .frame(width: 64, height: 64)
+                    .frame(width: 76, height: 76)
                 ZSigil()
                     .fill(LinearGradient(
                         colors: [Theme.accent, Theme.accent2, Theme.accent3],
                         startPoint: .topLeading, endPoint: .bottomTrailing
                     ))
-                    .frame(width: 42, height: 42)
+                    .frame(width: 50, height: 50)
             }
             Text("Zekktris")
-                .font(.zkSans(26, weight: .bold))
+                .font(.zkSans(31, weight: .bold))
                 .foregroundColor(Theme.ink1)
             Text(subtitle)
                 .font(.zkSans(14))
@@ -124,6 +145,8 @@ struct LoginView: View {
     @State private var password = ""
     @State private var code = ""
     @State private var showForgot = false
+    @State private var passkeyBusy = false
+    @State private var showQuickLoginRedeem = false
     @FocusState private var focus: Field?
     private enum Field { case email, password, code }
 
@@ -193,6 +216,41 @@ struct LoginView: View {
                     busy: session.busy, enabled: canSubmit, action: submit
                 )
 
+                if !session.needs2FA {
+                    HStack(spacing: 10) {
+                        Rectangle().fill(Theme.line).frame(height: 1)
+                        Text("OR").font(.zkSans(12)).foregroundColor(Theme.ink3)
+                        Rectangle().fill(Theme.line).frame(height: 1)
+                    }
+                    Button {
+                        passkeyBusy = true
+                        Task { _ = await session.loginWithPasskey(); passkeyBusy = false }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "person.badge.key.fill").font(.system(size: 15))
+                            Text(passkeyBusy ? "Waiting for passkey…" : "Sign in with a passkey")
+                                .font(.zkSans(15, weight: .semibold))
+                        }
+                        .foregroundColor(Theme.ink1)
+                        .frame(maxWidth: .infinity).padding(.vertical, 12)
+                        .background(Theme.bg3)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .disabled(passkeyBusy || session.busy)
+
+                    Button { showQuickLoginRedeem = true } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "qrcode.viewfinder").font(.system(size: 15))
+                            Text("Log in with another device").font(.zkSans(15, weight: .semibold))
+                        }
+                        .foregroundColor(Theme.ink1)
+                        .frame(maxWidth: .infinity).padding(.vertical, 12)
+                        .background(Theme.bg3)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .disabled(session.busy)
+                }
+
                 if session.needs2FA {
                     Button("Use a different account") {
                         session.needs2FA = false
@@ -221,6 +279,7 @@ struct LoginView: View {
             ZStack { Theme.bg1; AbyssBackground() }.ignoresSafeArea()
         }
         .sheet(isPresented: $showForgot) { ForgotPasswordView() }
+        .sheet(isPresented: $showQuickLoginRedeem) { QuickLoginRedeemSheet() }
     }
 
     private func submit() {
@@ -325,6 +384,15 @@ struct RegisterView: View {
     @State private var displayName = ""
     @State private var password = ""
     @State private var repeatPassword = ""
+    // Date of birth. `dobChosen` gates submit so the user must actively pick
+    // (the picker can't be nil); the server age-gates under-13 regardless.
+    @State private var dob = Date()
+    @State private var dobChosen = false
+    // Must agree to the Terms/Privacy before the account can be created — the
+    // links open in-app (SafariView) so tapping them doesn't discard the form.
+    @State private var agreeToTerms = false
+    @State private var showTerms = false
+    @State private var showPrivacy = false
     @FocusState private var focus: Field?
     private enum Field { case email, username, displayName, password, repeatPassword }
 
@@ -332,7 +400,16 @@ struct RegisterView: View {
     private var mismatch: Bool { !repeatPassword.isEmpty && repeatPassword != password }
     private var canSubmit: Bool {
         !email.isEmpty && !username.isEmpty && !displayName.isEmpty
-            && password.count >= 8 && password == repeatPassword
+            && password.count >= 8 && password == repeatPassword && dobChosen && agreeToTerms
+    }
+
+    /// Compose the picked date into the server's YYYY-MM-DD shape (local
+    /// calendar day, stable POSIX format).
+    private var dobString: String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: dob)
     }
 
     var body: some View {
@@ -386,6 +463,45 @@ struct RegisterView: View {
                             .foregroundColor(Theme.danger)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
+
+                    HStack {
+                        Text("Date of birth")
+                            .font(.zkSans(14))
+                            .foregroundColor(Theme.ink2)
+                        Spacer()
+                        DatePicker(
+                            "",
+                            selection: $dob,
+                            in: ...Date(),
+                            displayedComponents: .date
+                        )
+                        .labelsHidden()
+                        .tint(Theme.accent)
+                        .onChange(of: dob) { dobChosen = true }
+                    }
+
+                    // Terms/Privacy agreement. The link taps are intercepted
+                    // (OpenURLAction) so they present the in-app SafariView
+                    // sheet instead of leaving the app for Safari.
+                    HStack(alignment: .center, spacing: 10) {
+                        Button { agreeToTerms.toggle() } label: {
+                            Image(systemName: agreeToTerms ? "checkmark.square.fill" : "square")
+                                .font(.system(size: 18))
+                                .foregroundColor(agreeToTerms ? Theme.accent : Theme.ink3)
+                        }
+                        .buttonStyle(.plain)
+                        Text("I agree to the [Terms of Service](\(LegalURL.terms.absoluteString)) and [Privacy Policy](\(LegalURL.privacy.absoluteString))")
+                            .font(.zkSans(13))
+                            .foregroundColor(Theme.ink2)
+                            .tint(Theme.accent)
+                            .environment(\.openURL, OpenURLAction { url in
+                                if url == LegalURL.terms { showTerms = true; return .handled }
+                                if url == LegalURL.privacy { showPrivacy = true; return .handled }
+                                return .systemAction
+                            })
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.top, 2)
                 }
 
                 if let error = session.authError {
@@ -414,6 +530,8 @@ struct RegisterView: View {
         .background {
             ZStack { Theme.bg1; AbyssBackground() }.ignoresSafeArea()
         }
+        .sheet(isPresented: $showTerms) { SafariView(url: LegalURL.terms) }
+        .sheet(isPresented: $showPrivacy) { SafariView(url: LegalURL.privacy) }
     }
 
     private func submit() {
@@ -421,7 +539,8 @@ struct RegisterView: View {
         focus = nil
         Task {
             await session.register(
-                email: email, username: username, displayName: displayName, password: password
+                email: email, username: username, displayName: displayName, password: password,
+                dateOfBirth: dobString
             )
         }
     }
@@ -441,6 +560,174 @@ private struct StrengthMeter: View {
                 .font(.zkSans(11, weight: .medium))
                 .foregroundColor(passwordStrengthColor(score))
                 .frame(width: 48, alignment: .trailing)
+        }
+    }
+}
+
+// MARK: - Quick login (log in on another device)
+
+/// Redeem a quick-login code shown on another (signed-in) device: scan the QR
+/// or type the 16-digit code. On success Session.redeemQuickLogin persists the
+/// new session and the whole auth flow unmounts into the app.
+struct QuickLoginRedeemSheet: View {
+    @EnvironmentObject private var session: Session
+    @Environment(\.dismiss) private var dismiss
+    @State private var code = ""
+    @State private var scanning = false
+    @State private var busy = false
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("On a device you're already signed in on, open Settings → Log in on another device, then scan the QR or enter the 16-digit code shown there.")
+                        .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Button { scanning = true } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "qrcode.viewfinder").font(.system(size: 15))
+                            Text("Scan QR code").font(.zkSans(15, weight: .semibold))
+                        }
+                        .foregroundColor(Theme.ink1)
+                        .frame(maxWidth: .infinity).padding(.vertical, 12)
+                        .background(Theme.bg3).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("OR ENTER CODE").font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                        TextField("16-digit code", text: $code)
+                            .keyboardType(.numberPad)
+                            .autocorrectionDisabled()
+                            .font(.system(size: 17, design: .monospaced)).foregroundColor(Theme.ink1)
+                            .padding(12).background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+
+                    if let error {
+                        Text(error).font(.zkSans(13)).foregroundColor(Theme.danger)
+                    }
+
+                    Button { submit(code) } label: {
+                        Text(busy ? "Signing in…" : "Sign in")
+                            .font(.zkSans(16, weight: .semibold)).foregroundColor(.white)
+                            .frame(maxWidth: .infinity).padding(.vertical, 12)
+                            .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .disabled(busy || extractCode(code).count < 6)
+                }
+                .padding(20)
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Log in with another device")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { dismiss() } label: {
+                        Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(Theme.ink2).frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Close")
+                }
+            }
+            .sheet(isPresented: $scanning) {
+                QRScannerView { raw in
+                    scanning = false
+                    submit(raw)
+                }
+            }
+        }
+    }
+
+    /// Pull the 16-digit code out of a scanned URL (…?c=<digits>) or bare digits.
+    private func extractCode(_ s: String) -> String {
+        if let r = s.range(of: "c=") {
+            let digits = s[r.upperBound...].prefix { $0.isNumber }
+            if digits.count >= 6 { return String(digits) }
+        }
+        return s.filter(\.isNumber)
+    }
+
+    private func submit(_ raw: String) {
+        let c = extractCode(raw)
+        guard c.count >= 6 else {
+            error = "Enter the code shown on your other device."
+            return
+        }
+        busy = true; error = nil
+        Task {
+            let ok = await session.redeemQuickLogin(code: c)
+            busy = false
+            if ok {
+                dismiss() // app flips to signed-in via persist()
+            } else {
+                error = session.authError ?? "Could not sign in with that code."
+            }
+        }
+    }
+}
+
+/// Minimal AVFoundation QR scanner. Fires `onCode` once with the decoded string
+/// on the main queue. Camera permission uses the existing NSCameraUsageDescription.
+struct QRScannerView: UIViewControllerRepresentable {
+    let onCode: (String) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onCode: onCode) }
+    func makeUIViewController(context: Context) -> ScannerVC {
+        let vc = ScannerVC()
+        vc.coordinator = context.coordinator
+        return vc
+    }
+    func updateUIViewController(_ vc: ScannerVC, context: Context) {}
+
+    final class Coordinator: NSObject, AVCaptureMetadataOutputObjectsDelegate {
+        let onCode: (String) -> Void
+        var handled = false
+        init(onCode: @escaping (String) -> Void) { self.onCode = onCode }
+        func metadataOutput(_ output: AVCaptureMetadataOutput,
+                            didOutput metadataObjects: [AVMetadataObject],
+                            from connection: AVCaptureConnection) {
+            guard !handled,
+                  let obj = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
+                  let str = obj.stringValue else { return }
+            handled = true
+            // Delegate is registered with `queue: .main`, so we're already on
+            // the main thread — call directly (no @Sendable dispatch capture).
+            onCode(str)
+        }
+    }
+
+    final class ScannerVC: UIViewController {
+        weak var coordinator: Coordinator?
+        private let captureSession = AVCaptureSession()
+        private var preview: AVCaptureVideoPreviewLayer?
+        private let sessionQueue = DispatchQueue(label: "zk.qrscanner")
+
+        override func viewDidLoad() {
+            super.viewDidLoad()
+            view.backgroundColor = .black
+            guard let device = AVCaptureDevice.default(for: .video),
+                  let input = try? AVCaptureDeviceInput(device: device),
+                  captureSession.canAddInput(input) else { return }
+            captureSession.addInput(input)
+            let output = AVCaptureMetadataOutput()
+            guard captureSession.canAddOutput(output) else { return }
+            captureSession.addOutput(output)
+            output.setMetadataObjectsDelegate(coordinator, queue: .main)
+            output.metadataObjectTypes = [.qr]
+            let layer = AVCaptureVideoPreviewLayer(session: captureSession)
+            layer.videoGravity = .resizeAspectFill
+            view.layer.addSublayer(layer)
+            preview = layer
+            sessionQueue.async { self.captureSession.startRunning() }
+        }
+        override func viewDidLayoutSubviews() {
+            super.viewDidLayoutSubviews()
+            preview?.frame = view.bounds
+        }
+        override func viewWillDisappear(_ animated: Bool) {
+            super.viewWillDisappear(animated)
+            sessionQueue.async { if self.captureSession.isRunning { self.captureSession.stopRunning() } }
         }
     }
 }

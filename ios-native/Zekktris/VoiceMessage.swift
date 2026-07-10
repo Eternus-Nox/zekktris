@@ -159,6 +159,10 @@ final class VoiceClipPlayer: ObservableObject {
 
     private var player: AVPlayer?
     private var observer: Any?
+    /// Token for the play-to-end NotificationCenter observer, so cleanup() can
+    /// unregister it — otherwise it leaks (and can fire after teardown) when a
+    /// clip is replayed or the row recycles.
+    private var endObserver: NSObjectProtocol?
     // Optional so an encrypted clip can be created before its decrypted
     // temp-file URL is ready; set via setSource(_:) once decryption finishes.
     private var url: URL?
@@ -191,7 +195,7 @@ final class VoiceClipPlayer: ObservableObject {
                     if secs >= self.duration { self.finish() }
                 }
             }
-            NotificationCenter.default.addObserver(
+            endObserver = NotificationCenter.default.addObserver(
                 forName: .AVPlayerItemDidPlayToEndTime, object: p.currentItem, queue: .main
             ) { [weak self] _ in
                 Task { @MainActor in self?.finish() }
@@ -222,6 +226,7 @@ final class VoiceClipPlayer: ObservableObject {
     /// "observers still registered" crash) and release it.
     func cleanup() {
         if let observer { player?.removeTimeObserver(observer); self.observer = nil }
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver); self.endObserver = nil }
         player?.pause()
         player = nil
         playing = false

@@ -62,6 +62,14 @@ final class Gateway: ObservableObject {
     private let maxBackoffMs = 30_000
     private let heartbeatAckTimeoutMs = 10_000
 
+    /// A SEPARATE, much slower backoff for AUTH failures (IDENTIFY rejected and
+    /// the one-shot token refresh didn't rescue it). Distinct from `backoffMs`
+    /// (transport) because a genuine revoke must not hot-loop the server: 30s →
+    /// 5min is slow enough to cost nothing, quick enough that a transient blip
+    /// heals by itself. Reset on READY/RESUMED.
+    private var authBackoffMs = 30_000
+    private let maxAuthBackoffMs = 300_000
+
     // MARK: Lifecycle
 
     func connect(token: String) {
@@ -108,13 +116,30 @@ final class Gateway: ObservableObject {
     /// the app returns to the foreground: iOS suspends sockets in the
     /// background and the death frequently arrives with no close event, so the
     /// only reliable recovery is to tear the socket down and reconnect. No-op
-    /// if we never connected or were intentionally closed.
+    /// if we never connected.
+    ///
+    /// Crucially this CLEARS the `intentionallyClosed` / `identifyRefreshAttempted`
+    /// latches. Those latch true when an IDENTIFY is rejected (expired token)
+    /// and the one-shot token refresh fails — which on a cold foreground is
+    /// often just a transient network race, not a real revoke. Without clearing
+    /// them, that one failure permanently wedged the gateway closed: every
+    /// later foreground `forceReconnect()` hit the old `!intentionallyClosed`
+    /// guard and no-op'd, so realtime stayed dead (no new messages) until the
+    /// app was relaunched — while REST kept working off the cookie, which is
+    /// why leaving+re-entering a conversation (a REST fetch) still worked. A
+    /// foreground is an explicit "reconnect now" and the right moment to retry
+    /// IDENTIFY + refresh again. Safe: a real sign-out goes through
+    /// `disconnect()` + store `stop()`, after which `currentUserId` is nil so
+    /// `foregroundReconnect` never calls this.
     func forceReconnect() {
-        guard token != nil, !intentionallyClosed else { return }
+        guard token != nil else { return }
+        intentionallyClosed = false
+        identifyRefreshAttempted = false
         reconnectTask?.cancel(); reconnectTask = nil
         ackWatchdogTask?.cancel(); ackWatchdogTask = nil
         heartbeatTask?.cancel(); heartbeatTask = nil
         backoffMs = 1_000
+        authBackoffMs = 30_000
         // Drop the old socket (possibly a zombie). Its pending receive will
         // fail, but the identity check in receive() ignores non-current tasks.
         let dead = task
@@ -125,6 +150,15 @@ final class Gateway: ObservableObject {
 
     private func openSocket() {
         guard token != nil else { return }
+        // Never leave a previous socket dangling. openSocket() is reached from
+        // several paths (cold connect, transport reconnect, auth retry, and the
+        // refresh-success branch); overwriting `task` without cancelling would
+        // strand a zombie receive loop on the old socket. `forceReconnect()`
+        // already does this itself, so this is a no-op there.
+        if let old = task {
+            task = nil
+            old.cancel(with: .goingAway, reason: nil)
+        }
         reconnectScheduled = false
         status = .connecting
         let t = urlSession.webSocketTask(with: Config.gatewayURL)
@@ -206,22 +240,27 @@ final class Gateway: ObservableObject {
             // simply-expired access token: tokens live ~15 min and only refresh
             // on REST 401s, so after the app idles in the background past expiry
             // the foreground reconnect IDENTIFYs with a stale token and lands
-            // here. Previously this latched closed permanently — realtime stayed
-            // dead (no messages/presence) until app relaunch while REST kept
-            // working off the cookie. Attempt ONE token refresh and reconnect;
-            // only latch closed if the refresh itself fails (genuine
-            // revoke/ban/logout — the refresh cookie is dead too).
+            // here. Attempt ONE immediate token refresh and reconnect; if that
+            // refresh fails, fall back to the SLOW auth retry. Never latch —
+            // `refreshAccessToken()` returns false for a dropped packet, a 5xx
+            // and a genuine revoke ALIKE, so latching on it wedged realtime dead
+            // (send worked over REST, receive never did) for the rest of the
+            // foreground session. See `scheduleAuthRetry`.
             heartbeatTask?.cancel(); heartbeatTask = nil
             ackWatchdogTask?.cancel(); ackWatchdogTask = nil
             if identifyRefreshAttempted {
-                intentionallyClosed = true
-                status = .closed
+                scheduleAuthRetry()
                 return
             }
             identifyRefreshAttempted = true
             status = .connecting
             Task { @MainActor in
-                if await APIClient.shared.refreshAccessToken() {
+                let ok = await APIClient.shared.refreshAccessToken()
+                // This Task is not stored, so `disconnect()` cannot cancel it. A
+                // sign-out landing during the refresh round-trip would otherwise
+                // reopen the socket for a signed-out user. Re-check after the await.
+                guard !self.intentionallyClosed, self.token != nil else { return }
+                if ok {
                     // refreshAccessToken sets APIClient.shared.token synchronously
                     // before returning; read it directly rather than waiting on
                     // the (async) notification observer.
@@ -231,8 +270,7 @@ final class Gateway: ObservableObject {
                     self.resuming = false
                     self.openSocket()
                 } else {
-                    self.intentionallyClosed = true
-                    self.status = .closed
+                    self.scheduleAuthRetry()
                 }
             }
         case 0: // DISPATCH
@@ -243,6 +281,7 @@ final class Gateway: ObservableObject {
             if t == "READY" || t == "RESUMED" {
                 status = .ready
                 backoffMs = 1_000
+                authBackoffMs = 30_000
                 resuming = false
                 // A live session means the token worked — re-arm the one-shot
                 // IDENTIFY-refresh recovery for any future expiry.
@@ -260,6 +299,12 @@ final class Gateway: ObservableObject {
             // until the user backs out and re-enters. The reconcile is a cheap
             // `after`-cursor fetch (usually a no-op), NOT the heavy re-bootstrap.
             let payload = obj["d"]
+            // The isValidJSONObject pre-check is NOT redundant, despite looking
+            // like it. `data(withJSONObject:)` does not *throw* on an invalid
+            // top-level type — it raises NSInvalidArgumentException, an ObjC
+            // exception that `try?` cannot catch, which aborts the process. And
+            // a JSON `null` reaches here as a non-nil `NSNull()`, sailing right
+            // through `if let payload`. One malformed frame would kill the app.
             if let payload, JSONSerialization.isValidJSONObject(payload),
                let dData = try? JSONSerialization.data(withJSONObject: payload) {
                 onEvent?(t, dData)
@@ -362,6 +407,55 @@ final class Gateway: ObservableObject {
         scheduleReconnect()
     }
 
+    /// IDENTIFY was rejected and a token refresh didn't rescue it.
+    ///
+    /// This must NOT latch the socket closed. `APIClient.refreshAccessToken()`
+    /// returns `false` indistinguishably for a dropped packet, a 5xx, a decode
+    /// failure, and a real revoke — so treating it as "genuine revoke/ban" meant
+    /// a single network blip during a token refresh killed realtime for the rest
+    /// of the foreground session. `handleClose`, `scheduleReconnect` and the ack
+    /// watchdog all bail on `intentionallyClosed`, and only a foreground
+    /// transition or a push tap calls `forceReconnect()` — so a user sitting in
+    /// an open DM never recovered: REST sends kept working off the refresh
+    /// cookie while nothing inbound ever arrived. (`ba6ce6c` fixed only the
+    /// foreground half of this; this fixes the sitting-still half.)
+    ///
+    /// Instead: retry on a slow, escalating backoff (30s → 5min). A genuine
+    /// revoke costs one cheap request per interval until a REST 401 signs the
+    /// user out; a transient blip heals on its own within 30s.
+    /// `intentionallyClosed` is now reserved for `disconnect()` (real sign-out),
+    /// which cancels `reconnectTask` and so cancels this retry too.
+    private func scheduleAuthRetry() {
+        heartbeatTask?.cancel(); heartbeatTask = nil
+        ackWatchdogTask?.cancel(); ackWatchdogTask = nil
+        reconnectTask?.cancel()
+        // Tear the rejected socket down OURSELVES. The server sends
+        // INVALID_SESSION and then immediately closes; if we left `task` alive,
+        // that close would surface in receive() as a .failure, pass the
+        // `self.task === task` identity check, and run handleClose() →
+        // scheduleReconnect() — which cancels the auth retry we're about to arm
+        // and replaces this slow ladder with the 1s→30s TRANSPORT backoff. The
+        // result would be a connect+IDENTIFY hammer every ≤30s against a revoked
+        // token: exactly the hot loop this function exists to prevent. Nil'ing
+        // `task` first makes receive()'s identity check reject the close.
+        let dead = task
+        task = nil
+        dead?.cancel(with: .goingAway, reason: nil)
+        status = .reconnecting
+        let delayMs = min(maxAuthBackoffMs, authBackoffMs) + Int.random(in: 0...1_000)
+        authBackoffMs = min(maxAuthBackoffMs, authBackoffMs * 2)
+        reconnectTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
+            guard let self, !Task.isCancelled, !self.intentionallyClosed else { return }
+            // Re-arm the one-shot refresh so the next IDENTIFY can try again.
+            self.identifyRefreshAttempted = false
+            self.sessionId = nil
+            self.lastSeq = nil
+            self.resuming = false
+            self.openSocket()
+        }
+    }
+
     private func scheduleReconnect() {
         guard !reconnectScheduled, !intentionallyClosed else { return }
         reconnectScheduled = true
@@ -372,7 +466,14 @@ final class Gateway: ObservableObject {
         backoffMs = min(maxBackoffMs, backoffMs * 2)
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
-            guard let self, !self.intentionallyClosed else { return }
+            // `!Task.isCancelled` is REQUIRED, not belt-and-braces: `try?`
+            // swallows the CancellationError that `Task.sleep` throws when this
+            // task is cancelled, so without it a CANCELLED reconnect still falls
+            // through and opens a socket. `forceReconnect()` and
+            // `scheduleAuthRetry()` both cancel this task and then open/schedule
+            // their own — cancellation must actually abort. (The ack watchdog and
+            // the auth retry already guard this way.)
+            guard let self, !Task.isCancelled, !self.intentionallyClosed else { return }
             self.openSocket()
         }
     }

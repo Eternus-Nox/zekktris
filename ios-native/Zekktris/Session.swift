@@ -119,17 +119,99 @@ final class Session: ObservableObject {
         }
     }
 
-    func register(email: String, username: String, displayName: String, password: String) async {
+    func register(email: String, username: String, displayName: String, password: String, dateOfBirth: String) async {
         busy = true; authError = nil
         defer { busy = false }
         do {
             let session = try await api.register(
-                email: email, username: username, displayName: displayName, password: password
+                email: email, username: username, displayName: displayName, password: password, dateOfBirth: dateOfBirth
             )
             persist(session)
         } catch {
             authError = message(for: error)
         }
+    }
+
+    // ── Passkeys (WebAuthn via PasskeyManager) ──────────────────────────────
+    /// Sign in with a passkey. Returns true on success. `.cancelled` (user
+    /// dismissed the system sheet) is a silent no-op.
+    func loginWithPasskey() async -> Bool {
+        busy = true; authError = nil
+        defer { busy = false }
+        do {
+            let opt = try await api.passkeyLoginOptions()
+            guard let challenge = Data(base64URLEncoded: opt.options.challenge) else {
+                throw PasskeyError.unexpected
+            }
+            let response = try await PasskeyManager().performAssertion(challenge: challenge)
+            let session = try await api.passkeyLoginVerify(challengeId: opt.challengeId, response: response)
+            persist(session)
+            return true
+        } catch PasskeyError.cancelled {
+            return false
+        } catch {
+            authError = message(for: error)
+            return false
+        }
+    }
+
+    // ── Quick login (log in on another device) ──────────────────────────────
+    /// Mint (or re-randomize) a quick-login code for this device's user. Does
+    /// NOT touch the current session.
+    func generateQuickLoginCode() async -> QuickLoginCode? {
+        do { return try await api.generateQuickLoginCode() }
+        catch { authError = message(for: error); return nil }
+    }
+    /// Invalidate the active code (on leaving the quick-login screen).
+    func cancelQuickLoginCode() async { await api.cancelQuickLoginCode() }
+    /// Redeem a code shown on another device → a new session. Mirrors
+    /// loginWithPasskey: on success persist() flips the app to signed-in.
+    func redeemQuickLogin(code: String) async -> Bool {
+        busy = true; authError = nil
+        defer { busy = false }
+        do {
+            let session = try await api.redeemQuickLogin(code: code)
+            persist(session)
+            return true
+        } catch {
+            authError = message(for: error)
+            return false
+        }
+    }
+
+    /// Add a passkey to the signed-in account. Returns true on success.
+    /// Step-up: `currentPassword` is re-verified server-side before the new
+    /// credential is stored (a passkey is a login factor that survives a
+    /// password reset, so adding one must itself require the password).
+    func registerPasskey(currentPassword: String) async -> Bool {
+        do {
+            let opt = try await api.passkeyRegisterOptions()
+            guard
+                let challenge = Data(base64URLEncoded: opt.options.challenge),
+                let userID = Data(base64URLEncoded: opt.options.user.id)
+            else { throw PasskeyError.unexpected }
+            let response = try await PasskeyManager().performRegistration(
+                challenge: challenge, userID: userID, userName: opt.options.user.name,
+            )
+            try await api.passkeyRegisterVerify(
+                challengeId: opt.challengeId, response: response,
+                deviceName: PasskeyManager.currentDeviceName, currentPassword: currentPassword,
+            )
+            return true
+        } catch PasskeyError.cancelled {
+            return false
+        } catch {
+            authError = message(for: error)
+            return false
+        }
+    }
+
+    func loadPasskeys() async -> [PasskeyInfo] {
+        (try? await api.listPasskeys()) ?? []
+    }
+    /// Step-up: removing a login factor requires the account password.
+    func deletePasskey(_ id: String, currentPassword: String) async -> Bool {
+        do { try await api.deletePasskey(id: id, currentPassword: currentPassword); return true } catch { return false }
     }
 
     func logout() {
@@ -180,6 +262,14 @@ final class Session: ObservableObject {
         catch { return message(for: error) }
     }
 
+    /// One-time self-service DOB set/correction (dob is YYYY-MM-DD). The server
+    /// re-locks after success, so currentUser.canChangeDob flips to false and
+    /// the confirm-age banner unmounts. Returns nil on success, else an error.
+    func updateDateOfBirth(_ dob: String) async -> String? {
+        do { currentUser = try await api.updateDateOfBirth(dob); return nil }
+        catch { return message(for: error) }
+    }
+
     /// Update the profile bio. Empty/whitespace clears it (sent as ""). Returns
     /// nil on success, or a user-facing error string.
     func updateBio(_ bio: String) async -> String? {
@@ -203,6 +293,19 @@ final class Session: ObservableObject {
         catch { authError = message(for: error) }
     }
 
+    /// Profile privacy: show/hide the supporter tier title on the profile
+    /// popup (the membership's perks keep working either way).
+    func setShowSubscriptionTier(_ value: Bool) async {
+        do { currentUser = try await api.updateProfile(["showSubscriptionTier": value]) }
+        catch { authError = message(for: error) }
+    }
+
+    /// Account-level toggle for achievement-unlock notifications (push + in-app).
+    func setNotifyAchievements(_ value: Bool) async {
+        do { currentUser = try await api.updateProfile(["notifyAchievements": value]) }
+        catch { authError = message(for: error) }
+    }
+
     /// Save the custom name tag ("clan tag"), label-only. Empty/whitespace
     /// label clears it (sent as null) so a blank tag disappears cleanly.
     /// tagColor is always sent (a #rrggbb hex). Returns nil on success or a
@@ -215,6 +318,24 @@ final class Session: ObservableObject {
         ]
         do { currentUser = try await api.updateProfile(patch); return nil }
         catch { return message(for: error) }
+    }
+
+    /// Staff-only display-name shimmer. Pass a #rrggbb hex to turn it on, or nil
+    /// to turn it off (the server also gates the write to staff). Returns nil on
+    /// success or a user-facing error string.
+    func setStaffColor(_ color: String?) async -> String? {
+        do {
+            currentUser = try await api.updateProfile(["staffColor": color ?? NSNull()])
+            return nil
+        } catch { return message(for: error) }
+    }
+
+    /// Optional soft glow on the staff shimmer (staff-only, gated server-side).
+    func setStaffGlow(_ on: Bool) async -> String? {
+        do {
+            currentUser = try await api.updateProfile(["staffGlow": on])
+            return nil
+        } catch { return message(for: error) }
     }
 
     // MARK: Guild folders

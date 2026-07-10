@@ -7,8 +7,18 @@ struct ThreadListView: View {
     @EnvironmentObject private var store: AppStore
     let parent: Channel
     @State private var showNewPost = false
+    // Mirrors the web ForumView toggle (localStorage zekktris.forumShowArchived).
+    // Default true — long-standing behavior is to mix archived threads in.
+    @AppStorage("zk.forumShowArchived") private var showArchived = true
 
     private var isForum: Bool { parent.isForum }
+
+    /// The list actually rendered — archived threads filtered out when the
+    /// user has hidden them.
+    private var shownThreads: [Channel] {
+        showArchived ? store.threadList : store.threadList.filter { !$0.isArchived }
+    }
+    private var hasArchived: Bool { store.threadList.contains { $0.isArchived } }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,20 +26,34 @@ struct ThreadListView: View {
 
             if store.loadingThreads && store.threadList.isEmpty {
                 Spacer(); ProgressView().tint(Theme.accent); Spacer()
-            } else if store.threadList.isEmpty {
+            } else if shownThreads.isEmpty {
                 Spacer()
                 VStack(spacing: 14) {
-                    Text(isForum ? "No threads yet" : "No threads yet")
-                        .font(.zkSans(14))
-                        .foregroundColor(Theme.ink3)
-                    if isForum {
-                        Button { showNewPost = true } label: {
-                            Label("New Thread", systemImage: "plus")
+                    // Distinguish "nothing here" from "everything here is
+                    // archived and you've hidden it" — otherwise hiding the
+                    // last archived thread looks like the threads vanished.
+                    if hasArchived && !showArchived {
+                        Text("Archived threads are hidden")
+                            .font(.zkSans(14))
+                            .foregroundColor(Theme.ink3)
+                        Button { showArchived = true } label: {
+                            Label("Show archived", systemImage: "archivebox")
                                 .font(.zkSans(14, weight: .semibold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 16).padding(.vertical, 10)
-                                .background(Theme.accent)
-                                .clipShape(Capsule())
+                                .foregroundColor(Theme.accent)
+                        }
+                    } else {
+                        Text("No threads yet")
+                            .font(.zkSans(14))
+                            .foregroundColor(Theme.ink3)
+                        if isForum {
+                            Button { showNewPost = true } label: {
+                                Label("New Thread", systemImage: "plus")
+                                    .font(.zkSans(14, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 16).padding(.vertical, 10)
+                                    .background(Theme.accent)
+                                    .clipShape(Capsule())
+                            }
                         }
                     }
                 }
@@ -37,7 +61,7 @@ struct ThreadListView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 2) {
-                        ForEach(store.threadList) { thread in
+                        ForEach(shownThreads) { thread in
                             Button { store.selectChannel(thread) } label: { ThreadRow(thread: thread) }
                                 .buttonStyle(.plain)
                         }
@@ -73,6 +97,18 @@ struct ThreadListView: View {
                 .lineLimit(1)
 
             Spacer()
+
+            // Show/hide archived threads. Only surfaced when there's
+            // something to toggle (some archived exist, or they're hidden
+            // so the control stays reachable to bring them back).
+            if hasArchived || !showArchived {
+                Button { showArchived.toggle() } label: {
+                    Image(systemName: showArchived ? "archivebox.fill" : "archivebox")
+                        .font(.system(size: 16))
+                        .foregroundColor(showArchived ? Theme.accent : Theme.ink3)
+                }
+                .accessibilityLabel(showArchived ? "Hide archived threads" : "Show archived threads")
+            }
 
             if isForum {
                 Button { showNewPost = true } label: {

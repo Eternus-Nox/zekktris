@@ -153,6 +153,9 @@ enum Theme {
     /// red-400 for danger text on dark backgrounds.
     static let danger = Color(hex: 0xEF4444)      // red-500
     static let dangerSoft = Color(hex: 0xF87171)  // red-400
+    /// Warning accent (amber-500) — used for reversible-but-serious actions
+    /// like channel purge, distinct from the red destructive/delete accent.
+    static let warning = Color(hex: 0xF59E0B)     // amber-500
     /// Presence dots: emerald-500 / amber-500 / red-500 / ink-3 on web.
     static let online = Color(hex: 0x10B981)      // emerald-500
     static let idle = Color(hex: 0xF59E0B)        // amber-500

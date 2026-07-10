@@ -41,17 +41,41 @@ struct MainView: View {
 
     var body: some View {
         shell
+            // One-time "confirm your date of birth" nudge for grandfathered
+            // accounts. Collapses to zero height when not applicable.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                DobBannerView().environmentObject(session)
+            }
             // Root presenters. Environment objects are re-injected
             // explicitly: sheet/fullScreenCover content hosts have been
             // observed to lose inherited environment objects on Mac
             // (Designed for iPad) when the window resizes across size
             // classes — the source of the "No ObservableObject of type
             // AppStore found" crash.
-            .sheet(item: $store.profileUser) { u in
-                ProfileCardView(user: u)
-                    .environmentObject(store)
-                    .environmentObject(session)
-                    .environmentObject(store.voice)
+            // Profile is its OWN PAGE (full-screen), not a bottom-sheet popup —
+            // a NavigationStack gives it the standard "<" back chevron, and a
+            // fullScreenCover (unlike a sheet) can't be swipe-dismissed, so it
+            // also sidesteps the drag-dismiss-leaves-the-rail-dead hit-test bug.
+            .fullScreenCover(item: $store.profileUser) { u in
+                NavigationStack {
+                    ProfileCardView(user: u)
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button { store.profileUser = nil } label: {
+                                    Image(systemName: "chevron.left")
+                                        .font(.system(size: 20, weight: .semibold))
+                                        .foregroundColor(Theme.ink2)
+                                        .frame(width: 44, height: 44)
+                                        .contentShape(Rectangle())
+                                }
+                                .accessibilityLabel("Back")
+                            }
+                        }
+                }
+                .environmentObject(store)
+                .environmentObject(session)
+                .environmentObject(store.voice)
             }
             .fullScreenCover(item: $store.lightbox) { img in
                 ImageLightboxView(item: img)
@@ -91,8 +115,32 @@ struct MainView: View {
                     // taps behind it; fix = dismiss via button, not gesture.)
                     .interactiveDismissDisabled()
             }
+            // Self-profile / Settings — a POP-UP SHEET (all size classes) driven
+            // by store.showSettingsSheet, opened from the rail avatar. Placed
+            // HERE as a PEER of the other root presenters (profile / lightbox /
+            // members) for the same reason as the members sheet above: a sheet
+            // nested underneath sibling presenters can strand a hit-test shield
+            // over the 72pt server rail after dismissal. This replaces Settings'
+            // old rail-page presentation so it reads as a pop-up like Friends /
+            // Saved rather than a full-screen takeover.
+            .sheet(isPresented: $store.showSettingsSheet) {
+                // Re-inject env objects (the sheet host doesn't inherit them on
+                // "Designed for iPad on Mac") and DON'T set zkDismissPage, so
+                // SettingsView's PageBackButton falls back to dismiss() and
+                // closes the sheet.
+                SettingsView()
+                    .environmentObject(store)
+                    .environmentObject(session)
+                    .environmentObject(store.voice)
+                    // Close ONLY via the "<" (programmatic dismiss), not a
+                    // swipe-down: SettingsView hosts a NavigationStack, and
+                    // interactively drag-dismissing such a sheet corrupts the
+                    // presenter's hit-testing and leaves the server rail dead
+                    // (same bug the members sheet mitigates the same way).
+                    .interactiveDismissDisabled()
+            }
             .onAppear { store.isWideLayout = isWide }
-            .onChange(of: hSizeClass) { newValue in
+            .onChange(of: hSizeClass) { _, newValue in
                 store.isWideLayout = (newValue == .regular)
                 // Expanding to wide with a deep stack: trim to the top route
                 // so the detail pane shows a single screen.
@@ -244,7 +292,7 @@ struct MainView: View {
         // intermittent "swipe randomly stops working" bug. The destination starts
         // with the keyboard down and the gesture armed; a real focus re-fires
         // keyboardWillShow, so swipe-lock-while-keyboard is preserved.
-        .onChange(of: routeKey) { _ in
+        .onChange(of: routeKey) {
             keyboardVisible = false
             if settling { settling = false; settleX = 0 }
         }
@@ -373,7 +421,7 @@ struct MainView: View {
             GeometryReader { geo in
                 Color.clear
                     .onAppear { contentWidth = geo.size.width }
-                    .onChange(of: geo.size.width) { contentWidth = $0 }
+                    .onChange(of: geo.size.width) { _, w in contentWidth = w }
             }
         )
         // NOTE: the back-swipe gesture is attached to the message-route page in
@@ -561,8 +609,7 @@ struct PageBackButton: View {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundColor(Theme.ink2)
-                    .padding(.leading, 14)
-                    .frame(width: 44, height: 44, alignment: .leading)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Back")
@@ -654,18 +701,40 @@ struct ServerRailView: View {
 
             if !keyboardVisible {
             VStack(spacing: 10) {
-                if session.currentUser?.isAdmin == true {
+                if session.currentUser?.isAdmin == true || session.currentUser?.isModerator == true {
                     RailIconButton(symbol: "lock.shield", active: store.railPage == .admin) {
                         store.toggleRailPage(.admin)
                     }
                 }
-                if showFamilyButton {
+                // Opt-in for adults, but ALWAYS shown to a minor so they can
+                // reach the "connect a guardian" flow; a locked (unlinked)
+                // minor gets a red attention dot.
+                if showFamilyButton || store.family?.isMinor == true {
                     RailIconButton(symbol: "person.2.fill", active: store.railPage == .family) {
                         store.toggleRailPage(.family)
                     }
+                    .overlay(alignment: .topTrailing) {
+                        if store.family?.restrictedHeavily == true && store.railPage != .family {
+                            Circle().fill(Theme.danger)
+                                .frame(width: 11, height: 11)
+                                .overlay(Circle().stroke(Theme.bg0, lineWidth: 2))
+                                .offset(x: 2, y: -2)
+                        }
+                    }
                 }
 
-                Button { store.toggleRailPage(.settings) } label: {
+                Button {
+                    // Compact (iPhone): present Settings as a pop-up SHEET
+                    // (closes via the "<" PageBackButton, which only renders in
+                    // compact). Wide (iPad/Mac): keep the inline rail page —
+                    // there the always-visible rail is the way out, and a sheet
+                    // would have no close affordance in a regular width class.
+                    if store.isWideLayout {
+                        store.toggleRailPage(.settings)
+                    } else {
+                        store.showSettingsSheet = true
+                    }
+                } label: {
                     Avatar(
                         url: session.currentUser?.avatarUrl,
                         name: session.currentUser?.name ?? "?",
@@ -676,7 +745,9 @@ struct ServerRailView: View {
                         decoration: session.currentUser?.avatarDecoration
                     )
                     .frame(maxWidth: .infinity)
-                    .overlay(alignment: .leading) { RailPip(active: store.railPage == .settings) }
+                    .overlay(alignment: .leading) {
+                        RailPip(active: store.railPage == .settings || store.showSettingsSheet)
+                    }
                 }
                 .buttonStyle(.plain)
             }
@@ -981,6 +1052,9 @@ struct ChannelListView: View {
             GuildInfoCard(onOpenSettings: {
                 showGuildInfo = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { showGuildSettings = true }
+            }, onCreateChannel: {
+                showGuildInfo = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { showCreateChannel = true }
             })
         }
         .sheet(isPresented: $showReorderChannels) {
@@ -1010,14 +1084,13 @@ struct ChannelListView: View {
     // category/row derivations below filter a pre-sorted array instead of
     // re-sorting on every render.
     private var sortedChannels: [Channel] { store.sortedChannels }
-    private var sortedCategories: [Channel] {
-        sortedChannels.filter { $0.isCategory }
-    }
-    private var uncategorizedChannels: [Channel] {
-        sortedChannels.filter { !$0.isCategory && !$0.isThread && $0.parentId == nil }
-    }
+    // Grouping is memoized once in AppStore's `channels` didSet — index into it
+    // instead of re-filtering the whole sortedChannels array per category on
+    // every render (the sidebar body re-runs on every AppStore publish).
+    private var sortedCategories: [Channel] { store.categoryChannels }
+    private var uncategorizedChannels: [Channel] { store.uncategorizedChannels }
     private func channels(in category: Channel) -> [Channel] {
-        sortedChannels.filter { !$0.isCategory && !$0.isThread && $0.parentId == category.id }
+        store.channelsByCategory[category.id] ?? []
     }
 
     private func categoryHeader(_ category: Channel) -> some View {
@@ -1234,7 +1307,7 @@ private struct SidebarVoiceParticipant: View {
 
     var body: some View {
         let member = store.members[state.userId]
-        let label = member?.nickname ?? member?.user.name ?? String(state.userId.suffix(5))
+        let label = member?.user.name ?? String(state.userId.suffix(5))
         HStack(spacing: 6) {
             Avatar(url: member?.user.avatarUrl, name: label, size: 18, toneId: state.userId)
             Text(label)
@@ -1482,10 +1555,10 @@ private struct DMRow: View {
     var body: some View {
         let unread = store.isChannelUnread(dm)
         let mentions = store.mentionCount(for: dm.id)
-        HStack(spacing: 10) {
+        HStack(spacing: 6) {
             Avatar(
                 url: dm.dmAvatarUser?.avatarUrl,
-                name: dm.dmTitle,
+                name: store.dmDisplayTitle(dm),
                 size: 36,
                 status: store.status(for: dm.dmAvatarUser?.id, fallback: dm.dmAvatarUser?.status),
                 ringColor: Theme.bg2,
@@ -1506,7 +1579,7 @@ private struct DMRow: View {
                 }
             }
             if let u = dm.dmAvatarUser { NameTag(u) }
-            Text(dm.dmTitle)
+            Text(store.dmDisplayTitle(dm))
                 .font(.zkSans(15, weight: unread ? .semibold : .regular))
                 .foregroundColor(unread ? Theme.ink1 : Theme.ink2)
                 .lineLimit(1)
@@ -1548,7 +1621,10 @@ struct FriendsView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
+                // Lazy so friend-row sections (and their avatar loads) realize
+                // as they scroll into view instead of all at once up front —
+                // matches the LazyVStack pattern used elsewhere in this file.
+                LazyVStack(alignment: .leading, spacing: 22) {
                     addFriendSection
                     if !incoming.isEmpty { requestsSection }
                     if !outgoing.isEmpty { pendingSection }
@@ -1561,7 +1637,7 @@ struct FriendsView: View {
             .navigationTitle("Friends")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) { PageBackButton() }
+                ToolbarItem(placement: .cancellationAction) { PageBackButton() }
             }
             .task { await store.loadRelationships() }
         }
@@ -1804,27 +1880,49 @@ struct SettingsView: View {
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+
+    /// Where membership is purchased/managed. Payments happen on the website —
+    /// the iOS app links out to it and the membership syncs back automatically
+    /// on the next refresh. Perks = cosmetics (account-wide) + premium 2K/4K
+    /// streaming: screen share on web/desktop AND the camera here in-app (the
+    /// one membership-gated capability inside this app; see the App Store
+    /// posture note on the subscribe button below).
+    private static let membershipURL = URL(string: "https://zekktris.com/settings")!
 
     @State private var displayName = ""
     @State private var bio = ""
-    @State private var bioStatus: String?
     @State private var customStatus = ""
     @State private var customStatusEmoji = ""
     @State private var customStatusExpiry: CustomStatusExpiryChoice = .keep
     @State private var showStatusEmojiPicker = false
-    @State private var nameStatus: String?
+    // One consolidated Save for every editable profile field (display name, bio,
+    // custom status, name tag, staff shimmer). The per-field "Save"/"Set"/"Save
+    // tag"/"Save color" buttons were removed in favor of the single bottom
+    // "Save changes" bar — see profileIsDirty / saveProfileChanges. `saving`
+    // gates the bar; `saveStatus` shows the result ("Saved." or an error).
+    @State private var saving = false
+    @State private var saveStatus: String?
     @State private var showChangePassword = false
     @State private var showChangeUsername = false
     @State private var showChangeEmail = false
     @State private var showSessions = false
     @State private var showTwoFactor = false
+    @State private var showPasskeys = false
+    @State private var showQuickLogin = false
     @State private var showBots = false
     @State private var showAchievements = false
+    @State private var showTermsSheet = false
+    @State private var showPrivacySheet = false
     // Name-tag ("clan tag") editor state, seeded from the self user.
     @State private var tagLabel = ""
     @State private var tagColor = Color(hex: 0x3DD7EC)
-    @State private var tagSaving = false
-    @State private var tagStatus: String?
+    // Staff-only display-name shimmer editor state, seeded from the self user.
+    // `staffShimmerOn` mirrors whether staffColor is set; the toggle saves via a
+    // custom Binding so seeding it doesn't fire a redundant network save.
+    @State private var staffShimmerColor = Color(hex: 0xF5C542)
+    @State private var staffShimmerOn = false
+    @State private var staffGlowOn = false
     // Mic input test (record-and-discard meter; never sent). Reuses the
     // voice-message recorder's live metering — no new audio infra.
     @StateObject private var micTest = VoiceRecorder()
@@ -1835,12 +1933,19 @@ struct SettingsView: View {
     // tap (the async setter returns before currentUser updates), so it read
     // as "won't turn on." The mirror updates optimistically and reconciles
     // with the server result.
-    @State private var achievementsPublicOn = false
+    @State private var achievementsPublicOn = true
+    // Local mirror for the achievement-notification toggle (same snap-back
+    // rationale as achievementsPublicOn).
+    @State private var notifyAchievementsOn = true
+    // Local mirror for the supporter-tier visibility toggle (same snap-back
+    // rationale as achievementsPublicOn above).
+    @State private var showTierOn = true
     @State private var bioProbe: Biometrics.Probe?
     @State private var avatarPickerItem: PhotosPickerItem?
     @State private var bannerPickerItem: PhotosPickerItem?
     @State private var imageUploading = false
     @AppStorage("zk.showFamily") private var showFamilyButton = false
+    @AppStorage("zk.hideClanTags") private var hideClanTags = false
     @AppStorage("zk.notifyMessages") private var notifyMessages = true
     @AppStorage("zk.notifyCalls") private var notifyCalls = true
     @AppStorage("zk.cameraQuality") private var cameraQuality = "high"
@@ -1856,10 +1961,14 @@ struct SettingsView: View {
 
     /// Top-level grouping for the Settings screen so the ~12 sections aren't
     /// one long scroll. The profile header stays pinned above the tabs.
+    // Mirrors the web Settings tabs (SettingsView.tsx), same labels + order:
+    // Profile, Security, Voice & Video, Membership. (Web's "User Profile" is
+    // just "Profile" here to save chip width; web's Bots tab has no iOS analog.)
     private enum SettingsTab: String, CaseIterable, Identifiable {
         case profile = "Profile"
-        case preferences = "Preferences"
-        case account = "Account"
+        case security = "Security"
+        case voiceVideo = "Voice & Video"
+        case membership = "Membership"
         var id: String { rawValue }
     }
     @State private var settingsTab: SettingsTab = .profile
@@ -1873,30 +1982,68 @@ struct SettingsView: View {
                     // name regardless of which tab is active.
                     profileHeader
 
-                    Picker("Settings section", selection: $settingsTab) {
-                        ForEach(SettingsTab.allCases) { tab in
-                            Text(tab.rawValue).tag(tab)
+                    // Scrollable chip bar (was a 4-segment segmented Picker):
+                    // "Membership" + "Voice & Video" don't fit four segments on a
+                    // phone. Mirrors the Admin instance tab bar.
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(SettingsTab.allCases) { tab in
+                                settingsTabChip(tab)
+                            }
                         }
+                        .padding(.vertical, 2)
                     }
-                    .pickerStyle(.segmented)
 
                     switch settingsTab {
                     case .profile:
+                        // Matches web's Profile tab: identity + status +
+                        // notifications + privacy/features, all in one place.
                         statusSection
                         displayNameSection
                         bioSection
                         customStatusSection
-                        achievementsSection
-                    case .preferences:
-                        appearanceSection
                         notificationsSection
-                        micTestSection
-                        cameraSection
                         featuresSection
-                    case .account:
+                        achievementsSection
+                    case .membership:
+                        // Staff name shimmer — an instance-STAFF perk (not
+                        // membership-gated), shown at the top for admins/mods.
+                        if session.currentUser?.isAdmin == true || session.currentUser?.isModerator == true {
+                            staffShimmerEditor
+                            Divider().background(Theme.line).padding(.vertical, 6)
+                        }
+                        // Appearance is a SUPPORTER PERK: members (own or
+                        // family pass-down) get the editors; everyone else
+                        // sees the membership pitch. The server hard-locks the
+                        // cosmetic writes too.
+                        if session.currentUser?.subscriptionTier != nil {
+                            appearanceSection
+                            // Own (non-inherited) members get a link to manage
+                            // or cancel on the website; inherited (family
+                            // pass-down) members have nothing to manage here.
+                            if session.currentUser?.subscriptionInherited != true {
+                                manageMembershipSection
+                            }
+                        } else {
+                            membershipPitchSection
+                        }
+                        entitlementsSection
+                        // Hide clan tags is a per-device VIEWER preference, not
+                        // a perk — available to EVERYONE, member or not.
+                        hideClanTagsSection
+                    case .security:
+                        // Web's Security tab: account (username/email) + password
+                        // + 2FA + passkeys. Legal + Log out live here too (iOS
+                        // has no separate footer for them).
                         securitySection
                         accountSection
+                        legalSection
                         logoutSection
+                    case .voiceVideo:
+                        // Web's Voice & Video tab: input/output device test +
+                        // camera/quality.
+                        micTestSection
+                        cameraSection
                     }
                 }
                 .padding(16)
@@ -1906,30 +2053,211 @@ struct SettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .onDisappear { micTest.cancel() } // never leave the mic open
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) { PageBackButton() }
+                ToolbarItem(placement: .cancellationAction) { PageBackButton() }
+            }
+            // One consolidated Save bar for every editable profile field. Shows
+            // only when something actually changed (or a result is displaying) —
+            // each per-field "Save"/"Set"/"Save tag"/"Save color" button was
+            // removed in favor of this. Pinned above the bottom safe area; the
+            // safeAreaInset reserves space so it never covers scroll content.
+            .safeAreaInset(edge: .bottom) {
+                if profileIsDirty || saveStatus != nil {
+                    VStack(spacing: 8) {
+                        if let saveStatus {
+                            Text(saveStatus)
+                                .font(.zkSans(12))
+                                .foregroundColor(saveStatus == "Saved." ? Theme.ink3 : Theme.dangerSoft)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if profileIsDirty {
+                            Button {
+                                Task { await saveProfileChanges() }
+                            } label: {
+                                Text(saving ? "Saving…" : "Save changes")
+                                    .font(.zkSans(15, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 13)
+                                    .background(Theme.accent)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(saving)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
+                    .padding(.bottom, 6)
+                    .frame(maxWidth: .infinity)
+                    .background(
+                        Theme.bg1.overlay(Divider().background(Theme.line), alignment: .top)
+                    )
+                }
             }
             .onAppear {
-                displayName = session.currentUser?.displayName ?? ""
-                bio = session.currentUser?.bio ?? ""
-                customStatus = session.currentUser?.customStatus ?? ""
-                customStatusEmoji = session.currentUser?.customStatusEmoji ?? ""
-                // If a future auto-clear is already set, default to "keep" so a
-                // text/emoji edit doesn't silently wipe it (mirrors web).
-                customStatusExpiry =
-                    customStatusHasFutureExpiry(session.currentUser?.customStatusExpiresAt) ? .keep : .off
+                seedProfileDrafts()
                 faceIDOn = session.faceIDEnabled
-                achievementsPublicOn = session.currentUser?.achievementsPublic ?? false
-                tagLabel = session.currentUser?.tagLabel ?? ""
-                if let hex = session.currentUser?.tagColor, let c = Color(hexString: hex) {
-                    tagColor = c
-                }
+                achievementsPublicOn = session.currentUser?.achievementsPublic ?? true
+                notifyAchievementsOn = session.currentUser?.notifyAchievements ?? true
+                showTierOn = session.currentUser?.showSubscriptionTier ?? true
             }
             // Keep the mirror in sync if currentUser is refreshed (e.g. the
             // background getMe on foreground) while Settings is open.
-            .onChange(of: session.currentUser?.achievementsPublic) { newValue in
-                achievementsPublicOn = newValue ?? false
+            .onChange(of: session.currentUser?.achievementsPublic) { _, newValue in
+                achievementsPublicOn = newValue ?? true
+            }
+            .onChange(of: session.currentUser?.notifyAchievements) { _, newValue in
+                notifyAchievementsOn = newValue ?? true
             }
         }
+    }
+
+    // MARK: One-Save profile editing
+
+    /// Seed the editable profile drafts from the current user. Called on appear
+    /// and again after a successful Save so the dirty-tracking baseline resets
+    /// (which hides the bottom Save bar).
+    private func seedProfileDrafts() {
+        let u = session.currentUser
+        displayName = u?.displayName ?? ""
+        bio = u?.bio ?? ""
+        customStatus = u?.customStatus ?? ""
+        customStatusEmoji = u?.customStatusEmoji ?? ""
+        // If a future auto-clear is already set, default to "keep" so a
+        // text/emoji edit doesn't silently wipe it (mirrors web).
+        customStatusExpiry = customStatusHasFutureExpiry(u?.customStatusExpiresAt) ? .keep : .off
+        tagLabel = u?.tagLabel ?? ""
+        if let hex = u?.tagColor, let c = Color(hexString: hex) { tagColor = c }
+        // Staff shimmer: on when a color is set; seed the picker to it.
+        if let hex = u?.staffColor, let c = Color(hexString: hex) {
+            staffShimmerColor = c
+            staffShimmerOn = true
+        } else {
+            staffShimmerOn = false
+        }
+        staffGlowOn = u?.staffGlow == true
+    }
+
+    private var isStaff: Bool {
+        session.currentUser?.isAdmin == true || session.currentUser?.isModerator == true
+    }
+
+    /// Display name changed to a NON-EMPTY value (blank can't clear a name, so a
+    /// blanked field is treated as not-dirty — matching the old disable rule).
+    private var displayNameDirty: Bool {
+        let dn = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !dn.isEmpty && dn != (session.currentUser?.displayName ?? "")
+    }
+    private var bioDirty: Bool {
+        bio.trimmingCharacters(in: .whitespacesAndNewlines) != (session.currentUser?.bio ?? "")
+    }
+    private var customStatusDirty: Bool {
+        let seededExpiry: CustomStatusExpiryChoice =
+            customStatusHasFutureExpiry(session.currentUser?.customStatusExpiresAt) ? .keep : .off
+        return customStatus.trimmingCharacters(in: .whitespacesAndNewlines) != (session.currentUser?.customStatus ?? "")
+            || customStatusEmoji.trimmingCharacters(in: .whitespacesAndNewlines) != (session.currentUser?.customStatusEmoji ?? "")
+            || customStatusExpiry != seededExpiry
+    }
+    private var nameTagDirty: Bool {
+        let draftLabel = tagLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if draftLabel != (session.currentUser?.tagLabel ?? "") { return true }
+        // Color only matters when there's a tag to color; compare case-insensitively.
+        if !draftLabel.isEmpty {
+            let stored = (session.currentUser?.tagColor ?? "").lowercased()
+            if !stored.isEmpty && tagColor.tagHexString.lowercased() != stored { return true }
+        }
+        return false
+    }
+    private var staffColorDirty: Bool {
+        guard isStaff else { return false }
+        let storedOn = (session.currentUser?.staffColor?.isEmpty == false)
+        if staffShimmerOn != storedOn { return true }
+        if staffShimmerOn, let stored = session.currentUser?.staffColor {
+            return staffShimmerColor.tagHexString.lowercased() != stored.lowercased()
+        }
+        return false
+    }
+    private var staffGlowDirty: Bool {
+        isStaff && staffGlowOn != (session.currentUser?.staffGlow == true)
+    }
+
+    /// Any editable profile field differs from the saved user → show the bottom
+    /// Save bar. Fields the current user can't edit (name tag for non-members,
+    /// staff shimmer for non-staff) never turn dirty because their editors —
+    /// and thus their drafts — are never changed.
+    private var profileIsDirty: Bool {
+        displayNameDirty || bioDirty || customStatusDirty || nameTagDirty
+            || staffColorDirty || staffGlowDirty
+    }
+
+    /// Persist every dirty profile field in one action (the single bottom "Save
+    /// changes" button). Only changed groups hit the network; each reuses the
+    /// field's existing Session save so trim / null / staff-gate semantics stay
+    /// identical to the old per-field buttons. Re-seeds the drafts from the
+    /// updated user afterward so the baseline resets and the bar hides.
+    private func saveProfileChanges() async {
+        saving = true
+        saveStatus = nil
+        var errors: [String] = []
+
+        if displayNameDirty {
+            let dn = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let err = await session.updateDisplayName(dn) { errors.append(err) }
+        }
+        if bioDirty {
+            if let err = await session.updateBio(bio) { errors.append(err) }
+        }
+        if customStatusDirty {
+            // setCustomStatus reports failures via the shared error banner
+            // (authError), not a return value — nothing to collect here.
+            await session.setCustomStatus(
+                customStatus.isEmpty ? nil : customStatus,
+                emoji: customStatusEmoji.isEmpty ? nil : customStatusEmoji,
+                expiry: customStatusExpiry.resolved()
+            )
+        }
+        if nameTagDirty {
+            if let err = await session.setNameTag(label: tagLabel, color: tagColor.tagHexString) {
+                errors.append(err)
+            }
+        }
+        if staffColorDirty {
+            if let err = await session.setStaffColor(staffShimmerOn ? staffShimmerColor.tagHexString : nil) {
+                errors.append(err)
+            }
+        }
+        if staffGlowDirty {
+            if let err = await session.setStaffGlow(staffGlowOn) { errors.append(err) }
+        }
+
+        saving = false
+        // Reset the dirty baseline from the server's echo so the bar hides and a
+        // second tap is a no-op. On error the failed field stays dirty (its
+        // currentUser value didn't change) so the bar stays for a retry.
+        seedProfileDrafts()
+        if errors.isEmpty {
+            saveStatus = "Saved."
+            // Fade the confirmation after a moment (the disappearing bar is the
+            // real signal; this is just a brief acknowledgement).
+            Task {
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                if saveStatus == "Saved." { saveStatus = nil }
+            }
+        } else {
+            saveStatus = errors.joined(separator: " ")
+        }
+    }
+
+    private func settingsTabChip(_ tab: SettingsTab) -> some View {
+        Button { settingsTab = tab } label: {
+            Text(tab.rawValue)
+                .font(.zkSans(13, weight: settingsTab == tab ? .semibold : .regular))
+                .foregroundColor(settingsTab == tab ? .white : Theme.ink2)
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(settingsTab == tab ? Theme.accent : Theme.bg2)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     private var profileHeader: some View {
@@ -1948,7 +2276,7 @@ struct SettingsView: View {
                                        startPoint: .topLeading, endPoint: .bottomTrailing)
                     }
                 }
-                .frame(height: 170)
+                .frame(height: 238) // 170 → 187 → 206 → 231 → 238; taller frame shows more of the banner image (scaledToFill crops less)
                 .frame(maxWidth: .infinity)
                 .clipped()
                 // Legibility scrim so the avatar + name always read over any
@@ -2027,8 +2355,8 @@ struct SettingsView: View {
             }
             .padding(.leading, 6)
         }
-        .onChange(of: avatarPickerItem) { item in uploadProfileImage(item, kind: "avatar") }
-        .onChange(of: bannerPickerItem) { item in uploadProfileImage(item, kind: "banner") }
+        .onChange(of: avatarPickerItem) { _, item in uploadProfileImage(item, kind: "avatar") }
+        .onChange(of: bannerPickerItem) { _, item in uploadProfileImage(item, kind: "banner") }
     }
 
     /// Load the picked photo and push it to the matching profile endpoint.
@@ -2069,6 +2397,25 @@ struct SettingsView: View {
                 .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
             }
             .buttonStyle(.plain)
+
+            // Custom Binding so seeding the mirror on open doesn't fire a save.
+            Toggle(isOn: Binding(
+                get: { notifyAchievementsOn },
+                set: { on in
+                    notifyAchievementsOn = on
+                    Task { await session.setNotifyAchievements(on) }
+                }
+            )) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Achievement notifications")
+                        .font(.zkSans(15)).foregroundColor(Theme.ink1)
+                    Text("Get notified when you unlock a new achievement.")
+                        .font(.zkSans(11)).foregroundColor(Theme.ink4)
+                }
+            }
+            .tint(Theme.accent)
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
         }
         .sheet(isPresented: $showAchievements) { AchievementsGallerySheet() }
     }
@@ -2117,29 +2464,11 @@ struct SettingsView: View {
     private var displayNameSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("DISPLAY NAME")
-            HStack(spacing: 8) {
-                TextField("Display name", text: $displayName)
-                    .padding(12)
-                    .background(Theme.bg2)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .foregroundColor(Theme.ink1)
-                Button {
-                    let n = displayName
-                    Task { nameStatus = await session.updateDisplayName(n) ?? "Saved." }
-                } label: {
-                    Text("Save")
-                        .font(.zkSans(14, weight: .semibold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(Theme.accent)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                }
-                .disabled(displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            if let nameStatus {
-                Text(nameStatus).font(.zkSans(12)).foregroundColor(Theme.ink2)
-            }
+            TextField("Display name", text: $displayName)
+                .padding(12)
+                .background(Theme.bg2)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .foregroundColor(Theme.ink1)
         }
     }
 
@@ -2152,31 +2481,13 @@ struct SettingsView: View {
                 .background(Theme.bg2)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .foregroundColor(Theme.ink1)
-                .onChange(of: bio) { newValue in
+                .onChange(of: bio) { _, newValue in
                     // Hard cap mirrors the server's BIO_MAX_LENGTH (200) —
                     // the web editor uses the same limit. A higher cap here
                     // just invited 400s on Save for 201–500-char bios.
                     if newValue.count > 200 { bio = String(newValue.prefix(200)) }
                 }
-            HStack {
-                Text("\(bio.count)/200").font(.zkSans(11)).foregroundColor(Theme.ink3)
-                Spacer()
-                Button {
-                    let b = bio
-                    Task { bioStatus = await session.updateBio(b) ?? "Saved." }
-                } label: {
-                    Text("Save")
-                        .font(.zkSans(14, weight: .semibold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(Theme.accent)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                }
-            }
-            if let bioStatus {
-                Text(bioStatus).font(.zkSans(12)).foregroundColor(Theme.ink2)
-            }
+            Text("\(bio.count)/200").font(.zkSans(11)).foregroundColor(Theme.ink3)
         }
     }
 
@@ -2210,20 +2521,6 @@ struct SettingsView: View {
                     .background(Theme.bg2)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .foregroundColor(Theme.ink1)
-                Button {
-                    let s = customStatus
-                    let e = customStatusEmoji
-                    let exp = customStatusExpiry.resolved()
-                    Task { await session.setCustomStatus(s, emoji: e, expiry: exp) }
-                } label: {
-                    Text("Set")
-                        .font(.zkSans(14, weight: .semibold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(Theme.accent)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                }
             }
             // Auto-clear duration. Matches the web "Clear after" dropdown.
             Text("CLEAR AFTER").font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
@@ -2242,17 +2539,89 @@ struct SettingsView: View {
             }
             if !customStatus.isEmpty || !customStatusEmoji.isEmpty {
                 Button {
+                    // Local clear — the bottom Save persists it (and clears the
+                    // auto-clear timer, since empty text saves a null expiry).
                     customStatus = ""
                     customStatusEmoji = ""
                     customStatusExpiry = .off
-                    // Clearing the status also clears any auto-clear timer.
-                    Task { await session.setCustomStatus(nil, emoji: nil, expiry: .clear) }
                 } label: {
                     Text("Clear status")
                         .font(.zkSans(13))
                         .foregroundColor(Theme.ink3)
                 }
             }
+        }
+    }
+
+    /// Shown where Appearance would be, for non-members. Copy requirements
+    /// (user-specified): supporting keeps Zekktris alive and strong;
+    /// memberships are non-refundable. Admin-gifted until card payments land.
+    private var membershipPitchSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("MEMBERSHIP — A SUPPORTER PERK")
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Being a supporter helps Zekktris stay alive and strong. Membership unlocks COSMETIC customization — themes, avatar frames, and name tags — and wears your tier on your profile, plus higher streaming quality (2K on Guardian, 4K on Legend) for your camera and for screen share on web/desktop. It never changes what you can say or do.")
+                    .font(.zkSans(13)).foregroundColor(Theme.ink2)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    ForEach([("scout", "Scout", "$2/mo", "Cosmetics"), ("guardian", "Guardian", "$5/mo", "2K streams"), ("legend", "Legend", "$10/mo", "4K streams")], id: \.0) { tier in
+                        let color = TierBadge.meta(tier.0)?.color ?? Theme.accent
+                        VStack(spacing: 2) {
+                            Text(tier.1).font(.zkSans(14, weight: .bold)).foregroundColor(color)
+                            Text(tier.2).font(.zkSans(12)).foregroundColor(Theme.ink2)
+                            Text(tier.3).font(.zkSans(10)).foregroundColor(Theme.ink3)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(color.opacity(0.08))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(color.opacity(0.45), lineWidth: 1))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                }
+                // Payments happen on the WEBSITE, opened in the browser; the
+                // membership syncs back to this app automatically. NOTE (App
+                // Store posture): since 2026-07-04 the membership DOES gate an
+                // in-app capability — 2K/4K camera quality (user decision,
+                // parity with web). Combined with this external purchase link
+                // that raises 3.1.1 review risk; if App Review objects, the
+                // mitigation is hiding this subscribe link (entitlements that
+                // sync from elsewhere remain allowed under 3.1.3(b)).
+                Button { openURL(Self.membershipURL) } label: {
+                    HStack(spacing: 6) {
+                        Text("Subscribe on zekktris.com").font(.zkSans(14, weight: .semibold))
+                        Image(systemName: "arrow.up.right.square").font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity).padding(.vertical, 11)
+                    .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                Text("Payments are handled on the website and sync here automatically. Memberships are non-refundable; cancel any time and you keep it until the end of the paid term. A supervising parent's membership also covers their children.")
+                    .font(.zkSans(11)).foregroundColor(Theme.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+    }
+
+    /// Shown to CURRENT members: a link to manage/cancel their membership on
+    /// the website (payments + cancellation live there, not in the iOS app).
+    private var manageMembershipSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button { openURL(Self.membershipURL) } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "creditcard").font(.system(size: 14)).foregroundColor(Theme.accent)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Manage membership").font(.zkSans(15)).foregroundColor(Theme.ink1)
+                        Text("Change tier or cancel on zekktris.com").font(.zkSans(11)).foregroundColor(Theme.ink3)
+                    }
+                    Spacer()
+                    Image(systemName: "arrow.up.right.square").font(.system(size: 13)).foregroundColor(Theme.ink3)
+                }
+                .padding(12)
+                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -2276,6 +2645,52 @@ struct SettingsView: View {
             decorationSection
             Divider().background(Theme.line).padding(.vertical, 6)
             nameTagEditor
+        }
+    }
+
+    /// Staff-only display-name shimmer editor. Admins/moderators can give their
+    /// display name an animated shimmer in a chosen color that OVERRIDES any
+    /// role color everywhere. The toggle turns it on/off (clears staffColor);
+    /// changing the color takes effect on "Save color". Uses a custom Binding so
+    /// seeding the toggle on open doesn't fire a redundant save.
+    private var staffShimmerEditor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("STAFF NAME SHIMMER")
+            Text("Give your display name an animated shimmer in a color you choose — it overrides your server role colors wherever your name appears. Staff only; turn it off any time.")
+                .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Toggle(isOn: $staffShimmerOn) {
+                Text("Shimmer my name").font(.zkSans(15)).foregroundColor(Theme.ink1)
+            }
+            .tint(Theme.accent)
+
+            if staffShimmerOn {
+                HStack(alignment: .bottom, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Color").font(.zkSans(11)).foregroundColor(Theme.ink3)
+                        ColorPicker("", selection: $staffShimmerColor, supportsOpacity: false)
+                            .labelsHidden().frame(width: 44, height: 36)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Preview").font(.zkSans(11)).foregroundColor(Theme.ink3)
+                        StaffName(text: session.currentUser?.name ?? "You",
+                                  staffColor: staffShimmerColor.tagHexString,
+                                  glow: staffGlowOn,
+                                  font: .zkSans(16, weight: .semibold))
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(Theme.bg1).clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                // Optional slight glow — saved with everything else via the
+                // bottom "Save changes" bar.
+                Toggle(isOn: $staffGlowOn) {
+                    Text("Add a slight glow").font(.zkSans(15)).foregroundColor(Theme.ink1)
+                }
+                .tint(Theme.accent)
+            }
         }
     }
 
@@ -2303,7 +2718,7 @@ struct SettingsView: View {
                         .padding(.horizontal, 10).padding(.vertical, 8)
                         .background(Theme.bg1).clipShape(RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line, lineWidth: 1))
-                        .onChange(of: tagLabel) { v in
+                        .onChange(of: tagLabel) { _, v in
                             if v.count > 4 { tagLabel = String(v.prefix(4)) }
                         }
                 }
@@ -2313,7 +2728,7 @@ struct SettingsView: View {
             HStack(spacing: 8) {
                 Text("Preview").font(.zkSans(11)).foregroundColor(Theme.ink3)
                 HStack(spacing: 6) {
-                    NameTag(label: tagLabel, color: tagColor.tagHexString)
+                    NameTag(label: tagLabel, color: tagColor.tagHexString, ignoreHidePref: true)
                     Text(session.currentUser?.name ?? "You")
                         .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
                 }
@@ -2321,45 +2736,89 @@ struct SettingsView: View {
                 .background(Theme.bg1).clipShape(RoundedRectangle(cornerRadius: 8))
             }
 
-            HStack(spacing: 10) {
+            if !tagLabel.isEmpty {
                 Button {
-                    Task {
-                        tagSaving = true; tagStatus = nil
-                        let err = await session.setNameTag(label: tagLabel, color: tagColor.tagHexString)
-                        tagStatus = err ?? "Saved"
-                        tagSaving = false
-                    }
+                    // Local clear — the bottom "Save changes" bar persists the
+                    // removed tag.
+                    tagLabel = ""
                 } label: {
-                    Text(tagSaving ? "Saving…" : "Save tag")
-                        .font(.zkSans(14, weight: .semibold)).foregroundColor(.white)
-                        .padding(.horizontal, 14).padding(.vertical, 8)
-                        .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 8))
+                    Text("Clear tag").font(.zkSans(14)).foregroundColor(Theme.ink2)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line, lineWidth: 1))
                 }
-                .buttonStyle(.plain).disabled(tagSaving)
+                .buttonStyle(.plain)
+            }
+        }
+    }
 
-                if !tagLabel.isEmpty {
-                    Button {
-                        tagLabel = ""
-                        Task {
-                            tagSaving = true; tagStatus = nil
-                            let err = await session.setNameTag(label: "", color: tagColor.tagHexString)
-                            tagStatus = err ?? "Cleared"
-                            tagSaving = false
-                        }
-                    } label: {
-                        Text("Clear").font(.zkSans(14)).foregroundColor(Theme.ink2)
-                            .padding(.horizontal, 12).padding(.vertical, 8)
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line, lineWidth: 1))
-                    }
-                    .buttonStyle(.plain).disabled(tagSaving)
+    /// Viewer-side declutter — hide everyone's name-tag pills on this device.
+    /// A per-device preference (@AppStorage), available to ALL users regardless
+    /// of membership (it's not a supporter perk). NameTag reads the same key.
+    private var hideClanTagsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("DISPLAY")
+            Toggle(isOn: $hideClanTags) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Hide clan tags")
+                        .font(.zkSans(15)).foregroundColor(Theme.ink1)
+                    Text("Hide everyone's name-tag pills (yours too) on this device. Your tag is still visible to others.")
+                        .font(.zkSans(11)).foregroundColor(Theme.ink4)
                 }
+            }
+            .tint(Theme.accent)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+    }
 
-                if let tagStatus {
-                    Text(tagStatus).font(.zkSans(12))
-                        .foregroundColor(tagStatus == "Saved" || tagStatus == "Cleared" ? Theme.ink3 : Theme.dangerSoft)
+    /// What each tier unlocks — highlights the user's current tier. Shown to
+    /// everyone so non-members can see what's on offer and members can see the
+    /// content their tier includes.
+    private var entitlementsSection: some View {
+        let tier = session.currentUser?.subscriptionTier
+        return VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("WHAT MEMBERSHIP UNLOCKS")
+            VStack(spacing: 8) {
+                entitlementRow("scout", "Scout", "$2/mo",
+                    ["Themes, avatar frames & name tags", "Supporter tier on your profile", "Streaming up to 1080p60"],
+                    current: tier == "scout")
+                entitlementRow("guardian", "Guardian", "$5/mo",
+                    ["Everything in Scout", "2K camera & screen-share streaming", "Covers your supervised children"],
+                    current: tier == "guardian")
+                entitlementRow("legend", "Legend", "$10/mo",
+                    ["Everything in Guardian", "4K camera & screen-share streaming"],
+                    current: tier == "legend")
+            }
+        }
+    }
+
+    private func entitlementRow(_ id: String, _ name: String, _ price: String, _ perks: [String], current: Bool) -> some View {
+        let color = TierBadge.meta(id)?.color ?? Theme.accent
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(name).font(.zkSans(15, weight: .bold)).foregroundColor(color)
+                Text(price).font(.zkSans(12)).foregroundColor(Theme.ink3)
+                Spacer()
+                if current {
+                    Text("YOUR TIER").font(.zkSans(9, weight: .bold)).tracking(0.5)
+                        .foregroundColor(color)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(color.opacity(0.2)).clipShape(Capsule())
+                }
+            }
+            ForEach(perks, id: \.self) { perk in
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "checkmark").font(.system(size: 10, weight: .bold))
+                        .foregroundColor(color).padding(.top, 3)
+                    Text(perk).font(.zkSans(12)).foregroundColor(Theme.ink2)
                 }
             }
         }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(current ? color.opacity(0.08) : Theme.bg2)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(current ? color.opacity(0.5) : Color.clear, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func themeCard(_ opt: ThemeOption) -> some View {
@@ -2421,6 +2880,39 @@ struct SettingsView: View {
     }
 
     /// Log Out lives at the very bottom of Settings.
+    /// Terms of Service + Privacy Policy — open the hosted docs in an in-app
+    /// SafariView so the text stays a single source of truth with the web app.
+    private var legalSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("LEGAL")
+            Button { showTermsSheet = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "doc.text").font(.system(size: 14)).foregroundColor(Theme.ink3).frame(width: 20)
+                    Text("Terms of Service").font(.system(size: 15)).foregroundColor(Theme.ink1)
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.system(size: 12)).foregroundColor(Theme.ink4)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 12)
+                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+
+            Button { showPrivacySheet = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "hand.raised").font(.system(size: 14)).foregroundColor(Theme.ink3).frame(width: 20)
+                    Text("Privacy Policy").font(.system(size: 15)).foregroundColor(Theme.ink1)
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.system(size: 12)).foregroundColor(Theme.ink4)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 12)
+                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+        }
+        .sheet(isPresented: $showTermsSheet) { SafariView(url: LegalURL.terms) }
+        .sheet(isPresented: $showPrivacySheet) { SafariView(url: LegalURL.privacy) }
+    }
+
     private var logoutSection: some View {
         Button(role: .destructive) {
             (zkDismissPage ?? {})()
@@ -2594,22 +3086,59 @@ struct SettingsView: View {
             .padding(12)
             .background(Theme.bg2)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            // Push-to-talk (F2). When on, the mic stays muted and only
+            // transmits while the talk button is held in a call.
+            Toggle(isOn: Binding(
+                get: { store.voice.pushToTalkEnabled },
+                set: { store.voice.setPushToTalk($0) }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Push to talk")
+                        .font(.zkSans(15)).foregroundColor(Theme.ink1)
+                    Text("Hold the mic button to talk; your mic stays muted otherwise.")
+                        .font(.zkSans(11)).foregroundColor(Theme.ink4)
+                }
+            }
+            .tint(Theme.accent)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
         }
+    }
+
+    /// Premium camera gate: minimum tiers come from the admin-configured
+    /// monetization matrix (defaults: 2K Guardian, 4K Legend — 1080p can be
+    /// gated too now). Selecting a locked quality snaps back to the highest
+    /// unlocked one — VoiceManager also clamps at publish time, so the UI is
+    /// honesty, not the enforcement.
+    private func cameraTierLocked(_ q: CameraQuality) -> Bool {
+        guard let required = store.requiredCameraTier(for: q) else { return false }
+        return AppStore.tierRank(session.currentUser?.subscriptionTier) < AppStore.tierRank(required)
     }
 
     private var cameraSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("CAMERA")
             VStack(alignment: .leading, spacing: 10) {
+                // Six tiers no longer fit a segmented control — menu style.
                 Picker("Quality", selection: $cameraQuality) {
                     ForEach(CameraQuality.allCases) { q in
-                        Text(q.shortLabel).tag(q.rawValue)
+                        Text(cameraTierLocked(q) ? "\(q.shortLabel) 🔒" : q.shortLabel).tag(q.rawValue)
                     }
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
+                .tint(Theme.accent)
+                .onChange(of: cameraQuality) { _, next in
+                    // Locked pick → snap to the highest unlocked quality
+                    // (1080p, or 720p if the admin gated 1080p too) rather
+                    // than silently saving a value the clamp would ignore.
+                    if let q = CameraQuality(rawValue: next), cameraTierLocked(q) {
+                        cameraQuality = cameraTierLocked(.high) ? "medium" : "high"
+                    }
+                }
                 Text((CameraQuality(rawValue: cameraQuality) ?? .high).detail)
                     .font(.zkSans(12)).foregroundColor(Theme.ink3)
-                Text("Video uses hardware H.264. Changes apply the next time you turn your camera on.")
+                Text("Some qualities may require a membership tier set by this server. 2K and 4K are heavy on battery. Changes apply the next time you turn your camera on.")
                     .font(.zkSans(11)).foregroundColor(Theme.ink4)
             }
             .padding(12)
@@ -2647,7 +3176,7 @@ struct SettingsView: View {
                         await session.setAchievementsPublic(newValue)
                         // Reconcile with the server's persisted value; reverts
                         // the knob if the write failed.
-                        achievementsPublicOn = session.currentUser?.achievementsPublic ?? false
+                        achievementsPublicOn = session.currentUser?.achievementsPublic ?? true
                     }
                 }
             )) {
@@ -2661,6 +3190,32 @@ struct SettingsView: View {
             .tint(Theme.accent)
             .padding(.horizontal, 12).padding(.vertical, 10)
             .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+
+            // Supporter-tier visibility — TITLED members only (founder/
+            // grandfathered memberships have no title, so nothing to hide).
+            // Same optimistic local-mirror pattern as above.
+            if session.currentUser?.subscriptionTitled == true {
+                Toggle(isOn: Binding(
+                    get: { showTierOn },
+                    set: { newValue in
+                        showTierOn = newValue // optimistic — reflect the tap immediately
+                        Task {
+                            await session.setShowSubscriptionTier(newValue)
+                            showTierOn = session.currentUser?.showSubscriptionTier ?? true
+                        }
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Show my supporter tier")
+                            .font(.zkSans(15)).foregroundColor(Theme.ink1)
+                        Text("Displays your tier title on your profile popup. Off hides the title — your perks keep working.")
+                            .font(.zkSans(11)).foregroundColor(Theme.ink4)
+                    }
+                }
+                .tint(Theme.accent)
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+            }
         }
     }
 
@@ -2707,6 +3262,42 @@ struct SettingsView: View {
                 .padding(.horizontal, 12).padding(.vertical, 10)
                 .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
             }
+
+            Button { showPasskeys = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "person.badge.key.fill").font(.system(size: 14)).foregroundColor(Theme.ink3).frame(width: 20)
+                    Text("Passkeys").font(.system(size: 15)).foregroundColor(Theme.ink1)
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.system(size: 12)).foregroundColor(Theme.ink4)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 12)
+                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+
+            Button { showTwoFactor = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "lock.rotation").font(.system(size: 14)).foregroundColor(Theme.ink3).frame(width: 20)
+                    Text("Two-Factor Authentication").font(.system(size: 15)).foregroundColor(Theme.ink1)
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.system(size: 12)).foregroundColor(Theme.ink4)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 12)
+                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+
+            Button { showQuickLogin = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "qrcode").font(.system(size: 14)).foregroundColor(Theme.ink3).frame(width: 20)
+                    Text("Log in on another device").font(.system(size: 15)).foregroundColor(Theme.ink1)
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.system(size: 12)).foregroundColor(Theme.ink4)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 12)
+                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
         }
         .task { bioProbe = await Biometrics.resolve() }
     }
@@ -2744,18 +3335,6 @@ struct SettingsView: View {
             }
             .buttonStyle(.plain)
 
-            Button { showTwoFactor = true } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "lock.rotation").font(.system(size: 14)).foregroundColor(Theme.ink3).frame(width: 20)
-                    Text("Two-Factor Authentication").font(.system(size: 15)).foregroundColor(Theme.ink1)
-                    Spacer()
-                    Image(systemName: "chevron.right").font(.system(size: 12)).foregroundColor(Theme.ink4)
-                }
-                .padding(.horizontal, 12).padding(.vertical, 12)
-                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
-            }
-            .buttonStyle(.plain)
-
             Button { showBots = true } label: {
                 HStack(spacing: 10) {
                     Image(systemName: "cpu").font(.system(size: 14)).foregroundColor(Theme.ink3).frame(width: 20)
@@ -2777,6 +3356,8 @@ struct SettingsView: View {
         .sheet(isPresented: $showChangeEmail) { ChangeEmailSheet() }
         .sheet(isPresented: $showSessions) { SessionsSheet() }
         .sheet(isPresented: $showTwoFactor) { TwoFactorSheet() }
+        .sheet(isPresented: $showPasskeys) { PasskeysSheet() }
+        .sheet(isPresented: $showQuickLogin) { QuickLoginSheet() }
         .sheet(isPresented: $showBots) { BotsView() }
     }
 
@@ -2816,6 +3397,116 @@ struct SettingsView: View {
             .font(.zkSans(11, weight: .bold))
             .tracking(Theme.capTracking(11)) // letter-spaced uppercase label (web parity)
             .foregroundColor(Theme.ink3)
+    }
+}
+
+/// Manage the account's passkeys: list, add (system registration sheet via
+/// PasskeyManager), and remove. Sign-in itself is on the login screen.
+struct PasskeysSheet: View {
+    @EnvironmentObject private var session: Session
+    @Environment(\.dismiss) private var dismiss
+    @State private var passkeys: [PasskeyInfo] = []
+    @State private var loading = true
+    @State private var adding = false
+    // Step-up: adding/removing a passkey re-verifies the account password.
+    // `pwAction` holds which action is awaiting the password from the alert.
+    private enum PwAction { case add; case remove(String) }
+    @State private var pwAction: PwAction?
+    @State private var pwInput = ""
+
+    private func runStepUp() {
+        let pw = pwInput
+        let action = pwAction
+        pwInput = ""
+        pwAction = nil
+        guard !pw.isEmpty, let action else { return }
+        Task {
+            switch action {
+            case .add:
+                adding = true
+                if await session.registerPasskey(currentPassword: pw) {
+                    passkeys = await session.loadPasskeys()
+                }
+                adding = false
+            case .remove(let id):
+                if await session.deletePasskey(id, currentPassword: pw) {
+                    passkeys.removeAll { $0.id == id }
+                }
+            }
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Sign in without a password using Face ID, Touch ID, or a security key. Passkeys are saved to your iCloud Keychain.")
+                        .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if loading {
+                        ProgressView().tint(Theme.accent).frame(maxWidth: .infinity).padding(.top, 20)
+                    } else if passkeys.isEmpty {
+                        Text("No passkeys yet.")
+                            .font(.zkSans(14)).foregroundColor(Theme.ink3)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        ForEach(passkeys) { k in
+                            HStack(spacing: 10) {
+                                Image(systemName: "person.badge.key.fill")
+                                    .font(.system(size: 16)).foregroundColor(Theme.accent)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(k.deviceName ?? "Passkey").font(.zkSans(15)).foregroundColor(Theme.ink1)
+                                    if k.backedUp {
+                                        Text("Synced").font(.zkSans(11)).foregroundColor(Theme.ink3)
+                                    }
+                                }
+                                Spacer()
+                                Button("Remove") {
+                                    pwInput = ""
+                                    pwAction = .remove(k.id)
+                                }
+                                .font(.zkSans(13)).foregroundColor(Theme.danger)
+                            }
+                            .padding(12).background(Theme.bg2)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                        }
+                    }
+
+                    Button {
+                        pwInput = ""
+                        pwAction = .add
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "plus").font(.system(size: 14))
+                            Text(adding ? "Waiting for passkey…" : "Add a passkey")
+                                .font(.zkSans(15, weight: .semibold))
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity).padding(.vertical, 12)
+                        .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .disabled(adding)
+
+                    if let err = session.authError {
+                        Text(err).font(.zkSans(13)).foregroundColor(Theme.danger)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(16)
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Passkeys").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold)).foregroundColor(Theme.ink2).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
+            .alert("Confirm it's you", isPresented: Binding(get: { pwAction != nil }, set: { if !$0 { pwAction = nil; pwInput = "" } })) {
+                SecureField("Account password", text: $pwInput)
+                Button("Cancel", role: .cancel) { pwAction = nil; pwInput = "" }
+                Button("Confirm") { runStepUp() }
+            } message: {
+                Text("Enter your account password to continue.")
+            }
+            .task { passkeys = await session.loadPasskeys(); loading = false }
+        }
     }
 }
 
@@ -2977,6 +3668,8 @@ struct TwoFactorSheet: View {
     @State private var loading = true
     @State private var setup: TwoFactorSecret?
     @State private var code = ""
+    // Step-up: arming 2FA re-verifies the account password server-side.
+    @State private var setupPassword = ""
     @State private var submitting = false
     @State private var recoveryCodes: [String]?
     @State private var disabling = false
@@ -3076,21 +3769,27 @@ struct TwoFactorSheet: View {
                 .font(.zkMono(18)).multilineTextAlignment(.center)
                 .foregroundColor(Theme.ink1).padding(.vertical, 11)
                 .background(Theme.bg1).clipShape(RoundedRectangle(cornerRadius: 10))
-                .onChange(of: code) { newValue in
+                .onChange(of: code) { _, newValue in
                     code = String(newValue.filter(\.isNumber).prefix(6))
                 }
+            Text("CONFIRM YOUR ACCOUNT PASSWORD")
+                .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+            SecureField("Account password", text: $setupPassword)
+                .textContentType(.password)
+                .foregroundColor(Theme.ink1).padding(.vertical, 11).padding(.horizontal, 12)
+                .background(Theme.bg1).clipShape(RoundedRectangle(cornerRadius: 10))
             HStack {
                 Spacer()
-                Button("Cancel") { setup = nil; code = ""; errorText = nil }
+                Button("Cancel") { setup = nil; code = ""; setupPassword = ""; errorText = nil }
                     .font(.zkSans(14)).foregroundColor(Theme.ink2)
                 Button { Task { await confirmSetup() } } label: {
                     Text(submitting ? "Verifying…" : "Verify & Enable")
                         .font(.zkSans(14, weight: .semibold)).foregroundColor(.white)
                         .padding(.horizontal, 14).padding(.vertical, 9)
-                        .background(code.count == 6 ? Theme.accent : Theme.bg3)
+                        .background(code.count == 6 && !setupPassword.isEmpty ? Theme.accent : Theme.bg3)
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
-                .disabled(submitting || code.count != 6)
+                .disabled(submitting || code.count != 6 || setupPassword.isEmpty)
             }
         }
         .padding(12)
@@ -3172,13 +3871,13 @@ struct TwoFactorSheet: View {
     }
 
     private func confirmSetup() async {
-        guard !submitting, code.count == 6 else { return }
+        guard !submitting, code.count == 6, !setupPassword.isEmpty else { return }
         submitting = true
         defer { submitting = false }
         do {
-            let r = try await store.api.confirmTwoFactor(code: code)
+            let r = try await store.api.confirmTwoFactor(code: code, currentPassword: setupPassword)
             recoveryCodes = r.recoveryCodes
-            setup = nil; code = ""; errorText = nil
+            setup = nil; code = ""; setupPassword = ""; errorText = nil
             await load()
         } catch {
             errorText = (error as? APIError)?.message ?? "Invalid code."
@@ -3400,7 +4099,7 @@ struct MentionsView: View {
             // button. Gated on the cover's dismiss action being present.
             .toolbar {
                 if dismissPage != nil {
-                    ToolbarItem(placement: .navigationBarLeading) { PageBackButton() }
+                    ToolbarItem(placement: .cancellationAction) { PageBackButton() }
                 }
                 if !store.mentions.isEmpty {
                     ToolbarItem(placement: .navigationBarTrailing) {
@@ -3420,22 +4119,28 @@ private struct MentionRow: View {
     /// "Server · #channel" — where the mention came from (guild name resolved
     /// from the id we have loaded). Falls back gracefully for DMs.
     private var sourceLabel: String {
-        let guildName = mention.guildId.flatMap { gid in
-            store.guilds.first(where: { $0.id == gid })?.name
-        }
-        let parts = [mention.channelName.map { "#\($0)" }, guildName].compactMap { $0 }
+        let parts = [mention.channelName.map { "#\($0)" }, mentionGuild?.name].compactMap { $0 }
         return parts.isEmpty ? "Direct message" : parts.joined(separator: " · ")
     }
 
+    private var mentionGuild: Guild? {
+        mention.guildId.flatMap { gid in store.guilds.first(where: { $0.id == gid }) }
+    }
+    /// A system_join welcome @-mentions the newcomer but is authored, in the
+    /// data, by the newcomer themself — so their own inbox showed THEIR OWN
+    /// name. Attribute it to the SERVER (guild name + icon), matching chat.
+    private var isServerAuthor: Bool { mention.type == "system_join" }
+
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Avatar(url: mention.author?.avatarUrl,
-                   name: mention.author?.name ?? "?",
+            Avatar(url: isServerAuthor ? mentionGuild?.iconUrl : mention.author?.avatarUrl,
+                   name: isServerAuthor ? (mentionGuild?.name ?? "Server") : (mention.author?.name ?? "?"),
                    size: 38,
-                   decoration: mention.author?.avatarDecoration)
+                   decoration: isServerAuthor ? nil : mention.author?.avatarDecoration,
+                   toneId: isServerAuthor ? mention.guildId : nil)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(mention.author?.name ?? "Unknown")
+                    Text(isServerAuthor ? (mentionGuild?.name ?? "Server") : (mention.author?.name ?? "Unknown"))
                         .font(.zkSans(14, weight: .semibold))
                         .foregroundColor(Theme.ink1)
                     Spacer(minLength: 4)
@@ -3467,6 +4172,79 @@ private struct MentionRow: View {
 }
 
 // MARK: Rail icon button (Discover / Create / Join)
+
+/// One-time "confirm your date of birth" banner for grandfathered accounts.
+/// Shows only while `canChangeDob` is true (legacy accounts defaulted to 18 by
+/// migration 0096). Saving hits the one-time endpoint, which re-locks — so
+/// `canChangeDob` flips to false and this collapses away. Dismiss is
+/// session-only, so it reappears until a date is set (non-blocking).
+struct DobBannerView: View {
+    @EnvironmentObject private var session: Session
+    @State private var dob = Date()
+    @State private var dobChosen = false
+    @State private var dismissed = false
+    @State private var busy = false
+    @State private var error: String?
+
+    private var dobString: String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: dob)
+    }
+
+    var body: some View {
+        if session.currentUser?.canChangeDob == true && !dismissed {
+            VStack(spacing: 8) {
+                HStack(alignment: .top, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Confirm your date of birth")
+                            .font(.zkSans(14, weight: .semibold)).foregroundColor(Theme.ink1)
+                        Text("We set a default age for your account. You can correct it once.")
+                            .font(.zkSans(11)).foregroundColor(Theme.ink3)
+                    }
+                    Spacer()
+                    Button { dismissed = true } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .semibold)).foregroundColor(Theme.ink3)
+                            .frame(width: 32, height: 32)
+                    }
+                    .buttonStyle(.plain)
+                }
+                HStack(spacing: 10) {
+                    DatePicker("", selection: $dob, in: ...Date(), displayedComponents: .date)
+                        .labelsHidden().tint(Theme.accent)
+                        .onChange(of: dob) { dobChosen = true }
+                    Spacer()
+                    Button {
+                        guard dobChosen, !busy else { return }
+                        busy = true; error = nil
+                        Task {
+                            if let err = await session.updateDateOfBirth(dobString) {
+                                error = err; busy = false
+                            }
+                            // Success: currentUser.canChangeDob → false, banner collapses.
+                        }
+                    } label: {
+                        Text(busy ? "Saving…" : "Save")
+                            .font(.zkSans(13, weight: .semibold)).foregroundColor(.white)
+                            .padding(.horizontal, 14).padding(.vertical, 7)
+                            .background(dobChosen ? Theme.accent : Theme.accent.opacity(0.4))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain).disabled(!dobChosen || busy)
+                }
+                if let error {
+                    Text(error).font(.zkSans(11)).foregroundColor(Theme.danger)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(Theme.bg2)
+            .overlay(Rectangle().fill(Theme.line).frame(height: 1), alignment: .bottom)
+        }
+    }
+}
 
 private struct RailIconButton: View {
     let symbol: String
@@ -3544,7 +4322,7 @@ struct CreateServerSheet: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Create a Server").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .navigationBarLeading) { PageBackButton() } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { PageBackButton() } }
             .fileImporter(
                 isPresented: $showImporter,
                 allowedContentTypes: [.json],
@@ -3594,8 +4372,8 @@ struct CreateServerSheet: View {
             .offset(x: 12, y: 20)
         }
         .padding(.bottom, 20)
-        .onChange(of: iconItem) { item in loadServerImage(item, isIcon: true) }
-        .onChange(of: bannerItem) { item in loadServerImage(item, isIcon: false) }
+        .onChange(of: iconItem) { _, item in loadServerImage(item, isIcon: true) }
+        .onChange(of: bannerItem) { _, item in loadServerImage(item, isIcon: false) }
     }
 
     private func loadServerImage(_ item: PhotosPickerItem?, isIcon: Bool) {
@@ -3729,7 +4507,7 @@ struct JoinByInviteSheet: View {
             }
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Join a Server").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .navigationBarLeading) { PageBackButton() } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { PageBackButton() } }
         }
     }
 
@@ -3849,7 +4627,7 @@ struct DiscoveryView: View {
                     TextField("Search servers", text: $query)
                         .foregroundColor(Theme.ink1)
                         .autocorrectionDisabled()
-                        .onChange(of: query) { _ in debouncedReload() }
+                        .onChange(of: query) { debouncedReload() }
                 }
                 .padding(10).background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
                 .padding(.horizontal, 16).padding(.top, 10)
@@ -3888,7 +4666,7 @@ struct DiscoveryView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Discover").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .navigationBarLeading) { PageBackButton() } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { PageBackButton() } }
             .task { await store.loadDiscoverable(q: query, category: category) }
         }
     }
@@ -3963,6 +4741,7 @@ private struct DiscoverRow: View {
 
 struct AdminView: View {
     @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var session: Session
     @Environment(\.dismiss) private var dismiss
     @State private var tab = 0
     @State private var search = ""
@@ -3977,29 +4756,66 @@ struct AdminView: View {
     @State private var voiceDiag: LivekitDiagnostic?
     @State private var voiceTesting = false
     @State private var voiceError: String?
+    // Overview recent-activity feed.
+    @State private var activity: AdminActivity?
+    // Monetization tab: local editable copy + save state.
+    @State private var monet: MonetizationConfig?
+    @State private var monetSaving = false
+    @State private var monetError: String?
+    @State private var monetSaved = false
+
+    /// Moderators get the restricted panel: Users / Servers / Security only,
+    /// with the reduced action set inside each. The API enforces the same
+    /// boundary (allowlist middleware) — this is presentation.
+    private var selfIsAdmin: Bool { session.currentUser?.isAdmin == true }
+
+    /// One compact tab chip in the admin tab bar. Selected = accent capsule.
+    @ViewBuilder
+    private func adminTabChip(_ title: String, _ value: Int) -> some View {
+        Button { tab = value } label: {
+            Text(title)
+                .font(.zkSans(13, weight: tab == value ? .semibold : .regular))
+                .foregroundColor(tab == value ? .white : Theme.ink2)
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(tab == value ? Theme.accent : Theme.bg2)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                Picker("", selection: $tab) {
-                    Text("Overview").tag(0)
-                    Text("Users").tag(1)
-                    Text("Servers").tag(2)
-                    Text("Storage").tag(3)
-                    Text("Security").tag(4)
+                // Compact scrollable tab chips (was a full-width segmented
+                // Picker): the words sit closer together, and a long label like
+                // "Monetization" fits without truncating.
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        if selfIsAdmin { adminTabChip("Overview", 0) }
+                        adminTabChip("Users", 1)
+                        adminTabChip("Servers", 2)
+                        if selfIsAdmin { adminTabChip("Storage", 3) }
+                        adminTabChip("Security", 4)
+                        if selfIsAdmin { adminTabChip("Monetization", 5) }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
                 }
-                .pickerStyle(.segmented)
-                .padding(12)
+                .onAppear { if !selfIsAdmin && (tab == 0 || tab == 3 || tab == 5) { tab = 1 } }
 
-                if tab == 0 { overview }
+                if tab == 0 && selfIsAdmin { overview }
+                else if tab == 0 { users }
                 else if tab == 1 { users }
                 else if tab == 2 { guilds }
-                else if tab == 3 { storage }
+                else if tab == 3 && selfIsAdmin { storage }
+                else if tab == 3 { users }
+                else if tab == 4 { AdminSecurityTab() }
+                else if tab == 5 && selfIsAdmin { monetization }
                 else { AdminSecurityTab() }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.bg1.ignoresSafeArea())
-            .onChange(of: tab) { newTab in
+            .onChange(of: tab) { _, newTab in
                 if newTab == 1 && store.adminUsers.isEmpty {
                     Task { await store.loadAdminUsers(q: search, bannedOnly: bannedOnly) }
                 } else if newTab == 2 && store.adminGuilds.isEmpty {
@@ -4007,7 +4823,7 @@ struct AdminView: View {
                 }
             }
             .navigationTitle("Admin Instance").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .navigationBarLeading) { PageBackButton() } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { PageBackButton() } }
             .sheet(isPresented: $showStorageItems) { StorageItemsView() }
             .sheet(item: $observingGuild) { g in AdminObserveView(guild: g) }
             .task { await store.loadAdminStats() }
@@ -4039,6 +4855,9 @@ struct AdminView: View {
 
                     // Voice / LiveKit diagnostic (run on demand).
                     voiceDiagnosticSection
+
+                    // Recent activity feed (newest signups + servers).
+                    activitySection
                 }
                 .padding(16)
             } else {
@@ -4050,7 +4869,161 @@ struct AdminView: View {
                 .padding(.top, 40)
             }
         }
-        .task { await loadMetrics() }
+        .task {
+            await loadMetrics()
+            if activity == nil { activity = try? await store.api.adminActivity() }
+        }
+    }
+
+    @ViewBuilder
+    private var activitySection: some View {
+        if let a = activity, !(a.recentUsers.isEmpty && a.recentGuilds.isEmpty) {
+            VStack(alignment: .leading, spacing: 6) {
+                adminSubheader("RECENT SIGNUPS")
+                ForEach(a.recentUsers.prefix(10)) { u in
+                    HStack(spacing: 8) {
+                        Text(u.displayName).font(.zkSans(13)).foregroundColor(Theme.ink1).lineLimit(1)
+                        Text("@\(u.username)").font(.zkSans(11)).foregroundColor(Theme.ink3).lineLimit(1)
+                        Spacer()
+                        Text(relativeShort(u.createdAt)).font(.zkSans(11)).foregroundColor(Theme.ink4)
+                    }
+                    .padding(.vertical, 3)
+                }
+                if !a.recentGuilds.isEmpty {
+                    adminSubheader("NEW SERVERS")
+                    ForEach(a.recentGuilds.prefix(10)) { g in
+                        HStack(spacing: 8) {
+                            Text(g.name).font(.zkSans(13)).foregroundColor(Theme.ink1).lineLimit(1)
+                            Spacer()
+                            Text(relativeShort(g.createdAt)).font(.zkSans(11)).foregroundColor(Theme.ink4)
+                        }
+                        .padding(.vertical, 3)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Compact "2h" / "3d" relative label for the activity feed.
+    private func relativeShort(_ iso: String) -> String {
+        guard let d = messageDate(iso) else { return "" }
+        let s = Int(Date().timeIntervalSince(d))
+        if s < 60 { return "\(max(0, s))s" }
+        if s < 3600 { return "\(s / 60)m" }
+        if s < 86400 { return "\(s / 3600)h" }
+        return "\(s / 86400)d"
+    }
+
+    // ── Monetization tab (admin-only): per-instance feature gates ────────────
+    private var monetization: some View {
+        ScrollView {
+            if let m = Binding($monet) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Minimum supporter tier required for each feature. \"Everyone\" = no tier gate.")
+                        .font(.zkSans(11)).foregroundColor(Theme.ink3)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 2)
+
+                    adminSubheader("SCREEN SHARE — MIN TIER")
+                    tierRow("1080p", m.stream.p1080)
+                    tierRow("2K", m.stream.k2)
+                    tierRow("4K", m.stream.k4)
+
+                    adminSubheader("CAMERA — MIN TIER")
+                    tierRow("1080p", m.camera.p1080)
+                    tierRow("2K", m.camera.k2)
+                    tierRow("4K", m.camera.k4)
+
+                    adminSubheader("APPEARANCE / COSMETICS")
+                    tierRow("Min tier", m.appearance)
+
+                    adminSubheader("UPLOAD CAPS — MB (BLANK = SERVER DEFAULT)")
+                    capRow("Free", m.uploadCapsMb.free)
+                    capRow("Scout", m.uploadCapsMb.scout)
+                    capRow("Guardian", m.uploadCapsMb.guardian)
+                    capRow("Legend", m.uploadCapsMb.legend)
+
+                    if let e = monetError {
+                        Text(e).font(.zkSans(12)).foregroundColor(Theme.danger).padding(.top, 4)
+                    }
+                    Button {
+                        saveMonetization()
+                    } label: {
+                        Text(monetSaving ? "Saving…" : (monetSaved ? "Saved ✓" : "Save changes"))
+                            .font(.zkSans(14, weight: .semibold)).foregroundColor(.white)
+                            .frame(maxWidth: .infinity).padding(.vertical, 11)
+                            .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain).disabled(monetSaving).padding(.top, 8)
+                }
+                .padding(16)
+            } else {
+                ProgressView().tint(Theme.accent).padding(.top, 40)
+            }
+        }
+        .task {
+            // Seed from the already-loaded gate matrix if present, else fetch.
+            // (Can't `await` inside a `??` autoclosure, so branch explicitly.)
+            if monet == nil {
+                if let cfg = store.monetizationConfig {
+                    monet = cfg
+                } else {
+                    monet = try? await store.api.monetization()
+                }
+            }
+        }
+    }
+
+    private func tierRow(_ title: String, _ sel: Binding<String>) -> some View {
+        HStack {
+            Text(title).font(.zkSans(13)).foregroundColor(Theme.ink1)
+            Spacer()
+            Picker("", selection: sel) {
+                Text("Everyone").tag("none")
+                Text("Scout").tag("scout")
+                Text("Guardian").tag("guardian")
+                Text("Legend").tag("legend")
+            }
+            .pickerStyle(.menu).tint(Theme.accent)
+        }
+        .onChange(of: sel.wrappedValue) { _, _ in monetSaved = false }
+    }
+
+    private func capRow(_ title: String, _ v: Binding<Int?>) -> some View {
+        HStack {
+            Text(title).font(.zkSans(13)).foregroundColor(Theme.ink1)
+            Spacer()
+            TextField("default", text: Binding(
+                get: { v.wrappedValue.map(String.init) ?? "" },
+                set: {
+                    let t = $0.trimmingCharacters(in: .whitespaces)
+                    v.wrappedValue = t.isEmpty ? nil : Int(t)
+                    monetSaved = false
+                }
+            ))
+            .keyboardType(.numberPad)
+            .multilineTextAlignment(.trailing)
+            .font(.zkSans(13)).foregroundColor(Theme.ink1)
+            .frame(width: 90)
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(Theme.bg3).clipShape(RoundedRectangle(cornerRadius: 7))
+            Text("MB").font(.zkSans(11)).foregroundColor(Theme.ink3)
+        }
+    }
+
+    private func saveMonetization() {
+        guard let cfg = monet else { return }
+        monetSaving = true; monetError = nil; monetSaved = false
+        Task { @MainActor in
+            do {
+                let updated = try await store.api.adminUpdateMonetization(cfg)
+                monet = updated
+                store.monetizationConfig = updated
+                monetSaved = true
+            } catch {
+                monetError = "Couldn't save changes. Please try again."
+            }
+            monetSaving = false
+        }
     }
 
     private func adminSubheader(_ t: String) -> some View {
@@ -4230,26 +5203,91 @@ struct AdminView: View {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
                     Text(u.name).font(.zkSans(15, weight: .medium)).foregroundColor(Theme.ink1).lineLimit(1)
-                    if u.isAdmin { badge("ADMIN", Theme.accent) }
-                    if u.isBanned { badge("BANNED", Theme.danger) }
+                    if u.isAdmin { badge("ADMINISTRATOR", Theme.accent) }
+                    // sky-400 — matches the web panel's moderator badge.
+                    if u.isModerator { badge("MODERATOR", Color(hex: 0x38BDF8)) }
+                    if u.isBanned { badge(u.bannedUntil != nil ? "BANNED · TIMED" : "BANNED", Theme.danger) }
+                    if let tier = u.subscriptionTier, let m = TierBadge.meta(tier) {
+                        badge(m.label.uppercased(), m.color)
+                    }
                 }
                 Text("@\(u.username)").font(.zkSans(12)).foregroundColor(Theme.ink3).lineLimit(1)
             }
             Spacer()
             Menu {
-                if u.isBanned {
-                    Button { Task { await store.adminUnban(u) } } label: { Label("Unban", systemImage: "checkmark.circle") }
-                } else {
-                    Button(role: .destructive) { Task { await store.adminBan(u) } } label: { Label("Ban", systemImage: "nosign") }
+                // Moderators can't ban/unban/sign-out other staff, delete
+                // accounts, or hand out roles (all server-enforced too).
+                if selfIsAdmin || !u.isStaff {
+                    if u.isBanned {
+                        Button { Task { await store.adminUnban(u) } } label: { Label("Unban", systemImage: "checkmark.circle") }
+                    } else {
+                        // Ban with a duration (covers text + voice).
+                        Menu {
+                            Button { Task { await store.adminBan(u, duration: "1m") } } label: { Text("1 month") }
+                            Button { Task { await store.adminBan(u, duration: "3m") } } label: { Text("3 months") }
+                            Button { Task { await store.adminBan(u, duration: "6m") } } label: { Text("6 months") }
+                            Button(role: .destructive) { Task { await store.adminBan(u, duration: "perm") } } label: { Text("Permanent") }
+                        } label: {
+                            Label("Ban", systemImage: "nosign")
+                        }
+                    }
+                    Button { Task { await store.adminLogout(u) } } label: {
+                        Label("Force Logout", systemImage: "rectangle.portrait.and.arrow.right")
+                    }
                 }
-                Button { Task { await store.adminToggleAdmin(u) } } label: {
-                    Label(u.isAdmin ? "Remove Admin" : "Make Admin", systemImage: "shield")
+                // DOB reset — allowed on non-staff (or by an admin on anyone).
+                // Membership gift/reset is ADMIN-ONLY: monetization is out of
+                // moderator scope, and the server rejects gifts/resets from
+                // moderators via the admin-router allowlist.
+                if selfIsAdmin || !u.isStaff {
+                    if selfIsAdmin {
+                        Menu {
+                            ForEach([("scout", "Scout"), ("guardian", "Guardian"), ("legend", "Legend")], id: \.0) { tier in
+                                Menu {
+                                    Button { Task { await store.adminGift(u, tier: tier.0, duration: "1m") } } label: { Text("1 month") }
+                                    Button { Task { await store.adminGift(u, tier: tier.0, duration: "3m") } } label: { Text("3 months") }
+                                    Button { Task { await store.adminGift(u, tier: tier.0, duration: "6m") } } label: { Text("6 months") }
+                                    Button { Task { await store.adminGift(u, tier: tier.0, duration: "forever") } } label: { Text("Forever") }
+                                } label: {
+                                    Text(tier.1)
+                                }
+                            }
+                            if u.subscriptionTier != nil {
+                                Button(role: .destructive) { Task { await store.adminRemoveMembership(u) } } label: {
+                                    Label("Reset membership", systemImage: "xmark.circle")
+                                }
+                            }
+                        } label: {
+                            Label("Membership", systemImage: "star")
+                        }
+                    }
+                    Button { Task { await store.adminResetDob(u) } } label: {
+                        Label("Reset DOB", systemImage: "calendar.badge.clock")
+                    }
                 }
-                Button { Task { await store.adminLogout(u) } } label: {
-                    Label("Force Logout", systemImage: "rectangle.portrait.and.arrow.right")
-                }
-                Button(role: .destructive) { deleteCandidate = u } label: {
-                    Label("Delete Account", systemImage: "trash")
+                if selfIsAdmin {
+                    Menu {
+                        if !u.isAdmin {
+                            Button { Task { await store.adminSetRole(u, role: "administrator") } } label: {
+                                Label("Administrator", systemImage: "shield.fill")
+                            }
+                        }
+                        if !u.isModerator {
+                            Button { Task { await store.adminSetRole(u, role: "moderator") } } label: {
+                                Label("Moderator", systemImage: "shield.lefthalf.filled")
+                            }
+                        }
+                        if u.isStaff {
+                            Button(role: .destructive) { Task { await store.adminSetRole(u, role: "none") } } label: {
+                                Label("Remove Role", systemImage: "shield.slash")
+                            }
+                        }
+                    } label: {
+                        Label("Role", systemImage: "shield")
+                    }
+                    Button(role: .destructive) { deleteCandidate = u } label: {
+                        Label("Delete Account", systemImage: "trash")
+                    }
                 }
             } label: {
                 Image(systemName: "ellipsis").font(.system(size: 16)).foregroundColor(Theme.ink3).frame(width: 32, height: 32)
@@ -4330,10 +5368,13 @@ struct AdminView: View {
                 Image(systemName: "eye").font(.system(size: 14)).foregroundColor(Theme.accent).frame(width: 32, height: 32)
             }
             .buttonStyle(.plain)
-            Button(role: .destructive) { deletingGuild = g } label: {
-                Image(systemName: "trash").font(.system(size: 14)).foregroundColor(Theme.danger).frame(width: 32, height: 32)
+            // Moderators can observe but not delete servers (server-enforced).
+            if selfIsAdmin {
+                Button(role: .destructive) { deletingGuild = g } label: {
+                    Image(systemName: "trash").font(.system(size: 14)).foregroundColor(Theme.danger).frame(width: 32, height: 32)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 16).padding(.vertical, 9)
     }
@@ -4409,9 +5450,21 @@ struct FamilyView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
     @State private var childUsername = ""
+    @State private var guardianEmail = ""
     @State private var managingChild: FamilyUser?
 
-    private enum RowAction { case accept, remove }
+    private enum RowAction { case accept, acceptChild, remove }
+
+    /// Show the "link a guardian" surface to minors (and anyone with a guardian
+    /// or a pending guardian invite).
+    private var showGuardianInvite: Bool {
+        guard let f = store.family else { return false }
+        return (f.isMinor ?? false)
+            || (f.graceActive ?? false)
+            || (f.restrictedHeavily ?? false)
+            || !f.supervisedBy.isEmpty
+            || !(f.outgoingParentRequests ?? []).isEmpty
+    }
 
     var body: some View {
         NavigationStack {
@@ -4420,20 +5473,40 @@ struct FamilyView: View {
                     if store.loadingFamily && store.family == nil {
                         ProgressView().tint(Theme.accent).frame(maxWidth: .infinity).padding(.top, 30)
                     } else {
+                        if store.family?.restrictedHeavily == true {
+                            supervisionBanner(
+                                "Your account is restricted until a parent or guardian is linked. Enter their email below to ask them to supervise your account.",
+                                color: Theme.danger)
+                        } else if store.family?.graceActive == true {
+                            let days = store.family?.graceDaysRemaining ?? 0
+                            supervisionBanner(
+                                "Link a parent or guardian within \(days) \(days == 1 ? "day" : "days") to keep full access.",
+                                color: Color.orange)
+                        }
                         if let r = store.family?.restrictions { restrictionsCard(r) }
-                        linkChildSection
+                        if showGuardianInvite { linkParentSection }
+                        // A minor (13–17) can't supervise anyone — hide every
+                        // parent-side control; they only get the child side.
+                        if store.family?.isMinor != true { linkChildSection }
                         if let f = store.family {
+                            let isMinor = (f.isMinor ?? false)
+                            if !isMinor, let childReqs = f.incomingChildRequests, !childReqs.isEmpty {
+                                section("ASKING YOU TO SUPERVISE THEM", users: childReqs, action: .acceptChild)
+                            }
                             if !f.incomingRequests.isEmpty {
                                 section("REQUESTS TO ACCEPT", users: f.incomingRequests, action: .accept)
+                            }
+                            if let pending = f.outgoingParentRequests, !pending.isEmpty {
+                                section("GUARDIAN INVITES SENT", users: pending, action: .remove)
                             }
                             if !f.supervisedBy.isEmpty {
                                 section("SUPERVISED BY", users: f.supervisedBy, action: .remove)
                             }
-                            if !f.children.isEmpty {
+                            if !isMinor, !f.children.isEmpty {
                                 section("CHILDREN YOU SUPERVISE", users: f.children, action: .remove,
                                         manage: { managingChild = $0 })
                             }
-                            if !f.outgoingRequests.isEmpty {
+                            if !isMinor, !f.outgoingRequests.isEmpty {
                                 section("PENDING REQUESTS", users: f.outgoingRequests, action: .remove)
                             }
                         }
@@ -4444,7 +5517,7 @@ struct FamilyView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Parental Controls").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .navigationBarLeading) { PageBackButton() } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { PageBackButton() } }
             .task { await store.loadFamily() }
             .fullScreenCover(item: $managingChild) { ChildControlsView(child: $0) }
         }
@@ -4472,6 +5545,44 @@ struct FamilyView: View {
         }
     }
 
+    private func supervisionBanner(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.zkSans(13)).foregroundColor(Theme.ink1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(color.opacity(0.15))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(color.opacity(0.4), lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var linkParentSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("LINK A GUARDIAN")
+                .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+            Text("Enter a parent or guardian's email. If they have an account they'll get a request to approve; otherwise we'll email them an invite to create one.")
+                .font(.zkSans(12)).foregroundColor(Theme.ink3)
+            HStack(spacing: 8) {
+                TextField("guardian@email.com", text: $guardianEmail)
+                    .textFieldStyle(.plain).autocorrectionDisabled().textInputAutocapitalization(.never)
+                    .keyboardType(.emailAddress)
+                    .foregroundColor(Theme.ink1).padding(10)
+                    .background(Theme.bg3).clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                Button {
+                    Task {
+                        let status = await store.familyRequestParent(email: guardianEmail)
+                        if status != nil { guardianEmail = "" }
+                    }
+                } label: {
+                    Text("Invite")
+                        .font(.zkSans(13, weight: .semibold)).foregroundColor(.white)
+                        .padding(.horizontal, 14).padding(.vertical, 9)
+                        .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .disabled(guardianEmail.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+    }
+
     private func section(_ title: String, users: [FamilyUser], action: RowAction,
                          manage: ((FamilyUser) -> Void)? = nil) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -4481,8 +5592,13 @@ struct FamilyView: View {
                     Avatar(url: u.avatarUrl, name: u.name, size: 36)
                     Text(u.name).font(.zkSans(15)).foregroundColor(Theme.ink1)
                     Spacer()
-                    if action == .accept {
-                        Button { Task { await store.familyAccept(u) } } label: {
+                    if action == .accept || action == .acceptChild {
+                        Button {
+                            Task {
+                                if action == .acceptChild { await store.familyAcceptChild(u) }
+                                else { await store.familyAccept(u) }
+                            }
+                        } label: {
                             Text("Accept").font(.zkSans(13, weight: .semibold)).foregroundColor(Theme.online)
                         }
                         Button { Task { await store.familyRemove(u) } } label: {
@@ -4562,8 +5678,38 @@ struct ChildControlsView: View {
                                 rowDivider
                                 toggleRow("Stream", \.allowStream)
                                 rowDivider
+                                toggleRow("Join servers", \.allowJoinGuilds)
+                                rowDivider
+                                toggleRow("Send messages", \.allowMessaging)
+                                rowDivider
                                 toggleRow("Create servers", \.allowCreateGuild)
                             }
+                            .background(Theme.bg2)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                            // Content filter — ON is more protective (mask swear
+                            // words), so it sits apart from the ability toggles
+                            // above, whose ON means allowed.
+                            VStack(spacing: 0) {
+                                toggleRow("Blur swear words", \.filterProfanity)
+                            }
+                            .background(Theme.bg2)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                            // Direct messages — a 3-way policy, not on/off.
+                            HStack {
+                                Text("Who they can DM")
+                                    .font(.zkSans(15)).foregroundColor(Theme.ink1)
+                                Spacer()
+                                Picker("", selection: dmPolicyBinding) {
+                                    Text("None").tag("none")
+                                    Text("Friends").tag("friends")
+                                    Text("Anyone").tag("all")
+                                }
+                                .pickerStyle(.segmented)
+                                .frame(width: 210)
+                            }
+                            .padding(.horizontal, 14).padding(.vertical, 9)
                             .background(Theme.bg2)
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
@@ -4594,10 +5740,10 @@ struct ChildControlsView: View {
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle(child.name).navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button { dismiss() } label: {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 18, weight: .semibold))
+                            .font(.system(size: 20, weight: .semibold))
                             .foregroundColor(Theme.ink2)
                             .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
@@ -4627,6 +5773,17 @@ struct ChildControlsView: View {
             set: { newVal in
                 guard var r = store.childRestrictions[child.id] else { return }
                 r[keyPath: kp] = newVal
+                Task { await store.setChildRestrictions(child.id, r) }
+            }
+        )
+    }
+
+    private var dmPolicyBinding: Binding<String> {
+        Binding(
+            get: { store.childRestrictions[child.id]?.dmPolicy ?? "friends" },
+            set: { newVal in
+                guard var r = store.childRestrictions[child.id] else { return }
+                r.dmPolicy = newVal
                 Task { await store.setChildRestrictions(child.id, r) }
             }
         )
@@ -4792,6 +5949,7 @@ struct EditChannelSheet: View {
     @State private var slowmode = 0
     @State private var showWebhooks = false
     @State private var showPermissions = false
+    @State private var confirmingPurge = false
     @State private var error: String?
     @State private var busy = false
 
@@ -4884,6 +6042,45 @@ struct EditChannelSheet: View {
                         }
                         .buttonStyle(.plain)
                     }
+                    // Purge all messages — text channels & threads only, and
+                    // only for MANAGE_MESSAGES holders (mirrors web). Two-step
+                    // confirm. The channel itself stays; every message is
+                    // soft-deleted server-side.
+                    if (channel.isText || channel.isThread) && store.iHavePermission(Permissions.MANAGE_MESSAGES) {
+                        if !confirmingPurge {
+                            Button { confirmingPurge = true } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "trash").font(.system(size: 14)).foregroundColor(Theme.warning).frame(width: 20)
+                                    Text("Purge all messages").font(.system(size: 15)).foregroundColor(Theme.warning)
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 12).padding(.vertical, 12)
+                                .background(Theme.warning.opacity(0.10))
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Soft-deletes every message in this channel. The channel stays. This cannot be undone.")
+                                    .font(.zkSans(12)).foregroundColor(Theme.ink2)
+                                HStack {
+                                    Button("Cancel") { confirmingPurge = false }
+                                        .font(.system(size: 14)).foregroundColor(Theme.ink2)
+                                    Spacer()
+                                    Button { purge() } label: {
+                                        Text(busy ? "Purging…" : "Yes, purge")
+                                            .font(.system(size: 14, weight: .semibold)).foregroundColor(.white)
+                                            .padding(.horizontal, 12).padding(.vertical, 6)
+                                            .background(Theme.warning).clipShape(RoundedRectangle(cornerRadius: 8))
+                                    }
+                                    .disabled(busy)
+                                }
+                            }
+                            .padding(12)
+                            .background(Theme.warning.opacity(0.06))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                        }
+                    }
                     if let error {
                         Text(error).font(.zkSans(13)).foregroundColor(Theme.danger)
                     }
@@ -4924,6 +6121,15 @@ struct EditChannelSheet: View {
             let err = await store.editChannel(channel, name: finalName, topic: topic, parentId: parentId, rateLimitPerUser: channel.isCategory ? nil : slowmode)
             busy = false
             if let err { error = err } else { dismiss() }
+        }
+    }
+
+    private func purge() {
+        busy = true; error = nil
+        Task {
+            let (_, err) = await store.purgeChannel(channel)
+            busy = false
+            if let err { error = err; confirmingPurge = false } else { dismiss() }
         }
     }
 }
@@ -5417,8 +6623,8 @@ struct GuildSettingsView: View {
                 }
                 if guildImageUploading { ProgressView().tint(Theme.accent) }
             }
-            .onChange(of: guildIconItem) { item in uploadGuildImage(item, kind: "icon") }
-            .onChange(of: guildBannerItem) { item in uploadGuildImage(item, kind: "banner") }
+            .onChange(of: guildIconItem) { _, item in uploadGuildImage(item, kind: "icon") }
+            .onChange(of: guildBannerItem) { _, item in uploadGuildImage(item, kind: "banner") }
             VStack(alignment: .leading, spacing: 4) {
                 Text("Description").font(.zkSans(11, weight: .semibold)).foregroundColor(Theme.ink4)
                 TextField("What's this server about?", text: $guildDescription, axis: .vertical)
@@ -6418,7 +7624,7 @@ struct EmojiManagerView: View {
             .navigationTitle("Emoji").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold)).foregroundColor(Theme.ink2).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task { await store.loadEmojis() }
-            .onChange(of: pickerItem) { item in loadPicked(item) }
+            .onChange(of: pickerItem) { _, item in loadPicked(item) }
         }
     }
 
@@ -6543,7 +7749,7 @@ struct StickerManagerView: View {
             .navigationTitle("Stickers").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold)).foregroundColor(Theme.ink2).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .task { await store.loadStickers() }
-            .onChange(of: pickerItem) { item in loadPicked(item) }
+            .onChange(of: pickerItem) { _, item in loadPicked(item) }
         }
     }
 
@@ -7340,7 +8546,12 @@ struct GuildInfoCard: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
     let onOpenSettings: () -> Void
+    /// Opens the Create Channel flow — wired by the caller (ChannelList),
+    /// because the create sheet needs the guild's categories, which live there.
+    let onCreateChannel: () -> Void
     @State private var showInvite = false
+    @State private var showEvents = false
+    @State private var showBrowseRoles = false
 
     var body: some View {
         NavigationStack {
@@ -7359,8 +8570,30 @@ struct GuildInfoCard: View {
                         Text("\(store.members.count) member\(store.members.count == 1 ? "" : "s")")
                             .font(.zkSans(12)).foregroundColor(Theme.ink3)
 
+                        // Same list as the web guild dropdown (GuildInfoCard):
+                        // Create Channel → … → Server Settings → Leave Server.
                         VStack(spacing: 0) {
+                            if store.canManageChannels {
+                                infoButton("Create Channel", icon: "plus") { onCreateChannel() }
+                                Divider().overlay(Theme.line)
+                            }
                             infoButton("Invite People", icon: "person.badge.plus") { showInvite = true }
+                            Divider().overlay(Theme.line)
+                            infoButton("Browse Roles", icon: "shield.lefthalf.filled") {
+                                Task { await store.loadSelfAssignableRoles() }
+                                showBrowseRoles = true
+                            }
+                            Divider().overlay(Theme.line)
+                            infoButton("Events", icon: "calendar") { showEvents = true }
+                            Divider().overlay(Theme.line)
+                            infoButton("Mark All as Read", icon: "checkmark") {
+                                Task { await store.markGuildRead(g.id) }
+                            }
+                            Divider().overlay(Theme.line)
+                            infoButton(store.isGuildMuted(g.id) ? "Unmute Server" : "Mute Server",
+                                       icon: store.isGuildMuted(g.id) ? "bell.slash" : "bell") {
+                                Task { await store.setGuildMuted(g.id, !store.isGuildMuted(g.id)) }
+                            }
                             Divider().overlay(Theme.line)
                             infoButton("Server Settings", icon: "gearshape") { onOpenSettings() }
                             if !store.isGuildOwner {
@@ -7382,6 +8615,8 @@ struct GuildInfoCard: View {
             .navigationTitle("Server Info").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold)).foregroundColor(Theme.ink2).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
             .sheet(isPresented: $showInvite) { CreateInviteSheet().environmentObject(store) }
+            .sheet(isPresented: $showEvents) { EventsView().environmentObject(store) }
+            .sheet(isPresented: $showBrowseRoles) { BrowseRolesView().environmentObject(store) }
         }
     }
 
@@ -7555,6 +8790,99 @@ struct ReorderChannelsView: View {
         if c.isVoice { return "speaker.wave.2.fill" }
         if c.isForum { return "list.bullet.rectangle" }
         return "number"
+    }
+}
+
+/// Quick-login generator: shows a one-time QR + 16-digit code so the user can
+/// sign in on another device. Re-randomizes on demand, counts down, and
+/// invalidates the code on dismiss. Never touches this device's session.
+struct QuickLoginSheet: View {
+    @EnvironmentObject private var session: Session
+    @Environment(\.dismiss) private var dismiss
+    @State private var code: String?
+    @State private var secondsLeft = 0
+    @State private var busy = false
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 16) {
+                    Text("On the other device's login screen, choose “Log in with another device” and scan this QR — or type the code. It works once, lasts ~90 seconds, and stops working when you close this. Anyone who sees it can sign in as you, so don't share or screenshot it.")
+                        .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if let code, let img = qrCodeImage("https://zekktris.com/login/device?c=\(code)") {
+                        Image(uiImage: img)
+                            .interpolation(.none).resizable()
+                            .frame(width: 220, height: 220)
+                            .padding(12).background(Color.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        Text(formatted(code))
+                            .font(.system(size: 20, weight: .semibold, design: .monospaced))
+                            .foregroundColor(Theme.ink1)
+                        Text("Expires in \(secondsLeft)s · works once")
+                            .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                        Button { Task { await generate() } } label: {
+                            Text(busy ? "…" : "New code")
+                                .font(.zkSans(15, weight: .semibold)).foregroundColor(Theme.accent)
+                        }
+                        .disabled(busy)
+                    } else if busy {
+                        ProgressView().tint(Theme.accent).padding(.top, 40)
+                    }
+                    if let error {
+                        Text(error).font(.zkSans(13)).foregroundColor(Theme.danger)
+                    }
+                }
+                .padding(20)
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Log in on another device")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { dismiss() } label: {
+                        Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(Theme.ink2).frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Close")
+                }
+            }
+            .task { await generate() }
+            // Live countdown for the current code; re-runs whenever the code
+            // changes (regenerate). Avoids a Combine timer.
+            .task(id: code) {
+                guard code != nil else { return }
+                while secondsLeft > 0 {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    if Task.isCancelled { return }
+                    secondsLeft -= 1
+                }
+                code = nil
+            }
+            .onDisappear { Task { await session.cancelQuickLoginCode() } }
+        }
+    }
+
+    private func generate() async {
+        busy = true; error = nil
+        if let r = await session.generateQuickLoginCode() {
+            code = r.code
+            secondsLeft = r.expiresIn
+        } else {
+            error = session.authError ?? "Could not generate a code."
+        }
+        busy = false
+    }
+
+    /// Group the 16 digits into 4×4 ("1234 5678 9012 3456").
+    private func formatted(_ c: String) -> String {
+        stride(from: 0, to: c.count, by: 4).map { i -> String in
+            let start = c.index(c.startIndex, offsetBy: i)
+            let end = c.index(start, offsetBy: min(4, c.count - i))
+            return String(c[start..<end])
+        }.joined(separator: " ")
     }
 }
 
@@ -8935,14 +10263,20 @@ struct GuildAuditLogView: View {
 // ═══════════════════════════════════════════════════════════════════════════
 
 struct AdminSecurityTab: View {
+    @EnvironmentObject private var session: Session
     @State private var events: [SecurityEvent] = []
-    @State private var words: [String] = []
+    @State private var words: [SecurityWord] = []
     @State private var config: SecurityConfig?
     @State private var newWord = ""
+    @State private var newWordSeverity = "blocked"
     @State private var kindFilter: String?
     @State private var loading = true
     @State private var showPreset = false
     @State private var error: String?
+
+    /// Moderators only get the security log — spam config + banned words are
+    /// admin-only (the API rejects those endpoints for moderators anyway).
+    private var selfIsAdmin: Bool { session.currentUser?.isAdmin == true }
 
     var body: some View {
         ScrollView {
@@ -8951,6 +10285,7 @@ struct AdminSecurityTab: View {
                     Text(error).font(.zkSans(12)).foregroundColor(Theme.dangerSoft)
                 }
 
+                if selfIsAdmin {
                 // ── Spam throttle ──
                 sectionLabel("SPAM PROTECTION")
                 if let cfg = config {
@@ -9002,6 +10337,12 @@ struct AdminSecurityTab: View {
                     }
                     .disabled(newWord.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
+                // Which list the new word joins.
+                Picker("Severity", selection: $newWordSeverity) {
+                    Text("Block").tag("blocked")
+                    Text("Watch").tag("watch")
+                }
+                .pickerStyle(.segmented)
                 Button {
                     showPreset = true
                 } label: {
@@ -9017,14 +10358,24 @@ struct AdminSecurityTab: View {
                     .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
-                Text("Browse a standard profanity + slur list and add words individually, or add all at once.")
+                Text("Blocked words are rejected in messages and can't appear in usernames, display names, or clan tags. Watch words are logged only — the message still sends.")
                     .font(.zkSans(11)).foregroundColor(Theme.ink4)
                 if words.isEmpty {
-                    Text("No banned words yet. Messages containing a banned word are rejected and reported here.")
+                    Text("No words yet. Blocked words are rejected and reported here; watch words are logged.")
                         .font(.zkSans(11)).foregroundColor(Theme.ink4)
                 } else {
-                    FlowWords(words: words) { w in removeWord(w) }
+                    ForEach(["blocked", "watch"], id: \.self) { sev in
+                        let group = words.filter { $0.severity == sev }.map { $0.word }
+                        if !group.isEmpty {
+                            Text(sev == "blocked" ? "BLOCKED — HARD BLOCK" : "WATCH — ALERT ONLY")
+                                .font(.zkSans(10, weight: .bold)).tracking(0.5)
+                                .foregroundColor(sev == "blocked" ? Theme.dangerSoft : Theme.warning)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            FlowWords(words: group) { w in removeWord(w) }
+                        }
+                    }
                 }
+                } // selfIsAdmin
 
                 // ── Event log ──
                 sectionLabel("SECURITY LOG")
@@ -9032,6 +10383,7 @@ struct AdminSecurityTab: View {
                     filterChip(nil, label: "All")
                     filterChip("spam_limited", label: "Spam")
                     filterChip("banned_word", label: "Banned words")
+                    filterChip("staff", label: "Staff")
                 }
                 if loading && events.isEmpty {
                     ProgressView().tint(Theme.accent).frame(maxWidth: .infinity).padding(.top, 16)
@@ -9101,11 +10453,20 @@ struct AdminSecurityTab: View {
     private func eventRow(_ ev: SecurityEvent) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Image(systemName: ev.kind == "banned_word" ? "exclamationmark.bubble.fill" : "speedometer")
+                Image(systemName: ev.isStaffAction
+                        ? "person.badge.shield.checkmark"
+                        : ev.kind == "banned_word" ? "exclamationmark.bubble.fill" : "speedometer")
                     .font(.system(size: 11))
-                    .foregroundColor(ev.kind == "banned_word" ? Theme.dangerSoft : Theme.plasmaAmber)
+                    .foregroundColor(ev.isStaffAction
+                        ? Color(hex: 0x38BDF8)
+                        : ev.kind == "banned_word" ? Theme.dangerSoft : Theme.plasmaAmber)
+                // Staff rows read "actor → target"; detections name the offender.
                 Text(ev.actorName)
                     .font(.zkSans(13, weight: .semibold)).foregroundColor(Theme.ink1)
+                if let target = ev.targetName {
+                    Text("→ \(target)")
+                        .font(.zkSans(12)).foregroundColor(Theme.ink3).lineLimit(1)
+                }
                 Spacer()
                 Text(shortTime(ev.createdAt))
                     .font(.zkSans(10)).foregroundColor(Theme.ink4)
@@ -9131,10 +10492,15 @@ struct AdminSecurityTab: View {
     // ── Data ──
     private func reload() async {
         loading = true
-        async let e: () = loadEvents()
-        async let w: () = loadWords()
-        async let c: () = loadConfig()
-        _ = await (e, w, c)
+        if selfIsAdmin {
+            async let e: () = loadEvents()
+            async let w: () = loadWords()
+            async let c: () = loadConfig()
+            _ = await (e, w, c)
+        } else {
+            // Moderator view: the log is the whole tab (config/words 403).
+            await loadEvents()
+        }
         loading = false
     }
     private func loadEvents() async {
@@ -9159,7 +10525,7 @@ struct AdminSecurityTab: View {
         guard !word.isEmpty else { return }
         newWord = ""
         Task {
-            if let updated = try? await APIClient.shared.adminAddSecurityWord(word) { words = updated }
+            if let updated = try? await APIClient.shared.adminAddSecurityWord(word, severity: newWordSeverity) { words = updated }
         }
     }
     private func removeWord(_ word: String) {
@@ -9173,7 +10539,7 @@ struct AdminSecurityTab: View {
 /// it on this instance, or "Add all". Already-banned words show a check.
 private struct PresetWordsSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @Binding var words: [String]
+    @Binding var words: [SecurityWord]
     @State private var preset: [String] = []
     @State private var loading = true
     @State private var addingAll = false
@@ -9205,9 +10571,8 @@ private struct PresetWordsSheet: View {
             .navigationTitle("Common wordlist")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold)).foregroundColor(Theme.ink2).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close")
-                        .font(.zkSans(15)).foregroundColor(Theme.accent)
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button { addAll() } label: {
@@ -9219,7 +10584,7 @@ private struct PresetWordsSheet: View {
                                 .foregroundColor(Theme.accent)
                         }
                     }
-                    .disabled(addingAll || loading || preset.allSatisfy { words.contains($0) })
+                    .disabled(addingAll || loading || preset.allSatisfy { p in words.contains(where: { $0.word == p }) })
                 }
             }
             .task {
@@ -9232,7 +10597,7 @@ private struct PresetWordsSheet: View {
 
     @ViewBuilder
     private func presetPill(_ w: String) -> some View {
-        let added = words.contains(w)
+        let added = words.contains(where: { $0.word == w })
         Button {
             guard !added else { return }
             add(w)

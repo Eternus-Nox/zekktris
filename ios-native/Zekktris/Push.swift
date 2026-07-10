@@ -137,9 +137,27 @@ final class VoipPushHandler: NSObject, PKPushRegistryDelegate {
     }
 
     /// Re-POST the voip token after sign-in (token may have arrived first).
+    /// The POST result is now CHECKED: a silent failure here is how the
+    /// account ends up with zero voip rows server-side (= incoming calls
+    /// stop ringing CallKit until a luckier foreground). One delayed retry
+    /// covers the cold-launch races (radio waking, token refresh in flight);
+    /// beyond that the next foreground re-asserts anyway.
     func registerWithServerIfPossible() {
         guard let token = voipTokenHex, APIClient.shared.token != nil else { return }
-        Task { _ = await APIClient.shared.registerDeviceToken(token: token, platform: "ios_voip") }
+        Task {
+            let first = await APIClient.shared.registerDeviceToken(token: token, platform: "ios_voip")
+            // .serverUnconfigured = the server SAID push isn't set up — a
+            // retry can't change that; the next foreground re-asserts anyway.
+            guard first == .failed else { return }
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            // Re-read the CURRENT token — PushKit may have rotated it while
+            // we slept, and the session may have signed out.
+            guard let fresh = self.voipTokenHex, APIClient.shared.token != nil else { return }
+            let second = await APIClient.shared.registerDeviceToken(token: fresh, platform: "ios_voip")
+            if second == .failed {
+                print("[zk] voip token registration failed twice — CallKit may not ring until next foreground")
+            }
+        }
     }
 
     /// Best-effort unregister on logout — without this the server keeps
@@ -269,6 +287,13 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         let kind = info["kind"] as? String
         let channelId = Self.channelId(from: info)
 
+        // Achievement-unlock notifications have no channel to open — tapping
+        // just brings the app forward.
+        if kind == "achievement" {
+            completionHandler()
+            return
+        }
+
         // Inline reply (notification "Reply" field — iPhone keyboard or Apple
         // Watch). Sending is async, so we hold the completion handler until the
         // post finishes. Done in a self-contained sender (QuickReply) because
@@ -280,7 +305,16 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             let text = textResponse.userText
             let isE2EE = (info["isE2EE"] as? Bool)
                 ?? (info["isE2EE"] as? NSNumber)?.boolValue ?? false
-            Task {
+            // `@MainActor` is REQUIRED, not cosmetic: UNUserNotificationCenter's
+            // completionHandler must be invoked on the main thread — UIKit runs
+            // snapshot/state-restoration work inside it
+            // (_updateSnapshotAndStateRestorationWithAction: →
+            // _performBlockAfterCATransactionCommitSynchronizes:) which asserts
+            // main-thread. NotificationDelegate is NOT actor-isolated, so a plain
+            // `Task {}` resumed on the cooperative pool after the `await` and
+            // called the handler off-main → NSAssertionHandler → abort(). That was
+            // the "crashes when I reopen it from suspended" crash (SIGABRT).
+            Task { @MainActor in
                 await QuickReply.send(channelId: channelId, text: text, isE2EE: isE2EE)
                 completionHandler()
             }
@@ -299,12 +333,14 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
                     name: .zkCallAction, object: ["channelId": channelId, "action": "decline"])
             }
         default:
-            // Body tap: open the conversation (calls auto-join, matching
-            // the web's ?autojoin=1 deeplink).
+            // Body tap: open the conversation AND deep-link to the specific
+            // message this notification is for (scroll to it; in a guild the
+            // composer prefills a reply to its author). Calls auto-join, matching
+            // the web's ?autojoin=1 deeplink.
             if let channelId {
-                NotificationCenter.default.post(
-                    name: .zkOpenChannel,
-                    object: ["channelId": channelId, "autojoin": kind == "call"])
+                var payload: [String: Any] = ["channelId": channelId, "autojoin": kind == "call"]
+                if let messageId = info["messageId"] as? String { payload["messageId"] = messageId }
+                NotificationCenter.default.post(name: .zkOpenChannel, object: payload)
             }
         }
         completionHandler()

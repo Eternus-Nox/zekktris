@@ -6,9 +6,10 @@ import WatchKit
 /// token + targets).
 struct ContentView: View {
     @EnvironmentObject private var sync: WatchSyncStore
+    @State private var path: [PokeTarget] = []
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 if sync.token == nil {
                     notice(
@@ -19,12 +20,26 @@ struct ContentView: View {
                     notice(systemImage: "bubble.left.and.bubble.right", text: "No recent DMs yet.")
                 } else {
                     List(sync.targets) { target in
-                        NavigationLink(value: target) { Text(target.name).lineLimit(1) }
+                        NavigationLink(value: target) {
+                            HStack(spacing: 6) {
+                                Text(target.name).lineLimit(1)
+                                if target.streak > 0 {
+                                    Spacer(minLength: 4)
+                                    StreakChip(days: target.streak)
+                                }
+                            }
+                        }
                     }
                 }
             }
             .navigationTitle("Friends")
             .navigationDestination(for: PokeTarget.self) { FriendScreen(target: $0) }
+            // Open-DM complication deep link → jump to that friend.
+            .onChange(of: sync.pendingFriendId) { _, id in
+                guard let id, let target = sync.targets.first(where: { $0.id == id }) else { return }
+                path = [target]
+                sync.pendingFriendId = nil
+            }
         }
         // Got poked: a FULL-SCREEN emoji takeover on top of whatever screen
         // you're on (paired with the haptic wave in WatchSyncStore). The emoji
@@ -64,6 +79,10 @@ struct ContentView: View {
             }
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.6), value: sync.incomingPoke?.id)
+        // On open, pull the latest token + DM list from the phone (if reachable)
+        // so a cold launch populates right away instead of stalling on
+        // "Open Zekktris on your iPhone" until the phone next foregrounds.
+        .task { await sync.requestFreshSync() }
     }
 
     private func notice(systemImage: String, text: String) -> some View {
@@ -72,6 +91,29 @@ struct ContentView: View {
             Text(text).font(.footnote).multilineTextAlignment(.center).foregroundStyle(.secondary)
         }
         .padding()
+    }
+}
+
+/// Amber flame + day count on an amber-tinted plate — the wrist's at-a-glance
+/// read on a DM streak, mirroring the in-app `StreakChip` (plasmaAmber pill with
+/// a rounded border) so it looks the same everywhere.
+struct StreakChip: View {
+    let days: Int
+    private static let amber = Color(red: 1.0, green: 0.69, blue: 0.0) // 0xFFB000
+    var body: some View {
+        HStack(spacing: 2) {
+            Image(systemName: "flame.fill").font(.system(size: 9, weight: .bold))
+                .foregroundStyle(Self.amber)
+            Text("\(days)").font(.system(size: 11, weight: .semibold).monospacedDigit())
+                .foregroundStyle(.white)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(Self.amber.opacity(0.16), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(Self.amber.opacity(0.4), lineWidth: 1)
+        )
     }
 }
 
@@ -141,13 +183,26 @@ struct MessageComposer: View {
 
     private func send() {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !sending, !body.isEmpty, let token = sync.token, let base = sync.apiBaseURL else { return }
+        guard !sending, !body.isEmpty else { return }
         sending = true
         failed = false
         WKInterfaceDevice.current().play(.click)
         Task {
+            // Pull a live token from the phone first so a stale/rotated one
+            // doesn't silently drop the send. One attempt only — a message POST
+            // isn't idempotent, so we never auto-retry (would risk a duplicate);
+            // the red "Retry" button lets the user decide.
+            guard let creds = await sync.credentials() else {
+                await MainActor.run {
+                    sending = false
+                    failed = true
+                    WKInterfaceDevice.current().play(.failure)
+                }
+                return
+            }
             let ok = await WatchPokeAPI.sendMessage(
-                baseURL: base, token: token, channelId: target.id, content: body
+                baseURL: creds.base, token: creds.token, channelId: target.id, content: body,
+                e2ee: target.e2ee, e2eeKey: target.e2eeKey
             )
             await MainActor.run {
                 sending = false
@@ -206,11 +261,18 @@ struct MessagesView: View {
     }
 
     private func load() async {
-        guard let token = sync.token, let base = sync.apiBaseURL else {
+        guard let creds = await sync.credentials() else {
             await MainActor.run { loading = false; failed = true }
             return
         }
-        let result = await WatchPokeAPI.fetchMessages(baseURL: base, token: token, channelId: target.id)
+        var result = await WatchPokeAPI.fetchMessages(baseURL: creds.base, token: creds.token, channelId: target.id, e2eeKey: target.e2eeKey)
+        if result == nil {
+            // A read is idempotent, so one refresh + retry is safe — recovers a
+            // token that expired since the last sync, or a transient miss.
+            if let creds2 = await sync.credentials() {
+                result = await WatchPokeAPI.fetchMessages(baseURL: creds2.base, token: creds2.token, channelId: target.id, e2eeKey: target.e2eeKey)
+            }
+        }
         await MainActor.run {
             loading = false
             if let result { messages = result } else { failed = true }
@@ -246,12 +308,18 @@ struct PokePager: View {
     }
 
     private func send(_ variant: PokeVariant) {
-        guard !sending, let token = sync.token, let base = sync.apiBaseURL else { return }
+        guard !sending else { return }
         sending = true
         WKInterfaceDevice.current().play(.click)
         Task {
+            // Pull a live token from the phone first so a stale/rotated one
+            // doesn't drop the poke.
+            guard let creds = await sync.credentials() else {
+                await MainActor.run { sending = false; WKInterfaceDevice.current().play(.failure) }
+                return
+            }
             let ok = await WatchPokeAPI.poke(
-                baseURL: base, token: token, channelId: target.id, pokeType: variant.rawValue
+                baseURL: creds.base, token: creds.token, channelId: target.id, pokeType: variant.rawValue
             )
             await MainActor.run {
                 sending = false

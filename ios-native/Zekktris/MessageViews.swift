@@ -5,6 +5,79 @@ import UniformTypeIdentifiers
 import AVKit
 import ImageIO
 
+/// Profanity mask for the parental "blur swear words" filter. When a supervised
+/// child's effective restrictions have `filterProfanity` on, message bodies are
+/// run through `mask`, which masks each whole-word profanity match to its first
+/// letter + bullets (e.g. `fucking` → `f••••••`). The word set is ported from
+/// the server's WATCH + BLOCKED presets; whole-word, case-insensitive, matching
+/// the server's automod semantics. Client-side render only.
+enum ProfanityFilter {
+    // BLOCKED (slurs) + WATCH (general profanity + sexual/explicit).
+    private static let words: [String] = [
+        "nigger", "niggers", "nigga", "niggas", "chink", "chinks", "gook",
+        "spic", "spics", "wetback", "wetbacks", "kike", "kikes", "beaner",
+        "beaners", "raghead", "towelhead", "faggot", "faggots", "fag", "fags",
+        "dyke", "dykes", "tranny", "trannies", "retard", "retards", "retarded",
+        "fuck", "fucks", "fucked", "fucker", "fuckers", "fucking", "motherfucker",
+        "motherfuckers", "motherfucking", "shit", "shits", "shitty", "bullshit",
+        "shithead", "dumbass", "jackass", "asshole", "assholes", "arsehole",
+        "bastard", "bastards", "bitch", "bitches", "bitchy", "son of a bitch",
+        "goddamn", "goddammit", "piss off", "pissed off",
+        "cock", "cocks", "cocksucker", "dick", "dicks", "dickhead", "pussy",
+        "pussies", "cunt", "cunts", "twat", "wank", "wanker", "jerkoff",
+        "jerk off", "blowjob", "blow job", "handjob", "hand job", "cum",
+        "jizz", "tits", "titties", "boobs", "dildo", "porn", "porno",
+        "pornography", "slut", "sluts", "slutty", "whore", "whores", "hoe",
+        "hoes", "skank",
+    ]
+
+    // Longer phrases first so they win over their substrings.
+    private static let regex: NSRegularExpression? = {
+        let alt = words
+            .sorted { $0.count > $1.count }
+            .map { NSRegularExpression.escapedPattern(for: $0) }
+            .joined(separator: "|")
+        return try? NSRegularExpression(pattern: "\\b(\(alt))\\b", options: [.caseInsensitive])
+    }()
+
+    // Custom-emoji shortcodes (:name:) and mention/channel tokens (<…>) must NOT
+    // be masked — rewriting their inner text (e.g. :cum: → :c••:) corrupts the
+    // token so it no longer resolves. Skip any profanity match overlapping one.
+    private static let protectedRegex = try? NSRegularExpression(pattern: ":[A-Za-z0-9_]+:|<[^>]+>")
+
+    static func mask(_ text: String) -> String {
+        guard !text.isEmpty, let re = regex else { return text }
+        let ns = text as NSString
+        let full = NSRange(location: 0, length: ns.length)
+        let protectedRanges = protectedRegex?.matches(in: text, range: full).map { $0.range } ?? []
+        let matches = re.matches(in: text, range: full).filter { m in
+            !protectedRanges.contains { NSIntersectionRange($0, m.range).length > 0 }
+        }
+        guard !matches.isEmpty else { return text }
+        var result = text
+        // Masking is length-preserving (letter→letter/•, others unchanged), so
+        // replacing back-to-front keeps every range valid.
+        for m in matches.reversed() {
+            guard let r = Range(m.range, in: result) else { continue }
+            result.replaceSubrange(r, with: maskWord(ns.substring(with: m.range)))
+        }
+        return result
+    }
+
+    private static func maskWord(_ word: String) -> String {
+        var seenFirst = false
+        var out = ""
+        for ch in word {
+            if ch.isLetter || ch.isNumber {
+                if seenFirst { out.append("•") } else { seenFirst = true; out.append(ch) }
+            } else {
+                out.append(ch)
+            }
+        }
+        return out
+    }
+}
+
 /// Decodes image bytes downsampled to a target pixel size via ImageIO, so the
 /// full-resolution bitmap is never realized in memory. Pure + off-main-safe —
 /// call it inside a detached task. Inline message images display at ≤240pt yet
@@ -44,6 +117,9 @@ struct MessageListView: View {
     @State private var composerFocused = false
     @State private var showEnableSheet = false
     @State private var showDmSettings = false
+    @State private var showPokePopover = false
+    @State private var pokeHistory: [PokeHistoryEntry] = []
+    @State private var pokeHistoryLoading = false
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var showPhotoPicker = false
     @State private var showCamera = false
@@ -158,7 +234,7 @@ struct MessageListView: View {
                               store.messages.last != nil else { return }
                         proxy.scrollTo(bottomAnchor, anchor: .bottom)
                     }
-                    .onChange(of: store.messages.count) { _ in
+                    .onChange(of: store.messages.count) {
                         // Only auto-scroll to the bottom when the newest message
                         // changed (append/initial). Prepended history keeps its
                         // place via the anchor restore below.
@@ -185,7 +261,7 @@ struct MessageListView: View {
                             }
                         }
                     }
-                    .onChange(of: store.pendingScrollAnchorId) { anchor in
+                    .onChange(of: store.pendingScrollAnchorId) { _, anchor in
                         // After an older page prepends, jump back to the message
                         // that was previously at the top so the view doesn't lurch.
                         guard let anchor else { return }
@@ -307,6 +383,16 @@ struct MessageListView: View {
                          showHeader: Bool,
                          anchors: (latest: Message?, lastRead: Message?)) -> MessageRowData {
         let replied = message.replyToId != nil ? store.repliedMessage(for: message) : nil
+        // Parental control: bake the swear-word mask into the display snapshot
+        // (body + reply preview) so it's captured in MessageRowData — the row's
+        // Equatable gate then re-renders when the flag flips (parent toggles /
+        // family loads at cold start) and the reply-quote is masked too. One
+        // source of truth; no render-time mask needed downstream.
+        let maskProfane = store.family?.restrictions?.filterProfanity == true
+        func masked(_ d: AppStore.MessageDisplay) -> AppStore.MessageDisplay {
+            if maskProfane, case .text(let s) = d { return .text(ProfanityFilter.mask(s)) }
+            return d
+        }
         return MessageRowData(
             message: message,
             channel: channel,
@@ -314,10 +400,15 @@ struct MessageListView: View {
             dmReceipt: dmReceipt(for: message, anchors: anchors),
             currentUserId: store.currentUserId,
             authorStatus: store.status(for: message.authorId, fallback: message.author?.status),
-            authorColorRGB: store.memberColorRGB(message.authorId ?? message.author?.id ?? ""),
-            display: store.display(for: message, in: channel),
+            // Role colors are guild-scoped: a DM / group-DM has no guild, so a
+            // name there must never inherit the role color from whatever server
+            // was open last (the store's members/roles aren't cleared on the
+            // hop into DMs). Gate on the channel type, which is unambiguous
+            // regardless of navigation state.
+            authorColorRGB: channel.isDM ? nil : store.memberColorRGB(message.authorId ?? message.author?.id ?? ""),
+            display: masked(store.display(for: message, in: channel)),
             repliedMessage: replied,
-            repliedDisplay: replied.map { store.display(for: $0, in: channel) },
+            repliedDisplay: replied.map { masked(store.display(for: $0, in: channel)) },
             localEmbeds: store.localEmbeds(for: message.id) ?? [],
             isSaved: store.isSaved(message.id),
             emojiCatalogVersion: store.emojiCatalogVersion,
@@ -356,7 +447,7 @@ struct MessageListView: View {
             if channel.isDM {
                 Avatar(
                     url: channel.dmAvatarUser?.avatarUrl,
-                    name: channel.dmTitle,
+                    name: store.dmDisplayTitle(channel),
                     size: 28,
                     status: store.status(for: channel.dmAvatarUser?.id, fallback: channel.dmAvatarUser?.status),
                     ringColor: Theme.bg2,
@@ -376,7 +467,7 @@ struct MessageListView: View {
                             .offset(x: 4, y: -4)
                     }
                 }
-                Text(channel.dmTitle)
+                Text(store.dmDisplayTitle(channel))
                     .font(.zkSans(16, weight: .semibold))
                     .foregroundColor(Theme.ink1)
                     .lineLimit(1)
@@ -437,14 +528,16 @@ struct MessageListView: View {
                         .foregroundColor(Theme.ink3)
                 }
                 .padding(.trailing, 2)
-                // Poke / nudge — 1:1 DMs only. The menu is the variant palette
+                // Poke / nudge — 1:1 DMs only. Opens a popover showing recent
+                // pokes received from this person (max 6) + the variant palette
                 // (poke/heart/wave/like/fire); each sends that nudge.
                 if channel.type == "dm" {
-                    Menu {
-                        ForEach(PokeVariant.allCases) { v in
-                            Button("\(v.emoji)  \(v.label)") {
-                                Task { await store.poke(channel, variant: v) }
-                            }
+                    Button {
+                        showPokePopover = true
+                        pokeHistoryLoading = true
+                        Task {
+                            pokeHistory = await store.pokeHistory(channel)
+                            pokeHistoryLoading = false
                         }
                     } label: {
                         Image(systemName: "hand.point.right.fill")
@@ -452,6 +545,17 @@ struct MessageListView: View {
                             .foregroundColor(Theme.ink3)
                     }
                     .padding(.trailing, 2)
+                    // A small bottom sheet (no popover arrow pointing at the
+                    // icon). Compact fixed height; the poke palette is centered.
+                    .sheet(isPresented: $showPokePopover) {
+                        PokePopover(history: pokeHistory, loading: pokeHistoryLoading) { v in
+                            showPokePopover = false
+                            Task { await store.poke(channel, variant: v) }
+                        }
+                        .presentationDetents([.height(260)])
+                        .presentationDragIndicator(.visible)
+                        .presentationBackground(Theme.bg2)
+                    }
                 }
                 Button { showDmSettings = true } label: {
                     Image(systemName: "gearshape")
@@ -676,10 +780,10 @@ struct MessageListView: View {
                 draft += draft.isEmpty || draft.hasSuffix(" ") ? emoji : " " + emoji
             }
         }
-        .onChange(of: pickerItems) { newItems in
+        .onChange(of: pickerItems) { _, newItems in
             loadPickedItems(newItems)
         }
-        .onChange(of: draft) { newValue in
+        .onChange(of: draft) { _, newValue in
             // Return key sends (the multi-line field inserts a newline
             // instead of submitting — catch it, strip it, send). The
             // keyboard then dismisses inside send().
@@ -696,7 +800,7 @@ struct MessageListView: View {
                 store.triggerTyping()
             }
         }
-        .onChange(of: store.replyingTo) { newValue in
+        .onChange(of: store.replyingTo) { _, newValue in
             if newValue != nil { composerFocused = true }
         }
         .sheet(isPresented: $showPollSheet) {
@@ -789,7 +893,7 @@ struct MessageListView: View {
             let content = applySlashTransform(draft).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !content.isEmpty else { return }
             draft = ""
-            Task { await store.send(content) }
+            Task { await store.send(content, in: channel) }
         }
     }
 
@@ -817,13 +921,17 @@ struct MessageListView: View {
     private var mentionMatches: [GuildMember] {
         guard let q = mentionQuery else { return [] }
         let ql = q.lowercased()
-        let all = Array(store.members.values)
-        let filtered = ql.isEmpty ? all : all.filter {
-            (($0.nickname ?? "").lowercased().contains(ql))
-            || $0.user.name.lowercased().contains(ql)
-            || (($0.user.username ?? "").lowercased().contains(ql))
+        // Lowercase each member's fields ONCE — this runs on every keystroke and
+        // the old code re-lowercased up to 5× per member (3 in filter, 2 in sort).
+        let prepared = store.members.values.map { m -> (member: GuildMember, sortKey: String, hay: [String]) in
+            (
+                m,
+                m.user.name.lowercased(),
+                [m.user.name.lowercased(), (m.user.username ?? "").lowercased()]
+            )
         }
-        return Array(filtered.sorted { ($0.nickname ?? $0.user.name).lowercased() < ($1.nickname ?? $1.user.name).lowercased() }.prefix(6))
+        let filtered = ql.isEmpty ? prepared : prepared.filter { $0.hay.contains { $0.contains(ql) } }
+        return Array(filtered.sorted { $0.sortKey < $1.sortKey }.prefix(6).map { $0.member })
     }
     /// @everyone / @here suggestions — guild channels only (DMs have no audience
     /// to mass-mention). The server enforces the Mention-Everyone permission on
@@ -836,7 +944,9 @@ struct MessageListView: View {
     private var emojiMatches: [GuildEmoji] {
         guard let q = emojiQuery else { return [] }
         let ql = q.lowercased()
-        return Array(store.guildEmojis.filter { $0.name.lowercased().contains(ql) }.prefix(8))
+        // lazy → only lowercase names until 8 matches are found, instead of
+        // lowercasing all 50+ emoji on every keystroke.
+        return Array(store.guildEmojis.lazy.filter { $0.name.lowercased().contains(ql) }.prefix(8))
     }
 
     @ViewBuilder
@@ -866,8 +976,8 @@ struct MessageListView: View {
     private func mentionRow(_ m: GuildMember) -> some View {
         Button { applyMention(m) } label: {
             HStack(spacing: 8) {
-                Avatar(url: m.user.avatarUrl, name: m.nickname ?? m.user.name, size: 24)
-                Text(m.nickname ?? m.user.name)
+                Avatar(url: m.user.avatarUrl, name: m.user.name, size: 24)
+                Text(m.user.name)
                     .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
                 if let u = m.user.username {
                     Text("@\(u)").font(.zkSans(12)).foregroundColor(Theme.ink4)
@@ -1237,6 +1347,10 @@ struct MessageRow: View, Equatable {
     @State private var showReactionPicker = false
     @State private var editText = ""
     @State private var videoToPlay: VideoItem?
+    // Share-sheet item for a single image's "Share…" action, now hosted in the
+    // row's own context menu (see singleSavableImage / menuItems) instead of a
+    // nested .imageActions menu that used to swallow the reaction menu.
+    @State private var imageShareItem: ImageShareItem?
 
     var body: some View {
         // Web parity: ONLY system_call renders as a quiet notice line.
@@ -1273,6 +1387,7 @@ struct MessageRow: View, Equatable {
             .fullScreenCover(item: $videoToPlay) { item in
                 VideoLightboxView(url: item.url)
             }
+            .sheet(item: $imageShareItem) { ActivityItemsView(items: [$0.image]) }
         }
     }
 
@@ -1403,6 +1518,47 @@ struct MessageRow: View, Equatable {
                 Label("Delete", systemImage: "trash")
             }
         }
+        // Image actions live in THIS row menu (not a nested .imageActions
+        // context menu on the photo) so that long-pressing a single photo still
+        // reaches "Add reaction" above. Only shown when the message's sole media
+        // is an image (plain OR E2EE); the provider decrypts on demand.
+        if let img = singleSavableImage {
+            Divider()
+            Button {
+                Task { if let i = await loadSingleImage(img) { _ = await PhotoSaver.save(i) } }
+            } label: { Label("Save to Photos", systemImage: "square.and.arrow.down") }
+            Button {
+                Task { if let i = await loadSingleImage(img) { await MainActor.run { UIPasteboard.general.image = i } } }
+            } label: { Label("Copy Image", systemImage: "doc.on.doc") }
+            Button {
+                Task { if let i = await loadSingleImage(img) { await MainActor.run { imageShareItem = ImageShareItem(image: i) } } }
+            } label: { Label("Share…", systemImage: "square.and.arrow.up") }
+        }
+    }
+
+    /// The message's sole image attachment (plain or E2EE), when there's exactly
+    /// one media attachment and it's an image — i.e. the `singleMedia` case.
+    /// Drives the image actions folded into `menuItems`. nil for text-only,
+    /// single-video, multi-media (grid), and file/voice messages.
+    private var singleSavableImage: Attachment? {
+        guard let attachments = message.attachments else { return nil }
+        let media = attachments.filter { att in
+            att.isVoiceMessage != true &&
+            (isEncrypted(att) ? encryptedInnerIsImage(att) : (att.isImage || att.isVideo))
+        }
+        guard media.count == 1, let only = media.first, isGridImage(only) else { return nil }
+        return only
+    }
+
+    /// Resolve the full-resolution UIImage for a single image attachment —
+    /// decrypting E2EE bytes off the main actor, or loading the plain URL.
+    private func loadSingleImage(_ att: Attachment) async -> UIImage? {
+        if isEncrypted(att) {
+            guard let data = await store.decryptedAttachmentData(att, in: channel) else { return nil }
+            return await Task.detached(priority: .userInitiated) { UIImage(data: data) }.value
+        }
+        guard let url = assetURL(att.url) else { return nil }
+        return await RetryingImage.load(url)
     }
 
     private var isOwn: Bool {
@@ -1459,6 +1615,8 @@ struct MessageRow: View, Equatable {
     private func replyPreviewText(_ m: Message, display: AppStore.MessageDisplay) -> String {
         switch display {
         case .text(let t):
+            // `t` (from repliedDisplay) is already profanity-masked upstream in
+            // rowData when the viewer is a supervised child with the filter on.
             if !t.isEmpty { return t }
             if m.sticker != nil { return "🏷️ Sticker" }
             if m.attachments?.contains(where: { $0.isVoiceMessage == true }) == true { return "🎤 Voice message" }
@@ -1473,11 +1631,28 @@ struct MessageRow: View, Equatable {
     /// Webhook persona (web parity): when set, the override name/avatar
     /// replace the author's user record everywhere in the row.
     private var isWebhook: Bool { message.webhookId != nil }
+    /// A "member joined" welcome (system_join) is authored in the data by the
+    /// joining user, but reads as the SERVER welcoming the newcomer — so we
+    /// swap the author identity to the guild's name + icon (the welcome body
+    /// still @-mentions the newcomer). Also suppresses the joiner's profile
+    /// tap, role color, clan tag, decoration, and BOT badge on this row.
+    private var isServerAuthor: Bool { message.type == "system_join" }
+    private var systemJoinGuild: Guild? {
+        guard isServerAuthor else { return nil }
+        if let gid = data.channel.guildId {
+            return store.guilds.first(where: { $0.id == gid }) ?? store.selectedGuild
+        }
+        return store.selectedGuild
+    }
     private var displayName: String {
+        if let g = systemJoinGuild { return g.name }
         if isWebhook { return message.authorOverrideName ?? message.author?.name ?? "Webhook" }
+        // In a DM, the peer's messages show the viewer's personal nickname.
+        if data.channel.isDM, let nick = store.dmNickname(message.author?.id) { return nick }
         return message.author?.name ?? "Unknown"
     }
     private var displayAvatarUrl: String? {
+        if let g = systemJoinGuild { return g.iconUrl }
         if isWebhook { return message.authorOverrideAvatar ?? message.author?.avatarUrl }
         return message.author?.avatarUrl
     }
@@ -1489,13 +1664,15 @@ struct MessageRow: View, Equatable {
                     url: displayAvatarUrl,
                     name: displayName,
                     size: 40,
-                    status: isWebhook ? nil : data.authorStatus,
+                    status: (isWebhook || isServerAuthor) ? nil : data.authorStatus,
                     ringColor: Theme.bg1,
-                    decoration: isWebhook ? nil : message.author?.avatarDecoration,
-                    toneId: isWebhook ? message.webhookId : (message.authorId ?? message.author?.id)
+                    decoration: (isWebhook || isServerAuthor) ? nil : message.author?.avatarDecoration,
+                    toneId: isServerAuthor
+                        ? systemJoinGuild?.id
+                        : (isWebhook ? message.webhookId : (message.authorId ?? message.author?.id))
                 )
                 .frame(width: gutter, alignment: .leading)
-                .onTapGesture { if !isWebhook, let a = message.author { store.openProfile(a) } }
+                .onTapGesture { if !isWebhook, !isServerAuthor, let a = message.author { store.openProfile(a) } }
             } else {
                 Color.clear.frame(width: gutter)
             }
@@ -1505,12 +1682,13 @@ struct MessageRow: View, Equatable {
                     replyPreview
                 }
                 if showHeader {
-                    HStack(alignment: .center, spacing: 6) {
-                        if !isWebhook, let a = message.author { NameTag(a) }
-                        Text(displayName)
-                            .font(.zkSans(15, weight: .medium))
-                            .foregroundColor(isWebhook ? Theme.ink1 : (data.authorColorRGB.map { store.color(fromRGB: $0) } ?? Theme.ink1))
-                            .onTapGesture { if !isWebhook, let a = message.author { store.openProfile(a) } }
+                    HStack(alignment: .center, spacing: 4) {
+                        if !isWebhook, !isServerAuthor, let a = message.author { NameTag(a) }
+                        StaffName((isWebhook || isServerAuthor) ? nil : message.author,
+                                  text: displayName,
+                                  color: (isWebhook || isServerAuthor) ? Theme.ink1 : (data.authorColorRGB.map { store.color(fromRGB: $0) } ?? Theme.ink1),
+                                  font: .zkSans(15, weight: .medium))
+                            .onTapGesture { if !isWebhook, !isServerAuthor, let a = message.author { store.openProfile(a) } }
                         if isWebhook {
                             Text("WEBHOOK")
                                 .font(.zkSans(8.5, weight: .bold))
@@ -1521,7 +1699,7 @@ struct MessageRow: View, Equatable {
                                 .background(Theme.accent2.opacity(0.2))
                                 .clipShape(RoundedRectangle(cornerRadius: 4))
                         }
-                        if message.author?.isBot == true {
+                        if message.author?.isBot == true && !isServerAuthor {
                             Text("BOT")
                                 .font(.zkSans(8.5, weight: .bold))
                                 .tracking(0.5)
@@ -1602,6 +1780,9 @@ struct MessageRow: View, Equatable {
     private var content: some View {
         switch data.display {
         case .text(let t):
+            // `t` is already profanity-masked upstream in rowData when the viewer
+            // is a supervised child with the filter on (baked into the display
+            // snapshot so the row's Equatable gate re-renders on toggle).
             if !t.isEmpty {
                 if let jumbo = emojiOnly(t) {
                     HStack(spacing: 4) {
@@ -1795,10 +1976,10 @@ struct MessageRow: View, Equatable {
         if token == "@everyone" || token == "@here" { return token }
         let digits = token.filter { $0.isNumber }
         if token.hasPrefix("<#") {
-            return "#\(store.channels.first(where: { $0.id == digits })?.name ?? "channel")"
+            return "#\(store.channelById[digits]?.name ?? "channel")"
         }
         if token.hasPrefix("<@&") {
-            return "@\(store.roles.first(where: { $0.id == digits })?.name ?? "role")"
+            return "@\(store.roleById[digits]?.name ?? "role")"
         }
         // User mention. memberName covers guild members; in a DM that map is
         // empty, so fall back to the DM recipients and this message's author so
@@ -1826,14 +2007,22 @@ struct MessageRow: View, Equatable {
         return result
     }
 
+    @ViewBuilder
     private func jumboEmoji(_ e: GuildEmoji) -> some View {
-        AsyncImage(url: assetURL(e.url)) { phase in
-            switch phase {
-            case .success(let image): image.resizable().scaledToFit()
-            default: Text(":\(e.name):").font(.zkSans(14)).foregroundColor(Theme.ink3)
+        // CachedImage seeds decoded pixels from DecodedImageCache on the first
+        // frame, so a recycled row paints instantly instead of re-downloading +
+        // re-decoding on every scroll-back (AsyncImage caches nothing across
+        // view recreations).
+        if let url = assetURL(e.url) {
+            CachedImage(url: url, contentMode: .fit) {
+                Text(":\(e.name):").font(.zkSans(14)).foregroundColor(Theme.ink3)
+            } failure: {
+                Text(":\(e.name):").font(.zkSans(14)).foregroundColor(Theme.ink3)
             }
+            .frame(width: 40, height: 40)
+        } else {
+            Text(":\(e.name):").font(.zkSans(14)).foregroundColor(Theme.ink3)
         }
-        .frame(width: 40, height: 40)
     }
 
     @ViewBuilder
@@ -1848,15 +2037,10 @@ struct MessageRow: View, Equatable {
     @ViewBuilder
     private var stickerView: some View {
         if let sticker = message.sticker, let url = assetURL(sticker.url) {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().scaledToFit()
-                case .empty:
-                    ProgressView().frame(width: 120, height: 120)
-                default:
-                    Text(":\(sticker.name):").font(.zkSans(13)).foregroundColor(Theme.ink3)
-                }
+            CachedImage(url: url, contentMode: .fit) {
+                ProgressView().frame(width: 120, height: 120)
+            } failure: {
+                Text(":\(sticker.name):").font(.zkSans(13)).foregroundColor(Theme.ink3)
             }
             .frame(width: 140, height: 140, alignment: .leading)
             .padding(.top, 2)
@@ -1885,15 +2069,13 @@ struct MessageRow: View, Equatable {
         if e.kind == "rich" {
             richEmbedCard(e)
         } else if e.kind == "image", let img = assetURL(e.imageUrl) {
-            // Pure image unfurl — just the picture.
-            AsyncImage(url: img) { phase in
-                if case .success(let image) = phase {
-                    image.resizable().scaledToFit()
-                        .onTapGesture { store.openLightbox(img) }
-                }
-            }
-            .frame(maxWidth: 260, maxHeight: 260, alignment: .leading)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            // Pure image unfurl. CachedImage (decoded cache + off-main downsample)
+            // so a scroll-back doesn't re-decode full-res on the main thread; a
+            // reserved box so it doesn't reflow the row when it loads.
+            CachedImage(url: img, contentMode: .fit) { Color.clear } failure: { Color.clear }
+                .frame(maxWidth: 260, minHeight: 146, maxHeight: 146, alignment: .leading)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .onTapGesture { store.openLightbox(img) }
         } else {
             HStack(alignment: .top, spacing: 10) {
                 RoundedRectangle(cornerRadius: 2).fill(Theme.accent).frame(width: 3)
@@ -1901,7 +2083,7 @@ struct MessageRow: View, Equatable {
                     if let site = e.siteName, !site.isEmpty {
                         HStack(spacing: 5) {
                             if let fav = assetURL(e.faviconUrl) {
-                                AsyncImage(url: fav) { img in img.resizable() } placeholder: { Color.clear }
+                                CachedImage(url: fav, contentMode: .fill) { Color.clear } failure: { Color.clear }
                                     .frame(width: 14, height: 14).clipShape(RoundedRectangle(cornerRadius: 3))
                             }
                             Text(site).font(.zkSans(11)).foregroundColor(Theme.ink3).lineLimit(1)
@@ -1919,14 +2101,10 @@ struct MessageRow: View, Equatable {
                         Text(e.url).font(.zkSans(13)).foregroundColor(Theme.accent).lineLimit(1)
                     }
                     if let img = assetURL(e.imageUrl) {
-                        AsyncImage(url: img) { phase in
-                            if case .success(let image) = phase {
-                                image.resizable().scaledToFit()
-                                    .onTapGesture { store.openLightbox(img) }
-                            }
-                        }
-                        .frame(maxWidth: 240, maxHeight: 160, alignment: .leading)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        CachedImage(url: img, contentMode: .fit) { Color.clear } failure: { Color.clear }
+                            .frame(maxWidth: 240, minHeight: 135, maxHeight: 135, alignment: .leading)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .onTapGesture { store.openLightbox(img) }
                     }
                 }
             }
@@ -1950,7 +2128,7 @@ struct MessageRow: View, Equatable {
                 if let author = e.authorName, !author.isEmpty {
                     HStack(spacing: 6) {
                         if let icon = assetURL(e.authorIconUrl) {
-                            AsyncImage(url: icon) { img in img.resizable() } placeholder: { Color.clear }
+                            CachedImage(url: icon, contentMode: .fill) { Color.clear } failure: { Color.clear }
                                 .frame(width: 18, height: 18).clipShape(Circle())
                         }
                         Text(author).font(.zkSans(12, weight: .semibold))
@@ -1983,20 +2161,16 @@ struct MessageRow: View, Equatable {
                     }
                 }
                 if let img = assetURL(e.imageUrl) {
-                    AsyncImage(url: img) { phase in
-                        if case .success(let image) = phase {
-                            image.resizable().scaledToFit()
-                                .onTapGesture { store.openLightbox(img) }
-                        }
-                    }
-                    .frame(maxWidth: 280, maxHeight: 200, alignment: .leading)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    CachedImage(url: img, contentMode: .fit) { Color.clear } failure: { Color.clear }
+                        .frame(maxWidth: 280, minHeight: 158, maxHeight: 158, alignment: .leading)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .onTapGesture { store.openLightbox(img) }
                 }
                 let footer = embedFooter(e)
                 if !footer.isEmpty {
                     HStack(spacing: 6) {
                         if let icon = assetURL(e.footerIconUrl) {
-                            AsyncImage(url: icon) { img in img.resizable() } placeholder: { Color.clear }
+                            CachedImage(url: icon, contentMode: .fill) { Color.clear } failure: { Color.clear }
                                 .frame(width: 16, height: 16).clipShape(Circle())
                         }
                         Text(footer).font(.zkSans(11)).foregroundColor(Theme.ink3).lineLimit(2)
@@ -2005,12 +2179,10 @@ struct MessageRow: View, Equatable {
             }
             .padding(10)
             if let thumb = assetURL(e.thumbnailUrl) {
-                AsyncImage(url: thumb) { phase in
-                    if case .success(let image) = phase { image.resizable().scaledToFill() }
-                }
-                .frame(width: 64, height: 64)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .padding([.top, .trailing], 10)
+                CachedImage(url: thumb, contentMode: .fill) { Color.clear } failure: { Color.clear }
+                    .frame(width: 64, height: 64)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .padding([.top, .trailing], 10)
             }
         }
         .frame(maxWidth: 340, alignment: .leading)
@@ -2103,15 +2275,27 @@ struct MessageRow: View, Equatable {
             // including ENCRYPTED photos — so 2+ group into a tidy 2-col grid
             // instead of a messy stack. Encrypted videos/files (and plain
             // files) render individually after.
-            let voice = attachments.filter { $0.isVoiceMessage == true }
-            let rest = attachments.filter { $0.isVoiceMessage != true }
-            // Groupable media: plain image/video, or encrypted image. (Encrypted
-            // video/file decrypt-and-render in EncryptedAttachmentView below.)
-            let media = rest.filter { att in
-                isEncrypted(att) ? encryptedInnerIsImage(att) : (att.isImage || att.isVideo)
-            }
-            let mediaIds = Set(media.map { $0.id })
-            let leftover = rest.filter { !mediaIds.contains($0.id) }
+            // Partition in ONE pass (was 4 filters + a Set) — order preserved
+            // within each bucket. Voice first; then groupable media (plain
+            // image/video, or encrypted image); then everything else (encrypted
+            // video/file decrypts in EncryptedAttachmentView, plus plain files).
+            // Wrapped in a closure since a @ViewBuilder can't host imperative
+            // statements directly.
+            let (voice, media, leftover): ([Attachment], [Attachment], [Attachment]) = {
+                var v: [Attachment] = []
+                var m: [Attachment] = []
+                var l: [Attachment] = []
+                for att in attachments {
+                    if att.isVoiceMessage == true {
+                        v.append(att)
+                    } else if isEncrypted(att) ? encryptedInnerIsImage(att) : (att.isImage || att.isVideo) {
+                        m.append(att)
+                    } else {
+                        l.append(att)
+                    }
+                }
+                return (v, m, l)
+            }()
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(voice) { VoiceMessageView(store: store, attachment: $0, channel: channel) }
                 if media.count >= 2 {
@@ -2156,8 +2340,9 @@ struct MessageRow: View, Equatable {
             .frame(width: dim?.width, height: dim?.height)
             .frame(maxWidth: 240, maxHeight: 240, alignment: .leading)
             .clipShape(RoundedRectangle(cornerRadius: 10))
-            // Long-press → Save to Photos / Copy / Share.
-            .imageActions { await RetryingImage.load(url) }
+            // Long-press → the message row's context menu (Add reaction, Reply,
+            // …, plus Save/Copy/Share for this photo). NOT a nested .imageActions
+            // menu here — that used to swallow the reaction menu on single photos.
         } else if att.isVideo, let url = assetURL(att.url) {
             videoChip(att, url: url)
         } else {
@@ -2381,8 +2566,6 @@ private struct UnlockPanel: View {
     @EnvironmentObject private var store: AppStore
     let channel: Channel
     @State private var password = ""
-    @State private var showRestore = false
-    @State private var restoreNote: String?
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -2431,30 +2614,12 @@ private struct UnlockPanel: View {
             .disabled(password.isEmpty)
             .padding(.horizontal, 32)
 
-            Button { showRestore = true } label: {
-                Text("Or restore from a backup file")
-                    .font(.zkSans(13, weight: .medium))
-                    .foregroundColor(Theme.accent)
-            }
-            .padding(.top, 2)
-
-            if let restoreNote {
-                Text(restoreNote)
-                    .font(.zkSans(12)).foregroundColor(Theme.ink3)
-                    .multilineTextAlignment(.center).padding(.horizontal, 32)
-            }
-
             Spacer()
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg1)
         .onAppear { focused = true }
-        .fileImporter(
-            isPresented: $showRestore,
-            allowedContentTypes: [.json],
-            allowsMultipleSelection: false
-        ) { result in restore(result) }
     }
 
     private func unlock() {
@@ -2462,24 +2627,6 @@ private struct UnlockPanel: View {
         Task {
             if await store.unlockE2EE(channel, password: password) { password = "" }
         }
-    }
-
-    private func restore(_ result: Result<[URL], Error>) {
-        guard case .success(let urls) = result, let url = urls.first else {
-            if case .failure(let e) = result { restoreNote = e.localizedDescription }
-            return
-        }
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        guard let data = try? Data(contentsOf: url) else {
-            restoreNote = "Couldn't read that file."; return
-        }
-        guard let restored = store.importE2EEKeysJSON(data) else {
-            restoreNote = "That file isn't a valid Zekktris keys backup."; return
-        }
-        // Success: if this DM's key arrived the panel disappears on its own
-        // (showUnlockPanel re-evaluates via e2eeUnlockVersion).
-        restoreNote = "Restored \(restored.count) key\(restored.count == 1 ? "" : "s")."
     }
 }
 
@@ -3337,7 +3484,7 @@ struct ReportUserSheet: View {
                         .foregroundColor(Theme.ink1)
                         .padding(12).background(Theme.bg2)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .onChange(of: details) { v in if v.count > 1000 { details = String(v.prefix(1000)) } }
+                        .onChange(of: details) { _, v in if v.count > 1000 { details = String(v.prefix(1000)) } }
                     Text("\(details.count)/1000").font(.zkSans(11)).foregroundColor(Theme.ink4)
 
                     Button { submit() } label: {
@@ -3378,6 +3525,9 @@ struct ProfileCardView: View {
     /// users don't carry. Mirrors the web card's fullProfile fallback.
     @State private var fetched: PublicUser?
     @State private var showReport = false
+    @State private var showNicknameEditor = false
+    @State private var nicknameDraft = ""
+    @State private var nicknameError: String?
 
     private var isSelf: Bool { user.id == session.currentUser?.id }
     private var relType: String? { store.relationshipType(with: user.id) }
@@ -3436,11 +3586,12 @@ struct ProfileCardView: View {
                     .padding(.top, -38)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 5) {
                         NameTag(user)
-                        Text(user.displayName ?? user.username ?? "Unknown")
-                            .font(.zkSans(21, weight: .bold))
-                            .foregroundColor(store.memberColor(user.id) ?? Theme.ink1)
+                        StaffName(fetched ?? user,
+                                  text: user.displayName ?? user.username ?? "Unknown",
+                                  color: store.memberColor(user.id) ?? Theme.ink1,
+                                  font: .zkSans(21, weight: .bold))
                         if user.isBot == true {
                             Text("BOT")
                                 .font(.zkSans(10, weight: .bold))
@@ -3449,6 +3600,9 @@ struct ProfileCardView: View {
                                 .foregroundColor(Theme.accent)
                                 .clipShape(RoundedRectangle(cornerRadius: 4))
                         }
+                        // Supporter tier title — ships on the full-profile
+                        // fetch (nil when opted out or not a member).
+                        TierBadge(tier: fetched?.subscriptionTier ?? user.subscriptionTier)
                     }
                     if let uname = user.username {
                         Text("@\(uname)")
@@ -3510,6 +3664,65 @@ struct ProfileCardView: View {
         }
         .sheet(isPresented: $showReport) {
             ReportUserSheet(user: user).environmentObject(store)
+        }
+        .sheet(isPresented: $showNicknameEditor) {
+            NavigationStack {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("A nickname only you see, shown in place of \(user.name)'s name in direct messages.")
+                        .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                        .fixedSize(horizontal: false, vertical: true)
+                    TextField("Nickname", text: $nicknameDraft)
+                        .textInputAutocapitalization(.words)
+                        .font(.zkSans(16)).foregroundColor(Theme.ink1)
+                        .padding(.horizontal, 12).padding(.vertical, 10)
+                        .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.line, lineWidth: 1))
+                        .onChange(of: nicknameDraft) { _, v in
+                            if v.count > 32 { nicknameDraft = String(v.prefix(32)) }
+                        }
+                    if let nicknameError {
+                        Text(nicknameError).font(.zkSans(12)).foregroundColor(Theme.dangerSoft)
+                    }
+                    HStack(spacing: 10) {
+                        Button {
+                            Task {
+                                if let err = await store.setDmNickname(userId: user.id, to: nicknameDraft) {
+                                    nicknameError = err
+                                } else {
+                                    showNicknameEditor = false
+                                }
+                            }
+                        } label: {
+                            Text("Save").font(.zkSans(15, weight: .semibold)).foregroundColor(.white)
+                                .frame(maxWidth: .infinity).padding(.vertical, 11)
+                                .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 10))
+                        }
+                        if store.dmNickname(user.id) != nil {
+                            Button {
+                                Task {
+                                    _ = await store.setDmNickname(userId: user.id, to: nil)
+                                    showNicknameEditor = false
+                                }
+                            } label: {
+                                Text("Remove").font(.zkSans(15, weight: .medium)).foregroundColor(Theme.danger)
+                                    .frame(maxWidth: .infinity).padding(.vertical, 11)
+                                    .background(Theme.bg3).clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                        }
+                    }
+                    Spacer()
+                }
+                .padding(18)
+                .background(Theme.bg1.ignoresSafeArea())
+                .navigationTitle("Nickname")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { showNicknameEditor = false }
+                    }
+                }
+            }
+            .presentationDetents([.height(260)])
         }
     }
 
@@ -3573,6 +3786,19 @@ struct ProfileCardView: View {
             }
 
             friendButton
+
+            // Personal DM nickname — a label only you see, shown in direct
+            // messages. Available for any other (non-bot) user.
+            if !isSelf && user.isBot != true {
+                secondaryButton(
+                    store.dmNickname(user.id) != nil ? "Edit Nickname" : "Set Nickname",
+                    icon: "pencil"
+                ) {
+                    nicknameDraft = store.dmNickname(user.id) ?? ""
+                    nicknameError = nil
+                    showNicknameEditor = true
+                }
+            }
 
             Button { toggleBlock() } label: {
                 Label(relType == "blocked" ? "Unblock" : "Block",
@@ -3718,10 +3944,30 @@ struct MemberListView: View {
         var members: [GuildMember]
     }
 
+    /// Memoized sections + the input stamp they were computed from. The view
+    /// body re-evaluates on EVERY AppStore publish (presence churn included),
+    /// but the sections only actually change when members/roles change
+    /// (mentionContextVersion) or presence flushes (presenceVersion). Recompute
+    /// only when that stamp moves — otherwise reuse the cached sort.
+    @State private var cachedSections: [MemberSection] = []
+    @State private var sectionsStamp: Int = -1
+
+    private var sectionsInputStamp: Int {
+        // Combine the two cheap monotonic counters into one key.
+        store.mentionContextVersion &* 0x9E3779B1 &+ store.presenceVersion
+    }
+
+    private func refreshSectionsIfNeeded() {
+        let stamp = sectionsInputStamp
+        guard stamp != sectionsStamp else { return }
+        sectionsStamp = stamp
+        cachedSections = computeSections()
+    }
+
     /// Discord-style hoisted sections (matches the web MemberList): one
     /// section per hoisted role, members under their highest hoisted role,
     /// an "Online" bucket for the rest, and a separate "Offline" bucket.
-    private var sections: [MemberSection] {
+    private func computeSections() -> [MemberSection] {
         let allMembers = Array(store.members.values)
         let hoisted = store.roles.filter { $0.hoist }.sorted { $0.position < $1.position }
         var roleIdx: [String: Int] = [:]
@@ -3744,7 +3990,7 @@ struct MemberListView: View {
         }
 
         func byName(_ a: GuildMember, _ b: GuildMember) -> Bool {
-            (a.nickname ?? a.user.name).localizedCaseInsensitiveCompare(b.nickname ?? b.user.name) == .orderedAscending
+            a.user.name.localizedCaseInsensitiveCompare(b.user.name) == .orderedAscending
         }
         for i in buckets.indices { buckets[i].members.sort(by: byName) }
         online.members.sort(by: byName)
@@ -3770,7 +4016,7 @@ struct MemberListView: View {
                 } else {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(sections) { section in
+                            ForEach(cachedSections) { section in
                                 sectionHeader(section)
                                 ForEach(section.members) { m in
                                     Button { selectedProfile = m.user } label: {
@@ -3786,6 +4032,10 @@ struct MemberListView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.bg1)
+            // Recompute the hoisted sections only when their real inputs move
+            // (members/roles or a presence flush), not on every AppStore publish.
+            .onAppear { refreshSectionsIfNeeded() }
+            .onChange(of: sectionsInputStamp) { _, _ in refreshSectionsIfNeeded() }
             .navigationTitle("Members — \(store.members.count)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -3804,13 +4054,29 @@ struct MemberListView: View {
                 }
             }
         }
-        .sheet(item: $selectedProfile) { u in
-            // Re-inject env objects for the Mac sheet host (ProfileCardView
-            // reads both store and session).
-            ProfileCardView(user: u)
-                .environmentObject(store)
-                .environmentObject(session)
-                .environmentObject(store.voice)
+        .fullScreenCover(item: $selectedProfile) { u in
+            // Profile is its own full-screen PAGE with the standard "<" back
+            // chevron (matches the profileUser presenter in MainView). Re-inject
+            // env objects for the Mac cover host (ProfileCardView reads both).
+            NavigationStack {
+                ProfileCardView(user: u)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button { selectedProfile = nil } label: {
+                                Image(systemName: "chevron.left")
+                                    .font(.system(size: 20, weight: .semibold))
+                                    .foregroundColor(Theme.ink2)
+                                    .frame(width: 44, height: 44)
+                                    .contentShape(Rectangle())
+                            }
+                            .accessibilityLabel("Back")
+                        }
+                    }
+            }
+            .environmentObject(store)
+            .environmentObject(session)
+            .environmentObject(store.voice)
         }
         .sheet(item: $reportTarget) { u in
             ReportUserSheet(user: u).environmentObject(store)
@@ -3829,22 +4095,16 @@ struct MemberListView: View {
 
     private func memberRow(_ m: GuildMember) -> some View {
         HStack(spacing: 10) {
-            Avatar(url: m.user.avatarUrl, name: m.nickname ?? m.user.name, size: 32,
+            Avatar(url: m.user.avatarUrl, name: m.user.name, size: 32,
                    status: store.status(for: m.userId, fallback: m.user.status),
                    ringColor: Theme.bg1, decoration: m.user.avatarDecoration)
             VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 5) {
+                HStack(spacing: 4) {
                     NameTag(m.user)
-                    Text(m.nickname ?? m.user.name)
-                        .font(.zkSans(15, weight: .medium))
-                        .foregroundColor(store.memberColor(m.userId) ?? Theme.ink1)
-                        .lineLimit(1)
-                }
-                if m.nickname != nil {
-                    Text(m.user.name)
-                        .font(.zkSans(12))
-                        .foregroundColor(Theme.ink3)
-                        .lineLimit(1)
+                    StaffName(m.user,
+                              text: m.user.name,
+                              color: store.memberColor(m.userId) ?? Theme.ink1,
+                              font: .zkSans(15, weight: .medium))
                 }
             }
             Spacer()
@@ -4002,6 +4262,7 @@ struct PinPanelView: View {
 /// double-tap to toggle zoom, tap ✕ to close. Mirrors the web ImageLightbox.
 struct ImageLightboxView: View {
     let item: LightboxImage
+    @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
     @State private var index: Int
     @State private var savedFlash = false
@@ -4095,6 +4356,12 @@ struct ImageLightboxView: View {
             if let img = it.image {
                 // Decrypted E2EE page already in memory.
                 ok = await PhotoSaver.save(img)
+            } else if let (att, channel) = it.encrypted,
+                      let data = await store.decryptedAttachmentData(att, in: channel) {
+                // Lazy E2EE page — decrypt the full blob and save those bytes
+                // (never the ciphertext). The session cache makes this cheap if
+                // the page already decrypted for display.
+                ok = await PhotoSaver.save(data: data)
             } else if let url = it.url, let data = await RetryingImage.loadData(url) {
                 // Plain image — save the ORIGINAL bytes (preserves format/quality).
                 ok = await PhotoSaver.save(data: data)
@@ -4124,15 +4391,53 @@ struct ImageLightboxView: View {
 /// One zoom/pannable page in the lightbox.
 private struct LightboxPage: View {
     let item: LightboxItem
+    @EnvironmentObject private var store: AppStore
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
     @State private var offset: CGSize = .zero
     @State private var lastOffset: CGSize = .zero
+    // Full-res image decrypted on-appear for a LAZY encrypted item (gallery
+    // lightbox). Only the visible/adjacent pages of the paged TabView build,
+    // so only those decrypt — not the whole loaded photo set.
+    @State private var resolved: UIImage?
+    /// The decrypt or the decode failed. Without this, the encrypted branch spun
+    /// a `ProgressView` FOREVER on failure — `resolved` never becomes non-nil.
+    @State private var decryptFailed = false
 
     var body: some View {
-        // E2EE images arrive as an in-memory UIImage (no plaintext URL);
+        // E2EE images arrive as a LAZY encrypted reference, decrypted on-appear;
         // plain attachments load by URL. Both get the same zoom/pan.
-        if let image = item.image {
+        if item.encrypted != nil {
+            // `resolved` (full-res) wins once decoded. `item.image` is the
+            // already-decrypted inline THUMBNAIL: shown instantly so the viewer is
+            // never blank, and it remains the fallback if the full decrypt fails.
+            Group {
+                if let image = resolved ?? item.image {
+                    zoomable(Image(uiImage: image).resizable().scaledToFit())
+                } else if decryptFailed {
+                    Image(systemName: "lock.trianglebadge.exclamationmark")
+                        .font(.system(size: 28))
+                        .foregroundColor(.white)
+                } else {
+                    ProgressView().tint(.white)
+                }
+            }
+            .task {
+                guard resolved == nil, let (att, channel) = item.encrypted else { return }
+                // Prefer the full blob (lightbox is full-resolution); decode
+                // OFF the main actor with a generous cap so zoom stays sharp
+                // while a bare main-thread UIImage(data:) on a multi-MB JPEG
+                // never blocks the swipe. Mirrors GalleryThumb's on-appear.
+                guard let data = await store.decryptedAttachmentData(att, in: channel) else {
+                    decryptFailed = true
+                    return
+                }
+                let decoded = await Task.detached(priority: .userInitiated) {
+                    ImageDownsampler.decode(data, maxPixels: 2048)
+                }.value
+                if let decoded { resolved = decoded } else { decryptFailed = true }
+            }
+        } else if let image = item.image {
             zoomable(Image(uiImage: image).resizable().scaledToFit())
         } else if let url = item.url {
             AsyncImage(url: url) { phase in
@@ -4150,11 +4455,13 @@ private struct LightboxPage: View {
         }
     }
 
-    /// Pinch-zoom, drag-pan (only when zoomed, so the TabView still pages at
-    /// scale 1), and double-tap-to-toggle.
+    /// Pinch-zoom, drag-pan (only when zoomed), and double-tap-to-toggle.
     @ViewBuilder
     private func zoomable<V: View>(_ content: V) -> some View {
-        content
+        // Pinch + double-tap are always available. Pinch is a two-finger
+        // gesture and double-tap is a tap, so neither competes with the
+        // parent TabView's one-finger horizontal page swipe.
+        let base = content
             .scaleEffect(scale)
             .offset(offset)
             .gesture(
@@ -4167,17 +4474,6 @@ private struct LightboxPage: View {
                         }
                     }
             )
-            .simultaneousGesture(
-                DragGesture()
-                    .onChanged { value in
-                        guard scale > 1 else { return }
-                        offset = CGSize(
-                            width: lastOffset.width + value.translation.width,
-                            height: lastOffset.height + value.translation.height
-                        )
-                    }
-                    .onEnded { _ in lastOffset = offset }
-            )
             .onTapGesture(count: 2) {
                 withAnimation {
                     if scale > 1 {
@@ -4187,6 +4483,29 @@ private struct LightboxPage: View {
                     }
                 }
             }
+
+        // Pan is a one-finger DragGesture, which DOES compete with the paging
+        // TabView. Attach it ONLY while zoomed in — at scale 1 there's nothing
+        // to pan, and leaving it attached made SwiftUI's gesture arbitration
+        // give the inner drag priority over the TabView, swallowing the
+        // left/right swipe-to-page entirely (an always-on `.simultaneousGesture`
+        // still claims the touch even when its handler early-returns). Removing
+        // it at rest lets the TabView own the horizontal drag, so swipe pages
+        // between images — matching the ‹ › buttons.
+        if scale > 1 {
+            base.simultaneousGesture(
+                DragGesture()
+                    .onChanged { value in
+                        offset = CGSize(
+                            width: lastOffset.width + value.translation.width,
+                            height: lastOffset.height + value.translation.height
+                        )
+                    }
+                    .onEnded { _ in lastOffset = offset }
+            )
+        } else {
+            base
+        }
     }
 }
 
@@ -4221,14 +4540,19 @@ private struct EncryptedThumb: View {
             .onTapGesture { if image != nil { onTap() } }
             .task(id: e2eeUnlockVersion) {
                 guard image == nil else { return }
+                // Decoded-thumb cache: on scroll-back paint instantly, skipping
+                // both the byte fetch and the ImageIO re-decode.
+                if let cached = EncryptedThumbCache.image(attachment.id, 400) { image = cached; return }
                 // Prefer the small encrypted thumbnail (tiny download + decrypt);
                 // fall back to the full blob for old messages without one.
                 var data = await store.decryptedThumbnailData(attachment, in: channel)
                 if data == nil { data = await store.decryptedAttachmentData(attachment, in: channel) }
                 if let data {
-                    image = await Task.detached(priority: .userInitiated) {
+                    let decoded = await Task.detached(priority: .userInitiated) {
                         ImageDownsampler.decode(data, maxPixels: 400)
                     }.value
+                    if let decoded { EncryptedThumbCache.store(decoded, attachment.id, 400) }
+                    image = decoded
                 }
             }
     }
@@ -4643,11 +4967,6 @@ struct DmSettingsSheet: View {
     let channel: Channel
     @State private var showEnableE2EE = false
     @State private var confirmDisableE2EE = false
-    // E2EE key backup / restore (cross-client with web).
-    @State private var shareFile: ShareFile?
-    @State private var showRestore = false
-    @State private var confirmRestore = false
-    @State private var keyNote: String?
 
     private let options: [(String, Int?)] = [
         ("Off", nil), ("30 seconds", 30), ("1 minute", 60), ("2 minutes", 120)
@@ -4735,8 +5054,6 @@ struct DmSettingsSheet: View {
                         .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
                         Text("Messages are encrypted with your shared password. Turning this off permanently deletes the encrypted history for both of you.")
                             .font(.zkSans(12)).foregroundColor(Theme.ink3)
-
-                        keyBackupSection
                     } else {
                         Button { showEnableE2EE = true } label: {
                             HStack(spacing: 8) {
@@ -4788,22 +5105,6 @@ struct DmSettingsSheet: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("All encrypted messages in this conversation are permanently deleted for both of you.")
-            }
-            .sheet(item: $shareFile) { ActivityView(url: $0.url) }
-            .fileImporter(
-                isPresented: $showRestore,
-                allowedContentTypes: [.json],
-                allowsMultipleSelection: false
-            ) { result in onRestore(result) }
-            .confirmationDialog(
-                "Restore keys from a backup?",
-                isPresented: $confirmRestore,
-                titleVisibility: .visible
-            ) {
-                Button("Choose File…") { showRestore = true }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Importing keys will replace any matching keys on this device.")
             }
         }
     }
@@ -4872,72 +5173,9 @@ struct DmSettingsSheet: View {
         .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    // Key backup/restore — mirrors web's DmSettingsPanel "Download keys" /
-    // "Import from backup" affordances. The backup bundles ALL of this
-    // device's DM keys into one cross-client file (see E2EE.encodeKeyBackup).
-    @ViewBuilder
-    private var keyBackupSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Your keys are stored only on this device. Back them up so you can keep reading messages on another device.")
-                .font(.zkSans(12)).foregroundColor(Theme.ink3)
-            HStack(spacing: 10) {
-                Button { backupKeys() } label: {
-                    Label("Back up keys", systemImage: "square.and.arrow.up")
-                        .font(.zkSans(13, weight: .semibold)).foregroundColor(.white)
-                        .padding(.horizontal, 12).padding(.vertical, 9)
-                        .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 10))
-                }
-                .buttonStyle(.plain)
-                Button { confirmRestore = true } label: {
-                    Label("Restore keys", systemImage: "square.and.arrow.down")
-                        .font(.zkSans(13, weight: .semibold)).foregroundColor(Theme.ink1)
-                        .padding(.horizontal, 12).padding(.vertical, 9)
-                        .background(Theme.bg2)
-                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.line, lineWidth: 1))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                }
-                .buttonStyle(.plain)
-            }
-            Text("Anyone with this file can read your encrypted messages.")
-                .font(.zkSans(11)).italic().foregroundColor(Theme.ink4)
-            if let keyNote {
-                Text(keyNote).font(.zkSans(12)).foregroundColor(Theme.ink3)
-            }
-        }
-    }
-
-    private func backupKeys() {
-        keyNote = nil
-        guard let data = store.exportE2EEKeysJSON() else {
-            keyNote = "No encryption keys on this device yet."; return
-        }
-        let stamp = ISO8601DateFormatter().string(from: Date()).prefix(10)
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("zekktris-e2ee-keys-\(stamp).json")
-        do {
-            try data.write(to: url, options: .atomic)
-            shareFile = ShareFile(url: url)
-        } catch {
-            keyNote = "Couldn't prepare the backup file."
-        }
-    }
-
-    private func onRestore(_ result: Result<[URL], Error>) {
-        keyNote = nil
-        guard case .success(let urls) = result, let url = urls.first else {
-            if case .failure(let e) = result { keyNote = e.localizedDescription }
-            return
-        }
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        guard let data = try? Data(contentsOf: url) else {
-            keyNote = "Couldn't read that file."; return
-        }
-        guard let restored = store.importE2EEKeysJSON(data) else {
-            keyNote = "That file isn't a valid Zekktris keys backup."; return
-        }
-        keyNote = "Restored \(restored.count) key\(restored.count == 1 ? "" : "s")."
-    }
+    // Key backup / restore was removed — the shared conversation password is
+    // the single unlock path (the per-DM key is re-derivable from it), so a
+    // key file is redundant. See UnlockPanel.unlock() / store.unlockE2EE.
 
     private func ttlRow(_ opt: (String, Int?)) -> some View {
         Button { Task { await store.setDmTtl(channel.id, opt.1) } } label: {
@@ -4953,12 +5191,6 @@ struct DmSettingsSheet: View {
         }
         .buttonStyle(.plain)
     }
-}
-
-/// Identifiable wrapper so a temp file URL can drive `.sheet(item:)`.
-private struct ShareFile: Identifiable {
-    let id = UUID()
-    let url: URL
 }
 
 /// Live camera capture for the composer — wraps UIImagePickerController(.camera).
@@ -4997,17 +5229,6 @@ private struct CameraPicker: UIViewControllerRepresentable {
     }
 }
 
-/// Thin bridge to the iOS share sheet (UIActivityViewController) for exporting
-/// a file — used by the E2EE key backup. No new file needed; UIKit is already
-/// imported here.
-private struct ActivityView: UIViewControllerRepresentable {
-    let url: URL
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [url], applicationActivities: nil)
-    }
-    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
-}
-
 // MARK: - Image long-press actions (save / copy / share)
 
 /// Share-sheet host for an arbitrary set of activity items (e.g. a UIImage).
@@ -5025,49 +5246,13 @@ private struct ImageShareItem: Identifiable {
     let image: UIImage
 }
 
-/// Long-press context menu (Save to Photos / Copy / Share) for an image. The
-/// `provider` yields the UIImage on demand — for plain attachments it loads
-/// from the URL; for E2EE images it returns the already-decrypted UIImage, so
-/// the saved/shared/copied bytes are the DECRYPTED image and E2EE is never
-/// bypassed (no plaintext URL is exposed). Save-to-Photos goes through
-/// PhotoSaver (PhotoKit + add-only authorization).
-private struct ImageActionsModifier: ViewModifier {
-    let provider: () async -> UIImage?
-    @State private var shareItem: ImageShareItem?
-
-    func body(content: Content) -> some View {
-        content
-            .contextMenu {
-                Button {
-                    Task { if let img = await provider() { _ = await PhotoSaver.save(img) } }
-                } label: { Label("Save to Photos", systemImage: "square.and.arrow.down") }
-                Button {
-                    withImage { UIPasteboard.general.image = $0 }
-                } label: { Label("Copy Image", systemImage: "doc.on.doc") }
-                Button {
-                    withImage { shareItem = ImageShareItem(image: $0) }
-                } label: { Label("Share…", systemImage: "square.and.arrow.up") }
-            }
-            .sheet(item: $shareItem) { ActivityItemsView(items: [$0.image]) }
-    }
-
-    /// Resolve the image (async) then run `action` on the main actor.
-    private func withImage(_ action: @escaping (UIImage) -> Void) {
-        Task {
-            if let img = await provider() {
-                await MainActor.run { action(img) }
-            }
-        }
-    }
-}
-
-extension View {
-    /// Attach the image long-press actions menu. `provider` supplies the
-    /// UIImage to act on (decrypted, for E2EE).
-    func imageActions(_ provider: @escaping () async -> UIImage?) -> some View {
-        modifier(ImageActionsModifier(provider: provider))
-    }
-}
+// The per-image long-press menu (Save to Photos / Copy / Share) that used to
+// live here as an `.imageActions` ViewModifier was removed: as a nested
+// .contextMenu on the photo it swallowed the message row's reaction menu, so
+// single-photo messages couldn't be reacted to. Those actions now live in the
+// row's own context menu (MessageRow.menuItems, gated on singleSavableImage),
+// which decrypts E2EE bytes on demand via loadSingleImage — so the saved /
+// shared / copied bytes are still the DECRYPTED image (no plaintext URL).
 
 /// Downloads an encrypted (.zke) attachment, decrypts it with the DM's
 /// channel key, and renders the result — images inline (tap to zoom via a
@@ -5115,34 +5300,30 @@ struct EncryptedAttachmentView: View {
                     .resizable().scaledToFit()
                     .frame(maxWidth: 240, maxHeight: 240, alignment: .leading)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
-                    // Tap → full-screen preview of the DECRYPTED image (no
-                    // plaintext URL). Long-press → Save/Copy/Share the decrypted
-                    // bytes — E2EE is preserved end to end.
-                    // Inline shows the THUMBNAIL; tapping decrypts the FULL image
-                    // for the lightbox (cached after first open). Save/Share also
-                    // use full resolution.
+                    // Tap → full-screen preview of the DECRYPTED image (no plaintext
+                    // URL). Presents IMMEDIATELY with a LAZY encrypted reference —
+                    // the lightbox page decrypts + downsamples the full image
+                    // on-appear (same as the multi-photo path; the decrypt cache
+                    // makes repeat opens instant). This used to `await` the full
+                    // decrypt BEFORE presenting, so the first tap looked dead for a
+                    // beat and an impatient second tap queued a SECOND open, which
+                    // stacked/re-presented the viewer ("tap again → opens multiple,
+                    // still there after exiting one").
                     .onTapGesture {
-                        Task {
-                            // `image` here is the (non-optional) inline thumbnail.
-                            // Decrypt the FULL image for the lightbox; fall back to
-                            // the thumb if the full blob is unavailable.
-                            var full: UIImage?
-                            if let data = await store.decryptedAttachmentData(attachment, in: channel) {
-                                full = await Task.detached(priority: .userInitiated) {
-                                    UIImage(data: data)
-                                }.value
-                            }
-                            store.openLightbox(image: full ?? image)
-                        }
-                    }
-                    .imageActions {
-                        if let full = await store.decryptedAttachmentData(attachment, in: channel) {
-                            return await Task.detached(priority: .userInitiated) { UIImage(data: full) }.value
-                        }
-                        return image
+                        // Carry the inline thumbnail as an instant placeholder AND a
+                        // decrypt-failure fallback; the page swaps in the full-res
+                        // decode on-appear.
+                        store.openLightbox(
+                            items: [LightboxItem(image: image, encrypted: (attachment, channel))],
+                            startIndex: 0)
                     }
                     // Per-image E2EE lock badge removed — the lock by the DM
                     // header already signals the whole conversation is encrypted.
+                    // Long-press actions (Add reaction + Save/Copy/Share the
+                    // decrypted bytes) come from the message row's context menu
+                    // (see singleSavableImage / loadSingleImage) — NOT a nested
+                    // .imageActions menu, which used to swallow the reaction menu
+                    // on single photos.
             } else if let videoURL {
                 // Decrypted video → tappable chip → full-screen player. The
                 // bytes were written to a temp file (AVPlayer needs a URL).
@@ -5207,6 +5388,12 @@ struct EncryptedAttachmentView: View {
             if let videoURL { try? FileManager.default.removeItem(at: videoURL) }
         }
         .task(id: e2eeUnlockVersion) {
+            // e2eeUnlockVersion bumps on ANY CHANNEL_UPDATE for the open channel,
+            // not just key changes — don't redo the decrypt/decode (or re-write
+            // the video temp file) once this row has already resolved. A not-yet-
+            // resolved row (incl. a previously-failed one) still retries, so a
+            // real unlock recovers.
+            guard image == nil, videoURL == nil else { return }
             loading = true
             failed = false
             if isVideo {
@@ -5227,9 +5414,16 @@ struct EncryptedAttachmentView: View {
                     failed = true
                 }
             } else {
-                // Inline image: decrypt the small thumbnail (tiny download +
-                // decrypt); fall back to the full blob for old messages. Decode
-                // off-main. The lightbox/Save decrypt the FULL image on tap.
+                // Inline image. Decoded-thumb cache: on scroll-back paint
+                // instantly, skipping the byte fetch + ImageIO re-decode.
+                if let cached = EncryptedThumbCache.image(attachment.id, 720) {
+                    image = cached
+                    loading = false
+                    return
+                }
+                // Decrypt the small thumbnail (tiny download + decrypt); fall back
+                // to the full blob for old messages. Decode off-main. The lightbox
+                // / Save decrypt the FULL image on tap.
                 var data = await store.decryptedThumbnailData(attachment, in: channel)
                 if data == nil { data = await store.decryptedAttachmentData(attachment, in: channel) }
                 guard let data else {
@@ -5237,9 +5431,11 @@ struct EncryptedAttachmentView: View {
                     failed = true
                     return
                 }
-                image = await Task.detached(priority: .userInitiated) {
+                let decoded = await Task.detached(priority: .userInitiated) {
                     ImageDownsampler.decode(data, maxPixels: 720)
                 }.value
+                if let decoded { EncryptedThumbCache.store(decoded, attachment.id, 720) }
+                image = decoded
                 loading = false
                 failed = (image == nil && !data.isEmpty) ? false : failed
             }
@@ -5291,7 +5487,7 @@ struct MediaGalleryView: View {
                     LazyVGrid(columns: cols, spacing: 3) {
                         ForEach(media) { att in
                             GalleryThumb(attachment: att, channel: channel,
-                                         onOpen: { tappedId in Task { await openGalleryLightbox(tapped: tappedId) } })
+                                         onOpen: { tappedId in openGalleryLightbox(tapped: tappedId) })
                         }
                     }
                     .padding(.horizontal, 3)
@@ -5325,7 +5521,7 @@ struct MediaGalleryView: View {
         // DM-settings sheet) so a tapped photo pops OVER it. The app-root
         // store.lightbox cover sits behind the sheet and wouldn't appear until
         // the sheet was closed.
-        .fullScreenCover(item: $lightbox) { ImageLightboxView(item: $0) }
+        .fullScreenCover(item: $lightbox) { ImageLightboxView(item: $0).environmentObject(store) }
     }
 
     private func loadMore() async {
@@ -5349,18 +5545,20 @@ struct MediaGalleryView: View {
     /// settings sheet this gallery lives in). Plain images stay lazy via their
     /// URL; encrypted images decrypt through the session media cache (visible
     /// thumbs are already cached from their on-appear decrypt).
-    private func openGalleryLightbox(tapped: String) async {
+    private func openGalleryLightbox(tapped: String) {
         var lbItems: [LightboxItem] = []
         var start = 0
         for att in media {
             let it: LightboxItem?
             if att.filename?.hasSuffix(".zke") == true {
-                if let data = await store.decryptedAttachmentData(att, in: channel),
-                   let img = UIImage(data: data) {
-                    it = LightboxItem(image: img)
-                } else {
-                    it = nil
-                }
+                // Carry a LAZY encrypted reference — the visible LightboxPage
+                // decrypts + downsamples on-appear. This loops over the whole
+                // loaded set (potentially hundreds); eagerly downloading +
+                // decrypting each full-res blob here froze the UI for seconds
+                // on tap. The paged TabView only builds the current/adjacent
+                // pages, so only those images decrypt; the rest resolve as the
+                // user swipes.
+                it = LightboxItem(encrypted: (att, channel))
             } else if let url = assetURL(att.url) {
                 it = LightboxItem(url: url)
             } else {
@@ -5411,8 +5609,25 @@ private struct GalleryThumb: View {
             .onTapGesture { onOpen(attachment.id) }
             .task(id: store.e2eeUnlockVersion) {
                 guard isEncrypted, decrypted == nil else { return }
-                if let data = await store.decryptedAttachmentData(attachment, in: channel) {
-                    decrypted = UIImage(data: data)
+                // Decoded-thumb cache (shared with the inline thumb at 400px):
+                // scroll-back paints instantly with no re-decode.
+                if let cached = EncryptedThumbCache.image(attachment.id, 400) {
+                    decrypted = cached
+                    tried = true
+                    return
+                }
+                // Prefer the small thumbnail, then decode OFF the main actor with
+                // downsampling — a bare UIImage(data:) on the full blob here
+                // decoded multi-megapixel JPEGs on the main thread, hitching the
+                // gallery grid. Mirrors the inline EncryptedThumb path.
+                var data = await store.decryptedThumbnailData(attachment, in: channel)
+                if data == nil { data = await store.decryptedAttachmentData(attachment, in: channel) }
+                if let data {
+                    let decoded = await Task.detached(priority: .userInitiated) {
+                        ImageDownsampler.decode(data, maxPixels: 400)
+                    }.value
+                    if let decoded { EncryptedThumbCache.store(decoded, attachment.id, 400) }
+                    decrypted = decoded
                 }
                 tried = true
             }
@@ -5445,5 +5660,88 @@ private struct GalleryFileRow: View {
         .onTapGesture {
             if !isEncrypted, let url = assetURL(attachment.url) { openURL(url) }
         }
+    }
+}
+
+// MARK: - Poke history popover
+
+/// Compact relative time for the poke-history rows ("just now", "2m", "3h", "5d").
+/// The server emits fractional-second ISO timestamps, so parse with millis.
+private let pokeIsoParser: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+}()
+
+private func pokeAgo(_ iso: String) -> String {
+    guard let then = pokeIsoParser.date(from: iso) else { return "" }
+    let s = max(0, Int(Date().timeIntervalSince(then)))
+    if s < 45 { return "just now" }
+    if s < 3600 { return "\(s / 60)m" }
+    if s < 86400 { return "\(s / 3600)h" }
+    return "\(s / 86400)d"
+}
+
+/// Poke button popover: recent pokes received on this DM (max 6) above the
+/// poke palette. Kept simple/dependency-free so it renders reliably inside the
+/// header popover.
+private struct PokePopover: View {
+    let history: [PokeHistoryEntry]
+    let loading: Bool
+    let onPoke: (PokeVariant) -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            // "RECENT POKES" header + list (secondary). Scrolls if there are
+            // several so it never pushes the palette off the compact sheet.
+            VStack(alignment: .leading, spacing: 8) {
+                Text("RECENT POKES")
+                    .font(.zkSans(10, weight: .bold)).tracking(0.5)
+                    .foregroundColor(Theme.ink3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if loading {
+                    Text("Loading…").font(.zkSans(13)).foregroundColor(Theme.ink3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else if history.isEmpty {
+                    Text("No pokes yet — say hi below.")
+                        .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(history) { p in
+                                HStack(spacing: 6) {
+                                    Text(p.variant.emoji).font(.system(size: 15))
+                                    Text(p.initiatorName)
+                                        .font(.zkSans(13, weight: .medium)).foregroundColor(Theme.ink1)
+                                        .lineLimit(1)
+                                    Text(p.variant.verb).font(.zkSans(13)).foregroundColor(Theme.ink2)
+                                    Spacer(minLength: 8)
+                                    Text(pokeAgo(p.createdAt)).font(.zkSans(11)).foregroundColor(Theme.ink3)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 120)
+                }
+            }
+
+            Divider().overlay(Theme.line)
+
+            // Poke palette — CENTERED. `maxWidth: .infinity` centers the packed
+            // button row within the full-width sheet.
+            HStack(spacing: 10) {
+                ForEach(PokeVariant.allCases) { v in
+                    Button { onPoke(v) } label: {
+                        Text(v.emoji).font(.system(size: 24)).frame(width: 40, height: 40)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .top)
+        .background(Theme.bg2)
     }
 }

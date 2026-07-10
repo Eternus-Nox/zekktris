@@ -33,6 +33,20 @@ struct PublicUser: Codable, Identifiable, Hashable {
     /// (clients fall back to the accent when nil).
     var tagLabel: String?
     var tagColor: String?
+    /// Supporter tier title ("scout" | "guardian" | "legend"). Only populated
+    /// by the single-profile fetch; nil when no membership or opted out.
+    var subscriptionTier: String?
+    /// Instance staff role. Present (true) only for administrators/moderators —
+    /// regular members omit both. Drives the subtle staff badge next to the
+    /// name. Admin takes precedence when both are set.
+    var isAdmin: Bool?
+    var isModerator: Bool?
+    /// Staff-only display-name shimmer color (#rrggbb). Present only for
+    /// admins/moderators who turned it on; when set it OVERRIDES any role
+    /// color and marks the name with an animated shimmer instead of a badge.
+    var staffColor: String?
+    /// Optional soft glow layered on the shimmer (only when staffColor is set).
+    var staffGlow: Bool?
 
     /// Best display label with sensible fallbacks.
     var name: String { displayName ?? username ?? "Unknown" }
@@ -49,7 +63,6 @@ struct Bot: Codable, Identifiable, Hashable {
     var displayName: String?
     var avatarUrl: String?
     var isBot: Bool?
-    var botOwnerId: String?
     /// Configured event callback URL, or nil if the bot has no subscription.
     /// The signing secret is never included here.
     var botEventUrl: String?
@@ -74,7 +87,6 @@ struct BotWrap: Codable { let bot: Bot }
 struct BotCreateResponse: Codable { let bot: Bot; let token: String }
 /// Regenerate-token response: just the new one-time plaintext token.
 struct BotTokenResponse: Codable { let token: String }
-struct BotCommandListWrap: Codable { let commands: [BotCommand] }
 /// Event-config response: the callback URL plus the (one-time-ish) signing secret.
 struct BotEventConfigResponse: Codable { let eventUrl: String?; let secret: String? }
 
@@ -92,12 +104,17 @@ struct SelfUser: Codable, Identifiable, Hashable {
     /** ISO-8601 instant the custom status auto-clears, or nil for no expiry. */
     var customStatusExpiresAt: String?
     var isAdmin: Bool?
+    /// Instance moderator — restricted staff subset of the admin panel.
+    var isModerator: Bool?
     var avatarDecoration: String?
     var guildFolders: [GuildFolder]?
     /// Achievements-on-profile visibility. Carried on the self user so the
     /// Settings toggle reads/writes it through the same durable, launch-
     /// hydrated path as every other profile setting.
     var achievementsPublic: Bool?
+    /// Account-level toggle for achievement-unlock notifications (push + in-app).
+    /// nil is treated as the server default `true`.
+    var notifyAchievements: Bool?
     /// Per-user DM read-receipts preference (mirrors web SelfUser.dmReadReceiptsEnabled).
     /// Optional for back-compat with sessions hydrated before the column existed;
     /// nil is treated as the server default `true`.
@@ -106,6 +123,27 @@ struct SelfUser: Codable, Identifiable, Hashable {
     /// Appearance editor pre-fills and survives relaunch. See PublicUser.
     var tagLabel: String?
     var tagColor: String?
+    /// Staff-only display-name shimmer color (#rrggbb) — carried on the self
+    /// user so the Appearance editor pre-fills and it survives relaunch. Only
+    /// meaningful for admins/moderators; overrides role colors. See PublicUser.
+    var staffColor: String?
+    /// Optional soft glow layered on the shimmer (carried on self for the toggle).
+    var staffGlow: Bool?
+    /// Date of birth (YYYY-MM-DD), or nil for a legacy account that never set
+    /// one. `canChangeDob` is true while the user may still change it (drives
+    /// the one-time "confirm your date of birth" banner). Both optional for
+    /// back-compat with sessions hydrated before the columns existed.
+    var dateOfBirth: String?
+    var canChangeDob: Bool?
+    /// Effective supporter membership ("scout" | "guardian" | "legend"; own or
+    /// inherited from a supervising parent). nil = none → Appearance locked.
+    /// showSubscriptionTier drives the profile-title opt-out toggle.
+    var subscriptionTier: String?
+    var subscriptionExpiresAt: String?
+    var subscriptionInherited: Bool?
+    /// False for founder (grandfathered) memberships — perks without a title.
+    var subscriptionTitled: Bool?
+    var showSubscriptionTier: Bool?
 
     var name: String { displayName ?? username ?? "You" }
 }
@@ -143,9 +181,7 @@ struct Channel: Codable, Identifiable, Hashable {
     var rateLimitPerUser: Int?
     var lastMessageId: String?
     /// Thread fields (type == public_thread).
-    var parentMessageId: String?
     var threadArchivedAt: String?
-    var threadLastActivityAt: String?
     /// DM / group-DM only: the OTHER recipients (excludes the current user).
     var recipients: [PublicUser]?
     /// Shared-key E2EE state for 1:1 DMs.
@@ -282,6 +318,19 @@ enum PokeVariant: String, CaseIterable, Identifiable {
     }
 }
 
+/// One entry of a DM's poke history (newest-first, capped at 6), from
+/// GET /channels/:id/pokes. Feeds the poke button's history popover.
+struct PokeHistoryEntry: Decodable, Identifiable {
+    let id: String
+    let pokeType: String
+    let initiatorId: String
+    let recipientId: String
+    let createdAt: String
+    let initiatorName: String
+    /// The matching variant (falls back to .poke for an unknown type).
+    var variant: PokeVariant { PokeVariant(rawValue: pokeType) ?? .poke }
+}
+
 extension Message {
     /// Build a client-side optimistic placeholder shown immediately on send,
     /// before the server confirms. Its `id` is the send nonce so the confirmed
@@ -400,7 +449,6 @@ struct EventRsvpCounts: Codable { var going: Int; var maybe: Int; var declined: 
 struct ScheduledEvent: Codable, Identifiable {
     let id: String
     var guildId: String?
-    var creator: PublicUser?
     var name: String
     var description: String?
     var startAt: String
@@ -458,7 +506,6 @@ struct StageParticipant: Codable, Identifiable {
     var userId: String
     var isSpeaker: Bool
     var handRaised: Bool
-    var joinedAt: String?
     var id: String { userId }
 }
 struct StageJoinResult: Codable { let participant: StageParticipant; let token: String?; let wsUrl: String? }
@@ -554,6 +601,13 @@ struct AuthSession: Codable {
     let accessToken: String
 }
 
+/// A short-lived, single-use quick-login code for signing in on another
+/// device (shown as digits + encoded in a QR). `expiresIn` is seconds.
+struct QuickLoginCode: Codable {
+    let code: String
+    let expiresIn: Int
+}
+
 // ── Response envelopes ──────────────────────────────────────────────────────
 struct UserWrap: Codable { let user: SelfUser }
 struct GuildsWrap: Codable { let guilds: [Guild] }
@@ -578,11 +632,22 @@ struct AdminUser: Codable, Identifiable {
     var email: String?
     var avatarUrl: String?
     var isAdmin: Bool
+    /// Instance moderator (restricted staff role).
+    var isModerator: Bool
+    /// Date of birth (YYYY-MM-DD); nil for legacy accounts without one.
+    var dateOfBirth: String?
     var bannedAt: String?
+    /// For a timed ban: when it auto-lifts (ISO). Nil = permanent (when banned)
+    /// or not banned.
+    var bannedUntil: String?
+    /// Active supporter membership (own row); nil = none.
+    var subscriptionTier: String?
+    var subscriptionExpiresAt: String?
     var createdAt: String?
     var lastSeenAt: String?
     var name: String { displayName ?? username }
     var isBanned: Bool { bannedAt != nil }
+    var isStaff: Bool { isAdmin || isModerator }
 
     // Defensive decode: a single null username/isAdmin shouldn't blank the
     // whole admin user list.
@@ -594,7 +659,12 @@ struct AdminUser: Codable, Identifiable {
         email = try? c.decode(String.self, forKey: .email)
         avatarUrl = try? c.decode(String.self, forKey: .avatarUrl)
         isAdmin = (try? c.decode(Bool.self, forKey: .isAdmin)) ?? false
+        isModerator = (try? c.decode(Bool.self, forKey: .isModerator)) ?? false
+        dateOfBirth = try? c.decode(String.self, forKey: .dateOfBirth)
         bannedAt = try? c.decode(String.self, forKey: .bannedAt)
+        bannedUntil = try? c.decode(String.self, forKey: .bannedUntil)
+        subscriptionTier = try? c.decode(String.self, forKey: .subscriptionTier)
+        subscriptionExpiresAt = try? c.decode(String.self, forKey: .subscriptionExpiresAt)
         createdAt = try? c.decode(String.self, forKey: .createdAt)
         lastSeenAt = try? c.decode(String.self, forKey: .lastSeenAt)
     }
@@ -679,6 +749,8 @@ struct Relationship: Codable, Identifiable {
     var id: String { user.id }
 }
 struct RelationshipsWrap: Codable { let relationships: [Relationship] }
+/// The current user's personal DM-nickname map: { targetUserId: nickname }.
+struct DmNicknamesWrap: Codable { let nicknames: [String: String] }
 
 struct Mention: Codable, Identifiable {
     let id: String
@@ -688,6 +760,10 @@ struct Mention: Codable, Identifiable {
     var content: String?
     var channelName: String?
     var guildId: String?
+    /// Message type ("default", "system_join", …). The mentions route returns
+    /// full message DTOs; decoding this lets the inbox attribute a system_join
+    /// welcome to the SERVER instead of its data-author (the newcomer).
+    var type: String?
 
     var text: String { content ?? "" }
 }
@@ -714,6 +790,26 @@ struct RegisterBody: Codable {
     let username: String
     let displayName: String
     let password: String
+    /// YYYY-MM-DD. Required by the server (age-gates under-13).
+    let dateOfBirth: String
+}
+
+// ── WebAuthn passkeys ────────────────────────────────────────────────────
+// We decode only the fields the ceremony needs from the server's options blob
+// (it carries many more; Codable ignores the rest). All binary values are
+// base64url strings on the wire.
+struct PasskeyAssertionOptions: Codable { let challenge: String }
+struct PasskeyLoginOptions: Codable { let challengeId: String; let options: PasskeyAssertionOptions }
+struct PasskeyRegUser: Codable { let id: String; let name: String; let displayName: String }
+struct PasskeyAttestationOptions: Codable { let challenge: String; let user: PasskeyRegUser }
+struct PasskeyRegisterOptions: Codable { let challengeId: String; let options: PasskeyAttestationOptions }
+
+struct PasskeyInfo: Codable, Identifiable {
+    let id: String
+    let deviceName: String?
+    let backedUp: Bool
+    let createdAt: String?
+    let lastUsedAt: String?
 }
 struct OpenDMBody: Codable { let recipientId: String }
 struct E2EEEnableBody: Codable { let salt: String; let verifier: String }
@@ -743,7 +839,6 @@ struct DiscoverWrap: Codable { let guilds: [DiscoverableGuild] }
 
 struct CreateGuildResult: Codable {
     let guild: Guild
-    let defaultChannelId: String?
 }
 struct AcceptInviteResult: Codable {
     let guildId: String
@@ -839,7 +934,6 @@ struct LivekitDiagnostic: Codable {
     let configured: Bool
     let ok: Bool
     let wsUrl: String?
-    let httpUrl: String?
     let checks: [LivekitCheck]
     let generatedAt: String
 }
@@ -861,18 +955,52 @@ struct ChildRestrictions: Codable {
     var allowVideo: Bool
     var allowStream: Bool
     var allowCreateGuild: Bool
+    var allowJoinGuilds: Bool
+    var allowMessaging: Bool
+    /// "none" | "friends" | "all"
+    var dmPolicy: String
+    /// Mask swear/vulgar words (f•••) in the child's message views.
+    var filterProfanity: Bool
+
+    // Custom decode so a server that hasn't shipped `filter_profanity` yet (the
+    // pre-deploy window) doesn't hard-fail the ENTIRE supervision decode with a
+    // keyNotFound — the new field degrades to ON (protective) when absent. The
+    // other fields keep the existing required contract (the server always sends
+    // them). encode(to:) stays synthesized, so familySetRestrictions still sends
+    // the full struct.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        canAddFriends = try c.decode(Bool.self, forKey: .canAddFriends)
+        canRemoveFriends = try c.decode(Bool.self, forKey: .canRemoveFriends)
+        allowVoice = try c.decode(Bool.self, forKey: .allowVoice)
+        allowVideo = try c.decode(Bool.self, forKey: .allowVideo)
+        allowStream = try c.decode(Bool.self, forKey: .allowStream)
+        allowCreateGuild = try c.decode(Bool.self, forKey: .allowCreateGuild)
+        allowJoinGuilds = try c.decode(Bool.self, forKey: .allowJoinGuilds)
+        allowMessaging = try c.decode(Bool.self, forKey: .allowMessaging)
+        dmPolicy = try c.decode(String.self, forKey: .dmPolicy)
+        filterProfanity = try c.decodeIfPresent(Bool.self, forKey: .filterProfanity) ?? true
+    }
 }
 
 struct FamilyRestrictionsWrap: Codable {
     let restrictions: ChildRestrictions
-    var blockedGuildIds: [String]?
 }
 struct FamilySummary: Codable {
     var restrictions: ChildRestrictions?
+    // Age-driven minor state (optional for forward-compat with older servers).
+    var isMinor: Bool?
+    var graceActive: Bool?
+    var graceDaysRemaining: Int?
+    var restrictedHeavily: Bool?
     var children: [FamilyUser]
     var outgoingRequests: [FamilyUser]
+    /// Child-initiated requests awaiting MY (the parent's) acceptance.
+    var incomingChildRequests: [FamilyUser]?
     var supervisedBy: [FamilyUser]
     var incomingRequests: [FamilyUser]
+    /// Parent invites I (the child) sent, awaiting the parent's acceptance.
+    var outgoingParentRequests: [FamilyUser]?
 }
 
 // MARK: Guild members (for resolving names in voice rosters, etc.)
@@ -881,7 +1009,6 @@ struct GuildMember: Codable, Identifiable {
     var guildId: String?
     var userId: String
     var user: PublicUser
-    var nickname: String?
     var roleIds: [String]?
     var membershipState: String?
     var id: String { userId }
@@ -919,13 +1046,16 @@ struct SavedMessageItem: Codable, Identifiable {
 struct SavedListWrap: Codable { let items: [SavedMessageItem]; let nextCursor: String? }
 struct SavedMembershipWrap: Codable { let savedIds: [String] }
 
-/// One image in a lightbox: a remote URL (plain attachments) or an
+/// One image in a lightbox: a remote URL (plain attachments), an
 /// in-memory UIImage (E2EE attachments, already decrypted — so plaintext
-/// never round-trips through a URL).
+/// never round-trips through a URL), or a lazily-resolved encrypted
+/// reference (attachment + channel) the visible page decrypts on-appear so
+/// we don't decrypt the whole paged set up front.
 struct LightboxItem: Identifiable {
     let id = UUID()
     var url: URL? = nil
     var image: UIImage? = nil
+    var encrypted: (attachment: Attachment, channel: Channel)? = nil
 }
 
 /// A full-screen image presentation request — one or more images, paged
@@ -937,8 +1067,6 @@ struct LightboxImage: Identifiable {
 
     /// Back-compat: a single remote image.
     init(url: URL) { items = [LightboxItem(url: url)]; startIndex = 0 }
-    /// Back-compat: a single in-memory (decrypted) image.
-    init(image: UIImage) { items = [LightboxItem(image: image)]; startIndex = 0 }
     /// A set of images to page through, opening at startIndex.
     init(items: [LightboxItem], startIndex: Int = 0) {
         self.items = items
@@ -1126,19 +1254,40 @@ struct FamilyFlagsWrap: Codable { let flags: [FamilyFlag] }
 // ── Security (Admin → Security) ─────────────────────────────────────────────
 struct SecurityEvent: Codable, Identifiable, Hashable {
     let id: String
-    var kind: String              // spam_limited | banned_word
+    var kind: String              // spam_limited | banned_word | staff_*
     var userId: String?
     var username: String?
     var displayName: String?
+    /// WHO performed a staff action (nil for automated detections).
+    var actorId: String?
+    var actorUsername: String?
+    var actorDisplayName: String?
     var guildId: String?
     var channelId: String?
     var detail: String
     var contentSnapshot: String?
     var createdAt: String
-    var actorName: String { displayName ?? username ?? "Unknown" }
+    var isStaffAction: Bool { kind.hasPrefix("staff_") }
+    /// The name shown bold at the front of the row: the staff actor for
+    /// staff_* audit rows, else the detection's offender.
+    var actorName: String {
+        if isStaffAction { return actorDisplayName ?? actorUsername ?? "Unknown staff" }
+        return displayName ?? username ?? "Unknown"
+    }
+    /// Target of a staff action, for the "actor → target" line.
+    var targetName: String? { isStaffAction ? (displayName ?? username) : nil }
 }
 struct SecurityEventsWrap: Codable { let events: [SecurityEvent] }
-struct SecurityWordsWrap: Codable { let words: [String] }
+/// A banned/watched word. 'blocked' hard-blocks messages + identity fields;
+/// 'watch' logs usage without blocking.
+struct SecurityWord: Codable, Identifiable, Hashable {
+    let word: String
+    let severity: String   // "blocked" | "watch"
+    var id: String { word }
+}
+struct SecurityWordsWrap: Codable { let words: [SecurityWord] }
+/// The raw common-wordlist preset endpoint still returns plain strings.
+struct SecurityPresetWrap: Codable { let words: [String] }
 
 // ── Audit log ───────────────────────────────────────────────────────────────
 
@@ -1232,9 +1381,6 @@ struct Report: Codable, Identifiable {
     var reason: String              // spam | harassment | nsfw | violence | other
     var details: String?
     var status: String              // open | resolved | dismissed
-    var handledById: String?
-    var handledAt: String?
-    var resolutionNote: String?
     var createdAt: String
 
     var reporterName: String { reporter?.name ?? "Unknown" }
@@ -1276,14 +1422,19 @@ enum ReportReason: String, CaseIterable, Identifiable {
 /// web's camera-quality picker. The LiveKit dimensions/bitrate mapping lives in
 /// Voice.swift so this stays UI-only (no LiveKit dependency here).
 enum CameraQuality: String, CaseIterable, Identifiable {
+    // rawValues are persisted in UserDefaults ("zk.cameraQuality") — never
+    // rename `medium`/`high` even though they now read as 720p/1080p.
     case auto, low, medium, high
+    case k2, k4
     var id: String { rawValue }
     var shortLabel: String {
         switch self {
         case .auto: return "Auto"
         case .low: return "Low"
-        case .medium: return "Medium"
-        case .high: return "High"
+        case .medium: return "720p"
+        case .high: return "1080p"
+        case .k2: return "2K"
+        case .k4: return "4K"
         }
     }
     var detail: String {
@@ -1291,10 +1442,57 @@ enum CameraQuality: String, CaseIterable, Identifiable {
         case .auto: return "Adapts to your connection (≈720p)."
         case .low: return "480p · saves bandwidth, good for slow networks."
         case .medium: return "720p · balanced."
-        case .high: return "1080p · sharpest, needs a strong uplink."
+        case .high: return "1080p · sharp, needs a strong uplink."
+        case .k2: return "2560×1440 · sharp, heavy on battery."
+        case .k4: return "3840×2160 · maximum sharpness — heavy CPU/heat; needs excellent wifi."
         }
     }
 }
+
+/// Admin-configurable monetization gates (GET /instance/monetization).
+/// Each matrix value is the MINIMUM membership tier required
+/// ("none"/"scout"/"guardian"/"legend"; "none" = free). 720p and below are
+/// always free and never appear here. `uploadCapsMb` values are nil when the
+/// server falls back to its env default for that tier.
+struct MonetizationConfig: Codable, Hashable {
+    struct QualityTiers: Codable, Hashable {
+        var p1080: String
+        var k2: String
+        var k4: String
+    }
+    struct UploadCapsMb: Codable, Hashable {
+        var free: Int?
+        var scout: Int?
+        var guardian: Int?
+        var legend: Int?
+    }
+    var stream: QualityTiers
+    var camera: QualityTiers
+    var appearance: String
+    var uploadCapsMb: UploadCapsMb
+}
+struct MonetizationConfigWrap: Codable { let config: MonetizationConfig }
+
+/// Admin Overview "recent activity" feed (GET /admin/activity).
+struct AdminActivity: Codable {
+    struct RecentUser: Codable, Identifiable {
+        let id: String
+        let username: String
+        let displayName: String
+        let avatarUrl: String?
+        let createdAt: String
+    }
+    struct RecentGuild: Codable, Identifiable {
+        let id: String
+        let name: String
+        let iconUrl: String?
+        let ownerId: String
+        let createdAt: String
+    }
+    let recentUsers: [RecentUser]
+    let recentGuilds: [RecentGuild]
+}
+struct AdminActivityWrap: Codable { let activity: AdminActivity }
 
 struct SecurityConfig: Codable, Hashable {
     var spamEnabled: Bool
@@ -1332,6 +1530,17 @@ struct Achievement: Codable, Identifiable, Hashable {
         case id == "marathon": return "flame.fill"
         case id == "founder": return "building.columns.fill"
         case id == "voice_of_people": return "mic.fill"
+        case id == "locked_in": return "key.fill"
+        case id == "double_locked": return "lock.shield.fill"
+        case id == "tagged": return "tag.fill"
+        case id == "framed": return "photo.circle.fill"
+        case id == "signature_look": return "sparkles"
+        case id == "welcome_committee": return "hand.wave.fill"
+        case id == "off_the_record": return "lock.fill"
+        case id == "discovered": return "safari.fill"
+        case id == "guardian_angel": return "figure.and.child.holdinghands"
+        case id == "first_contact": return "antenna.radiowaves.left.and.right"
+        case id == "event_horizon": return "circle.circle.fill"
         default: return "rosette"
         }
     }

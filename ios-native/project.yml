@@ -3,7 +3,9 @@ options:
   bundleIdPrefix: com.zekktris
   createIntermediateGroups: true
   deploymentTarget:
-    iOS: "16.0"
+    # iOS 17 minimum — required for INTERACTIVE widgets (App Intents fired from
+    # a widget Button, e.g. the one-tap poke). Raised from 16 deliberately.
+    iOS: "17.0"
 
 settings:
   base:
@@ -11,8 +13,8 @@ settings:
     # Keep in sync with Info.plist CFBundleShortVersionString / pbxproj
     # MARKETING_VERSION so a future `xcodegen generate` doesn't regress the
     # shipping version. Bump all three together on release.
-    MARKETING_VERSION: "2.0"
-    CURRENT_PROJECT_VERSION: "3"
+    MARKETING_VERSION: "5.0"
+    CURRENT_PROJECT_VERSION: "5"
     # Apple Developer Team — set here (not only in Xcode) so `xcodegen generate`
     # doesn't drop code signing and break the archive. Applies to all targets.
     DEVELOPMENT_TEAM: "4QF34MB8R3"
@@ -36,7 +38,7 @@ targets:
   Zekktris:
     type: application
     platform: iOS
-    deploymentTarget: "16.0"
+    deploymentTarget: "17.0"
     sources:
       - path: Zekktris
     dependencies:
@@ -49,12 +51,16 @@ targets:
       # so it ships to a paired Apple Watch (Embed Watch Content phase).
       - target: ZekktrisWatch
         embed: true
+      # Bundles + embeds the WidgetKit extension (Home/Lock-Screen "Quick DM"
+      # widget) into the app (Embed Foundation Extensions phase).
+      - target: ZekktrisWidgets
+        embed: true
     info:
       path: Zekktris/Info.plist
       properties:
         CFBundleDisplayName: Zekktris
-        CFBundleShortVersionString: "2.0"
-        CFBundleVersion: "3"
+        CFBundleShortVersionString: "5.0"
+        CFBundleVersion: "5"
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -73,6 +79,12 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         ITSAppUsesNonExemptEncryption: false
+        # Deep-link scheme so the Home/Lock-Screen widget can open a DM
+        # (zekktris://dm/<channelId>) — handled by .onOpenURL in ZekktrisApp.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.zekktris.native
+            CFBundleURLSchemes:
+              - zekktris
         NSMicrophoneUsageDescription: "Zekktris uses your microphone for voice channels, calls, and voice messages."
         NSCameraUsageDescription: "Zekktris uses your camera for video calls and to set your avatar."
         NSPhotoLibraryAddUsageDescription: "Zekktris can save images you receive to your photo library."
@@ -96,6 +108,15 @@ targets:
         # Developer account and enabled on BOTH targets (see AppGroupConfig.swift).
         com.apple.security.application-groups:
           - group.com.zekktris.native
+        # Passkeys (WebAuthn). Binds the app to zekktris.com so the system
+        # passkey sheet will create/use credentials for that rpID, verified
+        # against https://zekktris.com/.well-known/apple-app-site-association.
+        # Declared HERE (not just in the .entitlements file) so a future
+        # `xcodegen generate` regenerates the entitlement instead of dropping it.
+        # Requires the Associated Domains capability on the com.zekktris.native
+        # App ID (automatic signing enables it on archive; verify in the portal).
+        com.apple.developer.associated-domains:
+          - webcredentials:zekktris.com
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native
@@ -116,7 +137,7 @@ targets:
   NotificationService:
     type: app-extension
     platform: iOS
-    deploymentTarget: "16.0"
+    deploymentTarget: "17.0"
     sources:
       - path: NotificationService
       - path: Zekktris/E2EE.swift
@@ -128,8 +149,8 @@ targets:
         # MUST match the app's version/build or App Store upload is rejected
         # (ITMS). Bump alongside the app's CFBundleShortVersionString / the
         # MARKETING_VERSION + CURRENT_PROJECT_VERSION base settings.
-        CFBundleShortVersionString: "2.0"
-        CFBundleVersion: "3"
+        CFBundleShortVersionString: "5.0"
+        CFBundleVersion: "5"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
@@ -144,6 +165,40 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Automatic
 
+  # WidgetKit extension — the Home/Lock-Screen "Quick DM" widget. One-tap poke
+  # via an App Intent (no app launch) + tap-to-message deep link. Reads the
+  # recent DM list (app-group UserDefaults) + token (app-group keychain) the
+  # app publishes via WidgetBridge. Reuses AppGroupConfig/Keychain/Config
+  # (compiled directly, like the NSE) + the shared WidgetShared model. iOS 17+
+  # (interactive widgets).
+  ZekktrisWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: ZekktrisWidgets
+      - path: Zekktris/WidgetShared.swift
+      - path: Zekktris/AppGroupConfig.swift
+      - path: Zekktris/Keychain.swift
+      - path: Zekktris/Config.swift
+    info:
+      path: ZekktrisWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Zekktris
+        CFBundleShortVersionString: "5.0"
+        CFBundleVersion: "5"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: ZekktrisWidgets/ZekktrisWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.zekktris.native
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.widgets
+        CODE_SIGN_STYLE: Automatic
+
   # watchOS companion — displays as "Zekktris" on the watch. A standalone
   # single-target watch app (WKApplication) for quick messages/pokes to a
   # recent DM peer. It does NOT compile the iOS app's
@@ -156,15 +211,36 @@ targets:
     deploymentTarget: "10.0"
     sources:
       - path: ZekktrisWatch
+      # Shared with the watch widget: app-group keychain (token) + the group id.
+      - path: Zekktris/Keychain.swift
+      - path: Zekktris/AppGroupConfig.swift
+    dependencies:
+      # Bundles + embeds the watchOS widget/complication extension into the
+      # watch app.
+      - target: ZekktrisWatchWidgets
+        embed: true
     info:
       path: ZekktrisWatch/Info.plist
       properties:
         CFBundleDisplayName: Zekktris
-        CFBundleShortVersionString: "2.0"
-        CFBundleVersion: "3"
+        CFBundleShortVersionString: "5.0"
+        CFBundleVersion: "5"
         WKApplication: true
         # Ties this watch app to the iOS app so it installs alongside it.
         WKCompanionAppBundleIdentifier: com.zekktris.native
+        # Deep-link scheme so the watch Open-DM complication can open the watch
+        # app at a friend (zekktris://friend/<id>) — handled in ZekktrisWatchApp.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.zekktris.native.watchkitapp
+            CFBundleURLSchemes:
+              - zekktris
+    entitlements:
+      path: ZekktrisWatch/ZekktrisWatch.entitlements
+      properties:
+        # Watch-side App Group: the watch app publishes the DM list + token here
+        # so the watch widget/complication can poke + open DMs on its own.
+        com.apple.security.application-groups:
+          - group.com.zekktris.native
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.watchkitapp
@@ -175,6 +251,38 @@ targets:
         # rejected (error 90713). Reuses the iOS 1024 marketing icon.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
+  # watchOS WidgetKit extension — complications + Smart Stack widgets for the
+  # watch face: one-tap Poke, Open DM, and a Streaks readout. Reads the DM list
+  # + token the watch app publishes to the shared App Group (reuses Keychain +
+  # AppGroupConfig). watchOS 10 supports interactive (App Intent) widgets.
+  ZekktrisWatchWidgets:
+    type: app-extension
+    platform: watchOS
+    deploymentTarget: "10.0"
+    sources:
+      - path: ZekktrisWatchWidgets
+      - path: ZekktrisWatch/WatchWidgetBridge.swift
+      - path: Zekktris/Keychain.swift
+      - path: Zekktris/AppGroupConfig.swift
+    info:
+      path: ZekktrisWatchWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Zekktris
+        CFBundleShortVersionString: "5.0"
+        CFBundleVersion: "5"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: ZekktrisWatchWidgets/ZekktrisWatchWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.zekktris.native
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.watchkitapp.widgets
+        TARGETED_DEVICE_FAMILY: "4"
+        CODE_SIGN_STYLE: Automatic
+
   # Host-less logic-test target. Compiles E2EE.swift directly (no app host,
   # no LiveKit) so the crypto / call-key interop contract can be tested fast.
   # Run with:  xcodegen generate && xcodebuild test -scheme Zekktris \
@@ -182,7 +290,7 @@ targets:
   ZekktrisTests:
     type: bundle.unit-test
     platform: iOS
-    deploymentTarget: "16.0"
+    deploymentTarget: "17.0"
     sources:
       - path: ZekktrisTests
       - path: Zekktris/E2EE.swift

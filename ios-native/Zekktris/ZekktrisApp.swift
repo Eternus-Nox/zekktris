@@ -19,6 +19,9 @@ struct ZekktrisApp: App {
                 // 15px base the web sets via `html { font-size: 15px }`.
                 // Explicit .font modifiers still override per-view.
                 .environment(\.font, .zkSans(15))
+                // Deep links from the Home/Lock-Screen widget
+                // (zekktris://dm/<channelId> → open that DM at the composer).
+                .onOpenURL { store.handleDeepLink($0) }
         }
     }
 }
@@ -58,12 +61,14 @@ struct RootView: View {
             }
         }
         .task { await session.bootstrap() }
-        .onChange(of: scenePhase) { newPhase in
+        .onChange(of: scenePhase) { _, newPhase in
             // Biometric lock is required once per cold launch (set in bootstrap),
             // not on every background — the session stays unlocked until the app
             // is fully closed. We only refresh the gateway when returning.
             if newPhase == .active {
-                store.foregroundReconnect()
+                // Debounced: a notification tap (openFromPush) may have just
+                // fired the same revive — don't tear the socket down twice.
+                store.foregroundReconnectDebounced()
                 // Self-heal push registration on every foreground. If the APNs
                 // or PushKit VoIP token rotated while the app was closed, the
                 // cold-launch register paths can race (the token may arrive
@@ -87,7 +92,7 @@ struct RootView: View {
                 RefreshCookieStore.capture()
             }
         }
-        .onChange(of: session.phase) { phase in
+        .onChange(of: session.phase) { _, phase in
             switch phase {
             case .signedIn:
                 if let token = session.token { store.start(token: token, user: session.currentUser) }
@@ -119,6 +124,17 @@ struct RootView: View {
             }
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.85), value: store.pokeBanner?.id)
+        // Transient achievement-unlock celebration — same slot/animation as the
+        // poke banner (the two are rarely up at once).
+        .overlay(alignment: .top) {
+            if let banner = store.achievementBanner {
+                AchievementBannerView(banner: banner)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .id(banner.id)
+            }
+        }
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: store.achievementBanner?.id)
     }
 }
 
@@ -130,7 +146,7 @@ private struct PokeBannerView: View {
     let banner: PokeBanner
     var body: some View {
         HStack(spacing: 10) {
-            Text(banner.emoji).font(.system(size: 28))
+            Text(banner.emoji).font(.system(size: 40))
             VStack(alignment: .leading, spacing: 1) {
                 Text(banner.name).font(.system(size: 15, weight: .semibold))
                 Text("Tap to open · tap the emoji to poke back")
@@ -138,13 +154,18 @@ private struct PokeBannerView: View {
                     .foregroundColor(Theme.ink2)
                     .lineLimit(1)
             }
-            // Poke back with the SAME emoji.
+            // Poke back with the SAME emoji. ZStack centers the glyph in the
+            // circle (a Text + .frame + .background doesn't reliably center an
+            // emoji — its line-box metrics push it off).
             Button { store.pokeBack(banner) } label: {
-                Text(banner.emoji)
-                    .font(.system(size: 20))
-                    .frame(width: 40, height: 40)
-                    .background(Circle().fill(Color.white.opacity(0.15)))
-                    .contentShape(Circle())
+                ZStack {
+                    Circle().fill(Color.white.opacity(0.15))
+                    Text(banner.emoji)
+                        .font(.system(size: 20))
+                        .multilineTextAlignment(.center)
+                }
+                .frame(width: 40, height: 40)
+                .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Poke back")
@@ -157,6 +178,37 @@ private struct PokeBannerView: View {
         .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
         .contentShape(Capsule())
         .onTapGesture { store.openPokeSender(banner) }
+    }
+}
+
+/// The transient achievement-unlock celebration pill (foreground phone only):
+/// a trophy glyph + the achievement name. Tap to dismiss; auto-dismisses via
+/// showAchievementBanner.
+private struct AchievementBannerView: View {
+    @EnvironmentObject private var store: AppStore
+    let banner: AchievementBanner
+    var body: some View {
+        HStack(spacing: 11) {
+            Image(systemName: "trophy.fill")
+                .font(.system(size: 26))
+                .foregroundColor(Color(hex: 0xF4C95B))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Achievement unlocked")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Theme.ink2)
+                Text(banner.name)
+                    .font(.system(size: 15, weight: .semibold))
+                    .lineLimit(1)
+            }
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 20)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
+        .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
+        .contentShape(Capsule())
+        .onTapGesture { store.achievementBanner = nil }
     }
 }
 

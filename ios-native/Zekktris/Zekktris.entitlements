@@ -8,5 +8,9 @@
 	<array>
 		<string>group.com.zekktris.native</string>
 	</array>
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>webcredentials:zekktris.com</string>
+	</array>
 </dict>
 </plist>

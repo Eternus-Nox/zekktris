@@ -43,7 +43,22 @@ final class APIClient {
     var onTokenRefresh: ((String) -> Void)?
     static let tokenRefreshedNotification = Notification.Name("zk.accessTokenRefreshed")
 
-    private let session = URLSession(configuration: .default)
+    private let session: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        // Fail fast on a dead/stale connection instead of hanging. After a long
+        // background, URLSession's keep-alive pool can hand a new request a
+        // half-open socket; with the default 7-day resource timeout and no
+        // request timeout, that request parks ~indefinitely — which is exactly
+        // what made a post-resume DM send clear the composer yet never deliver
+        // (the send's `catch` never ran, so the optimistic bubble stayed stuck
+        // at "Sending…"). A 20s request timeout turns that into a thrown
+        // URLError so the send visibly fails + offers Retry, and the transparent
+        // retry below usually makes it succeed on the first try anyway.
+        cfg.timeoutIntervalForRequest = 20
+        cfg.timeoutIntervalForResource = 60
+        cfg.waitsForConnectivity = false
+        return URLSession(configuration: cfg)
+    }()
     private let decoder = JSONDecoder()
 
     /// In-flight refresh, shared so concurrent 401s trigger ONE /auth/refresh
@@ -124,7 +139,19 @@ final class APIClient {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 
-        let (data, resp) = try await session.data(for: req)
+        let data: Data
+        let resp: URLResponse
+        do {
+            (data, resp) = try await session.data(for: req)
+        } catch let err as URLError where !isRetry && Self.isStaleConnection(err.code) {
+            // A stale pooled socket after a long background raises
+            // .networkConnectionLost / .cannotConnectToHost — the request never
+            // reached the server, so replaying it once on a fresh connection is
+            // safe (and the send endpoint is nonce-deduplicated server-side
+            // regardless). This makes the very first post-resume request succeed
+            // instead of surfacing a spurious failure.
+            return try await send(method, path, bodyData: bodyData, authorized: authorized, isRetry: true)
+        }
         guard let http = resp as? HTTPURLResponse else {
             throw APIError(status: 0, message: "No HTTP response")
         }
@@ -148,6 +175,20 @@ final class APIClient {
             return try decoder.decode(T.self, from: data)
         } catch {
             throw APIError(status: http.statusCode, message: "Could not read response: \(error)")
+        }
+    }
+
+    /// Connection-level failures worth ONE transparent replay: these mean the
+    /// request never reached the server (a dead pooled socket / unreachable
+    /// host), so retrying can't double-execute anything. Deliberately excludes
+    /// `.timedOut` (a real 20s timeout — already waited long enough) and
+    /// `.notConnectedToInternet` (no radio — a retry won't help).
+    private static func isStaleConnection(_ code: URLError.Code) -> Bool {
+        switch code {
+        case .networkConnectionLost, .cannotConnectToHost:
+            return true
+        default:
+            return false
         }
     }
 
@@ -208,6 +249,53 @@ final class APIClient {
         }
     }
 
+    /// Like `send`, but returns the raw response body undecoded — for an
+    /// endpoint whose payload is opaque JSON we must preserve verbatim (the
+    /// voice-prefs blob). Mirrors `sendVoid`'s auth + 401-refresh handling.
+    private func sendRawData(_ method: String, _ path: String, bodyData: Data? = nil, authorized: Bool = true, isRetry: Bool = false) async throws -> Data {
+        guard let url = URL(string: Config.apiBaseURL + path) else {
+            throw APIError(status: 0, message: "Bad URL: \(path)")
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let bodyData {
+            req.httpBody = bodyData
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        if authorized, let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw APIError(status: 0, message: "No HTTP response") }
+        if http.statusCode == 401, canRetryAfterRefresh(path, authorized: authorized, isRetry: isRetry),
+           await refreshAccessToken() {
+            return try await sendRawData(method, path, bodyData: bodyData, authorized: authorized, isRetry: true)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw APIError(status: http.statusCode, message: Self.extractError(data) ?? "Request failed (\(http.statusCode))")
+        }
+        return data
+    }
+
+    // ── Voice preferences (cross-device per-user mute sync) ─────────────────
+    // The blob is opaque JSON owned by the web client (per-user volumes, master
+    // volume, audio-processing toggles). iOS only reads/writes perUser[*].muted,
+    // so it round-trips the WHOLE blob as [String: Any] — PATCH is a full
+    // replace server-side, and we must not clobber web-only fields.
+
+    /// Fetch the current voice-prefs blob (the inner object, web shape:
+    /// `{ perUser: { <id>: { muted, volume } }, masterVolume, ... }`).
+    func getVoicePrefs() async throws -> [String: Any] {
+        let data = try await sendRawData("GET", "/users/@me/voice-prefs")
+        let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        return (obj?["voicePrefs"] as? [String: Any]) ?? [:]
+    }
+
+    /// Replace the voice-prefs blob. Caller must pass the COMPLETE merged blob.
+    func setVoicePrefs(_ blob: [String: Any]) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["voicePrefs": blob])
+        try await sendVoid("PATCH", "/users/@me/voice-prefs", bodyData: body)
+    }
+
     private static func extractError(_ data: Data) -> String? {
         if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let e = obj["error"] as? [String: Any], let m = e["message"] as? String { return m }
@@ -224,6 +312,23 @@ final class APIClient {
         return try await send("POST", "/auth/login", bodyData: body, authorized: false)
     }
 
+    // ── Quick login (log in on another device) ──────────────────────────────
+    /// [authed] Mint (or re-randomize) a quick-login code for this device's
+    /// user. Uses the existing bearer token; never touches the session.
+    func generateQuickLoginCode() async throws -> QuickLoginCode {
+        return try await send("POST", "/auth/quick-login/create")
+    }
+    /// [authed] Invalidate the active code (on leaving the quick-login screen).
+    func cancelQuickLoginCode() async {
+        await sendNoDecode("POST", "/auth/quick-login/cancel")
+    }
+    /// [public] Redeem a code on a logged-out device → a new session (same
+    /// envelope as login; the server also Set-Cookies the refresh token).
+    func redeemQuickLogin(code: String) async throws -> AuthSession {
+        let body = try JSONSerialization.data(withJSONObject: ["code": code])
+        return try await send("POST", "/auth/quick-login/redeem", bodyData: body, authorized: false)
+    }
+
     func forgotPassword(email: String) async throws {
         let body = try JSONSerialization.data(withJSONObject: ["email": email])
         try await sendVoid("POST", "/auth/forgot-password", bodyData: body, authorized: false)
@@ -234,9 +339,9 @@ final class APIClient {
         try await sendVoid("POST", "/auth/reset-password", bodyData: body, authorized: false)
     }
 
-    func register(email: String, username: String, displayName: String, password: String) async throws -> AuthSession {
+    func register(email: String, username: String, displayName: String, password: String, dateOfBirth: String) async throws -> AuthSession {
         let body = try JSONEncoder().encode(
-            RegisterBody(email: email, username: username, displayName: displayName, password: password)
+            RegisterBody(email: email, username: username, displayName: displayName, password: password, dateOfBirth: dateOfBirth)
         )
         return try await send("POST", "/auth/register", bodyData: body, authorized: false)
     }
@@ -414,7 +519,19 @@ final class APIClient {
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         req.httpBody = body
 
-        let (data, resp) = try await session.data(for: req)
+        let data: Data
+        let resp: URLResponse
+        do {
+            (data, resp) = try await session.data(for: req)
+        } catch let err as URLError where !isRetry && Self.isStaleConnection(err.code) {
+            // A socket that went stale across app suspension throws before any
+            // bytes are sent — one transparent replay on a fresh connection (the
+            // same replay send() does) so a resume-then-upload (e.g. a voice
+            // message, whose temp file is deleted after this call) isn't lost.
+            return try await uploadMultipart(path, fields: fields, fileField: fileField,
+                                             filename: filename, contentType: contentType,
+                                             fileData: fileData, type, isRetry: true)
+        }
         guard let http = resp as? HTTPURLResponse else { throw APIError(status: 0, message: "No HTTP response") }
         if http.statusCode == 401, canRetryAfterRefresh(path, authorized: true, isRetry: isRetry),
            await refreshAccessToken() {
@@ -568,6 +685,21 @@ final class APIClient {
         return wrap.relationships
     }
 
+    // ── Personal DM nicknames (viewer-private, shown in DMs only) ─────────────
+    func getDmNicknames() async throws -> [String: String] {
+        let wrap: DmNicknamesWrap = try await send("GET", "/users/@me/dm-nicknames")
+        return wrap.nicknames
+    }
+
+    func setDmNickname(userId: String, nickname: String) async throws {
+        let body = try JSONEncoder().encode(["nickname": nickname])
+        try await sendVoid("PUT", "/users/@me/dm-nicknames/\(userId)", bodyData: body)
+    }
+
+    func clearDmNickname(userId: String) async throws {
+        try await sendVoid("DELETE", "/users/@me/dm-nicknames/\(userId)")
+    }
+
     func sendFriendRequestByUsername(_ username: String) async throws {
         let body = try JSONEncoder().encode(["username": username])
         let _: [String: String] = try await send("POST", "/users/@me/relationships/friends", bodyData: body)
@@ -619,6 +751,14 @@ final class APIClient {
         try await sendVoid("POST", "/channels/\(channelId)/poke", bodyData: body)
     }
 
+    /// Recent pokes RECEIVED by the current user on a 1:1 DM, newest first
+    /// (capped at 6 server-side). Feeds the poke button's history popover.
+    func listPokes(channelId: String) async throws -> [PokeHistoryEntry] {
+        struct Wrap: Decodable { let pokes: [PokeHistoryEntry] }
+        let wrap: Wrap = try await send("GET", "/channels/\(channelId)/pokes")
+        return wrap.pokes
+    }
+
     /// The user's notification overrides (per-guild / per-channel mute levels).
     func notificationOverrides() async throws -> [NotificationOverride] {
         let wrap: NotificationOverridesWrap = try await send("GET", "/users/@me/notification-settings")
@@ -660,14 +800,6 @@ final class APIClient {
     func regenerateBotToken(botId: String) async throws -> String {
         let resp: BotTokenResponse = try await send("POST", "/users/@me/bots/\(botId)/token")
         return resp.token
-    }
-
-    /// Update a bot's display name.
-    func updateBot(botId: String, displayName: String) async throws -> Bot {
-        let body: [String: Any] = ["displayName": displayName]
-        let data = try JSONSerialization.data(withJSONObject: body)
-        let wrap: BotWrap = try await send("PATCH", "/users/@me/bots/\(botId)", bodyData: data)
-        return wrap.bot
     }
 
     /// Delete a bot permanently.
@@ -986,6 +1118,13 @@ final class APIClient {
         return wrap.user
     }
 
+    /// One-time self-service DOB set/correction (dedicated, gated endpoint).
+    func updateDateOfBirth(_ dob: String) async throws -> SelfUser {
+        let data = try JSONSerialization.data(withJSONObject: ["dateOfBirth": dob])
+        let wrap: UserWrap = try await send("PATCH", "/users/@me/date-of-birth", bodyData: data)
+        return wrap.user
+    }
+
     // ── Search ────────────────────────────────────────────────────────────
     /// Full-text search within a channel. Returns matching messages.
     func searchMessages(channelId: String, query: String) async throws -> [Message] {
@@ -1056,9 +1195,10 @@ extension APIClient {
     }
 
     /// Confirm enrollment with a 6-digit code; returns one-time recovery codes
-    /// (POST /users/@me/totp/confirm).
-    func confirmTwoFactor(code: String) async throws -> TwoFactorRecovery {
-        let body = try JSONEncoder().encode(["code": code])
+    /// (POST /users/@me/totp/confirm). Step-up: arming 2FA is a login-factor
+    /// change, so the account password is re-verified server-side.
+    func confirmTwoFactor(code: String, currentPassword: String) async throws -> TwoFactorRecovery {
+        let body = try JSONEncoder().encode(["code": code, "currentPassword": currentPassword])
         return try await send("POST", "/users/@me/totp/confirm", bodyData: body)
     }
 
@@ -1151,6 +1291,45 @@ extension APIClient {
     func familyRemoveLink(otherId: String) async throws {
         try await sendVoid("DELETE", "/family/links/\(otherId)")
     }
+    /// Child invites a guardian by email. Returns "pending" (the email has an
+    /// account, awaiting their accept) or "awaiting_signup" (we emailed them).
+    func familyRequestParent(email: String) async throws -> String {
+        struct Result: Codable { let status: String }
+        let body = try JSONEncoder().encode(["email": email])
+        let r: Result = try await send("POST", "/family/request-parent", bodyData: body, authorized: true)
+        return r.status
+    }
+    func familyAcceptChildRequest(childId: String) async throws {
+        try await sendVoid("POST", "/family/child-requests/\(childId)/accept")
+    }
+
+    // MARK: WebAuthn passkeys
+    func passkeyLoginOptions() async throws -> PasskeyLoginOptions {
+        try await send("POST", "/auth/passkey/login/options", authorized: false)
+    }
+    func passkeyLoginVerify(challengeId: String, response: [String: Any]) async throws -> AuthSession {
+        let body = try JSONSerialization.data(withJSONObject: ["challengeId": challengeId, "response": response])
+        return try await send("POST", "/auth/passkey/login/verify", bodyData: body, authorized: false)
+    }
+    func passkeyRegisterOptions() async throws -> PasskeyRegisterOptions {
+        try await send("POST", "/auth/passkey/register/options")
+    }
+    func passkeyRegisterVerify(challengeId: String, response: [String: Any], deviceName: String?, currentPassword: String) async throws {
+        var obj: [String: Any] = ["challengeId": challengeId, "response": response, "currentPassword": currentPassword]
+        if let deviceName { obj["deviceName"] = deviceName }
+        let body = try JSONSerialization.data(withJSONObject: obj)
+        try await sendVoid("POST", "/auth/passkey/register/verify", bodyData: body)
+    }
+    func listPasskeys() async throws -> [PasskeyInfo] {
+        struct Wrap: Codable { let passkeys: [PasskeyInfo] }
+        let w: Wrap = try await send("GET", "/auth/passkey")
+        return w.passkeys
+    }
+    /// Step-up: removing a login factor requires the account password.
+    func deletePasskey(id: String, currentPassword: String) async throws {
+        let body = try JSONEncoder().encode(["currentPassword": currentPassword])
+        try await sendVoid("DELETE", "/auth/passkey/\(id)", bodyData: body)
+    }
 
     func familyChildRestrictions(childId: String) async throws -> ChildRestrictions {
         let wrap: FamilyRestrictionsWrap = try await send("GET", "/family/children/\(childId)/restrictions")
@@ -1158,13 +1337,16 @@ extension APIClient {
     }
 
     func familySetRestrictions(childId: String, _ r: ChildRestrictions) async throws -> ChildRestrictions {
-        let patch: [String: Bool] = [
+        let patch: [String: Any] = [
             "canAddFriends": r.canAddFriends,
             "canRemoveFriends": r.canRemoveFriends,
             "allowVoice": r.allowVoice,
             "allowVideo": r.allowVideo,
             "allowStream": r.allowStream,
             "allowCreateGuild": r.allowCreateGuild,
+            "allowJoinGuilds": r.allowJoinGuilds,
+            "allowMessaging": r.allowMessaging,
+            "dmPolicy": r.dmPolicy,
         ]
         let data = try JSONSerialization.data(withJSONObject: patch)
         let wrap: FamilyRestrictionsWrap = try await send("PATCH", "/family/children/\(childId)/restrictions", bodyData: data)
@@ -1193,6 +1375,13 @@ extension APIClient {
     }
     func deleteChannel(channelId: String) async throws {
         try await sendVoid("DELETE", "/channels/\(channelId)")
+    }
+
+    struct PurgeResult: Decodable { let deleted: Int; let done: Bool }
+    /// Soft-delete a batch of the channel's messages (server caps each call to
+    /// 1000 rows; loop until `done`). MANAGE_MESSAGES-gated server-side.
+    func purgeChannel(channelId: String) async throws -> PurgeResult {
+        return try await send("POST", "/channels/\(channelId)/messages/purge")
     }
 
     // ── Roles ───────────────────────────────────────────────────────────────
@@ -1411,7 +1600,7 @@ extension APIClient {
         let wrap: SecurityEventsWrap = try await send("GET", path)
         return wrap.events
     }
-    func adminSecurityWords() async throws -> [String] {
+    func adminSecurityWords() async throws -> [SecurityWord] {
         let wrap: SecurityWordsWrap = try await send("GET", "/admin/security/words")
         return wrap.words
     }
@@ -1470,23 +1659,26 @@ extension APIClient {
         return wrap.report
     }
 
-    func adminAddSecurityWord(_ word: String) async throws -> [String] {
-        let body = try JSONSerialization.data(withJSONObject: ["word": word])
+    /// Add (or move) a word. severity 'blocked' = hard block; 'watch' = alert
+    /// only. Defaults to 'blocked' (back-compat).
+    func adminAddSecurityWord(_ word: String, severity: String = "blocked") async throws -> [SecurityWord] {
+        let body = try JSONSerialization.data(withJSONObject: ["word": word, "severity": severity])
         let wrap: SecurityWordsWrap = try await send("POST", "/admin/security/words", bodyData: body)
         return wrap.words
     }
-    func adminRemoveSecurityWord(_ word: String) async throws -> [String] {
+    func adminRemoveSecurityWord(_ word: String) async throws -> [SecurityWord] {
         let enc = word.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? word
         let wrap: SecurityWordsWrap = try await send("DELETE", "/admin/security/words/\(enc)")
         return wrap.words
     }
     /// The server's common moderation wordlist (read-only; nothing added).
     func adminSecurityWordPreset() async throws -> [String] {
-        let wrap: SecurityWordsWrap = try await send("GET", "/admin/security/words/preset")
+        let wrap: SecurityPresetWrap = try await send("GET", "/admin/security/words/preset")
         return wrap.words
     }
-    /// Bulk-load the server's common moderation wordlist (insert-only).
-    func adminLoadSecurityWordPreset() async throws -> [String] {
+    /// Bulk-load the server's common moderation wordlist (insert-only; slurs
+    /// file as blocked, general profanity as watch).
+    func adminLoadSecurityWordPreset() async throws -> [SecurityWord] {
         let wrap: SecurityWordsWrap = try await send("POST", "/admin/security/words/preset")
         return wrap.words
     }
@@ -1498,6 +1690,43 @@ extension APIClient {
         let body = try JSONSerialization.data(withJSONObject: patch)
         let wrap: SecurityConfigWrap = try await send("PATCH", "/admin/security/config", bodyData: body)
         return wrap.config
+    }
+
+    // ── Monetization (instance-wide, any authed user) ────────────────────────
+    /// Admin-configured monetization gates: camera/stream quality tier
+    /// minimums, Appearance gate, upload caps. 404s on older servers — callers
+    /// treat any failure as "use built-in defaults".
+    func monetization() async throws -> MonetizationConfig {
+        let wrap: MonetizationConfigWrap = try await send("GET", "/instance/monetization")
+        return wrap.config
+    }
+
+    /// Admin write side of monetization gates (PUT /admin/monetization). Sends
+    /// the whole config (explicit null for a cleared upload cap = "use the env
+    /// default"), matching the web admin panel; server does a partial write.
+    func adminUpdateMonetization(_ c: MonetizationConfig) async throws -> MonetizationConfig {
+        func cap(_ v: Int?) -> Any { v ?? NSNull() }
+        let body = try JSONSerialization.data(withJSONObject: [
+            "config": [
+                "stream": ["p1080": c.stream.p1080, "k2": c.stream.k2, "k4": c.stream.k4],
+                "camera": ["p1080": c.camera.p1080, "k2": c.camera.k2, "k4": c.camera.k4],
+                "appearance": c.appearance,
+                "uploadCapsMb": [
+                    "free": cap(c.uploadCapsMb.free),
+                    "scout": cap(c.uploadCapsMb.scout),
+                    "guardian": cap(c.uploadCapsMb.guardian),
+                    "legend": cap(c.uploadCapsMb.legend),
+                ],
+            ],
+        ])
+        let wrap: MonetizationConfigWrap = try await send("PUT", "/admin/monetization", bodyData: body)
+        return wrap.config
+    }
+
+    /// Admin Overview recent-activity feed (GET /admin/activity).
+    func adminActivity() async throws -> AdminActivity {
+        let wrap: AdminActivityWrap = try await send("GET", "/admin/activity")
+        return wrap.activity
     }
 
     // ── Achievements ─────────────────────────────────────────────────────────
@@ -1523,13 +1752,32 @@ extension APIClient {
         let wrap: AdminUsersWrap = try await send("GET", path)
         return wrap.users
     }
-    func adminBanUser(userId: String) async throws { try await sendVoid("POST", "/admin/users/\(userId)/ban") }
+    /// Ban an account for a duration ("1m"|"3m"|"6m"|"perm"). Covers text + voice.
+    func adminBanUser(userId: String, duration: String = "perm") async throws {
+        let data = try JSONSerialization.data(withJSONObject: ["duration": duration])
+        try await sendVoid("POST", "/admin/users/\(userId)/ban", bodyData: data)
+    }
     func adminUnbanUser(userId: String) async throws { try await sendVoid("POST", "/admin/users/\(userId)/unban") }
-    func adminSetAdmin(userId: String, isAdmin: Bool) async throws {
-        let data = try JSONSerialization.data(withJSONObject: ["isAdmin": isAdmin])
-        try await sendVoid("POST", "/admin/users/\(userId)/admin", bodyData: data)
+    /// Set a user's instance role ("administrator" | "moderator" | "none").
+    /// The two flags are mutually exclusive server-side. Admin-only.
+    func adminSetRole(userId: String, role: String) async throws {
+        let data = try JSONSerialization.data(withJSONObject: ["role": role])
+        try await sendVoid("POST", "/admin/users/\(userId)/role", bodyData: data)
     }
     func adminLogoutUser(userId: String) async throws { try await sendVoid("POST", "/admin/users/\(userId)/logout") }
+    /// Reopen a user's one-time date-of-birth change.
+    func adminResetDobLock(userId: String) async throws {
+        try await sendVoid("POST", "/admin/users/\(userId)/reset-dob-lock")
+    }
+    /// Gift (or re-gift, overwriting) a supporter membership.
+    func adminGiftSubscription(userId: String, tier: String, duration: String) async throws {
+        let data = try JSONSerialization.data(withJSONObject: ["tier": tier, "duration": duration])
+        try await sendVoid("POST", "/admin/users/\(userId)/subscription", bodyData: data)
+    }
+    /// Reset (remove) a user's membership + clear their paid cosmetics.
+    func adminRemoveSubscription(userId: String) async throws {
+        try await sendVoid("DELETE", "/admin/users/\(userId)/subscription")
+    }
     /// Permanently delete a user account (hard delete). Throws on non-2xx —
     /// e.g. the server refuses when the user still owns active guilds.
     func adminDeleteUser(userId: String) async throws { try await sendVoid("DELETE", "/admin/users/\(userId)") }

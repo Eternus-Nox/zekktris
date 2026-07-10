@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Platform-based (no AppCompat/Material-XML dependency needed — Compose
+         Material3 owns all in-app styling). NoActionBar + our dark window bg;
+         Compose enableEdgeToEdge() draws behind the transparent system bars. -->
+    <style name="Theme.Zekktris" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/zk_bg0</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

@@ -1,11 +1,30 @@
 import Foundation
 import WatchConnectivity
 import WatchKit
+import WidgetKit
 
-/// A DM peer the watch can poke: the DM channel id + a display name.
+/// A DM peer the watch can poke or message: the DM channel id + display name,
+/// plus (for E2EE DMs) the base64 of the 32-byte channel key relayed from the
+/// phone so the watch can encrypt outgoing / decrypt incoming text itself.
 struct PokeTarget: Identifiable, Codable, Hashable {
     let id: String   // DM channel id
     let name: String
+    /// Current DM streak (consecutive days you've both messaged). 0 = none, so
+    /// the wrist can show what level you're at — and what you'd break.
+    var streak: Int = 0
+    /// Whether this DM is end-to-end encrypted. Separate from the key so the
+    /// watch can REFUSE to send plaintext to an E2EE DM whose key the phone
+    /// couldn't relay (locked / no key), instead of silently leaking.
+    var e2ee: Bool = false
+    /// base64 of the 32-byte AES key for an E2EE DM; nil if the phone didn't
+    /// have the key to relay.
+    var e2eeKeyBase64: String? = nil
+
+    /// Decoded 32-byte key, or nil if absent/bad.
+    var e2eeKey: Data? {
+        guard let b64 = e2eeKeyBase64, let d = Data(base64Encoded: b64), d.count == 32 else { return nil }
+        return d
+    }
 }
 
 /// A transient incoming-poke flash — the full-screen emoji shown on top,
@@ -28,6 +47,9 @@ final class WatchSyncStore: NSObject, ObservableObject {
     /// Set when the phone relays an incoming poke (only while the watch app is
     /// reachable). Drives the on-top emoji flash + the haptic wave.
     @Published var incomingPoke: PokeFlash?
+    /// Set from a widget/complication deep link (zekktris://friend/<id>) so the
+    /// root view can navigate to that friend. Cleared once consumed.
+    @Published var pendingFriendId: String?
 
     override init() {
         super.init()
@@ -43,6 +65,63 @@ final class WatchSyncStore: NSObject, ObservableObject {
            let list = try? JSONDecoder().decode([PokeTarget].self, from: data) {
             targets = list
         }
+        publishToWidget()
+    }
+
+    /// Mirror the latest token + API base URL + DM list to the watch App Group
+    /// so the widget/complication can poke + open DMs without the app running,
+    /// then reload its timelines. The token lands in the app-group keychain
+    /// (encrypted) — the price of one-tap-from-the-face.
+    private func publishToWidget() {
+        let dms = targets.map { WatchWidgetDM(id: $0.id, name: $0.name, streak: $0.streak) }
+        WatchWidgetBridge.publish(dms: dms, baseURL: apiBaseURL, token: token)
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    /// Handle a `zekktris://friend/<id>` (or `/dm/<id>`) deep link from a
+    /// widget/complication — stash the id for the root view to navigate to.
+    func handleURL(_ url: URL) {
+        guard url.scheme == "zekktris" else { return }
+        let id = url.pathComponents.first(where: { $0 != "/" }) ?? ""
+        if !id.isEmpty { pendingFriendId = id }
+    }
+
+    /// Actively PULL the freshest token + targets from the phone right before we
+    /// act, so the watch never sends / pokes / loads on a stale or missing
+    /// token. Sends a `refresh` message with a reply handler (which wakes the
+    /// phone app in the background) and applies the reply. Best-effort: a no-op
+    /// when the phone is unreachable (we keep whatever the last push gave us),
+    /// and bounded by `timeout` so a wedged phone never hangs a wrist action.
+    func requestFreshSync(timeout: TimeInterval = 4) async {
+        guard WCSession.isSupported() else { return }
+        let session = WCSession.default
+        guard session.activationState == .activated, session.isReachable else { return }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            var finished = false
+            // All three completion paths run on the main thread (the reply /
+            // error handlers hop to MainActor, the timeout is on the main queue),
+            // so this flag needs no further synchronization.
+            func finish() {
+                if finished { return }
+                finished = true
+                cont.resume()
+            }
+            session.sendMessage(
+                ["kind": "refresh"],
+                replyHandler: { reply in Task { @MainActor in self.apply(reply); finish() } },
+                errorHandler: { _ in Task { @MainActor in finish() } }
+            )
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { finish() }
+        }
+    }
+
+    /// Pull a fresh token from the phone, then hand back the current
+    /// (token, base) — or nil if we still have none (phone never synced and is
+    /// unreachable). The one call a wrist action awaits before hitting the API.
+    func credentials() async -> (token: String, base: String)? {
+        await requestFreshSync()
+        guard let t = token, let b = apiBaseURL else { return nil }
+        return (t, b)
     }
 
     /// Flash the full-screen emoji on top + play a three-beat haptic wave when
