@@ -1582,7 +1582,10 @@ function formatDateDivider(iso: string): string {
   return includeWeekday ? DIVIDER_WMDY_FMT.format(d) : DIVIDER_MDY_FMT.format(d);
 }
 
-const GROUP_WINDOW_MS = 5 * 60 * 1000;
+// 1 minute: a message sent a minute or more after the previous one starts a
+// NEW block with the avatar + timestamp, so exchanges don't clump together
+// (user request; iOS + Android match).
+const GROUP_WINDOW_MS = 60 * 1000;
 // Re-show the author header (avatar + name) at least every N messages within an
 // uninterrupted same-author run, so a long monologue doesn't lose its label and
 // you can tell who's talking without scrolling up. Mirrors the iOS client's
