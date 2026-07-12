@@ -1864,6 +1864,10 @@ interface AppStateValue {
   /** Append any messages newer than what we hold for an already-loaded
       channel (web analog of the native open-channel self-heal). */
   reconcileChannel: (channelId: string) => Promise<void>;
+  /** Bulletproof latest-window catch-up for the open channel (merges, never
+      resets scroll) — the return-from-background floor the after-cursor
+      reconcile can miss. */
+  refreshChannelLatest: (channelId: string) => Promise<void>;
   /**
    * Load the page of messages immediately older than what's currently
    * in state. Returns the number of messages added (0 = no new
@@ -2253,6 +2257,32 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         limit: 50,
       });
       // REST returns newest-first; append oldest-first so order is preserved.
+      for (const m of [...r.messages].reverse()) {
+        dispatch({ type: 'MESSAGE_APPEND', channelId, message: m });
+      }
+    },
+    [loadMessages, restForChannel],
+  );
+
+  /**
+   * BULLETPROOF catch-up for the OPEN conversation. Fetches the LATEST window
+   * (no `after` cursor — exactly what re-opening the channel does, the one
+   * recovery that always works) and MERGES it via MESSAGE_APPEND, which dedups
+   * by id, so it never clobbers loaded history or resets scroll. The after-
+   * cursor `reconcileChannel` above can still miss on a return-from-background
+   * (a stale/failed cursor fetch, a fetch racing the socket coming back); the
+   * plain latest fetch shares none of those failure modes, so a message that
+   * slipped through every live path appears the instant the tab regains focus
+   * or visibility — no page reload needed.
+   */
+  const refreshChannelLatest = useCallback(
+    async (channelId: string) => {
+      const existing = stateRef.current.messagesByChannel[channelId];
+      if (!existing || existing.length === 0) {
+        await loadMessages(channelId);
+        return;
+      }
+      const r = await (await restForChannel(channelId)).listMessages(channelId, { limit: 50 });
       for (const m of [...r.messages].reverse()) {
         dispatch({ type: 'MESSAGE_APPEND', channelId, message: m });
       }
@@ -3651,6 +3681,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       loadMessages,
       loadMessagesAround,
       reconcileChannel,
+      refreshChannelLatest,
       loadOlderMessages,
       loadMembers,
       loadRoles,
@@ -3684,6 +3715,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       loadMessages,
       loadMessagesAround,
       reconcileChannel,
+      refreshChannelLatest,
       loadOlderMessages,
       loadMembers,
       loadRoles,

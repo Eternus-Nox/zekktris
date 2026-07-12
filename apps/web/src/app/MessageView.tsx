@@ -87,6 +87,7 @@ export function MessageView({
   const loadMessages = useAppStateSelector((v) => v.loadMessages);
   const loadMessagesAround = useAppStateSelector((v) => v.loadMessagesAround);
   const reconcileChannel = useAppStateSelector((v) => v.reconcileChannel);
+  const refreshChannelLatest = useAppStateSelector((v) => v.refreshChannelLatest);
   const ackChannel = useAppStateSelector((v) => v.ackChannel);
   const sendMessageOptimistic = useAppStateSelector((v) => v.sendMessageOptimistic);
   const messages = useAppStateSelector((v) => v.state.messagesByChannel[channel.id]);
@@ -156,13 +157,26 @@ export function MessageView({
   // appear immediately — instead of the user having to refresh the page.
   // Append-only + cheap (a no-op `after` fetch when already current).
   useEffect(() => {
+    // Return-from-background (tab regains focus/visibility): use the BULLETPROOF
+    // latest-window catch-up — the same recovery re-opening the channel does —
+    // so a message that arrived while the tab was hidden can never leave the
+    // open chat stale. The after-cursor reconcile can miss here (stale cursor,
+    // fetch racing the socket coming back); the latest fetch shares none of
+    // those failure modes. Merged (dedup by id) so scroll/history are preserved.
+    const catchUpIfVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshChannelLatest(channel.id).catch(() => undefined);
+      }
+    };
+    // The frequent while-visible poll stays on the cheap after-cursor reconcile
+    // (a no-op zero-row fetch when already current).
     const reconcileIfVisible = () => {
       if (document.visibilityState === 'visible') {
         void reconcileChannel(channel.id).catch(() => undefined);
       }
     };
-    document.addEventListener('visibilitychange', reconcileIfVisible);
-    window.addEventListener('focus', reconcileIfVisible);
+    document.addEventListener('visibilitychange', catchUpIfVisible);
+    window.addEventListener('focus', catchUpIfVisible);
     // Near-live convergence for the OPEN conversation. The live gateway push
     // is the fast path, but it can silently fail to deliver (a half-dead
     // socket, a reverse proxy that isn't upgrading the WebSocket, a missed
@@ -174,11 +188,11 @@ export function MessageView({
     // rows in the common (already-current) case.
     const poll = window.setInterval(reconcileIfVisible, 3_000);
     return () => {
-      document.removeEventListener('visibilitychange', reconcileIfVisible);
-      window.removeEventListener('focus', reconcileIfVisible);
+      document.removeEventListener('visibilitychange', catchUpIfVisible);
+      window.removeEventListener('focus', catchUpIfVisible);
       window.clearInterval(poll);
     };
-  }, [channel.id, reconcileChannel]);
+  }, [channel.id, reconcileChannel, refreshChannelLatest]);
 
   // Scroll-into-view + flash highlight for the jump target. We wait
   // for the message to appear in state (load above) then in the DOM
