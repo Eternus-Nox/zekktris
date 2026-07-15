@@ -52,6 +52,7 @@ import * as permissions from '../services/permissions';
 import * as voice from '../services/voice';
 import * as dispatch from './dispatch';
 import * as dms from '../services/dms';
+import * as relationships from '../services/relationships';
 
 const GATEWAY_PATH = '/gateway';
 
@@ -251,7 +252,7 @@ export function attachGateway(httpServer: HttpServer): void {
         // with a fresh reconnect — if the user reconnects before this
         // finishes, the IDENTIFY handler will flip them back online
         // and dispatch the appropriate transition.
-        const [memberRows, dmRows] = await Promise.all([
+        const [memberRows, dmRows, friendIds] = await Promise.all([
           db
             .select({ guildId: schema.guildMembers.guildId })
             .from(schema.guildMembers)
@@ -260,13 +261,15 @@ export function attachGateway(httpServer: HttpServer): void {
             .select({ channelId: schema.dmRecipients.channelId })
             .from(schema.dmRecipients)
             .where(eq(schema.dmRecipients.userId, userId)),
+          relationships.listAcceptedFriendIds(userId),
         ]);
-        if (memberRows.length > 0 || dmRows.length > 0) {
+        if (memberRows.length > 0 || dmRows.length > 0 || friendIds.length > 0) {
           dispatch.presenceUpdate({
             userId,
             status: 'offline',
             guildIds: memberRows.map((r) => r.guildId),
             dmChannelIds: dmRows.map((r) => r.channelId),
+            userIds: friendIds,
           });
         }
       } catch (err) {
@@ -431,7 +434,7 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
   // Load the user's membership snapshot. We materialize sets that the
   // registry filter consults at fanout time — no DB queries on the hot
   // path.
-  const [user, guildIdRows, dmChannelIdRows, readStateRows] = await Promise.all([
+  const [user, guildIdRows, dmChannelIdRows, readStateRows, friendIds] = await Promise.all([
     db.select().from(schema.users).where(eq(schema.users.id, userId)).limit(1),
     db
       .select({ guildId: schema.guildMembers.guildId })
@@ -446,6 +449,10 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
     // round-trip after the viewable-channel resolver (saves one RTT on every
     // connect/reconnect, which iOS does on every background/foreground).
     readStates.listMy(userId),
+    // Accepted friends — so a friend who shares NO guild and NO DM channel
+    // still sees this user flip online on IDENTIFY. Batched here (one indexed
+    // read) rather than a serial round-trip before the presence broadcast.
+    relationships.listAcceptedFriendIds(userId),
   ]);
   if (!user[0]) {
     conn.send(invalidSessionFrame(false));
@@ -638,12 +645,13 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
   const priorStatus = user[0].status;
   const postUpdateStatus = priorStatus === 'offline' ? 'online' : priorStatus;
   const broadcastStatus = postUpdateStatus === 'invisible' ? 'offline' : postUpdateStatus;
-  if (guildIds.length > 0 || dmChannelIdRows.length > 0) {
+  if (guildIds.length > 0 || dmChannelIdRows.length > 0 || friendIds.length > 0) {
     dispatch.presenceUpdate({
       userId,
       status: broadcastStatus,
       guildIds,
       dmChannelIds: dmChannelIdRows.map((r) => r.channelId),
+      userIds: friendIds,
     });
   }
 
@@ -794,8 +802,18 @@ async function handleResume(conn: Connection, payload: ResumePayload | undefined
         : userRow.status;
   const guildIds = Array.from(conn.guildIds);
   const dmChannelIds = Array.from(conn.dmChannelIds);
-  if (guildIds.length > 0 || dmChannelIds.length > 0) {
-    dispatch.presenceUpdate({ userId, status: broadcastStatus, guildIds, dmChannelIds });
+  // The connection snapshot carries guilds + DM channels but not the friend
+  // list, so load accepted friends fresh here — this heals presence for a
+  // friend who shares no guild/DM after a >grace-period gap flipped us offline.
+  const friendIds = await relationships.listAcceptedFriendIds(userId);
+  if (guildIds.length > 0 || dmChannelIds.length > 0 || friendIds.length > 0) {
+    dispatch.presenceUpdate({
+      userId,
+      status: broadcastStatus,
+      guildIds,
+      dmChannelIds,
+      userIds: friendIds,
+    });
   }
 
   log.info('gateway: resumed', {

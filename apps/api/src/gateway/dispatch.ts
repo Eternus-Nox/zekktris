@@ -419,6 +419,13 @@ export function presenceUpdate(payload: {
    * online-flip) loads these alongside guildIds.
    */
   dmChannelIds?: bigint[];
+  /**
+   * Accepted-friend user ids. Delivered a single guild_id=null frame each so
+   * a friend who shares NO guild and NO DM channel still sees the subject's
+   * status change live (the null frame drives usersById + the Friends dot).
+   * The caller loads these via relationships.listAcceptedFriendIds.
+   */
+  userIds?: bigint[];
 }): void {
   // ONE bus publish carrying the user's full membership footprint. The
   // registry expands it at delivery into the exact frames the previous
@@ -435,14 +442,15 @@ export function presenceUpdate(payload: {
   // injected per-frame by the registry so each guild still gets its own.
   const guildIds = payload.guildIds;
   const dmChannelIds = payload.dmChannelIds ?? [];
-  if (guildIds.length === 0 && dmChannelIds.length === 0) return;
+  const userIds = payload.userIds ?? [];
+  if (guildIds.length === 0 && dmChannelIds.length === 0 && userIds.length === 0) return;
   publish(
     GatewayEvent.PRESENCE_UPDATE,
     {
       user_id: payload.userId.toString(),
       status: payload.status,
     },
-    { kind: 'presence', guildIds, dmChannelIds },
+    { kind: 'presence', guildIds, dmChannelIds, userIds },
   );
 }
 

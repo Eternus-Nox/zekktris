@@ -454,7 +454,12 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
       .select({ channelId: schema.dmRecipients.channelId })
       .from(schema.dmRecipients)
       .where(eq(schema.dmRecipients.userId, userId));
-    if (memberRows.length > 0 || dmRows.length > 0) {
+    // Accepted friends receive the status change too, even when they share no
+    // guild and no DM channel with this user — otherwise a manual status flip
+    // (e.g. Online → Invisible) would never reach a friends-only relationship.
+    const { listAcceptedFriendIds } = await import('../services/relationships');
+    const friendIds = await listAcceptedFriendIds(userId);
+    if (memberRows.length > 0 || dmRows.length > 0 || friendIds.length > 0) {
       const { presenceUpdate } = await import('../gateway/dispatch');
       // 'invisible' is a private setting — to other users it appears as
       // 'offline'. We broadcast offline rather than leaking the
@@ -466,6 +471,7 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
         status: broadcastStatus,
         guildIds: memberRows.map((r) => r.guildId),
         dmChannelIds: dmRows.map((r) => r.channelId),
+        userIds: friendIds,
       });
     }
   }

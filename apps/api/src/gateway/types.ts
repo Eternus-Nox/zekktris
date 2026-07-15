@@ -49,7 +49,7 @@ export type Audience =
    * the membership lists. The payload `d` carries `{ user_id, status }`; the
    * per-frame `guild_id` is injected at delivery time.
    */
-  | { kind: 'presence'; guildIds: bigint[]; dmChannelIds: bigint[] }
+  | { kind: 'presence'; guildIds: bigint[]; dmChannelIds: bigint[]; userIds: bigint[] }
   /**
    * A profile change (USER_UPDATE) for one user, destined for every guild
    * they're in PLUS explicit extra recipients (their DM peers + themselves

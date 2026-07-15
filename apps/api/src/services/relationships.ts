@@ -47,6 +47,22 @@ async function getRow(userId: bigint, targetId: bigint) {
 }
 
 /**
+ * Accepted-friend user ids for `userId`. The graph is symmetric (accept
+ * flips BOTH rows to 'friend'), so the subject's own rows are sufficient.
+ * Used by the gateway to fan a presence change out to friends who share no
+ * guild and no DM channel — otherwise their status dot never updates live.
+ * `type = 'friend'` inherently excludes blocked pairs (blockUser deletes the
+ * friendship rows), so no blocked-pair leak.
+ */
+export async function listAcceptedFriendIds(userId: bigint): Promise<bigint[]> {
+  const rows = await db
+    .select({ targetId: schema.relationships.targetId })
+    .from(schema.relationships)
+    .where(and(eq(schema.relationships.userId, userId), eq(schema.relationships.type, 'friend')));
+  return rows.map((r) => r.targetId);
+}
+
+/**
  * Send a friend request from `userId` to `targetId`. Idempotent — if
  * a row already exists, we resolve the conflict cleanly:
  *   - existing 'outgoing_request' → no-op (return existing)

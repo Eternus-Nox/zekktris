@@ -588,10 +588,19 @@ class Registry {
     // send each exactly one null frame. The null-guild handler is idempotent
     // (patches usersById + all DM recipients), matching the old behavior of
     // one null frame per peer.
-    if (audience.dmChannelIds.length > 0) {
+    // Null-frame recipients = DM peers ∪ accepted friends. Merged into ONE
+    // deduped set so a friend who is ALSO a DM peer (or in several DM channels)
+    // still gets exactly one null frame. The friend leg is what lets a friend
+    // who shares no guild AND no DM see the subject's status change at all —
+    // the null-guild handler patches usersById + the Friends dot idempotently.
+    if (audience.dmChannelIds.length > 0 || audience.userIds.length > 0) {
       const dmPeers = new Set<Connection>();
       for (const channelId of audience.dmChannelIds) {
         const set = this.byDMChannel.get(channelId);
+        if (set) for (const c of set) dmPeers.add(c);
+      }
+      for (const uid of audience.userIds) {
+        const set = this.byUser.get(uid);
         if (set) for (const c of set) dmPeers.add(c);
       }
       let nullFrame: string | null = null;
