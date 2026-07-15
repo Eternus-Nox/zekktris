@@ -1855,12 +1855,22 @@ messagesRouter.patch(
     const existing = await messages.getMessage(channelId, messageId);
     if (!existing) throw errors.notFound('Message');
     // Editing is author-only — even MANAGE_MESSAGES doesn't let you put words
-    // in someone else's mouth. Mods can delete, not edit.
+    // in someone else's mouth. Mods can delete others' messages, not edit them.
     if (existing.authorId !== userId) {
       throw errors.forbidden('You can only edit your own messages');
     }
-    // Edits are only allowed within a short grace window after posting.
-    if (Date.now() - existing.createdAt.getTime() > MESSAGE_MUTATE_WINDOW_MS) {
+    // Edits are normally only allowed within a short grace window after posting.
+    // A moderator (MANAGE_MESSAGES) may edit their OWN message at any time — the
+    // author-only check above still stands, so this only lifts the clock for the
+    // mod's own posts and never lets them rewrite another user's message.
+    const canManageMessages =
+      !ctx.isDM &&
+      ctx.channelPerms !== null &&
+      hasPermission(ctx.channelPerms, Permissions.MANAGE_MESSAGES);
+    if (
+      !canManageMessages &&
+      Date.now() - existing.createdAt.getTime() > MESSAGE_MUTATE_WINDOW_MS
+    ) {
       throw errors.forbidden('Messages can only be edited within a minute of posting');
     }
     // Timeout enforcement — a timed-out user could otherwise edit an
