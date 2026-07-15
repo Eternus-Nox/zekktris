@@ -106,30 +106,37 @@ async function accessToken(): Promise<string> {
 
 /** Map our cross-platform PushPayload onto an FCM v1 message for one token. */
 function buildFcmMessage(payload: PushPayload, token: string): Record<string, unknown> {
-  // FCM `data` values MUST be strings. Carry routing data (channelId, url,
-  // kind, e2ee ciphertext) so the app's tap/foreground handler can route,
-  // mirroring how APNs ships non-`aps` keys.
+  // DATA-ONLY message — deliberately NO top-level `notification` block. With a
+  // notification block the OS draws the banner itself and the app's
+  // onMessageReceived never runs while backgrounded/killed; data-only makes it
+  // run in every state, which is what lets the Android client offer inline
+  // quick-reply, ring a full-screen incoming call, and decrypt an E2EE DM
+  // preview on-device. The client rebuilds the visible notification from these
+  // `data` fields. (This builder is Android-only — iOS keeps its APNs path — so
+  // going data-only here can't affect iOS delivery.)
+  //
+  // FCM `data` values MUST be strings. Carry routing data (channelId, url, kind,
+  // e2ee ciphertext) plus the notification content the client needs to render.
   const data: Record<string, string> = {};
   for (const [k, v] of Object.entries(payload.data ?? {})) {
     if (v !== undefined && v !== null) data[k] = typeof v === 'string' ? v : String(v);
   }
   if (payload.url) data.url = payload.url;
   if (payload.kind) data.kind = payload.kind;
+  // Notification content now travels in `data` for the client to render.
+  data.title = payload.title;
+  data.body = payload.body;
+  if (payload.tag) data.tag = payload.tag;
+  if (payload.badge !== undefined) data.badge = String(payload.badge);
 
   return {
     token,
-    notification: { title: payload.title, body: payload.body },
     android: {
-      priority: payload.kind === 'call' ? 'high' : 'normal',
-      notification: {
-        sound: 'default',
-        // Collapse rapid repeats from one channel into a single thread, the
-        // Android analogue of APNs `thread-id`.
-        ...(payload.tag ? { tag: payload.tag } : {}),
-        // The app-icon badge count (Android shows it where the launcher
-        // supports it). 0 clears.
-        ...(payload.badge !== undefined ? { notification_count: payload.badge } : {}),
-      },
+      // High priority so a data-only push reliably wakes a backgrounded or
+      // swipe-killed app to run onMessageReceived promptly (a 'normal' data
+      // push can be deferred by Doze). Calls were already high; messages now
+      // match so their banner isn't delayed.
+      priority: 'high',
     },
     data,
   };
