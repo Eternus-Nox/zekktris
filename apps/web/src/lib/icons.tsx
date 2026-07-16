@@ -639,6 +639,42 @@ export function ScreenShare(props: IconProps) {
   );
 }
 
+/** Monitor (desktop display on a stand) — the desktop/laptop device glyph in
+ *  the Security → Active sessions list. Mirrors iOS's "laptopcomputer". */
+export function Monitor(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2" y="3" width="20" height="14" rx="2" />
+      <line x1="8" y1="21" x2="16" y2="21" />
+      <line x1="12" y1="17" x2="12" y2="21" />
+    </Svg>
+  );
+}
+
+/** Smartphone (handset body + home indicator) — the mobile device glyph in
+ *  the Security → Active sessions list. Mirrors iOS's "iphone". Distinct
+ *  from `Phone`, which is a telephone handset used for calls. */
+export function Smartphone(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="6" y="2" width="12" height="20" rx="2" />
+      <line x1="11" y1="18" x2="13" y2="18" />
+    </Svg>
+  );
+}
+
+/** Globe (meridians) — fallback device glyph for an unrecognized or absent
+ *  User-Agent in the Active sessions list. Mirrors iOS's "globe". */
+export function Globe(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="12" cy="12" r="10" />
+      <line x1="2" y1="12" x2="22" y2="12" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+    </Svg>
+  );
+}
+
 /** Ban (universal "no" / prohibition glyph) — used for the Bans tab
  *  in guild settings and the Ban action in moderation menus. */
 export function Ban(props: IconProps) {

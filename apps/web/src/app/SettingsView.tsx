@@ -15,7 +15,7 @@
  */
 
 import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
-import { ApiError, type PasskeyInfo } from '@zekktris/client';
+import { ApiError, type PasskeyInfo, type SessionInfo } from '@zekktris/client';
 import { UserTag } from '../lib/UserTag';
 import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
@@ -41,6 +41,10 @@ import {
   Shield,
   ChevronLeft,
   Key,
+  Monitor,
+  Smartphone,
+  Globe,
+  LogOut,
 } from '../lib/icons';
 import { useNavigate } from 'react-router-dom';
 import { copyText } from '../lib/clipboard';
@@ -1036,6 +1040,7 @@ export function SettingsView() {
             <PasswordSection />
             <TwoFactorSection />
             <PasskeysSection />
+            <SessionsSection />
             <QuickLoginSection />
 
             {/* Bots — iOS folds bot management into Security→Account rather
@@ -3007,6 +3012,214 @@ function PasskeysSection() {
         {adding ? 'Waiting for passkey…' : 'Add a passkey'}
       </button>
       {stepUp.element}
+    </section>
+  );
+}
+
+// ── Active sessions ─────────────────────────────────────────────────────────
+
+/** Compact relative-time formatter for session "last active" stamps. */
+function sessionRelativeTime(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(diffMs) || diffMs < 60_000) return 'just now';
+  const min = Math.floor(diffMs / 60_000);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+/**
+ * Best-effort device label from a User-Agent. Mirrors iOS's deviceLabel
+ * (MainView.swift). Ordered most-specific-first: Chrome UAs also contain
+ * "Safari" and Edge contains "Chrome", so a lookup in arbitrary order would
+ * mislabel — the distinctive token has to be checked first.
+ */
+function deviceLabel(ua: string | null): string {
+  if (!ua) return 'Unknown device';
+  if (ua.includes('Zekktris')) return 'Zekktris (app)';
+  const browser = (
+    [
+      ['Edg', 'Edge'],
+      ['OPR', 'Opera'],
+      ['Firefox', 'Firefox'],
+      ['Chrome', 'Chrome'],
+      ['Safari', 'Safari'],
+    ] as const
+  ).find(([token]) => ua.includes(token))?.[1];
+  const os = (
+    [
+      ['iPhone', 'iPhone'],
+      ['iPad', 'iPad'],
+      ['Mac OS X', 'macOS'],
+      ['Macintosh', 'macOS'],
+      ['Windows', 'Windows'],
+      ['Android', 'Android'],
+      ['Linux', 'Linux'],
+    ] as const
+  ).find(([token]) => ua.includes(token))?.[1];
+  if (browser && os) return `${browser} on ${os}`;
+  return browser ?? os ?? ua.slice(0, 40);
+}
+
+/** Device glyph for a User-Agent. Mirrors iOS's deviceIcon. */
+function DeviceIcon({ ua, className }: { ua: string | null; className?: string }) {
+  if (ua && (ua.includes('Zekktris') || ua.includes('iPhone') || ua.includes('Android'))) {
+    return <Smartphone size={16} className={className} />;
+  }
+  if (
+    ua &&
+    (ua.includes('iPad') ||
+      ua.includes('Macintosh') ||
+      ua.includes('Mac OS X') ||
+      ua.includes('Windows') ||
+      ua.includes('Linux'))
+  ) {
+    return <Monitor size={16} className={className} />;
+  }
+  return <Globe size={16} className={className} />;
+}
+
+/**
+ * Active sessions: every device currently logged in, with a per-row revoke
+ * and a bulk "sign out everywhere else". Mirrors iOS's SessionsSheet
+ * (MainView.swift).
+ *
+ * Two security invariants, both inherited from iOS:
+ *   - `current` comes from the server (SessionDTO stamps exactly one row);
+ *     we never try to infer which session is ours from the local token.
+ *   - The current session gets NO revoke control at all — signing yourself
+ *     out from a device-management list is a footgun. Logout is the path.
+ *
+ * The IP + User-Agent shown here are personal data. They're rendered for the
+ * user's own review and go nowhere else — no logging, no query strings.
+ */
+function SessionsSection() {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
+  const [revoking, setRevoking] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  async function refresh() {
+    try {
+      const r = await rest.listSessions();
+      setSessions(r.sessions);
+    } catch {
+      setSessions([]);
+    }
+  }
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function revoke(id: string) {
+    setRevoking((s) => new Set(s).add(id));
+    try {
+      await rest.revokeSession(id);
+      setSessions((list) => (list ?? []).filter((s) => s.id !== id));
+      toasts.push('Session signed out', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not sign out that session', 'error');
+    } finally {
+      setRevoking((s) => {
+        const next = new Set(s);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
+
+  async function revokeOthers() {
+    if (
+      !window.confirm(
+        'Sign out every other device? This device stays signed in; everywhere else will need to log in again.',
+      )
+    )
+      return;
+    setBulkBusy(true);
+    try {
+      await rest.revokeOtherSessions();
+      // Keep only the server-flagged current session rather than re-fetching.
+      setSessions((list) => (list ?? []).filter((s) => s.current));
+      toasts.push('Signed out everywhere else', 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not sign out other sessions', 'error');
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  // Current session first, then most-recently-active. ISO-8601 stamps sort
+  // chronologically as plain strings, so a > b ⇒ a is more recent.
+  const sorted = [...(sessions ?? [])].sort((a, b) => {
+    if (a.current !== b.current) return a.current ? -1 : 1;
+    return a.lastUsedAt < b.lastUsedAt ? 1 : a.lastUsedAt > b.lastUsedAt ? -1 : 0;
+  });
+  const hasOthers = sorted.some((s) => !s.current);
+
+  return (
+    <section className="space-y-2">
+      <div className="text-xs uppercase tracking-wider text-ink-3">Active Sessions</div>
+      <p className="text-sm text-ink-3 leading-relaxed">
+        Devices currently signed in to your account. If you don&apos;t recognize one, sign it out —
+        and change your password.
+      </p>
+      {sessions === null ? (
+        <div className="text-sm text-ink-3">Loading…</div>
+      ) : sorted.length === 0 ? (
+        <div className="text-sm text-ink-3">No active sessions.</div>
+      ) : (
+        <ul className="space-y-1.5">
+          {sorted.map((s) => (
+            <li
+              key={s.id}
+              className="flex items-start gap-2 rounded-md border border-line bg-bg-1/60 px-3 py-2"
+            >
+              <DeviceIcon ua={s.userAgent} className="text-accent shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0 space-y-0.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-sm text-ink-1 truncate">{deviceLabel(s.userAgent)}</span>
+                  {s.current && (
+                    <span className="shrink-0 rounded-full bg-accent/15 px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-accent">
+                      THIS DEVICE
+                    </span>
+                  )}
+                </div>
+                {s.ipAddress && <div className="font-mono text-[11px] text-ink-3">{s.ipAddress}</div>}
+                <div className="text-[11px] text-ink-3">
+                  Last active {sessionRelativeTime(s.lastUsedAt)}
+                </div>
+              </div>
+              {/* No revoke control for the current session — deliberate. */}
+              {!s.current && (
+                <button
+                  type="button"
+                  onClick={() => void revoke(s.id)}
+                  disabled={revoking.has(s.id)}
+                  className="shrink-0 text-xs text-red-400 hover:underline disabled:opacity-50 disabled:no-underline"
+                >
+                  {revoking.has(s.id) ? 'Signing out…' : 'Sign out'}
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {hasOthers && (
+        <button
+          type="button"
+          onClick={() => void revokeOthers()}
+          disabled={bulkBusy}
+          className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-md border border-red-400/40 bg-red-400/10 text-ink-1 hover:bg-red-400/20 disabled:opacity-50"
+        >
+          <LogOut size={15} />
+          {bulkBusy ? 'Signing out…' : 'Sign out everywhere else'}
+        </button>
+      )}
     </section>
   );
 }

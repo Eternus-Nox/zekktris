@@ -47,6 +47,7 @@ import type {
   SecurityEvent,
   SecurityWord,
   SelfUser,
+  SessionInfo,
   VoiceState,
   Webhook,
 } from './types';
@@ -491,6 +492,30 @@ export class RestClient {
     revokeOtherSessions?: boolean;
   }): Promise<{ ok: boolean; revokedSessions?: number }> {
     return this.request('POST', '/users/@me/password', input);
+  }
+
+  // ── Active sessions ────────────────────────────────────────────────────
+  // Every device currently logged in as the current user. The server stamps
+  // exactly one entry with `current: true` — trust that flag rather than
+  // trying to match the local token against the list.
+
+  /** List the current user's logged-in sessions. */
+  listSessions(): Promise<{ sessions: SessionInfo[] }> {
+    return this.request('GET', '/users/@me/sessions');
+  }
+
+  /**
+   * Revoke a single session, signing that device out. Passing the current
+   * session's id would sign the caller out of this device — UIs shouldn't
+   * offer that; use `logout()` instead.
+   */
+  revokeSession(id: string): Promise<{ ok: boolean }> {
+    return this.request('DELETE', `/users/@me/sessions/${id}`);
+  }
+
+  /** Revoke every session except the current one. */
+  revokeOtherSessions(): Promise<{ ok: boolean }> {
+    return this.request('DELETE', '/users/@me/sessions');
   }
 
   // ── Bots ──────────────────────────────────────────────────────────────

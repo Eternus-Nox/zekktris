@@ -996,6 +996,29 @@ export interface AchievementsResponse {
   public?: boolean;
 }
 
+// ── Active sessions (Settings → Security) ───────────────────────────────────
+
+/**
+ * One logged-in auth session. Mirrors the server's SessionDTO
+ * (apps/api/src/lib/dto.ts → toSession).
+ *
+ * `userAgent` / `ipAddress` are personal data: render them for the user's own
+ * review, but never log them or ship them anywhere else.
+ */
+export interface SessionInfo {
+  id: string;
+  userAgent: string | null;
+  ipAddress: string | null;
+  createdAt: string;
+  lastUsedAt: string;
+  expiresAt: string;
+  /**
+   * True if this is the session making the request. Server-stamped — never
+   * infer it client-side, and never offer to revoke the session it marks.
+   */
+  current: boolean;
+}
+
 // ── Instance security (Admin → Security) ────────────────────────────────────
 
 export interface SecurityConfig {
