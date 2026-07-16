@@ -6,15 +6,11 @@
  * done by clicking another rail tile, matching the Discover/Admin
  * pattern.
  *
- * Flow: the user types a name first, then a popup asks HOW to build the
- * server — start from scratch, from a template file, or by recovering a
- * backup. The name they typed is carried into every path (for template /
- * backup it overrides the file's stored name) so naming always happens
- * up front and only once.
- *
- * Template and backup files share the same on-disk format (the JSON
- * produced by the Backup & Restore export); the two popup options differ
- * only in intent + wording. Both feed `rest.importGuild`.
+ * Flow (mirrors iOS): the user names + optionally describes the server and
+ * the primary button creates it immediately. An inline "OR — Import from a
+ * file" option below builds a server from an exported template/backup file
+ * (the JSON produced by the Backup & Restore export) via `rest.importGuild`,
+ * with the typed name overriding the file's stored name.
  */
 
 import { useRef, useState } from 'react';
@@ -23,9 +19,7 @@ import { ChevronLeft } from '../lib/icons';
 import { ApiError } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
-import { Plus, Archive, FilePen, Upload, X } from '../lib/icons';
-import { Portal } from '../lib/Portal';
-import { avatarColor, avatarInitials } from '../lib/avatar';
+import { Plus, Upload, Camera } from '../lib/icons';
 
 export function CreateServerView() {
   const { rest } = useAuth();
@@ -36,14 +30,9 @@ export function CreateServerView() {
   const nav = useNavigate();
 
   const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
   const [pending, setPending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  // Popup ("how would you like to set it up?") visibility. Opened once a
-  // valid name is submitted.
-  const [choosing, setChoosing] = useState(false);
-  // Which import flavor the hidden file input is currently acting for —
-  // purely cosmetic (drives the error wording). null = blank create.
-  const importModeRef = useRef<'template' | 'backup'>('template');
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [importing, setImporting] = useState(false);
 
@@ -70,9 +59,10 @@ export function CreateServerView() {
   }
 
   const trimmedName = name.trim();
+  const trimmedDescription = description.trim();
 
-  // Step 1 — name submitted. Don't create yet; open the setup popup.
-  function onSubmitName(e: React.FormEvent) {
+  // Create the server immediately (matching iOS — no intermediate popup).
+  async function onSubmitName(e: React.FormEvent) {
     e.preventDefault();
     if (createRestricted) {
       setErr('Creating servers is restricted by your parent');
@@ -80,16 +70,18 @@ export function CreateServerView() {
     }
     if (!trimmedName) return;
     setErr(null);
-    setChoosing(true);
+    await createBlank();
   }
 
-  // Step 2a — start from scratch (blank server with the typed name).
   async function createBlank() {
     if (pending || importing) return;
     setPending(true);
     setErr(null);
     try {
-      const r = await rest.createGuild({ name: trimmedName });
+      const r = await rest.createGuild({
+        name: trimmedName,
+        ...(trimmedDescription ? { description: trimmedDescription } : {}),
+      });
       // Upload the optional picture + banner to the new guild (non-fatal).
       if (iconFile) {
         try {
@@ -110,20 +102,13 @@ export function CreateServerView() {
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : 'Failed to create server');
       setPending(false);
-      setChoosing(false);
     }
   }
 
-  // Step 2b — kick off the file picker for template OR backup. The actual
-  // import runs in onImportFile once a file is chosen.
-  function pickFile(mode: 'template' | 'backup') {
-    importModeRef.current = mode;
-    fileRef.current?.click();
-  }
-
-  // Build a brand-new server from a template / backup file. The typed name
-  // overrides whatever the file was called, so the user's choice up front
-  // is what sticks. Reuses the same import the Backup & Restore tab uses.
+  // Build a brand-new server from an exported template / backup file. The
+  // typed name overrides whatever the file was called, so the user's choice
+  // up front is what sticks. Reuses the same import the Backup & Restore tab
+  // uses.
   async function onImportFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -132,7 +117,6 @@ export function CreateServerView() {
       setErr('Creating servers is restricted by your parent');
       return;
     }
-    const mode = importModeRef.current;
     setImporting(true);
     setErr(null);
     try {
@@ -156,18 +140,11 @@ export function CreateServerView() {
           ? e.message
           : e instanceof Error
             ? e.message
-            : `Failed to create from ${mode}`,
+            : 'Failed to create from that file',
       );
       setImporting(false);
     }
   }
-
-  // Live-preview tile mimics the rail's guild tile. Initials seed from
-  // the typed name so users see what their server icon will look like
-  // before they commit. Empty name falls back to a placeholder so the
-  // tile doesn't look broken at idle.
-  const tone = avatarColor(trimmedName || 'zekktris-new-server');
-  const initials = avatarInitials(trimmedName || 'New server');
 
   const busy = pending || importing;
 
@@ -182,7 +159,7 @@ export function CreateServerView() {
           <ChevronLeft size={20} />
         </button>
         <Plus size={16} className="text-accent shrink-0" />
-        <h1 className="text-base sm:text-lg font-semibold truncate">Create a server</h1>
+        <h1 className="text-base sm:text-lg font-semibold truncate">Create a Server</h1>
       </header>
 
       <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin">
@@ -191,17 +168,15 @@ export function CreateServerView() {
             {/* Description first, then the banner/picture area below it. */}
             <div className="text-center mb-8">
               <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-                Create your server
+                Create a Server
               </h2>
               <p className="mt-2 text-sm text-ink-2 max-w-sm mx-auto leading-relaxed">
-                A server is where you and your community hang out — text, voice,
-                and everything in between. Pick a name to get started; you can
-                change it any time.
+                Give your server a name. You can change it later.
               </p>
             </div>
             {/* Optional server banner + picture. The picture overhangs the
                 banner's bottom-left (mirrors the profile/guild header). Both
-                optional; the picture falls back to the live initials preview. */}
+                optional; the picture falls back to a camera placeholder. */}
             <div className="relative">
               <button
                 type="button"
@@ -223,16 +198,16 @@ export function CreateServerView() {
                 onClick={() => iconInputRef.current?.click()}
                 disabled={busy}
                 aria-label="Add server picture (optional)"
-                className="absolute -bottom-6 left-4 w-20 h-20 rounded-2xl overflow-hidden ring-4 ring-bg-1 shadow-lg hover:brightness-110 transition-all disabled:opacity-60"
+                className="absolute -bottom-6 left-4 w-20 h-20 rounded-full overflow-hidden ring-4 ring-bg-1 shadow-lg hover:brightness-110 transition-all disabled:opacity-60"
               >
                 {iconPreview ? (
                   <img src={iconPreview} alt="" className="w-full h-full object-cover" />
                 ) : (
                   <div
-                    className={`w-full h-full flex items-center justify-center text-2xl font-bold ${tone}`}
+                    className="w-full h-full flex items-center justify-center bg-bg-3 text-ink-2"
                     aria-hidden
                   >
-                    <span className="zk-avatar-initials">{initials}</span>
+                    <Camera size={24} />
                   </div>
                 )}
               </button>
@@ -250,13 +225,27 @@ export function CreateServerView() {
                 style={{ borderColor: 'var(--zk-line)' }}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. The Zekktris Lounge"
+                placeholder="My cool server"
                 maxLength={100}
                 required
               />
               <span className="block mt-1.5 text-xs text-ink-3">
                 Between 1 and 100 characters.
               </span>
+            </label>
+            <label className="block">
+              <span className="text-xs uppercase tracking-wider font-semibold text-ink-3">
+                Description (optional)
+              </span>
+              <textarea
+                rows={3}
+                className="mt-2 w-full bg-bg-1/60 backdrop-blur-sm border rounded-md px-3 py-2.5 outline-none resize-none transition-all focus:shadow-[0_0_0_1px_var(--accent-glow),0_0_14px_var(--accent-glow)]"
+                style={{ borderColor: 'var(--zk-line)' }}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="What's your server about?"
+                maxLength={1000}
+              />
             </label>
             {err && (
               <div className="text-sm text-red-300 bg-red-500/10 border border-red-500/30 rounded-md px-3 py-2">
@@ -268,7 +257,30 @@ export function CreateServerView() {
               disabled={!trimmedName || createRestricted || busy}
               className="w-full px-4 py-2.5 rounded-md bg-gradient-to-br from-accent to-accent-2 hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed text-bg-0 font-semibold transition-all shadow-[0_0_0_1px_var(--accent-glow),0_4px_18px_var(--accent-glow)]"
             >
-              {createRestricted ? 'Restricted by your parent' : 'Continue'}
+              {createRestricted
+                ? 'Restricted by your parent'
+                : pending
+                  ? 'Creating…'
+                  : 'Create Server'}
+            </button>
+
+            {/* Inline OR divider + import — mirrors iOS's on-page import
+                option instead of a post-name popup. */}
+            <div className="flex items-center gap-3 pt-1" aria-hidden>
+              <span className="flex-1 h-px bg-line" />
+              <span className="text-xs uppercase tracking-wider text-ink-3 font-semibold">
+                or
+              </span>
+              <span className="flex-1 h-px bg-line" />
+            </div>
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              disabled={busy || createRestricted}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-md border border-line bg-bg-2 hover:bg-bg-3 text-ink-1 text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              <Upload size={16} />
+              {importing ? 'Importing…' : 'Import from a file'}
             </button>
           </form>
 
@@ -282,7 +294,7 @@ export function CreateServerView() {
         </div>
       </div>
 
-      {/* Hidden file input shared by the template + backup options. */}
+      {/* Hidden file input for the "Import from a file" option. */}
       <input
         ref={fileRef}
         type="file"
@@ -305,113 +317,6 @@ export function CreateServerView() {
         onChange={(e) => onPickImage(e, 'banner')}
         className="hidden"
       />
-
-      {/* Step 2 — setup popup: how to build the server. */}
-      {choosing && (
-        <Portal>
-          <div
-            className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
-            onClick={() => !busy && setChoosing(false)}
-          >
-            <div
-              className="bg-bg-1 border border-line elevation-pop w-full max-w-md rounded-lg overflow-hidden"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold text-ink-1 truncate">
-                    Set up “{trimmedName}”
-                  </div>
-                  <div className="text-xs text-ink-3">Choose how to build your server</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => !busy && setChoosing(false)}
-                  aria-label="Close"
-                  className="shrink-0 p-1.5 rounded-md text-ink-2 hover:bg-bg-3 disabled:opacity-50"
-                  disabled={busy}
-                >
-                  <X size={16} />
-                </button>
-              </div>
-
-              <div className="p-4 space-y-2.5">
-                {/* Start from scratch */}
-                <button
-                  type="button"
-                  onClick={createBlank}
-                  disabled={busy}
-                  className="w-full flex items-center gap-3 text-left px-4 py-3 rounded-lg border border-line bg-bg-2 hover:border-accent hover:bg-bg-3/50 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  <span className="shrink-0 w-9 h-9 rounded-lg bg-accent/15 text-accent flex items-center justify-center">
-                    <Plus size={18} />
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block text-sm font-medium text-ink-1">
-                      {pending ? 'Creating…' : 'Start from scratch'}
-                    </span>
-                    <span className="block text-xs text-ink-3 leading-snug">
-                      A clean server with a couple of starter channels.
-                    </span>
-                  </span>
-                </button>
-
-                {/* Use a template */}
-                <button
-                  type="button"
-                  onClick={() => pickFile('template')}
-                  disabled={busy}
-                  className="w-full flex items-center gap-3 text-left px-4 py-3 rounded-lg border border-line bg-bg-2 hover:border-accent hover:bg-bg-3/50 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  <span className="shrink-0 w-9 h-9 rounded-lg bg-accent/15 text-accent flex items-center justify-center">
-                    <FilePen size={18} />
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block text-sm font-medium text-ink-1">
-                      {importing && importModeRef.current === 'template'
-                        ? 'Building…'
-                        : 'Use a template'}
-                    </span>
-                    <span className="block text-xs text-ink-3 leading-snug">
-                      Start from a template file — channels, roles, and
-                      permissions come ready-made.
-                    </span>
-                  </span>
-                </button>
-
-                {/* Recover from a backup */}
-                <button
-                  type="button"
-                  onClick={() => pickFile('backup')}
-                  disabled={busy}
-                  className="w-full flex items-center gap-3 text-left px-4 py-3 rounded-lg border border-line bg-bg-2 hover:border-accent hover:bg-bg-3/50 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  <span className="shrink-0 w-9 h-9 rounded-lg bg-accent/15 text-accent flex items-center justify-center">
-                    <Upload size={18} />
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block text-sm font-medium text-ink-1">
-                      {importing && importModeRef.current === 'backup'
-                        ? 'Restoring…'
-                        : 'Recover from a backup'}
-                    </span>
-                    <span className="block text-xs text-ink-3 leading-snug">
-                      Rebuild a server from a backup file you exported earlier.
-                    </span>
-                  </span>
-                </button>
-
-                {err && (
-                  <div className="text-sm text-red-300 bg-red-500/10 border border-red-500/30 rounded-md px-3 py-2 flex items-start gap-2">
-                    <Archive size={14} className="mt-0.5 shrink-0" />
-                    <span>{err}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </Portal>
-      )}
     </div>
   );
 }

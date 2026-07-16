@@ -32,7 +32,16 @@ import {
 } from '../lib/notifyPrefs';
 import { useToasts } from '../state/Toasts';
 import { compressImage } from '../lib/compressImage';
-import { AlertTriangle, Copy, Settings as SettingsIcon, Shield, ChevronLeft, Key } from '../lib/icons';
+import {
+  AlertTriangle,
+  Camera,
+  Check,
+  Copy,
+  Settings as SettingsIcon,
+  Shield,
+  ChevronLeft,
+  Key,
+} from '../lib/icons';
 import { useNavigate } from 'react-router-dom';
 import { copyText } from '../lib/clipboard';
 import { qrEncode, qrToSvg } from '../lib/qr';
@@ -186,15 +195,23 @@ export function SettingsView() {
   // value-seeding render so we don't fire a redundant save on open.
   const saveRef = useRef<(opts?: { silent?: boolean }) => Promise<void>>(async () => {});
   const didSeedRef = useRef(false);
-  /** Active settings tab. Two top-level categories:
-   *    - profile  → identity, password, 2FA, avatar/banner, status, name,
-   *                 bio, notifications, install, privacy, blocked
-   *    - voice    → voice + video device settings, audio processing,
-   *                 video quality
+  /** Active settings tab. Four top-level categories, mirroring the iOS
+   *  Settings tab bar:
+   *    - profile     → avatar/banner, name, about me, status, notifications,
+   *                    install, privacy, blocked, legal
+   *    - security    → identity (user id / username / email), password, 2FA,
+   *                    passkeys, quick login, bots (iOS folds Bots in here
+   *                    rather than giving it a standalone tab)
+   *    - voice       → voice + video device settings, audio processing,
+   *                    video quality
+   *    - membership  → tiers/pitch/manage plus the appearance cosmetics they
+   *                    unlock (themes, avatar decoration, name tag)
    *  Defaults to 'profile' so users land on the surface they're
    *  already used to. Transient state — not persisted; each visit
-   *  starts on User Profile. */
-  const [activeTab, setActiveTab] = useState<'profile' | 'membership' | 'security' | 'voice' | 'bots'>('profile');
+   *  starts on Profile. */
+  const [activeTab, setActiveTab] = useState<'profile' | 'membership' | 'security' | 'voice'>(
+    'profile',
+  );
   const [theme, setTheme] = useState<ThemeId>(() => getStoredTheme());
 
   function chooseTheme(id: ThemeId) {
@@ -228,6 +245,9 @@ export function SettingsView() {
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [bannerUploading, setBannerUploading] = useState(false);
   const [bannerPreview, setBannerPreview] = useState<string | null>(null);
+  // Hidden file inputs driven by the persistent profile hero (below the header).
+  const heroBannerInput = useRef<HTMLInputElement>(null);
+  const heroAvatarInput = useRef<HTMLInputElement>(null);
   // Status auto-save runs independently from the Save Changes button; we
   // track its in-flight state separately so the buttons disable correctly
   // without flickering the main Save spinner.
@@ -492,20 +512,21 @@ export function SettingsView() {
           <SettingsIcon size={16} className="text-accent shrink-0" />
           <h1 className="text-base sm:text-lg font-semibold truncate">Settings</h1>
         </div>
-        {/* Tab bar. Two top-level categories — User Profile and Voice
-            & Video. Active tab gets the accent underline; inactive
-            tabs get an ink-3 label that brightens on hover. Border
-            radius is intentionally none on the bottom so the active
-            tab's underline reads as continuous with the header
-            divider. */}
-        <nav className="flex gap-1 -mb-px" role="tablist" aria-label="Settings sections">
+        {/* Tab bar — iOS capsule pills. The active tab is a solid accent
+            capsule; inactive tabs are bg-2 chips whose label brightens on
+            hover. Horizontally scrollable so the four pills never wrap or
+            get clipped on narrow phones. */}
+        <nav
+          className="flex gap-2 overflow-x-auto scrollbar-thin py-1"
+          role="tablist"
+          aria-label="Settings sections"
+        >
           {(
             [
-              { id: 'profile', label: 'User Profile' },
+              { id: 'profile', label: 'Profile' },
               { id: 'security', label: 'Security' },
               { id: 'voice', label: 'Voice & Video' },
               { id: 'membership', label: 'Membership' },
-              { id: 'bots', label: 'Bots' },
             ] as const
           ).map((t) => {
             const active = activeTab === t.id;
@@ -516,10 +537,8 @@ export function SettingsView() {
                 role="tab"
                 aria-selected={active}
                 onClick={() => setActiveTab(t.id)}
-                className={`px-3 py-2 text-sm border-b-2 transition-colors ${
-                  active
-                    ? 'border-accent text-ink-1 font-medium'
-                    : 'border-transparent text-ink-3 hover:text-ink-2'
+                className={`px-3.5 py-1.5 text-sm rounded-full font-medium whitespace-nowrap transition-colors ${
+                  active ? 'bg-accent text-white' : 'bg-bg-2 text-ink-2 hover:text-ink-1'
                 }`}
               >
                 {t.label}
@@ -530,6 +549,93 @@ export function SettingsView() {
       </header>
 
       <div className="p-4 sm:p-6 space-y-5 overflow-y-auto scrollbar-thin flex-1 min-h-0">
+        {/* Persistent profile hero — full-bleed banner + overhanging avatar +
+            name + "Upload Picture" pill, matching the iOS Settings header.
+            Shown above the tab content on every tab. The camera buttons and
+            the pill drive the same upload handlers the old boxy pickers used;
+            Remove lives on the Profile tab so the controls aren't duplicated. */}
+        <div className="-mx-4 sm:-mx-6 -mt-4 sm:-mt-6">
+          <div className="relative w-full aspect-[16/6] overflow-hidden bg-gradient-to-r from-accent/55 to-accent-2/45">
+            {(bannerPreview || user.bannerUrl) && (
+              <img
+                src={bannerPreview || user.bannerUrl || undefined}
+                alt=""
+                className="w-full h-full object-cover"
+              />
+            )}
+            <button
+              type="button"
+              onClick={() => heroBannerInput.current?.click()}
+              disabled={bannerUploading}
+              className="absolute bottom-2 right-2 w-9 h-9 grid place-items-center rounded-full bg-black/50 text-white hover:bg-black/70 disabled:opacity-60 transition-colors"
+              aria-label="Change banner"
+            >
+              <Camera size={17} />
+            </button>
+          </div>
+          <div className="px-4 sm:px-6 -mt-9 flex items-end gap-3">
+            <button
+              type="button"
+              onClick={() => heroAvatarInput.current?.click()}
+              disabled={avatarUploading}
+              className="relative shrink-0 disabled:opacity-70"
+              aria-label="Change avatar"
+            >
+              <span
+                className={`block w-[76px] h-[76px] rounded-full border-4 border-bg-1 text-2xl font-semibold flex items-center justify-center ${avatarColor(user.id)}`}
+                aria-hidden="true"
+              >
+                {avatarInitials(user.displayName)}
+              </span>
+              <AvatarImage
+                src={avatarPreview || user.avatarUrl}
+                className="absolute inset-0 w-[76px] h-[76px] rounded-full border-4 border-bg-1 object-cover"
+              />
+              <span className="absolute bottom-0 right-0 w-6 h-6 grid place-items-center rounded-full bg-accent text-white border-2 border-bg-1">
+                <Camera size={11} />
+              </span>
+            </button>
+            <div className="min-w-0 pb-1">
+              <div className="text-xl font-bold truncate leading-tight text-ink-1">
+                {user.displayName || user.username}
+              </div>
+              <div className="text-sm text-ink-3 truncate">@{user.username}</div>
+            </div>
+          </div>
+          <div className="px-4 sm:px-6 mt-2.5">
+            <button
+              type="button"
+              onClick={() => heroAvatarInput.current?.click()}
+              disabled={avatarUploading}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-accent/[0.12] text-accent text-sm font-medium hover:bg-accent/20 disabled:opacity-60 transition-colors"
+            >
+              <Camera size={14} /> {avatarUploading ? 'Uploading…' : 'Upload Picture'}
+            </button>
+          </div>
+          <input
+            ref={heroBannerInput}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = '';
+              if (f) void uploadBanner(f);
+            }}
+          />
+          <input
+            ref={heroAvatarInput}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = '';
+              if (f) void uploadAvatar(f);
+            }}
+          />
+        </div>
+
         {activeTab === 'profile' && (
           <>
         {/* Supervision notice — shown to a supervised account so it
@@ -568,31 +674,33 @@ export function SettingsView() {
           <section className="space-y-3">
             <div className="text-xs uppercase tracking-wider text-ink-3">Profile</div>
 
-            {/* Avatar picker. Shows the current avatar (or local
-                preview while uploading), with a Change button that
-                triggers a hidden file input, and a Remove button when
-                an avatar is set. The hidden input pattern is
-                preferable to a styled input[type=file] because file
-                inputs are notoriously hard to style consistently
-                across browsers. */}
-            <AvatarPicker
-              user={user}
-              previewUrl={avatarPreview}
-              uploading={avatarUploading}
-              onPick={uploadAvatar}
-              onClear={clearAvatar}
-            />
-
-            {/* Banner picker — wide hero strip shown on the user's
-                profile card. Distinct from the square avatar; the
-                preview shape mirrors the rendered surface. */}
-            <BannerPicker
-              user={user}
-              previewUrl={bannerPreview}
-              uploading={bannerUploading}
-              onPick={uploadBanner}
-              onClear={clearBanner}
-            />
+            {/* Avatar/banner CHANGE is handled by the persistent hero above;
+                here we only offer Remove (when one is set), so the controls
+                aren't duplicated. */}
+            {(user.avatarUrl || user.bannerUrl) && (
+              <div className="flex flex-wrap gap-2">
+                {user.avatarUrl && (
+                  <button
+                    type="button"
+                    onClick={clearAvatar}
+                    disabled={avatarUploading}
+                    className="px-3 py-1.5 rounded-md bg-bg-1 border border-line hover:bg-bg-3 text-ink-2 hover:text-ink-1 text-sm transition-colors disabled:opacity-60"
+                  >
+                    Remove picture
+                  </button>
+                )}
+                {user.bannerUrl && (
+                  <button
+                    type="button"
+                    onClick={clearBanner}
+                    disabled={bannerUploading}
+                    className="px-3 py-1.5 rounded-md bg-bg-1 border border-line hover:bg-bg-3 text-ink-2 hover:text-ink-1 text-sm transition-colors disabled:opacity-60"
+                  >
+                    Remove banner
+                  </button>
+                )}
+              </div>
+            )}
 
             <label className="block">
               <span className="text-sm text-ink-2">Display name</span>
@@ -612,17 +720,17 @@ export function SettingsView() {
             <CustomStatusRow />
 
             <label className="block">
-              <span className="text-sm text-ink-2">Bio</span>
+              <span className="text-sm text-ink-2">About Me</span>
               <textarea
                 value={bio}
                 onChange={(e) => setBio(e.target.value)}
                 onBlur={() => void save({ silent: true })}
-                maxLength={500}
+                maxLength={200}
                 rows={3}
                 className="mt-1 w-full bg-bg-1 border border-line rounded-md px-3 py-2 outline-none focus:border-accent transition-colors resize-none"
                 placeholder="A short blurb about yourself"
               />
-              <span className="text-xs text-ink-3 block mt-1">{(bio ?? '').length}/500</span>
+              <span className="text-xs text-ink-3 block mt-1">{(bio ?? '').length}/200</span>
             </label>
           </section>
 
@@ -633,26 +741,27 @@ export function SettingsView() {
               happens before the REST round-trip so the UI is snappy. */}
           <section className="space-y-2">
             <div className="text-xs uppercase tracking-wider text-ink-3">Status</div>
-            <div className="grid grid-cols-2 gap-2">
-              {STATUS_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  disabled={savingStatus}
-                  onClick={() => void changeStatus(opt.value)}
-                  className={`text-left px-3 py-2 rounded-md border transition-colors disabled:opacity-60 ${
-                    status === opt.value
-                      ? 'bg-accent/15 border-accent/60'
-                      : 'bg-bg-1 border-line hover:bg-bg-3'
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
+            {/* iOS: a single-column stack of full-width rows; the active status
+                gets a trailing accent checkmark (no per-row help subtext). */}
+            <div className="space-y-2">
+              {STATUS_OPTIONS.map((opt) => {
+                const active = status === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    disabled={savingStatus}
+                    onClick={() => void changeStatus(opt.value)}
+                    className={`w-full flex items-center gap-2.5 text-left px-3 py-2.5 rounded-md border transition-colors disabled:opacity-60 ${
+                      active ? 'bg-accent/15 border-accent/60' : 'bg-bg-1 border-line hover:bg-bg-3'
+                    }`}
+                  >
                     <span className={`w-2.5 h-2.5 rounded-full ${opt.dot}`} aria-hidden />
                     <span className="font-medium">{opt.label}</span>
-                  </div>
-                  <div className="text-xs text-ink-3 mt-0.5">{opt.help}</div>
-                </button>
-              ))}
+                    {active && <Check size={16} className="ml-auto text-accent" />}
+                  </button>
+                );
+              })}
             </div>
           </section>
 
@@ -801,15 +910,25 @@ export function SettingsView() {
                           : 'border-line bg-bg-1 hover:border-accent/40'
                       }`}
                     >
+                      {/* iOS swatch: two overlapping accent circles centered over
+                          the theme's base colour, with an accent check badge when
+                          selected (no inline OLED text — OLED variants read as the
+                          pure-black base). */}
                       <div
-                        className="h-6 rounded border border-line/60 flex items-center gap-1 px-1.5"
+                        className="relative h-9 rounded border border-line/60 flex items-center justify-center"
                         style={{ background: t.bg }}
                       >
-                        <span className="w-2.5 h-2.5 rounded-full" style={{ background: t.swatch[0] }} />
-                        <span className="w-2.5 h-2.5 rounded-full" style={{ background: t.swatch[1] }} />
-                        {t.oled && (
-                          <span className="ml-auto text-[0.5rem] uppercase tracking-wider text-ink-3 font-semibold">
-                            OLED
+                        <span
+                          className="w-4 h-4 rounded-full border border-black/30"
+                          style={{ background: t.swatch[0] }}
+                        />
+                        <span
+                          className="w-4 h-4 rounded-full border border-black/30 -ml-1.5"
+                          style={{ background: t.swatch[1] }}
+                        />
+                        {active && (
+                          <span className="absolute top-1 right-1 w-3.5 h-3.5 rounded-full bg-accent grid place-items-center">
+                            <Check size={9} className="text-white" />
                           </span>
                         )}
                       </div>
@@ -827,11 +946,11 @@ export function SettingsView() {
             ))}
           </div>
 
-          {/* Avatar Frame — a cosmetic ring/glow others see on your
+          {/* Avatar Decoration — a cosmetic ring/glow others see on your
               avatar. Saves immediately; previews render the live overlay. */}
           <div className="mt-4 pt-3 border-t border-line">
             <div className="flex items-baseline justify-between gap-2">
-              <h3 className="text-sm font-medium text-ink-1">Avatar Frame</h3>
+              <h3 className="text-sm font-medium text-ink-1">Avatar Decoration</h3>
               <span className="text-[0.65rem] text-ink-3 shrink-0">
                 {decoSaving ? 'Saving…' : 'Shown on your avatar everywhere'}
               </span>
@@ -918,6 +1037,11 @@ export function SettingsView() {
             <TwoFactorSection />
             <PasskeysSection />
             <QuickLoginSection />
+
+            {/* Bots — iOS folds bot management into Security→Account rather
+                than giving it a standalone tab, since bot tokens are
+                credentials like any other. */}
+            <BotsSection />
           </>
         )}
 
@@ -934,11 +1058,6 @@ export function SettingsView() {
               <VoiceDeviceSettings />
               <VideoQualitySettings />
             </section>
-          </>
-        )}
-        {activeTab === 'bots' && (
-          <>
-            <BotsSection />
           </>
         )}
         </div>
@@ -2774,193 +2893,6 @@ function BlockedSettings() {
         </li>
       ))}
     </ul>
-  );
-}
-
-/**
- * AvatarPicker
- * ------------
- * Local component (no separate file — kept here because it's only
- * used by SettingsModal). Renders the current avatar at 80x80, with
- * Change and Remove buttons beside it. The actual file input is hidden
- * and clicked via a ref so the button styling stays consistent.
- */
-function AvatarPicker({
-  user,
-  previewUrl,
-  uploading,
-  onPick,
-  onClear,
-}: {
-  user: { id: string; displayName: string; avatarUrl: string | null } | null;
-  previewUrl: string | null;
-  uploading: boolean;
-  onPick: (file: File) => void;
-  onClear: () => void;
-}) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  if (!user) return null;
-  // Display priority: in-flight preview > saved avatar > initials.
-  const displayUrl = previewUrl ?? user.avatarUrl;
-  const tone = avatarColor(user.id);
-  const initials = avatarInitials(user.displayName);
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-4">
-        <div className="relative w-20 h-20 shrink-0">
-          <span
-            className={`absolute inset-0 rounded-full text-2xl font-semibold flex items-center justify-center border border-line ${tone}`}
-            aria-hidden="true"
-          >
-            <span className="zk-avatar-initials">{initials}</span>
-          </span>
-          <AvatarImage
-            src={displayUrl}
-            className="absolute inset-0 w-full h-full rounded-full object-cover border border-line"
-          />
-          {uploading && (
-            <span className="absolute inset-0 rounded-full bg-black/50 flex items-center justify-center">
-              <span className="w-5 h-5 rounded-full border-2 border-white border-t-transparent animate-spin" />
-            </span>
-          )}
-        </div>
-
-        {/* Buttons-only column. Hint text lives BELOW the row so
-            its extra height doesn't pull the avatar off-center
-            against the buttons — items-center on the parent flex
-            then aligns the avatar against the buttons' midpoint. */}
-        <div className="flex flex-col gap-1.5">
-          <button
-            type="button"
-            onClick={() => inputRef.current?.click()}
-            disabled={uploading}
-            className="px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 text-white text-sm font-medium transition-colors disabled:opacity-60"
-          >
-            {uploading ? 'Uploading…' : displayUrl ? 'Change avatar' : 'Upload avatar'}
-          </button>
-          {user.avatarUrl && !uploading && (
-            <button
-              type="button"
-              onClick={onClear}
-              className="px-3 py-1.5 rounded-md bg-bg-1 border border-line hover:bg-bg-3 text-ink-2 hover:text-ink-1 text-sm transition-colors"
-            >
-              Remove avatar
-            </button>
-          )}
-        </div>
-      </div>
-
-      <p className="text-xs text-ink-3 leading-snug">
-        <span className="text-ink-2 font-medium">Recommended: square, 512×512.</span>{' '}
-        PNG, JPEG, GIF, or WebP. Max 8&nbsp;MB. Shown as a circle at every size.
-      </p>
-
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/png,image/jpeg,image/gif,image/webp"
-        className="hidden"
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          // Reset value so picking the same file twice still fires.
-          e.target.value = '';
-          if (f) onPick(f);
-        }}
-      />
-    </div>
-  );
-}
-
-/**
- * BannerPicker — wide hero strip uploader, sibling to AvatarPicker.
- *
- * The banner is shown above the user's bio on their profile card; it's
- * decorative, optional, and unbounded by aspect ratio (we let the
- * server-side image keep its native ratio and `object-cover` the
- * container). The shape difference from AvatarPicker (a 16:6-ish
- * strip vs a 1:1 disc) means duplicating the layout is cleaner than
- * parameterising AvatarPicker — the buttons sit BELOW the preview
- * here, since the preview is already the full content width and
- * pushing buttons to the side wastes horizontal space.
- */
-function BannerPicker({
-  user,
-  previewUrl,
-  uploading,
-  onPick,
-  onClear,
-}: {
-  user: { id: string; bannerUrl: string | null } | null;
-  previewUrl: string | null;
-  uploading: boolean;
-  onPick: (file: File) => void;
-  onClear: () => void;
-}) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  if (!user) return null;
-  const displayUrl = previewUrl ?? user.bannerUrl;
-  return (
-    <div className="space-y-2">
-      <span className="text-sm text-ink-2">Profile banner</span>
-      {/* Banner preview. 16:9 aspect to match the live render on
-          profile-card popouts and the guild banner shape on the
-          channel list. Capped at 500px wide and centered so it
-          doesn't stretch the settings column. */}
-      <div className="relative w-full max-w-[500px] mx-auto aspect-[16/9] rounded-md overflow-hidden bg-bg-3 border border-line">
-        {displayUrl ? (
-          <img
-            src={displayUrl}
-            alt=""
-            className="w-full h-full object-contain"
-            draggable={false}
-          />
-        ) : (
-          <div className="absolute inset-0 flex items-center justify-center text-xs text-ink-3">
-            No banner
-          </div>
-        )}
-        {uploading && (
-          <span className="absolute inset-0 bg-black/50 flex items-center justify-center">
-            <span className="w-5 h-5 rounded-full border-2 border-white border-t-transparent animate-spin" />
-          </span>
-        )}
-      </div>
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => inputRef.current?.click()}
-          disabled={uploading}
-          className="px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 text-white text-sm font-medium transition-colors disabled:opacity-60"
-        >
-          {uploading ? 'Uploading…' : displayUrl ? 'Change banner' : 'Upload banner'}
-        </button>
-        {user.bannerUrl && !uploading && (
-          <button
-            type="button"
-            onClick={onClear}
-            className="px-3 py-1.5 rounded-md bg-bg-1 border border-line hover:bg-bg-3 text-ink-2 hover:text-ink-1 text-sm transition-colors"
-          >
-            Remove banner
-          </button>
-        )}
-        <span className="text-xs text-ink-3 ml-auto text-right leading-snug max-w-[280px]">
-          <span className="text-ink-2 font-medium">Recommended: 1920×1080 (16:9 wide).</span>{' '}
-          PNG, JPEG, GIF, or WebP. Max 8&nbsp;MB. Other shapes show with bars.
-        </span>
-      </div>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/png,image/jpeg,image/gif,image/webp"
-        className="hidden"
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          e.target.value = '';
-          if (f) onPick(f);
-        }}
-      />
-    </div>
   );
 }
 

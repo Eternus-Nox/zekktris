@@ -2,11 +2,14 @@
  * FriendsView
  * -----------
  * Default landing for `/channels/@me`. Shows the user's relationship
- * graph in three tabs:
+ * graph on a single scrolling page with stacked, caps-labelled
+ * sections (mirroring iOS FriendsView):
  *
- *   - All:       Friends (any pending requests omitted)
- *   - Pending:   Incoming + outgoing friend requests
- *   - Blocked:   Users this account has blocked
+ *   - ADD A FRIEND  (always) — username field + Add button
+ *   - REQUESTS      (if any incoming) — friend requests to act on
+ *   - PENDING       (if any outgoing) — requests you sent
+ *   - FRIENDS       (always)
+ *   - BLOCKED       (if any)
  *
  * Reads from `state.relationships`, which is hydrated at boot by
  * AppState. Mutations (accept / reject / cancel / remove / unblock)
@@ -15,12 +18,8 @@
  *
  * Each row exposes a "Send message" affordance that opens (or creates)
  * a DM channel with that user, mirroring the ProfileCard behaviour.
- *
- * Empty states are friendly ("No friends yet — open someone's profile
- * to add them") rather than apologetic; "no blocked users" is the
- * desired state, not a failure.
  */
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError, type PublicUser } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
@@ -30,27 +29,25 @@ import { useProfileCard } from '../lib/useProfileCard';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
 import { AvatarDecoration } from '../lib/avatarDecorations';
-import { MessageSquare, UserPlus, UserMinus, Shield, X, Users as UsersIcon, Phone, ChevronLeft } from '../lib/icons';
+import {
+  MessageSquare,
+  UserMinus,
+  Shield,
+  X,
+  CheckCircle,
+  Users as UsersIcon,
+  Phone,
+  ChevronLeft,
+} from '../lib/icons';
 import { connectToVoice, VoiceError, prepareVoiceAudio } from '../lib/voice';
-
-type TabId = 'all' | 'pending' | 'blocked' | 'add';
-
-const TABS: Array<{ id: TabId; label: string }> = [
-  { id: 'all', label: 'All friends' },
-  { id: 'pending', label: 'Pending' },
-  { id: 'blocked', label: 'Blocked' },
-  { id: 'add', label: 'Add Friend' },
-];
 
 export function FriendsView() {
   const { state, loadRelationships } = useAppState();
   const { user: self, rest } = useAuth();
   const nav = useNavigate();
-  const [tab, setTab] = useState<TabId>('all');
-  const [query, setQuery] = useState('');
   const { onAvatarClick, cardElement } = useProfileCard();
 
-  // "Add friend" composer state (the Add Friend tab).
+  // "Add friend" composer state.
   const [addUsername, setAddUsername] = useState('');
   const [addPending, setAddPending] = useState(false);
   const [addMsg, setAddMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(
@@ -69,10 +66,8 @@ export function FriendsView() {
       await loadRelationships();
       if (r.type === 'friend') {
         setAddMsg({ kind: 'success', text: `You're now friends with @${uname}!` });
-        setTab('all');
       } else {
         setAddMsg({ kind: 'success', text: `Friend request sent to @${uname}.` });
-        setTab('pending');
       }
       setAddUsername('');
     } catch (e) {
@@ -85,103 +80,48 @@ export function FriendsView() {
     }
   }
 
-  // Bucket relationships by tab. Memoised so typing in the search box
-  // doesn't rebucket the whole list on every keystroke; we filter the
-  // pre-bucketed lists in the render.
+  // Bucket relationships. Memoised so re-renders don't rebucket.
   const buckets = useMemo(() => {
     const friends: typeof state.relationships = [];
-    const pending: typeof state.relationships = [];
+    const incoming: typeof state.relationships = [];
+    const outgoing: typeof state.relationships = [];
     const blocked: typeof state.relationships = [];
     for (const r of state.relationships) {
       if (r.type === 'friend') friends.push(r);
-      else if (r.type === 'incoming_request' || r.type === 'outgoing_request') pending.push(r);
+      else if (r.type === 'incoming_request') incoming.push(r);
+      else if (r.type === 'outgoing_request') outgoing.push(r);
       else if (r.type === 'blocked') blocked.push(r);
     }
-    // Sort friends alphabetically by display name, pending oldest-first
-    // (so the user can act on the longest-waiting requests), blocked
-    // alphabetically.
     friends.sort((a, b) => a.user.displayName.localeCompare(b.user.displayName));
-    pending.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    incoming.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    outgoing.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     blocked.sort((a, b) => a.user.displayName.localeCompare(b.user.displayName));
-    return { friends, pending, blocked };
+    return { friends, incoming, outgoing, blocked };
   }, [state.relationships]);
-
-  // Filter the active bucket by the search query (case-insensitive
-  // substring on display name OR username).
-  const visible = useMemo(() => {
-    const list =
-      tab === 'all' ? buckets.friends : tab === 'pending' ? buckets.pending : buckets.blocked;
-    if (!query.trim()) return list;
-    const q = query.trim().toLowerCase();
-    return list.filter(
-      (r) =>
-        r.user.displayName.toLowerCase().includes(q) ||
-        r.user.username.toLowerCase().includes(q),
-    );
-  }, [tab, buckets, query]);
-
-  const counts = {
-    all: buckets.friends.length,
-    pending: buckets.pending.length,
-    blocked: buckets.blocked.length,
-    add: 0,
-  };
 
   return (
     <div className="flex flex-col h-full bg-bg-1">
-      <header className="px-4 sm:px-6 py-3 border-b border-line shrink-0 flex flex-col sm:flex-row sm:items-center gap-3">
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={() => nav('/channels/@me')}
-            className="xl:hidden -ml-1 w-10 h-10 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3 shrink-0"
-            aria-label="Back to direct messages"
-          >
-            <ChevronLeft size={20} />
-          </button>
-          <UsersIcon size={18} className="text-accent shrink-0" />
-          <span className="font-semibold">Friends</span>
-        </div>
-        {/* Tabs. On mobile they get their own row and expand to share
-            the full width so each is a comfortable tap target. On
-            sm+ they sit inline with the title. */}
-        <div className="flex items-center gap-1 sm:ml-2 -mx-1 sm:mx-0">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={`flex-1 sm:flex-initial px-3 py-1.5 rounded-md text-sm transition-colors ${
-                tab === t.id
-                  ? 'bg-bg-3 text-ink-1'
-                  : 'text-ink-2 hover:text-ink-1 hover:bg-bg-3/50'
-              }`}
-            >
-              {t.label}
-              {counts[t.id] > 0 && (
-                <span className="ml-1.5 text-xs text-ink-3">
-                  {counts[t.id]}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+      <header className="px-4 sm:px-6 py-3 border-b border-line shrink-0 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => nav('/channels/@me')}
+          className="xl:hidden -ml-1 w-10 h-10 flex items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3 shrink-0"
+          aria-label="Back to direct messages"
+        >
+          <ChevronLeft size={20} />
+        </button>
+        <UsersIcon size={18} className="text-accent shrink-0" />
+        <span className="font-semibold">Friends</span>
       </header>
 
-      {tab === 'add' ? (
-        /* Add Friend tab — search for a person by username and send them a
-           request. (Adding is by exact username, which keeps the directory
-           private — there's no browsable list of every account.) */
-        <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-4 sm:px-6 py-5">
-          <div className="max-w-md">
-            <h2 className="text-sm font-semibold text-ink-1">Add a friend</h2>
-            <p className="text-xs text-ink-3 mt-0.5 mb-3">
-              Search for someone by their exact username to send a friend request.
-            </p>
+      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin">
+        <div className="max-w-2xl mx-auto px-4 sm:px-6 py-5 space-y-7">
+          {/* ADD A FRIEND — always first, always visible. */}
+          <section>
+            <SectionLabel>Add a friend</SectionLabel>
             <div className="flex gap-2">
               <input
                 type="search"
-                autoFocus
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
@@ -200,10 +140,9 @@ export function FriendsView() {
                 type="button"
                 onClick={() => void submitAdd()}
                 disabled={addPending || addUsername.trim().length === 0}
-                className="shrink-0 inline-flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium bg-gradient-to-br from-accent to-accent-2 text-bg-0 hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                className="shrink-0 px-4 py-2 rounded-md text-sm font-medium bg-accent text-white hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                <UserPlus size={16} />
-                {addPending ? 'Sending…' : 'Send Request'}
+                {addPending ? 'Sending…' : 'Add'}
               </button>
             </div>
             {addMsg && (
@@ -215,26 +154,54 @@ export function FriendsView() {
                 {addMsg.text}
               </p>
             )}
-          </div>
-        </div>
-      ) : (
-        <>
-          <div className="px-4 sm:px-6 py-3 border-b border-line shrink-0">
-            <input
-              type="search"
-              placeholder="Search"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              className="w-full bg-bg-2 border border-line rounded-md px-3 py-1.5 text-sm outline-none focus:border-accent transition-colors"
-            />
-          </div>
+          </section>
 
-          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin">
-            {visible.length === 0 ? (
-              <EmptyTab tab={tab} hasQuery={query.trim().length > 0} />
+          {/* REQUESTS — incoming friend requests. */}
+          {buckets.incoming.length > 0 && (
+            <section>
+              <SectionLabel>Requests</SectionLabel>
+              <ul className="rounded-xl border border-line bg-bg-2/40 overflow-hidden divide-y divide-line">
+                {buckets.incoming.map((r) => (
+                  <FriendRow
+                    key={r.user.id}
+                    user={r.user}
+                    relType={r.type}
+                    isSelf={self?.id === r.user.id}
+                    onAvatarClick={onAvatarClick}
+                  />
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {/* PENDING — outgoing requests you sent. */}
+          {buckets.outgoing.length > 0 && (
+            <section>
+              <SectionLabel>Pending</SectionLabel>
+              <ul className="rounded-xl border border-line bg-bg-2/40 overflow-hidden divide-y divide-line">
+                {buckets.outgoing.map((r) => (
+                  <FriendRow
+                    key={r.user.id}
+                    user={r.user}
+                    relType={r.type}
+                    isSelf={self?.id === r.user.id}
+                    onAvatarClick={onAvatarClick}
+                  />
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {/* FRIENDS — always shown (with an empty hint when none). */}
+          <section>
+            <SectionLabel>Friends</SectionLabel>
+            {buckets.friends.length === 0 ? (
+              <p className="text-xs text-ink-3 px-1">
+                No friends yet — add someone by username above.
+              </p>
             ) : (
-              <ul className="divide-y divide-line">
-                {visible.map((r) => (
+              <ul className="rounded-xl border border-line bg-bg-2/40 overflow-hidden divide-y divide-line">
+                {buckets.friends.map((r) => (
                   <FriendRow
                     key={r.user.id}
                     user={r.user}
@@ -245,40 +212,37 @@ export function FriendsView() {
                 ))}
               </ul>
             )}
-          </div>
-        </>
-      )}
+          </section>
+
+          {/* BLOCKED — only when there's something to show. */}
+          {buckets.blocked.length > 0 && (
+            <section>
+              <SectionLabel>Blocked</SectionLabel>
+              <ul className="rounded-xl border border-line bg-bg-2/40 overflow-hidden divide-y divide-line">
+                {buckets.blocked.map((r) => (
+                  <FriendRow
+                    key={r.user.id}
+                    user={r.user}
+                    relType={r.type}
+                    isSelf={self?.id === r.user.id}
+                    onAvatarClick={onAvatarClick}
+                  />
+                ))}
+              </ul>
+            </section>
+          )}
+        </div>
+      </div>
 
       {cardElement}
     </div>
   );
 }
 
-function EmptyTab({ tab, hasQuery }: { tab: TabId; hasQuery: boolean }) {
-  const lines: Record<TabId, [string, string]> = {
-    all: [
-      'No friends yet',
-      'Use the Add Friend tab to search for someone by username and send a request.',
-    ],
-    pending: [
-      'No pending requests',
-      'Friend requests you send or receive will show up here until they’re accepted or declined.',
-    ],
-    blocked: [
-      "You haven’t blocked anyone",
-      "Open a profile and pick Block to silence someone’s messages from your view.",
-    ],
-    add: ['Add a friend', 'Search for someone by username.'],
-  };
-  const queryLines: [string, string] = [
-    'No matches',
-    'Try a different name or username.',
-  ];
-  const [title, sub] = hasQuery ? queryLines : lines[tab];
+function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="h-full min-h-[40vh] flex flex-col items-center justify-center text-center px-6">
-      <div className="text-ink-2 text-sm font-medium">{title}</div>
-      <div className="text-ink-3 text-xs mt-1 max-w-sm">{sub}</div>
+    <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2 px-1">
+      {children}
     </div>
   );
 }
@@ -430,7 +394,7 @@ function FriendRow({
   }
 
   return (
-    <li className="flex items-center gap-3 px-4 sm:px-6 py-3 hover:bg-bg-2/40 transition-colors">
+    <li className="flex items-center gap-3 px-4 sm:px-4 py-3 hover:bg-bg-2/40 transition-colors">
       <button
         type="button"
         onClick={(e) => onAvatarClick(user, e)}
@@ -472,98 +436,182 @@ function FriendRow({
         </div>
       </button>
 
-      <div className="flex items-center gap-1 shrink-0">
+      <div className="flex items-center gap-1.5 shrink-0">
         {relType === 'friend' && (
           <>
-            {!isSelf && (
-              <RowButton
-                onClick={() => void startVoiceCall()}
-                icon={<Phone size={14} />}
-                label="Call"
-                disabled={callPending}
-              />
-            )}
-            <RowButton
+            {/* Primary affordance is the message icon (matching iOS); the
+                rest live behind a compact overflow menu. */}
+            <IconButton
               onClick={() => void openDM()}
-              icon={<MessageSquare size={14} />}
               label="Message"
+              icon={<MessageSquare size={16} />}
             />
-            <RowButton
-              onClick={() => void remove(`${user.displayName} removed`)}
-              icon={<UserMinus size={14} />}
-              label="Remove"
-              destructive
-              disabled={busy}
+            <FriendOverflowMenu
+              onCall={isSelf ? undefined : () => void startVoiceCall()}
+              callDisabled={callPending}
+              onRemove={() => void remove(`${user.displayName} removed`)}
+              removeDisabled={busy}
             />
           </>
         )}
         {relType === 'incoming_request' && (
           <>
-            <RowButton
+            {/* Icon-only accept (green filled check) + decline (muted x). */}
+            <button
+              type="button"
               onClick={() => void accept()}
-              icon={<UserPlus size={14} />}
-              label="Accept"
-              accent
               disabled={busy}
-            />
-            <RowButton
+              aria-label="Accept friend request"
+              title="Accept"
+              className="text-emerald-500 hover:text-emerald-400 disabled:opacity-50 transition-colors"
+            >
+              <CheckCircle size={26} />
+            </button>
+            <button
+              type="button"
               onClick={() => void remove('Friend request declined')}
-              icon={<X size={14} />}
-              label="Decline"
               disabled={busy}
-            />
+              aria-label="Decline friend request"
+              title="Decline"
+              className="w-[26px] h-[26px] flex items-center justify-center rounded-full bg-bg-3 text-ink-3 hover:text-ink-1 disabled:opacity-50 transition-colors"
+            >
+              <X size={16} />
+            </button>
           </>
         )}
         {relType === 'outgoing_request' && (
-          <RowButton
+          <IconButton
             onClick={() => void remove('Friend request cancelled')}
-            icon={<X size={14} />}
-            label="Cancel"
+            label="Cancel request"
+            icon={<X size={16} />}
             disabled={busy}
           />
         )}
         {relType === 'blocked' && (
-          <RowButton
+          <button
+            type="button"
             onClick={() => void unblock()}
-            icon={<Shield size={14} />}
-            label="Unblock"
             disabled={busy}
-          />
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-bg-3 text-ink-2 hover:text-ink-1 transition-colors disabled:opacity-60"
+          >
+            <Shield size={14} />
+            <span className="hidden sm:inline">Unblock</span>
+          </button>
         )}
       </div>
     </li>
   );
 }
 
-function RowButton({
+function IconButton({
   onClick,
-  icon,
   label,
-  accent,
-  destructive,
+  icon,
   disabled,
 }: {
   onClick: () => void;
-  icon: React.ReactNode;
   label: string;
-  accent?: boolean;
-  destructive?: boolean;
+  icon: React.ReactNode;
   disabled?: boolean;
 }) {
-  const tone = accent
-    ? 'bg-accent hover:bg-accent/90 text-white'
-    : destructive
-      ? 'bg-bg-3 hover:bg-red-950/40 text-ink-2 hover:text-red-300'
-      : 'bg-bg-3 hover:bg-bg-3/80 text-ink-2 hover:text-ink-1';
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`flex items-center gap-1 px-2 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors disabled:opacity-60 ${tone}`}
+      aria-label={label}
+      title={label}
+      className="w-8 h-8 flex items-center justify-center rounded-md bg-bg-3 text-ink-2 hover:text-ink-1 hover:bg-bg-3/80 transition-colors disabled:opacity-60"
     >
       {icon}
-      <span className="hidden sm:inline">{label}</span>
     </button>
+  );
+}
+
+/**
+ * Compact "…" overflow menu for friend rows — holds Call and Remove so
+ * the row shows only the message icon at rest (matching iOS, where
+ * remove/block live in a long-press menu). Outside-click is handled by a
+ * full-screen invisible backdrop so it can't leave a lingering hit-test
+ * trap on a hosting popover.
+ */
+function FriendOverflowMenu({
+  onCall,
+  callDisabled,
+  onRemove,
+  removeDisabled,
+}: {
+  onCall?: () => void;
+  callDisabled?: boolean;
+  onRemove: () => void;
+  removeDisabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-label="More actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="w-8 h-8 flex items-center justify-center rounded-md bg-bg-3 text-ink-2 hover:text-ink-1 transition-colors"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+          <circle cx="5" cy="12" r="1.75" />
+          <circle cx="12" cy="12" r="1.75" />
+          <circle cx="19" cy="12" r="1.75" />
+        </svg>
+      </button>
+      {open && (
+        <>
+          {/* Invisible full-screen backdrop closes the menu on any outside
+              click without a document-level listener. */}
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden />
+          <div
+            role="menu"
+            className="absolute right-0 top-full mt-1 z-50 min-w-[140px] rounded-lg border border-line bg-bg-1 elevation-pop py-1"
+          >
+            {onCall && (
+              <button
+                type="button"
+                role="menuitem"
+                disabled={callDisabled}
+                onClick={() => {
+                  setOpen(false);
+                  onCall();
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-ink-1 hover:bg-bg-3 disabled:opacity-60 transition-colors"
+              >
+                <Phone size={15} /> Call
+              </button>
+            )}
+            <button
+              type="button"
+              role="menuitem"
+              disabled={removeDisabled}
+              onClick={() => {
+                setOpen(false);
+                onRemove();
+              }}
+              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-400 hover:bg-red-950/40 disabled:opacity-60 transition-colors"
+            >
+              <UserMinus size={15} /> Remove
+            </button>
+          </div>
+        </>
+      )}
+    </div>
   );
 }

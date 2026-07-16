@@ -2,9 +2,10 @@
  * AdminSecurityTab — instance security (web parity with the iOS tab).
  * -------------------------------------------------------------------
  * Three sections:
- *   1. Spam protection — rate-limit config (trigger threshold, window,
- *      cooldown) behind an enable toggle. After the threshold, an
- *      offender is limited to 1 message/minute for the cooldown.
+ *   1. Spam protection — rate-limit config (trigger threshold + cooldown)
+ *      behind an enable toggle. After the threshold, an offender is
+ *      limited to 1 message/minute for the cooldown. The cooldown is
+ *      stored in seconds but edited in minutes, matching iOS.
  *   2. Banned words — instance-wide whole-word filter. Add words one at
  *      a time, browse the server's common preset list (add individually
  *      or all at once), remove via the pills.
@@ -27,20 +28,6 @@ import { Plus, Shield, X as CloseIcon } from '../lib/icons';
 
 type KindFilter = 'spam_limited' | 'banned_word' | 'watch_word' | 'staff' | undefined;
 type WordSeverity = SecurityWord['severity'];
-
-/** Badge labels for the staff-action audit kinds. */
-const STAFF_KIND_LABELS: Record<string, string> = {
-  staff_ban: 'Ban',
-  staff_unban: 'Unban',
-  staff_logout: 'Sign-out',
-  staff_gift: 'Membership gift',
-  staff_membership_reset: 'Membership reset',
-  staff_dob_reset: 'DOB reset',
-  staff_role_change: 'Role change',
-  staff_observe: 'Observe',
-  staff_guild_delete: 'Server delete',
-  staff_user_delete: 'Account delete',
-};
 
 export function AdminSecurityTab() {
   const { rest, user: self } = useAuth();
@@ -169,22 +156,14 @@ export function AdminSecurityTab() {
               max={100}
               onChange={(v) => void patch({ spamMaxMessages: v })}
             />
-            <StepperRow
-              label="Window"
-              detail="seconds measured"
-              value={config.spamWindowSeconds}
-              min={2}
-              max={300}
-              onChange={(v) => void patch({ spamWindowSeconds: v })}
-            />
+            {/* Cooldown is stored in seconds but edited in minutes (iOS parity). */}
             <StepperRow
               label="Cooldown"
-              detail="seconds at 1 msg/min"
-              value={config.spamCooldownSeconds}
-              min={60}
-              max={86400}
-              step={60}
-              onChange={(v) => void patch({ spamCooldownSeconds: v })}
+              detail="minutes at 1 msg/min"
+              value={Math.round(config.spamCooldownSeconds / 60)}
+              min={1}
+              max={1440}
+              onChange={(v) => void patch({ spamCooldownSeconds: v * 60 })}
             />
           </div>
         )}
@@ -251,7 +230,14 @@ export function AdminSecurityTab() {
           onClick={() => setShowPreset(true)}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-accent/10 text-accent text-sm font-medium hover:bg-accent/20 transition-colors"
         >
-          <Shield size={14} />
+          {/* text.badge.plus — list-add glyph (iOS parity) */}
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M11 12H3" />
+            <path d="M16 6H3" />
+            <path d="M16 18H3" />
+            <path d="M18 9v6" />
+            <path d="M21 12h-6" />
+          </svg>
           Common wordlist…
         </button>
         <p className="text-xs text-ink-3">
@@ -327,9 +313,9 @@ export function AdminSecurityTab() {
                 setKindFilter(k);
                 void loadEvents(k);
               }}
-              className={`px-2.5 py-1 rounded-full text-xs transition-colors ${
+              className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
                 kindFilter === k
-                  ? 'bg-accent/20 text-accent border border-accent/40'
+                  ? 'bg-accent text-bg-0 border border-accent'
                   : 'bg-bg-2 text-ink-3 border border-line hover:text-ink-2'
               }`}
             >
@@ -343,49 +329,69 @@ export function AdminSecurityTab() {
           <ul className="space-y-2">
             {events.map((ev) => {
               const isStaff = ev.kind.startsWith('staff_');
-              const badge = isStaff
-                ? (STAFF_KIND_LABELS[ev.kind] ?? 'Staff action')
-                : ev.kind === 'spam_limited'
-                  ? 'Spam limited'
-                  : 'Banned word';
               const actor = ev.actorDisplayName ?? ev.actorUsername;
               const target = ev.displayName ?? ev.username;
               return (
-                <li key={ev.id} className="bg-bg-2 border border-line rounded-lg px-3 py-2.5">
-                  <div className="flex items-center gap-2 text-xs">
-                    <span
-                      className={`px-1.5 py-0.5 rounded font-medium ${
-                        isStaff
-                          ? 'bg-sky-500/15 text-sky-400'
-                          : ev.kind === 'spam_limited'
-                            ? 'bg-amber-500/15 text-amber-400'
-                            : 'bg-red-500/15 text-red-400'
-                      }`}
-                    >
-                      {badge}
-                    </span>
-                    {/* Staff rows read "actor → target"; detection rows just
-                        name the offender. */}
+                <li
+                  key={ev.id}
+                  className="bg-bg-2 border border-line rounded-lg px-3 py-2.5 flex gap-2.5"
+                >
+                  {/* Leading glyph replaces the text badge (iOS parity): the
+                      kind is carried by icon + colour, the specifics by the
+                      detail line below. Watch words stay amber, blocked red —
+                      the same severity colours used by the word lists above. */}
+                  <span
+                    className={`mt-0.5 shrink-0 ${
+                      isStaff
+                        ? 'text-sky-400'
+                        : ev.kind === 'banned_word'
+                          ? 'text-red-400'
+                          : 'text-amber-400'
+                    }`}
+                    aria-hidden="true"
+                  >
                     {isStaff ? (
-                      <span className="text-ink-2 font-medium truncate">
-                        {actor ?? 'Unknown staff'}
-                        {target && <span className="text-ink-3 font-normal"> → {target}</span>}
-                      </span>
+                      <Shield size={16} />
+                    ) : ev.kind === 'spam_limited' ? (
+                      /* speedometer / gauge */
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="m12 14 4-4" />
+                        <path d="M3.34 19a10 10 0 1 1 17.32 0" />
+                      </svg>
                     ) : (
-                      <span className="text-ink-2 font-medium truncate">
-                        {target ?? 'Unknown user'}
-                      </span>
+                      /* exclamation bubble */
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                        <path d="M12 7v2" />
+                        <path d="M12 13h.01" />
+                      </svg>
                     )}
-                    <span className="text-ink-3 ml-auto shrink-0">
-                      {new Date(ev.createdAt).toLocaleString()}
-                    </span>
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 text-xs">
+                      {/* Staff rows read "actor → target"; detection rows just
+                          name the offender. */}
+                      {isStaff ? (
+                        <span className="text-ink-2 font-medium truncate">
+                          {actor ?? 'Unknown staff'}
+                          {target && <span className="text-ink-3 font-normal"> → {target}</span>}
+                        </span>
+                      ) : (
+                        <span className="text-ink-2 font-medium truncate">
+                          {target ?? 'Unknown user'}
+                        </span>
+                      )}
+                      <span className="text-ink-3 ml-auto shrink-0">
+                        {new Date(ev.createdAt).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className="text-sm text-ink-2 mt-1">{ev.detail}</p>
+                    {ev.contentSnapshot && (
+                      <p className="text-xs text-ink-3 font-mono mt-1 bg-bg-1 rounded px-2 py-1 break-words">
+                        {ev.contentSnapshot}
+                      </p>
+                    )}
                   </div>
-                  <p className="text-sm text-ink-2 mt-1">{ev.detail}</p>
-                  {ev.contentSnapshot && (
-                    <p className="text-xs text-ink-3 font-mono mt-1 bg-bg-1 rounded px-2 py-1 break-words">
-                      {ev.contentSnapshot}
-                    </p>
-                  )}
                 </li>
               );
             })}
@@ -598,7 +604,7 @@ function StepperRow({
         >
           −
         </button>
-        <span className="font-mono text-sm text-ink-1 w-14 text-center">{value}</span>
+        <span className="font-mono text-sm text-accent w-14 text-center">{value}</span>
         <button
           type="button"
           onClick={() => onChange(clamp(value + step))}

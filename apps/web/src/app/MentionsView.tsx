@@ -26,7 +26,7 @@ import { ApiError, type Message } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
-import { AtSign, Hash, X } from '../lib/icons';
+import { AtSign, X } from '../lib/icons';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
 
@@ -230,10 +230,7 @@ export function MentionsView() {
         {!loading && !error && items.length === 0 && (
           <div className="text-center py-12 px-4">
             <AtSign size={32} className="mx-auto text-ink-3 mb-2" />
-            <p className="text-sm text-ink-2">No mentions yet.</p>
-            <p className="text-xs text-ink-3 mt-1">
-              When someone @-mentions you, it'll show up here.
-            </p>
+            <p className="text-sm text-ink-2">No mentions</p>
           </div>
         )}
 
@@ -372,7 +369,7 @@ function MentionRow({
             <span className="text-[0.65rem] text-ink-3 tabular-nums shrink-0">{ts}</span>
           </span>
           <span className="block text-xs text-ink-3 flex items-center gap-1 mt-0.5">
-            <Hash size={10} />
+            <AtSign size={10} className="text-accent shrink-0" />
             <span className="truncate">
               {channelName ?? 'channel'}
               {guildName ? ` · ${guildName}` : ''}

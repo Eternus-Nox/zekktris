@@ -33,7 +33,12 @@ import { Portal } from '../lib/Portal';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
 import { AvatarDecoration } from '../lib/avatarDecorations';
-import { computeMemberGuildPerms, memberHighestRolePosition, hasBit } from '../lib/permissions';
+import {
+  computeMemberGuildPerms,
+  memberHighestRolePosition,
+  memberDisplayColor,
+  hasBit,
+} from '../lib/permissions';
 import { UserPlus, UserMinus, Shield, X, Edit, Trash, Ban as BanIcon, Clock } from '../lib/icons';
 import { connectToVoice, VoiceError, prepareVoiceAudio } from '../lib/voice';
 import { formatCustomStatus } from './CustomStatusModal';
@@ -51,6 +56,29 @@ interface AnchorPoint {
 }
 
 const CARD_WIDTH = 340;
+
+/** Report/flag glyph. Inlined here (rather than added to lib/icons) so the
+    Report User action matches the stroke style of the shared icon set. */
+function FlagIcon({ size = 16, className = '' }: { size?: number; className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={className}
+    >
+      <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" />
+      <line x1="4" y1="22" x2="4" y2="15" />
+    </svg>
+  );
+}
 
 export function ProfileCard({
   user,
@@ -316,6 +344,14 @@ export function ProfileCard({
   // currently timed out" derived value below.
   const [timeoutPending, setTimeoutPending] = useState(false);
   const [timeoutPromptOpen, setTimeoutPromptOpen] = useState(false);
+  // Report state. Inline prompt (like the ban prompt) letting the viewer pick
+  // a reason + optional details before filing a report against this user.
+  const [reportPromptOpen, setReportPromptOpen] = useState(false);
+  const [reportPending, setReportPending] = useState(false);
+  const [reportReason, setReportReason] = useState<
+    'spam' | 'harassment' | 'nsfw' | 'violence' | 'other'
+  >('harassment');
+  const [reportDetails, setReportDetails] = useState('');
 
   /** Save (or clear) the personal DM nickname — viewer-private, shown in DMs. */
   async function saveDmNickname() {
@@ -403,6 +439,30 @@ export function ProfileCard({
       setBanPending(false);
     }
     // We don't reset banPending on success — the card is closing.
+  }
+
+  // File a report against this user. Only meaningful in a guild context (the
+  // report route is scoped to a guild); the button that opens this is gated on
+  // targetMember being present. Reason is required; details optional.
+  async function submitReport() {
+    if (!guildId || reportPending) return;
+    setReportPending(true);
+    try {
+      const trimmed = reportDetails.trim();
+      await rest.createReport(guildId, {
+        targetType: 'user',
+        targetUserId: user.id,
+        reason: reportReason,
+        ...(trimmed.length > 0 ? { details: trimmed } : {}),
+      });
+      toasts.push(`Report submitted for ${user.displayName}`, 'success');
+      setReportPromptOpen(false);
+      setReportDetails('');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not submit report', 'error');
+    } finally {
+      setReportPending(false);
+    }
   }
 
   // Relationship status from the AppState store — hydrated on connect
@@ -611,6 +671,14 @@ export function ProfileCard({
     }
   }
 
+  // Highest role's color for the display name (mirrors iOS store.memberColor
+  // and the MemberList treatment). Only resolves in a guild context once the
+  // role list + target member are loaded; falls back to text-ink-1.
+  const nameColor =
+    guildId && allRoles && targetMember
+      ? memberDisplayColor(allRoles, guildId, targetMember.roleIds)
+      : null;
+
   const dotColor =
     user.status === 'online'
       ? 'bg-emerald-500'
@@ -641,23 +709,27 @@ export function ProfileCard({
           >
             <X size={16} />
           </button>
-        {/* Banner — container locked at 16:9 to match the guild
-            banner shape on the channel list and invite cards. Users
-            uploading at the recommended 1920×1080 get edge-to-edge
-            fill; other ratios show with letterbox/pillarbox bars
-            filled by the avatar-tinted background as an intentional
-            design treatment. */}
-        <div className="aspect-[16/9] relative">
-          {/* Avatar-tinted placeholder — intentionally faded. Kept on its own
-              layer so it fills any letterbox/pillarbox bars WITHOUT dimming
-              the banner image: CSS opacity applies to the whole subtree, so
-              when this lived on the container the image inherited the fade. */}
-          <div className={`absolute inset-0 ${avatarColor(user.id).split(' ')[0]} opacity-30`} />
+        {/* Banner — container locked at 16:10 to match the iOS profile
+            header's banner shape. The image fills edge-to-edge
+            (object-cover) like iOS (.fill + clipped) rather than
+            letterboxing. */}
+        <div className="aspect-[16/10] relative">
+          {/* No-banner fallback: branded accent→accent2 gradient (matches the
+              iOS profileHeader banner). Sits behind the <img> so an uploaded
+              banner still wins; the image uses object-cover to fill edge-to-edge
+              like iOS (.fill + clipped) rather than letterboxing. */}
+          <div
+            className="absolute inset-0"
+            style={{
+              background:
+                'linear-gradient(to right, rgb(var(--c-accent) / 0.55), rgb(var(--c-accent-2) / 0.45))',
+            }}
+          />
           {bannerUrl && (
             <img
               src={bannerUrl}
               alt=""
-              className="absolute inset-0 w-full h-full object-contain"
+              className="absolute inset-0 w-full h-full object-cover"
               draggable={false}
             />
           )}
@@ -727,14 +799,18 @@ export function ProfileCard({
             <div className="min-w-0 flex-1 pt-2 -ml-[3px] -mt-[2px]">
               <div className="flex items-center gap-1.5">
                 <UserTag user={user} className="-mr-1" />
+                {/* Role color rides on StaffName's roleColor prop (same as
+                    MemberList) so the staff shimmer still wins when present —
+                    .zk-staff-shimmer forces `color: transparent !important`. */}
                 <StaffName
                   user={user}
                   text={user.displayName}
-                  className="font-semibold text-base text-ink-1 truncate"
+                  roleColor={nameColor}
+                  className="text-xl font-bold text-ink-1 truncate"
                 />
                 {user.isBot && (
                   <span
-                    className="shrink-0 inline-flex items-center px-1.5 rounded bg-violet-500/20 text-violet-300 text-[0.55rem] font-bold uppercase tracking-wider leading-[1.1rem]"
+                    className="shrink-0 inline-flex items-center px-1.5 rounded bg-accent/20 text-accent text-[0.55rem] font-bold uppercase tracking-wider leading-[1.1rem]"
                     title="Bot account"
                   >
                     Bot
@@ -744,7 +820,7 @@ export function ProfileCard({
                     (and only when the user hasn't opted out of showing it). */}
                 <TierBadge tier={fullProfile?.subscriptionTier ?? user.subscriptionTier} />
               </div>
-              <div className="text-xs text-ink-3 truncate">@{user.username}</div>
+              <div className="text-sm text-ink-3 truncate">@{user.username}</div>
             </div>
           </div>
 
@@ -859,6 +935,65 @@ export function ProfileCard({
                   <Shield size={14} />
                   <span>Block</span>
                 </button>
+              )}
+
+              {/* Report User — for guild members you aren't friends with, mirrors
+                  the iOS danger-tinted 'Report User' action. Opens an inline
+                  reason picker (scoped to the current guild's report queue). */}
+              {targetMember && rel !== 'friend' && !reportPromptOpen && (
+                <button
+                  disabled={pending}
+                  onClick={() => setReportPromptOpen(true)}
+                  className="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-red-950/40 text-sm font-medium text-red-400 transition-colors disabled:opacity-60"
+                >
+                  <FlagIcon size={14} />
+                  <span>Report User</span>
+                </button>
+              )}
+
+              {reportPromptOpen && (
+                <div className="mt-1 pt-3 border-t border-line space-y-2">
+                  <div className="text-xs text-ink-2">
+                    Report {user.displayName} to the server moderators
+                  </div>
+                  <select
+                    value={reportReason}
+                    onChange={(e) => setReportReason(e.target.value as typeof reportReason)}
+                    className="w-full px-3 py-1.5 bg-bg-2 border border-line rounded-md text-sm outline-none focus:border-red-400"
+                  >
+                    <option value="spam">Spam</option>
+                    <option value="harassment">Harassment</option>
+                    <option value="nsfw">NSFW</option>
+                    <option value="violence">Violence or threats</option>
+                    <option value="other">Other</option>
+                  </select>
+                  <input
+                    type="text"
+                    value={reportDetails}
+                    onChange={(e) => setReportDetails(e.target.value)}
+                    maxLength={512}
+                    placeholder="Add details (optional)"
+                    className="w-full px-3 py-1.5 bg-bg-2 border border-line rounded-md text-sm outline-none focus:border-red-400"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={reportPending}
+                      onClick={() => void submitReport()}
+                      className="flex-1 px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-700 text-white text-sm font-medium disabled:opacity-60"
+                    >
+                      {reportPending ? 'Submitting…' : 'Submit report'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={reportPending}
+                      onClick={() => setReportPromptOpen(false)}
+                      className="px-3 py-1.5 rounded-md bg-bg-3 hover:bg-bg-3/80 text-ink-2 text-sm disabled:opacity-60"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
               )}
 
               {/* Private DM nickname ("only you") — a viewer-private label

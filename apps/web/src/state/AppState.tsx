@@ -459,6 +459,7 @@ type Action =
   | { type: 'STICKERS_SET'; guildId: string; stickers: Sticker[] }
   | { type: 'STAGE_PARTICIPANTS_SET'; channelId: string; participants: StageParticipant[] }
   | { type: 'ROLES_SET'; guildId: string; roles: Role[] }
+  | { type: 'ROLE_UPSERT'; guildId: string; role: Role }
   // ── Scheduled events ──────────────────────────────────────────────────
   // Full replace from a list fetch. Caller-supplied DTOs include
   // rsvpCounts + myRsvp.
@@ -1342,16 +1343,37 @@ function reducer(state: State, action: Action): State {
       // reference and React skips the re-render entirely.
       const list = state.membersByGuild[action.guildId];
       const cachedUser = state.usersById[action.userId];
+
+      // The Friends tab renders its status dots from
+      // relationships[].user.status — a copy that, despite the doc comment
+      // on userStatusById claiming this reducer patches it, was in fact only
+      // ever written by a full listRelationships() refetch. Patch it here too
+      // so a live presence event moves the Friends-tab dot in lock-step with
+      // the member-list and DM dots (it previously froze at the last list
+      // fetch until a reconnect — a cross-surface presence split-brain).
+      // Computed up front so it still lands when the member/usersById
+      // fast-paths below bail out: a friend may be in no loaded guild and not
+      // in usersById, yet still visible in the Friends tab. Resolves to the
+      // same array reference when nothing matches, so unrelated presence
+      // events don't re-render Friends consumers.
+      const relIdx = state.relationships.findIndex((r) => r.user.id === action.userId);
+      const relationships =
+        relIdx !== -1 && state.relationships[relIdx]!.user.status !== action.status
+          ? state.relationships.map((r, i) =>
+              i === relIdx ? { ...r, user: { ...r.user, status: action.status } } : r,
+            )
+          : state.relationships;
+
       if (!list && !cachedUser) {
         // Neither a loaded member list nor a cached identity — but a DM partner
         // you share this guild with (whose member list you never opened and
         // whose messages you never loaded) is in NEITHER map, yet the DM-list
-        // dot still needs updating. Try the DM patch; patchDmRecipientStatus
-        // returns the SAME ref when no recipient matched, so we keep the cheap
-        // reference-preserving bail for the common no-DM case.
+        // dot still needs updating. Same for a friend in no loaded guild. Try
+        // both patches; each returns the SAME ref when nothing matched, so we
+        // keep the cheap reference-preserving bail for the common case.
         const dmChannels = patchDmRecipientStatus(state.dmChannels, action.userId, action.status);
-        if (dmChannels === state.dmChannels) return state;
-        return { ...state, dmChannels };
+        if (dmChannels === state.dmChannels && relationships === state.relationships) return state;
+        return { ...state, dmChannels, relationships };
       }
 
       // Single findIndex serves both the early-bail check AND the
@@ -1373,7 +1395,14 @@ function reducer(state: State, action: Action): State {
         cachedUser === undefined || state.userStatusById[action.userId] === action.status;
       const memberStatusMatches =
         memberIdx === -1 || list![memberIdx]!.user.status === action.status;
-      if (statusMatches && memberStatusMatches) return state;
+      if (statusMatches && memberStatusMatches) {
+        // The member row + status slice are already current, but the
+        // relationships / DM-recipient copies might not be — don't drop those
+        // patches just because the member-list view is up to date.
+        const dmChannels = patchDmRecipientStatus(state.dmChannels, action.userId, action.status);
+        if (dmChannels === state.dmChannels && relationships === state.relationships) return state;
+        return { ...state, dmChannels, relationships };
+      }
 
       // Write presence into a SEPARATE slice, never into usersById.
       // usersById holds identity (name/avatar/tag) and is subscribed to
@@ -1400,8 +1429,13 @@ function reducer(state: State, action: Action): State {
         // Without this, a DM partner's dot froze at whatever the list
         // fetch returned (the web-side twin of the iOS stale-pin bug).
         const dmChannels = patchDmRecipientStatus(state.dmChannels, action.userId, action.status);
-        if (userStatusById === state.userStatusById && dmChannels === state.dmChannels) return state;
-        return { ...state, userStatusById, dmChannels };
+        if (
+          userStatusById === state.userStatusById &&
+          dmChannels === state.dmChannels &&
+          relationships === state.relationships
+        )
+          return state;
+        return { ...state, userStatusById, dmChannels, relationships };
       }
 
       // Splice in place — O(1) work instead of .map's O(n) callback
@@ -1416,6 +1450,7 @@ function reducer(state: State, action: Action): State {
         membersByGuild: { ...state.membersByGuild, [action.guildId]: nextList },
         userStatusById,
         dmChannels: patchDmRecipientStatus(state.dmChannels, action.userId, action.status),
+        relationships,
       };
     }
 
@@ -1702,6 +1737,28 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         rolesByGuild: { ...state.rolesByGuild, [action.guildId]: action.roles },
+      };
+    }
+    case 'ROLE_UPSERT': {
+      // Live patch of a single role (color/name/permission edit) from
+      // GUILD_ROLE_UPDATE. Member name colors + role pills read
+      // state.rolesByGuild, which was otherwise only ever written by a full
+      // REST loadRoles — so a role recolor stayed stale until a guild-settings
+      // open or a reload (reconnect didn't even heal it).
+      const existing = state.rolesByGuild[action.guildId];
+      // Do NOT create a fresh guild entry from a single-role event: a
+      // 1-element list would satisfy the mount-time `if (guildRoles) return`
+      // load guard and suppress the full fetch, leaving every OTHER role's
+      // color unknown. Only patch a guild whose role list is already loaded.
+      if (!existing) return state;
+      const idx = existing.findIndex((r) => r.id === action.role.id);
+      const next =
+        idx >= 0
+          ? existing.map((r) => (r.id === action.role.id ? action.role : r))
+          : [...existing, action.role];
+      return {
+        ...state,
+        rolesByGuild: { ...state.rolesByGuild, [action.guildId]: next },
       };
     }
     case 'EVENTS_SET': {
@@ -2065,9 +2122,11 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   // Tracks whether the gateway has delivered its first READY for the
   // current auth session. Used by the READY handler below to distinguish
   // "initial connect (bootstrap effect already running)" from "reconnect
-  // (need to refetch state we may have missed events for)". Reset to
-  // false in the gateway-subscription effect's cleanup so a logout →
-  // login cycle gets a fresh first-READY semantic.
+  // (need to refetch state we may have missed events for)". Reset to false
+  // only on a genuine login → logout identity flip (a dedicated effect keyed
+  // on user?.id), NOT on token refresh or self-user churn, so a logout → login
+  // cycle gets a fresh first-READY semantic while a mid-session token rotation
+  // keeps the reconnect-resync behavior.
   const readyOnceRef = useRef(false);
 
   // ── REST loaders ──────────────────────────────────────────────────────
@@ -2288,6 +2347,69 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       }
     },
     [loadMessages, restForChannel],
+  );
+
+  /**
+   * Full open-window RESYNC for an already-loaded channel. This is the
+   * MUTATION twin of refreshChannelLatest above, not a replacement for it:
+   * both fetch the tail, but refreshChannelLatest merges via MESSAGE_APPEND
+   * (dedups by id, so it can only ADD messages it doesn't have) while this
+   * REPLACES the loaded window, healing mutations that landed on rows the
+   * client ALREADY holds — edits, deletes, reactions, and read-receipts.
+   *
+   * That's precisely what the reconnect resync needs and what neither
+   * refreshChannelLatest nor the append-only reconcileChannel can do: a fresh
+   * IDENTIFY (RESUME failed) replays no MESSAGE_UPDATE / MESSAGE_DELETE /
+   * REACTION / *_VIEWED for the outage, so an append-merge returning zero new
+   * messages still leaves the open DM showing stale text / stuck 'Delivered' /
+   * wrong reaction counts / the ghost of a deleted message until a hard
+   * refresh. The two compose safely if both run (a reconnect that coincides
+   * with the tab regaining visibility): whichever lands last converges on the
+   * same server tail, since APPEND dedups and REPLACE takes server truth.
+   *
+   * Anchors the `around=<id>` window on the newest real (server snowflake) id
+   * so the refetched window is the same tail the user is viewing — which also
+   * means MESSAGES_SET's default `preserveNewerSurvivors` is the behavior we
+   * want here (unlike loadMessagesAround's jump to an older window, which
+   * opts out): any REAL row newer than the fetched tail that landed during the
+   * round trip is unioned back by the reducer, so we don't re-implement that.
+   * What the reducer deliberately does NOT keep is optimistic `local-`
+   * placeholders, so we carry those forward explicitly: a send whose REST 201
+   * hasn't landed would otherwise vanish from the list mid-flight (and lose the
+   * nonce row its echo reconciles against). Re-reads the live list after the
+   * await so a placeholder created during the round trip is included. No-op
+   * when nothing is loaded (a normal first open handles that) or only
+   * optimistic rows exist.
+   */
+  const resyncChannelWindow = useCallback(
+    async (channelId: string) => {
+      const existing = stateRef.current.messagesByChannel[channelId];
+      if (!existing || existing.length === 0) return;
+      // Newest real id anchors the window; skip optimistic `local-` rows the
+      // server cursor wouldn't understand.
+      let anchor: string | undefined;
+      for (let i = existing.length - 1; i >= 0; i--) {
+        if (/^\d+$/.test(existing[i]!.id)) {
+          anchor = existing[i]!.id;
+          break;
+        }
+      }
+      if (!anchor) return; // only optimistic rows — nothing server-side to heal
+      const r = await (await restForChannel(channelId)).listMessages(channelId, {
+        around: anchor,
+        limit: 50,
+      });
+      // `around` returns chronological order (oldest-first) — no reverse.
+      // Re-read the LIVE list (a send/echo may have landed during the await)
+      // and carry forward any optimistic placeholders the server window can't
+      // contain, appended after the tail so chronological order holds.
+      const live = stateRef.current.messagesByChannel[channelId] ?? existing;
+      const serverIds = new Set(r.messages.map((m) => m.id));
+      const pending = live.filter((m) => m.id.startsWith('local-') && !serverIds.has(m.id));
+      const merged = pending.length > 0 ? [...r.messages, ...pending] : r.messages;
+      dispatch({ type: 'MESSAGES_SET', channelId, messages: merged });
+    },
+    [restForChannel],
   );
 
   /**
@@ -3392,8 +3514,27 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       gateway.on<GuildMember>(GatewayEvent.GUILD_MEMBER_ADD, (m) => {
         dispatch({ type: 'MEMBER_UPSERT', guildId: m.guildId, member: m });
       }),
+      // GUILD_MEMBER_UPDATE — role assignment/removal, hoist, and timeout
+      // (communicationDisabledUntil) changes. The wire DTO is produced by the
+      // same toGuildMember() serializer as GUILD_MEMBER_ADD (camelCase
+      // guildId/userId/roleIds), so the ADD handler body works verbatim.
+      // Without this the member row (role color, hoisted grouping, timeout
+      // state) stayed stale until a guild switch or reconnect. MEMBER_UPSERT
+      // is idempotent, so replaying for an existing member just refreshes it.
+      gateway.on<GuildMember>(GatewayEvent.GUILD_MEMBER_UPDATE, (m) => {
+        dispatch({ type: 'MEMBER_UPSERT', guildId: m.guildId, member: m });
+      }),
       gateway.on<{ guild_id: string; user_id: string }>(GatewayEvent.GUILD_MEMBER_REMOVE, (d) => {
         dispatch({ type: 'MEMBER_REMOVE', guildId: d.guild_id, userId: d.user_id });
+      }),
+
+      // GUILD_ROLE_UPDATE — role rename / recolor / permission edit. The
+      // toRole() DTO carries a camelCase guildId. Member name colors and role
+      // pills read state.rolesByGuild; without this handler the frame is
+      // dropped and the stale color persists (not even healed on reconnect —
+      // see the loadRoles refetch in the READY resync below).
+      gateway.on<Role>(GatewayEvent.GUILD_ROLE_UPDATE, (role) => {
+        dispatch({ type: 'ROLE_UPSERT', guildId: role.guildId, role });
       }),
 
       // GUILD_EMOJIS_UPDATE — bulk replace of a guild's emoji list.
@@ -3637,6 +3778,38 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         for (const gid of memberGuildIds) {
           void loadMembers(gid).catch(() => undefined);
         }
+        // Roles have no reconnect heal of their own — GUILD_ROLE_UPDATE is
+        // handled live above, but a role edit missed during the drop would
+        // otherwise stay stale forever (mount-time loadRoles is guarded on
+        // absence). Refetch only guilds whose role list was actually loaded.
+        const roleGuildIds = Object.keys(loaded.rolesByGuild);
+        for (const gid of roleGuildIds) {
+          void loadRoles(gid).catch(() => undefined);
+        }
+        // Heal the OPEN conversation's message window. Everything above
+        // refetches DMs/guilds/read-states/members/roles but NOT the open
+        // channel's messages — so any edit / delete / reaction / read-receipt
+        // that landed on an ALREADY-LOADED row during the drop stays stale
+        // until a page reload. A fresh IDENTIFY replays none of those events,
+        // and neither MessageView's refreshChannelLatest (append-merge, dedups
+        // by id) nor the after-cursor reconcileChannel can fix a row they
+        // already hold — only the around-window REPLACE can. Note this is
+        // complementary to, not a duplicate of, the tab-focus/visibility
+        // catch-up in MessageView: that path recovers MISSED MESSAGES on
+        // focus, this one heals MUTATED ROWS on reconnect, and the two
+        // converge on the same server tail if they overlap.
+        //
+        // AppState doesn't track the active channel, so derive it from the
+        // route (the router encodes it as the last segment of
+        // /channels/<...>/<channelId>). Guard on the channel actually being
+        // loaded so this only ever REPLACES a window the user is looking at.
+        const openChannelId =
+          typeof window !== 'undefined'
+            ? window.location.pathname.match(/\/channels\/[^/]+\/([^/?#]+)/)?.[1] ?? null
+            : null;
+        if (openChannelId && loaded.messagesByChannel[openChannelId]?.length) {
+          void resyncChannelWindow(openChannelId).catch(() => undefined);
+        }
       }),
     );
 
@@ -3647,6 +3820,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       token,
       loadChannels,
       loadMembers,
+      loadRoles,
       refreshGuilds,
       loadDMs,
       loadReadStates,
@@ -3656,19 +3830,40 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       loadSupervision,
       toasts.push,
       restForChannel,
+      resyncChannelWindow,
     ],
   );
 
   // Backbone gateway: subscribe for the auth session (unchanged behavior).
+  //
+  // NOTE: we deliberately do NOT reset readyOnceRef here. This effect re-runs
+  // on every `token` refresh (~15 min) and on every self-user object churn
+  // (status / custom-status / settings changes replace the `user` object),
+  // neither of which is a new session. Resetting the flag here made the NEXT
+  // fresh-IDENTIFY READY skip the full resync (it saw readyOnceRef===false,
+  // marked it true, and returned early), so any events missed during the drop
+  // — member adds, presence, channel create/delete, unread — were never
+  // reconciled. React runs cleanup + re-subscribe synchronously in the same
+  // commit (no gap that drops WS frames) and gateway.on replays no cached
+  // READY, so leaving the flag true across a re-subscribe is correct. The flag
+  // is reset only on a genuine login/logout identity flip by the effect below.
   useEffect(() => {
     if (!token || !user) return;
     const unsubs = subscribeGateway(gateway);
     return () => {
       for (const u of unsubs) u();
-      // Next session (logout → login) starts a fresh first-READY.
-      readyOnceRef.current = false;
     };
   }, [gateway, token, user, subscribeGateway]);
+
+  // Reset the first-READY flag ONLY on a genuine login/logout (the stable user
+  // id flips), never on token rotation or self-user-object patches. A fresh
+  // session must run the full bootstrap on its first READY; a mere reconnect
+  // within a session must run the reconnect resync.
+  useEffect(() => {
+    return () => {
+      readyOnceRef.current = false;
+    };
+  }, [user?.id]);
 
   const value = useMemo<AppStateValue>(
     () => ({

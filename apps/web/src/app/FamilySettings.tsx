@@ -27,11 +27,43 @@ import {
 } from '@zekktris/client';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
-import { Users, ChevronLeft } from '../lib/icons';
+import { Users, ChevronLeft, ChevronRight } from '../lib/icons';
 import { useNavigate } from 'react-router-dom';
 
 /** Mirrors the server cap (supervision.MAX_CHILDREN_PER_PARENT). */
 const MAX_CHILDREN = 6;
+
+/** iOS `sectionTitle`: uppercase, tracked, muted — the shared section label. */
+const SECTION_LABEL = 'text-[11px] font-bold uppercase tracking-wider text-ink-3';
+
+/** iOS renders an accent-tinted checkmark.circle.fill for an allowed ability. */
+function AllowIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" className="shrink-0 text-emerald-400" aria-hidden>
+      <circle cx="12" cy="12" r="9" fill="currentColor" fillOpacity="0.18" />
+      <path d="M8 12.5l2.5 2.5 5-5.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** A grey xmark.circle.fill for a restricted ability. */
+function DenyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" className="shrink-0 text-ink-3" aria-hidden>
+      <circle cx="12" cy="12" r="9" fill="currentColor" fillOpacity="0.18" />
+      <path d="M9 9l6 6M15 9l-6 6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** iOS decline control on request rows: a plain xmark button. */
+function XMark({ size = 14 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden>
+      <path d="M6 6l12 12M18 6L6 18" />
+    </svg>
+  );
+}
 
 function PersonRow({
   user,
@@ -290,9 +322,8 @@ export function FamilySettings() {
         <Users size={16} className="text-accent shrink-0" />
         <div className="min-w-0">
           <h1 className="text-base sm:text-lg font-semibold text-ink-1 leading-tight truncate">
-            Family
+            Parental Controls
           </h1>
-          <p className="text-xs text-ink-3 leading-tight">Parental controls &amp; supervision</p>
         </div>
       </header>
 
@@ -332,12 +363,39 @@ export function FamilySettings() {
         </div>
       ) : null}
 
+      {/* Read-only summary of MY own restrictions when I'm supervised. Mirrors
+          the iOS 'YOUR ACCOUNT IS SUPERVISED' card. */}
+      {sup.restrictions && (
+        <section className="space-y-2">
+          <h4 className="text-[11px] font-bold uppercase tracking-wider text-accent">
+            Your account is supervised
+          </h4>
+          <div className="rounded-md border border-line bg-bg-2 divide-y divide-line">
+            {(
+              [
+                { key: 'canAddFriends', label: 'Add friends' },
+                { key: 'canRemoveFriends', label: 'Remove friends' },
+                { key: 'allowVoice', label: 'Join voice channels' },
+                { key: 'allowVideo', label: 'Use video' },
+                { key: 'allowStream', label: 'Stream' },
+                { key: 'allowJoinGuilds', label: 'Join servers' },
+                { key: 'allowMessaging', label: 'Send messages in servers' },
+                { key: 'allowCreateGuild', label: 'Create servers' },
+              ] as const
+            ).map((r) => (
+              <div key={r.key} className="flex items-center gap-2.5 px-3 py-2">
+                {sup.restrictions?.[r.key] ? <AllowIcon /> : <DenyIcon />}
+                <span className="text-sm text-ink-1">{r.label}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Link a guardian by email (child POV). */}
       {showGuardianInvite && (
         <section className="space-y-2">
-          <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
-            Link a guardian
-          </h4>
+          <h4 className={SECTION_LABEL}>Link a guardian</h4>
           <p className="text-xs text-ink-3 leading-relaxed">
             Enter a parent or guardian&apos;s email. If they have an account they&apos;ll get a
             request to approve; otherwise we&apos;ll email them an invite to create one.
@@ -385,23 +443,49 @@ export function FamilySettings() {
         </section>
       )}
 
+      {/* Supervise a child — its own section, above the lists (iOS order).
+          Parent-side only: a minor can't supervise anyone. */}
+      {!isMinor && sup.children.length < MAX_CHILDREN && (
+        <section className="space-y-2">
+          <h4 className={SECTION_LABEL}>Supervise a child account</h4>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') addChild();
+              }}
+              placeholder="Child's username"
+              className="flex-1 min-w-0 text-sm bg-bg-2 border border-line rounded-md px-3 py-2 text-ink-1 placeholder:text-ink-3"
+            />
+            <button
+              type="button"
+              disabled={busy !== null || username.trim().length === 0}
+              onClick={addChild}
+              className="shrink-0 text-sm px-3 py-2 rounded-md border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40"
+            >
+              {busy === 'add' ? 'Sending…' : 'Request'}
+            </button>
+          </div>
+        </section>
+      )}
+
       {/* Child-initiated requests awaiting MY (the parent's) acceptance. */}
       {!isMinor && (sup.incomingChildRequests?.length ?? 0) > 0 && (
         <section className="space-y-2">
-          <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
-            Accounts asking you to supervise them
-          </h4>
+          <h4 className={SECTION_LABEL}>Asking you to supervise them</h4>
           <ul className="space-y-1.5">
             {sup.incomingChildRequests!.map((u) => (
               <PersonRow key={u.id} user={u}>
-                <span className="flex gap-1.5 shrink-0">
+                <span className="flex items-center gap-1.5 shrink-0">
                   <button
                     type="button"
                     disabled={busy !== null}
                     onClick={() =>
                       void run(`accchild-${u.id}`, () => rest.familyAcceptChildRequest(u.id), 'Now supervising')
                     }
-                    className="text-xs px-2.5 py-1 rounded border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40"
+                    className="text-xs font-medium px-2.5 py-1 text-emerald-400 hover:text-emerald-300 disabled:opacity-40"
                   >
                     Accept
                   </button>
@@ -411,9 +495,10 @@ export function FamilySettings() {
                     onClick={() =>
                       void run(`declchild-${u.id}`, () => rest.familyRemoveLink(u.id), 'Declined')
                     }
-                    className="text-xs px-2.5 py-1 rounded border border-line text-ink-2 hover:text-ink-1 hover:bg-bg-3 disabled:opacity-40"
+                    aria-label="Decline"
+                    className="w-7 h-7 grid place-items-center rounded-full text-ink-3 hover:text-ink-1 hover:bg-bg-3 disabled:opacity-40"
                   >
-                    Decline
+                    <XMark />
                   </button>
                 </span>
               </PersonRow>
@@ -425,20 +510,18 @@ export function FamilySettings() {
       {/* Requests awaiting MY acceptance */}
       {sup.incomingRequests.length > 0 && (
         <section className="space-y-2">
-          <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
-            Requests to supervise your account
-          </h4>
+          <h4 className={SECTION_LABEL}>Requests to accept</h4>
           <ul className="space-y-1.5">
             {sup.incomingRequests.map((u) => (
               <PersonRow key={u.id} user={u}>
-                <span className="flex gap-1.5 shrink-0">
+                <span className="flex items-center gap-1.5 shrink-0">
                   <button
                     type="button"
                     disabled={busy !== null}
                     onClick={() =>
                       void run(`acc-${u.id}`, () => rest.familyAcceptLink(u.id), 'Request accepted')
                     }
-                    className="text-xs px-2.5 py-1 rounded border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40"
+                    className="text-xs font-medium px-2.5 py-1 text-emerald-400 hover:text-emerald-300 disabled:opacity-40"
                   >
                     Accept
                   </button>
@@ -446,9 +529,10 @@ export function FamilySettings() {
                     type="button"
                     disabled={busy !== null}
                     onClick={() => void run(`dec-${u.id}`, () => rest.familyRemoveLink(u.id))}
-                    className="text-xs px-2.5 py-1 rounded border border-line text-ink-2 hover:bg-bg-3 disabled:opacity-40"
+                    aria-label="Decline"
+                    className="w-7 h-7 grid place-items-center rounded-full text-ink-3 hover:text-ink-1 hover:bg-bg-3 disabled:opacity-40"
                   >
-                    Decline
+                    <XMark />
                   </button>
                 </span>
               </PersonRow>
@@ -460,9 +544,7 @@ export function FamilySettings() {
       {/* Approval requests from supervised children */}
       {!isMinor && requests.length > 0 && (
         <section className="space-y-2">
-          <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
-            Requests to approve
-          </h4>
+          <h4 className={SECTION_LABEL}>Requests to approve</h4>
           <ul className="space-y-1.5">
             {requests.map((r) => {
               const childName = r.child.displayName || r.child.username;
@@ -508,7 +590,7 @@ export function FamilySettings() {
       {/* Who supervises me */}
       {sup.supervisedBy.length > 0 && (
         <section className="space-y-2">
-          <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
+          <h4 className={SECTION_LABEL}>
             Supervising your account
             <span className="ml-1.5 font-normal normal-case">
               {sup.supervisedBy.length} of 2
@@ -530,7 +612,7 @@ export function FamilySettings() {
       {/* Children I supervise — parent-side; hidden entirely for minors. */}
       {!isMinor && (
       <section className="space-y-2">
-        <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
+        <h4 className={SECTION_LABEL}>
           Children you supervise
           <span className="ml-1.5 font-normal normal-case">
             {sup.children.length} of {MAX_CHILDREN}
@@ -541,56 +623,31 @@ export function FamilySettings() {
         ) : (
           <ul className="space-y-1.5">
             {sup.children.map((u) => (
-              <PersonRow key={u.id} user={u}>
-                <span className="flex gap-1.5 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setViewingChild(u)}
-                    className="text-xs px-2.5 py-1 rounded border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25"
-                  >
-                    View
-                  </button>
+              <PersonRow key={u.id} user={u} onClick={() => setViewingChild(u)}>
+                <span className="flex items-center gap-1 shrink-0">
                   <button
                     type="button"
                     disabled={busy !== null}
-                    onClick={() => void run(`rm-${u.id}`, () => rest.familyRemoveLink(u.id))}
-                    className="text-xs px-2.5 py-1 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-40"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void run(`rm-${u.id}`, () => rest.familyRemoveLink(u.id));
+                    }}
+                    className="text-xs font-medium px-2 py-1 text-red-300 hover:text-red-200 disabled:opacity-40"
                   >
                     Remove
                   </button>
+                  <ChevronRight size={16} className="text-ink-3" />
                 </span>
               </PersonRow>
             ))}
           </ul>
         )}
 
-        {/* Add a child by username */}
-        {sup.children.length >= MAX_CHILDREN ? (
+        {sup.children.length >= MAX_CHILDREN && (
           <p className="text-xs text-ink-3 pt-1">
             You're supervising the maximum of {MAX_CHILDREN} accounts. Remove one
             to add another.
           </p>
-        ) : (
-          <div className="flex gap-2 pt-1">
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') addChild();
-              }}
-              placeholder="Child's username"
-              className="flex-1 min-w-0 text-sm bg-bg-2 border border-line rounded-md px-3 py-2 text-ink-1 placeholder:text-ink-3"
-            />
-            <button
-              type="button"
-              disabled={busy !== null || username.trim().length === 0}
-              onClick={addChild}
-              className="shrink-0 text-sm px-3 py-2 rounded-md border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40"
-            >
-              {busy === 'add' ? 'Sending…' : 'Send request'}
-            </button>
-          </div>
         )}
       </section>
       )}
@@ -598,9 +655,7 @@ export function FamilySettings() {
       {/* Outgoing requests (parent-side; hidden for minors) */}
       {!isMinor && sup.outgoingRequests.length > 0 && (
         <section className="space-y-2">
-          <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
-            Pending requests you've sent
-          </h4>
+          <h4 className={SECTION_LABEL}>Pending requests you've sent</h4>
           <ul className="space-y-1.5">
             {sup.outgoingRequests.map((u) => (
               <PersonRow key={u.id} user={u}>
@@ -635,9 +690,6 @@ function ChildMonitor({
   nudge: number;
 }) {
   const { rest } = useAuth();
-  const [tab, setTab] = useState<
-    'chats' | 'friends' | 'restrictions' | 'watchwords' | 'flags'
-  >('chats');
   const [channels, setChannels] = useState<FamilyChildChannel[] | null>(null);
   const [friends, setFriends] = useState<
     Array<{ type: string; user: FamilyUser }> | null
@@ -749,6 +801,7 @@ function ChildMonitor({
 
   const childName = child.displayName || child.username;
   const friendList = (friends ?? []).filter((f) => f.type === 'friend');
+  const blockedList = (friends ?? []).filter((f) => f.type === 'blocked');
 
   const toggle = async (key: keyof ChildRestrictions) => {
     if (!restrictions || savingRestr) return;
@@ -818,7 +871,6 @@ function ChildMonitor({
     if (ch) {
       setHighlightMessageId(f.messageId);
       setOpenChannel(ch);
-      setTab('chats');
     }
     // Viewing clears the flag from the alert list (server marks it
     // reviewed, so it won't come back on refresh either).
@@ -852,73 +904,42 @@ function ChildMonitor({
         </div>
       </div>
 
-      <div className="-mx-1 px-1 flex gap-1.5 overflow-x-auto zk-no-scrollbar">
-        {(
-          [
-            { id: 'chats', label: 'Conversations' },
-            { id: 'friends', label: 'Friends' },
-            { id: 'restrictions', label: 'Restrictions' },
-            { id: 'watchwords', label: 'Watch Words' },
-            {
-              id: 'flags',
-              label:
-                flags && flags.some((f) => !f.reviewed)
-                  ? `Flags · ${flags.filter((f) => !f.reviewed).length}`
-                  : 'Flags',
-            },
-          ] as const
-        ).map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setTab(t.id)}
-            className={`shrink-0 text-xs font-medium px-3 py-1.5 rounded-full border transition-colors ${
-              tab === t.id
-                ? 'bg-accent/15 border-accent/40 text-accent'
-                : 'bg-bg-2 border-line text-ink-2 hover:bg-bg-3 hover:text-ink-1'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
       {err && <p className="text-sm text-red-400">{err}</p>}
 
-      {tab === 'chats' &&
-        (openChannel ? (
-          <div className="space-y-2">
-            <button
-              type="button"
-              onClick={() => {
-                setOpenChannel(null);
-                setHighlightMessageId(null);
-              }}
-              className="text-xs text-accent hover:underline"
-            >
-              ← All conversations
-            </button>
-            <p className="text-xs text-ink-3">
-              with {openChannel.recipient?.displayName || openChannel.recipient?.username || 'unknown'}
-            </p>
-            {!messages ? (
-              <p className="text-sm text-ink-3">Loading messages…</p>
-            ) : messages.length === 0 ? (
-              <p className="text-sm text-ink-3">No messages.</p>
-            ) : (
-              <>
-                {hasMoreOlder && (
-                  <button
-                    type="button"
-                    disabled={loadingOlder}
-                    onClick={() => void loadOlder()}
-                    className="w-full text-xs px-3 py-1.5 rounded-md border border-line bg-bg-2 text-ink-2 hover:bg-bg-3 disabled:opacity-40"
-                  >
-                    {loadingOlder ? 'Loading…' : 'Load older messages'}
-                  </button>
-                )}
-                <ul className="space-y-2">
-                  {messages.map((m) => (
+      {openChannel ? (
+        /* Drill-down: reading one conversation (iOS pushes this as its own view). */
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={() => {
+              setOpenChannel(null);
+              setHighlightMessageId(null);
+            }}
+            className="text-xs text-accent hover:underline"
+          >
+            ← All conversations
+          </button>
+          <p className="text-xs text-ink-3">
+            with {openChannel.recipient?.displayName || openChannel.recipient?.username || 'unknown'}
+          </p>
+          {!messages ? (
+            <p className="text-sm text-ink-3">Loading messages…</p>
+          ) : messages.length === 0 ? (
+            <p className="text-sm text-ink-3">No messages.</p>
+          ) : (
+            <>
+              {hasMoreOlder && (
+                <button
+                  type="button"
+                  disabled={loadingOlder}
+                  onClick={() => void loadOlder()}
+                  className="w-full text-xs px-3 py-1.5 rounded-md border border-line bg-bg-2 text-ink-2 hover:bg-bg-3 disabled:opacity-40"
+                >
+                  {loadingOlder ? 'Loading…' : 'Load older messages'}
+                </button>
+              )}
+              <ul className="space-y-2">
+                {messages.map((m) => (
                   <li
                     key={m.id}
                     ref={
@@ -978,118 +999,104 @@ function ChildMonitor({
                     )}
                   </li>
                 ))}
-                </ul>
+              </ul>
+            </>
+          )}
+        </div>
+      ) : (
+        /* Everything on one scrolling page, matching iOS ChildControlsView. */
+        <div className="space-y-6">
+          {/* WHAT <NAME> CAN DO */}
+          <section className="space-y-2">
+            <h4 className={SECTION_LABEL}>What {childName} can do</h4>
+            {!restrictions ? (
+              <p className="text-sm text-ink-3">Loading…</p>
+            ) : (
+              <>
+                <div className="space-y-1.5">
+                  {(
+                    [
+                      { key: 'canAddFriends', label: 'Add friends' },
+                      { key: 'canRemoveFriends', label: 'Remove friends' },
+                      { key: 'allowVoice', label: 'Join voice channels' },
+                      { key: 'allowVideo', label: 'Use video' },
+                      { key: 'allowStream', label: 'Stream' },
+                      { key: 'allowJoinGuilds', label: 'Join servers' },
+                      { key: 'allowMessaging', label: 'Send messages in servers' },
+                      { key: 'allowCreateGuild', label: 'Create servers' },
+                    ] as const
+                  ).map((r) => {
+                    const on = restrictions[r.key];
+                    return (
+                      <div
+                        key={r.key}
+                        className="flex items-center justify-between px-3 py-2 bg-bg-2 border border-line rounded-md"
+                      >
+                        <span className="text-sm text-ink-1">{r.label}</span>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={on}
+                          disabled={savingRestr}
+                          onClick={() => void toggle(r.key)}
+                          className={`relative w-10 h-6 rounded-full transition-colors disabled:opacity-50 ${
+                            on ? 'bg-accent' : 'bg-bg-3'
+                          }`}
+                        >
+                          <span
+                            className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
+                              on ? 'left-[1.125rem]' : 'left-0.5'
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-ink-3 leading-relaxed">
+                  Turn an ability off to restrict it. For friends and servers,{' '}
+                  {childName} can still send you a request to approve.
+                </p>
               </>
             )}
-          </div>
-        ) : !channels ? (
-          <p className="text-sm text-ink-3">Loading conversations…</p>
-        ) : channels.length === 0 ? (
-          <p className="text-sm text-ink-3">No direct-message conversations.</p>
-        ) : (
-          <ul className="space-y-1.5">
-            {channels.map((ch) => (
-              <li key={ch.id}>
+          </section>
+
+          {/* CONTENT — ON is more protective (mask swear words), so it sits
+              apart from the ability toggles above, whose ON means allowed. */}
+          {restrictions && (
+            <section className="space-y-2">
+              <h4 className={SECTION_LABEL}>Content</h4>
+              <div className="flex items-center justify-between px-3 py-2 bg-bg-2 border border-line rounded-md">
+                <div className="pr-3">
+                  <span className="text-sm text-ink-1">Blur swear words</span>
+                  <p className="text-xs text-ink-3 leading-snug">
+                    Mask profanity in {childName}'s messages.
+                  </p>
+                </div>
                 <button
                   type="button"
-                  onClick={() => {
-                    setHighlightMessageId(null);
-                    setOpenChannel(ch);
-                  }}
-                  className="w-full flex items-center gap-3 px-3 py-2 bg-bg-2 border border-line rounded-md hover:bg-bg-3 text-left"
+                  role="switch"
+                  aria-checked={restrictions.filterProfanity}
+                  disabled={savingRestr}
+                  onClick={() => void toggle('filterProfanity')}
+                  className={`relative w-10 h-6 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+                    restrictions.filterProfanity ? 'bg-accent' : 'bg-bg-3'
+                  }`}
                 >
                   <span
-                    className="relative overflow-hidden shrink-0 w-9 h-9 rounded-full grid place-items-center text-xs font-semibold text-white"
-                    style={{ background: avatarColor(ch.recipient?.id ?? ch.id) }}
-                  >
-                    <span className="zk-avatar-initials">{avatarInitials(ch.recipient?.displayName || ch.recipient?.username || '?')}</span>
-                    <AvatarImage
-                      src={ch.recipient?.avatarUrl}
-                      alt={ch.recipient?.displayName || ch.recipient?.username || ''}
-                    />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm text-ink-1">
-                      {ch.recipient?.displayName || ch.recipient?.username || 'Unknown'}
-                    </span>
-                    {ch.recipient?.username && (
-                      <span className="block truncate text-xs text-ink-3">
-                        @{ch.recipient.username}
-                      </span>
-                    )}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        ))}
-
-      {tab === 'friends' &&
-        (!friends ? (
-          <p className="text-sm text-ink-3">Loading friends…</p>
-        ) : friendList.length === 0 ? (
-          <p className="text-sm text-ink-3">No friends.</p>
-        ) : (
-          <ul className="space-y-1.5">
-            {friendList.map((f) => (
-              <PersonRow key={f.user.id} user={f.user} onClick={() => setProfileUser(f.user)} />
-            ))}
-          </ul>
-        ))}
-
-      {tab === 'restrictions' &&
-        (!restrictions ? (
-          <p className="text-sm text-ink-3">Loading…</p>
-        ) : (
-          <div className="space-y-1.5">
-            <p className="text-xs text-ink-3 leading-relaxed pb-1">
-              Turn an ability off to restrict it. For friends and servers,{' '}
-              {childName} can still send you a request to approve.
-            </p>
-            {(
-              [
-                { key: 'canAddFriends', label: 'Add friends' },
-                { key: 'canRemoveFriends', label: 'Remove friends' },
-                { key: 'allowVoice', label: 'Voice calls' },
-                { key: 'allowVideo', label: 'Video' },
-                { key: 'allowStream', label: 'Screen sharing' },
-                { key: 'allowJoinGuilds', label: 'Join servers' },
-                { key: 'allowMessaging', label: 'Send messages in servers' },
-                { key: 'allowCreateGuild', label: 'Create servers' },
-              ] as const
-            ).map((r) => {
-              const on = restrictions[r.key];
-              return (
-                <div
-                  key={r.key}
-                  className="flex items-center justify-between px-3 py-2 bg-bg-2 border border-line rounded-md"
-                >
-                  <span className="text-sm text-ink-1">{r.label}</span>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={on}
-                    disabled={savingRestr}
-                    onClick={() => void toggle(r.key)}
-                    className={`relative w-10 h-6 rounded-full transition-colors disabled:opacity-50 ${
-                      on ? 'bg-accent/70' : 'bg-bg-3'
+                    className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
+                      restrictions.filterProfanity ? 'left-[1.125rem]' : 'left-0.5'
                     }`}
-                  >
-                    <span
-                      className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
-                        on ? 'left-[1.125rem]' : 'left-0.5'
-                      }`}
-                    />
-                  </button>
-                </div>
-              );
-            })}
+                  />
+                </button>
+              </div>
+            </section>
+          )}
 
-            {/* Direct messages — a 3-way policy, not a simple on/off. */}
-            <div className="pt-3 space-y-1.5">
-              <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
-                Direct messages
-              </h4>
+          {/* WHO THEY CAN DM — a 3-way policy, not a simple on/off. */}
+          {restrictions && (
+            <section className="space-y-2">
+              <h4 className={SECTION_LABEL}>Who they can DM</h4>
               <div className="flex gap-1.5">
                 {(
                   [
@@ -1117,175 +1124,251 @@ function ChildMonitor({
                   );
                 })}
               </div>
-            </div>
-
-            {/* Content filter — ON is more protective (mask swear words), so it
-                sits apart from the allow-toggles above, whose ON means allowed. */}
-            <div className="pt-3 space-y-1.5">
-              <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
-                Content
-              </h4>
-              <div className="flex items-center justify-between px-3 py-2 bg-bg-2 border border-line rounded-md">
-                <div className="pr-3">
-                  <span className="text-sm text-ink-1">Blur swear words</span>
-                  <p className="text-xs text-ink-3 leading-snug">
-                    Mask profanity in {childName}'s messages.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={restrictions.filterProfanity}
-                  disabled={savingRestr}
-                  onClick={() => void toggle('filterProfanity')}
-                  className={`relative w-10 h-6 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
-                    restrictions.filterProfanity ? 'bg-accent/70' : 'bg-bg-3'
-                  }`}
-                >
-                  <span
-                    className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
-                      restrictions.filterProfanity ? 'left-[1.125rem]' : 'left-0.5'
-                    }`}
-                  />
-                </button>
-              </div>
-            </div>
-
-            <div className="pt-3 space-y-1.5">
-              <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
-                Servers
-              </h4>
-              {!guilds ? (
-                <p className="text-xs text-ink-3">Loading…</p>
-              ) : guilds.length === 0 ? (
-                <p className="text-xs text-ink-3">{childName} isn't in any servers.</p>
-              ) : (
-                <ul className="space-y-1.5">
-                  {guilds.map((g) => (
-                    <li
-                      key={g.id}
-                      className="flex items-center justify-between gap-2 px-3 py-2 bg-bg-2 border border-line rounded-md"
-                    >
-                      <span className="text-sm text-ink-1 truncate">{g.name}</span>
-                      <button
-                        type="button"
-                        onClick={() => void toggleGuildBlock(g)}
-                        className={`shrink-0 text-xs px-2.5 py-1 rounded border ${
-                          g.blocked
-                            ? 'border-red-500/40 bg-red-500/15 text-red-200'
-                            : 'border-line text-ink-2 hover:bg-bg-3'
-                        }`}
-                      >
-                        {g.blocked ? 'Blocked' : 'Block'}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <p className="text-[0.7rem] text-ink-3 leading-relaxed">
-                A blocked server can't be joined. {childName} can ask you to approve a
-                specific server with an invite link.
-              </p>
-            </div>
-          </div>
-        ))}
-
-      {tab === 'watchwords' && (
-        <div className="space-y-2">
-          <p className="text-xs text-ink-3 leading-relaxed">
-            Messages {childName} sends or receives that contain one of these
-            words get flagged for you to review. Matching is case-insensitive.
-            Add several at once by separating them with commas.
-          </p>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={newWord}
-              onChange={(e) => setNewWord(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void addWord();
-              }}
-              placeholder="e.g. address, phone number, meet up"
-              className="flex-1 min-w-0 text-sm bg-bg-2 border border-line rounded-md px-3 py-2 text-ink-1 placeholder:text-ink-3"
-            />
-            <button
-              type="button"
-              disabled={newWord.trim().length === 0}
-              onClick={() => void addWord()}
-              className="shrink-0 text-sm px-3 py-2 rounded-md border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40"
-            >
-              Add
-            </button>
-          </div>
-          {!watchWords ? (
-            <p className="text-sm text-ink-3">Loading…</p>
-          ) : watchWords.length === 0 ? (
-            <p className="text-sm text-ink-3">No watch words yet.</p>
-          ) : (
-            <ul className="flex flex-wrap gap-1.5">
-              {watchWords.map((w) => (
-                <li
-                  key={w}
-                  className="inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 bg-bg-2 border border-line rounded-full text-sm text-ink-1"
-                >
-                  <span className="leading-none">{w}</span>
-                  <button
-                    type="button"
-                    onClick={() => void removeWord(w)}
-                    aria-label={`Remove ${w}`}
-                    className="shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-base leading-none text-ink-3 hover:text-ink-1 hover:bg-bg-3"
-                  >
-                    <span className="-mt-px">×</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+            </section>
           )}
+
+          {/* <NAME>'S SERVERS */}
+          <section className="space-y-2">
+            <h4 className={SECTION_LABEL}>{childName}'s servers</h4>
+            {!guilds ? (
+              <p className="text-xs text-ink-3">Loading…</p>
+            ) : guilds.length === 0 ? (
+              <p className="text-xs text-ink-3">{childName} isn't in any servers.</p>
+            ) : (
+              <ul className="space-y-1.5">
+                {guilds.map((g) => (
+                  <li
+                    key={g.id}
+                    className="flex items-center gap-3 px-3 py-2 bg-bg-2 border border-line rounded-md"
+                  >
+                    <span
+                      className="relative overflow-hidden shrink-0 w-8 h-8 rounded-lg grid place-items-center text-xs font-semibold text-white"
+                      style={{ background: avatarColor(g.id) }}
+                    >
+                      <span className="zk-avatar-initials">{avatarInitials(g.name)}</span>
+                      <AvatarImage src={g.iconUrl} alt={g.name} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm text-ink-1">{g.name}</span>
+                      {g.blocked && <span className="block text-xs text-red-300">Blocked</span>}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void toggleGuildBlock(g)}
+                      className={`shrink-0 text-xs px-2.5 py-1 rounded border ${
+                        g.blocked
+                          ? 'border-line text-ink-2 hover:bg-bg-3'
+                          : 'border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500/20'
+                      }`}
+                    >
+                      {g.blocked ? 'Unblock' : 'Block'}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="text-[0.7rem] text-ink-3 leading-relaxed">
+              A blocked server can't be joined. {childName} can ask you to approve a
+              specific server with an invite link.
+            </p>
+          </section>
+
+          {/* <NAME>'S FRIENDS */}
+          <section className="space-y-2">
+            <h4 className={SECTION_LABEL}>{childName}'s friends</h4>
+            {!friends ? (
+              <p className="text-sm text-ink-3">Loading friends…</p>
+            ) : friendList.length === 0 && blockedList.length === 0 ? (
+              <p className="text-sm text-ink-3">No friends.</p>
+            ) : (
+              <>
+                {friendList.length === 0 ? (
+                  <p className="text-sm text-ink-3">No friends.</p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {friendList.map((f) => (
+                      <PersonRow key={f.user.id} user={f.user} onClick={() => setProfileUser(f.user)}>
+                        <ChevronRight size={16} className="shrink-0 text-ink-3" />
+                      </PersonRow>
+                    ))}
+                  </ul>
+                )}
+                {blockedList.length > 0 && (
+                  <div className="pt-1 space-y-1.5">
+                    <h5 className={SECTION_LABEL}>Blocked</h5>
+                    <ul className="space-y-1.5">
+                      {blockedList.map((f) => (
+                        <PersonRow key={f.user.id} user={f.user} onClick={() => setProfileUser(f.user)}>
+                          <span className="flex items-center gap-1.5 shrink-0">
+                            <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-red-500/15 text-red-300">
+                              Blocked
+                            </span>
+                            <ChevronRight size={16} className="text-ink-3" />
+                          </span>
+                        </PersonRow>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </>
+            )}
+          </section>
+
+          {/* <NAME>'S DIRECT MESSAGES */}
+          <section className="space-y-2">
+            <h4 className={SECTION_LABEL}>{childName}'s direct messages</h4>
+            {!channels ? (
+              <p className="text-sm text-ink-3">Loading conversations…</p>
+            ) : channels.length === 0 ? (
+              <p className="text-sm text-ink-3">No direct-message conversations.</p>
+            ) : (
+              <ul className="space-y-1.5">
+                {channels.map((ch) => (
+                  <li key={ch.id}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHighlightMessageId(null);
+                        setOpenChannel(ch);
+                      }}
+                      className="w-full flex items-center gap-3 px-3 py-2 bg-bg-2 border border-line rounded-md hover:bg-bg-3 text-left"
+                    >
+                      <span
+                        className="relative overflow-hidden shrink-0 w-9 h-9 rounded-full grid place-items-center text-xs font-semibold text-white"
+                        style={{ background: avatarColor(ch.recipient?.id ?? ch.id) }}
+                      >
+                        <span className="zk-avatar-initials">{avatarInitials(ch.recipient?.displayName || ch.recipient?.username || '?')}</span>
+                        <AvatarImage
+                          src={ch.recipient?.avatarUrl}
+                          alt={ch.recipient?.displayName || ch.recipient?.username || ''}
+                        />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm text-ink-1">
+                          {ch.recipient?.displayName || ch.recipient?.username || 'Unknown'}
+                        </span>
+                        {ch.recipient?.username && (
+                          <span className="block truncate text-xs text-ink-3">
+                            @{ch.recipient.username}
+                          </span>
+                        )}
+                      </span>
+                      <ChevronRight size={16} className="shrink-0 text-ink-3" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {/* WATCH WORDS */}
+          <section className="space-y-2">
+            <h4 className={SECTION_LABEL}>Watch words</h4>
+            <p className="text-xs text-ink-3 leading-relaxed">
+              Messages {childName} sends or receives that contain one of these
+              words get flagged for you to review. Matching is case-insensitive.
+              Add several at once by separating them with commas.
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={newWord}
+                onChange={(e) => setNewWord(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void addWord();
+                }}
+                placeholder="e.g. address, phone number, meet up"
+                className="flex-1 min-w-0 text-sm bg-bg-2 border border-line rounded-md px-3 py-2 text-ink-1 placeholder:text-ink-3"
+              />
+              <button
+                type="button"
+                disabled={newWord.trim().length === 0}
+                onClick={() => void addWord()}
+                className="shrink-0 text-sm px-3 py-2 rounded-md border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40"
+              >
+                Add
+              </button>
+            </div>
+            {!watchWords ? (
+              <p className="text-sm text-ink-3">Loading…</p>
+            ) : watchWords.length === 0 ? (
+              <p className="text-sm text-ink-3">No watch words yet.</p>
+            ) : (
+              <ul className="flex flex-wrap gap-1.5">
+                {watchWords.map((w) => (
+                  <li
+                    key={w}
+                    className="inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 bg-bg-2 border border-line rounded-full text-sm text-ink-1"
+                  >
+                    <span className="leading-none">{w}</span>
+                    <button
+                      type="button"
+                      onClick={() => void removeWord(w)}
+                      aria-label={`Remove ${w}`}
+                      className="shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-base leading-none text-ink-3 hover:text-ink-1 hover:bg-bg-3"
+                    >
+                      <span className="-mt-px">×</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {/* FLAGGED MESSAGES */}
+          <section className="space-y-2">
+            <h4 className={SECTION_LABEL}>
+              Flagged messages
+              {flags && flags.some((f) => !f.reviewed) && (
+                <span className="ml-1.5 font-normal normal-case text-amber-300">
+                  {flags.filter((f) => !f.reviewed).length} new
+                </span>
+              )}
+            </h4>
+            {!flags ? (
+              <p className="text-sm text-ink-3">Loading…</p>
+            ) : flags.length === 0 ? (
+              <p className="text-sm text-ink-3">No flagged messages.</p>
+            ) : (
+              <ul className="space-y-1.5">
+                {flags.map((f) => (
+                  <li key={f.id}>
+                    <button
+                      type="button"
+                      onClick={() => openFlag(f)}
+                      className={`w-full text-left px-3 py-2 rounded-md border ${
+                        f.reviewed
+                          ? 'bg-bg-2 border-line'
+                          : 'bg-amber-500/10 border-amber-500/30'
+                      } hover:bg-bg-3`}
+                    >
+                      <div className="flex items-center gap-2 text-xs text-ink-3">
+                        <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300">
+                          {f.matchedWord}
+                        </span>
+                        <span>{f.byChild ? `${childName} sent` : 'received'}</span>
+                        <span className="ml-auto">
+                          {new Date(f.createdAt).toLocaleString(undefined, {
+                            month: 'short',
+                            day: 'numeric',
+                            hour: 'numeric',
+                            minute: '2-digit',
+                          })}
+                        </span>
+                      </div>
+                      {f.snippet && (
+                        <p className="mt-1 text-sm text-ink-1 line-clamp-2 break-words">
+                          {f.snippet}
+                        </p>
+                      )}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
         </div>
       )}
-
-      {tab === 'flags' &&
-        (!flags ? (
-          <p className="text-sm text-ink-3">Loading…</p>
-        ) : flags.length === 0 ? (
-          <p className="text-sm text-ink-3">No flagged messages.</p>
-        ) : (
-          <ul className="space-y-1.5">
-            {flags.map((f) => (
-              <li key={f.id}>
-                <button
-                  type="button"
-                  onClick={() => openFlag(f)}
-                  className={`w-full text-left px-3 py-2 rounded-md border ${
-                    f.reviewed
-                      ? 'bg-bg-2 border-line'
-                      : 'bg-amber-500/10 border-amber-500/30'
-                  } hover:bg-bg-3`}
-                >
-                  <div className="flex items-center gap-2 text-xs text-ink-3">
-                    <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300">
-                      {f.matchedWord}
-                    </span>
-                    <span>{f.byChild ? `${childName} sent` : 'received'}</span>
-                    <span className="ml-auto">
-                      {new Date(f.createdAt).toLocaleString(undefined, {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: 'numeric',
-                        minute: '2-digit',
-                      })}
-                    </span>
-                  </div>
-                  {f.snippet && (
-                    <p className="mt-1 text-sm text-ink-1 line-clamp-2 break-words">
-                      {f.snippet}
-                    </p>
-                  )}
-                </button>
-              </li>
-            ))}
-          </ul>
-        ))}
 
       {profileUser && (
         <ContactProfileModal user={profileUser} onClose={() => setProfileUser(null)} />

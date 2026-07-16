@@ -22,7 +22,7 @@ import { useToasts } from '../state/Toasts';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
 import { UserTag } from '../lib/UserTag';
-import { Search, X, Calendar, Users, Bookmark, ShieldE2ee } from '../lib/icons';
+import { Search, X, Calendar, Clock, Users, Bookmark, Lock, Plus } from '../lib/icons';
 import { ChannelMenu } from './ChannelMenu';
 
 export function DMList({ activeChannelId }: { activeChannelId: string | undefined }) {
@@ -88,8 +88,18 @@ export function DMList({ activeChannelId }: { activeChannelId: string | undefine
           onClick={() => navigate('/scheduled')}
           className="w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm text-ink-2 hover:bg-bg-3 hover:text-ink-1 transition-colors mt-0.5"
         >
-          <Calendar size={16} className="text-ink-3" />
+          <Clock size={16} className="text-ink-3" />
           <span className="flex-1 text-left">Scheduled messages</span>
+        </button>
+        {/* Search-messages quick row — matches the dedicated iOS row (its
+            own magnifier entry). Toggles the cross-DM search view below. */}
+        <button
+          type="button"
+          onClick={() => setSearching(true)}
+          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm text-ink-2 hover:bg-bg-3 hover:text-ink-1 transition-colors mt-0.5"
+        >
+          <Search size={16} className="text-ink-3" />
+          <span className="flex-1 text-left">Search messages</span>
         </button>
       </div>
 
@@ -107,12 +117,12 @@ export function DMList({ activeChannelId }: { activeChannelId: string | undefine
             </div>
             <button
               type="button"
-              onClick={() => setSearching(true)}
+              onClick={() => navigate('/friends')}
               className="w-6 h-6 flex items-center justify-center rounded text-ink-3 hover:text-ink-1 hover:bg-bg-3 transition-colors"
-              aria-label="Search direct messages"
-              title="Search direct messages"
+              aria-label="New direct message"
+              title="New direct message"
             >
-              <Search size={15} />
+              <Plus size={15} />
             </button>
           </div>
           {!state.loadedDMs ? (
@@ -405,7 +415,7 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
               title="End-to-end encrypted"
               aria-label="End-to-end encrypted"
             >
-              <ShieldE2ee size={8} className="text-accent" />
+              <Lock size={8} className="text-accent" />
             </span>
           )}
         </span>
@@ -440,33 +450,10 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
             {channel.streak}
           </span>
         )}
-        {/* Spacer: keeps the name + streak hugging the left and pushes the
-            muted/mention/unread indicators to the right edge (matches iOS). */}
+        {/* Spacer pushes the mention/unread indicators to the right edge.
+            iOS conveys mute purely via the dimmed / no-unread treatment,
+            so we don't render a separate muted glyph here (parity). */}
         <span className="flex-1" />
-        {muted && (
-          // Bell-with-strike glyph beside the name when this DM is muted
-          // — same indicator used for muted channels, so the meaning is
-          // consistent across the app.
-          <svg
-            width="10"
-            height="10"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="text-ink-3 shrink-0"
-            aria-label="Muted"
-          >
-            <title>Muted</title>
-            <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-            <path d="M18.63 13A17.89 17.89 0 0 1 18 8" />
-            <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14" />
-            <path d="M18 8a6 6 0 0 0-9.33-5" />
-            <line x1="1" y1="1" x2="23" y2="23" />
-          </svg>
-        )}
         {mentions > 0 ? (
           <span className="text-[0.65rem] font-bold bg-red-500 text-white rounded-full min-w-[1.1rem] h-[1.1rem] px-1 flex items-center justify-center">
             {mentions > 99 ? '99+' : mentions}

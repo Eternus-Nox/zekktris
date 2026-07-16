@@ -218,6 +218,16 @@ export function CheckCircle(props: IconProps) {
   );
 }
 
+export function Check(props: IconProps) {
+  // A bare checkmark. Used for selected/active affordances (status rows,
+  // membership tier cards) where the iOS app shows an accent checkmark.
+  return (
+    <Svg {...props}>
+      <polyline points="20 6 9 17 4 12" />
+    </Svg>
+  );
+}
+
 export function ChevronDown(props: IconProps) {
   return (
     <Svg {...props}>

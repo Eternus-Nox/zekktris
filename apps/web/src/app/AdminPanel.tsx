@@ -48,7 +48,7 @@ import { useToasts } from '../state/Toasts';
 import { AvatarImage } from '../lib/AvatarImage';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { TierBadge } from '../lib/TierBadge';
-import { Hash, Lock, Search as SearchIcon, Shield, Volume2, X as CloseIcon, Users, Archive, BarChart, ChevronLeft } from '../lib/icons';
+import { Hash, Lock, Search as SearchIcon, Shield, Volume2, X as CloseIcon, Users, Archive, BarChart, ChevronLeft, Eye, Trash } from '../lib/icons';
 
 type Tab = 'overview' | 'users' | 'guilds' | 'storage' | 'security' | 'monetization' | 'backup';
 
@@ -124,7 +124,7 @@ export function AdminPanel() {
             <ChevronLeft size={18} />
           </button>
           <Shield size={16} className="text-accent shrink-0" />
-          <h1 className="text-base sm:text-lg font-semibold truncate">Instance admin</h1>
+          <h1 className="text-base sm:text-lg font-semibold truncate">Admin Instance</h1>
           <span className="hidden sm:inline-block ml-2 text-xs text-ink-3 truncate">
             {/* Identify which instance / which admin is signed in — useful when
                 an op is logged into multiple environments. */}
@@ -133,7 +133,7 @@ export function AdminPanel() {
         </div>
         {!observing && (
           <nav
-            className="flex gap-1 -mb-px overflow-x-auto scrollbar-thin"
+            className="flex gap-2 overflow-x-auto scrollbar-thin py-1"
             role="tablist"
             aria-label="Admin sections"
           >
@@ -146,10 +146,10 @@ export function AdminPanel() {
                   role="tab"
                   aria-selected={active}
                   onClick={() => setTab(t.id)}
-                  className={`px-3 py-2 text-sm border-b-2 transition-colors whitespace-nowrap ${
+                  className={`px-3.5 py-1.5 text-sm rounded-full font-medium whitespace-nowrap transition-colors ${
                     active
-                      ? 'border-accent text-ink-1 font-medium'
-                      : 'border-transparent text-ink-3 hover:text-ink-2'
+                      ? 'bg-accent text-white'
+                      : 'bg-bg-2 text-ink-2 hover:text-ink-1'
                   }`}
                 >
                   {t.label}
@@ -1202,8 +1202,8 @@ function GuildsTab({ onObserve }: { onObserve: (guildId: string, guildName: stri
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="text-sm font-medium text-ink-1 truncate">{g.name}</span>
                       {g.discoverable && (
-                        <span className="text-[0.6rem] uppercase font-bold tracking-wider bg-emerald-500/20 text-emerald-400 px-1 py-0.5 rounded">
-                          discoverable
+                        <span className="text-[0.6rem] uppercase font-bold tracking-wider bg-accent-2/20 text-accent-2 px-1 py-0.5 rounded">
+                          public
                         </span>
                       )}
                     </div>
@@ -1228,19 +1228,24 @@ function GuildsTab({ onObserve }: { onObserve: (guildId: string, guildName: stri
                   <button
                     onClick={() => onObserve(g.id, g.name)}
                     disabled={pending === g.id}
-                    className="text-xs px-2 py-1 rounded bg-bg-3 hover:bg-accent/20 text-ink-2 hover:text-accent disabled:opacity-50 transition-colors"
+                    className="w-8 h-8 grid place-items-center rounded-lg text-accent hover:bg-accent/15 disabled:opacity-50 transition-colors"
                     title="Observe this server (read-only, undetected)"
+                    aria-label="Observe server"
                   >
-                    Observe
+                    <Eye size={18} />
                   </button>
+                  {/* Delete stays admin-only — moderators get Observe but
+                      not destructive server removal (the API enforces the
+                      same boundary). */}
                   {selfIsAdmin && (
                     <button
                       onClick={() => deleteGuild(g)}
                       disabled={pending === g.id}
-                      className="text-xs px-2 py-1 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 disabled:opacity-50 transition-colors"
+                      className="w-8 h-8 grid place-items-center rounded-lg text-red-400 hover:bg-red-500/15 disabled:opacity-50 transition-colors"
                       title="Permanently delete this server"
+                      aria-label="Delete server"
                     >
-                      Delete
+                      <Trash size={18} />
                     </button>
                   )}
                 </div>

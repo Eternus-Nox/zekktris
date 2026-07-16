@@ -14,9 +14,11 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { useAppStateSelector } from '../state/AppState';
 import type { Guild, GuildFolder } from '@zekktris/client';
-import { Plus, UserPlus, Settings, LogOut, MessageSquare, Compass, Folder, Trash, AtSign, Shield, Users } from '../lib/icons';
+import { Plus, LogOut, MessageSquare, Compass, Folder, Trash, AtSign, Shield, Users } from '../lib/icons';
 import { useParentalControlsEnabled } from '../lib/familyPrefs';
 import { avatarColor, avatarInitials } from '../lib/avatar';
+import { AvatarImage } from '../lib/AvatarImage';
+import { AvatarDecoration } from '../lib/avatarDecorations';
 import { Portal } from '../lib/Portal';
 import { GuildInfoCard } from './GuildInfoCard';
 // Lazy-loaded — see ChannelList; same on-demand server-settings modal.
@@ -325,7 +327,24 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
             : 'bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-1 hover:shadow-[inset_0_0_0_1px_var(--zk-line-glow)]'
         }`}
       >
-        <UserPlus size={18} />
+        {/* Link/chain glyph — 'join with invite'. Distinct from the +
+            create-server tile so create=+ and join=link read differently
+            (matches the iOS 'link' SF Symbol). Inline SVG in the same
+            1.6px stroke style as lib/icons. */}
+        <svg
+          width={18}
+          height={18}
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+        </svg>
       </Link>
 
       <div className="flex-1" />
@@ -377,17 +396,63 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
               )}
             </Link>
           )}
+          {/* Profile / settings entry — the very bottom of the rail is
+              the user's own avatar (not a generic gear), mirroring iOS.
+              Renders the avatar image (initials fallback), the presence
+              dot, the avatar-decoration ring, and the accent left
+              rail-pin when the settings surface is active. */}
           <Link
             to="/settings"
-            title="Settings"
+            title={`Settings (${user.username})`}
             aria-label="Account settings"
-            className={`w-12 h-12 zk-squircle flex items-center justify-center transition-all ${
-              isSettingsActive
-                ? 'bg-gradient-to-br from-accent to-accent-2 text-bg-0 shadow-[0_0_0_1px_var(--accent-glow),0_8px_28px_var(--accent-glow)]'
-                : 'bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-1 hover:shadow-[inset_0_0_0_1px_var(--zk-line-glow)]'
-            }`}
+            className="relative group"
           >
-            <Settings size={18} />
+            <span
+              className={`absolute -left-3 top-1/2 -translate-y-1/2 w-1.5 rounded-r transition-all ${
+                isSettingsActive
+                  ? 'h-8 bg-accent shadow-[0_0_12px_var(--accent-glow)]'
+                  : 'h-2 bg-ink-2 opacity-0 group-hover:opacity-100'
+              }`}
+              aria-hidden
+            />
+            <span
+              className={`relative block w-12 h-12 zk-squircle overflow-hidden transition-all ${
+                isSettingsActive
+                  ? 'shadow-[0_0_0_1px_var(--accent-glow),0_8px_28px_var(--accent-glow)]'
+                  : 'group-hover:shadow-[inset_0_0_0_1px_var(--zk-line-glow)]'
+              }`}
+            >
+              <span
+                className={`absolute inset-0 flex items-center justify-center text-sm font-semibold text-bg-0 ${avatarColor(
+                  user.id,
+                )}`}
+              >
+                {avatarInitials(user.displayName || user.username)}
+              </span>
+              <AvatarImage
+                src={user.avatarUrl}
+                className="absolute inset-0 w-full h-full object-cover"
+              />
+            </span>
+            {/* Avatar-decoration ring overlay (squircle-hugging). */}
+            <AvatarDecoration
+              decoration={user.avatarDecoration}
+              className="absolute inset-0 zk-squircle pointer-events-none"
+            />
+            {/* Presence dot — green online / amber idle / red dnd, muted
+                otherwise. Ringed in bg-1 so it reads against the tile. */}
+            <span
+              aria-hidden
+              className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-bg-1 ${
+                user.status === 'online'
+                  ? 'bg-emerald-500'
+                  : user.status === 'idle'
+                    ? 'bg-amber-500'
+                    : user.status === 'dnd'
+                      ? 'bg-red-500'
+                      : 'bg-ink-3'
+              }`}
+            />
           </Link>
           <button
             onClick={() => void logout()}
