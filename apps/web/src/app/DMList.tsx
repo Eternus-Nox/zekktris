@@ -21,7 +21,7 @@ import { useAuth } from '../auth/AuthContext';
 import { useToasts } from '../state/Toasts';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
-import { UserTag } from '../lib/UserTag';
+import { StaffName, UserTag } from '../lib/UserTag';
 import { Search, X, Calendar, Clock, Users, Bookmark, Lock, Plus } from '../lib/icons';
 import { ChannelMenu } from './ChannelMenu';
 
@@ -420,7 +420,21 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
           )}
         </span>
         {recipient && <UserTag user={recipient} className="-mr-1.5" />}
-        <span className="truncate min-w-0 text-[15px]">{displayName}</span>
+        {/* Staff names shimmer here too, matching every other place a name is
+            shown (message rows, member list, profile). StaffName no-ops for
+            non-staff, so this renders identically for everyone else. Note the
+            shimmer applies to `displayName`, which may be a private DM nickname
+            — the mark follows the PERSON, not the string. Group/system rows have
+            no single recipient, so they fall back to plain text. */}
+        {recipient ? (
+          <StaffName
+            user={recipient}
+            text={displayName}
+            className="truncate min-w-0 text-[15px]"
+          />
+        ) : (
+          <span className="truncate min-w-0 text-[15px]">{displayName}</span>
+        )}
         {typeof channel.streak === 'number' && channel.streak > 0 && (
           // Messaging streak: consecutive UTC days both parties messaged.
           // Shares the SAME box metrics as the clan tag (UserTag) — same
