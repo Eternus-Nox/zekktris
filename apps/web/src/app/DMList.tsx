@@ -427,7 +427,14 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
                   y 7→21 in a 24 viewBox (center 14, not 12), i.e. it's drawn
                   2 units low by design — shared with every other Lock call
                   site, so it's corrected here rather than in the icon. */}
-              <Lock size={8} className="absolute left-[2px] top-[1px] text-accent" />
+              {/* The -0.5px is a TRANSFORM, not a layout offset, on purpose.
+                  left/top stay whole-pixel so the two engines still agree on the
+                  base position (fractional layout values are what made Chrome
+                  and Safari disagree in the first place); a translate is applied
+                  at composite time, sub-pixel accurate and identical in both. So
+                  this trims the half-pixel of overshoot without reopening the
+                  rounding split. */}
+              <Lock size={8} className="absolute left-[2px] top-[1px] -translate-x-[0.5px] text-accent" />
             </span>
           )}
         </span>

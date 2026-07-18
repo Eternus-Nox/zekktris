@@ -839,8 +839,14 @@ export function ProfileCard({
             );
           })()}
 
-          {/* EARNED achievements only on the card (the Settings gallery shows all). */}
-          <AchievementsShelf userId={isSelf ? undefined : user.id} earnedOnly />
+          {/* Your OWN card has no action stack to sit inside, so the (collapsed)
+              achievements row lives here. For other users it is rendered down in
+              the actions, between Message/Call and the friend action. */}
+          {isSelf && (
+            <div className="mt-3">
+              <AchievementsShelf earnedOnly collapsible />
+            </div>
+          )}
 
           {/* Message / Call / friend actions — only for OTHER users. Your own
               card just shows your profile (no "this is you" filler). */}
@@ -871,6 +877,13 @@ export function ProfileCard({
                   </button>
                 </div>
               )}
+
+              {/* Achievements — a collapsed disclosure row sandwiched between
+                  the Message/Call pair and the friend action, per the requested
+                  placement. Closed by default: it used to render every earned
+                  badge inline, which made the card far taller than it needed to
+                  be and pushed these actions down. */}
+              <AchievementsShelf userId={user.id} earnedOnly collapsible />
 
               {/* Friend action — depends on current relationship.
                   Stacks below the Message/Call pair so it's clearly

@@ -554,12 +554,20 @@ export function SettingsView() {
 
       <div className="p-4 sm:p-6 space-y-5 overflow-y-auto scrollbar-thin flex-1 min-h-0">
         {/* Persistent profile hero — full-bleed banner + overhanging avatar +
-            name + "Upload Picture" pill, matching the iOS Settings header.
-            Shown above the tab content on every tab. The camera buttons and
-            the pill drive the same upload handlers the old boxy pickers used;
-            Remove lives on the Profile tab so the controls aren't duplicated. */}
+            name, matching the iOS Settings header. Shown above the tab content
+            on every tab. Exactly ONE control per image: the banner's corner
+            camera changes the banner, the avatar itself (with its camera badge)
+            changes the avatar. Remove lives on the Profile tab, so nothing is
+            duplicated. */}
         <div className="-mx-4 sm:-mx-6 -mt-4 sm:-mt-6">
-          <div className="relative w-full aspect-[16/6] overflow-hidden bg-gradient-to-r from-accent/55 to-accent-2/45">
+          {/* FIXED height, not an aspect ratio. aspect-[16/6] scaled with the
+              panel width, so on a wide settings pane the banner ballooned to
+              ~340px and pushed the name/username below the fold — which read as
+              "the banner is too big and its text isn't showing". A fixed height
+              keeps the whole hero (banner + avatar + name) visible at any width.
+              Mirrors iOS, which also pins a fixed banner height rather than an
+              aspect ratio (MainView.swift:2285). */}
+          <div className="relative w-full h-[124px] sm:h-[148px] overflow-hidden bg-gradient-to-r from-accent/55 to-accent-2/45">
             {(bannerPreview || user.bannerUrl) && (
               <img
                 src={bannerPreview || user.bannerUrl || undefined}
@@ -567,6 +575,13 @@ export function SettingsView() {
                 className="w-full h-full object-cover"
               />
             )}
+            {/* Legibility scrim — iOS parity (MainView.swift:2290-2293). Fades
+                the banner into the page so the avatar and name always read,
+                whatever the banner image happens to be. */}
+            <div
+              aria-hidden
+              className="absolute inset-0 bg-gradient-to-b from-transparent to-bg-1/90"
+            />
             <button
               type="button"
               onClick={() => heroBannerInput.current?.click()}
@@ -606,16 +621,10 @@ export function SettingsView() {
               <div className="text-sm text-ink-3 truncate">@{user.username}</div>
             </div>
           </div>
-          <div className="px-4 sm:px-6 mt-2.5">
-            <button
-              type="button"
-              onClick={() => heroAvatarInput.current?.click()}
-              disabled={avatarUploading}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-accent/[0.12] text-accent text-sm font-medium hover:bg-accent/20 disabled:opacity-60 transition-colors"
-            >
-              <Camera size={14} /> {avatarUploading ? 'Uploading…' : 'Upload Picture'}
-            </button>
-          </div>
+          {/* No "Upload Picture" pill here — the avatar itself is the button
+              (it carries the accent camera badge and opens the same input), so
+              the pill was a second control for an identical action. Upload
+              progress now shows on the avatar via its disabled/opacity state. */}
           <input
             ref={heroBannerInput}
             type="file"

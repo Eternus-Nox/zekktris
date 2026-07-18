@@ -20,6 +20,7 @@ import {
   Bookmark,
   Calendar,
   Camera,
+  ChevronDown,
   Clock,
   Compass,
   CornerUpLeft,
@@ -203,13 +204,20 @@ function AchievementDetailModal({
 export function AchievementsShelf({
   userId,
   earnedOnly = false,
+  collapsible = false,
 }: {
   userId?: string;
   earnedOnly?: boolean;
+  /** Profile card: render as a closed disclosure row that expands on click,
+   *  instead of dumping the whole grid inline. A user with many badges made the
+   *  card enormously tall, pushing the actual actions off-screen. Ignored by the
+   *  full Settings gallery, where showing everything IS the point. */
+  collapsible?: boolean;
 }) {
   const { rest } = useAuth();
   const [achievements, setAchievements] = useState<Achievement[] | null>(null);
   const [selected, setSelected] = useState<Achievement | null>(null);
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -245,7 +253,54 @@ export function AchievementsShelf({
   // Profile card: earned badges only, with an explicit empty state.
   if (earnedOnly) {
     if (earned.length === 0) {
-      return <div className="mt-3 text-xs text-ink-3">No achievements unlocked yet.</div>;
+      // Nothing to expand — a disclosure row that opens onto "none" is worse
+      // than the one-line statement, so keep the plain text in both modes.
+      return collapsible ? null : (
+        <div className="mt-3 text-xs text-ink-3">No achievements unlocked yet.</div>
+      );
+    }
+    if (collapsible) {
+      // Closed by default: sits in the action stack as one row the same height
+      // as the buttons around it, and only costs vertical space once asked for.
+      return (
+        <div>
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            aria-expanded={open}
+            className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-md bg-bg-3 hover:bg-bg-3/80 text-sm font-medium text-ink-1 transition-colors"
+          >
+            <span className="flex items-center gap-2">
+              {/* Activity is this file's default badge glyph (badgeIcon's
+                  fallback), so the header reads as the same family as the
+                  tiles it opens. */}
+              <Activity size={14} />
+              <span>Achievements</span>
+            </span>
+            <span className="flex items-center gap-1.5 text-ink-3">
+              <span className="font-mono text-xs">{earned.length}</span>
+              <ChevronDown
+                size={14}
+                className={`transition-transform ${open ? 'rotate-180' : ''}`}
+              />
+            </span>
+          </button>
+          {open && (
+            <div className="mt-1.5 grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(92px,1fr))]">
+              {earned.map((a) => (
+                <AchievementTile
+                  key={a.id}
+                  a={a}
+                  earned
+                  numeral={numerals[a.id]}
+                  onClick={() => setSelected(a)}
+                />
+              ))}
+            </div>
+          )}
+          {detailModal}
+        </div>
+      );
     }
     return (
       <div className="mt-3">
