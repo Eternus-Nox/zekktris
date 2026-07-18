@@ -32,6 +32,26 @@
 const RING_MASK =
   'radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))';
 
+/** Squircle variant of the same 2px ring.
+ *
+ *  RING_MASK is a radial-gradient, so it is ALWAYS a circle no matter what
+ *  border-radius the element carries. On a circular avatar that's exactly
+ *  right, but on the server rail's `zk-squircle` tile (border-radius: 30%) it
+ *  painted a circular ring over a squircle picture — the avatar read as "a
+ *  circle that doesn't fill its oval."
+ *
+ *  This variant instead masks a 2px PADDING box out of the element, which
+ *  follows whatever border-radius is applied — so the ring hugs the squircle.
+ *  Same 2px thickness, same flush placement, gradients still work (a plain
+ *  inset box-shadow would not: half the registry is conic-gradient). */
+const SQUIRCLE_RING_STYLE = {
+  padding: '2px',
+  WebkitMask: 'linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)',
+  WebkitMaskComposite: 'xor',
+  mask: 'linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)',
+  maskComposite: 'exclude',
+} as const;
+
 interface DecoKind {
   id: string;
   label: string;
@@ -90,9 +110,15 @@ const BY_ID = new Map(AVATAR_DECORATIONS.map((d) => [d.id, d]));
 export function AvatarDecoration({
   decoration,
   className = 'absolute -inset-[2px] rounded-full pointer-events-none',
+  shape = 'circle',
 }: {
   decoration?: string | null;
   className?: string;
+  /** Ring geometry. 'circle' (default) suits the round avatars used almost
+   *  everywhere. Pass 'squircle' when the avatar is a `zk-squircle` tile (the
+   *  server rail) so the ring follows the tile's border-radius instead of
+   *  cutting a circle across its corners. */
+  shape?: 'circle' | 'squircle';
 }) {
   if (!decoration || decoration === 'none') return null;
   const d = BY_ID.get(decoration);
@@ -103,8 +129,9 @@ export function AvatarDecoration({
       className={className}
       style={{
         background: d.fill,
-        WebkitMask: RING_MASK,
-        mask: RING_MASK,
+        ...(shape === 'squircle'
+          ? SQUIRCLE_RING_STYLE
+          : { WebkitMask: RING_MASK, mask: RING_MASK }),
         filter: d.glow ? `drop-shadow(0 0 4px ${d.glow})` : undefined,
       }}
     />

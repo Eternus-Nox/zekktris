@@ -120,7 +120,7 @@ const STATUS_OPTIONS: Array<{ value: Status; label: string; dot: string; help: s
 
 export function SettingsView() {
   const navigate = useNavigate();
-  const { user, rest, updateUser } = useAuth();
+  const { user, rest, updateUser, logout } = useAuth();
   const { replaceUser, state } = useAppState();
   const toasts = useToasts();
 
@@ -848,6 +848,27 @@ export function SettingsView() {
                   Privacy Policy
                 </a>
               </div>
+            </div>
+            {/* Sign out — last thing on the profile page, matching where the
+                native apps put it. Moved here from the server rail, where it
+                sat directly below the settings avatar and a misclick logged
+                you out instead of opening settings. Confirmed because it's
+                destructive-ish and now sits one click from everyday controls. */}
+            <div className="pt-3 border-t border-line">
+              <button
+                onClick={() => {
+                  if (!window.confirm('Sign out of Zekktris on this device?')) return;
+                  void logout();
+                }}
+                className="w-full sm:w-auto px-3 py-2 rounded-lg text-sm font-medium border border-red-400/40 text-red-400 hover:bg-red-500/10 transition-colors inline-flex items-center justify-center gap-2"
+              >
+                <LogOut size={16} />
+                Log out
+              </button>
+              <p className="text-xs text-ink-3 mt-2">
+                Signs out this device only. Other devices stay signed in — manage
+                them under Security → Active sessions.
+              </p>
             </div>
           </section>
           </>

@@ -2,8 +2,10 @@
  * GuildList
  * ---------
  * The leftmost rail. One circular tile per guild the user is in, plus a +
- * tile at the bottom for creating a new server. Also shows a logout button
- * — for v1 there's no proper user menu, this is the simplest path.
+ * tile at the bottom for creating a new server, and the settings avatar.
+ * Signing out lives in Settings → Profile (bottom of the page), not here —
+ * a logout tile directly under the settings avatar was too easy to hit by
+ * mistake.
  *
  * Visual state: the active guild gets a tall accent bar at its left edge.
  * Hover state pops the tile slightly via background color change.
@@ -14,7 +16,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { useAppStateSelector } from '../state/AppState';
 import type { Guild, GuildFolder } from '@zekktris/client';
-import { Plus, LogOut, MessageSquare, Compass, Folder, Trash, AtSign, Shield, Users } from '../lib/icons';
+import { Plus, MessageSquare, Compass, Folder, Trash, AtSign, Shield, Users } from '../lib/icons';
 import { useParentalControlsEnabled } from '../lib/familyPrefs';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
@@ -43,7 +45,7 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
   // only when the guild set or guild metadata changes, not on every dispatch.
   const guildIds = useAppStateSelector((v) => v.state.guildIds);
   const guildsById = useAppStateSelector((v) => v.state.guildsById);
-  const { logout, user, rest } = useAuth();
+  const { user, rest } = useAuth();
   const location = useLocation();
   const isDiscoverActive = location.pathname.startsWith('/discover');
   // The new pseudo-areas (mentions, settings, create-server, join-server,
@@ -434,10 +436,15 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
                 className="absolute inset-0 w-full h-full object-cover"
               />
             </span>
-            {/* Avatar-decoration ring overlay (squircle-hugging). */}
+            {/* Avatar-decoration ring overlay. shape="squircle" is required
+                here: the default ring is a radial-gradient (always a circle),
+                which on this squircle tile cut across the corners and made the
+                avatar read as a circle floating in the tile instead of filling
+                it. */}
             <AvatarDecoration
               decoration={user.avatarDecoration}
               className="absolute inset-0 zk-squircle pointer-events-none"
+              shape="squircle"
             />
             {/* Presence dot — green online / amber idle / red dnd, muted
                 otherwise. Ringed in bg-1 so it reads against the tile. */}
@@ -454,14 +461,9 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
               }`}
             />
           </Link>
-          <button
-            onClick={() => void logout()}
-            title={`Sign out (${user.username})`}
-            aria-label="Sign out"
-            className="w-12 h-12 zk-squircle bg-bg-2 hover:bg-red-900/40 text-ink-2 hover:text-red-300 flex items-center justify-center transition-all hover:shadow-[inset_0_0_0_1px_rgba(239,68,68,0.4)]"
-          >
-            <LogOut size={18} />
-          </button>
+          {/* Sign out lives in Settings → Profile (bottom of the page) now, not
+              here. It sat one tile below the settings avatar, where a misclick
+              logged you out instead of opening settings. */}
         </div>
       )}
 
