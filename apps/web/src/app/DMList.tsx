@@ -411,11 +411,23 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
             // the DM's profile picture) from the per-message + header
             // positions, so it's a single quiet badge per conversation.
             <span
-              className="absolute -top-0.5 -right-0.5 w-[13px] h-[13px] rounded-full bg-bg-2 border border-accent/45 flex items-center justify-center"
+              className="absolute -top-0.5 -right-0.5 w-[13px] h-[13px] rounded-full bg-bg-2 border border-accent/45"
               title="End-to-end encrypted"
               aria-label="End-to-end encrypted"
             >
-              <Lock size={8} className="text-accent" />
+              {/* Placed explicitly rather than flex-centered, ON PURPOSE.
+                  The badge's padding box is 11px (13 − 2px border) around an
+                  8px glyph, so centering wants 1.5px a side — and Chrome and
+                  Safari round that half-pixel in OPPOSITE directions, which is
+                  why the lock looked correctly centered in one and a pixel off
+                  in the other. Whole-pixel offsets remove the rounding entirely
+                  so both engines agree.
+                  left 2 / right 1 nudges it right; top 1 / bottom 2 nudges it
+                  up, which also compensates the glyph itself: Lock's bbox is
+                  y 7→21 in a 24 viewBox (center 14, not 12), i.e. it's drawn
+                  2 units low by design — shared with every other Lock call
+                  site, so it's corrected here rather than in the icon. */}
+              <Lock size={8} className="absolute left-[2px] top-[1px] text-accent" />
             </span>
           )}
         </span>
