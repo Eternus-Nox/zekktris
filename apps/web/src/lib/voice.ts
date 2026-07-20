@@ -2061,7 +2061,21 @@ interface TrackPublicationLike {
    *  the publisher mutes their track even if the local subscriber's
    *  MediaStreamTrack hasn't received the silence frames yet. */
   isMuted?: boolean;
-  track?: { mediaStreamTrack?: MediaStreamTrack };
+  track?: {
+    mediaStreamTrack?: MediaStreamTrack;
+    /** LocalVideoTrack only. Re-acquires the camera through the SDK's
+     *  `constraintsForOptions` from an explicit VideoCaptureOptions bag
+     *  instead of the track's remembered `_constraints`. Optional here
+     *  because the same structural type also describes REMOTE
+     *  publications, which have no such method. */
+    restartTrack?: (options?: {
+      resolution?: { width: number; height: number; frameRate: number };
+    }) => Promise<void>;
+    /** The RTCRtpSender carrying this local track. Used to re-cap the
+     *  encoder budget when the capture came back smaller than asked
+     *  (see reconcileCameraCapture). Absent on remote publications. */
+    sender?: RTCRtpSender;
+  };
 }
 
 /**
@@ -2242,6 +2256,115 @@ export function isDeafened(): boolean {
   return deafenedFlag;
 }
 
+/** How far below the requested capture size we tolerate before calling
+    the result "materially smaller". Measured on the SHORT edge, so a
+    1280x720 request landing on 1024x576 passes (the browser picked a
+    near neighbour) while one landing on 640x480 does not. */
+const CAPTURE_SHORTFALL_RATIO = 0.9;
+/** Floor for a reconciled encoder budget. Even a badly downgraded
+    capture should not be starved below roughly the 'low' tier. */
+const MIN_RECONCILED_BITRATE = 500_000;
+
+/** The local camera publication, or null. Structural access into the
+    SDK's publication map — wrapped because a shape change here must
+    never break camera toggling. */
+function findLocalCameraPublication(): TrackPublicationLike | null {
+  if (!room) return null;
+  try {
+    const localPubs = room.localParticipant as unknown as {
+      trackPublications: Map<string, TrackPublicationLike>;
+    };
+    for (const [, pub] of localPubs.trackPublications) {
+      if (pub.source === 'camera') return pub;
+    }
+  } catch {
+    // Ignore — treated as "no publication", which only costs us the
+    // explicit re-assert below.
+  }
+  return null;
+}
+
+/**
+ * Reconcile the tier we ASKED for against what the camera actually
+ * handed back, and re-cap the sender if they disagree.
+ *
+ * Why this exists: nothing in the capture path guarantees we get the
+ * resolution we requested, and until now a shortfall was completely
+ * invisible. `restart()` (which every unmute and every device switch
+ * routes through) destructures the remembered constraints into
+ * `{deviceId, facingMode}` + `otherConstraints`, and builds the
+ * getUserMedia request from the FIRST pair only — width/height/frameRate
+ * are not in the request at all. deviceId is always truthy (the SDK
+ * force-fills `{ideal:'default'}`), so the reacquire is effectively
+ * getUserMedia({video:{deviceId:'default'}}) → the browser's default
+ * capture profile, commonly 640x480. The resolution is applied only
+ * afterwards via applyConstraints(otherConstraints) with BARE NUMBERS,
+ * which per spec are 'ideal' — a hint the source is free to ignore.
+ *
+ * Net effect without this function: after a camera off→on the user can
+ * be capturing 640x480 while the sender still budgets 2.5 Mbps for a
+ * 1280x720 target, so the encoder spends a 720p bitrate painting an
+ * upscaled 480p. It looks soft, and no amount of available bandwidth
+ * fixes it because bandwidth was never the constraint.
+ *
+ * So: measure, log it (this is the observability half — the failure had
+ * no signal at all before), and scale the encoder budget down by the
+ * pixel ratio. Only ever LOWERS a rung, never raises one, and never
+ * touches rungs already below the new cap, so simulcast's small layers
+ * are left alone. All of it is best-effort — a throw here must not
+ * degrade working video.
+ */
+function reconcileCameraCapture(
+  pub: TrackPublicationLike | null,
+  preset: { width: number; height: number; maxBitrate: number },
+  tier: CameraQuality,
+): void {
+  try {
+    const settings = pub?.track?.mediaStreamTrack?.getSettings();
+    const gotW = settings?.width ?? 0;
+    const gotH = settings?.height ?? 0;
+    // Some browsers withhold dimensions until the first frame; nothing
+    // to compare against, so leave the publish alone.
+    if (!gotW || !gotH) return;
+
+    const wantShort = Math.min(preset.width, preset.height);
+    const gotShort = Math.min(gotW, gotH);
+    if (gotShort >= wantShort * CAPTURE_SHORTFALL_RATIO) return;
+
+    const scaled = Math.max(
+      MIN_RECONCILED_BITRATE,
+      Math.round(preset.maxBitrate * ((gotW * gotH) / (preset.width * preset.height))),
+    );
+    console.warn('[voice] camera captured below the requested tier', {
+      tier,
+      requested: `${preset.width}x${preset.height}`,
+      actual: `${gotW}x${gotH}`,
+      requestedBitrate: preset.maxBitrate,
+      cappedBitrate: scaled,
+    });
+
+    const sender = pub?.track?.sender;
+    const params = sender?.getParameters();
+    if (!params?.encodings?.length) return;
+    let changed = false;
+    for (const enc of params.encodings) {
+      if (typeof enc.maxBitrate === 'number' && enc.maxBitrate > scaled) {
+        enc.maxBitrate = scaled;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    // Fire-and-forget: setParameters rejects if the sender was replaced
+    // underneath us (a concurrent restart), which is harmless — the new
+    // publish runs its own reconcile.
+    void sender?.setParameters(params).catch((e) => {
+      console.warn('[voice] could not re-cap camera bitrate', e);
+    });
+  } catch (e) {
+    console.warn('[voice] camera capture reconcile failed', e);
+  }
+}
+
 /**
  * Enable / disable the local camera. When enabled, publishes the
  * webcam track which other participants render as a video tile. When
@@ -2267,6 +2390,13 @@ export async function setCameraEnabled(on: boolean): Promise<void> {
         ? saved
         : highestAllowedCameraQuality();
       const preset = CAMERA_QUALITY_PRESETS[q];
+      // Whether a camera publication ALREADY exists. If it does, this
+      // "turn the camera on" is an unmute, not a fresh publish — and
+      // livekit-client's unmute is exactly the path that loses the
+      // resolution constraint (see reconcileCameraCapture for the full
+      // mechanism). Captured before the call because the call creates
+      // the publication when there wasn't one.
+      const hadPublication = findLocalCameraPublication() !== null;
       // H.264 for the camera so it uses the browser's hardware encoder/decoder
       // (sharper, lower CPU) — overrides the VP8 publishDefault for THIS track
       // only; screen share keeps VP8.
@@ -2295,13 +2425,39 @@ export async function setCameraEnabled(on: boolean): Promise<void> {
           maxBitrate: preset.maxBitrate,
           maxFramerate: preset.frameRate,
         };
-        if (q === 'k2' || q === 'k4') {
-          // Explicit simulcast rungs for the heavy tiers: 720p + 360p
+        if (q === 'k2' || q === 'k4' || q === 'p1080') {
+          // Explicit simulcast rungs for the heavy tiers: 360p + 720p
           // (LiveKit's own presets, 16:9). LiveKit's automatic layer
           // selection scales rungs off the primary encoding, which at
           // 8–14 Mbps produces mid layers that are still too fat for a
           // weak downlink — pinning two modest rungs guarantees every
           // viewer a decodable layer. Dynacast drops unwatched rungs.
+          //
+          // p1080 is in this list for the OPPOSITE reason. Left to the
+          // SDK, `defaultSimulcastLayers` returns the FIXED pair
+          // [h180, h360] — 320x180@160k and 640x360@450k, constants
+          // that do not scale with capture resolution. Since 1920 >= 960
+          // the SDK emits three rungs, so the published ladder was
+          // 180p / 360p / 1080p: a 3x resolution cliff with nothing in
+          // between. A viewer on a middling link gets pinned to the
+          // 360p rung and VoiceView renders camera tiles `object-cover`,
+          // so that 640x360 is upscaled AND cropped into the tile —
+          // exactly the "blurry webcam" report. [h360, h720] closes the
+          // gap: 360p / 720p / 1080p.
+          //
+          // The fatter middle rung is close to free because the Room
+          // runs dynacast:true (see the comment at the Room ctor) — the
+          // SFU tells us which layers actually have subscribers and the
+          // encoder stops producing the ones nobody is watching. In the
+          // common 1:1 case only the rung that viewer wants is encoded,
+          // so the cost of offering 720p is paid only when it is used.
+          //
+          // p720 / auto / low are deliberately NOT listed. p720 and auto
+          // capture at 1280x720, where the SDK's own [h180, h360] is
+          // already the sane ladder under a 720p top rung; low captures
+          // 640x480 (4:3), where `size < 960` means the SDK emits just
+          // two rungs anyway. Pinning the defaults explicitly would be
+          // pure churn with an identical published result.
           const { VideoPresets } = await loadLivekit();
           cameraPublish.videoSimulcastLayers = [VideoPresets.h360, VideoPresets.h720];
         }
@@ -2318,6 +2474,50 @@ export async function setCameraEnabled(on: boolean): Promise<void> {
         );
       } else {
         await room.localParticipant.setCameraEnabled(true, undefined, cameraPublish);
+      }
+      // Re-assert the tier explicitly when this was an UNMUTE rather than
+      // a fresh publish. setCameraEnabled(true) on an existing publication
+      // bottoms out in the SDK's unmute → restart(undefined, true), which
+      // rebuilds the capture request from the track's remembered
+      // `_constraints` — and, per the mechanism documented on
+      // reconcileCameraCapture, drops width/height/frameRate out of the
+      // getUserMedia call entirely. restartTrack({resolution}) instead
+      // routes through the SDK's `constraintsForOptions` from the tier we
+      // just resolved, so the request is rebuilt from a KNOWN state rather
+      // than from whatever the track happens to remember, and the track's
+      // constraints are re-seeded with our width/height for every later
+      // restart. Costs one extra getUserMedia on camera-on (a brief
+      // re-acquire), which is worth it to stop shipping an upscaled 480p.
+      //
+      // Deliberately NOT 'exact'/'min' — `resolution` flattens to bare
+      // numbers, i.e. 'ideal'. An exact constraint would throw
+      // OverconstrainedError on any webcam that can't hit the number,
+      // turning soft video into NO video for every user with 1080p saved
+      // and a 720p-max camera. Ask nicely, then reconcile below.
+      if (hadPublication && preset) {
+        const pub = findLocalCameraPublication();
+        try {
+          await pub?.track?.restartTrack?.({
+            resolution: {
+              width: preset.width,
+              height: preset.height,
+              frameRate: preset.frameRate,
+            },
+          });
+        } catch (e) {
+          // The camera is already live at this point — a failed
+          // re-assert leaves the (possibly smaller) capture publishing,
+          // which the reconcile below then budgets for correctly. Never
+          // escalate this into a "camera failed" error for the user.
+          console.warn('[voice] camera tier re-assert failed', e);
+        }
+      }
+      // Now check what we actually got. Whatever path we took above, the
+      // browser was only ever given a hint — this is the step that makes
+      // a shortfall observable and stops the encoder from spending a
+      // 2.5 Mbps 720p budget on an upscaled 480p frame.
+      if (preset) {
+        reconcileCameraCapture(findLocalCameraPublication(), preset, q);
       }
       // contentHint='motion' on the published camera track — the mirror
       // of the 'detail' hint on screen share (see setScreenShareEnabled).
