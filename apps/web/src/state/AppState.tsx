@@ -3683,6 +3683,31 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         },
       ),
       gateway.on<VoiceState>(GatewayEvent.VOICE_STATE_UPDATE, (v) => {
+        // ── Ambient join/leave blips ──────────────────────────────────────
+        // A quiet blip when somebody ELSE arrives in or departs from the
+        // voice channel we're currently sitting in.
+        //
+        // Read the previous channel BEFORE the dispatch below overwrites it.
+        // VOICE_STATE_UPDATE also fires for mute / deafen / video toggles, so
+        // only an actual channel *transition* counts as an arrival or a
+        // departure — otherwise every mute click in the room would blip.
+        const prevChannelId = stateRef.current.voiceStatesByUser[v.userId]?.channelId ?? null;
+        const nextChannelId = v.channelId ?? null;
+        if (selfId && v.userId !== selfId && prevChannelId !== nextChannelId) {
+          void (async () => {
+            // Dynamic import for the same reason as the self-move detector
+            // below: a static one would make AppState ↔ voice circular.
+            const voiceMod = await import('../lib/voice');
+            // The channel we hold live media in. Null when we're not in voice
+            // at all, which silences other channels' churn for free — and
+            // deafened means no audio, chrome included.
+            const myChannelId = voiceMod.getConnectedChannelId();
+            if (!myChannelId || voiceMod.isDeafened()) return;
+            const { playVoiceJoin, playVoiceLeave } = await import('../lib/sounds');
+            if (nextChannelId === myChannelId) playVoiceJoin();
+            else if (prevChannelId === myChannelId) playVoiceLeave();
+          })();
+        }
         dispatch({ type: 'VOICE_STATE_UPSERT', voiceState: v });
         // Self-move detection. If the gateway just told us OUR
         // voice state moved to a different channel than the one
@@ -3699,7 +3724,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
             const connected = voiceMod.getConnectedChannelId();
             if (!connected || connected === newChannelId) return;
             try {
-              await voiceMod.disconnectVoice();
+              // silent: a moderator dragging us between channels is a move,
+              // not a hangup. The connect chime from the rejoin below marks
+              // the transition on its own.
+              await voiceMod.disconnectVoice({ silent: true });
               const r = await (await restForChannel(newChannelId)).joinVoice(newChannelId);
               if (r?.token && r.wsUrl) {
                 await voiceMod.connectToVoice({

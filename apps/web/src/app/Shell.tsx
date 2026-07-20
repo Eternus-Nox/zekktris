@@ -145,7 +145,10 @@ export function Shell() {
         local,
         myVoiceSessionId,
       );
-      void disconnectVoice();
+      // silent: same reasoning as the console.warn above — the user moved
+      // themselves to another device, so the call didn't end from their point
+      // of view. An end-of-call chime here is noise about a non-event.
+      void disconnectVoice({ silent: true });
     }
   }, [myVoiceSessionId, toasts]);
 

@@ -231,6 +231,7 @@ import * as voicePrefs from './voicePrefs';
 import { enterCallBackgroundMode, exitCallBackgroundMode } from './callBackground';
 import { getCallKeyString } from './e2ee';
 import { isMediaCaptureAvailable, mediaUnavailableMessage } from './mediaSupport';
+import { playCallConnect, playCallEnd } from './sounds';
 
 function loadLivekit(): Promise<typeof import('livekit-client')> {
   if (!livekitModule) {
@@ -941,6 +942,11 @@ function mediaErrorToVoiceError(err: unknown): VoiceError {
 
 // ── Connection lifecycle ───────────────────────────────────────────────────
 
+/** True between a successful connect and the end-of-call chime, so the
+ *  hangup sound fires exactly once per session no matter how many teardown
+ *  paths race to disconnectVoice(). See the chime block in disconnectVoice. */
+let hangupChimeArmed = false;
+
 /**
  * Establish a LiveKit connection and publish the local microphone
  * track. If a connection is already open, it's torn down first — voice
@@ -1016,7 +1022,10 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
   // this click gesture and the new connect follows immediately; closing it
   // would force a suspended re-create on Safari and kill the speaking rings).
   if (room) {
-    await disconnectVoice({ keepAudioContext: true });
+    // silent: this is a channel SWITCH, not a call end — the connect chime
+    // fired by the join immediately below is the whole story. Chiming
+    // hangup-then-connect here would narrate a call ending that didn't.
+    await disconnectVoice({ keepAudioContext: true, silent: true });
   }
 
   // Read the user's current quality preference. The preset caps audio
@@ -1872,6 +1881,21 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
     mutedFlag = false;
   }
 
+  // Connect chime. Placed AFTER the mic publish, not at the `connected`
+  // transition above, because the publish failure path tears the room back
+  // down — chiming earlier would narrate a connect-then-hangup pair for a
+  // join that never actually happened (the user gets an error toast instead).
+  //
+  // This is a genuine join by construction: connectToVoice() is never the
+  // reconnect path. LiveKit's own resume fires RoomEvent.Reconnected and
+  // republishes 'connected' without coming back through here, so a flapping
+  // network can't machine-gun this sound.
+  //
+  // Arming the hangup chime here (and only here) is what makes the end-of-call
+  // sound exactly-once per successfully-joined session.
+  hangupChimeArmed = true;
+  playCallConnect();
+
   // Apply saved output device after connect — switchActiveDevice needs
   // a live Room. Failures here are non-fatal (Firefox/Safari may not
   // support output switching at all); the audio still plays through
@@ -2087,9 +2111,33 @@ interface TrackPublicationLike {
  * new connect follows immediately, so closing the context here would force it
  * to be re-created OUTSIDE the gesture (born suspended on Safari → speaking
  * rings stop lighting up until the next interaction). A real leave closes it.
+ *
+ * `silent` suppresses the end-of-call chime. Set it when the teardown isn't a
+ * call ENDING from the user's point of view — a channel switch, a moderator
+ * moving them, or another device taking the session over. All three are
+ * followed by (or equivalent to) continuing to be in voice somewhere.
  */
-export async function disconnectVoice(opts: { keepAudioContext?: boolean } = {}): Promise<void> {
+export async function disconnectVoice(
+  opts: { keepAudioContext?: boolean; silent?: boolean } = {},
+): Promise<void> {
   if (!room) return;
+  // Hangup chime. Fired HERE, at the single chokepoint every teardown path
+  // funnels through, so it covers both required paths with one call site:
+  // the local user pressing leave/hangup, and the remote party ending it
+  // (Shell's DM auto-end and RoomEvent.Disconnected both land here).
+  //
+  // `hangupChimeArmed` makes it exactly-once per connected session. `room`
+  // isn't nulled until after the awaited teardown below, so the re-entrant
+  // disconnectVoice() that RoomEvent.Disconnected fires *during*
+  // room.disconnect() would otherwise sail past the `!room` guard and chime
+  // a second time.
+  //
+  // Deafened means no audio, and that includes our own chrome — read the flag
+  // now, before the teardown at the bottom resets it.
+  if (hangupChimeArmed) {
+    hangupChimeArmed = false;
+    if (!opts.silent && !deafenedFlag) playCallEnd();
+  }
   // Tear down our hidden audio sinks before disconnecting LiveKit so we
   // don't leak <video> elements if the unsubscribe events don't fire
   // in the right order during shutdown.
