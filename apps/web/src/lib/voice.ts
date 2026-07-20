@@ -56,6 +56,13 @@ interface VideoOpts {
 interface VideoPublishOpts {
   videoCodec?: 'vp8' | 'h264' | 'vp9' | 'av1';
   videoEncoding?: { maxBitrate: number; maxFramerate?: number };
+  // What the encoder sacrifices when it can't fund the target. Left unset,
+  // livekit-client fills a HEIGHT-DEPENDENT default (getDefaultDegradationPreference):
+  // >=1080 -> 'maintain-resolution', else 'balanced'. That threshold means our
+  // tiers silently disagreed with each other — 720p adapted, 1080p+ refused to,
+  // holding full resolution and cranking the quantizer until the picture went
+  // to mush. Set it explicitly so it's a decision, not a side effect of a number.
+  degradationPreference?: RTCDegradationPreference;
   // Type-only reference — erased at compile time, so the livekit-client
   // chunk stays dynamically imported. Values come from the loaded module.
   videoSimulcastLayers?: Array<import('livekit-client').VideoPreset>;
@@ -280,10 +287,31 @@ export const CAMERA_QUALITY_PRESETS: Record<
     description: string;
   } | null
 > = {
-  // null means "let LiveKit pick" — we omit the resolution option entirely
-  // so the SDK's adaptive logic + browser hints decide, and the encoder
-  // budget stays on publishDefaults.videoEncoding (the audio preset's cap).
-  auto: null,
+  // 'auto' captures at 720p and lets SIMULCAST + the SFU do the adapting —
+  // that is what "let the network decide" actually means here.
+  //
+  // It used to be `null`, i.e. "omit the resolution and inherit
+  // publishDefaults". That inheritance chain ran straight into the AUDIO
+  // quality preset: voiceQuality.ts's default 'normal' tier is
+  // videoWidth 854 / videoHeight 480 / videoBitrate 800k. So the tier
+  // labelled "Recommended for most users" published 854x480 @ 800kbps —
+  // the single blurriest camera setting in the app, below even the explicit
+  // "Low (480p)" option, and it could never improve because nothing about it
+  // was adaptive. Worse, picking the "Low" VOICE preset silently dropped the
+  // camera to 640x480, a coupling no part of the UI mentioned.
+  //
+  // Now it starts at a sharp 720p and degrades via the mechanism built for
+  // it: simulcast rungs the SFU hands out per-viewer, plus a 'balanced'
+  // degradationPreference so the encoder can shed pixels under pressure AND
+  // climb back when it clears.
+  auto: {
+    width: 1280,
+    height: 720,
+    frameRate: 30,
+    maxBitrate: 2_500_000,
+    label: 'Auto',
+    description: 'Starts at 720p and adapts to your connection.',
+  },
   low: {
     width: 640,
     height: 480,
@@ -2242,7 +2270,19 @@ export async function setCameraEnabled(on: boolean): Promise<void> {
       // H.264 for the camera so it uses the browser's hardware encoder/decoder
       // (sharper, lower CPU) — overrides the VP8 publishDefault for THIS track
       // only; screen share keeps VP8.
-      const cameraPublish: VideoPublishOpts = { videoCodec: 'h264' };
+      // 'balanced' on EVERY camera tier. This is the "auto correct itself"
+      // lever: it lets libwebrtc's quality scaler shed resolution when the
+      // uplink or CPU can't fund the target — and, critically, climb back up
+      // when conditions recover. The SDK's height-based default gave 1080p+
+      // 'maintain-resolution', which forbids shedding pixels, so a constrained
+      // encoder held 1920x1080 and spent its bits on quantizer instead: a
+      // full-size, permanently smeared image with no path back to sharp.
+      // Screen share deliberately keeps maintain-resolution (set separately) —
+      // text must stay legible, and dropping frames there is the right trade.
+      const cameraPublish: VideoPublishOpts = {
+        videoCodec: 'h264',
+        degradationPreference: 'balanced',
+      };
       if (preset) {
         // Named tiers carry their own encoder budget as a per-publish
         // override (merged over publishDefaults). Without this the

@@ -3919,7 +3919,11 @@ function VideoQualitySettings() {
     /** Membership tier this option needs, when the user doesn't have it. */
     lockedBehind?: 'scout' | 'guardian' | 'legend';
   }> = [
-    { value: 'auto', label: 'Auto', description: 'Let the network decide. Recommended for most users.' },
+    {
+      value: 'auto',
+      label: 'Auto',
+      description: 'Starts at 720p and adapts to your connection. Recommended for most users.',
+    },
     {
       value: 'low',
       label: CAMERA_QUALITY_PRESETS.low!.label,
