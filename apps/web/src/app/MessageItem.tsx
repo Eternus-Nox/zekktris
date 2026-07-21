@@ -35,7 +35,7 @@ import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
 import { AvatarDecoration } from '../lib/avatarDecorations';
 import { useProfileCard } from '../lib/useProfileCard';
-import { Edit, Trash, Pin, CornerUpLeft, MessageSquare, Smile, Phone, Shield, Bookmark } from '../lib/icons';
+import { Edit, Trash, Pin, CornerUpLeft, Forward as ForwardIcon, MessageSquare, Smile, Phone, Shield, Bookmark } from '../lib/icons';
 import { decryptForDm, peekDecryptedText, encryptForDm, isEncryptedWireFormat, hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
 import { POKE_VARIANTS, type PokeType } from '../lib/poke';
 import { ForwardModal } from './ForwardModal';
@@ -81,6 +81,30 @@ function extractUrls(text: string): string[] {
     if (out.length >= 5) break;
   }
   return out;
+}
+
+/**
+ * One-line preview of a reply's parent message — shared by the in-stream
+ * quote bar and the composer's reply chip. Mirrors iOS replyPreviewText
+ * (MessageViews.swift): an E2EE parent shows this device's cached
+ * plaintext when it has already been decrypted — NEVER the raw
+ * `zkE2EE/…` wire string — or a lock label otherwise; an empty-text
+ * parent falls back to a typed sticker/voice/attachment/poll label.
+ */
+export function replyPreviewText(m: Message, filterProfanity = false): string {
+  let text = m.content;
+  if (isEncryptedWireFormat(text)) {
+    const cached = peekDecryptedText(text, m.channelId);
+    if (cached === null) return '🔒 Encrypted message';
+    text = cached;
+  }
+  if (filterProfanity && text) text = maskProfanity(text);
+  if (text) return text;
+  if (m.stickerId) return '🏷️ Sticker';
+  if (m.attachments.some((a) => a.isVoiceMessage)) return '🎤 Voice message';
+  if (m.attachments.length > 0) return '📎 Attachment';
+  if (m.poll) return '📊 Poll';
+  return 'Message';
 }
 
 function MessageItemBase({ message, continuation, selfId, onReply, channel, showDmReceipt }: Props) {
@@ -755,16 +779,35 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
           left padding (4.25rem) lines up with the username column —
           the preview visually sits under where the username starts
           on the row below. */}
-      {repliedTo && (
+      {(repliedTo || message.replyToId) && (
         <div className="w-full flex items-center gap-1.5 text-xs text-ink-3 mb-0.5 pl-[4.25rem] pr-4 pointer-events-none">
           <CornerUpLeft size={11} className="shrink-0" />
-          <span className="font-medium text-ink-2 shrink-0">
-            @{repliedTo.author?.displayName ?? repliedTo.author?.username ?? 'unknown'}
-          </span>
-          <span className="truncate">
-            {(filterProfanity && repliedTo.content ? maskProfanity(repliedTo.content) : repliedTo.content) ||
-              (repliedTo.attachments && repliedTo.attachments.length > 0 ? '(attachment)' : '')}
-          </span>
+          {repliedTo ? (
+            <>
+              {/* 16px avatar of the replied author — iOS parity
+                  (MessageViews.swift replyPreview renders a 16pt Avatar
+                  before the name). Same initials-under-image pattern as
+                  the row avatar, scaled down. */}
+              <span
+                className={`relative w-4 h-4 rounded-full overflow-hidden shrink-0 flex items-center justify-center text-[0.5rem] font-semibold ${avatarColor(repliedTo.author?.id)}`}
+                aria-hidden
+              >
+                <span className="zk-avatar-initials">
+                  {avatarInitials(repliedTo.author?.displayName ?? repliedTo.author?.username ?? '?')}
+                </span>
+                <AvatarImage src={repliedTo.author?.avatarUrl ?? null} />
+              </span>
+              <span className="font-medium text-ink-2 shrink-0">
+                @{repliedTo.author?.displayName ?? repliedTo.author?.username ?? 'unknown'}
+              </span>
+              <span className="truncate">{replyPreviewText(repliedTo, filterProfanity)}</span>
+            </>
+          ) : (
+            /* Parent not in the loaded window (older than the scrollback
+               window, or deleted): still show that this IS a reply — iOS
+               renders the same italic placeholder. */
+            <span className="italic truncate">Replying to a message</span>
+          )}
         </div>
       )}
 
@@ -830,24 +873,31 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
               // so users can tell at a glance whether the persona is
               // a real account or an integration. Discord uses "BOT";
               // we use "WEBHOOK" to match the configuration UI label.
+              // accent-2 tint — iOS parity (MessageViews.swift: WEBHOOK
+              // is Theme.accent2 on accent2/20; BOT is accent on accent/20).
               <span
-                className="inline-flex items-center px-1.5 rounded bg-accent/20 text-accent text-[0.55rem] font-bold uppercase tracking-wider leading-[1.1rem]"
+                className="inline-flex items-center px-1.5 rounded bg-accent-2/20 text-accent-2 text-[0.55rem] font-bold uppercase tracking-wider leading-[1.1rem]"
                 title="Sent via webhook"
               >
                 Webhook
               </span>
             )}
             {!isWebhook && author?.isBot && (
-              // BOT pill for bot-account authors. Violet tint to read
-              // distinct from the cyan webhook pill.
+              // BOT pill for bot-account authors. Accent tint, distinct
+              // from the accent-2 webhook pill (matches iOS).
               <span
-                className="inline-flex items-center px-1.5 rounded bg-violet-500/20 text-violet-300 text-[0.55rem] font-bold uppercase tracking-wider leading-[1.1rem]"
+                className="inline-flex items-center px-1.5 rounded bg-accent/20 text-accent text-[0.55rem] font-bold uppercase tracking-wider leading-[1.1rem]"
                 title="Bot account"
               >
                 Bot
               </span>
             )}
-            <span className="text-xs text-ink-3">{formatTimestamp(message.createdAt)}</span>
+            <span
+              className="text-xs text-ink-3"
+              title={new Date(message.createdAt).toLocaleString()}
+            >
+              {formatTimestamp(message.createdAt)}
+            </span>
             {message.pinned && (
               <span className="inline-flex items-center gap-0.5 text-[0.6rem] uppercase tracking-wider text-amber-400" title="Pinned message">
                 <Pin size={10} />
@@ -1067,6 +1117,21 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
               <Pin size={13} />
             </button>
           )}
+          {/* Forward — opens the ForwardModal to re-send this message
+              into another channel/DM. Mirrors the iOS row context
+              menu's Forward action (MessageViews.swift), which sits
+              between Pin and Save. Skipped for local- optimistic ids
+              (nothing on the server to forward yet), same as Save. */}
+          {!message.id.startsWith('local-') && (
+            <button
+              onClick={() => setShowForward(true)}
+              className="w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center text-ink-2 hover:text-ink-1 hover:bg-bg-3 rounded"
+              title="Forward"
+              aria-label="Forward message"
+            >
+              <ForwardIcon size={13} />
+            </button>
+          )}
           {/* Save / bookmark — per-user, private. Filled icon while
               saved. Optimistically toggles via the AppState helper;
               REST failure reverts + toasts. Available on every
@@ -1152,25 +1217,13 @@ const TIME_FMT = new Intl.DateTimeFormat(undefined, {
   hour: 'numeric',
   minute: '2-digit',
 });
-const WEEKDAY_FMT = new Intl.DateTimeFormat(undefined, { weekday: 'short' });
-const FULL_DATE_FMT = new Intl.DateTimeFormat(undefined, {
-  year: 'numeric',
-  month: 'short',
-  day: 'numeric',
-});
 
+// iOS parity (Components.swift shortTime → "h:mm a"): the header
+// timestamp is ALWAYS the short local time — the calendar day is
+// conveyed solely by the date divider between groups. The full
+// date/time lives in the timestamp's `title` tooltip at the call site.
 function formatTimestamp(iso: string): string {
-  const d = new Date(iso);
-  const now = new Date();
-  const sameDay = d.toDateString() === now.toDateString();
-  if (sameDay) {
-    return TIME_FMT.format(d);
-  }
-  const diffMs = now.getTime() - d.getTime();
-  if (diffMs < 1000 * 60 * 60 * 24 * 7) {
-    return WEEKDAY_FMT.format(d) + ' ' + TIME_FMT.format(d);
-  }
-  return FULL_DATE_FMT.format(d);
+  return TIME_FMT.format(new Date(iso));
 }
 
 /**
@@ -1225,7 +1278,9 @@ function DmReceiptIndicator({ message }: { message: Message }) {
     }
     return (
       <div className="text-right text-[0.65rem] text-ink-3 select-none mt-0.5">
-        Read{time && ` · ${time}`}
+        {/* "Read 3:42 PM" — no separator dot, matching iOS
+            (MessageViews.swift: "Read \(shortTime(viewedAt))"). */}
+        Read{time && ` ${time}`}
       </div>
     );
   }

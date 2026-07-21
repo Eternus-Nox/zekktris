@@ -370,7 +370,7 @@ const MemberRow = memo(function MemberRow({
         />
         {m.user.isBot && (
           <span
-            className="shrink-0 inline-flex items-center px-1.5 rounded bg-violet-500/20 text-violet-300 text-[0.5rem] font-bold uppercase tracking-wider leading-4"
+            className="shrink-0 inline-flex items-center px-1.5 rounded bg-accent/20 text-accent text-[0.5rem] font-bold uppercase tracking-wider leading-4"
             title="Bot account"
           >
             Bot

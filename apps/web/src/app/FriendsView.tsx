@@ -393,6 +393,23 @@ function FriendRow({
     }
   }
 
+  /** Block straight from the friend row's overflow menu — mirrors the iOS
+      friend-row context menu (Remove friend + Block, both destructive). The
+      optimistic 'blocked' relationship moves the row to the BLOCKED bucket. */
+  async function block() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await rest.blockUser(user.id);
+      applyRelationship(user, 'blocked');
+      toasts.push(`${user.displayName} blocked`, 'success');
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Block failed', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <li className="flex items-center gap-3 px-4 sm:px-4 py-3 hover:bg-bg-2/40 transition-colors">
       <button
@@ -451,6 +468,8 @@ function FriendRow({
               callDisabled={callPending}
               onRemove={() => void remove(`${user.displayName} removed`)}
               removeDisabled={busy}
+              onBlock={isSelf ? undefined : () => void block()}
+              blockDisabled={busy}
             />
           </>
         )}
@@ -529,8 +548,8 @@ function IconButton({
 }
 
 /**
- * Compact "…" overflow menu for friend rows — holds Call and Remove so
- * the row shows only the message icon at rest (matching iOS, where
+ * Compact "…" overflow menu for friend rows — holds Call, Remove and Block
+ * so the row shows only the message icon at rest (matching iOS, where
  * remove/block live in a long-press menu). Outside-click is handled by a
  * full-screen invisible backdrop so it can't leave a lingering hit-test
  * trap on a hosting popover.
@@ -540,11 +559,15 @@ function FriendOverflowMenu({
   callDisabled,
   onRemove,
   removeDisabled,
+  onBlock,
+  blockDisabled,
 }: {
   onCall?: () => void;
   callDisabled?: boolean;
   onRemove: () => void;
   removeDisabled?: boolean;
+  onBlock?: () => void;
+  blockDisabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -609,6 +632,20 @@ function FriendOverflowMenu({
             >
               <UserMinus size={15} /> Remove
             </button>
+            {onBlock && (
+              <button
+                type="button"
+                role="menuitem"
+                disabled={blockDisabled}
+                onClick={() => {
+                  setOpen(false);
+                  onBlock();
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-400 hover:bg-red-950/40 disabled:opacity-60 transition-colors"
+              >
+                <Shield size={15} /> Block
+              </button>
+            )}
           </div>
         </>
       )}

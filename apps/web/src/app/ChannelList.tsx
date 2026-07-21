@@ -731,7 +731,7 @@ function TextChannelRow({
         // (Previously 'none' here blocked scrolling entirely for touches that
         // landed on a row — you could only scroll from the gaps between rows.)
         style={onDragStart ? { touchAction: 'pan-y' } : undefined}
-        className={`w-full flex items-center gap-2 px-2 py-1 rounded text-[0.9375rem] text-left transition-colors ${
+        className={`w-full flex items-center gap-2 px-2 py-1 rounded text-sm text-left transition-colors ${
           active
             ? 'row-active'
             : unread
@@ -1009,7 +1009,7 @@ function StageChannelRow({
             : undefined
         }
         style={onDragStart ? { touchAction: 'pan-y' } : undefined}
-        className={`w-full flex items-center gap-2 px-2 py-1 rounded text-[0.9375rem] text-left transition-colors ${
+        className={`w-full flex items-center gap-2 px-2 py-1 rounded text-sm text-left transition-colors ${
           active ? 'row-active' : 'text-ink-2 hover:text-ink-1 hover:bg-bg-3/50'
         }`}
       >
@@ -1113,7 +1113,7 @@ function ForumChannelRow({
             : undefined
         }
         style={onDragStart ? { touchAction: 'pan-y' } : undefined}
-        className={`w-full flex items-center gap-2 px-2 py-1 rounded text-[0.9375rem] text-left transition-colors ${
+        className={`w-full flex items-center gap-2 px-2 py-1 rounded text-sm text-left transition-colors ${
           active ? 'row-active' : 'text-ink-2 hover:text-ink-1 hover:bg-bg-3/50'
         }`}
       >
@@ -1233,7 +1233,7 @@ function LinkChannelRow({
             : undefined
         }
         style={onDragStart ? { touchAction: 'pan-y' } : undefined}
-        className="w-full flex items-center gap-2 px-2 py-1 rounded text-[0.9375rem] text-left text-ink-2 hover:text-ink-1 hover:bg-bg-3/50 transition-colors"
+        className="w-full flex items-center gap-2 px-2 py-1 rounded text-sm text-left text-ink-2 hover:text-ink-1 hover:bg-bg-3/50 transition-colors"
       >
         <span className="relative shrink-0">
           <ExternalLink size={14} className="text-accent" />
@@ -1500,7 +1500,7 @@ function VoiceChannelRow({
               : undefined
           }
           style={onDragStart ? { touchAction: 'pan-y' } : undefined}
-          className={`w-full flex items-center gap-2 px-2 py-1 rounded text-[0.9375rem] text-left transition-colors ${
+          className={`w-full flex items-center gap-2 px-2 py-1 rounded text-sm text-left transition-colors ${
             userDropHover
               ? 'bg-accent/15 ring-1 ring-accent/60 text-ink-1'
               : active || selfInThis

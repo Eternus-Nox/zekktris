@@ -1231,7 +1231,7 @@ export function VoiceView({
             <MasterVolumeControl />
             <button
               onClick={() => void leave()}
-              className="ml-2 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#ED4245] hover:bg-[#C53639] text-white text-sm font-semibold shadow-md hover:shadow-lg active:translate-y-px transition-all"
+              className="ml-2 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-red-500/90 hover:bg-red-500 text-white text-sm font-semibold shadow-md hover:shadow-lg active:translate-y-px transition-all"
               aria-label="Leave call"
               title="Leave call"
             >

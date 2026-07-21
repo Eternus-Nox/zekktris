@@ -101,26 +101,22 @@ function splitFencedBlocks(content: string): Segment[] {
 }
 
 /**
- * Detect whether a message is "emoji-only" — only emoji tokens and
- * whitespace, with at most JUMBO_MAX emoji. Such messages render the
- * emoji at a much larger size for visual punch (matching Discord and
- * iMessage).
+ * Detect whether a message is "emoji-only" — only resolvable CUSTOM
+ * emoji tokens and whitespace, with at most JUMBO_MAX emoji. Such
+ * messages render the emoji at a much larger size for visual punch.
  *
- * Token kinds we count as emoji:
- *   - `:name:` tokens that resolve via lookupEmoji
- *   - Single Unicode pictographic codepoints (\p{Extended_Pictographic})
- *     plus their variation selectors / skin-tone modifiers / ZWJ
- *     sequences
+ * iOS parity (MessageViews.swift emojiOnly/jumboEmoji): only `:name:`
+ * tokens that resolve via lookupEmoji count — 1-12 of them. Unicode
+ * pictographs are ordinary text there, so a unicode-emoji-only message
+ * renders at the normal body size on every platform. (A previous web
+ * version also jumbo-ed unicode emoji, capped at 3, which diverged
+ * both ways from iOS.)
  *
- * Anything else (letters, digits, punctuation) disqualifies the message.
+ * Anything else (letters, digits, punctuation, unicode emoji)
+ * disqualifies the message.
  */
-const JUMBO_MAX = 3;
+const JUMBO_MAX = 12;
 const EMOJI_TOKEN_RE = /:[a-z0-9_]{2,32}:/g;
-// Matches a "compound emoji" — base pictographic plus optional variation
-// selector, skin-tone modifier, and ZWJ-joined components. The `u` flag
-// is required for \p{...} classes.
-const PICTO_RE =
-  /\p{Extended_Pictographic}(?:\u{FE0F}|\u{1F3FB}|\u{1F3FC}|\u{1F3FD}|\u{1F3FE}|\u{1F3FF})?(?:\u200D\p{Extended_Pictographic}(?:\u{FE0F}|\u{1F3FB}|\u{1F3FC}|\u{1F3FD}|\u{1F3FE}|\u{1F3FF})?)*/gu;
 
 function isEmojiOnly(content: string, lookupEmoji?: (n: string) => unknown): boolean {
   const trimmed = content.trim();
@@ -139,15 +135,10 @@ function isEmojiOnly(content: string, lookupEmoji?: (n: string) => unknown): boo
     return m; // unresolved — treat as text
   });
 
-  // Replace pictographic emoji clusters with whitespace.
-  work = work.replace(PICTO_RE, () => {
-    count++;
-    return ' ';
-  });
-
   // If anything non-whitespace remains, the message has actual text
-  // mixed in — not jumbo. Also bail if no emoji were found at all,
-  // or more than the cap.
+  // (or unicode emoji, which render at normal size — see the doc
+  // comment) mixed in — not jumbo. Also bail if no emoji were found
+  // at all, or more than the cap.
   if (count === 0 || count > JUMBO_MAX) return false;
   if (work.replace(/\s+/g, '').length > 0) return false;
   return true;
@@ -187,7 +178,8 @@ function RenderInline({
 }: {
   content: string;
   ctx: RenderContext;
-  /** When true, custom-emoji `<img>` and unicode glyphs render at 2× size. */
+  /** When true, custom-emoji `<img>` render at jumbo size (the message
+      is 1-12 resolvable custom emoji + whitespace — see isEmojiOnly). */
   jumbo?: boolean;
 }) {
   const out: ReactNode[] = [];
@@ -330,10 +322,10 @@ function RenderInline({
   if (cursor < content.length) {
     out.push(content.slice(cursor));
   }
-  // For jumbo messages, wrap the whole inline run in a span that bumps
-  // font-size — this scales unicode-emoji glyphs (which are rendered
-  // as text) up to match the inline `<img>` jumbo size. Custom-emoji
-  // images already use their own jumbo class above.
+  // For jumbo messages, wrap the inline run in a larger-font span so the
+  // whitespace between the jumbo `<img>` emoji spaces them proportionally
+  // (only custom emoji + whitespace can be in a jumbo run — see
+  // isEmojiOnly). The images themselves use their own jumbo class above.
   if (jumbo) {
     return <span className="text-[2.6rem] leading-tight">{out}</span>;
   }

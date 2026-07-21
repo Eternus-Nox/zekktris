@@ -683,6 +683,38 @@ export function SettingsView() {
               login) moved to their own "Security" tab — see the
               activeTab === 'security' block below. */}
 
+          {/* ── Status ───────────────────────────────────────────────────
+              First on the tab (matches iOS). Status changes apply immediately
+              (no Save Changes click required) — this matches Discord's
+              behaviour and resolves the surprise of "I picked Idle but it
+              didn't take". The optimistic local update happens before the
+              REST round-trip so the UI is snappy. */}
+          <section className="space-y-2">
+            <div className="text-xs uppercase tracking-wider text-ink-3">Status</div>
+            {/* iOS: a single-column stack of full-width rows; the active status
+                gets a trailing accent checkmark (no per-row help subtext). */}
+            <div className="space-y-2">
+              {STATUS_OPTIONS.map((opt) => {
+                const active = status === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    disabled={savingStatus}
+                    onClick={() => void changeStatus(opt.value)}
+                    className={`w-full flex items-center gap-2.5 text-left px-3 py-2.5 rounded-md border transition-colors disabled:opacity-60 ${
+                      active ? 'bg-accent/15 border-accent/60' : 'bg-bg-1 border-line hover:bg-bg-3'
+                    }`}
+                  >
+                    <span className={`w-2.5 h-2.5 rounded-full ${opt.dot}`} aria-hidden />
+                    <span className="font-medium">{opt.label}</span>
+                    {active && <Check size={16} className="ml-auto text-accent" />}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
           {/* ── Profile ────────────────────────────────────────────────── */}
           <section className="space-y-3">
             <div className="text-xs uppercase tracking-wider text-ink-3">Profile</div>
@@ -727,11 +759,6 @@ export function SettingsView() {
               />
             </label>
 
-            {/* Custom status — emoji + text shown next to the presence dot on
-                profile cards and DM lists. Sits between name and bio; saves
-                via its own modal (expiry options need the room). */}
-            <CustomStatusRow />
-
             <label className="block">
               <span className="text-sm text-ink-2">About Me</span>
               <textarea
@@ -745,37 +772,11 @@ export function SettingsView() {
               />
               <span className="text-xs text-ink-3 block mt-1">{(bio ?? '').length}/200</span>
             </label>
-          </section>
 
-          {/* ── Status ───────────────────────────────────────────────────
-              Status changes apply immediately (no Save Changes click required)
-              — this matches Discord's behaviour and resolves the surprise of
-              "I picked Idle but it didn't take". The optimistic local update
-              happens before the REST round-trip so the UI is snappy. */}
-          <section className="space-y-2">
-            <div className="text-xs uppercase tracking-wider text-ink-3">Status</div>
-            {/* iOS: a single-column stack of full-width rows; the active status
-                gets a trailing accent checkmark (no per-row help subtext). */}
-            <div className="space-y-2">
-              {STATUS_OPTIONS.map((opt) => {
-                const active = status === opt.value;
-                return (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    disabled={savingStatus}
-                    onClick={() => void changeStatus(opt.value)}
-                    className={`w-full flex items-center gap-2.5 text-left px-3 py-2.5 rounded-md border transition-colors disabled:opacity-60 ${
-                      active ? 'bg-accent/15 border-accent/60' : 'bg-bg-1 border-line hover:bg-bg-3'
-                    }`}
-                  >
-                    <span className={`w-2.5 h-2.5 rounded-full ${opt.dot}`} aria-hidden />
-                    <span className="font-medium">{opt.label}</span>
-                    {active && <Check size={16} className="ml-auto text-accent" />}
-                  </button>
-                );
-              })}
-            </div>
+            {/* Custom status — emoji + text shown next to the presence dot on
+                profile cards and DM lists. Sits after the bio (matches iOS);
+                saves via its own modal (expiry options need the room). */}
+            <CustomStatusRow />
           </section>
 
           {/* ── Notifications (Web Push) ───────────────────────────────── */}
@@ -897,12 +898,8 @@ export function SettingsView() {
                 are non-refundable.
               </p>
             </div>
-        {/* The full tier breakdown — shown to EVERYONE, member or not (mirrors
-            the iOS entitlementsSection), with a "Your tier" badge on the active
-            one so members can still see what their membership covers. */}
-        <WhatMembershipUnlocks />
         {/* Staff name shimmer — an instance-STAFF perk (not membership-gated),
-            shown here alongside the other appearance/cosmetic options. Renders
+            shown first, above the membership sections (matches iOS). Renders
             nothing for non-staff. */}
         <StaffShimmerSection />
         {/* Appearance — a SUPPORTER PERK. Members (own membership or one
@@ -913,7 +910,7 @@ export function SettingsView() {
         {!!user?.subscriptionTier && (
         <section className="rounded-xl border border-line bg-bg-2 p-3">
           <div className="flex items-baseline justify-between gap-2">
-            <h2 className="text-sm font-semibold text-ink-1">Appearance</h2>
+            <h2 className="text-xs uppercase tracking-wider text-ink-3">Appearance</h2>
             {/* Founder (grandfathered) members have the perks but no title. */}
             {user.subscriptionTitled ? (
               <TierBadge tier={user.subscriptionTier} />
@@ -1042,11 +1039,16 @@ export function SettingsView() {
           <ManageMembership />
         </section>
         )}
+        {/* The full tier breakdown — shown to EVERYONE, member or not (mirrors
+            the iOS entitlementsSection), with a "Your tier" badge on the active
+            one so members can still see what their membership covers. Renders
+            second-to-last, after the appearance/pitch section (matches iOS). */}
+        <WhatMembershipUnlocks />
         {/* Hide clan tags is a per-device VIEWER preference, not a supporter
             perk — anyone can declutter names regardless of membership. Render
             it in its own block so members AND non-members both get it. */}
         <section className="rounded-xl border border-line bg-bg-2 p-3">
-          <h2 className="text-sm font-semibold text-ink-1">Display</h2>
+          <h2 className="text-xs uppercase tracking-wider text-ink-3">Display</h2>
           <div className="mt-2">
             <HideClanTagsToggle />
           </div>
@@ -1056,26 +1058,29 @@ export function SettingsView() {
 
         {activeTab === 'security' && (
           <>
-            {/* Account identity — username + email (credential changes, each
-                re-confirmed with the current password). */}
-            <section className="space-y-2">
-              <div className="text-xs uppercase tracking-wider text-ink-3">Account</div>
-              <UserIdSection />
-              <UsernameSection />
-              <EmailSection />
-            </section>
-
-            {/* Authentication — password, two-factor, passkeys, and quick
-                device login (QR / code). */}
-            <PasswordSection />
-            <TwoFactorSection />
+            {/* Security group first (matches iOS): passkeys, two-factor,
+                then quick device login (QR / code). */}
             <PasskeysSection />
-            <SessionsSection />
+            <TwoFactorSection />
             <QuickLoginSection />
 
-            {/* Bots — iOS folds bot management into Security→Account rather
-                than giving it a standalone tab, since bot tokens are
-                credentials like any other. */}
+            {/* Account identity — username + email (credential changes, each
+                re-confirmed with the current password), then the copyable
+                User ID (iOS row order). */}
+            <section className="space-y-2">
+              <div className="text-xs uppercase tracking-wider text-ink-3">Account</div>
+              <UsernameSection />
+              <EmailSection />
+              <UserIdSection />
+            </section>
+
+            {/* Password, active sessions, then bots close out the account
+                group (matches the iOS ACCOUNT row order). iOS folds bot
+                management into Security→Account rather than giving it a
+                standalone tab, since bot tokens are credentials like any
+                other. */}
+            <PasswordSection />
+            <SessionsSection />
             <BotsSection />
           </>
         )}
@@ -3387,50 +3392,71 @@ function StaffShimmerSection() {
         overrides your server role colors wherever your name appears. Add a slight
         glow if you like. Instance staff only; turn it off any time.
       </p>
-      <div className="flex items-center gap-3 flex-wrap">
+      {/* iOS: a "Shimmer my name" Toggle, then (while on) color + preview and
+          an "Add a slight glow" Toggle — switches, not pill buttons. */}
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-ink-1">Shimmer my name</p>
         <button
           type="button"
+          role="switch"
+          aria-checked={enabled}
+          aria-label="Shimmer my name"
           disabled={saving}
           onClick={() => void patch({ staffColor: enabled ? null : color })}
-          className={`text-sm px-3 py-2 rounded-md border disabled:opacity-50 ${
-            enabled
-              ? 'border-accent/40 bg-accent/15 text-ink-1'
-              : 'border-line text-ink-2 hover:bg-bg-3'
+          className={`relative shrink-0 w-10 h-6 rounded-full transition-colors disabled:opacity-50 ${
+            enabled ? 'bg-accent/70' : 'bg-bg-3'
           }`}
         >
-          {enabled ? 'Shimmer on' : 'Turn on shimmer'}
+          <span
+            className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
+              enabled ? 'left-[1.125rem]' : 'left-0.5'
+            }`}
+          />
         </button>
-        <input
-          type="color"
-          value={color}
-          onChange={(e) => setColor(e.target.value)}
-          onBlur={() => {
-            if (enabled && color !== user?.staffColor) void patch({ staffColor: color });
-          }}
-          className="w-9 h-9 rounded-md bg-transparent cursor-pointer border border-line"
-          aria-label="Shimmer color"
-        />
-        {/* Optional slight glow — only meaningful while the shimmer is on. */}
-        <button
-          type="button"
-          disabled={saving || !enabled}
-          onClick={() => void patch({ staffGlow: !glow })}
-          className={`text-sm px-3 py-2 rounded-md border disabled:opacity-40 ${
-            glow && enabled
-              ? 'border-accent/40 bg-accent/15 text-ink-1'
-              : 'border-line text-ink-2 hover:bg-bg-3'
-          }`}
-          title="Add a slight glow around your name"
-        >
-          {glow ? 'Glow on' : 'Add glow'}
-        </button>
-        <span
-          className={`zk-staff-shimmer${glow ? ' zk-staff-glow' : ''} text-base font-semibold`}
-          style={{ ['--sc']: color } as CSSProperties}
-        >
-          {user?.displayName || 'Preview'}
-        </span>
       </div>
+      {enabled && (
+        <>
+          <div className="flex items-center gap-3 flex-wrap">
+            <input
+              type="color"
+              value={color}
+              onChange={(e) => setColor(e.target.value)}
+              onBlur={() => {
+                if (color !== user?.staffColor) void patch({ staffColor: color });
+              }}
+              className="w-9 h-9 rounded-md bg-transparent cursor-pointer border border-line"
+              aria-label="Shimmer color"
+            />
+            <span
+              className={`zk-staff-shimmer${glow ? ' zk-staff-glow' : ''} text-base font-semibold`}
+              style={{ ['--sc']: color } as CSSProperties}
+            >
+              {user?.displayName || 'Preview'}
+            </span>
+          </div>
+          {/* Optional slight glow — only meaningful while the shimmer is on. */}
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm text-ink-1">Add a slight glow</p>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={glow}
+              aria-label="Add a slight glow"
+              disabled={saving}
+              onClick={() => void patch({ staffGlow: !glow })}
+              className={`relative shrink-0 w-10 h-6 rounded-full transition-colors disabled:opacity-50 ${
+                glow ? 'bg-accent/70' : 'bg-bg-3'
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
+                  glow ? 'left-[1.125rem]' : 'left-0.5'
+                }`}
+              />
+            </button>
+          </div>
+        </>
+      )}
     </section>
   );
 }

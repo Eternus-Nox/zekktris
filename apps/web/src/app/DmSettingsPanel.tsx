@@ -26,10 +26,11 @@
  */
 
 import { useEffect, useRef, useState, type RefObject } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { ApiError, type Channel } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useToasts } from '../state/Toasts';
-import { Paperclip, Shield } from '../lib/icons';
+import { Paperclip, Shield, XCircle } from '../lib/icons';
 
 const OPTIONS: { value: number | null; label: string; sublabel?: string }[] = [
   { value: null, label: 'Off', sublabel: 'Messages stay forever' },
@@ -213,6 +214,54 @@ export function DmSettingsPanel({
         })}
       </ul>
       <E2eeToggle channel={channel} selfId={selfId} />
+      <CloseDmRow channel={channel} />
+    </div>
+  );
+}
+
+/**
+ * Trailing destructive "Close DM" row — iOS parity: DmSettingsSheet ends
+ * with a danger Close DM row (xmark.circle) plus a footnote explaining
+ * the action is one-sided. Removes the conversation from this user's
+ * list only; the other person keeps their copy. On success we navigate
+ * back to the DM home since the current channel is about to disappear
+ * from state (the gateway CHANNEL_DELETE broadcast removes it).
+ */
+function CloseDmRow({ channel }: { channel: Channel }) {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const navigate = useNavigate();
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <div className="border-t border-line px-3 py-2.5">
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => {
+          if (busy) return;
+          setBusy(true);
+          void rest
+            .closeDM(channel.id)
+            .then(() => {
+              navigate('/channels/@me');
+            })
+            .catch((e: unknown) => {
+              toasts.push(
+                e instanceof ApiError ? e.message : 'Could not close DM',
+                'error',
+              );
+              setBusy(false);
+            });
+        }}
+        className="w-full flex items-center gap-2.5 text-left text-sm text-red-400 hover:text-red-300 disabled:opacity-60 disabled:cursor-wait transition-colors"
+      >
+        <XCircle size={15} className="shrink-0" />
+        <span className="flex-1">{busy ? 'Closing…' : 'Close DM'}</span>
+      </button>
+      <p className="text-[0.7rem] text-ink-3 mt-1.5 leading-snug">
+        Removes this conversation from your list. The other person keeps their copy.
+      </p>
     </div>
   );
 }

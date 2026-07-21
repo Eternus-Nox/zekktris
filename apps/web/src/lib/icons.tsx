@@ -412,6 +412,37 @@ export function MessageSquare(props: IconProps) {
 }
 
 /**
+ * XCircle — an X inside a circle. Destructive-action affordance used on
+ * the DM settings panel's "Close DM" row (iOS parity: xmark.circle).
+ */
+export function XCircle(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="12" cy="12" r="10" />
+      <line x1="15" y1="9" x2="9" y2="15" />
+      <line x1="9" y1="9" x2="15" y2="15" />
+    </Svg>
+  );
+}
+
+/**
+ * MessagesSquare — two overlapping speech bubbles. Used on the rail's
+ * Home/DMs tile to match iOS's bubble.left.and.bubble.right.fill (and
+ * Android's QuestionAnswer): "conversations", plural, as opposed to the
+ * single-bubble MessageSquare used for threads.
+ */
+export function MessagesSquare(props: IconProps) {
+  return (
+    <Svg {...props}>
+      {/* Back bubble — up and to the left */}
+      <path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z" />
+      {/* Front bubble — offset down-right, tail on the right side */}
+      <path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1" />
+    </Svg>
+  );
+}
+
+/**
  * Forum — stacked-discussion glyph. Two overlapping rounded squares
  * signal "multiple posts/threads stacked together," distinct from the
  * single-bubble MessageSquare. Used on guild_forum channel rows and

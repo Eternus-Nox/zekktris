@@ -16,7 +16,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { useAppStateSelector } from '../state/AppState';
 import type { Guild, GuildFolder } from '@zekktris/client';
-import { Plus, MessageSquare, Compass, Folder, Trash, AtSign, Shield, Users } from '../lib/icons';
+import { Plus, MessagesSquare, Compass, Folder, Trash, AtSign, Shield, Users } from '../lib/icons';
 import { useParentalControlsEnabled } from '../lib/familyPrefs';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
@@ -254,7 +254,6 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
               folder={folder}
               guilds={entry.guilds}
               collapsed={collapsed}
-              activeGuildId={activeGuildId}
               onToggle={() => {
                 setFolderCollapsed(folder.id, !collapsed);
                 setCollapseTick((n) => n + 1);
@@ -560,7 +559,9 @@ function HomeTile({ active }: { active: boolean }) {
             : 'bg-bg-2 text-ink-2 group-hover:bg-bg-3 group-hover:text-ink-1 group-hover:shadow-[inset_0_0_0_1px_var(--zk-line-glow)]'
         }`}
       >
-        <MessageSquare size={20} />
+        {/* Double speech bubble — matches iOS's
+            bubble.left.and.bubble.right.fill rail glyph. */}
+        <MessagesSquare size={20} />
       </span>
     </Link>
   );
@@ -744,29 +745,26 @@ function FolderTile({
   folder,
   guilds,
   collapsed,
-  activeGuildId,
   onToggle,
   onContextMenu,
 }: {
   folder: GuildFolder;
   guilds: Guild[];
   collapsed: boolean;
-  /** When a guild inside this folder is active, the tile borders glow
-      so the user knows their current location is "inside" this folder
-      even when it's collapsed. */
-  activeGuildId: string | undefined;
   onToggle: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
 }) {
-  const containsActive = activeGuildId
-    ? guilds.some((g) => g.id === activeGuildId)
-    : false;
   // Folder color is applied as a low-alpha background overlay so the
   // mini guild icons inside remain visible at their own colors. When
   // no color is set we fall back to the default accent tint.
   const bg = folder.color ?? DEFAULT_FOLDER_BG;
   const miniGuilds = guilds.slice(0, 4);
 
+  // Same continuous squircle as every other rail tile (iOS parity: the
+  // folder tile is the standard 48pt squircle filled with the folder
+  // color at low alpha — no hover shape morph, and no ring when a
+  // contained guild is active; the active child tile below carries its
+  // own pip/glow).
   return (
     <button
       type="button"
@@ -774,9 +772,7 @@ function FolderTile({
       onContextMenu={onContextMenu}
       title={folder.name}
       aria-label={`${folder.name} folder, ${collapsed ? 'collapsed' : 'expanded'}`}
-      className={`relative group w-12 h-12 rounded-2xl hover:rounded-xl transition-all flex items-center justify-center overflow-hidden ${
-        containsActive ? 'ring-2 ring-accent' : ''
-      }`}
+      className="relative group w-12 h-12 zk-squircle transition-all flex items-center justify-center overflow-hidden"
       style={{
         // Low-alpha tint over bg-2 so the folder reads as a "container"
         // and not as a solid colored block. The hex+'33' suffix is a

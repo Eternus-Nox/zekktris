@@ -24,12 +24,15 @@ import { useAuth } from '../auth/AuthContext';
 import { useAppStateSelector, useDmNickname, voiceStatesForChannel, dmE2eeSuppressed } from '../state/AppState';
 import { useTypingPing, useTypingUsers } from '../state/Typing';
 import { useToasts } from '../state/Toasts';
-import { MessageItem } from './MessageItem';
+import { MessageItem, replyPreviewText } from './MessageItem';
 import { PinPanel } from './PinPanel';
 import { SearchPanel } from './SearchPanel';
 import { useNavigate } from 'react-router-dom';
-import { Hash, AtSign, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronLeft, ChevronRight, CheckCircle, Lock, Users as UsersIcon } from '../lib/icons';
+import { Hash, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronLeft, ChevronRight, CheckCircle, Lock, Users as UsersIcon } from '../lib/icons';
 import { SchedulePickerModal } from './SchedulePickerModal';
+import { avatarColor, avatarInitials } from '../lib/avatar';
+import { AvatarImage } from '../lib/AvatarImage';
+import { DmStreakPill } from './DMList';
 // Lazy-loaded: the DM settings/privacy panel only mounts when opened.
 const DmSettingsPanel = lazy(() =>
   import('./DmSettingsPanel').then((m) => ({ default: m.DmSettingsPanel })),
@@ -257,6 +260,29 @@ export function MessageView({
   // entangling the ack logic with scroll position. The user can recover
   // unread state by navigating away and back if they really care; no
   // server-side data is lost.
+
+  // Frozen unread boundary — iOS parity (AppStore.swift unreadBoundaryId,
+  // frozen in openChannel BEFORE the ack advances the read state). Captured
+  // synchronously at render time on channel switch so it always wins the
+  // race with the auto-ack effect below (effects run post-render). Only set
+  // when the channel actually has unread messages past the stored read
+  // marker — same gate as iOS — so a fully-read channel never grows a
+  // divider when new messages arrive while it's open. Drives the red
+  // "New messages" divider + guild-channel land-on-first-unread in Scroller.
+  const unreadBoundaryRef = useRef<{ channelId: string; boundary: string | null } | null>(null);
+  if (unreadBoundaryRef.current?.channelId !== channel.id) {
+    const prevRead = readStateByChannel[channel.id]?.lastMessageId;
+    const last = channel.lastMessageId;
+    const hasUnread =
+      typeof prevRead === 'string' &&
+      typeof last === 'string' &&
+      isNumericId(prevRead) &&
+      isNumericId(last) &&
+      BigInt(last) > BigInt(prevRead);
+    unreadBoundaryRef.current = { channelId: channel.id, boundary: hasUnread ? prevRead : null };
+  }
+  const unreadBoundary = unreadBoundaryRef.current?.boundary ?? null;
+
   useEffect(() => {
     if (!messages || messages.length === 0) return;
     // Walk back from the tail to find the most recent message with a
@@ -400,6 +426,16 @@ export function MessageView({
   const headerLabel = isDM
     ? (dmDisplayName ?? channel.name ?? 'Direct message')
     : (channel.name ?? '(unnamed)');
+  // Presence dot color for the DM header avatar (same mapping as DMList).
+  const dmStatus = dmRecipient?.status ?? 'offline';
+  const dmStatusDot =
+    dmStatus === 'online'
+      ? 'bg-emerald-500'
+      : dmStatus === 'idle'
+        ? 'bg-amber-500'
+        : dmStatus === 'dnd'
+          ? 'bg-red-500'
+          : 'bg-ink-3';
   const composerPlaceholder = isDM
     ? `Message ${dmDisplayName ?? 'this conversation'}`
     : isThread
@@ -419,6 +455,25 @@ export function MessageView({
   // component instance. (When MessageView re-mounts on channel switch
   // the new instance gets its own stable identity.)
   const onReply = useCallback((m: Message) => setReplyTo(m), []);
+
+  // One-shot reply prefill for guild-channel message deep-links (iOS
+  // parity: a notification tap both scrolls to the target message AND
+  // puts the composer into reply mode targeting it — guild channels
+  // only; DMs get scroll-only). Keyed per jump id so a new message
+  // arriving later doesn't re-trigger, and reset on channel switch so
+  // revisiting the same link works again.
+  const replyPrefillForRef = useRef<string | null>(null);
+  useEffect(() => {
+    replyPrefillForRef.current = null;
+  }, [channel.id]);
+  useEffect(() => {
+    if (!jumpToMessageId || isDM) return;
+    if (replyPrefillForRef.current === jumpToMessageId) return;
+    const target = messages?.find((m) => m.id === jumpToMessageId);
+    if (!target) return;
+    replyPrefillForRef.current = jumpToMessageId;
+    setReplyTo(target);
+  }, [jumpToMessageId, isDM, messages]);
 
   const isDM1to1 = channel.type === 'dm';
   // Auxiliary panel — pin list and search take up the same overlay slot
@@ -573,7 +628,34 @@ export function MessageView({
             <ChevronLeft size={20} />
           </button>
         ) : isDM ? (
-          <AtSign size={18} className="text-accent shrink-0" />
+          // Recipient avatar with presence dot + conditional E2EE lock
+          // corner badge (iOS parity: MessageViews.swift DM header shows a
+          // 28pt Avatar with status, lock.fill badge pinned top-trailing
+          // when the conversation is E2EE). Same markup as the DM-list row.
+          <span className="relative w-7 h-7 shrink-0">
+            <span
+              className={`absolute inset-0 rounded-full text-[11px] flex items-center justify-center font-medium ${avatarColor(dmRecipient?.id ?? channel.id)}`}
+            >
+              {avatarInitials(headerLabel) || '?'}
+            </span>
+            <AvatarImage src={dmRecipient?.avatarUrl} />
+            <span
+              aria-hidden
+              className={`absolute bottom-0 right-0 w-[10px] h-[10px] rounded-full border-2 border-bg-1 ${dmStatusDot}`}
+            />
+            {channel.e2eeEnabled && (
+              // End-to-end encrypted indicator — pinned to the avatar's
+              // top-right corner, exactly like the DM-list row badge (see
+              // DMList.tsx for the pixel-placement rationale).
+              <span
+                className="absolute -top-0.5 -right-0.5 w-[13px] h-[13px] rounded-full bg-bg-2 border border-accent/45"
+                title="End-to-end encrypted"
+                aria-label="End-to-end encrypted"
+              >
+                <Lock size={8} className="absolute left-[2px] top-[1px] -translate-x-[0.5px] text-accent" />
+              </span>
+            )}
+          </span>
         ) : isThread ? (
           <MessageSquare size={18} className="text-accent shrink-0" />
         ) : (
@@ -603,6 +685,11 @@ export function MessageView({
         ) : (
           <>
             <span className="font-semibold truncate">{headerLabel}</span>
+            {/* Messaging-streak chip right after the name (iOS parity:
+                StreakChip in the DM header when streak > 0). */}
+            {isDM && typeof channel.streak === 'number' && channel.streak > 0 && (
+              <DmStreakPill streak={channel.streak} />
+            )}
             {channel.topic && (
               <>
                 <span className="text-ink-3 shrink-0 hidden sm:inline">·</span>
@@ -617,21 +704,30 @@ export function MessageView({
             stays in guild channels, where pins are a shared feature. */}
         <div className="ml-auto flex items-center gap-1 shrink-0">
           {/* Search leads the action group — ahead of the DM call button and
-              the channel Pins button. Visible everywhere. */}
-          <button
-            type="button"
-            onClick={() => setOverlay(overlay === 'search' ? null : 'search')}
-            className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${
-              overlay === 'search'
-                ? 'bg-bg-3 text-ink-1'
-                : 'text-ink-3 hover:text-ink-1 hover:bg-bg-3'
-            }`}
-            aria-label="Search messages"
-            title="Search"
-          >
-            <Search size={16} />
-          </button>
-          {isDM1to1 && (
+              the channel Pins button. Hidden in E2EE DMs (iOS parity): the
+              server only holds ciphertext there, so search can never match
+              message content — showing a button that always returns nothing
+              reads as broken. */}
+          {channel.e2eeEnabled !== true && (
+            <button
+              type="button"
+              onClick={() => setOverlay(overlay === 'search' ? null : 'search')}
+              className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${
+                overlay === 'search'
+                  ? 'bg-bg-3 text-ink-1'
+                  : 'text-ink-3 hover:text-ink-1 hover:bg-bg-3'
+              }`}
+              aria-label="Search messages"
+              title="Search"
+            >
+              <Search size={16} />
+            </button>
+          )}
+          {/* Call button shows for ALL DMs including group DMs (iOS
+              parity: the phone button gates on channel.isDM which covers
+              dm + group_dm; only poke is 1:1-only). The join/leave flow
+              inside the button is channel-generic. */}
+          {isDM && (
             <DmHeaderCallButton channel={channel} />
           )}
           {isDM1to1 && (
@@ -767,6 +863,7 @@ export function MessageView({
             selfId={user?.id}
             onReply={onReply}
             jumpToMessageId={jumpToMessageId}
+            unreadBoundary={unreadBoundary}
           />
 
           <TypingIndicator channelId={channel.id} />
@@ -1142,6 +1239,7 @@ function Scroller({
   selfId,
   onReply,
   jumpToMessageId,
+  unreadBoundary,
 }: {
   messages: Message[] | undefined;
   channel: Channel;
@@ -1153,6 +1251,11 @@ function Scroller({
   /** When set, scroll the matching message's group into view (the
       parent handles the flash highlight via the DOM). */
   jumpToMessageId?: string;
+  /** Frozen last-read message id captured when the channel was opened
+      (null when it had no unreads). Drives the red "New messages"
+      divider, and guild channels land their initial scroll ON the
+      divider instead of the bottom (iOS parity). */
+  unreadBoundary: string | null;
 }) {
   // Convenience alias — the rest of this function still references
   // `channelId` so we keep that local. Threading the full Channel down
@@ -1167,6 +1270,10 @@ function Scroller({
   /** Force the first post-switch snap to bottom even if we momentarily
       look scrolled-up (cached-empty channel that fills in late). */
   const forceSnapToBottomRef = useRef(true);
+  /** Set when the initial scroll landed ON the unread divider instead of
+      the bottom (guild channel with unreads). Read by the reveal chase so
+      it doesn't yank the view back to the bottom afterwards. */
+  const unreadLandedRef = useRef(false);
   /** Newest message id seen last render — detects appends. */
   const prevLastIdRef = useRef<string | null>(null);
   /** Oldest message id seen last render — detects prepends. */
@@ -1203,21 +1310,20 @@ function Scroller({
     [messages],
   );
   const isDM1to1 = channel.type === 'dm';
+  // Whether the channel is any kind of DM (1:1 or group). DMs land the
+  // initial scroll at the bottom even with unreads — only guild channels
+  // land on the "New messages" divider (iOS parity).
+  const isDMKind = channel.type === 'dm' || channel.type === 'group_dm';
 
-  // DM read-receipt anchors. We show at most TWO receipts in a 1:1 DM:
-  //   • "Read" on the most recent own message the recipient has read
-  //   • "Sent"/"Delivered" on the most recent own message, when it's
-  //     newer than that read point (i.e. still unread)
-  // When everything is read those collapse to a single "Read" on the
-  // last message. Anchoring them this way (instead of one receipt per
-  // own message) keeps a stable "one sent / one read" pair and stops
-  // the indicator hopping between bubbles — which was also what made
-  // the spacing jump around.
-  const dmReceiptAnchors = useMemo(() => {
-    const empty = { latest: null as string | null, lastRead: null as string | null };
-    if (!isDM1to1 || !selfId || !messages) return empty;
+  // DM read-receipt anchor. Exactly ONE receipt renders in a 1:1 DM —
+  // under the newest own message — showing "Read h:mm" / "Delivered" /
+  // "Sent". The moment a newer message is sent, any older "Read" status
+  // disappears with it (iOS parity: MessageViews.swift dmReceipt anchors
+  // only on `latest`). A previous version also anchored a second "Read"
+  // on the last-read own message, which showed two receipts at once.
+  const dmReceiptAnchor = useMemo(() => {
+    if (!isDM1to1 || !selfId || !messages) return null;
     let latest: string | null = null;
-    let lastRead: string | null = null;
     for (const m of messages) {
       // Skip own non-message rows: system_* types AND the streak-expiry notice
       // (a 'default' row carrying a streak_warning marker) — neither should be
@@ -1225,10 +1331,25 @@ function Scroller({
       if (m.authorId !== selfId || m.type.startsWith('system_')) continue;
       if (m.metadata?.kind === 'streak_warning') continue;
       latest = m.id;
-      if (m.viewedAt) lastRead = m.id;
     }
-    return { latest, lastRead };
+    return latest;
   }, [messages, selfId, isDM1to1]);
+
+  // Index of the first message group past the frozen unread boundary.
+  // The red "New messages" divider renders above this group, and guild
+  // channels land their initial scroll on it (iOS parity:
+  // MessageViews.swift shouldShowUnreadDivider + the land-on-divider
+  // open scroll). Group-granular: the divider sits between author
+  // groups, not mid-group.
+  const unreadGroupIndex = useMemo(() => {
+    if (!unreadBoundary || !isNumericId(unreadBoundary)) return null;
+    const boundary = BigInt(unreadBoundary);
+    for (let gi = 0; gi < messageGroups.length; gi++) {
+      const first = messageGroups[gi]![0]!;
+      if (isNumericId(first.id) && BigInt(first.id) > boundary) return gi;
+    }
+    return null;
+  }, [messageGroups, unreadBoundary]);
 
   // Virtual item layout: index 0 is the top-of-stream indicator; message
   // groups occupy 1..N, so the last item index === messageGroups.length.
@@ -1262,8 +1383,22 @@ function Scroller({
       prevLastIdRef.current = messages?.[messages.length - 1]?.id ?? null;
       triggerArmedRef.current = true;
       forceSnapToBottomRef.current = true;
+      unreadLandedRef.current = false;
       setShiftPrepend(false);
       setUnreadBelow(false);
+      // Guild channel with unread history (cached case): land the initial
+      // scroll ON the "New messages" divider instead of the bottom (iOS
+      // parity — MessageViews.swift lands guild channels on the divider;
+      // DMs keep the iMessage-style land-at-bottom). `+1` skips the
+      // top-of-stream indicator at item 0. No hide-gate here: we're
+      // intentionally NOT at the bottom, so reveal immediately.
+      if (!isDMKind && unreadGroupIndex !== null && messageGroups.length > 0) {
+        unreadLandedRef.current = true;
+        forceSnapToBottomRef.current = false;
+        vref.current?.scrollToIndex(unreadGroupIndex + 1, { align: 'start' });
+        setBottomReady(true);
+        return;
+      }
       // Hide the list until the first snap lands, so a cached channel
       // opens ALREADY at the newest message rather than painting at the
       // top and visibly jumping down. (When messages load AFTER the
@@ -1295,6 +1430,9 @@ function Scroller({
         const [d, ...rest] = delays;
         setTimeout(() => {
           if (prevChannelRef.current !== channelId) { setBottomReady(true); return; }
+          // The first append landed on the unread divider (uncached guild
+          // channel with unreads) — don't yank the view back to the bottom.
+          if (unreadLandedRef.current) { setBottomReady(true); return; }
           const el = ref.current;
           if (!el) { setBottomReady(true); return; }
           const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -1335,6 +1473,14 @@ function Scroller({
 
     // First append after a switch: land at bottom regardless of stale pin.
     if (forceSnapToBottomRef.current && isAppend) {
+      // Guild channel whose messages arrived AFTER the switch: land on the
+      // unread divider rather than the bottom (see the switch branch above).
+      if (!isDMKind && unreadGroupIndex !== null) {
+        unreadLandedRef.current = true;
+        forceSnapToBottomRef.current = false;
+        vref.current?.scrollToIndex(unreadGroupIndex + 1, { align: 'start' });
+        return;
+      }
       vref.current?.scrollToIndex(lastIndex, { align: 'end' });
       forceSnapToBottomRef.current = false;
       setUnreadBelow(false);
@@ -1474,6 +1620,7 @@ function Scroller({
               return (
                 <div key={firstMsg.id} className={gi === 0 ? 'pt-4' : 'pt-3'}>
                   {showDivider && <DateDivider iso={firstMsg.createdAt} />}
+                  {gi === unreadGroupIndex && <UnreadDivider />}
                   {group.map((m, i) => (
                     <ErrorBoundary
                       key={m.id}
@@ -1493,8 +1640,7 @@ function Scroller({
                           isDM1to1 &&
                           m.authorId === selfId &&
                           !m.type.startsWith('system_') &&
-                          (m.id === dmReceiptAnchors.latest ||
-                            m.id === dmReceiptAnchors.lastRead)
+                          m.id === dmReceiptAnchor
                         }
                       />
                     </ErrorBoundary>
@@ -1522,6 +1668,26 @@ function Scroller({
           <span>New messages</span>
         </button>
       )}
+    </div>
+  );
+}
+
+/**
+ * Red "New messages" separator marking where the user last left off —
+ * iOS parity (MessageViews.swift UnreadDividerView): a danger-red
+ * hairline with a bold 10px label at its right end. Anchored at the
+ * boundary frozen when the channel was opened, so it stays put while
+ * the auto-ack advances the server-side read marker.
+ */
+function UnreadDivider() {
+  return (
+    <div
+      className="flex items-center gap-2 py-[3px] select-none"
+      role="separator"
+      aria-label="New messages"
+    >
+      <div className="flex-1 h-px bg-red-400" />
+      <span className="text-[10px] font-bold text-red-400 shrink-0">New messages</span>
     </div>
   );
 }
@@ -2033,7 +2199,10 @@ function Composer({
             @{replyTo.author?.displayName ?? replyTo.author?.username ?? 'unknown'}
           </span>
           <span className="text-ink-2 truncate flex-1 min-w-0">
-            {replyTo.content || (replyTo.attachments && replyTo.attachments.length > 0 ? '(attachment)' : '')}
+            {/* Same preview rules as the in-stream quote bar: never the raw
+                E2EE wire string (cached plaintext or a lock label instead),
+                plus typed sticker/voice/attachment/poll fallbacks. */}
+            {replyPreviewText(replyTo)}
           </span>
           <button
             type="button"

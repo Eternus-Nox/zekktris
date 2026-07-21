@@ -11,7 +11,7 @@
  *     ring — the same visual cue used elsewhere for "active voice
  *     transmission."
  *   - Display name + "Incoming call…" subtitle.
- *   - Two large buttons: green Answer (Phone) and red Decline (X).
+ *   - Two large buttons: green Answer (Phone) and red Decline (PhoneOff).
  *   - Backdrop click is NOT a dismiss — accidental backdrop taps
  *     shouldn't drop a call. Use Decline explicitly.
  *   - Esc-to-decline IS supported as a keyboard escape hatch.
@@ -38,7 +38,7 @@ import { clearCallNotification } from '../lib/clearCallNotification';
 import { startRingtone, stopRingtone } from '../lib/sounds';
 import { showDesktopNotification } from '../lib/desktopNotify';
 import { getNotifyPrefs } from '../lib/notifyPrefs';
-import { Phone, X } from '../lib/icons';
+import { Phone, PhoneOff } from '../lib/icons';
 import { AvatarImage } from '../lib/AvatarImage';
 import { avatarColor } from '../lib/avatar';
 import { Portal } from '../lib/Portal';
@@ -389,7 +389,9 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
               className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-full bg-red-500/15 hover:bg-red-500/25 border border-red-500/40 text-red-300 text-sm font-medium transition-colors"
               aria-label="Decline call"
             >
-              <X size={16} />
+              {/* Phone-down glyph, not an X (iOS parity: Decline is
+                  phone.down.fill in a danger circle). */}
+              <PhoneOff size={16} />
               <span>Decline</span>
             </button>
             <button

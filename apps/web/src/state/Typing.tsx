@@ -2,8 +2,9 @@
  * Typing context
  * --------------
  * Tracks who's typing in each channel. Lives outside AppState because the
- * data is ephemeral (auto-expires after 5s) and not part of any persisted
- * shape — it doesn't belong in the same reducer.
+ * data is ephemeral (auto-expires after 8s, or the moment the typist's
+ * message arrives) and not part of any persisted shape — it doesn't
+ * belong in the same reducer.
  *
  * Sender side: a `useTypingPing(channelId)` hook returns a function that
  * fires `POST /channels/:id/typing` at most once every 4s. Components
@@ -28,7 +29,11 @@ import {
 import { GatewayEvent } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 
-const TYPING_TTL_MS = 5_000;
+// Receiver-side expiry window after the last TYPING_START. 8s matches
+// iOS (AppStore.handleTypingStart) so all clients drop a stalled typist
+// at the same moment. Senders ping every 3-4s, so a live typist always
+// refreshes well inside the window.
+const TYPING_TTL_MS = 8_000;
 const PING_INTERVAL_MS = 4_000;
 
 interface TypingState {
@@ -88,8 +93,24 @@ export function TypingProvider({ children }: { children: ReactNode }) {
         setRev((v) => v + 1);
       },
     );
+    // A user's message supersedes their typing indicator (iOS parity —
+    // AppStore clears the entry the moment their MESSAGE_CREATE lands).
+    // Without this, "X is typing…" lingers up to TYPING_TTL_MS after
+    // the message is already on screen.
+    const unsubscribeMsg = gateway.on<{ channelId: string; authorId?: string | null }>(
+      GatewayEvent.MESSAGE_CREATE,
+      (m) => {
+        if (!m.authorId) return;
+        const users = stateRef.current.byChannel.get(m.channelId);
+        if (users?.delete(m.authorId)) {
+          if (users.size === 0) stateRef.current.byChannel.delete(m.channelId);
+          setRev((v) => v + 1);
+        }
+      },
+    );
     return () => {
       unsubscribe();
+      unsubscribeMsg();
       // Wipe typing state on auth change so a logout → relogin
       // cycle doesn't surface up to TYPING_TTL_MS of stale
       // indicators from the previous user's session before the

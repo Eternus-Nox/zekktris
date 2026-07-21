@@ -348,9 +348,11 @@ export function ProfileCard({
   // a reason + optional details before filing a report against this user.
   const [reportPromptOpen, setReportPromptOpen] = useState(false);
   const [reportPending, setReportPending] = useState(false);
+  // No reason pre-selected — like iOS (ReportUserSheet), the reporter must
+  // actively pick one AND describe what happened before Submit enables.
   const [reportReason, setReportReason] = useState<
-    'spam' | 'harassment' | 'nsfw' | 'violence' | 'other'
-  >('harassment');
+    '' | 'spam' | 'harassment' | 'nsfw' | 'violence' | 'other'
+  >('');
   const [reportDetails, setReportDetails] = useState('');
 
   /** Save (or clear) the personal DM nickname — viewer-private, shown in DMs. */
@@ -443,21 +445,23 @@ export function ProfileCard({
 
   // File a report against this user. Only meaningful in a guild context (the
   // report route is scoped to a guild); the button that opens this is gated on
-  // targetMember being present. Reason is required; details optional.
+  // targetMember being present. Reason AND details are both required —
+  // mirrors iOS ReportUserSheet's canSubmit gate.
   async function submitReport() {
-    if (!guildId || reportPending) return;
+    const trimmed = reportDetails.trim();
+    if (!guildId || reportPending || !reportReason || trimmed.length === 0) return;
     setReportPending(true);
     try {
-      const trimmed = reportDetails.trim();
       await rest.createReport(guildId, {
         targetType: 'user',
         targetUserId: user.id,
         reason: reportReason,
-        ...(trimmed.length > 0 ? { details: trimmed } : {}),
+        details: trimmed,
       });
       toasts.push(`Report submitted for ${user.displayName}`, 'success');
       setReportPromptOpen(false);
       setReportDetails('');
+      setReportReason('');
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Could not submit report', 'error');
     } finally {
@@ -679,12 +683,17 @@ export function ProfileCard({
       ? memberDisplayColor(allRoles, guildId, targetMember.roleIds)
       : null;
 
+  // Live presence — the `user` prop is a snapshot from click time, but
+  // PRESENCE_PATCH keeps state.userStatusById fresh; read through it so the
+  // dot tracks status changes while the card is open (mirrors iOS
+  // store.status(for:fallback:), MessageViews.swift liveStatus).
+  const liveStatus = state.userStatusById[user.id] ?? user.status;
   const dotColor =
-    user.status === 'online'
+    liveStatus === 'online'
       ? 'bg-emerald-500'
-      : user.status === 'idle'
+      : liveStatus === 'idle'
         ? 'bg-amber-500'
-        : user.status === 'dnd'
+        : liveStatus === 'dnd'
           ? 'bg-red-500'
           : 'bg-ink-3';
 
@@ -902,7 +911,7 @@ export function ProfileCard({
                 <button
                   disabled={pending}
                   onClick={() => void acceptRequest()}
-                  className="flex items-center gap-2 px-3 py-2 rounded-md bg-emerald-700 hover:bg-emerald-600 text-sm font-medium text-white transition-colors disabled:opacity-60"
+                  className="flex items-center gap-2 px-3 py-2 rounded-md bg-bg-3 hover:bg-bg-3/80 text-sm font-medium text-ink-1 transition-colors disabled:opacity-60"
                 >
                   <UserPlus size={14} />
                   <span>Accept friend request</span>
@@ -943,7 +952,7 @@ export function ProfileCard({
                 <button
                   disabled={pending}
                   onClick={() => void block()}
-                  className="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-red-950/40 text-sm font-medium text-red-400 transition-colors disabled:opacity-60"
+                  className="flex items-center gap-2 px-3 py-2 rounded-md bg-bg-3 hover:bg-red-950/40 text-sm font-medium text-red-400 transition-colors disabled:opacity-60"
                 >
                   <Shield size={14} />
                   <span>Block</span>
@@ -974,6 +983,9 @@ export function ProfileCard({
                     onChange={(e) => setReportReason(e.target.value as typeof reportReason)}
                     className="w-full px-3 py-1.5 bg-bg-2 border border-line rounded-md text-sm outline-none focus:border-red-400"
                   >
+                    <option value="" disabled>
+                      Choose a reason
+                    </option>
                     <option value="spam">Spam</option>
                     <option value="harassment">Harassment</option>
                     <option value="nsfw">NSFW</option>
@@ -984,14 +996,19 @@ export function ProfileCard({
                     type="text"
                     value={reportDetails}
                     onChange={(e) => setReportDetails(e.target.value)}
-                    maxLength={512}
-                    placeholder="Add details (optional)"
+                    maxLength={1000}
+                    placeholder="Describe why you're reporting this user…"
                     className="w-full px-3 py-1.5 bg-bg-2 border border-line rounded-md text-sm outline-none focus:border-red-400"
                   />
+                  <div className="text-[11px] text-ink-3 text-right">
+                    {reportDetails.length}/1000
+                  </div>
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      disabled={reportPending}
+                      disabled={
+                        reportPending || !reportReason || reportDetails.trim().length === 0
+                      }
                       onClick={() => void submitReport()}
                       className="flex-1 px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-700 text-white text-sm font-medium disabled:opacity-60"
                     >
@@ -1010,10 +1027,11 @@ export function ProfileCard({
               )}
 
               {/* Private DM nickname ("only you") — a viewer-private label
-                  shown for this person in DMs. Only in the friends list + DMs
-                  (guildId unset), never in a server context. (Server nicknames
-                  were removed.) */}
-              {!user.isBot && !guildId &&
+                  shown for this person in DMs. The entry point is available on
+                  any other non-bot user's card, including cards opened from a
+                  server (mirrors iOS); the nickname itself still only renders
+                  in DMs. (Server/member nicknames were removed — don't re-add.) */}
+              {!user.isBot &&
                 (editingDmNick ? (
                   <div className="flex items-center gap-1.5">
                     <input
