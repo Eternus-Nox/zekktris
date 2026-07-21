@@ -17,7 +17,7 @@
 import { lazy, Suspense, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError, type Channel, type Guild } from '@zekktris/client';
-import { useAppStateSelector, isChannelUnread, channelMentionCount, isChannelMuted, effectiveNotificationLevel } from '../state/AppState';
+import { useAppStateSelector, isChannelUnread, channelMentionCount, effectiveNotificationLevel } from '../state/AppState';
 import { useAuth } from '../auth/AuthContext';
 import { useToasts } from '../state/Toasts';
 // Lazy-loaded: this modal (and its role/member/automod editors) is ~120 KB and
@@ -60,10 +60,9 @@ export function ChannelList({ guild, channels, activeChannelId, onOpenMembers }:
   // the list container; the local `appState` keeps existing reads unchanged.
   const membersByGuild = useAppStateSelector((v) => v.state.membersByGuild);
   const rolesByGuild = useAppStateSelector((v) => v.state.rolesByGuild);
-  const notificationOverrides = useAppStateSelector((v) => v.state.notificationOverrides);
   const loadRoles = useAppStateSelector((v) => v.loadRoles);
   const applyChannelReorder = useAppStateSelector((v) => v.applyChannelReorder);
-  const appState = { membersByGuild, rolesByGuild, notificationOverrides };
+  const appState = { membersByGuild, rolesByGuild };
   const toasts = useToasts();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [showSettings, setShowSettings] = useState(false);
@@ -229,32 +228,10 @@ export function ChannelList({ guild, channels, activeChannelId, onOpenMembers }:
                 (a hard single-line truncate cut them off); the wider rail
                 gives most names one line. */}
             <span className="line-clamp-2 break-words">{guild.name}</span>
-            {/* Guild-level mute indicator. Renders ONCE here when the
-                user has muted the whole server, instead of stamping
-                the same icon on every channel row in the list below.
-                Channel-specific mutes still show their own icon next
-                to the channel name (see ChannelRow). */}
-            {appState.notificationOverrides[`guild:${guild.id}`] === 'nothing' && (
-              <svg
-                width="11"
-                height="11"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="text-ink-3 shrink-0"
-                aria-label="Server muted"
-              >
-                <title>Server muted</title>
-                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                <path d="M18.63 13A17.89 17.89 0 0 1 18 8" />
-                <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14" />
-                <path d="M18 8a6 6 0 0 0-9.33-5" />
-                <line x1="1" y1="1" x2="23" y2="23" />
-              </svg>
-            )}
+            {/* No guild-muted glyph here — iOS parity. iOS surfaces a
+                server mute only inside the rail context menu / info
+                sheet (MainView.swift guildButton + guild info), never
+                as a passive indicator next to the guild name. */}
           </span>
           <ChevronDown
             size={16}
@@ -643,25 +620,20 @@ function TextChannelRow({
   const toasts = useToasts();
   const navigate = useNavigate();
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
-  // Mute suppresses the dimmer "unread" treatment but does NOT hide
-  // mention badges — Discord's behaviour. The user opted out of being
-  // distracted by every message, but explicit @-pings still surface.
-  const muted = isChannelMuted(state.notificationOverrides, channel.id, channel.guildId ?? null);
-  // Explicit channel-level mute vs guild-inherited. The per-row
-  // bell-off icon should only render when this channel itself is
-  // overridden to 'nothing' — if the muting comes from a
-  // guild-wide mute, the indicator lives next to the guild title
-  // (see ChannelList header) so we don't repeat it on every row.
-  const channelExplicitlyMuted =
-    state.notificationOverrides[`channel:${channel.id}`] === 'nothing';
   // Per-channel primitives — this row re-renders only when ITS unread flag or
   // mention count changes (the selected boolean/number is reference-stable),
   // not on every message in any channel.
-  const rawUnread = useAppStateSelector(
+  //
+  // iOS parity: mute is a NOTIFICATION setting only, with no row
+  // presentation — iOS ChannelRowLabel takes no muted flag and
+  // channelRow passes `unread: store.isChannelUnread(channel)`
+  // unconditionally (MainView.swift channelRow/ChannelRowLabel), so
+  // muted channels keep their unread dot / bold treatment and show no
+  // bell-slash glyph. Mute state surfaces only in the context menu.
+  const unread = useAppStateSelector(
     (v) => !active && isChannelUnread(channel, v.state.readStateByChannel),
   );
   const mentions = useAppStateSelector((v) => channelMentionCount(channel.id, v.state.readStateByChannel));
-  const unread = muted ? false : rawUnread;
 
   const lastMessageId = channel.lastMessageId ?? null;
 
@@ -756,29 +728,6 @@ function TextChannelRow({
           )}
         </span>
         <span className="truncate flex-1">{channel.name ?? '(unnamed)'}</span>
-        {channelExplicitlyMuted && (
-          // Subtle bell-with-strike glyph beside the channel name when
-          // muted — gives users a permanent reminder of why they're
-          // not seeing pings on this row.
-          <svg
-            width="10"
-            height="10"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="text-ink-3 shrink-0 group-hover/row:hidden"
-            aria-label="Muted"
-          >
-            <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-            <path d="M18.63 13A17.89 17.89 0 0 1 18 8" />
-            <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14" />
-            <path d="M18 8a6 6 0 0 0-9.33-5" />
-            <line x1="1" y1="1" x2="23" y2="23" />
-          </svg>
-        )}
         {mentions > 0 ? (
           <span className="text-[0.65rem] font-bold bg-red-500 text-white rounded-full min-w-[1.1rem] h-[1.1rem] px-1 flex items-center justify-center group-hover/row:hidden">
             {mentions > 99 ? '99+' : mentions}
@@ -810,7 +759,7 @@ function TextChannelRow({
           items={[
             {
               label: 'Mark as read',
-              disabled: !lastMessageId || !rawUnread,
+              disabled: !lastMessageId || !unread,
               onClick: () => {
                 if (!lastMessageId) return;
                 void ackChannel(channel.id, lastMessageId).catch(() => {

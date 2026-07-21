@@ -361,22 +361,23 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
   const toasts = useToasts();
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
   const [deleting, setDeleting] = useState(false);
-  // DMs don't have a guildId, so only per-channel mute applies. Same
-  // rule as ChannelRow: muted suppresses the "unread" dimming but
-  // mention badges still show.
+  // DMs don't have a guildId, so only per-channel mute applies. `muted`
+  // drives ONLY the context-menu label — iOS parity: mute is a
+  // notification setting with no row presentation (DMRow in
+  // MainView.swift reads `store.isChannelUnread(dm)` unconditionally),
+  // so muted DMs keep their unread dot / bold name.
   const muted = isChannelMuted(state.notificationOverrides, channel.id, null);
   // Per-channel selectors returning primitives (mirrors ChannelRow in
   // ChannelList.tsx): useContextSelector bails unless THIS DM's own unread
   // flag / mention count changes, instead of re-rendering every visible DM row
   // whenever the whole readStateByChannel map's reference flips (any message
   // anywhere).
-  const rawUnread = useAppStateSelector(
+  const unread = useAppStateSelector(
     (v) => !active && isChannelUnread(channel, v.state.readStateByChannel),
   );
   const mentions = useAppStateSelector((v) =>
     channelMentionCount(channel.id, v.state.readStateByChannel),
   );
-  const unread = muted ? false : rawUnread;
   const lastMessageId = channel.lastMessageId ?? null;
   // Resolve the displayed recipient. Priority order:
   //   1. channel.recipients (server-provided, excludes self) — the
@@ -495,8 +496,9 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
           <DmStreakPill streak={channel.streak} className="-ml-1" />
         )}
         {/* Spacer pushes the mention/unread indicators to the right edge.
-            iOS conveys mute purely via the dimmed / no-unread treatment,
-            so we don't render a separate muted glyph here (parity). */}
+            No muted glyph and no mute-driven dimming — iOS parity: its
+            DMRow renders muted conversations identically to unmuted ones
+            (mute only changes what notifies, not how the row looks). */}
         <span className="flex-1" />
         {mentions > 0 ? (
           <span className="text-[0.65rem] font-bold bg-red-500 text-white rounded-full min-w-[1.1rem] h-[1.1rem] px-1 flex items-center justify-center">
@@ -513,7 +515,7 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
           items={[
             {
               label: 'Mark as read',
-              disabled: !lastMessageId || !rawUnread,
+              disabled: !lastMessageId || !unread,
               onClick: () => {
                 if (!lastMessageId) return;
                 void ackChannel(channel.id, lastMessageId).catch(() => {
