@@ -235,6 +235,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     document.addEventListener('visibilitychange', onVisibility);
 
+    // visibilitychange alone is a DEAD SIGNAL on the desktop app. In Electron
+    // an unfocused-but-visible window (the common case: Zekktris behind the
+    // browser on a second monitor, or the machine waking from sleep with the
+    // window still mapped) never fires it, so a zombie gateway socket sat
+    // undetected until the ~40s heartbeat watchdog — or forever, since a socket
+    // that dies while unfocused has nothing else to kick it. Meanwhile LiveKit
+    // keeps its own connection alive and keeps delivering audio, which is
+    // exactly how you end up hearing someone you cannot see.
+    //
+    // 'focus' fires reliably in Electron on window activation and after wake;
+    // 'online' covers a dropped-then-restored network. forceReconnect() is a
+    // no-op when the socket is already healthy, so extra firings are free.
+    function onWake() {
+      gateway.forceReconnect();
+    }
+    window.addEventListener('focus', onWake);
+    window.addEventListener('online', onWake);
+
     // Fast disconnect on tab close: when the user closes the tab/app,
     // fire a synchronous beacon to the API so the server marks them
     // offline immediately rather than waiting out the 40-second
@@ -260,6 +278,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', onWake);
+      window.removeEventListener('online', onWake);
       window.removeEventListener('pagehide', onPageHide);
       gateway.stop();
     };

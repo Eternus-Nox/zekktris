@@ -2025,6 +2025,19 @@ export class RestClient {
     return this.request('POST', `/channels/${channelId}/voice/join`);
   }
 
+  /**
+   * Current occupants of a voice channel. Read-only and side-effect free, so
+   * it is safe to poll while in a call.
+   *
+   * Exists because the roster is otherwise event-only: one missed
+   * VOICE_STATE_UPDATE leaves someone audible but invisible with nothing to
+   * heal it. Gated on VIEW_CHANNEL (not CONNECT) — seeing who is in a channel
+   * is what the channel list already shows.
+   */
+  listVoiceStates(channelId: string): Promise<{ voiceStates: VoiceState[] }> {
+    return this.request('GET', `/channels/${channelId}/voice/states`);
+  }
+
   /** Update self-mute / self-deaf flags on the user's current voice state. */
   updateVoiceState(
     channelId: string,

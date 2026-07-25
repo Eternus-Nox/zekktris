@@ -2574,6 +2574,60 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   );
 
   /**
+   * IN-CALL ROSTER RECONCILE — the missing safety net.
+   *
+   * The voice roster was EVENT-ONLY: built from VOICE_STATE_UPDATE frames plus
+   * the snapshot in your own join response. Messages have three layers of
+   * catch-up (3s poll, focus refetch, resume reconcile); voice states had ZERO.
+   * So a single dropped frame left a participant permanently invisible while
+   * their audio played — LiveKit is a separate transport with its own
+   * reconnect, which is exactly why you can hear someone you cannot see.
+   *
+   * While connected to a voice channel this re-reads the authoritative roster
+   * every 10s, and immediately on window focus and on regaining network. The
+   * GET is side-effect free and the merge is idempotent, so a redundant call
+   * costs one small query and changes nothing.
+   *
+   * 10s, not 3s: unlike messages (where staleness is read as "my message never
+   * sent"), a roster row is low-stakes and this runs for the whole call.
+   * Focus/online cover the case that actually bites — a desktop window that sat
+   * unfocused while the gateway went quiet.
+   */
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+
+    const reconcile = async (): Promise<void> => {
+      try {
+        // Dynamic import, matching the other voice touchpoints in this file —
+        // a static one would create an AppState <-> voice cycle.
+        const voiceMod = await import('../lib/voice');
+        const channelId = voiceMod.getConnectedChannelId();
+        if (!channelId || cancelled) return;
+        const { voiceStates } = await rest.listVoiceStates(channelId);
+        if (cancelled) return;
+        // Re-check the channel: a leave/switch can land mid-flight, and
+        // applying a stale channel's roster would resurrect ghosts.
+        if (voiceMod.getConnectedChannelId() !== channelId) return;
+        dispatch({ type: 'VOICE_STATES_MERGE_CHANNEL', channelId, voiceStates });
+      } catch {
+        // Best-effort: a failed reconcile leaves the event-driven state as-is.
+      }
+    };
+
+    const id = window.setInterval(() => void reconcile(), 10_000);
+    const onFocus = (): void => void reconcile();
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('online', onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('online', onFocus);
+    };
+  }, [token, rest]);
+
+  /**
    * Toggle the saved state of a message. Optimistic dispatch first
    * (the bookmark icon flips immediately), then REST. On failure,
    * roll back the dispatch and toast.

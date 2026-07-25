@@ -24,6 +24,14 @@ import * as voice from '../services/voice';
 import * as dispatch from '../gateway/dispatch';
 import { getChannel } from '../services/channels';
 import { getOtherRecipient } from '../services/dms';
+import * as dms from '../services/dms';
+import { errors } from '../errors';
+import {
+  ensureMember,
+  hasPermission,
+  computeMemberChannelPermissions,
+  Permissions,
+} from '../services/permissions';
 import { sendToUser } from '../services/push';
 import { db, schema } from '../db';
 
@@ -61,6 +69,56 @@ async function dispatchSystemCallMessage(
     guildId: null,
   });
 }
+
+// ── Roster snapshot (read-only) ─────────────────────────────────────────────
+
+/**
+ * GET /channels/:channelId/voice/states — who is in this voice channel, now.
+ *
+ * The roster is otherwise EVENT-ONLY: clients build it from VOICE_STATE_UPDATE
+ * frames plus the snapshot embedded in their own join response. That means a
+ * single missed frame leaves a participant permanently invisible — you hear
+ * them (LiveKit is a separate transport with its own reconnect) but never see
+ * them, with nothing to heal it short of rejoining. Messages have three layers
+ * of catch-up; voice states had none.
+ *
+ * This is that missing layer. Deliberately a plain GET with no side effects, so
+ * it is safe to poll while in a call and safe to call from a reconcile path.
+ *
+ * PERMISSION: VIEW_CHANNEL only — NOT CONNECT. Seeing who is in a channel is
+ * exactly what the channel list already shows; requiring CONNECT would hide the
+ * roster from members who can look but not join. The join route keeps its
+ * stricter gate (CONNECT + onboarding + timeout) because joining is an action.
+ */
+voiceRouter.get(
+  '/:channelId/voice/states',
+  validate('param', z.object({ channelId: snowflakeSchema })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const channelId = BigInt(c.req.valid('param').channelId);
+
+    const channel = await getChannel(channelId);
+    if (!channel) throw errors.notFound('Voice channel');
+    const isDmVoice = channel.type === 'dm' || channel.type === 'group_dm';
+    if (!isDmVoice && channel.type !== 'guild_voice') throw errors.notFound('Voice channel');
+
+    if (isDmVoice) {
+      // Recipient-only, same as the join gate's first check. The richer
+      // block/supervision/reachability policy joinVoice applies is about
+      // STARTING or ANSWERING a call; reading the roster of a DM you are a
+      // recipient of leaks nothing you cannot already see in the DM itself.
+      await dms.ensureRecipient(channelId, userId);
+    } else {
+      if (!channel.guildId) throw errors.internal('Voice channel without guild');
+      await ensureMember(channel.guildId, userId);
+      const perms = await computeMemberChannelPermissions(channelId, userId);
+      if (!hasPermission(perms, Permissions.VIEW_CHANNEL)) throw errors.notFound('Voice channel');
+    }
+
+    const states = await voice.listChannelVoiceStates(channelId);
+    return c.json({ voiceStates: states.map(toVoiceState) });
+  },
+);
 
 // ── Join ────────────────────────────────────────────────────────────────────
 
