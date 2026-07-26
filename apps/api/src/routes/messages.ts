@@ -484,7 +484,19 @@ messagesRouter.get(
   async (c) => {
     const userId = requireUserId(c);
     const channelId = BigInt(c.req.valid('param').channelId);
-    await loadChannelContext(channelId, userId);
+    const ctx = await loadChannelContext(channelId, userId);
+
+    // READ_MESSAGE_HISTORY, same gate as list-messages (:1509-1513). This route
+    // returns attachments from the channel's ENTIRE history, so without it a
+    // member who can see the channel but is denied history could page the whole
+    // media archive — strictly more than the messages endpoint would give them.
+    // The context was already being loaded here and then thrown away.
+    if (!ctx.isDM && ctx.channelPerms !== null) {
+      if (!hasPermission(ctx.channelPerms, Permissions.READ_MESSAGE_HISTORY)) {
+        throw errors.missingPermissions(['READ_MESSAGE_HISTORY']);
+      }
+    }
+
     const q = c.req.valid('query');
     const rows = await messages.listChannelAttachments(channelId, {
       before: q.before ? BigInt(q.before) : undefined,

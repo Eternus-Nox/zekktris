@@ -487,7 +487,14 @@ type Action =
   // call when a channel loads, and toggled via the per-message
   // bookmark button.
   | { type: 'SAVED_HYDRATE'; messageIds: string[] }
-  | { type: 'SAVED_TOGGLE'; messageId: string; saved: boolean };
+  | { type: 'SAVED_TOGGLE'; messageId: string; saved: boolean }
+  // Wipe everything back to initialState. Dispatched when the signed-in
+  // identity changes (sign-out, or switching accounts). Without it this
+  // provider stays mounted across a logout and the NEXT account inherits the
+  // previous one's guilds, channels, messages, member lists and read states
+  // until each is individually refetched — a cross-account data leak on any
+  // shared machine, and visibly wrong in the seconds before hydration lands.
+  | { type: 'RESET' };
 
 // Cap messages-per-channel to keep memory bounded. For v1 we don't have
 // virtualized scrolling, so 200 is plenty for the visible buffer; older
@@ -613,6 +620,8 @@ function applyReactionDelta(
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
+    case 'RESET':
+      return initialState;
     case 'GUILDS_SET': {
       const guildsById: Record<string, Guild> = {};
       for (const g of action.guilds) guildsById[g.id] = g;
@@ -2111,6 +2120,29 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const { rest, gateway, token, user } = useAuth();
   const toasts = useToasts();
   const [state, dispatch] = useReducer(reducer, initialState);
+
+  // Wipe all cached state when the signed-in identity changes.
+  //
+  // This provider stays MOUNTED across sign-out (only the routed children swap),
+  // so without this the reducer kept the previous account's guilds, channels,
+  // messages, member lists and read states. Sign out, sign in as someone else,
+  // and you were looking at the last user's data until each slice happened to be
+  // refetched — a cross-account leak on any shared machine.
+  //
+  // Keyed on user id, not on a logout callback, so it also covers the
+  // switch-account path (A -> B with no intervening null) and a token swap.
+  // The ref keeps the very first identity from firing a pointless reset.
+  const lastIdentityRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const identity = user?.id ?? null;
+    if (lastIdentityRef.current === undefined) {
+      lastIdentityRef.current = identity;
+      return;
+    }
+    if (lastIdentityRef.current === identity) return;
+    lastIdentityRef.current = identity;
+    dispatch({ type: 'RESET' });
+  }, [user?.id]);
   // Mirror state into a ref so async callbacks can guard against re-
   // entrancy without the closure pinning a stale value. React doesn't
   // expose a "read latest state" primitive synchronously inside a
