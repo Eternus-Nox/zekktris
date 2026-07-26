@@ -83,6 +83,35 @@ function extractUrls(text: string): string[] {
   return out;
 }
 
+// ── Channel mentions ──────────────────────────────────────────────────────
+// `<#123>` tokens in a message body — the same token lib/markdown.tsx turns
+// into a channel chip (its group 8). We extract the ids per row so the row can
+// resolve ONLY the channels it actually references out of AppState, instead of
+// subscribing to the whole `state.channelsByGuild` map. That map's reference is
+// replaced on EVERY message in EVERY guild channel (the lastMessageId bump in
+// bumpGuildRecency rebuilds it), so subscribing to it re-rendered — and
+// re-ran the markdown/mention parse for — every mounted MessageItem on every
+// single incoming message. The overwhelming majority of messages mention no
+// channel at all, so the narrow subscription below settles on a constant.
+const CHANNEL_MENTION_RE = /<#(\d+)>/g;
+/** Stable empty results so the "no mentions" path never flips a reference. */
+const NO_MENTION_IDS: string[] = [];
+type MentionedChannel = { channel: Channel; guildId: string };
+const NO_MENTIONED_CHANNELS: Record<string, MentionedChannel> = {};
+
+function channelMentionIds(text: string): string[] {
+  // Cheap bail before touching the regex — nearly every message takes it.
+  if (!text.includes('<#')) return NO_MENTION_IDS;
+  const out: string[] = [];
+  CHANNEL_MENTION_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = CHANNEL_MENTION_RE.exec(text)) !== null) {
+    const id = m[1]!;
+    if (!out.includes(id)) out.push(id);
+  }
+  return out.length > 0 ? out : NO_MENTION_IDS;
+}
+
 /**
  * One-line preview of a reply's parent message — shared by the in-stream
  * quote bar and the composer's reply chip. Mirrors iOS replyPreviewText
@@ -131,7 +160,13 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   const membersByGuild = useAppStateSelector((v) => v.state.membersByGuild);
   const rolesByGuild = useAppStateSelector((v) => v.state.rolesByGuild);
   const relationships = useAppStateSelector((v) => v.state.relationships);
-  const channelsByGuild = useAppStateSelector((v) => v.state.channelsByGuild);
+  // NOTE: deliberately NOT subscribing to state.channelsByGuild here. The
+  // reducer replaces that map on every message received in any guild channel
+  // (forward-only lastMessageId bump), so a whole-map subscription invalidated
+  // every mounted MessageItem — the hottest render path in the app — on every
+  // single message. Everything this row needed from it is now derived from the
+  // `channel` prop, or read through the narrow per-message selectors below
+  // (mentioned channels, anchored thread).
   // Parental control: a supervised child's message views mask swear words.
   const filterProfanity = useAppStateSelector(
     (v) => v.state.supervision?.restrictions?.filterProfanity ?? false,
@@ -277,61 +312,10 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
     isUserBlocked(relationships, author.id) &&
     !revealed;
 
-  // Build the lookup context for renderMessageContent. We re-bind only when
-  // the underlying maps change — usersById/channelsByGuild are stable
-  // references between most renders thanks to the reducer's structural
-  // sharing.
-  const renderCtx = useMemo(
-    () => {
-      // Channel may be a DM (no guildId) — DMs don't have custom emoji
-      // since emoji are guild-scoped, so `lookupEmoji` returns undefined
-      // and `:name:` tokens stay as text. For guild channels, we look
-      // up `message.channelId`'s owning guild to find the right emoji
-      // index.
-      // The message's channel is the one being viewed (the `channel` prop), so
-      // there's no need to scan every guild's channel list to find it — pure
-      // waste on every row, and in a DM the scan always finds nothing. DMs have
-      // no custom (guild) emoji, so guildEmojis is undefined there.
-      const guildEmojis =
-        channel?.guildId != null ? emojisByGuild[channel.guildId] : undefined;
-
-      return {
-        // usersById is seeded only from message authors, so a DM mention of
-        // someone who hasn't sent a loaded message would miss → "@unknown".
-        // Fall back to the DM recipients and this message's author so DM
-        // mentions resolve to the real name.
-        lookupUser: (id: string) =>
-          usersById[id] ??
-          channel?.recipients?.find((r) => r.id === id) ??
-          (message.author?.id === id ? message.author : undefined),
-        lookupChannel: (id: string) => {
-          // Search every guild's channel list. This is O(guilds) which is
-          // small in practice; worth the simplicity over building a global
-          // channel cache for v1.
-          for (const list of Object.values(channelsByGuild)) {
-            const found = list.find((c) => c.id === id);
-            if (found) return found;
-          }
-          return undefined;
-        },
-        selfUserId: selfId,
-        onChannelClick: (channelId: string) => {
-          // Find the guild that owns the channel so we can build the URL.
-          for (const [guildId, list] of Object.entries(channelsByGuild)) {
-            if (list.some((c) => c.id === channelId)) {
-              nav(`/channels/${guildId}/${channelId}`);
-              return;
-            }
-          }
-        },
-        onUserClick: onAvatarClick,
-        lookupEmoji: guildEmojis
-          ? (name: string) => guildEmojis.find((e) => e.name === name)
-          : undefined,
-      };
-    },
-    [usersById, channelsByGuild, emojisByGuild, selfId, nav, message.channelId, message.author, channel?.guildId, channel?.recipients, onAvatarClick],
-  );
+  // (renderCtx — the lookup context handed to renderMessageContent — is built
+  // further down, right above `renderedContent`. It needs `displayContent`
+  // (the decrypted body for E2EE rows) to know which channel mentions to
+  // resolve, so it can't be assembled until decryption has been classified.)
 
   // ── E2EE decryption ─────────────────────────────────────────────────────
   // If the content is wrapped in our `zkE2EE/1:` wire format, attempt
@@ -481,6 +465,95 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   const displayContent = decryption.isEncrypted
     ? decryption.plaintext ?? ''
     : message.content;
+
+  // ── Channel-mention resolution ─────────────────────────────────────────
+  // Resolve ONLY the channels THIS message mentions, instead of subscribing
+  // to the whole channelsByGuild map (see the note at the top of the hook
+  // block). Almost every message mentions none, in which case the selector
+  // returns a module-level constant and never re-renders the row.
+  //
+  // The selector's RESULT is what useContextSelector compares (Object.is), so
+  // the built map has to be reference-stable across dispatches that didn't
+  // change anything we read. We memoise it behind a signature covering
+  // exactly what a mentioned channel contributes to the render: its id, its
+  // owning guild (for the click target) and its name (for the chip label).
+  const mentionedChannelIds = useMemo(
+    () => channelMentionIds(displayContent),
+    [displayContent],
+  );
+  const mentionedChannelsCache = useRef<{ sig: string; value: Record<string, MentionedChannel> }>({
+    sig: '',
+    value: NO_MENTIONED_CHANNELS,
+  });
+  const mentionedChannels = useAppStateSelector((v) => {
+    if (mentionedChannelIds.length === 0) return NO_MENTIONED_CHANNELS;
+    const value: Record<string, MentionedChannel> = {};
+    let sig = '';
+    for (const id of mentionedChannelIds) {
+      for (const [gid, list] of Object.entries(v.state.channelsByGuild)) {
+        const found = list.find((c) => c.id === id);
+        if (!found) continue;
+        value[id] = { channel: found, guildId: gid };
+        sig += `${id} ${gid} ${found.name ?? ''}`;
+        break;
+      }
+    }
+    // Nothing resolved → sig stays '' → falls back to the initial cache entry,
+    // which is the shared empty map. Correct: there is nothing to look up.
+    const cached = mentionedChannelsCache.current;
+    if (cached.sig === sig) return cached.value;
+    mentionedChannelsCache.current = { sig, value };
+    return value;
+  });
+
+  // Build the lookup context for renderMessageContent. We re-bind only when
+  // the underlying maps change — usersById/emojisByGuild are stable
+  // references between most renders thanks to the reducer's structural
+  // sharing, and mentionedChannels is the signature-memoised narrow slice
+  // built just above.
+  const renderCtx = useMemo(
+    () => {
+      // Channel may be a DM (no guildId) — DMs don't have custom emoji
+      // since emoji are guild-scoped, so `lookupEmoji` returns undefined
+      // and `:name:` tokens stay as text. For guild channels, we look
+      // up `message.channelId`'s owning guild to find the right emoji
+      // index.
+      // The message's channel is the one being viewed (the `channel` prop), so
+      // there's no need to scan every guild's channel list to find it — pure
+      // waste on every row, and in a DM the scan always finds nothing. DMs have
+      // no custom (guild) emoji, so guildEmojis is undefined there.
+      const guildEmojis =
+        channel?.guildId != null ? emojisByGuild[channel.guildId] : undefined;
+
+      return {
+        // usersById is seeded only from message authors, so a DM mention of
+        // someone who hasn't sent a loaded message would miss → "@unknown".
+        // Fall back to the DM recipients and this message's author so DM
+        // mentions resolve to the real name.
+        lookupUser: (id: string) =>
+          usersById[id] ??
+          channel?.recipients?.find((r) => r.id === id) ??
+          (message.author?.id === id ? message.author : undefined),
+        // Pre-resolved above from the ids this message actually mentions —
+        // no global channel scan on the hot path, and no whole-map
+        // subscription to keep it fresh.
+        lookupChannel: (id: string) => mentionedChannels[id]?.channel,
+        selfUserId: selfId,
+        onChannelClick: (channelId: string) => {
+          // The owning guild was resolved alongside the channel, so the URL
+          // is built without re-scanning every guild's channel list.
+          const gid = mentionedChannels[channelId]?.guildId;
+          if (gid) nav(`/channels/${gid}/${channelId}`);
+        },
+        onUserClick: onAvatarClick,
+        lookupEmoji: guildEmojis
+          ? (name: string) => guildEmojis.find((e) => e.name === name)
+          : undefined,
+      };
+    },
+    [usersById, mentionedChannels, emojisByGuild, selfId, nav, message.author, channel?.guildId, channel?.recipients, onAvatarClick],
+  );
+
   // Memoize the rendered content so we don't re-run the inline-markdown
   // regex passes on every parent re-render. useAppState() makes
   // MessageItem re-render on every state change anywhere in the app,
@@ -591,12 +664,14 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   // The server still enforces; client-side gating is just to avoid
   // showing buttons that 403. Refining this with full permission
   // resolution is a polish item.
-  const guildIdForChannel = useMemo(() => {
-    for (const [gid, list] of Object.entries(channelsByGuild)) {
-      if (list.some((c) => c.id === message.channelId)) return gid;
-    }
-    return null;
-  }, [message.channelId, channelsByGuild]);
+  // The owning guild used to be found by scanning every guild's channel list,
+  // which is what forced the whole-map subscription. The row already receives
+  // its channel as a prop (all three call sites — MessageView, PinPanel,
+  // SearchPanel — pass it), and guild-scoped search results are still inside
+  // that same guild, so `channel.guildId` is the same answer without the scan.
+  // DMs (and the no-channel-prop case) have no guild → null, exactly as the
+  // scan returned before since DM channels never live in channelsByGuild.
+  const guildIdForChannel = channel?.guildId ?? null;
   const guild = guildIdForChannel ? guildsById[guildIdForChannel] : undefined;
 
   // A "member joined" welcome (system_join) is authored, in the data, by the
@@ -621,15 +696,21 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   // for any threads created before threads moved exclusively under
   // forums), the badge below the message body lets the user navigate
   // into it. We don't create new ones from this surface anymore.
-  const existingThread = useMemo(() => {
-    if (!guildIdForChannel) return null;
-    const list = channelsByGuild[guildIdForChannel];
-    return (
-      list?.find(
-        (c) => c.type === 'public_thread' && c.parentMessageId === message.id,
-      ) ?? null
-    );
-  }, [guildIdForChannel, message.id, channelsByGuild]);
+  // Resolved through a narrow selector rather than off the whole
+  // channelsByGuild map: the selector's RESULT is what gates the re-render, so
+  // a row with no anchored thread selects a constant `null` and never
+  // re-renders when the map churns. When a thread does exist the reducer
+  // preserves that channel object's reference across sibling list rebuilds
+  // (bumpGuildRecency slices the array but keeps the elements), so the
+  // subscription only fires when the thread itself actually changes.
+  const existingThread = useAppStateSelector(
+    (v) =>
+      (guildIdForChannel
+        ? v.state.channelsByGuild[guildIdForChannel]?.find(
+            (c) => c.type === 'public_thread' && c.parentMessageId === message.id,
+          )
+        : undefined) ?? null,
+  );
 
   // Suppress unused-channel-prop warning. Future: thread permissions
   // through here so the standalone PinPanel/SearchPanel renders use
@@ -1237,14 +1318,18 @@ function formatTimestamp(iso: string): string {
  * MessageItem reads doesn't re-render any row at all. Previously
  * every gateway event re-rendered all 50.
  *
- * The default shallow comparator works because:
+ * The comparator is shallow (React.memo's default behaviour) for every
+ * prop EXCEPT `channel`, which gets a field-wise comparison:
  *   - `message` is a value from the reducer, which uses structural
  *     sharing — unchanged messages keep the same reference.
- *   - `continuation`, `selfId` are primitives.
+ *   - `continuation`, `selfId`, `showDmReceipt` are primitives.
  *   - `onReply` is wrapped in useCallback by MessageView.
- *   - `channel` is read from state (channelsByGuild) and the reducer
- *     preserves channel references when the channel itself is
- *     unchanged.
+ *   - `channel` CANNOT be compared by identity: the reducer replaces the
+ *     open channel's object on every message it receives (the forward-only
+ *     lastMessageId bump does `{ ...ch, lastMessageId }`), so identity
+ *     comparison re-rendered every row in the channel on every message even
+ *     though nothing the row displays had changed. `channelPropsEqual`
+ *     below compares only the fields this component actually reads.
  */
 /**
  * Compact DM read-receipt indicator. Rendered inside the message
@@ -1291,7 +1376,51 @@ function DmReceiptIndicator({ message }: { message: Message }) {
   );
 }
 
-export const MessageItem = memo(MessageItemBase);
+/**
+ * Field-wise equality for the `channel` prop.
+ *
+ * These are the ONLY fields MessageItemBase reads off `channel` (verified
+ * against every `channel`/`channel?.` reference in the component):
+ *   - `id`            — E2EE key lookup / decrypt / re-encrypt on edit
+ *   - `guildId`       — profile card, role color, custom emoji, pin gate,
+ *                       anchored-thread lookup, reaction picker
+ *   - `type`          — DM vs group DM (drives the DM-nickname substitution)
+ *   - `recipients`    — DM mention fallback in renderCtx.lookupUser
+ *   - `e2eeVerifier`  — passed to encryptForDm when saving an edit
+ * Plus presence: undefined vs a channel object is always a change.
+ *
+ * `recipients` is compared by reference, matching what the renderCtx memo
+ * already did. The reducer's `{ ...ch }` spreads preserve that array's
+ * identity, so recency bumps don't trip it; a genuine channel refetch does,
+ * which errs on the safe (re-render) side.
+ *
+ * If a future change reads another channel field, ADD IT HERE — a missing
+ * field renders stale.
+ */
+function channelPropsEqual(a: Channel | undefined, b: Channel | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.id === b.id &&
+    a.guildId === b.guildId &&
+    a.type === b.type &&
+    a.e2eeVerifier === b.e2eeVerifier &&
+    a.recipients === b.recipients
+  );
+}
+
+function messageItemPropsEqual(prev: Props, next: Props): boolean {
+  return (
+    prev.message === next.message &&
+    prev.continuation === next.continuation &&
+    prev.selfId === next.selfId &&
+    prev.onReply === next.onReply &&
+    prev.showDmReceipt === next.showDmReceipt &&
+    channelPropsEqual(prev.channel, next.channel)
+  );
+}
+
+export const MessageItem = memo(MessageItemBase, messageItemPropsEqual);
 
 /**
  * Format a millisecond span as a call-duration string.
