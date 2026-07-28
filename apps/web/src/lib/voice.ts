@@ -44,6 +44,28 @@ type RoomLike = {
   off(event: string, cb: (...args: unknown[]) => void): unknown;
 };
 
+/** Per-session bookkeeping stashed on the Room instance itself rather than
+    at module scope. Each Room therefore owns — and can release — exactly
+    its own timers and DOM sinks, which is what lets an orphan Room (one
+    that lost an identity race and is no longer `room`) clean itself up
+    without touching the live session's state. */
+type RoomInternals = {
+  _audioCleanup?: () => void;
+  _reapplyGains?: () => void;
+  _stalePoll?: number;
+  _rttPoll?: number;
+  _speakingPoll?: number;
+};
+
+/** Release everything a Room owns, without touching module state. Safe on a
+    Room that never finished setup — every field is optional. */
+function releaseRoomResources(r: RoomInternals): void {
+  r._audioCleanup?.();
+  if (typeof r._stalePoll === 'number') clearInterval(r._stalePoll);
+  if (typeof r._rttPoll === 'number') clearInterval(r._rttPoll);
+  if (typeof r._speakingPoll === 'number') clearInterval(r._speakingPoll);
+}
+
 interface VideoOpts {
   resolution?: { width: number; height: number; frameRate: number };
 }
@@ -213,17 +235,74 @@ let activeChannelId: string | null = null;
     DM-only. Drives the self-move detector. */
 let connectedChannelId: string | null = null;
 
+/** Channels we are ABOUT to join, each claimed before its REST joinVoice
+    call and released when that join settles either way.
+ *
+ *  A SET, not a single slot: two joins can legitimately overlap (a
+ *  mis-click then a correction, or a caller racing the self-move
+ *  detector's own rejoin). With one slot, whichever join finished first
+ *  cleared the other's claim, and the survivor's own echo then looked
+ *  like a moderator drag — the exact failure the claim exists to
+ *  prevent. Keying by channel makes releases idempotent and
+ *  order-independent, so no caller can revoke another's intent. */
+const pendingChannels = new Set<string>();
+
 export function getActiveVoiceSessionId(): string | null {
   return activeSessionId;
 }
 
-/** Channel id of the currently-connected voice room. Used by the
-    self-move detector in AppState to decide whether a VOICE_STATE_UPDATE
-    for our own user represents an admin-initiated move (channelId
-    differs from connected) vs. a benign state delta (mute/deaf
-    toggle on the same channel). Null when not connected. */
+/**
+ * Declare the channel this device is joining, BEFORE the REST join.
+ *
+ * The server dispatches the gateway VOICE_STATE_UPDATE from inside the
+ * join handler, before that HTTP response has even been written — so our
+ * own echo routinely arrives before connectToVoice() runs, let alone
+ * succeeds. Without a claim the self-move detector reads
+ * getConnectedChannelId() as the OLD channel (or null), decides a
+ * moderator dragged us, and force-moves the user out of the join they
+ * just started.
+ *
+ * Callers must invoke this SYNCHRONOUSLY immediately before
+ * `rest.joinVoice(...)` — any await in between reopens the race.
+ */
+export function claimVoiceChannel(channelId: string): void {
+  pendingChannels.add(channelId);
+}
+
+/** Drop the claim made by [claimVoiceChannel]. Scoped to one channel so a
+    join that fails (or finishes first) can never revoke a DIFFERENT join's
+    still-live intent. Safe to call more than once for the same id. */
+export function releaseVoiceChannel(channelId: string): void {
+  pendingChannels.delete(channelId);
+}
+
+/** Channel id of the voice room this device considers its own. Used by
+    the self-move detector in AppState to decide whether a
+    VOICE_STATE_UPDATE for our own user represents an admin-initiated
+    move (channelId differs from ours) vs. a benign state delta
+    (mute/deaf toggle on the same channel).
+ *
+ *  Reports the SETTLED connection only. To ask "is this state update my
+ *  own doing?", use [isSelfVoiceTarget] — collapsing intent into this
+ *  getter made an in-flight join look like the current channel to every
+ *  other caller too. */
 export function getConnectedChannelId(): string | null {
   return connectedChannelId;
+}
+
+/**
+ * True when [channelId] is one this device is already in or actively
+ * joining — i.e. a VOICE_STATE_UPDATE naming it is the echo of our own
+ * action, not somebody moving us.
+ *
+ * The server dispatches that echo from inside the join handler, before
+ * the HTTP response is written, so it routinely arrives before
+ * connectToVoice has even started. Matching against outstanding claims
+ * as well as the settled channel is what stops the self-move detector
+ * from force-moving the user out of a join they just made.
+ */
+export function isSelfVoiceTarget(channelId: string): boolean {
+  return pendingChannels.has(channelId) || connectedChannelId === channelId;
 }
 
 import { getCurrentPreset } from './voiceQuality';
@@ -860,6 +939,12 @@ export type VoiceErrorCode =
   // The DM wants an E2EE call but this browser lacks the insertable-
   // streams support LiveKit needs to encrypt media.
   | 'e2ee_unsupported'
+  // Our own screen capture died on its own (window closed, display
+  // unplugged, browser revoked it) — NOT a failed request. Reported
+  // asynchronously via subscribeVoiceError, never thrown, and kept
+  // distinct from `mic_denied_browser` so the screen-share UI (which
+  // suppresses that code to swallow picker-cancel) still surfaces it.
+  | 'screenshare_ended'
   | 'unknown';
 
 export class VoiceError extends Error {
@@ -869,6 +954,30 @@ export class VoiceError extends Error {
     this.code = code;
     this.name = 'VoiceError';
   }
+}
+
+// ── Asynchronous voice errors ──────────────────────────────────────────────
+//
+// Every other VoiceError reaches the UI by rejecting the call the user just
+// made (connect, camera toggle, screen-share toggle), so a toast falls out
+// of the caller's catch. Failures that arrive on their OWN schedule — a
+// capture source dying under a live publication — have no such call to
+// reject, so they ride the same tiny pub/sub shape this module already uses
+// for async state (speakers, tracks, connection).
+type VoiceErrorListener = (err: VoiceError) => void;
+const voiceErrorListeners = new Set<VoiceErrorListener>();
+
+/** Subscribe to voice failures that happen outside any user-initiated
+    call. Toast `err.message`; branch on `err.code` if you want to. */
+export function subscribeVoiceError(listener: VoiceErrorListener): () => void {
+  voiceErrorListeners.add(listener);
+  return () => {
+    voiceErrorListeners.delete(listener);
+  };
+}
+
+function publishVoiceError(err: VoiceError): void {
+  for (const l of voiceErrorListeners) l(err);
 }
 
 function mediaErrorToVoiceError(err: unknown): VoiceError {
@@ -948,14 +1057,59 @@ function mediaErrorToVoiceError(err: unknown): VoiceError {
 let hangupChimeArmed = false;
 
 /**
+ * Serial queue for session-lifecycle operations (connect / disconnect).
+ *
+ * Nothing else guards them: the module `room` handle is only assigned
+ * AFTER `await r.connect(...)` resolves, so two overlapping joins — a
+ * double-click on a channel, or a join racing an auto-reconnect — both
+ * saw a stale `room` at the top of connectToVoice, both skipped the
+ * tear-down of the other, and both connected with the SAME participant
+ * identity. LiveKit resolves that by evicting one of them
+ * (DUPLICATE_IDENTITY), which kills a call the user is already in and
+ * leaves an orphan Room behind.
+ *
+ * Mirrors the iOS client's `sessionChain` (Voice.swift): every enqueued
+ * op runs to completion before the next begins, so connect and
+ * disconnect can never overlap on one Room.
+ */
+let sessionChain: Promise<void> = Promise.resolve();
+
+/** Run `op` after any in-flight connect/disconnect finishes. The chain
+    itself never rejects — a failed op still hands the queue on — but the
+    caller gets the original rejection. */
+function serialized<T>(op: () => Promise<T>): Promise<T> {
+  const run = sessionChain.then(op);
+  sessionChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/**
  * Establish a LiveKit connection and publish the local microphone
  * track. If a connection is already open, it's torn down first — voice
  * is single-channel by design.
  *
+ * Serialized against every other session op (see `serialized`), so an
+ * overlapping join waits rather than racing this one onto a second Room.
+ *
  * Throws a `VoiceError` with a code/message pair suitable for direct
  * display in a toast.
  */
-export async function connectToVoice(args: ConnectArgs): Promise<void> {
+export function connectToVoice(args: ConnectArgs): Promise<void> {
+  return serialized(async () => {
+    try {
+      await performConnect(args);
+    } finally {
+      // Release only OUR claim, success or not. Another join's claim is
+      // keyed by its own channel and is untouched.
+      if (args.channelId) releaseVoiceChannel(args.channelId);
+    }
+  });
+}
+
+async function performConnect(args: ConnectArgs): Promise<void> {
   const { Room, RoomEvent, ParticipantEvent, ExternalE2EEKeyProvider, isE2EESupported, ScreenSharePresets } =
     await loadLivekit();
 
@@ -1025,7 +1179,10 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
     // silent: this is a channel SWITCH, not a call end — the connect chime
     // fired by the join immediately below is the whole story. Chiming
     // hangup-then-connect here would narrate a call ending that didn't.
-    await disconnectVoice({ keepAudioContext: true, silent: true });
+    //
+    // Raw teardown, not disconnectVoice(): we are already inside the
+    // serial chain, so re-entering it would deadlock waiting on ourselves.
+    await performDisconnect({ keepAudioContext: true, silent: true });
   }
 
   // Read the user's current quality preference. The preset caps audio
@@ -1241,14 +1398,41 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
   r.on(RoomEvent.Disconnected, (() => {
     if (room === (r as unknown as RoomLike)) {
       publishConnectionState('disconnected');
-      void disconnectVoice();
+      // Queue the teardown and RE-CHECK ownership when it runs. A channel
+      // switch disconnects the old Room from inside a connect, so this
+      // event fires while that connect still holds the chain — by the time
+      // we reach the front of the queue the module may already own a
+      // healthy new Room, which this teardown must not touch.
+      void serialized(async () => {
+        if (room !== (r as unknown as RoomLike)) return;
+        await performDisconnect();
+      });
+      return;
     }
+    // This Room is an ORPHAN: a newer session owns the module, and the
+    // SFU has just evicted us (DUPLICATE_IDENTITY) or we were replaced.
+    // The identity guard above correctly keeps us away from module state,
+    // but that used to mean the orphan ran NO cleanup at all — its audio
+    // sinks stayed in the DOM, its prefs subscription stayed live, and its
+    // pollers kept ticking for the lifetime of the tab. Release what this
+    // Room owns, and only that.
+    releaseRoomResources(r as unknown as RoomInternals);
   }) as never);
   // Surface SDK-internal reconnect attempts so the UI can show a
   // "reconnecting…" banner instead of appearing healthy-but-silent.
   r.on(RoomEvent.Reconnecting, (() => {
     if (room === (r as unknown as RoomLike)) publishConnectionState('reconnecting');
   }) as never);
+  // A SIGNAL-only resume (the RR_SIGNAL_DISCONNECTED we see in production)
+  // emits SignalReconnecting, NOT Reconnecting — media keeps flowing over
+  // the existing PeerConnection while the WebSocket is re-established. On
+  // Reconnecting alone the UI reported a perfectly healthy call during
+  // every one of those outages.
+  r.on(RoomEvent.SignalReconnecting, (() => {
+    if (room === (r as unknown as RoomLike)) publishConnectionState('reconnecting');
+  }) as never);
+  // Recovery from BOTH paths lands here: the SDK emits Reconnected on
+  // EngineEvent.Resumed, which is the tail of a signal-only resume too.
   r.on(RoomEvent.Reconnected, (() => {
     if (room === (r as unknown as RoomLike)) publishConnectionState('connected');
   }) as never);
@@ -1380,7 +1564,9 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
       })
       .catch(() => {});
   };
-  rttPollInterval = window.setInterval(pollRtt, 1000);
+  // Per-Room, not module-level: a second connect used to overwrite the
+  // module handle, so the first Room's poller ran until the tab closed.
+  (r as unknown as RoomInternals)._rttPoll = window.setInterval(pollRtt, 1000);
   pollRtt();
 
   // ── Audio-level polling fallback ──────────────────────────────────────
@@ -1405,7 +1591,9 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
   type WithAudioLevel = { identity: string; audioLevel?: number };
   const REMOTE_SPEAKING_THRESHOLD = 0.025;
   const remoteSpeakingSet = new Set<string>(); // tracks our poll's view
-  remoteSpeakingPollInterval = window.setInterval(() => {
+  // Stashed on the Room for the same reason as the RTT poller above.
+  (r as unknown as RoomInternals)._speakingPoll = window.setInterval(() => {
+    if (room !== (r as unknown as RoomLike)) return; // a newer session owns the module now
     let changed = false;
     // Walk every remote; flip them in/out of remoteSpeakingSet based
     // on their current audioLevel.
@@ -1451,7 +1639,7 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
   // double-add. Tracks are GC'd along with their publications, so
   // we don't need to clean up explicitly — the WeakSet handles it.
   const endedTrackListeners = new WeakSet<MediaStreamTrack>();
-  const attachEndedListener = (mst: MediaStreamTrack) => {
+  const attachEndedListener = (mst: MediaStreamTrack, isLocalScreen: boolean) => {
     if (endedTrackListeners.has(mst)) return;
     endedTrackListeners.add(mst);
     // Once-only listener that triggers a rebuild when this track
@@ -1463,6 +1651,23 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
       'ended',
       () => {
         rebuildTracks();
+        if (!isLocalScreen) return;
+        // OUR screen capture ended at the SOURCE — the browser's own "Stop
+        // sharing" bar, the shared window closing, or the display going
+        // away. (A stop we initiate goes through track.stop(), which by
+        // spec does NOT fire 'ended', so this is never our own button.)
+        // livekit-client unpublishes ScreenShare tracks on end, so the tile
+        // vanishes for everyone while this client says nothing — leaving
+        // the user broadcasting nothing and believing they still are, with
+        // a genuine capture death indistinguishable from a bug.
+        // eslint-disable-next-line no-console
+        console.warn('[voice] screen share ended at the capture source');
+        publishVoiceError(
+          new VoiceError(
+            'screenshare_ended',
+            'Your screen share ended. If you didn’t stop it, the shared window or display went away — start it again to keep sharing.',
+          ),
+        );
       },
       { once: true },
     );
@@ -1489,8 +1694,9 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
         // Without this check, we'd render a FeaturedTile with a
         // frozen final frame for that interval.
         if (mst.readyState === 'ended') continue;
-        attachEndedListener(mst);
         const isScreen = pub.source === 'screen_share';
+        // Remote shares ending is just someone else stopping — no notice.
+        attachEndedListener(mst, false);
         tiles.push({
           userId: p.identity,
           kind: isScreen ? 'screen' : 'camera',
@@ -1504,8 +1710,8 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
       if (pub.kind !== 'video' || !pub.track || !pub.track.mediaStreamTrack) continue;
       const mst = pub.track.mediaStreamTrack;
       if (mst.readyState === 'ended') continue;
-      attachEndedListener(mst);
       const isScreen = pub.source === 'screen_share';
+      attachEndedListener(mst, isScreen);
       tiles.push({
         userId: r.localParticipant.identity,
         kind: isScreen ? 'screen' : 'camera',
@@ -1525,6 +1731,11 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
   // against its publication; if any has gone stale, rebuild. The
   // check is cheap — handful of property reads.
   const stalePoll = window.setInterval(() => {
+    // An orphan Room (evicted by a newer session) has no participants
+    // left, so every tracked track reads as stale and the rebuild below
+    // publishes an EMPTY list — blanking the live call's screen shares
+    // and cameras once a second. Same guard the RTT poller uses.
+    if (room !== (r as unknown as RoomLike)) return;
     let anyStale = false;
     for (const t of currentTracks) {
       // Find this track's publication. Walk remote first then local.
@@ -1575,7 +1786,7 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
   // Stash the interval so disconnectVoice can clear it. We attach
   // it to the room as a non-enumerable property to avoid leaking
   // a module-level handle.
-  (r as unknown as { _stalePoll?: number })._stalePoll = stalePoll;
+  (r as unknown as RoomInternals)._stalePoll = stalePoll;
   r.on(RoomEvent.TrackSubscribed, rebuildTracks as never);
   r.on(RoomEvent.TrackUnsubscribed, rebuildTracks as never);
   // TrackUnpublished fires immediately when a REMOTE publisher kills
@@ -1829,6 +2040,12 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
     // Connect failed — make sure the E2EE worker (if we spun one up for
     // this call) doesn't outlive the dead Room.
     terminateE2eeWorker();
+    // This Room never became `room`, so no teardown path will ever reach
+    // it — but its pollers and audio sinks were wired up before connect.
+    releaseRoomResources(r as unknown as RoomInternals);
+    // The intent claim dies with this join — dropped by connectToVoice's
+    // finally, which is the one place that knows whether a LATER join is
+    // already waiting with a claim of its own.
     const msg = (err as Error).message ?? 'connection failed';
     throw new VoiceError('connect_failed', `Couldn't reach voice server: ${msg}`);
   }
@@ -1848,6 +2065,17 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
   // reconnected them (getConnectedChannelId() was null → the detector
   // early-returned and the user's audio silently died in the old room).
   connectedChannelId = args.channelId ?? null;
+  // Settled state now describes this join, so its claim has done its job.
+  if (args.channelId) releaseVoiceChannel(args.channelId);
+  // Own the session for the takeover watcher from the SAME instant. This
+  // used to be claimed at the very end of the connect, after mic publish,
+  // output switching, PTT and gain setup — so when two joins raced, the
+  // module kept whichever finished LAST rather than whichever the server
+  // kept, and the watcher then tore the user out of their own call. A
+  // failure after this point tears down through disconnectVoice(), which
+  // clears it again. A caller that passes no sessionId leaves it null:
+  // takeover detection just doesn't fire on this device.
+  activeSessionId = args.sessionId ?? null;
   publishConnectionState('connected');
 
   const localPubs = r.localParticipant as unknown as { trackPublications: Map<string, TrackPublicationLike> };
@@ -1868,7 +2096,8 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
       // Publishing failed on a token we believed could publish — tear
       // the whole connection down (now safe because `room` is set) and
       // surface a clear error rather than stranding a half-joined room.
-      await disconnectVoice();
+      // Raw teardown — we're inside the serial chain (see performConnect).
+      await performDisconnect();
       throw new VoiceError(
         'connect_failed',
         `Couldn't start your microphone: ${(err as Error)?.message ?? 'unknown error'}`,
@@ -2007,16 +2236,6 @@ export async function connectToVoice(args: ConnectArgs): Promise<void> {
     }
   }
 
-  // Claim ownership of this session for the takeover watcher.
-  // Done at the very end so a connect failure (which throws before
-  // here) doesn't leave a stale activeSessionId behind. If the
-  // caller didn't pass a sessionId (older callers or paths that
-  // didn't thread it through yet), we leave activeSessionId null —
-  // takeover detection just doesn't fire on this device, which
-  // degrades to the prior behavior (no auto-disconnect) instead of
-  // a false positive.
-  activeSessionId = args.sessionId ?? null;
-
   // Background-stay-alive setup: ask the OS not to lock the screen
   // (Wake Lock API), register the page as an active audio source
   // (Media Session API), and wire the platform Hang Up button to
@@ -2116,8 +2335,21 @@ interface TrackPublicationLike {
  * call ENDING from the user's point of view — a channel switch, a moderator
  * moving them, or another device taking the session over. All three are
  * followed by (or equivalent to) continuing to be in voice somewhere.
+ *
+ * Serialized against every other session op (see `serialized`), so it can
+ * never run concurrently with a connect on the same Room. Callers already
+ * inside the chain must use `performDisconnect` directly.
  */
-export async function disconnectVoice(
+export function disconnectVoice(
+  opts: { keepAudioContext?: boolean; silent?: boolean } = {},
+): Promise<void> {
+  // Deliberately does NOT clear claims: a disconnect is the FIRST half of
+  // every channel switch, and the incoming join's claim must survive it.
+  // Each claim is released by its own join settling, or by its caller.
+  return serialized(() => performDisconnect(opts));
+}
+
+async function performDisconnect(
   opts: { keepAudioContext?: boolean; silent?: boolean } = {},
 ): Promise<void> {
   if (!room) return;
@@ -2138,14 +2370,11 @@ export async function disconnectVoice(
     hangupChimeArmed = false;
     if (!opts.silent && !deafenedFlag) playCallEnd();
   }
-  // Tear down our hidden audio sinks before disconnecting LiveKit so we
-  // don't leak <video> elements if the unsubscribe events don't fire
-  // in the right order during shutdown.
-  const cleanup = (room as unknown as { _audioCleanup?: () => void })._audioCleanup;
-  cleanup?.();
-  // Clear the stale-tracks polling interval set up in connectToVoice.
-  const stalePoll = (room as unknown as { _stalePoll?: number })._stalePoll;
-  if (typeof stalePoll === 'number') clearInterval(stalePoll);
+  // Tear down our hidden audio sinks and every poller this Room owns,
+  // before disconnecting LiveKit — otherwise we leak <video> elements
+  // when the unsubscribe events don't fire in the right order during
+  // shutdown, and the pollers tick on into the next session.
+  releaseRoomResources(room as unknown as RoomInternals);
   // Tear down the manual-gain chain (second mic capture + AudioContext)
   // if it was active. It has no other caller, so without this a user in
   // manual-gain mode keeps a live mic capture (OS recording indicator
@@ -2180,14 +2409,6 @@ export async function disconnectVoice(
   // If the user joins again, connectToVoice will re-set this.
   activeSessionId = null;
   stopLocalLevelMonitor();
-  if (remoteSpeakingPollInterval !== null) {
-    clearInterval(remoteSpeakingPollInterval);
-    remoteSpeakingPollInterval = null;
-  }
-  if (rttPollInterval !== null) {
-    clearInterval(rttPollInterval);
-    rttPollInterval = null;
-  }
   publishRtt(null);
   // Tear down every per-track WebAudio speaker probe.
   for (const sid of Array.from(remoteSpeakerProbes.keys())) {
@@ -2729,8 +2950,6 @@ const qualityListeners = new Set<QualityListener>();
 type RttListener = (rttMs: number | null) => void;
 const rttListeners = new Set<RttListener>();
 let currentSpeakers: Set<string> = new Set();
-let remoteSpeakingPollInterval: number | null = null;
-let rttPollInterval: number | null = null;
 let currentTracks: VoiceTrackInfo[] = [];
 let currentConnectionState: VoiceConnectionState = 'disconnected';
 let currentQuality: Map<string, VoiceQuality> = new Map();

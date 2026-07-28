@@ -324,14 +324,30 @@ function createMainWindow(serverUrl: string, startHidden = false): void {
       mainWindow.webContents.reload();
     }
   });
+  // A reload destroys the renderer's LiveKit Room, killing an in-progress
+  // screen share for the streamer and every viewer at once. Encoding a
+  // high-resolution share routinely stalls the main thread long enough to
+  // fire 'unresponsive', so the recovery must only fire for a renderer that
+  // is genuinely wedged: cancel on 'responsive', and wait far longer than
+  // any plausible encode hiccup.
+  let unresponsiveTimer: ReturnType<typeof setTimeout> | null = null;
+  const cancelUnresponsiveReload = () => {
+    if (unresponsiveTimer) {
+      clearTimeout(unresponsiveTimer);
+      unresponsiveTimer = null;
+    }
+  };
   mainWindow.on('unresponsive', () => {
-    // Give it a moment, then reload if still wedged.
-    setTimeout(() => {
+    if (unresponsiveTimer) return;
+    unresponsiveTimer = setTimeout(() => {
+      unresponsiveTimer = null;
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.reload();
       }
-    }, 3000);
+    }, 45_000);
   });
+  mainWindow.on('responsive', cancelUnresponsiveReload);
+  mainWindow.on('closed', cancelUnresponsiveReload);
 
   // ── Right-click context menu: spelling suggestions + edit actions ─────
   mainWindow.webContents.on('context-menu', (_e, params) => {
@@ -440,7 +456,10 @@ function createTray(): void {
 // thumbnails. Resolves the pending getDisplayMedia callback with the
 // chosen source, or denies it on cancel.
 
-type DisplayMediaCallback = (streams: unknown) => void;
+// Electron's own callback shape. Typed as `unknown` before, which is
+// unsound in the contravariant position and made every call site pass the
+// real handler through an `as never` cast.
+type DisplayMediaCallback = (streams: Electron.Streams) => void;
 let pickerWindow: BrowserWindow | null = null;
 let pendingPickerCallback: DisplayMediaCallback | null = null;
 let pendingSources: Electron.DesktopCapturerSource[] = [];
@@ -778,18 +797,13 @@ app.whenReady().then(() => {
   // until we register this handler — this is why screen share was
   // failing. We present a picker of screens + windows and resolve the
   // request with the user's choice.
+  //
+  // Every platform, macOS included, goes through that picker. The OS-native
+  // picker (`useSystemPicker`) needs Electron 33+; on the pinned ^31 it is an
+  // unknown property that is silently dropped, leaving `video: undefined` —
+  // i.e. a hard deny. Don't re-add it without bumping Electron.
   session.defaultSession.setDisplayMediaRequestHandler(
     (_request, callback) => {
-      // macOS 15+ (Sonoma/Sequoia): hand off to the OS-native picker,
-      // which also drives the system screen-recording permission flow.
-      if (process.platform === 'darwin') {
-        try {
-          callback({ video: undefined, audio: undefined, useSystemPicker: true } as never);
-          return;
-        } catch {
-          // Older Electron without useSystemPicker — fall through.
-        }
-      }
       void desktopCapturer
         .getSources({
           types: ['screen', 'window'],
@@ -806,8 +820,6 @@ app.whenReady().then(() => {
         })
         .catch(() => callback({ video: undefined } as never));
     },
-    // useSystemPicker hint (honored on supported platforms).
-    { useSystemPicker: true } as never,
   );
 
   createTray();

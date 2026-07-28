@@ -3795,25 +3795,46 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           })();
         }
         dispatch({ type: 'VOICE_STATE_UPSERT', voiceState: v });
-        // Self-move detection. If the gateway just told us OUR
-        // voice state moved to a different channel than the one
-        // we're locally connected to, a moderator dragged us. We
-        // need to disconnect from the old LiveKit room and join
-        // the new one — the server's already updated the DB and
-        // evicted us from the old SFU room. Voice mod is imported
-        // dynamically to avoid circular reference between AppState
-        // and the voice module.
+        // Self-move detection. If the gateway just told us OUR voice
+        // state moved to a channel this device neither holds nor is
+        // trying to reach, a moderator dragged us. We need to disconnect
+        // from the old LiveKit room and join the new one — the server's
+        // already updated the DB and evicted us from the old SFU room.
+        // Voice mod is imported dynamically to avoid circular reference
+        // between AppState and the voice module.
+        //
+        // getConnectedChannelId() reports INTENT, not just settled state:
+        // every join site stakes a claim on its target before calling
+        // rest.joinVoice, because the server fans this very event out over
+        // the gateway BEFORE it writes the join response. Without the
+        // claim our own join's echo arrives while we're still connected to
+        // nothing (or to the room we're leaving), reads as a drag, and
+        // races a duplicate join against the one in flight. A REAL drag
+        // has no local claim, so `connected` is the old room and the
+        // mismatch below still fires.
         if (selfId && v.userId === selfId && v.channelId) {
           const newChannelId = v.channelId;
           void (async () => {
             const voiceMod = await import('../lib/voice');
             const connected = voiceMod.getConnectedChannelId();
-            if (!connected || connected === newChannelId) return;
+            // Not in voice at all: nothing to move.
+            if (!connected) return;
+            // Our own doing — either we're already there, or we claimed it
+            // before the REST join. Matching against OUTSTANDING CLAIMS as
+            // well as the settled channel is what makes two overlapping
+            // joins safe: with a single "current channel" the first join's
+            // echo read as a drag to the second join's channel, and the
+            // detector ping-ponged between them.
+            if (voiceMod.isSelfVoiceTarget(newChannelId)) return;
             try {
               // silent: a moderator dragging us between channels is a move,
               // not a hangup. The connect chime from the rejoin below marks
               // the transition on its own.
               await voiceMod.disconnectVoice({ silent: true });
+              // Claim the destination after the teardown (a disconnect-time
+              // clear would otherwise wipe it) and before the REST call, so
+              // the server's echo of THIS join isn't read as a second drag.
+              voiceMod.claimVoiceChannel(newChannelId);
               const r = await (await restForChannel(newChannelId)).joinVoice(newChannelId);
               if (r?.token && r.wsUrl) {
                 await voiceMod.connectToVoice({
@@ -3825,6 +3846,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
               }
             } catch {
               // Toasts surfaced by inner calls.
+            } finally {
+              // connectToVoice releases the claim when it settles; the
+              // REST-failed / no-token paths never reach it.
+              voiceMod.releaseVoiceChannel(newChannelId);
             }
           })();
         }

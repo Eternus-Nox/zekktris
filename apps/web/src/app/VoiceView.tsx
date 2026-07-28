@@ -66,6 +66,8 @@ import {
   getRtt,
   setDeafenHotkeyHandler,
   prepareVoiceAudio,
+  claimVoiceChannel,
+  releaseVoiceChannel,
   VoiceError,
   type VoiceTrackInfo,
   type VoiceConnectionState,
@@ -370,6 +372,11 @@ export function VoiceView({
   async function joinThis() {
     // Prime shared audio context inside the click — see voice.prepareVoiceAudio.
     prepareVoiceAudio();
+    // Claim the target BEFORE the REST call — the server dispatches our
+    // VOICE_STATE_UPDATE over the gateway before it writes the join
+    // response, so the echo can beat connectToVoice and trip the
+    // self-move detector into a duplicate "moderator dragged me" rejoin.
+    claimVoiceChannel(channel.id);
     try {
       const r = await (await restForChannel(channel.id)).joinVoice(channel.id);
       mergeChannelVoiceStates(channel.id, r.channelVoiceStates);
@@ -407,6 +414,12 @@ export function VoiceView({
       }
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Failed to join voice', 'error');
+    } finally {
+      // connectToVoice clears the claim when it settles, but the
+      // REST-failed / no-token paths never reach it — release it here so a
+      // dead claim can't make getConnectedChannelId() report a room we
+      // never entered.
+      releaseVoiceChannel(channel.id);
     }
   }
 

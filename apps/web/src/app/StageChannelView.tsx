@@ -42,6 +42,9 @@ import {
   connectToVoice,
   disconnectVoice,
   setMicMuted,
+  claimVoiceChannel,
+  releaseVoiceChannel,
+  getCurrentTracks,
   VoiceError,
 } from '../lib/voice';
 
@@ -123,10 +126,22 @@ export function StageChannelView({ channel }: { channel: Channel }) {
     const wasSpeaker = wasSpeakerRef.current;
     const isSpeaker = myParticipant.isSpeaker;
     if (wasSpeaker !== null && wasSpeaker !== isSpeaker) {
-      // Status changed — re-join to get a fresh token.
+      // Status changed — re-join to get a fresh token. This builds a brand
+      // new Room and voice.ts has no publish-restore step, so any camera or
+      // screen share dies with the old one. Sample it BEFORE the teardown so
+      // the user is told rather than left wondering why their stream stopped.
+      const hadVideo = getCurrentTracks().some(
+        (t) => t.userId === user?.id && (t.kind === 'camera' || t.kind === 'screen'),
+      );
       void (async () => {
         try {
           await disconnectVoice();
+          // Claim the target after the teardown (a disconnect-time clear
+          // would otherwise wipe it) but BEFORE the REST call — the server
+          // dispatches our VOICE_STATE_UPDATE over the gateway before it
+          // writes the join response, so the echo can beat connectToVoice
+          // and read as a moderator move to the self-move detector.
+          claimVoiceChannel(channel.id);
           const r = await rest.joinStage(channel.id);
           if (r.token && r.wsUrl) {
             await connectToVoice({
@@ -142,11 +157,21 @@ export function StageChannelView({ channel }: { channel: Channel }) {
             isSpeaker ? 'You can now speak' : 'You are now in the audience',
             'info',
           );
+          if (hadVideo) {
+            toasts.push(
+              'Your camera / screen share stopped — the stage rebuilt the connection. Start it again when you’re ready.',
+              'info',
+            );
+          }
         } catch (e) {
           toasts.push(
             e instanceof Error ? e.message : 'Stage reconnect failed',
             'error',
           );
+        } finally {
+          // connectToVoice releases the claim when it settles; the
+          // REST-failed / no-token paths never reach it.
+          releaseVoiceChannel(channel.id);
         }
       })();
     }
@@ -157,6 +182,11 @@ export function StageChannelView({ channel }: { channel: Channel }) {
   // ── Actions ────────────────────────────────────────────────────────────
 
   async function joinAsAudience() {
+    // Claim the target BEFORE the REST call — the server dispatches our
+    // VOICE_STATE_UPDATE over the gateway before it writes the join
+    // response, so the echo can beat connectToVoice and read as a moderator
+    // move to the self-move detector.
+    claimVoiceChannel(channel.id);
     try {
       const r = await rest.joinStage(channel.id);
       if (r.token && r.wsUrl) {
@@ -180,6 +210,11 @@ export function StageChannelView({ channel }: { channel: Channel }) {
       }
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Failed to join stage', 'error');
+    } finally {
+      // connectToVoice releases the claim when it settles; the REST-failed /
+      // no-token paths never reach it, and a stranded claim would make
+      // getConnectedChannelId() lie forever.
+      releaseVoiceChannel(channel.id);
     }
   }
 

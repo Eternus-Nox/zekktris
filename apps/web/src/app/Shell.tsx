@@ -68,6 +68,20 @@ import { ErrorBoundary } from '../lib/ErrorBoundary';
 
 const ME = '@me';
 
+/**
+ * How long a voice session-id mismatch must persist before the takeover
+ * watcher acts on it. connectToVoice records this device's session id at
+ * the very END of a join (after the Room is up and the mic is published),
+ * but the server dispatches the VOICE_STATE_UPDATE carrying that same new
+ * id the instant it upserts the row. Every legitimate join — and every
+ * channel switch — therefore passes through a window where the server's id
+ * is newer than ours and the comparison reads exactly like a takeover.
+ * Re-checking after the join has had time to land keeps the real case
+ * (another device joined; our local id never catches up) and drops the
+ * self-inflicted one.
+ */
+const VOICE_TAKEOVER_GRACE_MS = 4000;
+
 export function Shell() {
   const { token, user, hydrating, rest, emailVerificationRequired } = useAuth();
   // Desktop-only: auto-set Away/Online from system idle (no-op in browser).
@@ -131,8 +145,16 @@ export function Shell() {
     // is null, the user isn't in voice anywhere per the server,
     // which is a different state-transition not a takeover.
     if (local === null || myVoiceSessionId === null) return;
-    if (local !== myVoiceSessionId) {
-      // The server's session id for this user doesn't match the
+    if (local === myVoiceSessionId) return;
+    // Mismatch — but a join in flight on THIS device looks identical (see
+    // VOICE_TAKEOVER_GRACE_MS), so require it to survive the grace before
+    // acting, and re-read the local id at that point rather than trusting
+    // the value captured above. Our own join lands its session id in the
+    // meantime; a real takeover leaves it stale forever.
+    const timer = window.setTimeout(() => {
+      const settled = getActiveVoiceSessionId();
+      if (settled === null || settled === myVoiceSessionId) return;
+      // The server's session id for this user still doesn't match the
       // one this device locally established → another device
       // (phone, second tab, second computer) joined voice and
       // replaced our row. Tear down our local zombie connection
@@ -142,14 +164,15 @@ export function Shell() {
       // eslint-disable-next-line no-console
       console.warn(
         'Voice session taken over by another device (local %s, server %s)',
-        local,
+        settled,
         myVoiceSessionId,
       );
       // silent: same reasoning as the console.warn above — the user moved
       // themselves to another device, so the call didn't end from their point
       // of view. An end-of-call chime here is noise about a non-event.
       void disconnectVoice({ silent: true });
-    }
+    }, VOICE_TAKEOVER_GRACE_MS);
+    return () => window.clearTimeout(timer);
   }, [myVoiceSessionId, toasts]);
 
   // DM call auto-end: when you're in voice in a 1:1 DM channel and

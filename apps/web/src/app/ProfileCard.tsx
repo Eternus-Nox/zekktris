@@ -40,7 +40,7 @@ import {
   hasBit,
 } from '../lib/permissions';
 import { UserPlus, UserMinus, Shield, X, Edit, Trash, Ban as BanIcon, Clock } from '../lib/icons';
-import { connectToVoice, VoiceError, prepareVoiceAudio } from '../lib/voice';
+import { connectToVoice, VoiceError, prepareVoiceAudio, claimVoiceChannel, releaseVoiceChannel } from '../lib/voice';
 import { formatCustomStatus } from './CustomStatusModal';
 
 type RelType =
@@ -537,10 +537,19 @@ export function ProfileCard({
     setPending(true);
     // Prime shared audio context inside the click — see voice.prepareVoiceAudio.
     prepareVoiceAudio();
+    // Held outside the try so the finally can release exactly the claim we
+    // made — the DM channel isn't known until openDM resolves.
+    let claimed: string | null = null;
     try {
       const dm = await rest.openDM(user.id);
       onClose();
       nav(`/channels/@me/${dm.channel.id}`);
+      // Claim the target BEFORE the REST call — the server dispatches our
+      // VOICE_STATE_UPDATE over the gateway before it writes the join
+      // response, so the echo can land ahead of connectToVoice and look
+      // like a moderator move to the self-move detector.
+      claimed = dm.channel.id;
+      claimVoiceChannel(claimed);
       try {
         const r = await rest.joinVoice(dm.channel.id);
         mergeChannelVoiceStates(dm.channel.id, r.channelVoiceStates);
@@ -578,6 +587,10 @@ export function ProfileCard({
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Could not open DM', 'error');
     } finally {
+      // connectToVoice releases the claim when it settles, but the
+      // openDM-failed / REST-failed / no-token paths never reach it — a
+      // stranded claim would make getConnectedChannelId() lie forever.
+      if (claimed) releaseVoiceChannel(claimed);
       setPending(false);
     }
   }

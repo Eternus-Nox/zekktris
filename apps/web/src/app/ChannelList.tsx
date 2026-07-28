@@ -38,7 +38,7 @@ import { UserVolumePopover } from '../lib/UserVolumePopover';
 import { avatarColor } from '../lib/avatar';
 import { Portal } from '../lib/Portal';
 import { ChannelMenu } from './ChannelMenu';
-import { connectToVoice, VoiceError, subscribeSpeakers, getCurrentSpeakers, prepareVoiceAudio } from '../lib/voice';
+import { connectToVoice, VoiceError, subscribeSpeakers, getCurrentSpeakers, prepareVoiceAudio, claimVoiceChannel, releaseVoiceChannel } from '../lib/voice';
 import { memberIsAdmin } from '../lib/permissions';
 import { useChannelDragReorder, type DragState } from '../lib/useChannelDragReorder';
 import { useProfileCard } from '../lib/useProfileCard';
@@ -1311,6 +1311,13 @@ function VoiceChannelRow({
     // Prime shared audio context inside the click event — see
     // lib/voice.prepareVoiceAudio for why.
     prepareVoiceAudio();
+    // Stake the claim BEFORE the REST call: the server fans out our
+    // VOICE_STATE_UPDATE over the gateway before it writes the join
+    // response, so the echo can reach the self-move detector while
+    // connectToVoice hasn't even been called yet. Without the claim the
+    // detector reads "connected to nothing / the old room", concludes a
+    // moderator dragged us, and races a second join against this one.
+    claimVoiceChannel(channel.id);
     try {
       const r = await (await restForChannel(channel.id)).joinVoice(channel.id);
       // Merge the channel's authoritative voice state snapshot into
@@ -1349,6 +1356,11 @@ function VoiceChannelRow({
       }
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Failed to join voice', 'error');
+    } finally {
+      // The claim must never outlive the attempt. connectToVoice clears it
+      // itself, but the REST-failed / no-token paths never reach it, and a
+      // stranded claim would make getConnectedChannelId() lie forever.
+      releaseVoiceChannel(channel.id);
     }
   }
 

@@ -43,7 +43,7 @@ const DmSettingsPanel = lazy(() =>
 const MediaGalleryModal = lazy(() =>
   import('./MediaGalleryModal').then((m) => ({ default: m.MediaGalleryModal })),
 );
-import { connectToVoice, disconnectVoice, VoiceError, prepareVoiceAudio } from '../lib/voice';
+import { connectToVoice, disconnectVoice, VoiceError, prepareVoiceAudio, claimVoiceChannel, releaseVoiceChannel } from '../lib/voice';
 import { PollComposerModal, type PollDraft } from './PollComposerModal';
 import { StickerPicker } from './StickerPicker';
 import { useVoiceRecorder } from '../lib/useVoiceRecorder';
@@ -2968,6 +2968,11 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
     // Prime shared audio context inside the click gesture's call stack
     // — see lib/voice.prepareVoiceAudio for the rationale.
     prepareVoiceAudio();
+    // Claim the target BEFORE the REST call — the server fans our
+    // VOICE_STATE_UPDATE out over the gateway before it writes the join
+    // response, so the echo can arrive before connectToVoice runs and read
+    // as "a moderator dragged me somewhere else."
+    claimVoiceChannel(channel.id);
     try {
       const r = await (await restForChannel(channel.id)).joinVoice(channel.id);
       mergeChannelVoiceStates(channel.id, r.channelVoiceStates);
@@ -3006,6 +3011,10 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Failed to start call', 'error');
     } finally {
+      // Release the claim on every exit — connectToVoice clears it when it
+      // settles, but the REST-failed / no-token paths never call it, and a
+      // stranded claim would make getConnectedChannelId() lie.
+      releaseVoiceChannel(channel.id);
       setBusy(false);
     }
   }

@@ -33,7 +33,7 @@ import { ApiError, type Channel } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useAppState, voiceStatesForChannel, selfVoiceState } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
-import { connectToVoice, VoiceError, prepareVoiceAudio } from '../lib/voice';
+import { connectToVoice, VoiceError, prepareVoiceAudio, claimVoiceChannel, releaseVoiceChannel } from '../lib/voice';
 import { clearCallNotification } from '../lib/clearCallNotification';
 import { startRingtone, stopRingtone } from '../lib/sounds';
 import { showDesktopNotification } from '../lib/desktopNotify';
@@ -274,6 +274,11 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
     // autoplay Chrome, breaking remote speaker detection.
     prepareVoiceAudio();
     clearCallNotification(channel.id);
+    // Claim the target BEFORE the REST call — the server dispatches our
+    // VOICE_STATE_UPDATE over the gateway before it writes the join
+    // response, so the echo can land ahead of connectToVoice and read as a
+    // moderator move to the self-move detector.
+    claimVoiceChannel(channel.id);
     try {
       const r = await rest.joinVoice(channel.id);
       mergeChannelVoiceStates(channel.id, r.channelVoiceStates);
@@ -325,6 +330,10 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
         toasts.push(e instanceof ApiError ? e.message : 'Failed to accept call', 'error');
       }
     } finally {
+      // connectToVoice releases the claim when it settles; the 404 /
+      // REST-failed / no-token paths never reach it, and a stranded claim
+      // would make getConnectedChannelId() lie forever.
+      releaseVoiceChannel(channel.id);
       setBusy(false);
     }
   }
