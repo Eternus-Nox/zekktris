@@ -228,6 +228,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // becomes visible again. We forceReconnect() instead of just
     // start() because the gateway may still be in 'reconnecting'
     // state with a pending timer; force resets that and tries now.
+    // Deliberately forceReconnect() here, unlike the 'focus' handler below:
+    // visibilitychange fires only on a REAL hide→show, where iOS Safari has
+    // very likely already killed the socket silently. Reconnecting outright
+    // gets the user's messages back immediately instead of costing a
+    // heartbeat round trip first. It is also rare, so the teardown is cheap —
+    // which is exactly what is NOT true of 'focus'.
     function onVisibility() {
       if (document.visibilityState === 'visible') {
         gateway.forceReconnect();
@@ -245,10 +251,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // exactly how you end up hearing someone you cannot see.
     //
     // 'focus' fires reliably in Electron on window activation and after wake;
-    // 'online' covers a dropped-then-restored network. forceReconnect() is a
-    // no-op when the socket is already healthy, so extra firings are free.
+    // 'online' covers a dropped-then-restored network.
+    //
+    // ensureAlive(), NOT forceReconnect(): the latter ALWAYS closes the socket,
+    // so wiring it to 'focus' made every alt-tab back into the app destroy a
+    // healthy connection and pay a full HELLO/RESUME handshake — production
+    // /gateway sockets were living ~25 s. ensureAlive probes with a HEARTBEAT
+    // and only reconnects when the ack doesn't come back, which still catches
+    // the zombie sockets this listener exists for.
     function onWake() {
-      gateway.forceReconnect();
+      gateway.ensureAlive();
     }
     window.addEventListener('focus', onWake);
     window.addEventListener('online', onWake);

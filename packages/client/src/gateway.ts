@@ -153,6 +153,36 @@ export class GatewayClient {
    * Tearing down + reconnecting on visibility change is the only
    * reliable way to recover from those silent zombies.
    */
+  /**
+   * Wake-from-idle check: verify the socket is actually alive, and only
+   * reconnect if it isn't.
+   *
+   * Prefer this over [forceReconnect] for signals that fire on ordinary user
+   * activity — window focus, network 'online' — because forceReconnect ALWAYS
+   * tears the socket down. Wiring it to 'focus' meant every alt-tab back to
+   * the app destroyed a healthy connection and paid a full HELLO/RESUME
+   * handshake; production Caddy logs showed /gateway sockets living ~25 s.
+   *
+   * A zombie socket (iOS Safari suspending a backgrounded tab, a half-open TCP
+   * after sleep) still looks OPEN by readyState, which is why the old code
+   * reconnected unconditionally. But we already have a precise detector for
+   * that: send a HEARTBEAT and let the existing ack watchdog force-reconnect
+   * if no HEARTBEAT_ACK comes back. A live socket answers in a round trip and
+   * is left alone; a dead one is torn down a few seconds later, which is far
+   * sooner than the 30 s heartbeat interval would have noticed on its own.
+   *
+   * Use [forceReconnect] directly when you KNOW the connection is gone.
+   */
+  ensureAlive(): void {
+    if (this.intentionallyClosed) return;
+    // No socket, or one that is closing/closed: nothing to probe.
+    if (!this.ws || this.ws.readyState !== 1 /* OPEN */) {
+      this.forceReconnect();
+      return;
+    }
+    this.sendHeartbeat();
+  }
+
   forceReconnect(): void {
     if (this.intentionallyClosed) return;
     // Cancel any pending reconnect timer.
