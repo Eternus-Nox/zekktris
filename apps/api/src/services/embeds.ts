@@ -15,7 +15,13 @@
  *     pinning the original hostname, so DNS rebinding can't swap a
  *     public IP for a private one mid-flight.
  *   - Body size cap: 2 MB. Streamed read aborts past the cap.
- *   - Time cap: 5 seconds total (DNS + connect + body).
+ *   - Time cap: 5 seconds for connect + headers + body, enforced by one
+ *     AbortController per call plus undici headers/body timeouts.
+ *     NOT covered: `safeResolve`'s dns.lookup, which is getaddrinfo on the
+ *     libuv threadpool — it takes no AbortSignal, runs once per redirect hop,
+ *     and a black-holed resolver can block it for ~20 s (glibc default
+ *     timeout:5 attempts:2 over two nameservers). Those threads are shared
+ *     with scrypt, so slow DNS here contends with password hashing.
  *   - Content-Type filter: only text/html (no other media types).
  *   - Redirect following: max 3 redirects, each re-validated for
  *     SSRF.
@@ -23,9 +29,10 @@
  * Limitations (fine for v1, address if real-world abuse appears):
  *   - We don't honor robots.txt — implicit "can a crawler fetch this?"
  *     check. Public web servers expecting bot traffic should be fine.
- *   - We don't dedup across messages — the same URL hit twice in
- *     close succession will be fetched twice. A small in-memory
- *     LRU could fix this; for now we accept the redundancy.
+ *   - Dedup across messages is handled by services/embedCache.ts (Redis
+ *     read-through + in-process single-flight). The persist path here reads
+ *     POSITIVE entries only, so a transient failure can't be baked onto a
+ *     message row permanently.
  *   - HTML parsing is regex-based, not a real DOM. Misses pages with
  *     fancy HTML quirks. Trade-off: zero new dependencies.
  */
@@ -37,6 +44,7 @@ import { db, schema } from '../db';
 import { log } from '../log';
 import * as dispatch from '../gateway/dispatch';
 import type { MessageEmbedJson } from '@zekktris/db/schema';
+import { cachedResolveEmbed } from './embedCache';
 
 // ── Tunables ───────────────────────────────────────────────────────────────
 
@@ -305,6 +313,27 @@ async function fetchHtml(rawUrl: string): Promise<{ html: string; finalUrl: URL 
   }
 
   const deadline = Date.now() + FETCH_TIMEOUT_MS;
+  // ONE controller/timer for the WHOLE call — every hop's fetch AND its body
+  // read share this signal.
+  //
+  // This used to be armed per-hop and cleared in the `finally` of the fetch
+  // try-block. But `await fetch()` settles when the response HEADERS arrive,
+  // not when the body is consumed, so the clear fired before a single body
+  // byte was read and the signal was dead for the entire streaming phase. The
+  // only body-phase guard is the `Date.now() >= deadline` check inside the
+  // read loop, which is evaluated AFTER a chunk arrives — so a server that
+  // returns `200 text/html` and then sends nothing blocked `reader.read()`
+  // with no deadline at all, falling through to undici's 300 s default
+  // bodyTimeout. The header comment promising a 5 s total cap was simply
+  // false for the body, and any URL a user can get unfurled could pin a
+  // socket for five minutes.
+  //
+  // Deliberately never cleared: a fire after the body is read aborts an
+  // already-settled request, which is a no-op. unref() so the pending timer
+  // cannot hold the event loop open (or trip the open-handle tracker in tests).
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  timer.unref();
   let redirects = 0;
   let current = url;
 
@@ -343,7 +372,21 @@ async function fetchHtml(rawUrl: string): Promise<{ html: string; finalUrl: URL 
     const pinnedIp = resolved.ip;
     const pinnedFamily = resolved.family;
     const agent = new Agent({
+      // Belt-and-braces under the AbortController above. undici's defaults are
+      // headersTimeout 300 s / bodyTimeout 300 s, which is what the body read
+      // silently fell back to while the signal was being cleared too early.
+      // Enforcing the cap at the dispatcher too means a future refactor of the
+      // signal plumbing cannot re-open a 5-minute socket hold.
+      headersTimeout: FETCH_TIMEOUT_MS,
+      bodyTimeout: FETCH_TIMEOUT_MS,
       connect: {
+        // Sub-budget for TCP + TLS out of the call's 5 s. undici's own default
+        // is 10 s, which alone would overrun the whole cap; the AbortController
+        // above would still stop it, this just fails faster and more clearly.
+        // Not tighter than 3 s: for https the timer clears on 'secureConnect',
+        // so this covers the full handshake and a slow-but-real origin needs
+        // room.
+        timeout: 3_000,
         // undici's connector calls this with { all: true } and expects
         // the result as an ARRAY of { address, family }. The legacy
         // 3-arg dns.lookup form — callback(null, ip, family) — makes
@@ -365,10 +408,6 @@ async function fetchHtml(rawUrl: string): Promise<{ html: string; finalUrl: URL 
         },
       },
     });
-
-    const remainingMs = deadline - Date.now();
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), remainingMs);
 
     let res: Response;
     try {
@@ -409,8 +448,6 @@ async function fetchHtml(rawUrl: string): Promise<{ html: string; finalUrl: URL 
       // pool when fetch throws (DNS failure, abort, etc).
       void agent.destroy().catch(() => undefined);
       return null;
-    } finally {
-      clearTimeout(timer);
     }
 
     // Handle redirects manually (so we re-validate SSRF).
@@ -490,9 +527,29 @@ async function fetchHtml(rawUrl: string): Promise<{ html: string; finalUrl: URL 
         }
       }
     } catch (e) {
-      log.debug?.('embed body read failed', { url: current.href, err: String(e) });
-      void agent.destroy().catch(() => undefined);
-      return null;
+      // SALVAGE what we already buffered. og:title / og:description / <title>
+      // all live in <head>, i.e. the first bytes of the stream, so a partial
+      // read is usually enough for a full card.
+      //
+      // This matters because the deadline now genuinely reaches the body read.
+      // Previously the abort signal was (wrongly) disarmed before the body
+      // phase, so the ONLY body-phase exit was the graceful
+      // `Date.now() >= deadline` check below, which cancels and breaks — and
+      // that path parses what it has. Arming the signal correctly made the
+      // abort win the race in the common case, which would have turned every
+      // slow-but-working origin into a null. Keeping the bytes preserves the
+      // old behaviour for exactly those sites while still capping the socket.
+      if (chunks.length > 0) {
+        log.debug?.('embed body read interrupted; parsing partial body', {
+          url: current.href,
+          bytes: total,
+          err: String(e),
+        });
+      } else {
+        log.debug?.('embed body read failed', { url: current.href, err: String(e) });
+        void agent.destroy().catch(() => undefined);
+        return null;
+      }
     }
     const buf = Buffer.concat(chunks.map((c) => Buffer.from(c)));
     // Best-effort utf-8 decode; the meta-tag matches we run later only
@@ -553,16 +610,25 @@ export async function resolveEmbed(rawUrl: string): Promise<MessageEmbedJson | n
     siteName: siteName ?? null,
   });
 
+  // The URL fields are capped too, not just the text ones. imageUrl and
+  // faviconUrl come straight out of attacker-controlled markup — the
+  // metaContent capture will take an `og:image` href as long as the page
+  // itself — and they are written to the messages row, shipped to every
+  // client, and cached. A real image URL is nowhere near 1 KB.
   return {
-    url: rawUrl,
+    url: truncate(rawUrl, MAX_URL_CHARS),
     kind: 'link',
     title: title ? truncate(title, 200) : null,
     description: description ? truncate(description, 400) : null,
-    imageUrl,
+    imageUrl: imageUrl ? truncate(imageUrl, MAX_URL_CHARS) : null,
     siteName: siteName ? truncate(siteName, 80) : null,
-    faviconUrl,
+    faviconUrl: faviconUrl ? truncate(faviconUrl, MAX_URL_CHARS) : null,
   };
 }
+
+/** Cap for any URL-shaped field. Comfortably above real URLs, far below the
+    megabyte-scale values hostile markup can supply. */
+const MAX_URL_CHARS = 1024;
 
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
@@ -611,7 +677,18 @@ export async function resolveAndPersistEmbeds(args: {
   // fine because resolveEmbed never throws.
   let resolved: MessageEmbedJson[];
   try {
-    const results = await Promise.all(urls.map((u) => resolveEmbed(u)));
+    // Through the same cache the /unfurl route uses, so a URL posted in a busy
+    // channel — or already unfurled by a client in an E2EE DM — is fetched
+    // once, not once per message. Also single-flights duplicates within this
+    // very batch, which a bare Promise.all could not.
+    //
+    // acceptNegative: false because whatever comes back is PERSISTED onto the
+    // message row and never retried. Borrowing another caller's transient null
+    // would make that message permanently preview-less. Positive hits are
+    // still used, and this call still warms the cache for /unfurl.
+    const results = await Promise.all(
+      urls.map((u) => cachedResolveEmbed(u, resolveEmbed, { acceptNegative: false })),
+    );
     resolved = results.filter((r): r is MessageEmbedJson => r !== null);
     log.info('embed pipeline: resolved', {
       messageId: args.messageId.toString(),

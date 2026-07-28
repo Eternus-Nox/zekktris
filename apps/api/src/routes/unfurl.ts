@@ -30,6 +30,7 @@ import { validate } from '../lib/validate';
 import { RateLimiter } from '../lib/rateLimit';
 import { errors } from '../errors';
 import * as embeds from '../services/embeds';
+import { cachedResolveEmbed } from '../services/embedCache';
 
 export const unfurlRouter = new Hono();
 
@@ -53,6 +54,11 @@ unfurlRouter.get('/', validate('query', unfurlQuery), async (c) => {
   const [normalized] = embeds.extractUrls(url);
   if (!normalized) return c.json({ embed: null });
 
-  const embed = await embeds.resolveEmbed(normalized);
+  // Through the cache: this endpoint is the ONLY thing that resolves previews
+  // for E2EE DMs (the server can't read the ciphertext to persist them on the
+  // message row the way it does for plaintext), so without it the same URLs
+  // were re-fetched on every render, on every device, forever. The cache also
+  // single-flights the concurrent burst a client sends when a channel opens.
+  const embed = await cachedResolveEmbed(normalized, embeds.resolveEmbed);
   return c.json({ embed });
 });
