@@ -143,12 +143,19 @@ export class Connection {
     // Watchdog: if HEARTBEAT_INTERVAL + GRACE elapses without a heartbeat,
     // assume the client is gone (their TCP keepalive may not have fired
     // yet) and close the socket.
+    //
+    // Polled every GRACE, not every INTERVAL. The threshold is unchanged, but
+    // a check that only ran every INTERVAL could overshoot it by nearly a full
+    // interval: a client dying just after a heartbeat was detected at up to
+    // 2*INTERVAL + GRACE (~70 s), not the ~40 s the constants read as. Ticking
+    // on the smaller of the two bounds the overshoot to GRACE. No extra
+    // traffic — this timer only compares a timestamp.
     this.heartbeatTimer = setInterval(() => {
       const since = Date.now() - this.lastHeartbeatAt;
       if (since > HEARTBEAT_INTERVAL_MS + HEARTBEAT_GRACE_MS) {
         this.close(CloseCode.SESSION_TIMEOUT, 'heartbeat lapsed');
       }
-    }, HEARTBEAT_INTERVAL_MS);
+    }, HEARTBEAT_GRACE_MS);
   }
 
   markAuthenticated(

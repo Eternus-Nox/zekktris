@@ -55,6 +55,14 @@ const MAX_BACKOFF_MS = 30_000;
  */
 const HEARTBEAT_ACK_TIMEOUT_MS = 10_000;
 
+/**
+ * Spread for the FIRST heartbeat after connecting. Only needs to be enough to
+ * de-synchronize a herd of clients reconnecting together; the resulting offset
+ * carries into the steady-state interval. Kept small so a fresh socket gets a
+ * liveness check almost immediately — see startHeartbeat().
+ */
+const INITIAL_HEARTBEAT_JITTER_MS = 2_000;
+
 export class GatewayClient {
   private ws: WebSocket | null = null;
   private status: ConnectionStatus = 'idle';
@@ -459,9 +467,20 @@ export class GatewayClient {
   private startHeartbeat(intervalMs: number): void {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.heartbeatStartTimer) clearTimeout(this.heartbeatStartTimer);
-    // Send first heartbeat at a random offset 0..interval so multiple clients
-    // don't synchronize on reconnect storms.
-    const initialDelay = Math.floor(Math.random() * intervalMs);
+    // Send the FIRST heartbeat almost immediately, with only enough jitter to
+    // de-synchronize clients.
+    //
+    // This used to be `Math.random() * intervalMs` — a 0..30 s wait before the
+    // first beat. The ack watchdog is only armed by sendHeartbeat(), so a
+    // freshly-connected socket had NO liveness check for up to 30 s, and up to
+    // 40 s counting the ack timeout. That blind window is a large part of why
+    // clients fall back on a 3 s REST poll to notice missed messages.
+    //
+    // The jitter exists to stop a herd of clients reconnecting after a server
+    // restart from beating in lockstep. A couple of seconds of spread does that
+    // just as well as thirty — the offset persists into the steady-state
+    // interval either way.
+    const initialDelay = Math.floor(Math.random() * INITIAL_HEARTBEAT_JITTER_MS);
     this.heartbeatStartTimer = setTimeout(() => {
       this.heartbeatStartTimer = null;
       if (!this.ws || this.ws.readyState !== this.ws.OPEN) return;
