@@ -195,6 +195,20 @@ export type SecurityEventKind =
   | 'spam_limited'
   | 'banned_word'
   | 'watch_word'
+  /**
+   * One session recovered the same refresh chain across enough separate
+   * rotations that it stopped looking like a network fault. Raised by
+   * auth/refresh-replay.ts (see noteRecoveredRotation for the threshold, the
+   * window, and why they are what they are). userId is the session's OWNER —
+   * the potential victim, not an offender — and there is no actor: this is an
+   * automated detection, like the two above. The session id, the count, the
+   * window and the User-Agent hash are in `detail`; no token material, no
+   * sealed blob, no raw User-Agent is ever recorded.
+   *
+   * `kind` is a plain text column (see packages/db/src/schema/security.ts), not
+   * a pg enum, so adding this value is a type-level change only — no migration.
+   */
+  | 'refresh_replay_repeated'
   | 'staff_ban'
   | 'staff_unban'
   | 'staff_logout'

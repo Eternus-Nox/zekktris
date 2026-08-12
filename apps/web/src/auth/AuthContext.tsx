@@ -26,12 +26,34 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { GatewayClient, RestClient, type SelfUser } from '@zekktris/client';
+import { ApiError, GatewayClient, RestClient, type SelfUser } from '@zekktris/client';
 import { clearDecryptedMediaCache } from '../lib/e2ee';
 import { setMonetization, setUserTier } from '../lib/voice';
 
 const TOKEN_STORAGE_KEY = 'zekktris.accessToken';
 const USER_STORAGE_KEY = 'zekktris.user';
+
+/**
+ * Backoff for the boot /users/@me hydration: 1s, doubling to a 30s ceiling,
+ * and it never stops while the tab is open and we still hold a token. This is
+ * a reconnect path, not a give-up path — the failures it exists for (app
+ * launched before the network is up, api mid-restart, laptop waking on a
+ * train) resolve on their own, and the old behaviour of wiping the session on
+ * the first failed attempt turned every one of them into a re-login.
+ */
+const BOOT_HYDRATE_FIRST_RETRY_MS = 1_000;
+const BOOT_HYDRATE_MAX_RETRY_MS = 30_000;
+/**
+ * How many boot hydrations may fail before we stop and show something the user
+ * can act on — but ONLY in the case where the retry loop is all there is on
+ * screen (a token, no cached user, so the app is sitting on the boot loader).
+ * Six attempts at 1/2/4/8/16 s is a bit over half a minute of silent retrying,
+ * which comfortably covers a deploy or a laptop waking up; past that, a spinner
+ * with no message and no escape is not a state to leave someone in. With a
+ * cached user the app is already rendered and the loop is a harmless background
+ * refresh, so it is not capped.
+ */
+const BOOT_HYDRATE_MAX_ATTEMPTS = 6;
 
 interface AuthState {
   /** Null when logged out. */
@@ -77,6 +99,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     user: parseStoredUser(),
     hydrating: tokenRef.current !== null,
   }));
+  // Boot hydration gave up with nothing to render — see BOOT_HYDRATE_MAX_ATTEMPTS.
+  const [stalled, setStalled] = useState(false);
+  // Bumping this restarts the hydration effect from a clean ladder ("Try again").
+  const [hydrateAttempt, setHydrateAttempt] = useState(0);
+  // Read inside the hydration ladder's async catch, where `state` would be a
+  // stale closure. Mirrors "do we have anything to render?".
+  const hasUserRef = useRef<boolean>(state.user !== null);
+  useEffect(() => {
+    hasUserRef.current = state.user !== null;
+  }, [state.user]);
 
   // ── Singletons ────────────────────────────────────────────────────────
   // Created once. The token getter closure reads tokenRef so token rotation
@@ -161,26 +193,94 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!tokenRef.current) {
-      setState((s) => ({ ...s, hydrating: false }));
+      setState((s) => (s.hydrating ? { ...s, hydrating: false } : s));
       return;
     }
+    setStalled(false);
     let cancelled = false;
-    rest
-      .getMe()
-      .then((r) => {
-        if (cancelled) return;
-        setToken(tokenRef.current, r.user);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        // Token is invalid (expired, revoked, server reset). Wipe and
-        // leave the user on the login screen.
-        setToken(null, null);
-      });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let retryMs = BOOT_HYDRATE_FIRST_RETRY_MS;
+    let attempts = 0;
+
+    // Boot hydration is RETRIED, not fatal. Who is allowed to end the session
+    // is the whole point here:
+    //
+    //  - A 403 is a definitive rejection of this identity (banned, deleted) —
+    //    no token refresh can fix it, so we clear.
+    //  - A 401 is NOT ours to act on. The REST client already tried to refresh
+    //    behind this call; if the refresh token was genuinely dead it answered
+    //    401/403, onRefreshFailed fired, and our credentials are already gone
+    //    (tokenRef is null) — nothing left to do. If the refresh merely
+    //    couldn't complete (offline, 5xx, another tab won the rotation race)
+    //    we still hold a perfectly good refresh token and must keep it.
+    //  - Everything else — ApiError(0, 'NETWORK'), a proxy's 502, a timeout —
+    //    says nothing at all about the session. This catch used to treat all
+    //    of them as "token is invalid" and wipe, which is why opening the
+    //    desktop app at login (before the network stack is up) or reloading
+    //    during a deploy dropped people on the login screen.
+    const hydrate = () => {
+      rest
+        .getMe()
+        .then((r) => {
+          if (cancelled) return;
+          setToken(tokenRef.current, r.user);
+        })
+        .catch((err: unknown) => {
+          if (cancelled) return;
+          if (err instanceof ApiError && err.status === 403) {
+            setToken(null, null);
+            return;
+          }
+          // The refresh path already decided the session was over and cleared
+          // everything; stop retrying into a logged-out state.
+          if (!tokenRef.current) return;
+          // Transient. If we have a cached user we can render the app right
+          // now on last-known state rather than sitting on the boot loader —
+          // and keep re-hydrating in the background. With no cached user
+          // there's nothing to draw, so we stay on the loader until the
+          // network comes back (leaving `hydrating` true also keeps the login
+          // route from bouncing us back and forth with a token in hand).
+          //
+          // The `s.hydrating` half of the guard matters: without it this
+          // allocated a NEW state object on every single failed attempt even
+          // once hydrating was already false, which changed the context value's
+          // identity and re-rendered every useAuth() consumer in the app on
+          // each rung of the ladder, for the whole outage.
+          setState((s) => (s.user && s.hydrating ? { ...s, hydrating: false } : s));
+          attempts += 1;
+          // BOUNDED only while we are BLOCKING. With a cached user the app is
+          // on screen and this is just a background refresh, so it keeps going
+          // (giving up there would strand the UI on stale data until a manual
+          // reload). With no cached user this loop IS the UI — an unbounded
+          // ladder is a spinner with no message, no control, and no way to
+          // reach the login screen. So after a bounded number of attempts we
+          // stop and render a terminal state the user can act on.
+          //
+          // Why a state of our own rather than just flipping `hydrating` to
+          // false: with a token in hand and no user, the app's auth gate sends
+          // us to /login, and /login sends anyone holding a token straight back
+          // — an infinite redirect. The terminal panel is rendered here instead,
+          // above that whole routing question, and its "Sign in again" button
+          // clears the token first so the bounce can't happen.
+          if (!hasUserRef.current && attempts >= BOOT_HYDRATE_MAX_ATTEMPTS) {
+            setStalled(true);
+            return;
+          }
+          // ±50% jitter, for the same reason the REST client's refresh ladder
+          // has it: tabs opened together would otherwise re-hydrate in
+          // lockstep, and each of these calls can fan out into its own refresh
+          // ladder underneath.
+          timer = setTimeout(hydrate, Math.round(retryMs * (0.5 + Math.random())));
+          retryMs = Math.min(retryMs * 2, BOOT_HYDRATE_MAX_RETRY_MS);
+        });
+    };
+    hydrate();
+
     return () => {
       cancelled = true;
+      if (timer !== undefined) clearTimeout(timer);
     };
-  }, [rest, setToken]);
+  }, [rest, setToken, hydrateAttempt]);
 
   // ── Cross-tab auth sync ───────────────────────────────────────────────
   // The `storage` event fires only in OTHER tabs. If another tab logs out
@@ -388,7 +488,96 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [state, rest, gateway, login, loginWithPasskey, loginWithDeviceCode, register, logout, updateUser, emailVerificationRequired],
   );
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={value}>
+      {/* Terminal state for boot hydration. Reached only when we hold a token,
+          have no cached user to render, and the ladder above ran out of
+          attempts — i.e. exactly the case that used to be an unbounded spinner.
+          Rendered here rather than handed to the app's auth gate because that
+          gate sends a user-less token holder to /login and /login sends token
+          holders back, which would loop; and because "keep hydrating" is this
+          provider's job, not a screen's.
+
+          It stands in for the whole tree, which in this state is only ever the
+          boot loader. The one cost is that a public route (terms, privacy, a
+          password reset) would also be covered for a token-holder in this
+          state; "Sign in again" clears the token and restores normal routing,
+          so it is recoverable rather than a dead end. */}
+      {stalled && state.hydrating ? (
+        <HydrationStalled
+          onRetry={() => {
+            setStalled(false);
+            setHydrateAttempt((n) => n + 1);
+          }}
+          onSignOut={() => setToken(null, null)}
+        />
+      ) : (
+        children
+      )}
+    </AuthContext.Provider>
+  );
+}
+
+/**
+ * "We couldn't reach the server" screen. Deliberately offers both a retry (the
+ * failure is usually transient and the session is usually fine) and a way out
+ * to the login screen (for when it isn't), because the state this replaces —
+ * an indefinite spinner — offered neither.
+ */
+function HydrationStalled({
+  onRetry,
+  onSignOut,
+}: {
+  onRetry: () => void;
+  onSignOut: () => void;
+}) {
+  // Auto-recover when the network comes back. By far the most common way to
+  // reach this panel is an outage that outlasted the ladder — a laptop lid, a
+  // tunnel, a captive portal, wi-fi handing over — and in every one of those the
+  // machine knows the moment connectivity returns. Making the user click Try
+  // again at that point is a manual step for something we were already told
+  // about. `online` is edge-triggered and only fires on an offline→online
+  // transition, so it cannot spin: while we are still offline nothing fires, and
+  // one retry per reconnection is exactly one ladder.
+  //
+  // It is a supplement, not a replacement: `online` means "the OS has a link",
+  // not "the server answers", so the button stays for the case where the link
+  // was never the problem (server down, DNS, a proxy 502).
+  const retryRef = useRef(onRetry);
+  retryRef.current = onRetry;
+  useEffect(() => {
+    const onOnline = () => retryRef.current();
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, []);
+  return (
+    <div className="fixed inset-0 grid place-items-center bg-bg-0 p-6">
+      <div className="w-full max-w-md rounded-2xl border border-line bg-bg-1 p-6 sm:p-8 shadow-2xl text-center">
+        <h1 className="text-xl font-semibold text-ink-1">Can&rsquo;t reach Zekktris</h1>
+        <p className="text-sm text-ink-2 leading-relaxed mt-2">
+          We couldn&rsquo;t load your account. This is usually a connection
+          problem or the server restarting — your session is probably still
+          fine.
+        </p>
+        <div className="mt-5 space-y-2">
+          <button
+            type="button"
+            onClick={onRetry}
+            className="w-full px-4 py-2.5 rounded-lg bg-gradient-to-br from-accent to-accent-2 text-bg-0 font-semibold hover:brightness-110 transition-all"
+          >
+            Try again
+          </button>
+          <button
+            type="button"
+            onClick={onSignOut}
+            className="w-full px-4 py-2.5 rounded-lg border border-line bg-bg-2 text-ink-1 hover:bg-bg-3 transition-colors text-sm"
+          >
+            Sign in again
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function useAuth(): AuthContextValue {

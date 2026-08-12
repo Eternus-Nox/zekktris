@@ -13,20 +13,38 @@
  *   social_circle     — friends: 5 / 10 / 25 / 50
  *   night_owl         — 500 messages sent between 01:00–05:00 (server time)
  *   first_responder   — 100 replies sent within 10s of the original
- *   marathon          — a 365-day messaging streak
- *   founder           — owns a server that reached 25 members
+ *   inseparable       — DM streak: 7 / 30 / 100 days
+ *   marathon          — a 365-day messaging streak (the capstone above those)
+ *   founder           — owns a server that reached 25 / 100 / 500 members
  *   voice_of_people   — 100 hours in 1:1 calls (sum of call durations)
+ *   ring_ring         — 50 completed 1:1 calls (answered, not missed)
+ *   founding_member   — signed up before FOUNDING_MEMBER_CUTOFF
  *   locked_in         — added a passkey
  *   double_locked     — passkey AND two-factor both enabled
  *   tagged            — wearing a name tag
  *   framed            — avatar frame equipped
  *   signature_look    — avatar + banner + bio + name tag all set
- *   welcome_committee — first to greet a newcomer after their welcome message
+ *   welcome_committee — first to greet a newcomer: 1 / 10 / 50 times
  *   off_the_record    — in an end-to-end-encrypted DM
  *   discovered        — joined a server through Discovery
  *   guardian_angel    — actively supervising a child account
  *   first_contact     — joined a voice channel (user_voice_stats)
- *   event_horizon     — an hour of total voice time (user_voice_stats)
+ *   event_horizon     — total voice time: 1h / 10h (user_voice_stats)
+ *
+ * Tier convention (set by veteran / chatterbox / social; every ladder here
+ * follows it): one entry per rung, id `family_<goal>`, the SAME `name` across
+ * the family, and the rung's threshold as the `marker`. Clients derive the
+ * roman numeral from the shared name ordered by goal (web AchievementsShelf
+ * `tierNumerals`, iOS MainView), so "Founder II" is a CLIENT-side label —
+ * never bake a numeral into `name`. And never change an existing rung's `id`:
+ * it is the `user_achievements` ledger key, which is why the original rungs
+ * keep their bare ids (`founder`, `welcome_committee`, `event_horizon`)
+ * instead of being renamed to `founder_25` etc.
+ *
+ * Every badge below carries a comment on whether it is farmable. That is a
+ * hard requirement of adding one — a badge nobody can trust is worse than no
+ * badge, and the cheapest exploit (idle in an empty voice channel, greet your
+ * own alt) is usually the one a threshold invites.
  */
 
 import { and, count, eq, isNull, sql } from 'drizzle-orm';
@@ -48,6 +66,30 @@ export interface Achievement {
 
 const CHATTERBOX_TIERS = [100, 1_000, 10_000, 100_000];
 const SOCIAL_TIERS = [5, 10, 25, 50];
+/** DM-streak ladder beneath the 365-day `marathon` capstone. */
+const INSEPARABLE_TIERS = [7, 30, 100];
+/** Owned-guild size ladder above the original 25-member `founder`. */
+const FOUNDER_TIERS = [100, 500];
+/** Newcomer-greeting ladder above the original single `welcome_committee`. */
+const WELCOME_TIERS = [10, 50];
+
+/**
+ * Founding Member cutoff — accounts created strictly BEFORE this instant.
+ *
+ * Chosen as the end of the launch month: v1.0 shipped 2026-08-06 (desktop
+ * v1.0.1), so this closes the founding window at the end of the first public
+ * month rather than leaving it open indefinitely. It is a constant precisely
+ * so it can be moved — but only FORWARD, and only while it is still in the
+ * future. Moving it earlier after the fact un-earns a badge people already
+ * have on their shelf (the `user_achievements` ledger keeps the row, but
+ * achievementsForUser recomputes live, so the tile silently disappears).
+ *
+ * This is the only unforgeable badge in the catalog: `users.created_at` is
+ * stamped server-side by the signup INSERT, is never read from the request
+ * body, and no endpoint — admin included — updates it. Every other badge
+ * measures behaviour, and behaviour can be ground out or staged with an alt.
+ */
+export const FOUNDING_MEMBER_CUTOFF = new Date('2026-09-01T00:00:00Z');
 
 function num(x: unknown): number {
   if (typeof x === 'number') return x;
@@ -101,6 +143,26 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
       earned: false,
       goal: nextY,
     });
+
+    // Founding Member — same `userRow` read, no extra query. NOT farmable and
+    // in fact not forgeable at all: see FOUNDING_MEMBER_CUTOFF above.
+    // Earned-only: a locked 0/1 tile is NEVER emitted, not even while the
+    // window is open. Nobody can be inside the window and not already founding
+    // — createdAt <= now, so `now < CUTOFF` implies `createdAt < CUTOFF` — and
+    // once the window closes it can never be earned, so a permanently-0/1
+    // badge on every later signup's shelf would be noise, not a goal.
+    const founding = userRow.createdAt.getTime() < FOUNDING_MEMBER_CUTOFF.getTime();
+    if (founding) {
+      out.push({
+        id: 'founding_member',
+        name: 'Founding Member',
+        description: 'Signed up before the public launch.',
+        marker: '🌱',
+        value: 1,
+        earned: true,
+        goal: 1,
+      });
+    }
   }
 
   // ── Messages sent (chatterbox tiers + night owl + first responder) ─────
@@ -204,6 +266,26 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
     goal: 365,
   });
 
+  // Inseparable — the rungs beneath Marathon, off the SAME `best` value (no
+  // extra query). Not self-farmable: a streak day is credited only when BOTH
+  // participants of the DM message within the same UTC day (streaks.ts), and
+  // the goal is measured in calendar days — an alt account still has to be
+  // tended on 7 / 30 / 100 separate real days, which no amount of grinding
+  // compresses. Kept as its own family name rather than folded into
+  // 'Marathon': sharing the name would relabel the existing badge as
+  // "Marathon IV" on everyone's shelf.
+  for (const tier of INSEPARABLE_TIERS) {
+    out.push({
+      id: `inseparable_${tier}`,
+      name: 'Inseparable',
+      description: `Kept a ${tier}-day DM streak.`,
+      marker: `${tier}`,
+      value: best,
+      earned: best >= tier,
+      goal: tier,
+    });
+  }
+
   // ── Founder (owns a guild that reached 25 members) ─────────────────────
   const [biggest] = await db
     .select({
@@ -226,12 +308,40 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
     earned: biggestGuild >= 25,
     goal: 25,
   });
+  // Founder II / III — same `biggest` row, no extra query. Not farmable at
+  // this scale: every member is a distinct account that had to clear signup
+  // (DOB gate + email) and then actually join, and the value is CURRENT
+  // membership rather than a cumulative total, so it goes back down when
+  // people leave. Whoever fakes 500 of those has earned something.
+  for (const tier of FOUNDER_TIERS) {
+    out.push({
+      id: `founder_${tier}`,
+      name: 'Founder',
+      description: `Created a server that reached ${tier} members.`,
+      marker: `${tier}`,
+      value: biggestGuild,
+      earned: biggestGuild >= tier,
+      goal: tier,
+    });
+  }
 
   // ── Voice of the People (100h in 1:1 calls) ────────────────────────────
   // Summed from system_call summaries in DMs the user participates in.
   const [vh] = await db
     .select({
       ms: sql<number>`COALESCE(SUM((${schema.messages.metadata} ->> 'durationMs')::bigint), 0)`,
+      // Ring Ring rides along on the SAME scan — one more aggregate, zero extra
+      // round trips. `missed = false` means the callee really joined: voice.ts
+      // stamps dm_active_call_answered_at only when a SECOND, different user
+      // enters the DM voice channel, so ring-outs and declines don't count.
+      // No channel-type or participant predicate is needed here, and that is
+      // load-bearing, not an oversight: BOTH writers of these rows hard-gate on
+      // `channel.type === 'dm'` (voice.ts joinVoice + endDmCallBookkeeping), so
+      // a `kind:'call'` summary can only exist in a 1:1 DM — where
+      // dm_recipients is exactly the two people on the call, and `missed=false`
+      // means both of them joined. If group-DM calls ever start writing these
+      // summaries, that invariant breaks and this query needs the predicate.
+      calls: sql<number>`COUNT(*) FILTER (WHERE ${schema.messages.metadata} ->> 'missed' = 'false')`,
     })
     .from(schema.messages)
     .innerJoin(
@@ -254,6 +364,22 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
     value: callHours,
     earned: callHours >= 100,
     goal: 100,
+  });
+
+  // Ring Ring — mildly farmable (a pair of accounts could answer each other 50
+  // times) but each cycle costs two real voice joins and it unlocks nothing but
+  // the tile, so the effort/reward never favours it. Deliberately COUNT-based
+  // rather than duration-based: a "longest single call" badge would pay people
+  // to leave a line open and walk away, which is not a thing worth rewarding.
+  const completedCalls = num(vh?.calls);
+  out.push({
+    id: 'ring_ring',
+    name: 'Ring Ring',
+    description: 'Completed 50 calls.',
+    marker: '📞',
+    value: completedCalls,
+    earned: completedCalls >= 50,
+    goal: 50,
   });
 
   // ── One combined read for the newer families ───────────────────────────
@@ -285,8 +411,21 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
       // "First to greet a newcomer": the user authored the first regular
       // message following someone ELSE's welcome (system_join rows are rare —
       // one per member join — so the LATERAL-ish correlated scan is bounded).
+      // COUNT(DISTINCT author) — one credit per NEWCOMER greeted, not per join
+      // EVENT, so a single alt cycling in and out is worth exactly one. See
+      // the farmability note on the WELCOME_TIERS ladder below.
+      //
+      // The COALESCE is for hard-deleted newcomers: `messages.author_id` is
+      // ON DELETE SET NULL, and COUNT(DISTINCT) skips NULLs — so a plain
+      // DISTINCT on the column would collapse EVERY tombstoned greeting into
+      // nothing and make a user's progress go BACKWARDS as people they
+      // legitimately greeted close their accounts. Falling back to the row id
+      // keeps each of those worth one, and cannot be farmed: earning a rung
+      // that way would mean deleting a whole account per join, which is far
+      // more expensive than the rejoin loop this DISTINCT exists to stop.
       welcomes: sql<number>`(
-        SELECT COUNT(*) FROM ${schema.messages} sj
+        SELECT COUNT(DISTINCT COALESCE(sj.author_id::text, 'gone:' || sj.id::text))
+        FROM ${schema.messages} sj
         WHERE sj.type = 'system_join'
           AND sj.deleted_at IS NULL
           AND sj.author_id IS DISTINCT FROM ${userId}
@@ -378,6 +517,26 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
     earned: welcomes >= 1,
     goal: 1,
   });
+  // Welcome Committee II / III — same `welcomes` value, no extra query.
+  // Farmability: skipping the user's own system_join rows (`sj.author_id IS
+  // DISTINCT FROM userId`) only stops you scoring off your own rejoins — on its
+  // own it is NOT enough at these thresholds. `postWelcomeMessage` fires on
+  // every non-idempotent join and the join route has no rate limit, so counting
+  // join EVENTS would let one alt join/leave 50 times and hand over the top rung
+  // in minutes. Hence the DISTINCT-on-author subquery: 50 requires
+  // 50 DIFFERENT newcomers, which is what the badge actually claims. It cannot
+  // weaken the goal-1 rung — the first greeting still counts as one.
+  for (const tier of WELCOME_TIERS) {
+    out.push({
+      id: `welcome_committee_${tier}`,
+      name: 'Welcome Committee',
+      description: `First to greet ${tier} newcomers.`,
+      marker: `${tier}`,
+      value: welcomes,
+      earned: welcomes >= tier,
+      goal: tier,
+    });
+  }
 
   const e2eeDms = num(extra?.e2eeDms);
   out.push({
@@ -432,6 +591,29 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
     earned: voiceMinutes >= 60,
     goal: 60,
   });
+  // Event Horizon II — same `voiceSeconds`, no extra query.
+  //
+  // FARMABLE BY DOING NOTHING, and that is the whole design constraint here:
+  // user_voice_stats.total_seconds accrues while you sit alone in an empty
+  // channel, so this measures presence, not participation. 10h is the ceiling
+  // on purpose — ordinary use reaches it, and idling to it isn't worth
+  // automating.
+  //
+  // DO NOT ADD A 100h RUNG. At that size, parking a client in a channel
+  // overnight becomes the cheapest path by an order of magnitude and the
+  // dominant strategy is AFK, which makes the badge mean the opposite of what
+  // it says. If a bigger voice badge is ever wanted, it has to be built on
+  // time spent with OTHER people present, not raw session seconds — and that
+  // is a new aggregate, not a free rung on this one.
+  out.push({
+    id: 'event_horizon_600',
+    name: 'Event Horizon',
+    description: 'Spent 10 hours in voice channels.',
+    marker: '10h',
+    value: voiceMinutes,
+    earned: voiceMinutes >= 600,
+    goal: 600,
+  });
 
   // Earned first (newest families intermixed is fine), then locked by
   // how close they are to unlocking.
@@ -455,13 +637,37 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
 // Rollout safety: a user's FIRST sync is a SILENT backfill — we record their
 // existing backlog without notifying (else everyone gets spammed at launch).
 // `users.achievements_seeded` gates this; new users are seeded at signup so
-// they get notified from their very first earn.
+// they get notified from their very first earn. That gate is per-user and
+// one-shot, so it does nothing for badges added AFTER a user is seeded — see
+// NEVER_NOTIFY_IDS for the one badge that must never announce at all.
+
+/**
+ * Badges that are recorded and displayed but NEVER announced — no toast, no
+ * push, permanently.
+ *
+ * `founding_member` is not an unlock EVENT. It is true from the instant of
+ * signup (`users.created_at` is stamped by the signup INSERT and never
+ * changes), so there is no moment at which the user does something to earn it.
+ * Announcing it is therefore always wrong, not merely wrong at rollout:
+ * shipping it as notifiable would push "Achievement unlocked — Founding
+ * Member" once to EVERY account that has ever existed (all of them predate the
+ * cutoff) inside a single 60s throttle window, and would then greet each
+ * brand-new signup with the same toast seconds after registration, because
+ * signup marks them seeded.
+ *
+ * The ledger insert and the shelf tile are untouched — only the notification
+ * is suppressed. Do NOT generalise this into a time-windowed silence for the
+ * other new badges: those are genuine unlocks people really earned, and their
+ * rollout burst is accepted deliberately.
+ */
+const NEVER_NOTIFY_IDS = new Set<string>(['founding_member']);
 
 /**
  * Recompute a user's achievements, record any newly-earned ones in the ledger,
- * and — unless this is the silent first-sync backfill or the user has turned
- * achievement notifications off — fire an in-app gateway toast + a push for
- * each. Fully best-effort: never throws (callers fire-and-forget it).
+ * and — unless this is the silent first-sync backfill, the user has turned
+ * achievement notifications off, or the badge is in NEVER_NOTIFY_IDS — fire an
+ * in-app gateway toast + a push for each. Fully best-effort: never throws
+ * (callers fire-and-forget it).
  */
 export async function syncAndNotifyAchievements(userId: bigint): Promise<void> {
   const [u] = await db
@@ -502,7 +708,9 @@ export async function syncAndNotifyAchievements(userId: bigint): Promise<void> {
   if (inserted.length === 0 || !u.notify) return;
 
   const newIds = new Set(inserted.map((r) => r.id));
-  const fresh = shelf.filter((a) => a.earned && newIds.has(a.id));
+  const fresh = shelf.filter(
+    (a) => a.earned && newIds.has(a.id) && !NEVER_NOTIFY_IDS.has(a.id),
+  );
   if (fresh.length === 0) return;
 
   const dispatch = await import('../gateway/dispatch');

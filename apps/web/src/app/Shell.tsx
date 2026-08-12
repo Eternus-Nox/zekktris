@@ -17,7 +17,7 @@
  * (DM channel from state.dmChannels), and hide the member list column.
  */
 
-import { useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import { ZekktrisMark } from '../lib/ZekktrisMark';
 import { Navigate, useNavigate, useParams, useLocation } from 'react-router-dom';
 import { VerifyEmailGate } from './VerifyEmail';
@@ -40,7 +40,7 @@ import { useNativePush } from './useNativePush';
 import { useDesktopIdleStatus } from '../lib/useDesktopIdleStatus';
 import { useAppStateSelector, totalMentionCount, voiceStatesForChannel, selfVoiceState } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
-import { disconnectVoice, getActiveVoiceSessionId } from '../lib/voice';
+import { disconnectVoice, getActiveVoiceSessionId, getConnectedChannelId } from '../lib/voice';
 import { GuildList } from './GuildList';
 import { ChannelList } from './ChannelList';
 import { DMList } from './DMList';
@@ -82,6 +82,58 @@ const ME = '@me';
  */
 const VOICE_TAKEOVER_GRACE_MS = 4000;
 
+/**
+ * Where the DM auto-end's "the partner HAS been in this call" latch is
+ * persisted so it survives a reload / PWA restore.
+ *
+ * The latch itself lives in a ref, which is fresh on every mount — so a tab
+ * that reloads mid-call (or a PWA the OS restored) comes back believing the
+ * partner was never here. READY then hydrates OUR voice row but not the
+ * partner's if they hung up in the meantime, and the auto-end below stays
+ * disabled for the rest of the session: the user renders as "in a call" that
+ * has already ended, their row sits on the server for everyone else to see,
+ * and their own call button is dead until they hang up by hand.
+ *
+ * sessionStorage, deliberately, not localStorage: it is scoped to THIS tab,
+ * so the latch can only ever re-arm a call this very tab was already
+ * watching. A second tab, or a call ringing out from the user's phone, never
+ * inherits it — which matters, because arming the latch on someone else's
+ * ring-out would make this tab hang up a call that nobody has answered yet.
+ */
+const PARTNER_SEEN_KEY = 'zekktrisCallPartnerSeen';
+
+/**
+ * The latch value is `<channelId>:<voiceSessionId>`. Pinning it to the voice
+ * session id — a fresh string the server mints on every join — is what stops
+ * an entry stranded by an earlier call (tab closed mid-call, so the "we left"
+ * branch never ran) from arming the NEXT call to the same DM, which would
+ * hang up that call's ring-out the instant it started.
+ */
+function partnerSeenLatch(channelId: string, sessionId: string | null): string | null {
+  return sessionId === null ? null : `${channelId}:${sessionId}`;
+}
+
+function readPartnerSeen(latch: string | null): boolean {
+  if (latch === null) return false;
+  try {
+    return window.sessionStorage.getItem(PARTNER_SEEN_KEY) === latch;
+  } catch {
+    // Storage disabled (private mode, locked-down webview). The in-memory
+    // ref still works for a tab that stays mounted; only the reload case
+    // degrades to today's behavior.
+    return false;
+  }
+}
+
+function writePartnerSeen(latch: string | null): void {
+  try {
+    if (latch === null) window.sessionStorage.removeItem(PARTNER_SEEN_KEY);
+    else window.sessionStorage.setItem(PARTNER_SEEN_KEY, latch);
+  } catch {
+    // See readPartnerSeen — persistence is a best-effort upgrade.
+  }
+}
+
 export function Shell() {
   const { token, user, hydrating, rest, emailVerificationRequired } = useAuth();
   // Desktop-only: auto-set Away/Online from system idle (no-op in browser).
@@ -98,6 +150,26 @@ export function Shell() {
   const guildIds = useAppStateSelector((v) => v.state.guildIds);
   const channelsByGuild = useAppStateSelector((v) => v.state.channelsByGuild);
   const guildsById = useAppStateSelector((v) => v.state.guildsById);
+  // Read only for the stage gate on the eviction teardown below, and only ever
+  // as a membership test — so subscribe to the KEY SET, flattened to a string,
+  // rather than to the dict itself.
+  //
+  // Subscribing to the dict was a re-render storm: STAGE_PARTICIPANTS_SET
+  // allocates a new dict on every update, and stage-participant updates fan out
+  // to the whole CHANNEL audience (dispatch.stageParticipantsUpdate), not just
+  // to people in the room. So every join / leave / hand-raise / promote in any
+  // stage re-rendered Shell — which cascades into all four columns, see above —
+  // for every member who can merely SEE that channel. The key set changes only
+  // when a stage channel first appears in state or is removed, which is the only
+  // thing this gate can actually observe, so the storm disappears while the
+  // answer stays identical.
+  const stageChannelIdKey = useAppStateSelector((v) =>
+    Object.keys(v.state.stageParticipantsByChannel).sort().join(','),
+  );
+  const stageParticipantChannelIds = useMemo(
+    () => new Set(stageChannelIdKey === '' ? [] : stageChannelIdKey.split(',')),
+    [stageChannelIdKey],
+  );
   const readStateByChannel = useAppStateSelector((v) => v.state.readStateByChannel);
   const nav = useNavigate();
   // Track on-screen keyboard height as a CSS variable so the layout
@@ -204,23 +276,174 @@ export function Shell() {
   // disconnectVoice. Cleared once the local voice state actually
   // shows we're no longer in this channel.
   const leavingInProgressRef = useRef<string | null>(null);
+  // Ref recording the channel whose end-of-call we have already announced
+  // (audio torn down + "Call ended" toast). Kept SEPARATE from
+  // leavingInProgressRef because the two have different lifetimes: the leave
+  // DELETE is retried until it succeeds, but the call only ends once. Cleared
+  // when the partner shows up again (a new call to announce the end of) and
+  // when we drop out of voice entirely.
+  const callEndedRef = useRef<string | null>(null);
+  /**
+   * Is `channelId` a STAGE room?
+   *
+   * Stage is the one connected state that legitimately has no voice_states
+   * row of our own: joinStage writes stage_participants and nothing else
+   * (apps/api/src/services/stage.ts), while connectToVoice still records the
+   * channel as connected for every join. So for a stage participant —
+   * audience AND speaker — "in a room, no row for me" is the normal steady
+   * state, not the eviction signature the teardown below looks for.
+   *
+   * Two signals, because either can be missing on its own: the participant
+   * list is fetched lazily by StageChannelView (absent until it lands), and a
+   * guild's channel list can be dropped from state while the room is still up.
+   */
+  const isStageChannel = useCallback(
+    (channelId: string): boolean => {
+      // stage_participants IS how stage membership is represented, and this
+      // slice is only ever written from stage events — an entry for the
+      // channel (ours or anyone else's) marks it as a stage room.
+      if (stageParticipantChannelIds.has(channelId)) return true;
+      for (const list of Object.values(channelsByGuild)) {
+        const ch = list.find((c) => c.id === channelId);
+        if (ch) return ch.type === 'guild_stage';
+      }
+      return false;
+    },
+    [channelsByGuild, stageParticipantChannelIds],
+  );
+  // The armed teardown re-evaluates the stage gate when it FIRES rather than
+  // trusting the render that armed it — the user can hang up and join a stage
+  // inside the grace window. A ref, because that timer deliberately outlives
+  // the effect run that created it.
+  const isStageChannelRef = useRef(isStageChannel);
+  useEffect(() => {
+    isStageChannelRef.current = isStageChannel;
+  }, [isStageChannel]);
+  /**
+   * The pending "the server evicted us" teardown.
+   *
+   * It lives in a ref, not in the effect's cleanup, because the effect re-runs
+   * on every voiceStatesByUser / dmChannels change — the 10s in-call roster
+   * reconcile or a DM-recipient presence patch is enough. Scoped to the effect
+   * run, each of those unrelated dispatches cleared the pending teardown and
+   * started a fresh countdown, so a busy roster could push the deadline out
+   * indefinitely. Owned by the ref it is armed once per eviction and cancelled
+   * only by the things that make it wrong: our voice row coming back, or the
+   * connection going away.
+   */
+  const evictionTimerRef = useRef<number | null>(null);
+  const cancelEviction = useCallback(() => {
+    if (evictionTimerRef.current === null) return;
+    window.clearTimeout(evictionTimerRef.current);
+    evictionTimerRef.current = null;
+  }, []);
+  // Unmount only — cancelEviction is stable, so this never re-runs. A pending
+  // teardown must not outlive the Shell.
+  useEffect(() => cancelEviction, [cancelEviction]);
   useEffect(() => {
     const selfId = user?.id;
     if (!selfId || !myVoiceChannelId) {
       // Not in voice → clear the partner-was-here memory so a future
       // call to the same DM starts fresh. Also clear the leaving
       // guard since we're definitively out now.
+      //
+      // The PERSISTED half is dropped only when this mount was actually
+      // tracking a call. This branch also runs on the first render after a
+      // reload — before READY has hydrated our voice state — and clearing
+      // there would erase the very record the rehydrated call needs to know
+      // its partner had already answered.
+      if (partnerWasHereRef.current !== null) writePartnerSeen(null);
       partnerWasHereRef.current = null;
       leavingInProgressRef.current = null;
+      callEndedRef.current = null;
+      // Our own row is GONE while this device is still in the SFU room: the
+      // server ended the call for us — the callee declined, a moderator
+      // disconnected us, or the socket-close grace evicted the row. (An AFK
+      // move repoints the row instead of deleting it, so it lands on the
+      // self-move detector, not here.) Nothing else covers this: the takeover
+      // watcher above needs a server session id to compare against and there
+      // is none once the row is deleted, and the self-move detector only
+      // fires for a row that still names a channel. So without a teardown
+      // here the Room — and the mic — stays live behind a UI that already
+      // shows us out of the call. iOS does exactly this (AppStore's "server
+      // evicted US" branch).
+      //
+      // SCOPE: only a channel we could ever have HELD a row for. Not being
+      // connected at all is the obvious exclusion; STAGE is the one that is
+      // easy to miss and fatal to get wrong — a stage listener (and speaker)
+      // is connected to the room with no voice_states row by design, so
+      // "connected, no row" there is the steady state, and tearing down on it
+      // hangs up every stage participant seconds after they join. See
+      // isStageChannel.
+      const connected = getConnectedChannelId();
+      if (connected === null || isStageChannel(connected)) {
+        cancelEviction();
+        return;
+      }
+      // Deferred behind the same grace as the takeover check, for the same
+      // reason: a join in flight has a live room before its own state-update
+      // echo lands, and that window is indistinguishable from an eviction.
+      // The countdown is armed ONCE and owned by evictionTimerRef — a re-run
+      // driven by unrelated churn (roster reconcile, presence patch) must not
+      // restart it, or a busy roster keeps pushing the deadline out. It is
+      // cancelled by our row returning, or by the connection going away.
+      if (evictionTimerRef.current !== null) return;
+      // The CONNECTION this teardown was armed for — room and session both.
+      //
+      // Arming once (above) means the timer can outlive the connection it was
+      // armed against: evicted from X, user joins somewhere two seconds later,
+      // and the fresh join's VOICE_STATE_UPDATE echo lands after the grace
+      // expires. All the timer used to check was "connected to something that
+      // isn't a stage", so it tore down the healthy new call — hangup chime and
+      // all. Usually masked by the echo beating the join response and
+      // cancelling at the bottom of this effect; this makes it not a race.
+      //
+      // Room id alone is not enough, because half of that sequence is re-joining
+      // the SAME room X — where the id at fire time matches the id at arm time
+      // and the guard would wave a brand-new connection through. The local voice
+      // session id is what distinguishes them: voice.ts stamps a fresh one on
+      // every successful connect and clears it on disconnect, so "same room,
+      // different session" is exactly a re-join. Captured defensively — a null
+      // here (a connection that carries no session id) just falls back to the
+      // room-id check rather than blocking every teardown.
+      const armedChannelId = connected;
+      const armedSessionId = getActiveVoiceSessionId();
+      evictionTimerRef.current = window.setTimeout(() => {
+        evictionTimerRef.current = null;
+        // Re-read live rather than trusting the arming render: the grace
+        // window is long enough to hang up and land somewhere else. Only the
+        // room this was armed for may be torn down (the null test is what
+        // narrows the type; a null connection can't equal armedChannelId).
+        const stillConnected = getConnectedChannelId();
+        if (stillConnected === null || stillConnected !== armedChannelId) return;
+        if (armedSessionId !== null && getActiveVoiceSessionId() !== armedSessionId) return;
+        // The stage gate is re-evaluated at FIRE time, not trusted from the
+        // arming render: a guild's channel list can land inside the grace window
+        // and only then reveal the room as a stage.
+        if (isStageChannelRef.current(stillConnected)) return;
+        // Not silent: from the user's point of view the call ended, so the
+        // hangup chime is the honest signal.
+        void disconnectVoice();
+      }, VOICE_TAKEOVER_GRACE_MS);
       return;
     }
+    // We hold a voice row again (or still) → nothing was evicted; drop any
+    // countdown armed while it was missing.
+    cancelEviction();
     // If we're already mid-leave for this channel, do nothing — the
     // IIFE below started a leave that hasn't finished propagating
     // back to local state yet.
     if (leavingInProgressRef.current === myVoiceChannelId) return;
-    // Reset the flag if we changed channels (joined a different call).
+    // Reset the flag if we changed channels (joined a different call), seeding
+    // it from the persisted latch: after a reload the partner may have been
+    // here all along, and a fresh `seen: false` is what leaves the call
+    // un-endable for the rest of the session (see PARTNER_SEEN_KEY).
+    const latch = partnerSeenLatch(myVoiceChannelId, myVoiceSessionId);
     if (partnerWasHereRef.current?.channelId !== myVoiceChannelId) {
-      partnerWasHereRef.current = { channelId: myVoiceChannelId, seen: false };
+      partnerWasHereRef.current = {
+        channelId: myVoiceChannelId,
+        seen: readPartnerSeen(latch),
+      };
     }
     // Is the channel I'm in a 1:1 DM? Look it up.
     const ch = dmChannels.find((c) => c.id === myVoiceChannelId);
@@ -234,6 +457,15 @@ export function Shell() {
     // here and now they're not."
     if (othersInChannel) {
       partnerWasHereRef.current.seen = true;
+      // A partner is in the room, so this is a LIVE call — whatever end we
+      // announced earlier was for a previous one, and the next end deserves
+      // its own toast.
+      callEndedRef.current = null;
+      // Persist it too, so a reload / PWA restore of this tab rejoins the
+      // call already knowing it was answered. Skipped when the row carries
+      // no session id — there'd be nothing to pin the latch to, and writing
+      // the clear value here would drop a good entry.
+      if (latch !== null) writePartnerSeen(latch);
       return;
     }
     // No partner. Only fire the auto-end if the partner had been
@@ -242,17 +474,51 @@ export function Shell() {
     if (!partnerWasHereRef.current.seen) return;
     // Partner was here and is now gone → end the call locally.
     leavingInProgressRef.current = myVoiceChannelId;
-    void (async () => {
-      try {
-        await (await restForChannel(myVoiceChannelId)).leaveVoice(myVoiceChannelId);
-      } catch {
-        // Best-effort; if server-side leave fails the local
-        // disconnect below still tears down audio.
-      }
+    const leaving = myVoiceChannelId;
+    // End the call on this device exactly once, latched separately from the
+    // leave below. The two have different lifetimes: a failed DELETE is
+    // retried on the next voice-state change (see the catch), but the call
+    // itself only ends once — without this latch every retry re-announced
+    // "Call ended", once per presence patch, for as long as the DELETE kept
+    // failing. Local teardown comes first here for the same reason it does at
+    // every hangup button (VoiceView, MessageView, OutgoingCallModal): the
+    // mic should die when the call ends, not when the server gets around to
+    // acknowledging it.
+    if (callEndedRef.current !== leaving) {
+      callEndedRef.current = leaving;
       void disconnectVoice();
       toasts.push('Call ended', 'info');
+    }
+    void (async () => {
+      try {
+        await (await restForChannel(leaving)).leaveVoice(leaving);
+        // Success: leave the guard latched. Our row is about to disappear and
+        // clear it, and releasing early would let a re-render fire a
+        // duplicate leave before the gateway echo lands.
+      } catch {
+        // The leave failed, so the server still has us in the call and our
+        // voice row never clears — which means the "we're out of voice"
+        // branch that normally releases this guard will never run, and the
+        // guard at the top of this effect swallows every later attempt.
+        // One dropped request would otherwise disable hangup for the rest of
+        // the session: local audio dead, still in the call for everyone else.
+        // Release it so the next voice-state change retries the DELETE; the
+        // retry is the REST call only — audio is already down and the user has
+        // already been told.
+        if (leavingInProgressRef.current === leaving) leavingInProgressRef.current = null;
+      }
     })();
-  }, [myVoiceChannelId, voiceStatesByUser, dmChannels, user?.id, rest, toasts]);
+  }, [
+    myVoiceChannelId,
+    myVoiceSessionId,
+    voiceStatesByUser,
+    dmChannels,
+    user?.id,
+    rest,
+    toasts,
+    isStageChannel,
+    cancelEviction,
+  ]);
 
   // NOTE: All hooks must be declared BEFORE any early return below. Early
   // returns inside this component skip the hooks underneath them, and React

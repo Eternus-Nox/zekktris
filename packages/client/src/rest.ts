@@ -69,10 +69,16 @@ export interface RestClientOptions {
    */
   onTokenRefreshed?(accessToken: string): void;
   /**
-   * Called when a refresh attempt fails (401, network error, etc).
-   * The host should treat this as a hard logout — clear stored
-   * tokens, navigate to login. Without this hook, the user can get
-   * stuck with stale tokens that 401 forever.
+   * Called when /auth/refresh answers 401 or 403 — i.e. the refresh
+   * token itself is dead and no amount of retrying will bring the
+   * session back. The host should treat this as a hard logout: clear
+   * stored tokens, navigate to login.
+   *
+   * Deliberately NOT called for network errors, timeouts, 5xx, or the
+   * 409 the api returns when another tab won the rotation race. Those
+   * are transient, the credential is still good, and wiping it for
+   * them is what turned every offline moment and every api restart
+   * into "it logged me out again".
    */
   onRefreshFailed?(): void;
 }
@@ -105,6 +111,47 @@ function friendlyHttpMessage(status: number): string {
   return `Request failed (${status}).`;
 }
 
+/**
+ * The outcome of a /auth/refresh attempt. The distinction that matters is
+ * `fatal`: only that means "the session is over, clear the credentials".
+ * Collapsing every failure into one null — which is what this used to be —
+ * is why an offline moment, a 502 during a deploy, or a lost rotation race
+ * signed the user out.
+ */
+interface RefreshOutcome {
+  /** The rotated access token, or null if this attempt didn't get one. */
+  accessToken: string | null;
+  /** True only for 401/403 from /auth/refresh: the refresh token is dead. */
+  fatal: boolean;
+}
+
+/**
+ * Backoff ladder for a TRANSIENT refresh failure, in ms between attempts (so
+ * four attempts, ~6 s of waiting in the worst case).
+ *
+ * Kept deliberately short. When the api answers 409 the token we're presenting
+ * has been superseded, and the server only treats that as benign concurrency
+ * for a couple of minutes before it starts calling it token theft — so a client
+ * that kept retrying for minutes would talk itself into a revoked session. Six
+ * seconds sits comfortably inside that window while still riding out an api
+ * restart or a momentary drop.
+ */
+const REFRESH_RETRY_DELAYS_MS = [400, 1_200, 4_000];
+
+/**
+ * Spread a ladder rung over ±50% at random.
+ *
+ * Without this, N tabs whose access tokens were minted together expire together
+ * and retry in lockstep at exactly 400 / 1600 / 5600 ms — every rung is the
+ * same thundering herd against an endpoint that is doing real work per attempt,
+ * and the tabs that lost the first race are disproportionately likely to lose
+ * every subsequent one and exhaust the ladder. Jitter decorrelates them, which
+ * matters most during exactly the outage the retries exist to survive.
+ */
+function jittered(delayMs: number): number {
+  return Math.round(delayMs * (0.5 + Math.random()));
+}
+
 export class RestClient {
   constructor(private opts: RestClientOptions) {}
 
@@ -114,25 +161,13 @@ export class RestClient {
    * 401ing simultaneously would each fire their own refresh, causing
    * a refresh-token rotation race that invalidates the others.
    */
-  private refreshInFlight: Promise<string | null> | null = null;
+  private refreshInFlight: Promise<RefreshOutcome> | null = null;
 
-  private async tryRefresh(): Promise<string | null> {
+  private async tryRefresh(): Promise<RefreshOutcome> {
     if (this.refreshInFlight) return this.refreshInFlight;
-    const fetchImpl = this.opts.fetch ?? fetch;
     this.refreshInFlight = (async () => {
       try {
-        const res = await fetchImpl(`${this.opts.baseUrl}/auth/refresh`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { Accept: 'application/json' },
-        });
-        if (!res.ok) return null;
-        const json = (await res.json()) as { accessToken?: string };
-        if (!json.accessToken) return null;
-        this.opts.onTokenRefreshed?.(json.accessToken);
-        return json.accessToken;
-      } catch {
-        return null;
+        return await this.refreshWithBackoff();
       } finally {
         // Clear the lock so subsequent token expiries can refresh
         // again. We do this in `finally` so even thrown errors don't
@@ -141,6 +176,67 @@ export class RestClient {
       }
     })();
     return this.refreshInFlight;
+  }
+
+  /**
+   * Refresh, retrying only the failures that are worth retrying. Stops the
+   * moment we have a token or a fatal answer; otherwise walks the backoff
+   * ladder and gives up transiently — the caller keeps its credentials and the
+   * next request will try again.
+   */
+  private async refreshWithBackoff(): Promise<RefreshOutcome> {
+    let outcome = await this.refreshOnce();
+    for (const delay of REFRESH_RETRY_DELAYS_MS) {
+      if (outcome.accessToken !== null || outcome.fatal) return outcome;
+      await new Promise((resolve) => setTimeout(resolve, jittered(delay)));
+      outcome = await this.refreshOnce();
+    }
+    return outcome;
+  }
+
+  /** One /auth/refresh round trip. Never throws — every failure mode is
+      classified into the RefreshOutcome tri-state instead. */
+  private async refreshOnce(): Promise<RefreshOutcome> {
+    const fetchImpl = this.opts.fetch ?? fetch;
+    let res: Response;
+    try {
+      res = await fetchImpl(`${this.opts.baseUrl}/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+      });
+    } catch {
+      // Network-level failure: offline, DNS, connection reset, the app opened
+      // before wi-fi came up. The refresh cookie is almost certainly still
+      // good — we simply couldn't ask.
+      return { accessToken: null, fatal: false };
+    }
+    // The only two answers that actually mean "this session is over".
+    if (res.status === 401 || res.status === 403) return { accessToken: null, fatal: true };
+    if (!res.ok) {
+      // 409 = another tab won the rotation race, or we're retrying a refresh
+      // whose response was lost; 5xx = the api is restarting or a proxy
+      // answered for it. Both are worth retrying; neither is a logout.
+      //
+      // Note the server now answers most lost-response replays with a 200
+      // carrying the token the lost response was meant to deliver, so that case
+      // usually resolves on the first rung rather than walking the ladder. A
+      // 409 here means the replay was outside the server's grace window, came
+      // from a different client, or its recovery store was unavailable — all
+      // still worth one more try with whatever token we end up holding.
+      return { accessToken: null, fatal: false };
+    }
+    let accessToken: string | undefined;
+    try {
+      accessToken = ((await res.json()) as { accessToken?: string }).accessToken;
+    } catch {
+      // A 200 with an unparseable body means something interposed (proxy,
+      // captive portal), not that the session died.
+      return { accessToken: null, fatal: false };
+    }
+    if (!accessToken) return { accessToken: null, fatal: false };
+    this.opts.onTokenRefreshed?.(accessToken);
+    return { accessToken, fatal: false };
   }
 
   private async request<T>(
@@ -188,12 +284,22 @@ export class RestClient {
 
     const text = await res.text();
     let parsed: unknown;
+    // Non-JSON body almost always means a gateway/proxy error page (502/503/
+    // 504) or the API being down — we surface a human message rather than
+    // "Non-JSON response (502)". But note we do NOT throw here: this used to
+    // return before the `!res.ok` block below, which meant a 401 delivered as
+    // an HTML page (a WAF, a captive portal, or a proxy answering for the api)
+    // never reached the refresh path at all. onRefreshFailed could then never
+    // fire, so a genuinely dead session was retried forever instead of logging
+    // out. The status is what decides the auth handling; the body shape only
+    // decides the error we end up throwing.
+    let unparseable = false;
     try {
       parsed = text ? JSON.parse(text) : undefined;
     } catch {
-      // Non-JSON body almost always means a gateway/proxy error page (502/503/
-      // 504) or the API being down — show a human message, not "Non-JSON
-      // response (502)".
+      unparseable = true;
+    }
+    if (unparseable && res.ok) {
       throw new ApiError(res.status, 'BAD_RESPONSE', friendlyHttpMessage(res.status));
     }
 
@@ -214,11 +320,21 @@ export class RestClient {
         !path.startsWith('/auth/register') &&
         !path.startsWith('/auth/quick-login/redeem')
       ) {
-        const newToken = await this.tryRefresh();
-        if (newToken) {
+        const refresh = await this.tryRefresh();
+        if (refresh.accessToken !== null) {
           return this.request<T>(method, path, body, extraHeaders, true);
         }
-        this.opts.onRefreshFailed?.();
+        // Only a 401/403 from /auth/refresh proves the session is gone. A
+        // network blip, a 5xx mid-deploy, or a lost rotation race must NOT wipe
+        // the user's credentials — we let this one request fail and keep the
+        // tokens, so the next call (or the next retry) can recover.
+        if (refresh.fatal) this.opts.onRefreshFailed?.();
+      }
+      // Body wasn't JSON: the auth handling above has run on the status, which
+      // is all it needs; there is no error envelope to read, so fall back to
+      // the friendly message for this status.
+      if (unparseable) {
+        throw new ApiError(res.status, 'BAD_RESPONSE', friendlyHttpMessage(res.status));
       }
       const err = (parsed as { error?: { code?: string; message?: string; details?: Record<string, unknown> } })?.error;
       // When the body has no standard { error } envelope (e.g. login's
@@ -2703,6 +2819,16 @@ export class RestClient {
     return this.request('GET', '/admin/voice-diagnostic');
   }
 
+  /** Live LiveKit occupancy — rooms, participants, media state, plus a diff
+   *  against this instance's own voice state (ghosts/orphans). Instance-admin
+   *  gated. Hits the SFU under a wall-clock budget; safe to poll at ~10s (the
+   *  server coalesces bursts). Always resolves — an unreachable or
+   *  unconfigured SFU comes back as `live.status`, not a thrown error. No
+   *  secrets: the SFU URL is redacted and TURN credentials are never sent. */
+  adminVoiceLive(): Promise<{ live: LiveVoiceSnapshot }> {
+    return this.request('GET', '/admin/voice-live');
+  }
+
   /** Download an instance-wide configuration backup — every guild's config
    *  backup bundled into one document. Instance-admin gated. `includeImages`
    *  defaults to true; pass false for a smaller config-only bundle. */
@@ -3303,8 +3429,126 @@ export interface LivekitDiagnostic {
   configured: boolean;
   ok: boolean;
   wsUrl: string | null;
+  /** Redacted of any userinfo/query — safe to render. */
   httpUrl: string | null;
   checks: LivekitCheck[];
+  generatedAt: string;
+}
+
+// ── Live voice monitor (GET /admin/voice-live) ──────────────────────────────
+//
+// Mirrors the server's shapes in apps/api/src/services/livekitLive.ts. The
+// monitor pairs LiveKit's ground truth with this instance's own voice_states
+// rows; where the two disagree you get a ghost (app says they're in a call,
+// LiveKit doesn't know them) or an orphan (on the SFU with no app row, so no
+// app-side eviction path can reach them).
+
+/** A user resolved server-side from a LiveKit participant identity. */
+export interface LiveVoiceUser {
+  id: string;
+  username: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  /** Account is soft-deleted — surfaced rather than hidden, since a deleted
+   *  account still on the SFU is exactly the anomaly worth seeing. */
+  deleted: boolean;
+}
+
+export interface LiveVoiceTrack {
+  source: 'microphone' | 'camera' | 'screen' | 'screen_audio' | 'unknown';
+  kind: 'audio' | 'video' | 'data';
+  muted: boolean;
+  /** The publisher negotiated end-to-end encrypted media. */
+  encrypted: boolean;
+  /** Video only, and only when the publisher declared dimensions. */
+  width: number | null;
+  height: number | null;
+}
+
+export interface LiveVoiceParticipant {
+  /** Raw LiveKit identity, always present — render it when `user` is null. */
+  identity: string;
+  /** Null when the identity isn't a Zekktris user (agent, egress worker, SIP
+   *  leg, stale identity). Not an error; it's the most suspicious thing this
+   *  endpoint can find, so it must be shown, not dropped. */
+  user: LiveVoiceUser | null;
+  state: 'joining' | 'joined' | 'active' | 'disconnected';
+  /** Anything other than 'standard' is infrastructure, not a person. */
+  kind: 'standard' | 'ingress' | 'egress' | 'sip' | 'agent' | 'other';
+  publishing: boolean;
+  connectedAt: string | null;
+  tracks: LiveVoiceTrack[];
+  sync: 'ok' | 'orphan';
+}
+
+/** A voice_states row with no matching LiveKit participant — the app believes
+ *  someone is in a call they've actually left. */
+export interface LiveVoiceGhost {
+  user: LiveVoiceUser | null;
+  identity: string;
+  appJoinedAt: string;
+  selfMute: boolean;
+  selfDeaf: boolean;
+}
+
+export interface LiveVoiceRoom {
+  /** g{guildId}-c{channelId} | dm-c{channelId} */
+  name: string;
+  scope: 'guild' | 'dm' | 'unknown';
+  channelId: string | null;
+  guildId: string | null;
+  /** Null for DM channels (they have no name) and for a channel row that no
+   *  longer exists — a live room on a deleted channel is itself a finding. */
+  channelName: string | null;
+  guildName: string | null;
+  createdAt: string | null;
+  /** LiveKit's own count — authoritative. 0 on an app-only room. */
+  participantCount: number;
+  publisherCount: number;
+  /** voice_states rows keyed to this room; diverging from participantCount is
+   *  the headline mismatch signal. */
+  appCount: number;
+  recording: boolean;
+  /** Anything but 'ok' means participants/ghosts for this room are unknown,
+   *  not empty. 'deadline'/'skipped' are budget outcomes, not faults. */
+  participantsState: 'ok' | 'error' | 'deadline' | 'skipped';
+  participantsError: string | null;
+  participants: LiveVoiceParticipant[];
+  ghosts: LiveVoiceGhost[];
+}
+
+/** Result of GET /admin/voice-live. `status` is the single discriminator:
+ *  'ok' with `rooms: []` means nobody is in voice (the normal case), which is
+ *  structurally distinct from 'error' — never infer failure from an empty
+ *  room list. */
+export interface LiveVoiceSnapshot {
+  status: 'ok' | 'unconfigured' | 'error';
+  /** Classified, redacted operator guidance. Set only when status==='error'. */
+  error: string | null;
+  /** Redacted SFU control URL — no userinfo, no query. */
+  httpUrl: string | null;
+  rooms: LiveVoiceRoom[];
+  /** LiveKit rooms that got NO row at all — past the server's row cap. They
+   *  are live on the SFU and their occupancy is already in `totals`. Distinct
+   *  from a room that IS in `rooms[]` with participantsState 'skipped': that
+   *  one is on screen, just without its roster. */
+  roomsTruncated: number;
+  /** App-only rooms (this instance believes in them, LiveKit has never heard
+   *  of them) that got no row. NOT live on the SFU and NOT in `totals.rooms`,
+   *  but every occupant is a certain ghost and IS in `totals.ghosts`. Never
+   *  add this to roomsTruncated — the two describe opposite things. */
+  appOnlyRoomsTruncated: number;
+  totals: {
+    /** LiveKit rooms only. `rooms[]` can be longer: rooms the app believes in
+     *  but LiveKit has never heard of are appended so the most common ghost
+     *  case (the last occupant's row outliving the room) stays visible. */
+    rooms: number;
+    participants: number;
+    publishers: number;
+    ghosts: number;
+    orphans: number;
+  };
+  tookMs: number;
   generatedAt: string;
 }
 

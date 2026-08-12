@@ -66,6 +66,11 @@ const MODERATOR_ALLOWED: { method: string; pattern: RegExp }[] = [
   { method: 'GET', pattern: /^\/channels\/[0-9]+\/peek\/messages$/ },
   { method: 'GET', pattern: /^\/security\/events$/ },
 ];
+// Deliberately absent from the list above: /voice-live. It discloses that a
+// specific DM channel has a live call AND both participants' identities, which
+// is strictly more than a moderator's chartered scope (security log, ban, peek
+// PUBLIC guild channels). Admin-only is the decision, not an oversight — don't
+// "fix" it by adding it here.
 
 adminRouter.use('*', requireAuth, requireStaff, async (c, next) => {
   if (!staffIsAdmin(c)) {
@@ -103,6 +108,29 @@ async function auditStaff(
   } catch (err) {
     console.error('[admin] staff audit log failed:', err);
   }
+}
+
+// ── Audit throttle for polled read-only views ───────────────────────────────
+//
+// The live voice monitor is polled (optionally every 10s) rather than clicked,
+// so a naive auditStaff call would write ~360 rows an hour per open tab and
+// bury every real staff action in the Security log. One row per admin per
+// window preserves the "an admin looked at live call state, here's when"
+// signal without the flood. Module-local and per-process: at worst a
+// multi-worker deploy writes one row per worker, which is still bounded.
+const VOICE_LIVE_AUDIT_WINDOW_MS = 10 * 60 * 1000;
+const voiceLiveAuditAt = new Map<bigint, number>();
+
+function shouldAuditVoiceLive(userId: bigint): boolean {
+  const now = Date.now();
+  // Prune on write so an admin who never comes back doesn't linger forever.
+  for (const [id, at] of voiceLiveAuditAt) {
+    if (now - at > VOICE_LIVE_AUDIT_WINDOW_MS) voiceLiveAuditAt.delete(id);
+  }
+  const last = voiceLiveAuditAt.get(userId);
+  if (last !== undefined && now - last < VOICE_LIVE_AUDIT_WINDOW_MS) return false;
+  voiceLiveAuditAt.set(userId, now);
+  return true;
 }
 
 /**
@@ -217,6 +245,42 @@ adminRouter.get('/metrics', async (c) => {
 adminRouter.get('/voice-diagnostic', async (c) => {
   const { diagnoseLivekit } = await import('../services/livekitDiagnostic');
   return c.json({ diagnostic: await diagnoseLivekit() });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// GET /admin/voice-live — live LiveKit occupancy + app/SFU reconciliation
+// ───────────────────────────────────────────────────────────────────────────
+//
+// "Who is in voice right now, on what, and is anything obviously broken."
+// Sibling of /voice-diagnostic (which answers "is voice CONFIGURED right"):
+// this fans out to the SFU (listRooms + listParticipants per room) under a
+// hard wall-clock budget, resolves identities and channel names in two batched
+// DB queries, and diffs LiveKit's ground truth against our own voice_states
+// rows. That ghost/orphan diff is the signal — it makes the dropped-call and
+// zombie-participant class visible without a psql session.
+//
+// Always 200: an unreachable or unconfigured SFU is reported IN the payload
+// (status/error) so the panel renders classified guidance instead of a generic
+// request failure. No secrets — the SFU URL is redacted of userinfo, TURN
+// passwords never leave the service, and participant `region` (coarse user
+// geolocation) is deliberately not collected.
+//
+// Safe to poll at ~10s: the service shares one in-flight build with every
+// concurrent caller for as long as it runs, then reuses the finished snapshot
+// for a short cool-down. Several admins watching at once — including while the
+// SFU is slow, which is when they all will be — still produce one fan-out.
+adminRouter.get('/voice-live', async (c) => {
+  const { getLiveVoice } = await import('../services/livekitLive');
+  const live = await getLiveVoice();
+  // One audit row per admin per 10-minute window, not per poll — same reasoning
+  // as the per-observe-session row at the guild peek endpoint below. This
+  // endpoint discloses that specific DM channels have live calls, and who is on
+  // them, so the access itself has to be auditable; logging every 10s tick
+  // would drown the security log and make the trail useless.
+  if (shouldAuditVoiceLive(requireUserId(c))) {
+    await auditStaff(c, 'staff_observe', 'Viewed the live voice monitor');
+  }
+  return c.json({ live });
 });
 
 // ───────────────────────────────────────────────────────────────────────────

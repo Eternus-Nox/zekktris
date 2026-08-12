@@ -11,6 +11,7 @@
  *
  * The tabs share a common header:
  *   - Overview  → /admin/stats          (counts + recent activity)
+ *   - Voice     → /admin/voice-live     (live LiveKit occupancy, admin-only)
  *   - Users     → /admin/users          (search + ban/role actions)
  *   - Guilds    → /admin/guilds         (server list with member counts)
  *   - Storage   → /admin/storage        (attachment + avatar disk usage)
@@ -19,9 +20,15 @@
  * because admin traffic is rare and the data is intentionally
  * snapshot-style (the operator's "what is the state of the instance
  * right now" question) — refetch on tab switch is the right behavior.
+ *
+ * Voice is the one tab that can also poll, because you can't watch a call
+ * degrade by clicking Refresh. It keeps the same default (mount-fetch +
+ * a manual button) and puts the 10s loop behind an opt-in checkbox that
+ * resets on every mount — see AdminVoiceLiveTab for why each tick costs
+ * real money and how the interval is torn down.
  */
 
-import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import {
   ApiError,
@@ -44,13 +51,23 @@ import {
 } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { AdminSecurityTab } from './AdminSecurityTab';
+import { AdminVoiceLiveTab } from './AdminVoiceLiveTab';
+import { AdminTabHeader, StatCard, fmtUptime } from './AdminUI';
 import { useToasts } from '../state/Toasts';
 import { AvatarImage } from '../lib/AvatarImage';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { TierBadge } from '../lib/TierBadge';
 import { Hash, Lock, Search as SearchIcon, Shield, Volume2, X as CloseIcon, Users, Archive, BarChart, ChevronLeft, Eye, Trash } from '../lib/icons';
 
-type Tab = 'overview' | 'users' | 'guilds' | 'storage' | 'security' | 'monetization' | 'backup';
+type Tab =
+  | 'overview'
+  | 'voice'
+  | 'users'
+  | 'guilds'
+  | 'storage'
+  | 'security'
+  | 'monetization'
+  | 'backup';
 
 export function AdminPanel() {
   const navigate = useNavigate();
@@ -95,6 +112,12 @@ export function AdminPanel() {
       ]
     : [
         { id: 'overview', label: 'Overview' },
+        // Admin-only, deliberately absent from the moderator list above: the
+        // live voice monitor discloses that specific DM calls exist and who
+        // is on them, which is beyond a moderator's charter. The API agrees
+        // — /admin/voice-live isn't on the moderator allowlist, so this is
+        // presentation matching an enforced boundary, not the boundary.
+        { id: 'voice', label: 'Voice' },
         { id: 'users', label: 'Users' },
         { id: 'guilds', label: 'Servers' },
         { id: 'storage', label: 'Storage' },
@@ -170,6 +193,12 @@ export function AdminPanel() {
         ) : (
           <div className="px-4 sm:px-8 py-6">
             {effectiveTab === 'overview' && <OverviewTab />}
+            {/* Each tab is mounted/unmounted by this switch rather than
+                hidden, which is what lets the voice monitor's opt-in poll
+                loop rely on effect cleanup to stop itself. */}
+            {effectiveTab === 'voice' && (
+              <AdminVoiceLiveTab onOpenDiagnostic={() => setTab('overview')} />
+            )}
             {effectiveTab === 'users' && <UsersTab />}
             {effectiveTab === 'guilds' && (
               <GuildsTab
@@ -255,17 +284,6 @@ function OverviewTab() {
       cancelled = true;
     };
   }, [rest]);
-
-  // Human-readable uptime (e.g. "3d 4h", "12m").
-  function fmtUptime(s: number): string {
-    if (s < 60) return `${s}s`;
-    const d = Math.floor(s / 86400);
-    const h = Math.floor((s % 86400) / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    if (d > 0) return `${d}d ${h}h`;
-    if (h > 0) return `${h}h ${m}m`;
-    return `${m}m`;
-  }
 
   if (error) return <p className="text-sm text-red-400">{error}</p>;
   if (!stats) return <p className="text-sm text-ink-3">Loading…</p>;
@@ -506,53 +524,9 @@ function relativeTime(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
-function StatCard({
-  label,
-  value,
-  subtle,
-}: {
-  label: string;
-  value: string;
-  subtle?: string;
-}) {
-  return (
-    <div className="rounded-xl border border-line bg-bg-2 p-4 transition-colors hover:border-accent/30">
-      <div className="text-[11px] text-ink-3 uppercase tracking-wider font-semibold">{label}</div>
-      <div className="mt-1.5 text-2xl font-semibold text-ink-1 tabular-nums">{value}</div>
-      {subtle && <div className="mt-1 text-xs text-ink-3">{subtle}</div>}
-    </div>
-  );
-}
-
-// Shared tab header — a gradient squircle icon + title + optional subtitle and
-// trailing action, matching the Family page's section header so the admin
-// surface reads as part of the same app rather than a bolt-on console.
-function AdminTabHeader({
-  icon: Icon,
-  title,
-  subtitle,
-  action,
-}: {
-  icon: ComponentType<{ size?: number; className?: string }>;
-  title: string;
-  subtitle?: string;
-  action?: ReactNode;
-}) {
-  return (
-    <div className="flex items-start justify-between gap-3 mb-5">
-      <div className="flex items-start gap-3 min-w-0">
-        <div className="shrink-0 w-10 h-10 rounded-2xl bg-gradient-to-br from-accent to-accent-2 grid place-items-center text-bg-0 shadow-[0_8px_28px_var(--accent-glow)]">
-          <Icon size={18} />
-        </div>
-        <div className="min-w-0">
-          <h2 className="text-lg font-semibold text-ink-1 leading-tight truncate">{title}</h2>
-          {subtitle && <p className="text-xs text-ink-3 mt-0.5 leading-relaxed">{subtitle}</p>}
-        </div>
-      </div>
-      {action && <div className="shrink-0">{action}</div>}
-    </div>
-  );
-}
+// StatCard, AdminTabHeader and fmtUptime moved to ./AdminUI so the tabs that
+// live in their own files (AdminVoiceLiveTab) can use them without importing
+// this module back — AdminPanel imports those tabs, so the edge would cycle.
 
 // ── Users tab ─────────────────────────────────────────────────────────────
 

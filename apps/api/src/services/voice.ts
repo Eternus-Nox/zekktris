@@ -443,8 +443,14 @@ export async function mintLivekitToken(
  * Derive the LiveKit room name from a voice_states row. Mirrors the
  * shape mintLivekitToken uses so eviction targets the right room
  * regardless of whether the row represents guild voice or DM voice.
+ *
+ * Exported because the live voice monitor (livekitLive.ts) reconciles
+ * voice_states rows against LiveKit's room list, and that diff is only
+ * meaningful if both sides derive the name from the same function — a
+ * second copy over there would silently render every user simultaneously
+ * ghost and orphan the moment either drifted.
  */
-function roomNameForRow(row: { guildId: bigint | null; channelId: bigint }): string {
+export function roomNameForRow(row: { guildId: bigint | null; channelId: bigint }): string {
   return row.guildId === null
     ? `dm-c${row.channelId.toString()}`
     : `g${row.guildId.toString()}-c${row.channelId.toString()}`;

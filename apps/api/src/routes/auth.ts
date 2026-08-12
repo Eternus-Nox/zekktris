@@ -27,7 +27,10 @@ import {
   revokeSession,
   revokeAllUserSessions,
   detectRefreshTokenReuse,
+  recoverRotatedRefreshToken,
 } from '../auth/sessions';
+import { noteRecoveredRotation } from '../auth/refresh-replay';
+import { logEvent } from '../services/security';
 import {
   setRefreshCookie,
   clearRefreshCookie,
@@ -477,6 +480,64 @@ void getDummyHash();
 // POST /refresh
 // ───────────────────────────────────────────────────────────────────────────
 
+/**
+ * True when this session's owner may no longer be handed tokens: banned, a
+ * timed ban still running, deleted, or the row is simply gone.
+ *
+ * Shared by all three points in /refresh that must ask this — before the
+ * rotate, after the rotate, and on the replay-recovery path — so they can't
+ * drift apart. The admin ban handler does two sequential UPDATEs (users.bannedAt,
+ * then sessions.revokedAt); a refresh landing between them would otherwise find
+ * the session still active and mint a fresh ~15-min access token for a
+ * now-banned user. Same shape as the gateway IDENTIFY check; refresh is
+ * low-frequency (~once per 14 min per active session) so the lookup is
+ * negligible.
+ */
+async function refreshSubjectBlocked(userId: bigint): Promise<boolean> {
+  const rows = await db
+    .select({
+      bannedAt: schema.users.bannedAt,
+      bannedUntil: schema.users.bannedUntil,
+      deletedAt: schema.users.deletedAt,
+    })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .limit(1);
+  const u = rows[0];
+  return !u || isCurrentlyBanned(u) || u.deletedAt !== null;
+}
+
+/**
+ * Shape of a token this server issues: base64url of 32 random bytes, so
+ * unpadded, 43 characters. Used only to skip the reuse scan for values that
+ * cannot possibly be ours (see the note on the scan below) — never to reject a
+ * token, so a differently-shaped token from some past format still gets its
+ * normal indexed lookup and behaves exactly as before.
+ */
+const REFRESH_TOKEN_SHAPE = /^[A-Za-z0-9_-]{43}$/;
+
+/**
+ * On rate-limiting this endpoint (deliberately NOT done):
+ *
+ * /refresh is unauthenticated in the middleware sense — anyone can POST a
+ * cookie at it — and a miss runs the reuse scan, which is a sequential scan
+ * (`previous_refresh_token_hash` is not indexed). That is worth protecting, but
+ * a per-IP limiter is the wrong tool and would be actively dangerous here:
+ * legitimate refresh volume behind one IP scales with the number of users
+ * behind it (offices, schools, campus wi-fi, CGNAT mobile carriers), and every
+ * client also retries on a short ladder, so any budget low enough to blunt an
+ * attacker is low enough to strand a whole NAT behind a permanent 429 — i.e.
+ * exactly the mass-logout this pass exists to stop. Limiting per refresh-cookie
+ * value protects nothing, since an attacker just varies the cookie.
+ *
+ * The cheap, no-lockout mitigations instead: the shape guard above keeps
+ * garbage cookies from ever reaching the scan (they cost one indexed lookup),
+ * and the client ladder is jittered so tabs don't align. The real fix is an
+ * index on `sessions.previous_refresh_token_hash` — a migration, so it is
+ * flagged for the next schema pass rather than done here — plus an edge/WAF
+ * limit sized well above the ladder if abuse is ever observed.
+ */
+
 authRouter.post('/refresh', async (c) => {
   const token = readRefreshCookie(c);
   if (!token) throw errors.unauthenticated('No refresh token');
@@ -485,12 +546,114 @@ authRouter.post('/refresh', async (c) => {
   if (!session) {
     // The token didn't match any active session's CURRENT hash. Before we
     // treat it as a benign expired/unknown token, check whether it's a
-    // SUPERSEDED token being replayed (reuse detection). A reuse outside the
-    // concurrency grace means the token leaked and someone is racing the
-    // legitimate holder — revoke that session family so the stolen token (and
-    // whatever the thief already rotated it into) stops working.
-    const reuse = await detectRefreshTokenReuse(token);
+    // SUPERSEDED token being replayed (reuse detection). Skipped for values
+    // that can't be one of ours: they'd match nothing, and the scan is the
+    // expensive part of this endpoint.
+    const reuse = REFRESH_TOKEN_SHAPE.test(token) ? await detectRefreshTokenReuse(token) : null;
+    if (reuse?.kind === 'concurrent') {
+      // Benign: a second tab lost the rotation race, or this is a retry of a
+      // refresh whose response never arrived. The session is healthy, so bail
+      // out BEFORE the clearRefreshCookie below — that was the bug. The cookie
+      // sitting in this browser is very likely the WINNER's freshly-issued
+      // token, and expiring it here deleted a perfectly valid credential; two
+      // tabs refreshing at the same instant logged the user out of both.
+      //
+      // LOST-RESPONSE RECOVERY. Bailing out is not enough for the client that
+      // never received the rotated token at all — its cookie jar still holds
+      // the superseded one, so "retry with whatever token you now hold" is the
+      // same dead token forever, and once the grace window closes the very same
+      // replay is reclassified as theft and the session is revoked. So before
+      // rejecting, try to hand back the token the lost response was carrying:
+      // `rotateSession` retained it, sealed under a key derivable only from the
+      // token being presented right now and bound to this client's User-Agent
+      // (see auth/refresh-replay.ts), and `recoverRotatedRefreshToken` re-checks
+      // that it is still the session's live token. If that succeeds the client
+      // ends up exactly where the lost response would have put it — same token,
+      // fresh access token, no re-login and no revocation. We do NOT rotate
+      // again: re-keying here would kill the token a multi-tab winner already
+      // holds.
+      const recovered = await recoverRotatedRefreshToken(token, getUserAgent(c), reuse.sessionId);
+      if (recovered) {
+        // Same ban/deletion gate as the normal path — a recovery must not be a
+        // side door around it.
+        if (await refreshSubjectBlocked(recovered.session.userId)) {
+          clearRefreshCookie(c);
+          throw errors.unauthenticated('Refresh token is no longer valid');
+        }
+        const accessToken = await signAccessToken({
+          userId: recovered.session.userId,
+          sessionId: recovered.session.id,
+        });
+        setRefreshCookie(c, recovered.refreshToken);
+        // Worth ops signal: a recovery means a rotation response was lost, and
+        // a sudden rise in these is either an api/proxy problem or someone
+        // replaying tokens. No token material is logged.
+        log.warn('refresh replay recovered', {
+          sessionId: recovered.session.id.toString(),
+          userId: recovered.session.userId.toString(),
+        });
+        // …and the pattern the single log line cannot show. One recovery is a
+        // lost response; the SAME session recovering rotation after rotation is
+        // the fingerprint of the one attacker the per-rotation redemption cap
+        // provably cannot stop — a cloned cookie with a matching User-Agent
+        // riding the chain, one redemption per window, forever (see
+        // MAX_REPLAY_RECOVERIES in auth/refresh-replay.ts). noteRecoveredRotation
+        // counts distinct recovered ROTATIONS per session over hours and returns
+        // non-null exactly once per window, at the threshold, so this can be at
+        // most one row per session per window no matter how a client flaps.
+        //
+        // FAIL SOFT, deliberately, at THIS call site: not awaited and with a
+        // terminal catch, so neither a counter-store outage nor a failing
+        // `logEvent` insert (nor their latency) can touch the refresh — the
+        // response below is already fully decided. noteRecoveredRotation itself
+        // also never throws; the catch here covers logEvent and the .then.
+        void noteRecoveredRotation({
+          sessionId: recovered.session.id,
+          supersededToken: token,
+          userAgent: getUserAgent(c),
+        })
+          .then((esc) => {
+            if (!esc) return;
+            const hours = Math.round(esc.windowSeconds / 3600);
+            return logEvent({
+              kind: 'refresh_replay_repeated',
+              // The session's OWNER — the party at risk, not an offender.
+              userId: recovered.session.userId,
+              guildId: null,
+              channelId: null,
+              // Everything an operator needs to act, and nothing that would
+              // make this log a credential store: no token, no sealed blob, no
+              // derived key, and a truncated UA digest rather than the header.
+              detail:
+                `Refresh-token replay recovery repeated for one session: ` +
+                `${esc.count} separate rotations recovered within ${hours}h ` +
+                `(session ${recovered.session.id.toString()}, UA hash ${esc.userAgentHash}). ` +
+                `A lost rotation response is a one-off; repeating it across rotations is ` +
+                `how a cloned refresh cookie with a matching User-Agent stays on the chain, ` +
+                `and the per-rotation cap cannot see it. Either this client's network is ` +
+                `badly broken or the session is being ridden — review it, and sign the ` +
+                `session out to settle it.`,
+            });
+          })
+          .catch(() => {});
+        return c.json({ accessToken, expiresIn: env.ACCESS_TOKEN_TTL_SECONDS });
+      }
+      // No recovery available — nothing retained, the grace expired, a
+      // different client, the entry's redemption budget is spent
+      // (MAX_REPLAY_RECOVERIES), or the store is down. Every one of those falls
+      // back to the old answer and NEVER to a revocation: an exhausted budget
+      // must not be able to end a session by itself, it just stops being a
+      // shortcut past the normal reuse handling.
+      // 409, not 401, so the client can
+      // tell "you raced, ask again" from "your session is over" and retry with
+      // whatever token it now holds instead of wiping its credentials and
+      // dropping to the login screen.
+      throw errors.conflict('A refresh for this session is already in flight; retry');
+    }
     if (reuse) {
+      // Reuse outside the concurrency grace: the token leaked and someone is
+      // racing the legitimate holder — revoke that session family so the stolen
+      // token (and whatever the thief already rotated it into) stops working.
       await revokeSession(reuse.sessionId).catch(() => undefined);
     }
     // Possible scenarios: token unknown, session revoked, session expired, or
@@ -500,24 +663,8 @@ authRouter.post('/refresh', async (c) => {
     throw errors.unauthenticated('Refresh token is no longer valid');
   }
 
-  // Banned/deleted check. The admin ban handler does two sequential
-  // UPDATEs (users.bannedAt, then sessions.revokedAt); a refresh
-  // landing in the microsecond window between them would find the
-  // session still active and rotate it, issuing a fresh access
-  // token to a now-banned user. Close the window with an explicit
-  // check here. Same shape as the gateway IDENTIFY check —
-  // refresh is low-frequency (~once per 14 min per active session)
-  // so the extra lookup is negligible.
-  const userRows = await db
-    .select({
-      bannedAt: schema.users.bannedAt,
-      bannedUntil: schema.users.bannedUntil,
-      deletedAt: schema.users.deletedAt,
-    })
-    .from(schema.users)
-    .where(eq(schema.users.id, session.userId))
-    .limit(1);
-  if (!userRows[0] || isCurrentlyBanned(userRows[0]) || userRows[0].deletedAt) {
+  // Banned/deleted check before we rotate — see refreshSubjectBlocked.
+  if (await refreshSubjectBlocked(session.userId)) {
     clearRefreshCookie(c);
     throw errors.unauthenticated('Refresh token is no longer valid');
   }
@@ -532,7 +679,16 @@ authRouter.post('/refresh', async (c) => {
   // the second one's UPDATE matches 0 rows because the first
   // already swapped the hash. Both axes converge: 0 rows → null
   // here → 401 with cookie cleared.
-  const rotated = await rotateSession(session.id, session.refreshTokenHash);
+  //
+  // The third argument is what makes a LOST RESPONSE recoverable: it lets the
+  // rotation retain the token it is about to issue, sealed to the presenter of
+  // this cookie and to this User-Agent, so if the reply below never reaches the
+  // client its retry can be answered with the same token instead of a dead end
+  // (see the `concurrent` branch above and auth/refresh-replay.ts).
+  const rotated = await rotateSession(session.id, session.refreshTokenHash, {
+    supersededToken: token,
+    userAgent: getUserAgent(c),
+  });
   if (!rotated) {
     clearRefreshCookie(c);
     throw errors.unauthenticated('Refresh token is no longer valid');
@@ -542,16 +698,7 @@ authRouter.post('/refresh', async (c) => {
   // the check→rotate window would otherwise mint a fresh ~15-min access token
   // for a just-banned user. Re-reading after the rotate sees the committed ban;
   // if banned/deleted, revoke this session and fail.
-  const recheck = await db
-    .select({
-      bannedAt: schema.users.bannedAt,
-      bannedUntil: schema.users.bannedUntil,
-      deletedAt: schema.users.deletedAt,
-    })
-    .from(schema.users)
-    .where(eq(schema.users.id, session.userId))
-    .limit(1);
-  if (!recheck[0] || isCurrentlyBanned(recheck[0]) || recheck[0].deletedAt) {
+  if (await refreshSubjectBlocked(session.userId)) {
     await revokeSession(session.id).catch(() => undefined);
     clearRefreshCookie(c);
     throw errors.unauthenticated('Refresh token is no longer valid');

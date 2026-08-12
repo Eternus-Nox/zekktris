@@ -3544,8 +3544,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'DM_STREAK_SET', channelId: d.channel_id, streak: d.streak });
       }),
       // Poke / nudge — an ephemeral notification (no message, no history). Show
-      // a transient toast (emoji + who); skip our own pokes echoed to the DM
-      // channel audience. A closed app is reached by the big-emoji push.
+      // a transient toast (emoji + who) AND, in the desktop app, an OS banner;
+      // skip our own pokes echoed to the DM channel audience. A closed app is
+      // reached by the big-emoji push.
       gateway.on<{
         channel_id: string;
         poke_type: string;
@@ -3554,7 +3555,50 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         initiator_name: string;
       }>(GatewayEvent.POKE, (d) => {
         if (!selfId || d.initiator_id === selfId) return;
-        toasts.push(`${d.emoji}  ${d.initiator_name}`, 'info', undefined, {
+        // Mute resolution, mirroring MESSAGE_CREATE above and the server's own
+        // poke fan-out (which skips any recipient whose level for this DM
+        // resolves to 'nothing'). A poke is a nudge, not an exemption — it
+        // must not be the one alert that punches through a DM the user muted.
+        // Pokes only ever land on 1:1 DMs, so there is no guild level to
+        // inherit from.
+        const muted = isChannelMuted(
+          stateRef.current.notificationOverrides,
+          d.channel_id,
+          null,
+        );
+        // Already looking at this DM in a focused window → the toast is the
+        // whole story and an OS banner on top is noise. Same suppression the
+        // service worker applies to the push copy of a poke.
+        const looking =
+          typeof document !== 'undefined' &&
+          document.hasFocus() &&
+          typeof window !== 'undefined' &&
+          window.location.pathname.includes(`/${d.channel_id}`);
+        // Device-local "Messages & mentions" toggle gates this the same way it
+        // gates message banners: a device the user silenced stays silent.
+        if (getNotifyPrefs().notifyMessages && !muted && !looking) {
+          // Electron only (browsers receive the service-worker push instead,
+          // see lib/desktopNotify). Without this a BACKGROUNDED desktop app
+          // showed nothing at all for a poke: the toast renders behind
+          // whatever window has focus and is gone before the user looks.
+          // Title / body / tag deliberately match the server's push copy
+          // (routes/messages.ts poke) so both surfaces read identically —
+          // sender's name, the emoji as the body, one banner per DM.
+          showDesktopNotification({
+            title: d.initiator_name,
+            body: d.emoji,
+            tag: `poke-${d.channel_id}`,
+            onClick: () => {
+              window.history.pushState({}, '', `/channels/@me/${d.channel_id}`);
+              window.dispatchEvent(new PopStateEvent('popstate'));
+            },
+          });
+        }
+        // 15s, not the 4s default: a poke is a deliberate nudge from another
+        // person and its toast carries the poke-back button, so it has to
+        // survive a glance away from the screen. 4s was short enough that the
+        // recipient routinely never saw it.
+        toasts.push(`${d.emoji}  ${d.initiator_name}`, 'info', 15_000, {
           // Tap the toast → open the DM with the sender (the poke arrived on
           // their DM channel). Soft-nav (no full reload — keeps the gateway up).
           onClick: () => {

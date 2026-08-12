@@ -21,7 +21,7 @@
  * high-level, classified error messages.
  */
 
-import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
+import { AccessToken, RoomServiceClient, TwirpError } from 'livekit-server-sdk';
 import { env } from '../env';
 import { browserLivekitWsUrl } from './voice';
 
@@ -49,15 +49,19 @@ export interface LivekitDiagnostic {
   ok: boolean;
   /** Browser-facing signaling URL (clients connect here). Config, not secret. */
   wsUrl: string | null;
-  /** Server-facing admin/signaling URL the API uses. Config, not secret. */
+  /** Server-facing admin/signaling URL the API uses, redacted of any userinfo
+   *  and query string (see redactUrl). Config, not secret. */
   httpUrl: string | null;
   checks: LivekitCheck[];
   generatedAt: string;
 }
 
 /** Server-side admin/signaling URL. Mirrors the resolution voice.ts uses for
- *  RoomServiceClient: explicit LIVEKIT_HTTP_URL, else derive from the ws URL. */
-function resolveHttpUrl(): string | null {
+ *  RoomServiceClient: explicit LIVEKIT_HTTP_URL, else derive from the ws URL.
+ *  Exported because the live voice monitor (livekitLive.ts) must resolve the
+ *  SFU exactly the same way — two copies of this would drift the day someone
+ *  changes the fallback. */
+export function resolveHttpUrl(): string | null {
   if (env.LIVEKIT_HTTP_URL) return env.LIVEKIT_HTTP_URL;
   if (env.LIVEKIT_WS_URL) {
     return env.LIVEKIT_WS_URL.replace(/^wss?:/i, (m) =>
@@ -67,19 +71,80 @@ function resolveHttpUrl(): string | null {
   return null;
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  return Promise.race([
-    p,
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
-  ]);
+/**
+ * Wall-clock guard around a promise. `ms` is MILLISECONDS — deliberately not
+ * the same unit as the SDK's own `ClientOptions.requestTimeout`, which is in
+ * SECONDS. Callers that mix the two get an 83-minute "timeout"; see the note
+ * at the RoomServiceClient construction in livekitLive.ts.
+ *
+ * Note this only stops us WAITING — the underlying request keeps running. It's
+ * the outer belt to the SDK's abort-backed braces.
+ *
+ * The timer is cleared whichever side wins, so a fast call leaves nothing
+ * behind. That matters now that the live voice monitor calls this up to 41
+ * times per snapshot (1 listRooms + ROOM_CAP listParticipants) on a 10s poll:
+ * without the clear, every one of those held a pending timer — and the event
+ * loop alive — for its full timeout after the work had already finished.
+ */
+export function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const guard = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  // race() attaches handlers to BOTH inputs, so the loser settling later is
+  // still consumed — no unhandled rejection either way. finally() passes the
+  // winning value or error straight through, so the signature and the
+  // behaviour every caller sees are unchanged.
+  return Promise.race([p, guard]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Strip credentials and query from a config URL before it is ever rendered or
+ * interpolated into an error string. `https://key:secret@host:7880/?x=1`
+ * becomes `https://host:7880`.
+ *
+ * LIVEKIT_HTTP_URL may legally carry userinfo, and both this diagnostic and
+ * the live monitor put the URL in front of an admin (and into `classifyError`
+ * text). Only the RoomServiceClient constructor should ever see the raw value.
+ * Unparseable input emits nothing rather than falling back to the raw string —
+ * failing closed is the whole point.
+ */
+export function redactUrl(u: string | null): string | null {
+  if (!u) return null;
+  try {
+    const p = new URL(u);
+    p.username = '';
+    p.password = '';
+    p.search = '';
+    p.hash = '';
+    return p.toString().replace(/\/$/, '');
+  } catch {
+    return null;
+  }
 }
 
 /** Map a raw RoomServiceClient error into clear operator guidance — without
- *  leaking secrets (the URL is config, the message is classified, not raw). */
-function classifyError(err: unknown, httpUrl: string): string {
+ *  leaking secrets (the URL is config and must already be redacted by the
+ *  caller; the message is classified, not raw). */
+export function classifyError(err: unknown, httpUrl: string): string {
   const msg = err instanceof Error ? err.message : String(err);
   const code = (err as { code?: string })?.code ?? '';
   const lower = `${code} ${msg}`.toLowerCase();
+  // A real HTTP status beats sniffing substrings. The `includes('invalid')`
+  // rule further down false-positives on any message containing the word
+  // ("invalid room name" is not a credentials problem), so consult the
+  // structured status first when the SFU actually answered.
+  if (err instanceof TwirpError) {
+    if (err.status === 401 || err.status === 403) {
+      return `LiveKit rejected the credentials (HTTP ${err.status}) — LIVEKIT_API_KEY / LIVEKIT_API_SECRET don't match the SFU's keys.`;
+    }
+    if (err.status === 404) {
+      return `LiveKit returned 404 for the control API at ${httpUrl} — that host/port isn't serving the Twirp admin API. Point LIVEKIT_HTTP_URL at the SFU's HTTP port (no path).`;
+    }
+    if (err.status >= 500) {
+      return `LiveKit returned HTTP ${err.status} from ${httpUrl}: ${msg.slice(0, 160)}`;
+    }
+  }
   if (lower.includes('econnrefused')) {
     return `Connection refused at ${httpUrl} — the SFU isn't listening there. Check it's running and that LIVEKIT_HTTP_URL host/port are correct.`;
   }
@@ -105,6 +170,13 @@ export async function diagnoseLivekit(): Promise<LivekitDiagnostic> {
   const apiSecret = env.LIVEKIT_API_SECRET;
   const wsUrl = browserLivekitWsUrl();
   const httpUrl = resolveHttpUrl();
+  // Everything that leaves this function — the DTO field and every error
+  // string below — uses the redacted form; only the RoomServiceClient
+  // constructor sees `httpUrl` itself. An operator who embedded credentials in
+  // LIVEKIT_HTTP_URL used to have them echoed straight back into the admin
+  // panel by classifyError().
+  const safeUrl = redactUrl(httpUrl);
+  const errUrl = safeUrl ?? 'the configured LiveKit URL';
   const now = () => new Date().toISOString();
 
   // 1. Credentials present.
@@ -118,7 +190,7 @@ export async function diagnoseLivekit(): Promise<LivekitDiagnostic> {
       : 'Not set — voice runs in presence-only mode (you can see who is in a channel, but there is no audio/video). Set LIVEKIT_API_KEY / LIVEKIT_API_SECRET to enable calls.',
   });
   if (!haveKeys) {
-    return { configured: false, ok: false, wsUrl, httpUrl, checks, generatedAt: now() };
+    return { configured: false, ok: false, wsUrl, httpUrl: safeUrl, checks, generatedAt: now() };
   }
 
   // 2. Browser signaling URL resolvable.
@@ -156,9 +228,9 @@ export async function diagnoseLivekit(): Promise<LivekitDiagnostic> {
       const svc = new RoomServiceClient(httpUrl, apiKey!, apiSecret!);
       const rooms = await withTimeout(svc.listRooms(), 5000, 'LiveKit listRooms');
       serverStatus = 'pass';
-      serverDetail = `Reached LiveKit at ${httpUrl}; credentials accepted (${rooms.length} active room${rooms.length === 1 ? '' : 's'}). Note: this verifies api→SFU signaling; browser↔SFU media still needs UDP 7882 reachable from clients.`;
+      serverDetail = `Reached LiveKit at ${errUrl}; credentials accepted (${rooms.length} active room${rooms.length === 1 ? '' : 's'}). Note: this verifies api→SFU signaling; browser↔SFU media still needs UDP 7882 reachable from clients.`;
     } catch (e) {
-      serverDetail = classifyError(e, httpUrl);
+      serverDetail = classifyError(e, errUrl);
     }
   }
   checks.push({ id: 'server', label: 'Reach LiveKit signaling + auth', status: serverStatus, detail: serverDetail });
@@ -180,5 +252,5 @@ export async function diagnoseLivekit(): Promise<LivekitDiagnostic> {
   // 'warn' steps don't fail the diagnostic — they flag what couldn't be
   // verified. Only a hard 'fail' (bad config/creds/unreachable SFU) does.
   const ok = checks.every((c) => c.status !== 'fail');
-  return { configured: true, ok, wsUrl, httpUrl, checks, generatedAt: now() };
+  return { configured: true, ok, wsUrl, httpUrl: safeUrl, checks, generatedAt: now() };
 }
