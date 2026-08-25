@@ -354,31 +354,54 @@ messagesRouter.post(
       initiatorName: pokerName,
     });
 
-    // Persist the poke + prune to the newest 6 for this (channel, recipient).
-    // Best-effort: a DB hiccup must never block the live nudge. Order/prune by
-    // the snowflake id (monotonic) to avoid the timestamptz µs/ms comparison
-    // foot-gun.
+    // Persist the poke: the bounded display buffer (insert + prune to the
+    // newest 6 for this channel+recipient) AND the durable pair tally, in ONE
+    // transaction. They must agree — the buffer is pruned and can never be
+    // re-derived, so a crash between the two would silently lose a poke from
+    // the lifetime count (or, worse, count one that was never shown).
+    //
+    // Still best-effort AS A WHOLE: a DB hiccup must never block the live
+    // nudge, which has already fired above. Order/prune by the snowflake id
+    // (monotonic) to avoid the timestamptz µs/ms comparison foot-gun.
     try {
-      for (const target of others) {
-        await db.insert(schema.pokes).values({
-          id: nextSnowflake(),
-          channelId,
-          initiatorId: userId,
-          recipientId: target,
-          pokeType,
-        });
-        await db.execute(sql`
-          DELETE FROM pokes
-           WHERE channel_id = ${channelId} AND recipient_id = ${target}
-             AND id NOT IN (
-               SELECT id FROM pokes
-                WHERE channel_id = ${channelId} AND recipient_id = ${target}
-                ORDER BY id DESC LIMIT 6
-             )
-        `);
-      }
+      await db.transaction(async (tx) => {
+        for (const target of others) {
+          await tx.insert(schema.pokes).values({
+            id: nextSnowflake(),
+            channelId,
+            initiatorId: userId,
+            recipientId: target,
+            pokeType,
+          });
+          await tx.execute(sql`
+            DELETE FROM pokes
+             WHERE channel_id = ${channelId} AND recipient_id = ${target}
+               AND id NOT IN (
+                 SELECT id FROM pokes
+                  WHERE channel_id = ${channelId} AND recipient_id = ${target}
+                  ORDER BY id DESC LIMIT 6
+               )
+          `);
+          // Durable tally. The buffer above is keyed by channel+RECIPIENT and
+          // pruned to 6, so it can never answer "how many people have I poked"
+          // — that lives here, keyed by the ordered pair, never pruned. Repeat
+          // pokes to the same person only bump poke_count, so the row count
+          // tracks DISTINCT people (the metric an alt-farm can't inflate)
+          // rather than poke volume.
+          await tx
+            .insert(schema.pokeTallies)
+            .values({ initiatorId: userId, recipientId: target, pokeCount: 1 })
+            .onConflictDoUpdate({
+              target: [schema.pokeTallies.initiatorId, schema.pokeTallies.recipientId],
+              set: {
+                pokeCount: sql`${schema.pokeTallies.pokeCount} + 1`,
+                lastAt: new Date(),
+              },
+            });
+        }
+      });
     } catch {
-      // History is best-effort — the live poke already fired.
+      // History + tally are best-effort — the live poke already fired.
     }
 
     // Push the OTHER party (best-effort, mute-aware). The live POKE event
@@ -420,6 +443,13 @@ messagesRouter.post(
 //
 // Feeds the poke button's history popover: up to 6 pokes this user received on
 // this 1:1 DM, newest first, each with the poker's display name. DM-1:1 only.
+//
+// This request IS the "poke button was opened" signal (clients fetch it on
+// popover open), so it doubles as the unread ACK: `unread` reports the badge
+// count as it was BEFORE this call, and the caller's unseen rows are flipped
+// to seen. The flag lives on `pokes` rather than read_states because ack()
+// advances that cursor with GREATEST — it never moves backwards, so a later
+// poke could never re-arm the badge.
 messagesRouter.get(
   '/:channelId/pokes',
   validate('param', z.object({ channelId: snowflakeSchema })),
@@ -439,6 +469,7 @@ messagesRouter.get(
         initiatorId: schema.pokes.initiatorId,
         recipientId: schema.pokes.recipientId,
         createdAt: schema.pokes.createdAt,
+        seen: schema.pokes.seen,
         displayName: schema.users.displayName,
         username: schema.users.username,
       })
@@ -448,13 +479,32 @@ messagesRouter.get(
       .orderBy(desc(schema.pokes.id))
       .limit(6);
 
+    const unread = rows.reduce((n, r) => (r.seen ? n : n + 1), 0);
+    if (unread > 0) {
+      // Clearing the badge is best-effort — the history itself already
+      // rendered, and the next open re-acks whatever is still unseen.
+      await db
+        .update(schema.pokes)
+        .set({ seen: true })
+        .where(
+          and(
+            eq(schema.pokes.channelId, channelId),
+            eq(schema.pokes.recipientId, userId),
+            eq(schema.pokes.seen, false),
+          ),
+        )
+        .catch(() => undefined);
+    }
+
     return c.json({
+      unread,
       pokes: rows.map((r) => ({
         id: r.id.toString(),
         pokeType: r.pokeType,
         initiatorId: r.initiatorId.toString(),
         recipientId: r.recipientId.toString(),
         createdAt: r.createdAt.toISOString(),
+        seen: r.seen,
         initiatorName: r.displayName ?? r.username ?? 'Someone',
       })),
     });

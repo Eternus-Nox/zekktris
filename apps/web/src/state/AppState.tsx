@@ -1366,10 +1366,37 @@ function reducer(state: State, action: Action): State {
       // same array reference when nothing matches, so unrelated presence
       // events don't re-render Friends consumers.
       const relIdx = state.relationships.findIndex((r) => r.user.id === action.userId);
+      const relPrev = relIdx !== -1 ? state.relationships[relIdx]! : null;
+      // DELIBERATELY NOT stamping lastSeenAt locally when a friend flips to
+      // offline. An earlier version did, reasoning that a one-shot stamp "can't
+      // be used to infer that an invisible user is still connected". That
+      // reasoning is wrong, and the bug it hides is subtle:
+      //
+      // Going Invisible is broadcast as `offline`, identical on the wire to a
+      // real disconnect. But the SERVER only advances last_seen_at on a genuine
+      // disconnect — never for someone going invisible (that guard is the whole
+      // point). So the local stamp makes the two cases diverge on the next
+      // fetch:
+      //
+      //   real disconnect → "just now",  refetch → still "just now"
+      //   went Invisible  → "just now",  refetch → snaps back to "5h ago"
+      //
+      // A last-seen time that jumps BACKWARDS is a reliable tell for "they went
+      // invisible and are online right now" — exactly what Invisible hides.
+      // Rendering a slightly stale value until the next listRelationships() is
+      // the correct trade. Android reached the same conclusion independently.
       const relationships =
-        relIdx !== -1 && state.relationships[relIdx]!.user.status !== action.status
+        relPrev !== null && relPrev.user.status !== action.status
           ? state.relationships.map((r, i) =>
-              i === relIdx ? { ...r, user: { ...r.user, status: action.status } } : r,
+              i === relIdx
+                ? {
+                    ...r,
+                    user: {
+                      ...r.user,
+                      status: action.status,
+                    },
+                  }
+                : r,
             )
           : state.relationships;
 
@@ -3812,6 +3839,25 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           if (!notified) toasts.push(msg, 'info');
         },
       ),
+      // The SUBJECT's own supervision changed — a guardian edited their
+      // restrictions, a link was accepted or ended, a server was
+      // blocked/unblocked, or the 18+ sweep released them. Audience is this
+      // user alone, so receiving it means OUR gates are stale.
+      //
+      // The frame carries the effective restrictions, but state.supervision is
+      // a FamilySummary (it also lists guardians and the grace-window fields,
+      // which this payload deliberately omits), so we re-read /family/me rather
+      // than splice a partial shape in. That single refetch re-gates every
+      // consumer at once — DM policy + E2EE, messaging, friend adds, guild
+      // create/join, voice/video/stream, the profanity mask, the supervision
+      // banner — instead of waiting for the next page load.
+      //
+      // No payload is read, hence `unknown`. A failed refetch keeps the last
+      // good snapshot (loadSupervision only dispatches on success), same as
+      // every other supervision refresh path.
+      gateway.on<unknown>(GatewayEvent.FAMILY_SUPERVISION_UPDATE, () => {
+        void loadSupervision().catch(() => undefined);
+      }),
       gateway.on<VoiceState>(GatewayEvent.VOICE_STATE_UPDATE, (v) => {
         // ── Ambient join/leave blips ──────────────────────────────────────
         // A quiet blip when somebody ELSE arrives in or departs from the

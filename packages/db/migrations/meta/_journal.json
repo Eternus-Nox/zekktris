@@ -834,6 +834,27 @@
       "when": 1784600280000,
       "tag": "0119_child_filter_profanity",
       "breakpoints": true
+    },
+    {
+      "idx": 119,
+      "version": "7",
+      "when": 1784600290000,
+      "tag": "0120_poke_tallies",
+      "breakpoints": true
+    },
+    {
+      "idx": 120,
+      "version": "7",
+      "when": 1784600300000,
+      "tag": "0121_user_last_seen",
+      "breakpoints": true
+    },
+    {
+      "idx": 121,
+      "version": "7",
+      "when": 1784600310000,
+      "tag": "0122_attachment_blob_expiry",
+      "breakpoints": true
     }
   ]
 }

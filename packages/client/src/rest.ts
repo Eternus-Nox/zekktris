@@ -15,6 +15,9 @@ import type {
   Attachment,
   AuthSession,
   QuickLoginCode,
+  DeviceLoginStart,
+  DeviceLoginPollResult,
+  DeviceLoginRequestInfo,
   AuditLogEntry,
   AutomodRule,
   Channel,
@@ -380,20 +383,69 @@ export class RestClient {
   }
 
   // ── Quick login (log in on another device) ──────────────────────────────
+  // DEPRECATED — the logged-in device mints a code that a logged-out device
+  // redeems, so the displayed code IS the credential and anyone who reads it
+  // off the screen takes the account. Superseded by the device-login methods
+  // below. Kept only because shipped iOS/Android builds still call these; see
+  // the delete checklist in apps/api/src/routes/auth.ts.
+
   /** [authed] Mint (or re-randomize) a short-lived, single-use quick-login
-      code for the current user. Does NOT change this device's session. */
+      code for the current user. Does NOT change this device's session.
+      @deprecated use the device-login flow. */
   generateQuickLoginCode(): Promise<QuickLoginCode> {
     return this.request('POST', '/auth/quick-login/create');
   }
   /** [authed] Invalidate the current user's active quick-login code — call on
-      leaving the quick-login section. */
+      leaving the quick-login section.
+      @deprecated use denyDeviceLogin. */
   cancelQuickLoginCode(): Promise<{ ok: boolean }> {
     return this.request('POST', '/auth/quick-login/cancel');
   }
   /** [public] Redeem a quick-login code on a logged-out device → a new session
-      (same envelope as login; the server also sets the refresh cookie). */
+      (same envelope as login; the server also sets the refresh cookie).
+      @deprecated use pollDeviceLogin. */
   redeemQuickLoginCode(code: string): Promise<AuthSession> {
     return this.request('POST', '/auth/quick-login/redeem', { code });
+  }
+
+  // ── Device-approval login ("approve this login on your phone") ──────────
+  // The inverse, and the flow to build against. The LOGGED-OUT device calls
+  // startDeviceLogin + pollDeviceLogin; the logged-in phone calls
+  // lookupDeviceLogin then approveDeviceLogin / denyDeviceLogin.
+  //
+  // HANDLING RULES FOR THE NEW DEVICE — these are not optional:
+  //   * Display `userCode` (and QR it). NEVER display, QR, log or persist
+  //     `deviceCode`; keep it in memory for the life of the attempt only.
+  //   * Poll no faster than the CURRENT `interval`, and adopt the new interval
+  //     whenever a response carries one (`slow_down` raises it).
+  //   * `approved` is delivered exactly once — persist the session on receipt
+  //     or it is gone.
+
+  /** [public] Open a device-login request from a logged-out device. Send the
+      body even when you have no label (`{}` is fine). */
+  startDeviceLogin(input: { deviceName?: string } = {}): Promise<DeviceLoginStart> {
+    return this.request('POST', '/auth/device-login/start', input);
+  }
+  /** [public] Ask for the outcome, presenting the SECRET deviceCode. Never
+      throws for pending/denied/expired — check `status`. */
+  pollDeviceLogin(deviceCode: string): Promise<DeviceLoginPollResult> {
+    return this.request('POST', '/auth/device-login/poll', { deviceCode });
+  }
+  /** [authed] On the logged-in phone: what is this code asking for? Feed the
+      returned metadata to the approval screen — it is the only defence against
+      an attacker phishing an approval out of the user. 404 when unknown or
+      expired. */
+  lookupDeviceLogin(userCode: string): Promise<DeviceLoginRequestInfo> {
+    return this.request('POST', '/auth/device-login/lookup', { userCode });
+  }
+  /** [authed] Approve: bind the request to the current user and log that
+      device in. Terminal. 409 if it was already answered. */
+  approveDeviceLogin(userCode: string): Promise<{ ok: boolean }> {
+    return this.request('POST', '/auth/device-login/approve', { userCode });
+  }
+  /** [authed] Deny. Terminal. */
+  denyDeviceLogin(userCode: string): Promise<{ ok: boolean }> {
+    return this.request('POST', '/auth/device-login/deny', { userCode });
   }
 
   // ── WebAuthn passkeys ───────────────────────────────────────────────────
@@ -608,6 +660,22 @@ export class RestClient {
     revokeOtherSessions?: boolean;
   }): Promise<{ ok: boolean; revokedSessions?: number }> {
     return this.request('POST', '/users/@me/password', input);
+  }
+
+  /**
+   * Permanently close the signed-in account. Irreversible: the user row is
+   * deleted, every session is revoked, and authored messages are de-identified.
+   * Step-up gated — the current password is required, plus a TOTP or recovery
+   * code when 2FA is armed.
+   *
+   * Rejects with a 400 if the user still owns an active server; they must
+   * transfer or delete it first.
+   */
+  deleteAccount(input: {
+    password: string;
+    totpCode?: string;
+  }): Promise<{ deleted: boolean }> {
+    return this.request('DELETE', '/users/@me', input);
   }
 
   // ── Active sessions ────────────────────────────────────────────────────
@@ -1221,6 +1289,12 @@ export class RestClient {
    * List every relationship the current user has — friends, pending
    * requests (incoming and outgoing), blocked users. Server returns
    * one flat list with a `type` discriminator so the client can group.
+   *
+   * `user.lastSeenAt` ("last online", ISO 8601) is present ONLY on
+   * `type: 'friend'` rows — non-friends get null. It is the only endpoint
+   * that serves it. Statuses here are already masked ('invisible' arrives
+   * as 'offline'), and lastSeenAt stops advancing while its owner is
+   * invisible, so neither field can unmask them.
    */
   listRelationships(): Promise<{
     relationships: Array<{
@@ -3319,6 +3393,31 @@ export interface ChildRestrictions {
   filterProfanity: boolean;
 }
 
+/**
+ * Payload of the FAMILY_SUPERVISION_UPDATE gateway event — the recipient's
+ * OWN supervision state after a guardian changed it (restrictions edited, a
+ * link accepted or ended, a server blocked/unblocked, the 18+ auto-release).
+ *
+ * Apply it directly to whatever local state gates supervised actions —
+ * `restrictions` is the same object GET /family/me returns (null = no
+ * restrictions), so a client never has to round-trip to re-gate itself.
+ *
+ * Guardians are deliberately NOT in this payload: it is delivered to the
+ * supervised account only. A UI that lists guardians should refetch
+ * /family/me when this arrives.
+ */
+export interface FamilySupervisionUpdate {
+  restrictions: ChildRestrictions | null;
+  /** True when at least one guardian actively supervises this account. */
+  supervised: boolean;
+  /** 13–17. */
+  isMinor: boolean;
+  /** Minor with no guardian → strict lockdown. */
+  restrictedHeavily: boolean;
+  /** Servers a guardian has put off-limits for this account. */
+  blockedGuildIds: string[];
+}
+
 export interface FamilyRequest {
   id: string;
   type: 'friend' | 'guild';
@@ -3375,13 +3474,12 @@ export interface FamilyChildMessage {
   editedAt: string | null;
   /** True when the child deleted this message — supervision retains and shows it. */
   deleted?: boolean;
-  attachments: Array<{
-    id: string;
-    filename: string;
-    url: string;
-    contentType: string;
-    size: number;
-  }>;
+  /** Full attachment shape, identical to a normal message's. In
+      particular it carries `thumbnailUrl` (render this, not the
+      full-size `url`, in the review list) and `blobExpiredAt` (non-null
+      = media retention removed the original, so `url` no longer
+      resolves — see `isBlobExpired`). */
+  attachments: Attachment[];
 }
 
 // ── Admin DTO shapes ──────────────────────────────────────────────────────
@@ -3727,13 +3825,10 @@ export interface AdminPeekMessage {
   content: string;
   createdAt: string;
   editedAt: string | null;
-  attachments: Array<{
-    id: string;
-    filename: string;
-    url: string;
-    contentType: string;
-    size: number;
-  }>;
+  /** Full attachment shape, identical to a normal message's — including
+      `thumbnailUrl` and `blobExpiredAt`. Gate every full-size fetch on
+      `blobExpiredAt`, never on a missing `url` (which stays populated). */
+  attachments: Attachment[];
   reactions: Array<{ emoji: string; count: number }>;
   hasReply: boolean;
   hasForward: boolean;

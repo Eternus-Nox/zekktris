@@ -22,6 +22,7 @@ import { RateLimiter } from '../lib/rateLimit';
 import { requireAuth, requireUserId } from '../auth/middleware';
 import { snowflakeSchema } from '../lib/validation';
 import { errors } from '../errors';
+import { toAttachment } from '../lib/dto';
 import * as supervision from '../services/supervision';
 import * as dms from '../services/dms';
 import * as relationships from '../services/relationships';
@@ -126,7 +127,23 @@ familyRouter.get(
       relationships: rows.map((row) => ({
         type: row.type,
         createdAt: row.createdAt,
-        user: { ...row.target, id: row.target.id.toString() },
+        // Explicit field pick, NOT a spread. `listRelationships` selects the
+        // whole joined users row, so `{...row.target}` silently republishes
+        // every column added to that select — which is how `lastSeenAt` and a
+        // raw `invisible` status reached this endpoint the moment last-seen
+        // shipped. These are third parties to the PARENT: the child's pending
+        // requests and blocked users have no presence relationship with them.
+        // Deliberately no `lastSeenAt` here at all — a parent supervising a
+        // child does not thereby get the last-online time of everyone the
+        // child has ever messaged.
+        user: {
+          id: row.target.id.toString(),
+          username: row.target.username,
+          displayName: row.target.displayName,
+          avatarUrl: row.target.avatarUrl,
+          status: row.target.status === 'invisible' ? 'offline' : row.target.status,
+          customStatus: row.target.status === 'invisible' ? null : row.target.customStatus,
+        },
       })),
     });
   },
@@ -245,13 +262,14 @@ familyRouter.get(
           createdAt: m.createdAt.toISOString(),
           editedAt: m.editedAt?.toISOString() ?? null,
           deleted: m.deletedAt !== null,
-          attachments: atts.map((at) => ({
-            id: at.id.toString(),
-            filename: at.filename,
-            url: at.url,
-            contentType: at.contentType,
-            size: at.size,
-          })),
+          // Full AttachmentDTO — the same shape every other message
+          // surface emits. Hand-rolling a subset here is how this
+          // surface lost `thumbnailUrl` (preview-sized bytes instead of
+          // the full original) and `blobExpiredAt` (the signal that the
+          // original was aged out by media retention, so `url` no longer
+          // resolves). A parent reviewing old conversations is exactly
+          // the reader most likely to hit expired media.
+          attachments: atts.map(toAttachment),
         };
       }),
     });

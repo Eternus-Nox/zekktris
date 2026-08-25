@@ -37,5 +37,9 @@ desktop/package-lock.json
 /tsconfig.json
 /update.sh
 /update.ps1
-# Android Firebase client config — carries an API key; provide at build time, don't commit
+# Android Firebase client config — carries an API key; provide at build time,
+# don't commit. Applies to BOTH Android projects: the Capacitor shell under
+# apps/web/android and the native app under android-native. (The native copy
+# was previously tracked because only the first path was listed here.)
 apps/web/android/app/google-services.json
+android-native/app/google-services.json

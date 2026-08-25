@@ -32,6 +32,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import {
   ApiError,
+  type Attachment,
   type AdminActivity,
   type AdminGuild,
   type AdminPeekChannel,
@@ -57,6 +58,7 @@ import { useToasts } from '../state/Toasts';
 import { AvatarImage } from '../lib/AvatarImage';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { TierBadge } from '../lib/TierBadge';
+import { ExpiredBadge, ExpiredMediaCard, EXPIRED_TITLE } from '../lib/mediaRetention';
 import { Hash, Lock, Search as SearchIcon, Shield, Volume2, X as CloseIcon, Users, Archive, BarChart, ChevronLeft, Eye, Trash } from '../lib/icons';
 
 type Tab =
@@ -2051,6 +2053,60 @@ function ObserveMessageList({
   );
 }
 
+/**
+ * One attachment inside a ghost-observe peek.
+ *
+ * Same two rules as the parental review surface (see
+ * `lib/mediaRetention`): render the thumbnail rather than dragging a
+ * full-size original into a 192px-tall box, and gate every full-size
+ * fetch on `blobExpiredAt` rather than on a missing `url` — the url
+ * stays populated after media retention reclaims the bytes, so trusting
+ * it produces a broken image and a 404 download.
+ */
+function PeekAttachment({ a }: { a: Attachment }) {
+  const expired = !!a.blobExpiredAt;
+  const isImage = a.contentType.startsWith('image/');
+  // Thumbnails outlive retention; the original is only a valid preview
+  // source while it is still stored.
+  const preview = a.thumbnailUrl ?? (expired ? null : a.url);
+
+  if (isImage && preview) {
+    const img = (
+      <img
+        src={preview}
+        alt={a.filename}
+        title={expired ? EXPIRED_TITLE : a.filename}
+        className="max-h-48 max-w-full rounded border border-line"
+        loading="lazy"
+        decoding="async"
+      />
+    );
+    return expired ? (
+      <span className="relative inline-block max-w-xs">
+        {img}
+        <ExpiredBadge />
+      </span>
+    ) : (
+      <a href={a.url} target="_blank" rel="noreferrer" className="inline-block max-w-xs">
+        {img}
+      </a>
+    );
+  }
+
+  // Expired with no surviving preview — a file, a video, a voice note,
+  // or an image predating thumbnails. Show it as present-but-unopenable
+  // rather than offering a link that 404s.
+  if (expired) {
+    return <ExpiredMediaCard filename={a.filename} subtitle={formatBytes(a.size)} />;
+  }
+
+  return (
+    <a href={a.url} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">
+      📎 {a.filename} ({formatBytes(a.size)})
+    </a>
+  );
+}
+
 function ObserveMessage({ message: m }: { message: AdminPeekMessage }) {
   const displayName = m.authorDisplayName ?? m.authorUsername ?? 'Unknown';
   const tone = avatarColor(m.authorId ?? m.id);
@@ -2096,37 +2152,11 @@ function ObserveMessage({ message: m }: { message: AdminPeekMessage }) {
         )}
         {m.attachments.length > 0 && (
           <ul className="mt-1 space-y-1">
-            {m.attachments.map((a) => {
-              const isImage = a.contentType.startsWith('image/');
-              return (
-                <li key={a.id}>
-                  {isImage ? (
-                    <a
-                      href={a.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-block max-w-xs"
-                    >
-                      <img
-                        src={a.url}
-                        alt={a.filename}
-                        className="max-h-48 max-w-full rounded border border-line"
-                        loading="lazy"
-                      />
-                    </a>
-                  ) : (
-                    <a
-                      href={a.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-xs text-accent hover:underline"
-                    >
-                      📎 {a.filename} ({formatBytes(a.size)})
-                    </a>
-                  )}
-                </li>
-              );
-            })}
+            {m.attachments.map((a) => (
+              <li key={a.id}>
+                <PeekAttachment a={a} />
+              </li>
+            ))}
           </ul>
         )}
         {m.reactions.length > 0 && (

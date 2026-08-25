@@ -243,6 +243,29 @@ export const attachments = pgTable(
      * means "eligible for evaluation once it reaches the age cutoff."
      */
     compressedAt: timestamp('compressed_at', { withTimezone: true }),
+    /**
+     * Set when the media-retention sweep aged out this attachment's FULL-SIZE
+     * bytes (services/uploads.runAttachmentRetentionSweep). The stored object
+     * is gone; everything else about the row survives on purpose:
+     *
+     *   - the message and its text are untouched (retention expires blobs, not
+     *     messages),
+     *   - `thumbnail_url` still points at a live thumbnail row, which is what
+     *     clients render in place of the original,
+     *   - filename / size / width / height stay so the expired state renders at
+     *     the right size with the right name instead of a broken image.
+     *
+     * `url` is deliberately LEFT AS-IS rather than nulled: it is NOT NULL in
+     * the DTO contract and every native client decodes it as a non-optional
+     * string, so nulling it would fail decoding on shipped builds. Clients gate
+     * on THIS column, not on the url.
+     *
+     * NULL = the full-size object is still on disk. A row is only ever reaped
+     * when it has a thumbnail (or the operator explicitly opted into reaping
+     * un-thumbnailed originals), and thumbnail rows themselves are never
+     * reaped — see the sweep for the full rules.
+     */
+    blobExpiredAt: timestamp('blob_expired_at', { withTimezone: true }),
   },
   (t) => ({
     messageIdx: index('attachments_message_idx').on(t.messageId),

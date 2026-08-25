@@ -16,6 +16,7 @@ import { useAuth } from '../auth/AuthContext';
 import { useToasts } from '../state/Toasts';
 import {
   ApiError,
+  type Attachment,
   type FamilyUser,
   type FamilyChildChannel,
   type FamilyChildMessage,
@@ -28,6 +29,7 @@ import {
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
 import { Users, ChevronLeft, ChevronRight } from '../lib/icons';
+import { ExpiredBadge, ExpiredMediaCard, EXPIRED_TITLE } from '../lib/mediaRetention';
 import { useNavigate } from 'react-router-dom';
 
 /** Mirrors the server cap (supervision.MAX_CHILDREN_PER_PARENT). */
@@ -677,6 +679,76 @@ export function FamilySettings() {
 }
 
 /**
+ * One attachment in the parent's read-only review of a child's DM.
+ *
+ * Two rules, both from `lib/mediaRetention`:
+ *  1. Render the THUMBNAIL, not the original. These are ~200px preview
+ *     boxes in a long scrolling list; pulling full-size originals into
+ *     them is pure waste.
+ *  2. Gate every full-size fetch (inline src, "open original",
+ *     download) on `blobExpiredAt` — never on a missing `url`, which
+ *     stays populated after retention ages the bytes out. An expired
+ *     original must read as "no longer stored", not as a broken image:
+ *     a parent needs to be able to tell "the server dropped this after
+ *     N days" apart from "this failed to load" or, worse, "my child
+ *     deleted the evidence".
+ */
+function ReviewAttachment({ at }: { at: Attachment }) {
+  const expired = !!at.blobExpiredAt;
+  const isImage = at.contentType.startsWith('image/');
+  // The thumbnail survives retention forever; the original is only a
+  // legitimate preview source while it is still stored.
+  const preview = at.thumbnailUrl ?? (expired ? null : at.url);
+
+  if (isImage && preview) {
+    const img = (
+      <img
+        src={preview}
+        alt={at.filename}
+        title={expired ? EXPIRED_TITLE : at.filename}
+        loading="lazy"
+        decoding="async"
+        className="max-h-48 rounded border border-line"
+      />
+    );
+    // Still stored → the preview links out to the full-size original.
+    // Expired → no link at all, plus the badge explaining why.
+    return expired ? (
+      <span className="relative mt-1 inline-block">
+        {img}
+        <ExpiredBadge />
+      </span>
+    ) : (
+      <a
+        href={at.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mt-1 inline-block"
+      >
+        {img}
+      </a>
+    );
+  }
+
+  // No usable preview: an expired file/video/voice note, or an expired
+  // image old enough to predate thumbnails.
+  if (expired) {
+    return <ExpiredMediaCard className="mt-1" filename={at.filename} />;
+  }
+
+  return (
+    <a
+      href={at.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="mt-1 inline-block text-xs text-accent hover:underline"
+    >
+      📎 {at.filename}
+    </a>
+  );
+}
+
+/**
  * Parent read view of one supervised child: their conversations (read
  * only) and their friends. Authorized server-side by the active link.
  */
@@ -977,26 +1049,9 @@ function ChildMonitor({
                         {m.content}
                       </p>
                     )}
-                    {m.attachments.map((at) =>
-                      at.contentType.startsWith('image/') ? (
-                        <img
-                          key={at.id}
-                          src={at.url}
-                          alt={at.filename}
-                          className="mt-1 max-h-48 rounded border border-line"
-                        />
-                      ) : (
-                        <a
-                          key={at.id}
-                          href={at.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="mt-1 inline-block text-xs text-accent hover:underline"
-                        >
-                          📎 {at.filename}
-                        </a>
-                      ),
-                    )}
+                    {m.attachments.map((at) => (
+                      <ReviewAttachment key={at.id} at={at} />
+                    ))}
                   </li>
                 ))}
               </ul>

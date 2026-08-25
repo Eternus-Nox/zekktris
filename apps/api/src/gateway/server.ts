@@ -53,6 +53,7 @@ import * as voice from '../services/voice';
 import * as dispatch from './dispatch';
 import * as dms from '../services/dms';
 import * as relationships from '../services/relationships';
+import { touchLastSeen } from '../services/presence';
 
 const GATEWAY_PATH = '/gateway';
 
@@ -239,10 +240,23 @@ export function attachGateway(httpServer: HttpServer): void {
           .limit(1);
         if (!u || u.status === 'invisible' || u.status === 'offline') return;
 
+        // The `status <> 'invisible'` predicate is load-bearing, not
+        // belt-and-braces: without it, a user who flips to invisible in the
+        // window between the SELECT above and this UPDATE gets clobbered back
+        // to 'offline' — and then touchLastSeen's own invisible guard is
+        // guaranteed to pass (we just wrote 'offline' ourselves), so the very
+        // race the guard exists to stop is the one case it could not catch.
+        // Leaving an invisible user's row as 'invisible' while disconnected is
+        // correct: it reads as 'offline' to everyone else through the mask.
         await db
           .update(schema.users)
           .set({ status: 'offline' })
-          .where(eq(schema.users.id, userId));
+          .where(and(eq(schema.users.id, userId), ne(schema.users.status, 'invisible')));
+
+        // "Last online" — this is the moment that matters for the friends
+        // list: they were visibly online (the early return above already
+        // dropped the invisible + already-offline cases) and now they're gone.
+        await touchLastSeen(userId);
 
         // Broadcast to every guild this user is in so co-members'
         // member-list dot recolors live. Also fan out to the user's
@@ -620,6 +634,14 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
     .set({ status: 'online' })
     .where(and(eq(schema.users.id, userId), eq(schema.users.status, 'offline')));
 
+  // "Last online": bound the stamp at the START of the session too, not just
+  // at disconnect. The disconnect hook is what normally writes it, but it
+  // never runs if the process dies — without this, a user who'd been
+  // connected for three days would read as "last seen 3 days ago" the
+  // instant the server crashed. No-ops (in SQL) while they're invisible.
+  // Runs after READY is already on the wire, so it adds no login latency.
+  await touchLastSeen(userId);
+
   // Derive the post-update status WITHOUT re-querying. The conditional
   // UPDATE above only changes the row when status was 'offline' — for
   // every other prior value the row is unchanged. So:
@@ -794,6 +816,8 @@ async function handleResume(conn: Connection, payload: ResumePayload | undefined
     .update(schema.users)
     .set({ status: 'online' })
     .where(and(eq(schema.users.id, userId), eq(schema.users.status, 'offline')));
+  // Same session-start bound as IDENTIFY — a RESUME is a connect too.
+  await touchLastSeen(userId);
   const broadcastStatus =
     userRow.status === 'offline'
       ? 'online'

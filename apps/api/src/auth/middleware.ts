@@ -87,6 +87,31 @@ export function requireSessionId(c: import('hono').Context): bigint {
 }
 
 /**
+ * Reject a BOT principal on session-scoped endpoints.
+ *
+ * requireAuth accepts `Authorization: Bot <token>` and sets userId without a
+ * sessionId, on the assumption — stated in its comment but never enforced —
+ * that "bots don't use session-scoped endpoints". Nothing stopped a bot token
+ * from reaching them. In particular POST /auth/quick-login/create ran under
+ * plain requireAuth, so a bot token could mint a quick-login code for its own
+ * user and redeem it (the redeem endpoint is public) for a full human
+ * JWT + rotating refresh session. That session outlives bot-token
+ * regeneration, so revoking a leaked bot token no longer evicted the holder.
+ *
+ * The absence of a sessionId is the precise signal: only the JWT path sets
+ * one, so this covers every non-human principal generically rather than
+ * enumerating bot flags at each call site.
+ *
+ * Compose AFTER requireAuth.
+ */
+export const requireHumanSession: MiddlewareHandler = async (c, next) => {
+  if (c.get('sessionId') === undefined) {
+    throw errors.forbidden('This endpoint requires a user session');
+  }
+  await next();
+};
+
+/**
  * Instance-admin gate. Reads users.is_admin and rejects with 403 if
  * the authenticated user isn't an admin. Runs ONE extra DB hit on
  * each admin-route request to read the flag — acceptable because

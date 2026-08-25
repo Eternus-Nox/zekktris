@@ -353,6 +353,68 @@ const apnsCheck: Check = {
   },
 };
 
+/**
+ * Voice/video (LiveKit).
+ *
+ * The LiveKit API secret is the HMAC key the SFU uses to verify join tokens.
+ * Anyone who knows it can mint a valid token for ANY room and join any voice
+ * channel, stage, or DM call as any identity — without ever authenticating to
+ * Zekktris, and without any of the API's permission checks running. So a
+ * secret that has ever been published is not "weak", it is *public*: we refuse
+ * to start rather than serve voice that is wide open.
+ *
+ * Two values have been published in this repo's history and are hard-blocked:
+ * the old docker-compose fallback, and the LiveKit Cloud pair an earlier
+ * setup.sh committed (the same pair scripts/setup.sh already migrates away
+ * from). Voice being unconfigured is NOT a failure — it degrades to
+ * presence-only, which is the safe default.
+ */
+const PUBLISHED_LIVEKIT_SECRETS = new Set([
+  'devsecret-do-not-use-in-production-32chars',
+  'REDACTED-LEAKED-LIVEKIT-SECRET',
+]);
+const PUBLISHED_LIVEKIT_KEYS = new Set(['devkey', 'APIAMD7Sj5psuK4']);
+
+const livekitCheck: Check = {
+  name: 'Voice / video (LiveKit)',
+  async run() {
+    const key = env.LIVEKIT_API_KEY;
+    const secret = env.LIVEKIT_API_SECRET;
+    if (!key && !secret) {
+      return { ok: true, detail: 'skipped (LIVEKIT_* not set — voice disabled)' };
+    }
+    if (!key || !secret) {
+      return {
+        ok: false,
+        reason:
+          'LIVEKIT_API_KEY and LIVEKIT_API_SECRET must be set together ' +
+          '(one is missing) — set both, or clear both to disable voice',
+      };
+    }
+    if (PUBLISHED_LIVEKIT_SECRETS.has(secret) || PUBLISHED_LIVEKIT_KEYS.has(key)) {
+      return {
+        ok: false,
+        reason:
+          'LIVEKIT credentials are a PUBLISHED value from this repository. ' +
+          'Anyone can forge a join token for any call on this instance. ' +
+          'Generate a fresh pair and restart:\n' +
+          "       LIVEKIT_API_KEY=lk_$(openssl rand -hex 8)\n" +
+          '       LIVEKIT_API_SECRET=$(openssl rand -hex 32)',
+      };
+    }
+    if (secret.length < 32) {
+      return {
+        ok: true,
+        detail: `configured — WARNING: secret is only ${secret.length} chars, use \`openssl rand -hex 32\``,
+      };
+    }
+    return {
+      ok: true,
+      detail: `configured (${env.LIVEKIT_WS_URL ? 'external SFU' : 'bundled SFU, same-origin /livekit'})`,
+    };
+  },
+};
+
 const checks: readonly Check[] = [
   envCheck,
   snowflakeCheck,
@@ -364,6 +426,7 @@ const checks: readonly Check[] = [
   uploadDirCheck,
   redisCheck,
   gatewayCheck,
+  livekitCheck,
   pushCheck,
   apnsCheck,
 ];

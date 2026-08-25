@@ -166,8 +166,8 @@ describe.runIf(dbReady)('permission enforcement (integration)', () => {
       const g = await createGuild(owner, P.VIEW_CHANNEL | P.SEND_MESSAGES);
       await addMember(g, member);
       const ch = await createChannel(g);
-      await expect(assertChannelPermission(ch, member, P.SEND_MESSAGES)).resolves.toBeUndefined();
-      await expect(assertChannelPermission(ch, member, P.MANAGE_MESSAGES)).rejects.toMatchObject({
+      await expect(assertChannelPermission(ch, member, [P.SEND_MESSAGES])).resolves.toBeUndefined();
+      await expect(assertChannelPermission(ch, member, [P.MANAGE_MESSAGES])).rejects.toMatchObject({
         code: 'MISSING_PERMISSIONS',
       });
     });

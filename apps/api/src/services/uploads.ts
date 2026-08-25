@@ -144,12 +144,39 @@ export async function saveUploadedFile(
   // Optional per-video size cap (0 = off). Checked from file.size before we
   // read the bytes, using the extension/MIME-derived type — so a single large
   // clip can be rejected without lowering the overall MAX_UPLOAD_SIZE_MB.
+  //
+  // E2EE uploads arrive as opaque `.zke` ciphertext declared
+  // application/octet-stream, so the plain extension check never fired on them
+  // and encrypted video skipped this cap entirely. The server can't read those
+  // bytes — but it doesn't need to: SIZE needs no key, and every client
+  // preserves the original name ahead of the suffix ("video.mov.zke"), so the
+  // INNER extension identifies the payload.
+  //
+  // WARNING: that inner name is CLIENT-SUPPLIED and therefore SPOOFABLE.
+  // Anyone can name a huge clip "notes.txt.zke" and dodge this check (they
+  // still hit MAX_UPLOAD_SIZE_MB above, which is the real backstop). That is
+  // acceptable for a storage cap, where the worst case is a missed
+  // enforcement. NEVER treat the inner extension as evidence of what an
+  // encrypted blob actually contains for anything security-relevant.
   if (env.MAX_VIDEO_UPLOAD_SIZE_MB > 0) {
-    const earlyType = normalizeContentType(safeName, file.type || '');
-    if (
-      /^video\//i.test(earlyType) &&
-      file.size > env.MAX_VIDEO_UPLOAD_SIZE_MB * 1024 * 1024
-    ) {
+    const isE2ee = /\.zke$/i.test(safeName);
+    const earlyType = isE2ee
+      ? // Peek at the inner extension. The claimed type is octet-stream for
+        // every .zke and so can't disambiguate a bare `.webm` (audio or
+        // video?) — we resolve that one to AUDIO deliberately, so an
+        // encrypted voice note can never be rejected by a *video* cap.
+        // Under-enforcing is the safe direction for an advisory cap.
+        normalizeContentType(safeName.replace(/\.zke$/i, ''), 'audio/webm')
+      : normalizeContentType(safeName, file.type || '');
+    // AES-GCM ciphertext is plaintext-length plus a fixed 28-byte envelope
+    // (iv 12 || ct || tag 16 — see apps/web/src/lib/e2ee.ts, byte-identical on
+    // iOS/Android). Allow a 1 KiB cushion on the encrypted path so a video
+    // that was legitimately just under the cap in the clear is never rejected
+    // for its own encryption overhead — and so a future envelope tweak can't
+    // quietly reintroduce that. 1 KiB is noise against an MB-scale cap.
+    const videoMaxBytes =
+      env.MAX_VIDEO_UPLOAD_SIZE_MB * 1024 * 1024 + (isE2ee ? 1024 : 0);
+    if (/^video\//i.test(earlyType) && file.size > videoMaxBytes) {
       throw errors.payloadTooLarge(
         `video "${file.name}" exceeds the ${env.MAX_VIDEO_UPLOAD_SIZE_MB} MB video limit`,
       );
@@ -1054,88 +1081,197 @@ export async function runAttachmentGcSweep(): Promise<{
   return { scanned: entries.length, deleted };
 }
 
+export interface AttachmentRetentionResult {
+  /** Rows the sweep looked at this run (reapable + skipped). */
+  candidates: number;
+  /** Rows whose full-size object was removed and stamped `blobExpiredAt`.
+   *  Always 0 on a dry run. */
+  expired: number;
+  /** Bytes actually reclaimed. On a dry run: bytes that WOULD be reclaimed. */
+  bytes: number;
+  /** Rows left alone because no live thumbnail could be proven for them —
+   *  reaping those would destroy the only copy. This is the number the
+   *  operator needs to see: it is exactly what retention is NOT reaching,
+   *  and why. */
+  skippedNoThumbnail: number;
+  /** Bytes locked up in those un-thumbnailed rows (what opting into
+   *  ATTACHMENT_RETENTION_REAP_UNTHUMBED would additionally free). */
+  skippedNoThumbnailBytes: number;
+}
+
 /**
- * Media-retention sweep: hard-delete message attachments whose message is older
- * than `days`, reclaiming the bytes that otherwise grow forever (live media is
- * the dominant disk sink). DISABLED unless ATTACHMENT_RETENTION_DAYS > 0, and
- * defaults to a dry run (logs candidates, deletes nothing) until explicitly
- * turned live — see the index.ts scheduler.
+ * Media-retention sweep: age out the FULL-SIZE bytes of old message
+ * attachments — NOT the attachments, and NOT the messages.
  *
- * Eligibility (all required): message older than the cutoff, NOT soft-deleted,
- * NOT pinned, and in a NON-E2EE channel. Identity assets (avatars/icons/emoji/
- * stickers) live in URL columns, not the attachments table, so they are never
- * selected here. Batched (LIMIT) so a huge backlog drains over several runs.
+ * ~96% of stored bytes on this instance are full-size images from native
+ * clients; message text is a rounding error. So the lever is the original
+ * object. For each expired attachment the sweep deletes the stored file, keeps
+ * the row (filename/size/dimensions/thumbnail all still render), keeps the
+ * thumbnail, keeps the message, and stamps `blob_expired_at` so clients can
+ * show "original expired — thumbnail kept" instead of a broken image.
  *
- * On a live run each eligible attachment has its file AND row removed, then any
- * message left with no body and no remaining attachments is tombstoned so a
- * reaped media-only message doesn't render as a blank bubble.
+ * DISABLED unless ATTACHMENT_RETENTION_DAYS > 0, and defaults to a dry run
+ * (reports what it WOULD reclaim, touches nothing) until explicitly turned
+ * live — see the index.ts scheduler.
+ *
+ * Eligibility (all required):
+ *   - message older than the cutoff, NOT soft-deleted, NOT pinned
+ *   - the row is not itself a thumbnail (`is_thumbnail = false`) — thumbnail
+ *     rows ARE the copy being preserved forever
+ *   - not already expired (`blob_expired_at IS NULL`), so a huge backlog
+ *     drains over successive runs instead of re-walking finished rows
+ *   - the row has a thumbnail that PROVABLY still exists (`thumbnail_url`
+ *     resolves to an attachment row that is itself not blob-expired). Without
+ *     one the original is the only copy, so removing it destroys the image
+ *     outright rather than downgrading it to a preview. Those rows are skipped
+ *     and counted separately unless the operator explicitly opts in via
+ *     `reapUnthumbed` (ATTACHMENT_RETENTION_REAP_UNTHUMBED, default off).
+ *
+ * E2EE channels are INCLUDED (they are the point). An encrypted thumbnail is
+ * its own `.zke` object with its own IV inside its own bytes, decrypted with
+ * the channel key — nothing about it is derived from the original, so it keeps
+ * decrypting and rendering after the original is gone.
+ *
+ * Identity assets (avatars/icons/emoji/stickers) live in URL columns, not the
+ * attachments table, so they are never selected here.
+ *
+ * NOTE (deliberate, do not "restore"): there is no empty-message tombstone
+ * pass any more. It existed because deleting an attachment row could leave a
+ * media-only message with nothing to render. Nothing is deleted now — a
+ * media-only message keeps its attachment row AND a renderable thumbnail — so
+ * the pass could only ever destroy messages that still have content.
  */
 export async function runAttachmentRetentionSweep(opts: {
   days: number;
   dryRun: boolean;
   limit?: number;
-}): Promise<{ candidates: number; deleted: number; bytes: number }> {
-  if (opts.days <= 0) return { candidates: 0, deleted: 0, bytes: 0 };
+  /** Opt-in (default false): also expire originals that have NO thumbnail.
+   *  Destroys those images outright — see S1 above. */
+  reapUnthumbed?: boolean;
+}): Promise<AttachmentRetentionResult> {
+  const empty: AttachmentRetentionResult = {
+    candidates: 0,
+    expired: 0,
+    bytes: 0,
+    skippedNoThumbnail: 0,
+    skippedNoThumbnailBytes: 0,
+  };
+  if (opts.days <= 0) return empty;
   const { db, schema } = await import('../db');
-  const { and, eq, lt, isNull, inArray, sql } = await import('drizzle-orm');
+  const { and, eq, lt, isNull, inArray } = await import('drizzle-orm');
   const cutoff = new Date(Date.now() - opts.days * 24 * 60 * 60 * 1000);
 
   const rows = await db
     .select({
       id: schema.attachments.id,
       size: schema.attachments.size,
-      messageId: schema.attachments.messageId,
+      thumbnailUrl: schema.attachments.thumbnailUrl,
     })
     .from(schema.attachments)
     .innerJoin(schema.messages, eq(schema.messages.id, schema.attachments.messageId))
-    .innerJoin(schema.channels, eq(schema.channels.id, schema.messages.channelId))
     .where(
       and(
         lt(schema.messages.createdAt, cutoff),
         isNull(schema.messages.deletedAt),
         eq(schema.messages.pinned, false),
-        eq(schema.channels.e2eeEnabled, false),
+        // Never reap a thumbnail row — that IS the preserved copy.
+        eq(schema.attachments.isThumbnail, false),
+        // Already aged out on an earlier run.
+        isNull(schema.attachments.blobExpiredAt),
       ),
     )
     .limit(opts.limit ?? 2000);
 
-  const bytes = rows.reduce((n, r) => n + (r.size ?? 0), 0);
-  if (opts.dryRun || rows.length === 0) {
-    return { candidates: rows.length, deleted: 0, bytes };
-  }
-
-  let deleted = 0;
-  const affected = new Set<bigint>();
+  // Split by the one rule that decides whether expiring is a downgrade or a
+  // destruction: does a thumbnail survive this row?
+  //
+  // `thumbnail_url` being set is not by itself proof — the row it points at
+  // could have been removed out from under it (admin storage delete, an
+  // interrupted upload). So resolve the url back to its attachment id and
+  // confirm that row still exists AND still has its own bytes. Anything we
+  // can't prove has a live thumbnail is treated as un-thumbnailed, i.e. left
+  // alone. Failing toward "skip" is the whole point of the rule.
+  const thumbIdByRow = new Map<string, bigint>();
   for (const r of rows) {
-    try {
-      await deleteStorageItem(r.id); // remove the on-disk file
-      await db.delete(schema.attachments).where(eq(schema.attachments.id, r.id)); // remove the row
-      affected.add(r.messageId);
-      deleted++;
-    } catch (err) {
-      console.warn(`attachment retention: failed to delete ${r.id}`, err);
-    }
+    const t = parseCdnAttachmentId(r.thumbnailUrl);
+    if (t !== null) thumbIdByRow.set(r.id.toString(), t);
+  }
+  const liveThumbIds = new Set<string>();
+  if (thumbIdByRow.size > 0) {
+    const wanted = [...new Set([...thumbIdByRow.values()].map((v) => v.toString()))].map((v) =>
+      BigInt(v),
+    );
+    const found = await db
+      .select({ id: schema.attachments.id })
+      .from(schema.attachments)
+      .where(
+        and(
+          inArray(schema.attachments.id, wanted),
+          // A thumbnail that was itself aged out is no fallback at all. (The
+          // sweep never reaps thumbnail rows, so this is belt-and-braces.)
+          isNull(schema.attachments.blobExpiredAt),
+        ),
+      );
+    for (const f of found) liveThumbIds.add(f.id.toString());
+  }
+  const hasLiveThumbnail = (id: bigint): boolean => {
+    const t = thumbIdByRow.get(id.toString());
+    return t !== undefined && liveThumbIds.has(t.toString());
+  };
+
+  const reapable = rows.filter((r) => hasLiveThumbnail(r.id) || opts.reapUnthumbed === true);
+  const skipped = rows.filter((r) => !hasLiveThumbnail(r.id) && opts.reapUnthumbed !== true);
+  const sumBytes = (rs: typeof rows) => rs.reduce((n, r) => n + (r.size ?? 0), 0);
+  const result: AttachmentRetentionResult = {
+    candidates: rows.length,
+    expired: 0,
+    bytes: 0,
+    skippedNoThumbnail: skipped.length,
+    skippedNoThumbnailBytes: sumBytes(skipped),
+  };
+
+  if (opts.dryRun || reapable.length === 0) {
+    // Dry run reports what WOULD be reclaimed; nothing is touched.
+    if (opts.dryRun) result.bytes = sumBytes(reapable);
+    return result;
   }
 
-  // Tombstone messages now left with no body AND no remaining attachments.
-  if (affected.size > 0) {
+  // Bytes first, mark second. The reverse order would leave a row marked
+  // "expired" with its file still on disk after a crash — and because the row
+  // still references the id, the GC would never reclaim it either. This order
+  // is self-healing: an interrupted run just re-selects the row next time,
+  // finds the directory already gone, and marks it (reclaiming 0 extra bytes).
+  const pendingMark: bigint[] = [];
+  // Marks in chunks so an interrupted long run keeps most of its progress.
+  // `expired` counts rows that are actually stamped, never rows we only
+  // attempted, so the report can't overstate what happened.
+  const flushMarks = async () => {
+    if (pendingMark.length === 0) return;
+    const ids = pendingMark.splice(0, pendingMark.length);
     try {
       await db
-        .update(schema.messages)
-        .set({ deletedAt: new Date() })
-        .where(
-          and(
-            inArray(schema.messages.id, [...affected]),
-            isNull(schema.messages.deletedAt),
-            eq(schema.messages.content, ''),
-            sql`NOT EXISTS (SELECT 1 FROM ${schema.attachments} a WHERE a.message_id = ${schema.messages.id})`,
-          ),
-        );
+        .update(schema.attachments)
+        .set({ blobExpiredAt: new Date() })
+        .where(inArray(schema.attachments.id, ids));
+      result.expired += ids.length;
     } catch (err) {
-      console.warn('attachment retention: empty-message tombstone pass failed', err);
+      console.warn('attachment retention: failed to stamp blob_expired_at', err);
     }
-  }
+  };
 
-  if (deleted > 0) invalidateStorageScan();
-  return { candidates: rows.length, deleted, bytes };
+  for (const r of reapable) {
+    try {
+      const removed = await deleteStorageItem(r.id); // the bytes, not the row
+      if (removed) result.bytes += r.size ?? 0;
+      pendingMark.push(r.id);
+    } catch (err) {
+      console.warn(`attachment retention: failed to expire blob ${r.id}`, err);
+      continue;
+    }
+    if (pendingMark.length >= 100) await flushMarks();
+  }
+  await flushMarks();
+
+  if (result.expired > 0) invalidateStorageScan();
+  return result;
 }

@@ -1,0 +1,34 @@
+-- "Last online" for the friends list.
+--
+-- WHY A COLUMN AND NOT MAX(sessions.last_used_at)
+-- ----------------------------------------------
+-- The admin panel already derives a last-active proxy from
+-- MAX(sessions.last_used_at) (apps/api/src/routes/admin.ts). That aggregate is
+-- wrong for this feature on two counts:
+--   1. ACCURACY. Session rows are touched by TOKEN REFRESH, which a backgrounded
+--      phone does on a timer with nobody holding the device. It answers "when did
+--      a token last refresh", not "when was this person last here" — the friends
+--      list would show everyone as recently online forever.
+--   2. COST. It is a GROUP BY over every session row of every friend on each read
+--      of the friends list; this column is one already-joined field on the `users`
+--      row the list fetches anyway (zero extra rows read).
+-- The writers are the gateway presence transitions (connect / disconnect), so the
+-- value tracks real presence.
+--
+-- PRIVACY (invisible must not leak presence)
+-- ------------------------------------------
+-- Every writer is gated on status <> 'invisible'. An invisible user reads as
+-- plain 'offline' to everyone; if this column kept advancing while they were
+-- invisible, an observer could poll it and infer "online right now", defeating
+-- Invisible entirely. Frozen at the last visible moment instead.
+--
+-- NULLABLE, NO DEFAULT, NO BACKFILL
+-- ---------------------------------
+-- Metadata-only in PG11+ (no table rewrite, no lock beyond the brief ACCESS
+-- EXCLUSIVE for the catalog update). NULL means "never observed online since this
+-- shipped" and clients render nothing rather than a fabricated time. Deliberately
+-- NOT seeded from session activity: that would bake in exactly the token-refresh
+-- signal this column exists to avoid, and would hand every user a plausible-
+-- looking-but-false "last online" on day one. It fills in naturally as people
+-- connect.
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "last_seen_at" timestamp with time zone;

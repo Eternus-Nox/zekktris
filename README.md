@@ -287,5 +287,6 @@ that exists — `./data` inside the repo is a sensible choice.
 
 ## License
 
-Proprietary — © Zekktris. All rights reserved. No public license is granted
-(there is no `LICENSE` file, so the default "all rights reserved" applies).
+Proprietary — © Zekktris. All rights reserved. No public license is granted;
+see [LICENSE](./LICENSE). Making this repository publicly readable does not
+grant any right to use, copy, modify, or redistribute the software.

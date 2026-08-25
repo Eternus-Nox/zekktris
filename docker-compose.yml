@@ -139,6 +139,38 @@ services:
       REFRESH_TOKEN_TTL_SECONDS: ${REFRESH_TOKEN_TTL_SECONDS:-2592000}
       MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-100}
       MAX_FILES_PER_MESSAGE: ${MAX_FILES_PER_MESSAGE:-10}
+      # Optional per-VIDEO cap in MB, on top of MAX_UPLOAD_SIZE_MB above.
+      # 0 (default) = off, so videos are bounded only by the overall cap.
+      # One phone clip can outweigh hundreds of compressed images; set this
+      # to reject oversized videos without lowering the limit for everything
+      # else. Rejects NEW uploads only — never touches files already stored.
+      MAX_VIDEO_UPLOAD_SIZE_MB: ${MAX_VIDEO_UPLOAD_SIZE_MB:-0}
+      # Attachment retention sweep — ENABLED at 90 days (user decision,
+      # 2026-08-14). This expires the FULL-SIZE bytes only: the message, its
+      # text, the attachment row (filename/size/dimensions) and the small
+      # thumbnail are all kept forever, and clients render an "original expired"
+      # state from `blobExpiredAt`. It is NOT the old behaviour (that version
+      # hard-deleted attachments and skipped E2EE, which is why it reclaimed
+      # almost nothing — ~96% of stored bytes are E2EE originals).
+      #
+      # A blob is only ever expired when a surviving thumbnail proves the image
+      # is still viewable. Attachments with NO thumbnail are skipped and counted
+      # separately; reaping those is a distinct opt-in
+      # (ATTACHMENT_RETENTION_REAP_UNTHUMBED, default false) because for them the
+      # original is the only copy.
+      #
+      # To PREVIEW before anything is deleted, run one cycle with
+      # ATTACHMENT_RETENTION_DRY_RUN=true — it logs candidates, reclaimable
+      # bytes and skip counts, and touches nothing.
+      ATTACHMENT_RETENTION_DAYS: ${ATTACHMENT_RETENTION_DAYS:-90}
+      ATTACHMENT_RETENTION_DRY_RUN: ${ATTACHMENT_RETENTION_DRY_RUN:-false}
+      # Periodic image-compression sweep (re-encodes stored images at lower
+      # quality; needs the `sharp` package, no-ops gracefully without it).
+      # QUALITY 1-100 (75 ≈ 30-50% saved on phone-camera output with no
+      # visible loss); ENABLED is the master off-switch.
+      IMAGE_COMPRESS_ENABLED: ${IMAGE_COMPRESS_ENABLED:-true}
+      IMAGE_COMPRESS_QUALITY: ${IMAGE_COMPRESS_QUALITY:-75}
+      IMAGE_COMPRESS_SWEEP_INTERVAL_HOURS: ${IMAGE_COMPRESS_SWEEP_INTERVAL_HOURS:-24}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
       WORKER_ID: ${WORKER_ID:-0}
@@ -148,6 +180,12 @@ services:
       # as a Bearer token. Not proxied by Caddy — internal-network only unless
       # you add a route. Admins always get JSON metrics at /api/v1/admin/metrics.
       METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # First-install bootstrap: if no user has is_admin yet AND a user
+      # exists with this email, promote them on boot. Idempotent once any
+      # admin exists, so it is safe to leave set. Without this line the
+      # documented "register, then become admin" flow silently no-ops and
+      # a fresh instance ends up with zero admins and no way in.
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
       # Encrypts sensitive fields at rest (TOTP 2FA secrets, bot event secrets,
       # and the SSO/OIDC client secret). REQUIRED to enable SSO. 32 bytes as 64
       # hex chars or base64: `openssl rand -hex 32`. Unset → those fields are
@@ -164,8 +202,19 @@ services:
       # To use LiveKit Cloud instead of the bundled SFU, set LIVEKIT_WS_URL
       # to your wss://…livekit.cloud URL (plus the cloud key/secret) and the
       # bundled service simply goes unused.
-      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
-      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-devsecret-do-not-use-in-production-32chars}
+      # NO FALLBACK DEFAULT ON PURPOSE. These previously defaulted to
+      # `devkey` / `devsecret-do-not-use-in-production-32chars`, which are
+      # published in this repo. The LiveKit secret is the HMAC key the SFU
+      # uses to verify join tokens, so any instance running on the default
+      # let ANYONE mint a valid token for ANY room — joining any voice
+      # channel, stage or DM call, as any identity, without ever
+      # authenticating to Zekktris. .env.example ships these blank, so the
+      # default applied to every deploy that didn't run setup.sh.
+      # Unset now means voice degrades to presence-only (joinVoice returns a
+      # null token), which is the correct failure mode. Run setup.sh or set
+      # your own values to enable voice.
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
       # Browser-facing LiveKit URL. Leave EMPTY to use the bundled SFU: the
       # API then derives a same-origin wss://<PUBLIC_URL host>/livekit URL
       # that Caddy reverse-proxies to the LiveKit container (see ops/Caddyfile),
@@ -377,7 +426,12 @@ services:
       # MUST match the api's LIVEKIT_API_KEY/SECRET (same defaults below so a
       # bare `docker compose up` agrees out of the box). setup.sh generates
       # secure random values on first run.
-      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-devsecret-do-not-use-in-production-32chars}"
+      # Must match the api's key/secret. No fallback default — see the note
+      # on the api service: the old `devkey`/`devsecret-…` defaults are
+      # published in this repo and let anyone forge a join token for any
+      # room. With these empty the SFU starts with no configured key and
+      # accepts no tokens, so voice is off until real values are supplied.
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-}: ${LIVEKIT_API_SECRET:-}"
       # STUN-discover the public IP by default (correct for internet-facing
       # hosts; gives remote clients a reachable candidate). The host LAN-IP
       # candidate is provided automatically by host networking above, so

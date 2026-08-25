@@ -145,7 +145,12 @@ describe.runIf(dbReady)('admin router: moderator authz + staff audit log', () =>
     ).toBe(403);
   });
 
-  it('moderator gifting is capped at 3 months; admins are not', async () => {
+  // Gifting is monetization, so it's admin-only: the route is absent from
+  // MODERATOR_ALLOWED, which makes the router guard reject a moderator before
+  // the handler runs — at EVERY duration, not just long ones. (An earlier spec
+  // let moderators gift up to 3 months; that cap no longer exists because the
+  // capability itself was withdrawn.)
+  it('membership gifting is admin-only — a moderator is refused at every duration', async () => {
     const mod = await createUser();
     await makeModerator(mod);
     const admin = await createUser();
@@ -153,22 +158,20 @@ describe.runIf(dbReady)('admin router: moderator authz + staff audit log', () =>
     const target = await createUser();
     const modToken = await tokenFor(mod);
 
-    expect(
-      (await req('POST', `/users/${target}/subscription`, modToken, { tier: 'scout', duration: '3m' }))
-        .status,
-    ).toBe(200);
-    expect(
-      (await req('POST', `/users/${target}/subscription`, modToken, { tier: 'scout', duration: '6m' }))
-        .status,
-    ).toBe(403);
-    expect(
-      (
-        await req('POST', `/users/${target}/subscription`, modToken, {
-          tier: 'scout',
-          duration: 'forever',
-        })
-      ).status,
-    ).toBe(403);
+    for (const duration of ['1m', '3m', '6m', 'forever'] as const) {
+      expect(
+        (await req('POST', `/users/${target}/subscription`, modToken, { tier: 'scout', duration }))
+          .status,
+      ).toBe(403);
+    }
+    // ...and the gift really didn't land.
+    const [none] = await db
+      .select({ tier: schema.subscriptions.tier })
+      .from(schema.subscriptions)
+      .where(eq(schema.subscriptions.userId, target));
+    expect(none).toBeUndefined();
+
+    // An admin is unrestricted.
     expect(
       (
         await req('POST', `/users/${target}/subscription`, await tokenFor(admin), {

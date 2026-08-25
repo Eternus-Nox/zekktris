@@ -73,10 +73,18 @@ Android push uses **Firebase Cloud Messaging**. Two halves:
    - In the [Firebase console](https://console.firebase.google.com/), create a
      project and add an **Android app** with package name `com.zekktris.app`.
    - Download **`google-services.json`** and drop it into
-     [`apps/web/android/app/`](./apps/web/android/app). The gradle is already
+     [`apps/web/android/app/`](./apps/web/android/app) — and, for the native
+     app, [`android-native/app/`](./android-native/app). The gradle is already
      wired: `app/build.gradle` applies the `com.google.gms.google-services`
      plugin **only when that file is present**, so the app builds fine without
      it (push just won't register).
+
+   > **`google-services.json` is NOT committed for either project** — both
+   > paths are in `.gitignore`. It embeds a Firebase API key and the project
+   > id, so a clone of this repo does not carry them; supply the file at build
+   > time (drop it in locally, or have CI write it from a secret). Restrict the
+   > key to your Android package + signing certificate in the Google Cloud
+   > console so a leaked copy can't be used elsewhere.
    - No client code change is needed — `@capacitor/push-notifications` yields an
      FCM token on Android, and [`useNativePush.ts`](./apps/web/src/app/useNativePush.ts)
      already registers it with the server tagged `platform: 'android'`.

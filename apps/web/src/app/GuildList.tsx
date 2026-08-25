@@ -351,7 +351,7 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
       <div className="flex-1" />
 
       {user && (
-        <div className="flex flex-col items-center gap-2 zk-rail-actions">
+        <div className="flex flex-col items-center gap-2 border-t border-line pt-2 zk-rail-actions">
           {/* Instance-admin entry point — first in the bottom group
               for users who have it. Sits above Settings because it's
               the highest-context tool (cross-instance reach); only

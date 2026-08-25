@@ -14,6 +14,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { adultCutoffDob } from '../lib/age';
+import { notifySupervisionChanged } from './supervision';
 
 export async function sweepParentLinksByAge(): Promise<{ revoked: number }> {
   const cutoff = adultCutoffDob(); // DOB <= cutoff ⇒ 18+
@@ -31,5 +32,16 @@ export async function sweepParentLinksByAge(): Promise<{ revoked: number }> {
       ),
     )
     .returning({ childId: schema.parentChildLinks.childId });
+
+  // Tell each released account's connected devices to drop their supervision
+  // gates. Enforcement already released on the fly at 18, but a client that
+  // cached its restrictions at startup would keep applying them until a cold
+  // start — so the newly-adult user stays needlessly restricted in the UI.
+  // Deduped: two guardians on one child produce two revoked rows, one user.
+  // Only the replica whose UPDATE actually matched the rows gets here, so
+  // there's no duplicate fan-out across nodes.
+  for (const childId of new Set(revoked.map((r) => r.childId))) {
+    await notifySupervisionChanged(childId);
+  }
   return { revoked: revoked.length };
 }

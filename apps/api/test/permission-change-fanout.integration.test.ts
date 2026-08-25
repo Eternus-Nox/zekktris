@@ -161,8 +161,14 @@ describe.runIf(dbReady)('applyGuildPermissionChange fan-out (integration)', () =
     expect(rosterIds).toContain(stayer);
 
     // ...and a STAGE_PARTICIPANTS_UPDATE was published for this channel,
-    // guild-scoped, whose participant list excludes the evictee but still
+    // CHANNEL-scoped, whose participant list excludes the evictee but still
     // includes stayer.
+    //
+    // The audience is 'channel', not 'guild'. A guild audience fanned every
+    // stage roster to every member of the guild, leaking both the existence
+    // of a private stage channel and who was on it to members without
+    // VIEW_CHANNEL — the same leak voiceStateUpdate was already fixed for.
+    // 'channel' filters against each connection's viewableGuildChannelIds.
     const updates = published.filter(
       (e) =>
         e.t === 'STAGE_PARTICIPANTS_UPDATE' &&
@@ -170,7 +176,7 @@ describe.runIf(dbReady)('applyGuildPermissionChange fan-out (integration)', () =
     );
     expect(updates.length).toBeGreaterThan(0);
     const last = updates[updates.length - 1];
-    expect((last.audience as { kind: string }).kind).toBe('guild');
+    expect((last.audience as { kind: string }).kind).toBe('channel');
     const participantIds = (
       (last.d as { participants: Array<{ userId: string }> }).participants
     ).map((p) => p.userId);

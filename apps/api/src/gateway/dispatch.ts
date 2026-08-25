@@ -329,7 +329,13 @@ export function stageParticipantsUpdate(payload: {
       channel_id: payload.channelId.toString(),
       participants: payload.participants,
     },
-    { kind: 'guild', guildId: payload.guildId },
+    // Channel audience, matching voiceStateUpdate. This was a 'guild'
+    // audience, which fanned every stage roster to EVERY member of the
+    // guild — leaking both the existence of a private stage channel and
+    // who is on it to members without VIEW_CHANNEL. The 'channel' branch
+    // of shouldReceive filters against conn.viewableGuildChannelIds, so
+    // non-viewers are excluded with no other change needed.
+    { kind: 'channel', channelId: payload.channelId, guildId: payload.guildId },
   );
 }
 
@@ -790,6 +796,25 @@ export function familyFlagCreate(args: {
   publish(GatewayEvent.FAMILY_FLAG_CREATE, payload, {
     kind: 'users',
     userIds: args.parentIds,
+  });
+}
+
+/**
+ * Parental controls — the SUBJECT's own supervision state changed
+ * (restrictions edited, link accepted/ended, a server blocked, the 18+
+ * sweep releasing them). Audience is that one user, so every device they
+ * have connected re-applies its supervision gates immediately instead of
+ * carrying stale permissions until the next cold start.
+ *
+ * The caller builds the state DTO (supervision.supervisionStateFor) so
+ * dispatch stays free of domain imports — same contract as channelAck.
+ * That DTO is the subject's OWN state only: it must never carry guardian
+ * identity or any other parent-side data.
+ */
+export function familySupervisionUpdate(args: { childId: bigint; state: unknown }): void {
+  publish(GatewayEvent.FAMILY_SUPERVISION_UPDATE, args.state, {
+    kind: 'user',
+    userId: args.childId,
   });
 }
 

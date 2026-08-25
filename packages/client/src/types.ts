@@ -40,6 +40,16 @@ export interface PublicUser {
   bio?: string | null;
   status: 'online' | 'idle' | 'dnd' | 'offline' | 'invisible';
   customStatus: string | null;
+  /** "Last online" (ISO 8601), for rendering "Last seen 3h ago" under an
+      offline friend. ONLY populated by GET /users/@me/relationships, and only
+      on rows whose `type` is 'friend' — pending requests, blocked users, and
+      every other user lookup (member lists, message authors, GET /users/:id)
+      omit it or send null, because last-seen is friends-only by policy.
+      null = never observed online, or not visible to you. Meaningless while
+      the user is online (the status dot is the live truth); the server
+      freezes it while they're invisible, so it can never be used to tell an
+      invisible user apart from a genuinely offline one. */
+  lastSeenAt?: string | null;
   /** Emoji alongside the custom status text. Independent — text-only,
       emoji-only, or both are all valid combinations. */
   customStatusEmoji?: string | null;
@@ -381,6 +391,19 @@ export interface Attachment {
       webp; E2EE: the .zke URL of a client-made, channel-key-encrypted
       thumbnail. Null = load the full image (`url`) inline. */
   thumbnailUrl: string | null;
+  /** ISO timestamp of when media retention aged out the FULL-SIZE original,
+      or null while it is still stored (the normal case, and what every
+      locally-synthesized attachment should use).
+
+      Non-null means the original is GONE: `url` will not resolve, so don't
+      fetch it, don't offer "open original"/download, and render the kept
+      `thumbnailUrl` with an "original expired" affordance instead of a broken
+      image. The message, its text, the filename and the dimensions are all
+      still intact — only the full-size bytes were reclaimed.
+
+      Optional so optimistic/placeholder attachments can omit it; the server
+      always sends it. */
+  blobExpiredAt?: string | null;
 }
 
 export interface ReactionAggregate {
@@ -639,11 +662,95 @@ export interface AuthSession {
 }
 
 /** A short-lived, single-use quick-login code for logging in on another
-    device (shown as digits + encoded in a QR). `expiresIn` is seconds. */
+    device (shown as digits + encoded in a QR). `expiresIn` is seconds.
+    @deprecated the logged-in→logged-out direction is being replaced by the
+    device-approval flow below (DeviceLoginStart & co). Delete with the
+    /auth/quick-login/* routes. */
 export interface QuickLoginCode {
   code: string;
   expiresIn: number;
 }
+
+// ── Device-approval login ("approve this login on your phone") ──────────────
+// The LOGGED-OUT device starts a request and shows `userCode`; the already
+// logged-in phone scans/types it, reviews the device metadata, and approves.
+//
+// TWO SECRETS, NOT INTERCHANGEABLE:
+//   userCode   — short, shown on screen + in the QR. Public by construction.
+//                Only ever used by an AUTHENTICATED caller to look up and
+//                decide the request. Never yields a session.
+//   deviceCode — 256-bit, returned once to the starting device. Never render
+//                it, never put it in a QR, never log it, never persist it
+//                anywhere durable. It alone collects the tokens.
+// See apps/api/src/auth/device-login-store.ts for why, and for the phishing
+// attack the approval screen exists to defeat.
+
+/** Result of POST /auth/device-login/start. `expiresIn` and `interval` are
+    seconds; poll no faster than `interval` or the server will slow you down. */
+export interface DeviceLoginStart {
+  /** Display + QR this, formatted `ABCD-EFGH`. */
+  userCode: string;
+  /** SECRET. Hold in memory only. */
+  deviceCode: string;
+  expiresIn: number;
+  interval: number;
+}
+
+export type DeviceLoginPlatform = 'ios' | 'android' | 'web' | 'desktop' | 'unknown';
+
+/**
+ * The device that is asking to be logged in, as shown on the approval screen.
+ *
+ * THE SPLIT BELOW IS THE WHOLE POINT — render it. `ipAddress` / `sameNetwork` /
+ * `requestedAt` are observed by the server and cannot be forged by a remote
+ * phisher. `declaredName` / `userAgent` / `platform` / `locale` are whatever
+ * the requesting device claimed about itself; an attacker will call themselves
+ * "Your iPhone". Present the claimed fields as claims.
+ */
+export interface DeviceLoginDeviceInfo {
+  /** UNTRUSTED, device-supplied label. May be null. */
+  declaredName: string | null;
+  /** UNTRUSTED, device-supplied User-Agent. */
+  userAgent: string | null;
+  /** UNTRUSTED — derived from the User-Agent. */
+  platform: DeviceLoginPlatform;
+  /** UNTRUSTED — from Accept-Language. A locale, NOT a location. */
+  locale: string | null;
+  /** Server-observed source IP of the requesting device. */
+  ipAddress: string | null;
+  /** Server-observed: the requester shares the approver's /24 (or IPv6 /48).
+      A hint, not proof — but a remote attacker can never make it true. Show a
+      prominent warning when false. */
+  sameNetwork: boolean;
+  /** ISO-8601. */
+  requestedAt: string;
+  /** Always null today — the server does not do GeoIP and will not guess. */
+  approxLocation: string | null;
+}
+
+/** Result of POST /auth/device-login/lookup. */
+export interface DeviceLoginRequestInfo {
+  userCode: string;
+  /** Seconds left before the request expires. */
+  expiresIn: number;
+  device: DeviceLoginDeviceInfo;
+}
+
+/**
+ * Result of POST /auth/device-login/poll. Every variant is an HTTP 200 — these
+ * are states of a polling loop, not errors.
+ *   pending    keep polling at `interval`.
+ *   slow_down  you polled too fast; adopt the (larger) `interval`.
+ *   approved   done — tokens included, delivered exactly once.
+ *   denied     the user refused. Stop.
+ *   expired    unknown/consumed/timed-out code. Stop and start over.
+ */
+export type DeviceLoginPollResult =
+  | { status: 'pending'; interval: number }
+  | { status: 'slow_down'; interval: number }
+  | { status: 'denied' }
+  | { status: 'expired' }
+  | ({ status: 'approved'; expiresIn: number } & AuthSession);
 
 /**
  * A guild ban — server-side this is a row in the `bans` table; the

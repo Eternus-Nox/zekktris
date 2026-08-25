@@ -790,6 +790,18 @@ export interface AttachmentDTO {
       webp; E2EE: the .zke URL of a client-made, channel-key-encrypted
       thumbnail. Null = load the full image (`url`) inline. */
   thumbnailUrl: string | null;
+  /** ISO timestamp of when media retention aged out the FULL-SIZE object, or
+      null while the original is still stored (the normal case).
+
+      Non-null means: `url` no longer resolves — do NOT fetch it, and do not
+      render a broken image. Everything needed for the expired state is still
+      here: `thumbnailUrl` (kept forever), plus filename/size/width/height.
+      The message and its text are untouched; only the original went.
+
+      `url` is intentionally still populated (it is non-optional in every
+      shipped native client), so clients MUST gate on this field rather than
+      on a missing url. */
+  blobExpiredAt: string | null;
 }
 
 export function toAttachment(a: Attachment): AttachmentDTO {
@@ -805,6 +817,7 @@ export function toAttachment(a: Attachment): AttachmentDTO {
     durationSeconds: a.durationSeconds ?? null,
     waveform: a.waveform ?? null,
     thumbnailUrl: a.thumbnailUrl ?? null,
+    blobExpiredAt: isoDate(a.blobExpiredAt ?? null),
   };
 }
 

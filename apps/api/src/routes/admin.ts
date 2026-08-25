@@ -35,7 +35,7 @@ import { requireAuth, requireStaff, requireUserId, staffIsAdmin } from '../auth/
 import { revokeAllUserSessions } from '../auth/sessions';
 import * as voice from '../services/voice';
 import * as dispatch from '../gateway/dispatch';
-import { leftVoiceStateDTO } from '../lib/dto';
+import { leftVoiceStateDTO, toAttachment } from '../lib/dto';
 import { registry } from '../gateway/registry';
 import {
   listStorageItems,
@@ -1348,13 +1348,12 @@ adminRouter.get(
           content: m.content,
           createdAt: m.createdAt.toISOString(),
           editedAt: m.editedAt?.toISOString() ?? null,
-          attachments: atts.map((at) => ({
-            id: at.id.toString(),
-            filename: at.filename,
-            url: at.url,
-            contentType: at.contentType,
-            size: at.size,
-          })),
+          // Full AttachmentDTO (see the same note in routes/family.ts):
+          // observers need `thumbnailUrl` so a peek renders previews
+          // rather than full-size originals, and `blobExpiredAt` so an
+          // aged-out original reads as "no longer stored" instead of a
+          // broken image.
+          attachments: atts.map(toAttachment),
           reactions: reacts
             ? Array.from(reacts.entries()).map(([emoji, count]) => ({ emoji, count }))
             : [],

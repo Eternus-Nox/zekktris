@@ -1,0 +1,40 @@
+-- Media retention: expire the BLOB, keep the message.
+--
+-- WHAT CHANGED
+-- ------------
+-- The retention sweep used to hard-DELETE old attachment rows (and tombstone
+-- any message left with an empty body). Measured on this instance, ~96% of
+-- stored bytes are full-size images from native clients while message text is
+-- a rounding error — so the lever is the full-size object, not the message.
+-- The sweep now deletes only the stored bytes and stamps this column; the
+-- attachment row, its thumbnail row, and the message all survive.
+--
+-- WHY A COLUMN AND NOT "url IS NULL"
+-- ----------------------------------
+-- Nulling `url` was the obvious marker, but `attachments.url` is NOT NULL and
+-- every shipped native client decodes the DTO's `url` as a non-optional string
+-- (Swift `var url: String`, Kotlin `val url: String`). Emitting null there
+-- would fail decoding of the whole message on builds already in users' hands.
+-- A separate nullable timestamp is additive: old clients ignore it (and get a
+-- 404 on the dead url, exactly as they would have for a deleted attachment),
+-- new clients render "full image expired — thumbnail kept".
+--
+-- The timestamp (rather than a boolean) is what makes the state auditable:
+-- an operator can tell WHEN the bytes went, and correlate a run of expiries
+-- with a particular sweep.
+--
+-- WHAT THE COLUMN PROTECTS
+-- ------------------------
+-- The sweep refuses to reap a row whose `thumbnail_url` IS NULL (with no
+-- thumbnail the full blob is the only copy, so reaping destroys the image
+-- outright) and never touches a row with `is_thumbnail = true` (those rows ARE
+-- the preserved copy). Rows skipped for the first reason are counted and
+-- reported separately so the operator can see what retention is not reaching.
+--
+-- NULLABLE, NO DEFAULT, NO BACKFILL
+-- ---------------------------------
+-- Metadata-only in PG11+ (no table rewrite; only the brief ACCESS EXCLUSIVE for
+-- the catalog update) — important because `attachments` is one of the larger
+-- tables here. NULL means "the full-size object is still on disk", which is the
+-- truth for every existing row.
+ALTER TABLE "attachments" ADD COLUMN IF NOT EXISTS "blob_expired_at" timestamp with time zone;

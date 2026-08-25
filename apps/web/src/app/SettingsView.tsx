@@ -16,7 +16,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import { ApiError, type PasskeyInfo, type SessionInfo } from '@zekktris/client';
-import { UserTag } from '../lib/UserTag';
+import { UserTag, StaffName } from '../lib/UserTag';
 import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
 import { AchievementsShelf } from './AchievementsShelf';
@@ -41,11 +41,10 @@ import {
   Shield,
   ChevronLeft,
   Key,
-  Monitor,
-  Smartphone,
-  Globe,
   LogOut,
 } from '../lib/icons';
+import { DeviceIcon, deviceLabel } from '../lib/deviceInfo';
+import { DeviceApprovalSection } from './DeviceApproval';
 import { useNavigate } from 'react-router-dom';
 import { copyText } from '../lib/clipboard';
 import { qrEncode, qrToSvg } from '../lib/qr';
@@ -113,10 +112,161 @@ type Status = 'online' | 'idle' | 'dnd' | 'invisible';
 
 const STATUS_OPTIONS: Array<{ value: Status; label: string; dot: string; help: string }> = [
   { value: 'online', label: 'Online', dot: 'bg-emerald-500', help: 'Visible and reachable' },
-  { value: 'idle', label: 'Idle', dot: 'bg-amber-500', help: 'Away from keyboard' },
+  // Display label only — the wire/DB value stays the string 'idle' so every
+  // already-shipped client keeps agreeing with the server about presence.
+  { value: 'idle', label: 'Away', dot: 'bg-amber-500', help: 'Away from keyboard' },
   { value: 'dnd', label: 'Do not disturb', dot: 'bg-red-500', help: 'No notification sounds' },
   { value: 'invisible', label: 'Invisible', dot: 'bg-ink-3', help: "Appear offline to everyone" },
 ];
+
+/**
+ * Danger zone — permanently close the account.
+ *
+ * The Privacy Policy states the user can "delete your account at any time from
+ * Settings", so this is where that promise is kept. Its own component (rather
+ * than more state on SettingsView) because it owns four pieces of transient
+ * form state that nothing else needs.
+ *
+ * Deliberately high-friction: the password is required by the server, and we
+ * additionally make the user type their username. Deletion is irreversible and
+ * one stray click away from everyday profile controls.
+ */
+function DeleteAccountSection() {
+  const { user, rest, logout } = useAuth();
+  const toasts = useToasts();
+  const [open, setOpen] = useState(false);
+  const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
+  const [confirmName, setConfirmName] = useState('');
+  const [needsCode, setNeedsCode] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const username = user?.username ?? '';
+  const canSubmit = password.length > 0 && confirmName === username && !busy;
+
+  async function openPanel() {
+    setOpen(true);
+    // Only ask for a second factor if one is actually armed. Best-effort: if
+    // the status call fails we simply show the field, and the server is the
+    // real gate either way.
+    try {
+      const st = await rest.getTwoFactorStatus();
+      setNeedsCode(st.enabled);
+    } catch {
+      setNeedsCode(true);
+    }
+  }
+
+  function reset() {
+    setOpen(false);
+    setPassword('');
+    setCode('');
+    setConfirmName('');
+    setBusy(false);
+  }
+
+  async function submit() {
+    if (!canSubmit) return;
+    setBusy(true);
+    try {
+      await rest.deleteAccount({
+        password,
+        ...(code.trim() ? { totpCode: code.trim() } : {}),
+      });
+      // The account is gone and every session with it — drop local state and
+      // return to the login screen.
+      toasts.push('Your account has been deleted.', 'success');
+      await logout();
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message ? err.message : 'Could not delete your account.';
+      toasts.push(message, 'error');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="pt-3 border-t border-line">
+      <div className="text-sm text-ink-2 font-medium mb-2">Delete account</div>
+      {!open ? (
+        <>
+          <button
+            onClick={() => void openPanel()}
+            className="w-full sm:w-auto px-3 py-2 rounded-lg text-sm font-medium border border-red-400/40 text-red-400 hover:bg-red-500/10 transition-colors inline-flex items-center justify-center gap-2"
+          >
+            <AlertTriangle size={16} />
+            Delete my account
+          </button>
+          <p className="text-xs text-ink-3 mt-2">
+            Permanently deletes your account and signs you out everywhere. This
+            can&rsquo;t be undone.
+          </p>
+        </>
+      ) : (
+        <div className="rounded-lg border border-red-400/40 bg-red-500/5 p-3 space-y-3">
+          <p className="text-sm text-ink-2">
+            This permanently deletes your account, your profile and your
+            memberships, and removes your name from messages you&rsquo;ve sent.
+            It cannot be undone.
+          </p>
+          <p className="text-xs text-ink-3">
+            If you own any servers, transfer or delete them first.
+          </p>
+          <label className="block">
+            <span className="text-xs text-ink-3">Your password</span>
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="mt-1 w-full px-2.5 py-1.5 rounded-md bg-bg-1 border border-line text-sm text-ink-1"
+            />
+          </label>
+          {needsCode && (
+            <label className="block">
+              <span className="text-xs text-ink-3">
+                Authenticator code (or a recovery code)
+              </span>
+              <input
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                className="mt-1 w-full px-2.5 py-1.5 rounded-md bg-bg-1 border border-line text-sm text-ink-1 font-mono tracking-widest"
+              />
+            </label>
+          )}
+          <label className="block">
+            <span className="text-xs text-ink-3">
+              Type <span className="font-mono text-ink-2">{username}</span> to confirm
+            </span>
+            <input
+              value={confirmName}
+              onChange={(e) => setConfirmName(e.target.value)}
+              className="mt-1 w-full px-2.5 py-1.5 rounded-md bg-bg-1 border border-line text-sm text-ink-1"
+            />
+          </label>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => void submit()}
+              disabled={!canSubmit}
+              className="px-3 py-2 rounded-lg text-sm font-medium bg-red-500/90 text-white hover:bg-red-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {busy ? 'Deleting\u2026' : 'Permanently delete'}
+            </button>
+            <button
+              onClick={reset}
+              disabled={busy}
+              className="px-3 py-2 rounded-lg text-sm text-ink-2 hover:bg-bg-1 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function SettingsView() {
   const navigate = useNavigate();
@@ -615,9 +765,17 @@ export function SettingsView() {
               </span>
             </button>
             <div className="min-w-0 pb-1">
-              <div className="text-xl font-bold truncate leading-tight text-ink-1">
-                {user.displayName || user.username}
-              </div>
+              {/* Your own name renders through the SAME <StaffName> every other
+                  surface uses, so instance staff see their shimmer (and the
+                  optional glow) here too. StaffName is the single gate —
+                  staffShimmerColor() returns null unless you're staff AND have
+                  picked a color, so a non-entitled or opted-out user still gets
+                  the plain text-ink-1 treatment. */}
+              <StaffName
+                user={user}
+                text={user.displayName || user.username}
+                className="block text-xl font-bold truncate leading-tight text-ink-1"
+              />
               <div className="text-sm text-ink-3 truncate">@{user.username}</div>
             </div>
           </div>
@@ -686,7 +844,7 @@ export function SettingsView() {
           {/* ── Status ───────────────────────────────────────────────────
               First on the tab (matches iOS). Status changes apply immediately
               (no Save Changes click required) — this matches Discord's
-              behaviour and resolves the surprise of "I picked Idle but it
+              behaviour and resolves the surprise of "I picked Away but it
               didn't take". The optimistic local update happens before the
               REST round-trip so the UI is snappy. */}
           <section className="space-y-2">
@@ -702,9 +860,10 @@ export function SettingsView() {
                     type="button"
                     disabled={savingStatus}
                     onClick={() => void changeStatus(opt.value)}
-                    className={`w-full flex items-center gap-2.5 text-left px-3 py-2.5 rounded-md border transition-colors disabled:opacity-60 ${
-                      active ? 'bg-accent/15 border-accent/60' : 'bg-bg-1 border-line hover:bg-bg-3'
-                    }`}
+                    /* iOS/Android express the selection with the trailing tick
+                       ALONE — the row card itself stays neutral either way
+                       (MainView.swift statusRow). */
+                    className="w-full flex items-center gap-2.5 text-left px-3 py-2.5 rounded-md border bg-bg-1 border-line hover:bg-bg-3 transition-colors disabled:opacity-60"
                   >
                     <span className={`w-2.5 h-2.5 rounded-full ${opt.dot}`} aria-hidden />
                     <span className="font-medium">{opt.label}</span>
@@ -835,6 +994,13 @@ export function SettingsView() {
               <div className="text-sm text-ink-2 font-medium mb-2">Blocked users</div>
               <BlockedSettings />
             </div>
+            {/* Media storage — the honest statement of what server-side media
+                retention does. Sits next to Legal because it's a data-
+                retention promise, not a preference. */}
+            <div className="pt-3 border-t border-line">
+              <div className="text-sm text-ink-2 font-medium mb-2">Media storage</div>
+              <MediaRetentionNotice />
+            </div>
             {/* Legal — reachable from inside the app, not just at signup. Open
                 in a new tab so Settings isn't unmounted underneath the reader. */}
             <div className="pt-3 border-t border-line">
@@ -880,24 +1046,13 @@ export function SettingsView() {
                 them under Security → Active sessions.
               </p>
             </div>
+            <DeleteAccountSection />
           </section>
           </>
         )}
 
         {activeTab === 'membership' && (
           <>
-            <div className="space-y-1">
-              <h2 className="text-sm font-semibold text-ink-1">Membership</h2>
-              <p className="text-xs text-ink-3 leading-relaxed">
-                Support keeps Zekktris alive and strong. Membership unlocks{' '}
-                <span className="text-ink-2 font-medium">cosmetic customization</span> — themes,
-                avatar frames, and name tags below — plus{' '}
-                <span className="text-ink-2 font-medium">premium streaming quality</span> (2K screen
-                share &amp; camera on Guardian, 4K on Legend; everyone streams free up to 1080p60). It never
-                changes what you can say or do. Payments are handled here on the website; memberships
-                are non-refundable.
-              </p>
-            </div>
         {/* Staff name shimmer — an instance-STAFF perk (not membership-gated),
             shown first, above the membership sections (matches iOS). Renders
             nothing for non-staff. */}
@@ -1058,11 +1213,13 @@ export function SettingsView() {
 
         {activeTab === 'security' && (
           <>
-            {/* Security group first (matches iOS): passkeys, two-factor,
-                then quick device login (QR / code). */}
+            {/* Security group first (matches iOS): passkeys, two-factor, then
+                approving a sign-in on a new device. Note the direction — this
+                device APPROVES others; it never hands out a code that is
+                itself a credential. */}
             <PasskeysSection />
             <TwoFactorSection />
-            <QuickLoginSection />
+            <DeviceApprovalSection />
 
             {/* Account identity — username + email (credential changes, each
                 re-confirmed with the current password), then the copyable
@@ -1656,18 +1813,35 @@ function ToggleRow({
   checked: boolean;
   onChange: (next: boolean) => void;
 }) {
+  // The control is the same pill switch every other boolean on this page
+  // uses (iOS/Android use one Toggle style throughout — a raw checkbox
+  // among eight pills read as a different app). The real <input> stays
+  // for keyboard + screen-reader semantics; it's visually hidden and the
+  // pill is painted next to it, with the focus ring driven off `peer`.
   return (
-    <label className="flex items-start gap-3 px-3 py-2 rounded-md bg-bg-1 border border-line cursor-pointer hover:bg-bg-3/40 transition-colors">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="mt-0.5 shrink-0 accent-accent"
-      />
+    <label className="flex items-center justify-between gap-3 px-3 py-2 rounded-md bg-bg-1 border border-line cursor-pointer hover:bg-bg-3/40 transition-colors">
       <div className="min-w-0 flex-1">
         <div className="text-sm text-ink-1 font-medium">{title}</div>
         <div className="text-xs text-ink-3 mt-0.5 leading-snug">{help}</div>
       </div>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="sr-only peer"
+      />
+      <span
+        className={`relative shrink-0 w-10 h-6 rounded-full transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-accent ${
+          checked ? 'bg-accent/70' : 'bg-bg-3'
+        }`}
+        aria-hidden
+      >
+        <span
+          className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
+            checked ? 'left-[1.125rem]' : 'left-0.5'
+          }`}
+        />
+      </span>
     </label>
   );
 }
@@ -1807,10 +1981,21 @@ function TagSettings() {
             <UserTag user={preview} ignoreHidePref />
             {/* Nudge the name down 1px to sit level with the tag pill's optical
                 center — DESKTOP ONLY (`sm:top-px`). Mobile browsers already
-                render it aligned, so the nudge would over-correct there. */}
-            <span className="relative sm:top-px text-sm text-ink-1 font-medium truncate max-w-[10rem]">
-              {user?.displayName ?? 'You'}
-            </span>
+                render it aligned, so the nudge would over-correct there.
+                Routed through <StaffName> so the preview shows the same name
+                treatment (staff shimmer + optional glow, when entitled and not
+                opted out) that the tag will actually sit next to elsewhere. */}
+            {user ? (
+              <StaffName
+                user={user}
+                text={user.displayName}
+                className="relative sm:top-px inline-block text-sm text-ink-1 font-medium truncate max-w-[10rem]"
+              />
+            ) : (
+              <span className="relative sm:top-px text-sm text-ink-1 font-medium truncate max-w-[10rem]">
+                You
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -2843,6 +3028,50 @@ function PrivacySettings() {
   );
 }
 
+/**
+ * MediaRetentionNotice — the user-facing statement of server-side media
+ * retention (`ATTACHMENT_RETENTION_DAYS` on the API).
+ *
+ * Two things this copy must not get wrong, because it's a data-retention
+ * promise and not marketing:
+ *
+ *   1. It is SERVER-SIDE ONLY. Nothing is removed from the sender's or the
+ *      recipient's device, and we must never imply otherwise.
+ *   2. The number of days is NOT exposed to clients — there's no field on
+ *      /instance/monetization or anywhere else carrying it, and the sweep
+ *      can also be switched off entirely (it ships off). So the copy says
+ *      an administrator sets it rather than hardcoding an N that would
+ *      silently drift out of sync with the real configuration. If the API
+ *      ever publishes the value, render it here instead of this sentence.
+ */
+function MediaRetentionNotice() {
+  return (
+    <div className="rounded-md border border-line bg-bg-1 px-3 py-2 text-xs leading-snug text-ink-3 space-y-2">
+      <p>
+        To keep storage sustainable, this instance can remove the full-size original of a photo,
+        video, or file once it is older than a set number of days. Whether that is switched on —
+        and how many days — is decided by this instance&apos;s administrators, and the app is not
+        told the setting, so no number is shown here.
+      </p>
+      <ul className="list-disc space-y-1 pl-4">
+        <li>Message text is never touched, and nothing is removed from the conversation.</li>
+        <li>
+          The small preview thumbnail is kept, so the photo still shows in the chat — it just
+          can&apos;t be opened or downloaded at full size any more.
+        </li>
+        <li>
+          This only affects the copy stored on our servers. Anything already saved on your device,
+          or on the device of whoever sent it, is untouched.
+        </li>
+      </ul>
+      <p>
+        Where an image is marked <span className="text-ink-2">Original expired</span>, this is what
+        happened to it.
+      </p>
+    </div>
+  );
+}
+
 function BlockedSettings() {
   const { rest } = useAuth();
   const toasts = useToasts();
@@ -3067,57 +3296,6 @@ function sessionRelativeTime(iso: string): string {
 }
 
 /**
- * Best-effort device label from a User-Agent. Mirrors iOS's deviceLabel
- * (MainView.swift). Ordered most-specific-first: Chrome UAs also contain
- * "Safari" and Edge contains "Chrome", so a lookup in arbitrary order would
- * mislabel — the distinctive token has to be checked first.
- */
-function deviceLabel(ua: string | null): string {
-  if (!ua) return 'Unknown device';
-  if (ua.includes('Zekktris')) return 'Zekktris (app)';
-  const browser = (
-    [
-      ['Edg', 'Edge'],
-      ['OPR', 'Opera'],
-      ['Firefox', 'Firefox'],
-      ['Chrome', 'Chrome'],
-      ['Safari', 'Safari'],
-    ] as const
-  ).find(([token]) => ua.includes(token))?.[1];
-  const os = (
-    [
-      ['iPhone', 'iPhone'],
-      ['iPad', 'iPad'],
-      ['Mac OS X', 'macOS'],
-      ['Macintosh', 'macOS'],
-      ['Windows', 'Windows'],
-      ['Android', 'Android'],
-      ['Linux', 'Linux'],
-    ] as const
-  ).find(([token]) => ua.includes(token))?.[1];
-  if (browser && os) return `${browser} on ${os}`;
-  return browser ?? os ?? ua.slice(0, 40);
-}
-
-/** Device glyph for a User-Agent. Mirrors iOS's deviceIcon. */
-function DeviceIcon({ ua, className }: { ua: string | null; className?: string }) {
-  if (ua && (ua.includes('Zekktris') || ua.includes('iPhone') || ua.includes('Android'))) {
-    return <Smartphone size={16} className={className} />;
-  }
-  if (
-    ua &&
-    (ua.includes('iPad') ||
-      ua.includes('Macintosh') ||
-      ua.includes('Mac OS X') ||
-      ua.includes('Windows') ||
-      ua.includes('Linux'))
-  ) {
-    return <Monitor size={16} className={className} />;
-  }
-  return <Globe size={16} className={className} />;
-}
-
-/**
  * Active sessions: every device currently logged in, with a per-row revoke
  * and a bulk "sign out everywhere else". Mirrors iOS's SessionsSheet
  * (MainView.swift).
@@ -3254,100 +3432,6 @@ function SessionsSection() {
           <LogOut size={15} />
           {bulkBusy ? 'Signing out…' : 'Sign out everywhere else'}
         </button>
-      )}
-    </section>
-  );
-}
-
-/**
- * Quick-login generator: shows a one-time QR + 16-digit code so the user can
- * sign in on another device. The code re-randomizes on each press, expires
- * after ~90s, works once, and is invalidated on unmount (leaving the section).
- * Generating a code does NOT touch this device's own session.
- */
-function QuickLoginSection() {
-  const { rest } = useAuth();
-  const toasts = useToasts();
-  const [code, setCode] = useState<string | null>(null);
-  const [svg, setSvg] = useState<string | null>(null);
-  const [secondsLeft, setSecondsLeft] = useState(0);
-  const [busy, setBusy] = useState(false);
-
-  // Invalidate the active code when the user leaves this settings view.
-  useEffect(() => {
-    return () => {
-      void rest.cancelQuickLoginCode().catch(() => {});
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Countdown → drop the shown code once it expires server-side.
-  useEffect(() => {
-    if (!code) return;
-    if (secondsLeft <= 0) {
-      setCode(null);
-      setSvg(null);
-      return;
-    }
-    const t = setTimeout(() => setSecondsLeft((s) => s - 1), 1000);
-    return () => clearTimeout(t);
-  }, [secondsLeft, code]);
-
-  async function generate() {
-    setBusy(true);
-    try {
-      const r = await rest.generateQuickLoginCode();
-      const url = `${window.location.origin}/login/device?c=${r.code}`;
-      setCode(r.code);
-      // Our own SVG string (numeric code only) — safe to inject.
-      setSvg(qrToSvg(qrEncode(url), 220));
-      setSecondsLeft(r.expiresIn);
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Could not generate a code', 'error');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <section className="space-y-2">
-      <div className="text-xs uppercase tracking-wider text-ink-3">Log in on another device</div>
-      <p className="text-sm text-ink-3 leading-relaxed">
-        Show a one-time code to sign in on another device — on that device&apos;s login screen choose
-        &ldquo;Log in with another device&rdquo; and scan the QR or type the 16-digit code. It works
-        once, lasts ~90 seconds, and stops working the moment you leave this page. Anyone who sees it
-        can sign in as you, so don&apos;t share or screenshot it.
-      </p>
-      {!code ? (
-        <button
-          type="button"
-          onClick={generate}
-          disabled={busy}
-          className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-md border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-50"
-        >
-          {busy ? 'Generating…' : 'Show a quick-login code'}
-        </button>
-      ) : (
-        <div className="rounded-lg border border-line bg-bg-1/60 p-4 space-y-3 max-w-[16rem]">
-          {svg && (
-            <div
-              className="bg-white rounded-md p-2 flex justify-center"
-              dangerouslySetInnerHTML={{ __html: svg }}
-            />
-          )}
-          <div className="text-center font-mono text-base tracking-widest text-ink-1 break-all">
-            {code.replace(/(\d{4})(?=\d)/g, '$1 ')}
-          </div>
-          <div className="text-center text-xs text-ink-3">Expires in {secondsLeft}s · works once</div>
-          <button
-            type="button"
-            onClick={generate}
-            disabled={busy}
-            className="w-full text-sm px-3 py-1.5 rounded-md border border-line text-ink-2 hover:bg-bg-3 disabled:opacity-50"
-          >
-            New code
-          </button>
-        </div>
       )}
     </section>
   );

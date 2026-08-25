@@ -293,7 +293,10 @@ export function MemberList({
 const MemberRow = memo(function MemberRow({
   member: m,
   isSelf,
-  isOffline,
+  // `isOffline` is still passed (it's part of the memo key, so a member
+  // moving between the online/offline buckets still re-renders), but the
+  // row no longer dims itself: iOS and Android render offline members at
+  // full contrast and let the grey presence dot carry the distinction.
   guildId,
   guildRoles,
   onAvatarClick,
@@ -341,7 +344,7 @@ const MemberRow = memo(function MemberRow({
       })}`
     : undefined;
   return (
-    <div className={`px-1 ${isOffline ? 'opacity-60' : ''}`}>
+    <div className="px-1">
       <button
         type="button"
         onClick={(e) => onAvatarClick(m.user, e)}

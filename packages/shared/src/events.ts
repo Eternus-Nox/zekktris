@@ -196,8 +196,9 @@ export const GatewayEvent = {
   SCHEDULED_EVENT_UPDATE: 'SCHEDULED_EVENT_UPDATE',
   SCHEDULED_EVENT_DELETE: 'SCHEDULED_EVENT_DELETE',
 
-  // Parental controls. Both are scoped to a single parent (kind:'user')
-  // so live updates reach the supervising account without polling.
+  // Parental controls. The first two are scoped to a single parent
+  // (kind:'user') so live updates reach the supervising account without
+  // polling.
   //
   // FAMILY_REQUEST_CREATE — a supervised child asked the parent to
   // approve adding a friend or joining a server. Payload:
@@ -208,6 +209,24 @@ export const GatewayEvent = {
   // Clients show a notification and refresh the relevant Family view.
   FAMILY_REQUEST_CREATE: 'FAMILY_REQUEST_CREATE',
   FAMILY_FLAG_CREATE: 'FAMILY_FLAG_CREATE',
+
+  // FAMILY_SUPERVISION_UPDATE — the SUBJECT's own supervision state
+  // changed: a guardian edited their restrictions, a link was accepted
+  // or ended, a server was blocked/unblocked for them, or the age sweep
+  // released them at 18. Audience is the subject alone (kind:'user') —
+  // it carries no guardian identity and is never sent to the parent.
+  //
+  // Payload (see FamilySupervisionUpdate in @zekktris/client):
+  //   { restrictions, supervised, isMinor, restrictedHeavily, blockedGuildIds }
+  // `restrictions` is the same effective-restrictions object GET
+  // /family/me returns (null = unrestricted), so a client can re-apply
+  // every local supervision gate from the frame alone. Clients that also
+  // render the guardian list should refetch /family/me on receipt —
+  // guardians are deliberately absent from this payload.
+  //
+  // Latency matters here: without it a revoked restriction only took
+  // effect on the child's device after a cold start.
+  FAMILY_SUPERVISION_UPDATE: 'FAMILY_SUPERVISION_UPDATE',
 } as const;
 
 export type GatewayEventName = (typeof GatewayEvent)[keyof typeof GatewayEvent];

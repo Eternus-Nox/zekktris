@@ -39,7 +39,7 @@ import {
 import { gateSignup, refundSignupCode } from '../auth/signup';
 import { toSelfUser } from '../lib/dto';
 import { getClientIp, getUserAgent } from '../lib/request';
-import { requireAuth, requireUserId } from '../auth/middleware';
+import { requireAuth, requireUserId, requireHumanSession } from '../auth/middleware';
 import { snowflakeSchema } from '../lib/validation';
 import {
   rpID,
@@ -52,6 +52,15 @@ import {
 } from '../lib/webauthn';
 import { challengeStore, newChallengeId } from '../auth/webauthn-challenges';
 import { quickLoginStore } from '../auth/quick-login-store';
+import {
+  deviceLoginStore,
+  normalizeUserCode,
+  formatUserCode,
+  guessPlatform,
+  sanitizeDeviceName,
+  parseLocale,
+  sameNetwork,
+} from '../auth/device-login-store';
 import { RateLimiter } from '../lib/rateLimit';
 import {
   emailSchema,
@@ -83,8 +92,25 @@ const confirmEmailChangeByIp = new RateLimiter(50, 60 * 60_000, 'confirm-email-c
 // Quick-login (log in on another device): generating is per-USER (guards
 // re-randomize spam); redeeming is per-IP (brute-force guard on the 16-digit
 // code, on top of single-use + 90s TTL).
+// DEPRECATED — see the /quick-login/* block below. Delete with those routes.
 const quickLoginCreateByUser = new RateLimiter(15, 60_000, 'quicklogin-create');
 const quickLoginRedeemByIp = new RateLimiter(15, 15 * 60_000, 'quicklogin-redeem-ip');
+// Device-approval login (the inverted flow — the LOGGED-OUT device asks, the
+// logged-in phone approves). Four different things need throttling here:
+//   start   per IP   — cheap to call and allocates store entries; a flood guard.
+//   poll    per IP    — also a flood guard, NOT a brute-force guard: the
+//                       deviceCode is 256 bits, so guessing is not the threat;
+//                       resource abuse is. Generous enough for a large NAT
+//                       (a single attempt polls ~60 times over its 5-min life).
+//   lookup  per USER — THIS is the userCode brute-force guard. The userCode is
+//                      only ~40 bits, and lookup is the only oracle that says
+//                      whether one exists. 20/min per authenticated user means
+//                      an attacker needs ~1e11 accounts-minutes per hit.
+//   decide  per USER — approve+deny share a budget; same reasoning as lookup.
+const deviceLoginStartByIp = new RateLimiter(10, 15 * 60_000, 'devicelogin-start-ip');
+const deviceLoginPollByIp = new RateLimiter(600, 15 * 60_000, 'devicelogin-poll-ip');
+const deviceLoginLookupByUser = new RateLimiter(20, 60_000, 'devicelogin-lookup-user');
+const deviceLoginDecideByUser = new RateLimiter(20, 60_000, 'devicelogin-decide-user');
 
 // Email verification token lifetime.
 const EMAIL_VERIFICATION_EXPIRY_MS = 24 * 60 * 60_000; // 24h
@@ -389,6 +415,35 @@ authRouter.post('/login', validate('json', loginSchema), async (c) => {
 
 // ───────────────────────────────────────────────────────────────────────────
 // Quick login — log in on another device via QR / 16-digit code
+//
+//   *** DEPRECATED — superseded by /auth/device-login/* below. ***
+//
+// This is the WEAKER direction: the code that gets DISPLAYED is also the code
+// that REDEEMS a session, so "the code is the whole credential" (see the
+// header of auth/quick-login-store.ts). Anyone who reads it off the screen, or
+// photographs the QR, can take the account — no approval step stands in the
+// way. The device-login flow below splits that into a public userCode and a
+// secret deviceCode and requires an explicit approval, which is why it
+// replaces this.
+//
+// KEPT WORKING ON PURPOSE: shipped iOS and Android builds call these three
+// routes and would hard-break on removal. Do not delete them in the same pass
+// that adds device-login.
+//
+// DELETE THIS ENTIRE BLOCK when every client in the wild has shipped
+// device-login. Specifically remove, all together:
+//   1. the three routes below (/quick-login/create, /cancel, /redeem)
+//   2. `quickLoginCreateByUser` + `quickLoginRedeemByIp` (limiters, above)
+//   3. the `quickLoginStore` import here, and the whole file
+//      apps/api/src/auth/quick-login-store.ts
+//   4. in packages/client/src/rest.ts: generateQuickLoginCode,
+//      cancelQuickLoginCode, redeemQuickLoginCode, and the
+//      '/auth/quick-login/redeem' entry in the 401-auto-refresh exemption list
+//   5. the `QuickLoginCode` interface in packages/client/src/types.ts
+//   6. the client call sites: iOS Session.swift / APIClient.swift /
+//      AuthViews.swift / Models.swift, Android AppStore.kt /
+//      SecurityScreens.kt / data/ApiClient.kt / data/model/Models.kt
+// Nothing else references them.
 // ───────────────────────────────────────────────────────────────────────────
 // A LOGGED-IN device mints a short-lived, single-use 16-digit code (shown as
 // digits + a QR that encodes a /login/device URL carrying the code). A
@@ -400,7 +455,8 @@ authRouter.post('/login', validate('json', loginSchema), async (c) => {
 // generating device already proved possession + authentication.
 
 // POST /auth/quick-login/create — [authed] mint (or re-randomize) a code.
-authRouter.post('/quick-login/create', requireAuth, async (c) => {
+// @deprecated use POST /auth/device-login/start + /approve.
+authRouter.post('/quick-login/create', requireAuth, requireHumanSession, async (c) => {
   const userId = requireUserId(c);
   const rl = await quickLoginCreateByUser.consume(userId.toString());
   if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
@@ -411,7 +467,8 @@ authRouter.post('/quick-login/create', requireAuth, async (c) => {
 
 // POST /auth/quick-login/cancel — [authed] invalidate the caller's active code
 // (what "leaving the quick-login section" maps to server-side).
-authRouter.post('/quick-login/cancel', requireAuth, async (c) => {
+// @deprecated use POST /auth/device-login/deny.
+authRouter.post('/quick-login/cancel', requireAuth, requireHumanSession, async (c) => {
   const userId = requireUserId(c);
   await quickLoginStore.cancel(userId.toString());
   return c.json({ ok: true });
@@ -419,6 +476,7 @@ authRouter.post('/quick-login/cancel', requireAuth, async (c) => {
 
 // POST /auth/quick-login/redeem — [PUBLIC] a logged-out device exchanges a code
 // for a new session. Single-use (atomic delete), rate-limited per IP.
+// @deprecated use POST /auth/device-login/poll.
 authRouter.post(
   '/quick-login/redeem',
   validate('json', z.object({ code: z.string().trim().min(1).max(64) })),
@@ -459,6 +517,232 @@ authRouter.post(
       accessToken,
       expiresIn: env.ACCESS_TOKEN_TTL_SECONDS,
     });
+  },
+);
+
+// ───────────────────────────────────────────────────────────────────────────
+// Device-approval login — the LOGGED-OUT device asks, the logged-in phone says yes
+// ───────────────────────────────────────────────────────────────────────────
+// The inverse of quick-login above, and the flow that replaces it. Shape:
+//
+//   1. new device  → POST /device-login/start   [PUBLIC]
+//                    gets { userCode, deviceCode, expiresIn, interval }.
+//                    It DISPLAYS userCode (and a QR encoding it) and KEEPS
+//                    deviceCode in memory, never on screen.
+//   2. new device  → POST /device-login/poll    [PUBLIC]  every `interval`s,
+//                    presenting deviceCode.
+//   3. phone       → POST /device-login/lookup  [AUTHED]  with the scanned or
+//                    typed userCode → the requesting device's metadata, which
+//                    it renders on the approval screen.
+//   4. phone       → POST /device-login/approve [AUTHED] or /deny [AUTHED]
+//   5. new device's next poll returns the session.
+//
+// WHY TWO CODES, and WHY THE APPROVAL SCREEN IS A SECURITY CONTROL (the
+// phishing attack): see the header of auth/device-login-store.ts. Read it
+// before changing anything here.
+//
+// Like quick-login and passkey login, an approval is an equivalent-to-password
+// entry point and deliberately bypasses TOTP: the approving device already
+// proved possession + authentication, and the approval is an explicit human
+// act on that device.
+
+// POST /auth/device-login/start — [PUBLIC] a logged-out device opens a request.
+// Body is REQUIRED (send `{}` if you have no device name) — the JSON validator
+// rejects an absent body. Returns the two codes; the deviceCode appears here
+// and nowhere else, ever.
+authRouter.post(
+  '/device-login/start',
+  validate(
+    'json',
+    z.object({
+      /** Optional self-declared label, e.g. "Pixel 9". UNTRUSTED — it is
+          sanitized and returned to the approver clearly marked as claimed by
+          the device, never as a verified fact. */
+      deviceName: z.string().max(64).optional(),
+    }),
+  ),
+  async (c) => {
+    const ip = getClientIp(c);
+    if (ip) {
+      const rl = await deviceLoginStartByIp.consume(ip);
+      if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
+    }
+    const userAgent = getUserAgent(c);
+    const started = await deviceLoginStore.start({
+      declaredName: sanitizeDeviceName(c.req.valid('json').deviceName),
+      userAgent,
+      platform: guessPlatform(userAgent),
+      ipAddress: ip,
+      locale: parseLocale(c.req.header('accept-language')),
+    });
+    // Never log either code.
+    return c.json({
+      userCode: formatUserCode(started.userCode),
+      deviceCode: started.deviceCode,
+      expiresIn: started.expiresIn,
+      interval: started.interval,
+    });
+  },
+);
+
+// POST /auth/device-login/poll — [PUBLIC] the new device asks for its outcome.
+// Always 200 on a well-formed call: pending / slow_down / approved / denied /
+// expired are normal states of a polling loop, not errors. An unknown,
+// malformed or already-consumed deviceCode all answer `expired` — one uniform
+// response, so this is never an oracle.
+authRouter.post(
+  '/device-login/poll',
+  validate('json', z.object({ deviceCode: z.string().trim().min(16).max(256) })),
+  async (c) => {
+    const ip = getClientIp(c);
+    if (ip) {
+      const rl = await deviceLoginPollByIp.consume(ip);
+      if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
+    }
+    const result = await deviceLoginStore.poll(c.req.valid('json').deviceCode);
+    if (result.status !== 'approved') {
+      return c.json(result);
+    }
+
+    const [user] = await db
+      .select()
+      .from(schema.users)
+      .where(and(eq(schema.users.id, BigInt(result.userId)), isNull(schema.users.deletedAt)))
+      .limit(1);
+    // The grant was already consumed (single-use) — if the user vanished
+    // between approval and collection there is nothing to re-try, so this is
+    // terminal, not `pending`.
+    if (!user) throw errors.badRequest('That request is no longer valid.');
+    // Re-check the ban HERE, not at approve time: this is the moment a session
+    // is actually minted, so it must see the freshest state (mirrors /login and
+    // quick-login/redeem).
+    if (isCurrentlyBanned(user)) {
+      throw errors.forbidden('This account has been disabled');
+    }
+
+    const { session, refreshToken } = await createSession({
+      userId: user.id,
+      userAgent: getUserAgent(c),
+      ipAddress: getClientIp(c),
+    });
+    const accessToken = await signAccessToken({ userId: user.id, sessionId: session.id });
+    setRefreshCookie(c, refreshToken);
+    log.info('device-login approved session issued', { userId: user.id.toString() });
+    return c.json({
+      status: 'approved' as const,
+      user: toSelfUser(user),
+      accessToken,
+      expiresIn: env.ACCESS_TOKEN_TTL_SECONDS,
+    });
+  },
+);
+
+/** Shared body for the three authed routes. Normalization (uppercase, strip
+    the display dash, fold O→0 and I/L→1) happens in the store helper. */
+const deviceLoginUserCodeSchema = z.object({
+  userCode: z.string().trim().min(1).max(32),
+});
+
+// POST /auth/device-login/lookup — [AUTHED] what am I about to approve?
+//
+// requireAuth runs first, so an UNAUTHENTICATED caller gets 401 before this
+// handler executes and therefore learns nothing about whether a code exists.
+// requireHumanSession additionally rejects bot tokens (a bot must never be
+// able to enumerate or approve device logins for its user — that is exactly
+// the bot-token-laundering hole documented in auth/middleware.ts).
+//
+// THE RESPONSE IS THE ANTI-PHISHING UI CONTRACT. `ipAddress` and `sameNetwork`
+// are server-observed and unforgeable by a remote attacker; `declaredName`,
+// `userAgent`, `platform` and `locale` are all claims made by the requesting
+// device. The approval screen MUST show them and MUST distinguish the two
+// groups. See the store header before trimming this down.
+authRouter.post(
+  '/device-login/lookup',
+  requireAuth,
+  requireHumanSession,
+  validate('json', deviceLoginUserCodeSchema),
+  async (c) => {
+    const userId = requireUserId(c);
+    const rl = await deviceLoginLookupByUser.consume(userId.toString());
+    if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
+    const userCode = normalizeUserCode(c.req.valid('json').userCode);
+    const request = userCode ? await deviceLoginStore.findByUserCode(userCode) : null;
+    if (!request) throw errors.notFound('Login request');
+    return c.json({
+      userCode: formatUserCode(request.userCode),
+      expiresIn: Math.max(0, Math.ceil((request.expiresAt - Date.now()) / 1000)),
+      device: {
+        // ── claimed by the requesting device (UNTRUSTED) ──
+        declaredName: request.declaredName,
+        userAgent: request.userAgent,
+        platform: request.platform,
+        locale: request.locale,
+        // ── observed by this server (TRUSTWORTHY) ──
+        ipAddress: request.ipAddress,
+        sameNetwork: sameNetwork(request.ipAddress, getClientIp(c)),
+        requestedAt: new Date(request.createdAt).toISOString(),
+        // Always null: a city/region needs a GeoIP dataset or a third-party
+        // lookup, and this pass adds neither. The field exists so clients
+        // don't need a shape change if one is shipped later. Do NOT fill it
+        // with a guess.
+        approxLocation: null,
+      },
+    });
+  },
+);
+
+// POST /auth/device-login/approve — [AUTHED] bind the request to the caller and
+// mark it approved. Terminal, atomic, first-caller-wins.
+authRouter.post(
+  '/device-login/approve',
+  requireAuth,
+  requireHumanSession,
+  validate('json', deviceLoginUserCodeSchema),
+  async (c) => {
+    const userId = requireUserId(c);
+    const rl = await deviceLoginDecideByUser.consume(userId.toString());
+    if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
+    const userCode = normalizeUserCode(c.req.valid('json').userCode);
+    const decision = userCode
+      ? await deviceLoginStore.decide(userCode, userId.toString())
+      : ({ result: 'gone' } as const);
+    if (decision.result === 'gone') {
+      throw errors.notFound('Login request');
+    }
+    if (decision.result === 'already') {
+      throw errors.conflict('That request has already been answered.');
+    }
+    log.info('device-login approved', {
+      userId: userId.toString(),
+      platform: decision.request.platform,
+    });
+    return c.json({ ok: true });
+  },
+);
+
+// POST /auth/device-login/deny — [AUTHED] terminal rejection. Uses the same
+// atomic claim as approve, so a deny that races an approve is decided once and
+// the polling device sees exactly one outcome.
+authRouter.post(
+  '/device-login/deny',
+  requireAuth,
+  requireHumanSession,
+  validate('json', deviceLoginUserCodeSchema),
+  async (c) => {
+    const userId = requireUserId(c);
+    const rl = await deviceLoginDecideByUser.consume(userId.toString());
+    if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
+    const userCode = normalizeUserCode(c.req.valid('json').userCode);
+    const decision = userCode
+      ? await deviceLoginStore.decide(userCode, null)
+      : ({ result: 'gone' } as const);
+    if (decision.result === 'gone') {
+      throw errors.notFound('Login request');
+    }
+    if (decision.result === 'already') {
+      throw errors.conflict('That request has already been answered.');
+    }
+    return c.json({ ok: true });
   },
 );
 
@@ -1374,7 +1658,7 @@ const passkeyLoginVerifySchema = z.object({
 });
 
 // 1) Register options (authed) — exclude already-registered credentials.
-authRouter.post('/passkey/register/options', requireAuth, async (c) => {
+authRouter.post('/passkey/register/options', requireAuth, requireHumanSession, async (c) => {
   const userId = requireUserId(c);
   const [user] = await db
     .select({ id: schema.users.id, username: schema.users.username, displayName: schema.users.displayName })
@@ -1405,7 +1689,7 @@ authRouter.post('/passkey/register/options', requireAuth, async (c) => {
 });
 
 // 2) Register verify (authed) — store the new credential.
-authRouter.post('/passkey/register/verify', requireAuth, validate('json', passkeyRegVerifySchema), async (c) => {
+authRouter.post('/passkey/register/verify', requireAuth, requireHumanSession, validate('json', passkeyRegVerifySchema), async (c) => {
   const userId = requireUserId(c);
   const body = c.req.valid('json');
   // Re-verify the password before consuming the single-use challenge, so a
@@ -1534,7 +1818,7 @@ authRouter.post('/passkey/login/verify', validate('json', passkeyLoginVerifySche
 });
 
 // List the current user's passkeys (Settings → Security).
-authRouter.get('/passkey', requireAuth, async (c) => {
+authRouter.get('/passkey', requireAuth, requireHumanSession, async (c) => {
   const userId = requireUserId(c);
   const rows = await db
     .select({

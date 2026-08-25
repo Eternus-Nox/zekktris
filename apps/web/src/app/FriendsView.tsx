@@ -462,7 +462,9 @@ function FriendRow({
             ? 'Incoming friend request'
             : relType === 'outgoing_request'
               ? 'Outgoing friend request'
-              : `@${user.username}`}
+              : relType === 'friend'
+                ? `@${user.username} · ${presenceLine(user)}`
+                : `@${user.username}`}
         </div>
       </button>
 
@@ -533,6 +535,65 @@ function FriendRow({
       </div>
     </li>
   );
+}
+
+/**
+ * "Where is this friend right now" line for the friend row's subtitle.
+ *
+ *   online   → "Online"                            (no time — they're here now)
+ *   idle     → "Away · Active 5m ago"              (label + last-active)
+ *   dnd      → "Do not disturb · Active 5m ago"
+ *   offline  → "Last online 3d ago" / "Offline"    (when the server has no value)
+ *
+ * Notes on the data:
+ *  - `lastSeenAt` is populated by GET /users/@me/relationships for FRIEND rows
+ *    only; it's null for a friend the server has never observed online since
+ *    the column shipped (there was no backfill), which renders as plain
+ *    "Offline".
+ *  - "Idle" is shown as "Away" — a display-label rename only; the wire value
+ *    stays 'idle' (see SettingsView's STATUS_OPTIONS).
+ *  - 'invisible' never arrives for another user (the server masks it to
+ *    'offline' and freezes lastSeenAt at the last visible moment, so an
+ *    invisible friend reads as a plain, stale Offline). The branch below still
+ *    routes it to the offline text defensively.
+ *  - For idle/dnd the server's stamp marks when the friend's CONNECTION was
+ *    last established, not their last keystroke — the only "last active"
+ *    signal that exists without a per-input heartbeat.
+ */
+function presenceLine(user: PublicUser): string {
+  const seen = user.lastSeenAt ? formatRelativePast(user.lastSeenAt) : null;
+  switch (user.status) {
+    case 'online':
+      return 'Online';
+    case 'idle':
+      return seen ? `Away · Active ${seen}` : 'Away';
+    case 'dnd':
+      return seen ? `Do not disturb · Active ${seen}` : 'Do not disturb';
+    default:
+      return seen ? `Last online ${seen}` : 'Offline';
+  }
+}
+
+/**
+ * "just now" / "5m ago" / "3h ago" / "2d ago", falling back to a short date
+ * past a month. Same thresholds and wording as the other relative-time
+ * renderers in this client (ForwardedMessageBlock, AdminPanel) — the repo
+ * keeps a local copy per surface rather than a shared module.
+ */
+function formatRelativePast(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return 'recently';
+  const diff = Date.now() - t;
+  // Clock skew (or a stamp landing a beat in the future) shouldn't render
+  // "-1m ago".
+  if (diff < 60_000) return 'just now';
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function IconButton({

@@ -17,7 +17,7 @@
 
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
-import type { Channel, Message, PokeHistoryEntry } from '@zekktris/client';
+import type { Channel, Message, PokeHistoryEntry, PublicUser } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
 import { POKE_TYPES, POKE_VARIANTS, type PokeType } from '../lib/poke';
 import { useAuth } from '../auth/AuthContext';
@@ -28,7 +28,7 @@ import { MessageItem, replyPreviewText } from './MessageItem';
 import { PinPanel } from './PinPanel';
 import { SearchPanel } from './SearchPanel';
 import { useNavigate } from 'react-router-dom';
-import { Hash, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronLeft, ChevronRight, CheckCircle, Lock, Users as UsersIcon } from '../lib/icons';
+import { Hash, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronDown, ChevronLeft, ChevronRight, CheckCircle, Lock, Users as UsersIcon } from '../lib/icons';
 import { SchedulePickerModal } from './SchedulePickerModal';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
@@ -54,6 +54,7 @@ import { useMentionAutocomplete } from '../lib/useMentionAutocomplete';
 import { useEmojiAutocomplete } from '../lib/useEmojiAutocomplete';
 import { ErrorBoundary } from '../lib/ErrorBoundary';
 import { computeMemberGuildPerms, hasBit } from '../lib/permissions';
+import { useProfileCard } from '../lib/useProfileCard';
 
 // Threshold for "auto-follow the bottom on new messages." If the user
 // is within this many pixels of the bottom when a new message arrives,
@@ -475,6 +476,22 @@ export function MessageView({
     setReplyTo(target);
   }, [jumpToMessageId, isDM, messages]);
 
+  // ── Jump-to-newest chevron ──────────────────────────────────────────────
+  // "The user has scrolled away from the newest message." Owned HERE rather
+  // than inside Scroller because the chevron is anchored 2px above the
+  // composer — Scroller's *sibling*. Nothing inside the scroll area can hit
+  // that mark: a permanent 20px typing strip plus the timeout / locked-E2EE
+  // banners sit between the two, and their combined height varies.
+  // Scroller publishes this from the SAME PIN_THRESHOLD_PX measurement that
+  // gates auto-follow and the "New messages" pill, so the two affordances
+  // can never disagree about where "the bottom" is.
+  const [scrolledUp, setScrolledUp] = useState(false);
+  // Stable identity so Scroller's prop doesn't change every render.
+  const onScrolledUpChange = useCallback((v: boolean) => setScrolledUp(v), []);
+  // Imperative handle to Scroller's scrollToBottom(). A ref, not a state
+  // callback: publishing it must never re-render this (large) view.
+  const jumpToNewestRef = useRef<(() => void) | null>(null);
+
   const isDM1to1 = channel.type === 'dm';
   // Auxiliary panel — pin list and search take up the same overlay slot
   // (the right-hand overlay above the message stream); they're mutually
@@ -684,7 +701,15 @@ export function MessageView({
           </div>
         ) : (
           <>
-            <span className="font-semibold truncate">{headerLabel}</span>
+            {/* In a 1:1 DM the name is a button that opens the SAME ProfileCard
+                popover every avatar in the app opens (useProfileCard). Guild
+                channels and group DMs keep the plain static span — there's no
+                single user behind a #channel / group name to profile. */}
+            {isDM1to1 && dmRecipient ? (
+              <DmHeaderName user={dmRecipient} label={headerLabel} />
+            ) : (
+              <span className="font-semibold truncate">{headerLabel}</span>
+            )}
             {/* Messaging-streak chip right after the name (iOS parity:
                 StreakChip in the DM header when streak > 0). */}
             {isDM && typeof channel.streak === 'number' && channel.streak > 0 && (
@@ -864,6 +889,8 @@ export function MessageView({
             onReply={onReply}
             jumpToMessageId={jumpToMessageId}
             unreadBoundary={unreadBoundary}
+            onScrolledUpChange={onScrolledUpChange}
+            jumpToNewestRef={jumpToNewestRef}
           />
 
           <TypingIndicator channelId={channel.id} />
@@ -974,6 +1001,48 @@ export function MessageView({
                     Enter password
                   </button>
                 </div>
+              )}
+            {/* Composer wrapper — exists ONLY to anchor the jump-to-newest
+                chevron. `bottom-full` + `mb-[2px]` puts the button exactly
+                2px above the composer's top border: in the message-list
+                area, never inside the text box, never over the send button.
+                The right offset lines the 44px tap target up with the send
+                button's centre — the composer pads `px-4` (16) and the input
+                row `px-2` (8), and the send button is `w-8`, so its centre
+                sits 16+8+16 = 40px from the right edge; 40 − 22 = 18.
+                Rendered conditionally rather than faded out: at the bottom
+                it must be gone from the tree, not an invisible 44px square
+                sitting on top of the composer eating taps. */}
+            <div className="relative">
+              {scrolledUp && (
+                <button
+                  type="button"
+                  onClick={() => jumpToNewestRef.current?.()}
+                  className="group absolute bottom-full right-[18px] mb-[2px] w-11 h-11 flex items-end justify-center z-20"
+                  title="Jump to newest messages"
+                  aria-label="Jump to newest messages"
+                >
+                  {/* 36px disc / 15px glyph / opaque bg-2 / 1px line border /
+                      black-35% shadow at y+2 blur 6 — the one cross-platform
+                      spec, taken from iOS. The fill is opaque (not `/90` with
+                      a backdrop-blur) because nothing but message rows sits
+                      behind it, and the blur was buying a compositing layer
+                      for an effect no one could see.
+
+                      `items-end` (not `items-center`) is load-bearing: the
+                      44px box is the >=44px tap target, and centring the 36px
+                      disc inside it leaves 4px of dead padding UNDER the disc.
+                      Added to the 2px margin that made the visible gap 6px —
+                      three times the spec — while the code still read as "2".
+                      Bottom-aligning makes the DISC flush with the box, so the
+                      2px margin is the gap you actually see. iOS grows its tap
+                      target up-and-left for the same reason
+                      (MessageViews.swift, .bottomTrailing) and Android moved
+                      its 2dp outside .size(). Measured, not eyeballed. */}
+                  <span className="w-9 h-9 flex items-center justify-center rounded-full border border-line bg-bg-2 shadow-[0_2px_6px_rgba(0,0,0,0.35)] text-ink-2 group-hover:text-ink-1 group-hover:bg-bg-3 transition-colors">
+                    <ChevronDown size={15} />
+                  </span>
+                </button>
               )}
             <Composer
               channel={channel}
@@ -1193,6 +1262,7 @@ export function MessageView({
                 toasts.push(`Scheduled for ${when}.`, 'success');
               }}
             />
+            </div>
             </>
           )}
         </div>
@@ -1240,6 +1310,8 @@ function Scroller({
   onReply,
   jumpToMessageId,
   unreadBoundary,
+  onScrolledUpChange,
+  jumpToNewestRef,
 }: {
   messages: Message[] | undefined;
   channel: Channel;
@@ -1256,6 +1328,17 @@ function Scroller({
       divider, and guild channels land their initial scroll ON the
       divider instead of the bottom (iOS parity). */
   unreadBoundary: string | null;
+  /** Publishes "the user is scrolled away from the newest message" to the
+      parent, which owns the jump-to-newest chevron (it's anchored to the
+      composer, our sibling — see MessageView). Fed by the same
+      PIN_THRESHOLD_PX measurement that gates auto-follow, so the chevron
+      and the "New messages" pill share one definition of "the bottom".
+      Called only on transitions, never once per scroll event. */
+  onScrolledUpChange?: (scrolledUp: boolean) => void;
+  /** Filled with scrollToBottom() so the composer-anchored chevron can
+      drive us. A ref rather than a callback prop: handing the parent a
+      fresh function identity each render would re-render the whole view. */
+  jumpToNewestRef?: { current: (() => void) | null };
 }) {
   // Convenience alias — the rest of this function still references
   // `channelId` so we keep that local. Threading the full Channel down
@@ -1266,6 +1349,11 @@ function Scroller({
   const vref = useRef<VirtualizerHandle>(null);
   /** Are we currently pinned to the bottom? Read before each commit. */
   const wasPinnedRef = useRef(true);
+  /** Last value handed to onScrolledUpChange. Pin state is recomputed on
+      every scroll event and every commit; only the transitions matter to
+      the parent, so de-dupe here rather than leaning on React's
+      same-value bail-out (which still costs a render pass). */
+  const reportedScrolledUpRef = useRef(false);
   const prevChannelRef = useRef(channelId);
   /** Force the first post-switch snap to bottom even if we momentarily
       look scrolled-up (cached-empty channel that fills in late). */
@@ -1355,6 +1443,25 @@ function Scroller({
   // groups occupy 1..N, so the last item index === messageGroups.length.
   const lastIndex = messageGroups.length;
 
+  /** Publish the "scrolled away from the newest message" signal upward,
+      de-duped to transitions. Separate from setPinned() because the
+      channel-switch path needs to reset the signal WITHOUT rewriting the
+      pin ref that the auto-follow logic depends on. */
+  function reportScrolledUp(scrolledUp: boolean) {
+    if (reportedScrolledUpRef.current === scrolledUp) return;
+    reportedScrolledUpRef.current = scrolledUp;
+    onScrolledUpChange?.(scrolledUp);
+  }
+
+  /** Single writer for the pin state: every place that measures the scroll
+      distance goes through here, so the chevron's "you are scrolled up" and
+      the auto-follow / "New messages" gate are by construction the same
+      notion of at-the-bottom — one threshold, one measurement, one source. */
+  function setPinned(pinned: boolean) {
+    wasPinnedRef.current = pinned;
+    reportScrolledUp(!pinned);
+  }
+
   // Capture pin state before each commit. Reading scroll metrics off our
   // own container is valid with virtua (it sizes the inner element to the
   // full virtual height).
@@ -1362,7 +1469,7 @@ function Scroller({
     const el = ref.current;
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    wasPinnedRef.current = distance < PIN_THRESHOLD_PX;
+    setPinned(distance < PIN_THRESHOLD_PX);
   });
 
   // Keep shift on only while a load-older is in flight; reset once the
@@ -1386,6 +1493,13 @@ function Scroller({
       unreadLandedRef.current = false;
       setShiftPrepend(false);
       setUnreadBelow(false);
+      // Hide the chevron across the switch. virtua applies scrollToIndex
+      // asynchronously, so the pin measurement taken right after this
+      // commit can still read the OUTGOING channel's scroll position and
+      // flash the chevron for a frame. The snap itself fires a scroll
+      // event, and handleScroll re-raises the signal immediately if we
+      // deliberately landed on the unread divider instead of the bottom.
+      reportScrolledUp(false);
       // Guild channel with unread history (cached case): land the initial
       // scroll ON the "New messages" divider instead of the bottom (iOS
       // parity — MessageViews.swift lands guild channels on the divider;
@@ -1527,7 +1641,7 @@ function Scroller({
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     const pinned = distance < PIN_THRESHOLD_PX;
-    wasPinnedRef.current = pinned;
+    setPinned(pinned);
     if (pinned && unreadBelow) setUnreadBelow(false);
 
     // Prefetch the next older page ~1.5 viewports BEFORE the top, so the page
@@ -1550,11 +1664,24 @@ function Scroller({
     });
   }
 
-  /** Jump-to-bottom (pill). */
+  /** Jump-to-bottom (pill, and the composer-anchored chevron). */
   function scrollToBottom() {
     vref.current?.scrollToIndex(messageGroups.length, { align: 'end', smooth: true });
     setUnreadBelow(false);
   }
+
+  // Hand the parent an imperative handle to the jump. The chevron that
+  // calls it is rendered next to the composer — our sibling — which has no
+  // way to reach `vref`. No dep array: re-published on every commit so the
+  // closed-over messageGroups.length is never a stale target, and cleared
+  // on unmount so a torn-down scroller can't be driven.
+  useEffect(() => {
+    if (!jumpToNewestRef) return;
+    jumpToNewestRef.current = scrollToBottom;
+    return () => {
+      jumpToNewestRef.current = null;
+    };
+  });
 
   if (!loaded || !messages) {
     // Skeleton rows during the initial fetch.
@@ -2196,7 +2323,7 @@ function Composer({
           <CornerUpLeft size={12} className="text-accent shrink-0" />
           <span className="text-ink-3 shrink-0">Replying to</span>
           <span className="font-medium text-ink-1 shrink-0">
-            @{replyTo.author?.displayName ?? replyTo.author?.username ?? 'unknown'}
+            {replyTo.author?.displayName ?? replyTo.author?.username ?? 'unknown'}
           </span>
           <span className="text-ink-2 truncate flex-1 min-w-0">
             {/* Same preview rules as the in-stream quote bar: never the raw
@@ -2698,7 +2825,7 @@ function Composer({
           type="button"
           onClick={() => void submit()}
           disabled={pending || (!text.trim() && files.length === 0 && !pollDraft)}
-          className="w-8 h-8 flex items-center justify-center rounded-full shrink-0 self-center bg-gradient-to-br from-accent to-accent-2 text-bg-0 hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+          className="w-8 h-8 flex items-center justify-center rounded-full shrink-0 self-center bg-accent text-bg-0 hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
           title="Send message"
           aria-label="Send message"
         >
@@ -2890,6 +3017,37 @@ function StickerComposerSlot({
           onPick={onPick}
         />
       )}
+    </>
+  );
+}
+
+/**
+ * The recipient's name in the DM header, as a click target that opens the
+ * shared ProfileCard popover.
+ *
+ * Its own component (rather than a `useProfileCard()` call up in MessageView)
+ * for one reason: the hook owns open/close state, and MessageView is a very
+ * large tree — parking that state here keeps opening the card from
+ * re-rendering the whole message view.
+ *
+ * `label` is passed separately from `user` because the header shows the
+ * viewer-private DM nickname when one is set, while the card itself should
+ * still receive the real user object.
+ */
+function DmHeaderName({ user, label }: { user: PublicUser; label: string }) {
+  const { onAvatarClick, cardElement } = useProfileCard();
+  return (
+    <>
+      <button
+        type="button"
+        onClick={(e) => onAvatarClick(user, e)}
+        className="font-semibold truncate min-w-0 text-left hover:underline decoration-ink-3/60 underline-offset-2 transition-colors"
+        title={`View profile for ${label}`}
+        aria-label={`View profile for ${label}`}
+      >
+        {label}
+      </button>
+      {cardElement}
     </>
   );
 }

@@ -26,7 +26,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { ApiError, GatewayClient, RestClient, type SelfUser } from '@zekktris/client';
+import { ApiError, GatewayClient, RestClient, type AuthSession, type SelfUser } from '@zekktris/client';
 import { clearDecryptedMediaCache } from '../lib/e2ee';
 import { setMonetization, setUserTier } from '../lib/voice';
 
@@ -71,9 +71,18 @@ interface AuthContextValue extends AuthState {
   /** Sign in with a passkey (WebAuthn). Runs the discoverable-credential
       ceremony then mints a session like a password login. */
   loginWithPasskey: () => Promise<void>;
-  /** Sign in by redeeming a quick-login code shown on another (logged-in)
-      device. Mints a session exactly like a password login. */
-  loginWithDeviceCode: (code: string) => Promise<void>;
+  /**
+   * Install a session this device obtained WITHOUT a local credential — today
+   * only the device-approval flow, where an already-signed-in device approved
+   * this one and the poll response carried the tokens back.
+   *
+   * Synchronous and side-effect-free on purpose: the server delivers the
+   * approved grant EXACTLY ONCE (it is consumed with GETDEL), so the poller
+   * must be able to bank it the instant it arrives. Anything that could throw
+   * or await between receiving and persisting risks dropping a session that
+   * cannot be re-fetched.
+   */
+  adoptDeviceSession: (session: AuthSession) => void;
   register: (input: { email: string; username: string; displayName: string; password: string; dateOfBirth: string; code?: string }) => Promise<void>;
   logout: () => Promise<void>;
   /**
@@ -416,12 +425,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(r.accessToken, r.user);
   }, [rest, setToken]);
 
-  const loginWithDeviceCode = useCallback<AuthContextValue['loginWithDeviceCode']>(
-    async (code) => {
-      const r = await rest.redeemQuickLoginCode(code);
-      setToken(r.accessToken, r.user);
+  const adoptDeviceSession = useCallback<AuthContextValue['adoptDeviceSession']>(
+    (session) => {
+      setToken(session.accessToken, session.user);
     },
-    [rest, setToken],
+    [setToken],
   );
 
   const register = useCallback<AuthContextValue['register']>(
@@ -484,8 +492,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [rest, state.user?.id, state.user?.subscriptionTier]);
 
   const value = useMemo<AuthContextValue>(
-    () => ({ ...state, rest, gateway, login, loginWithPasskey, loginWithDeviceCode, register, logout, updateUser, emailVerificationRequired }),
-    [state, rest, gateway, login, loginWithPasskey, loginWithDeviceCode, register, logout, updateUser, emailVerificationRequired],
+    () => ({ ...state, rest, gateway, login, loginWithPasskey, adoptDeviceSession, register, logout, updateUser, emailVerificationRequired }),
+    [state, rest, gateway, login, loginWithPasskey, adoptDeviceSession, register, logout, updateUser, emailVerificationRequired],
   );
 
   return (

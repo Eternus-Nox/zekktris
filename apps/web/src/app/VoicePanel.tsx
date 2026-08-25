@@ -29,7 +29,6 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
   // on every reducer dispatch).
   const voiceStatesByUser = useAppStateSelector((v) => v.state.voiceStatesByUser);
   const channelsByGuild = useAppStateSelector((v) => v.state.channelsByGuild);
-  const guildsById = useAppStateSelector((v) => v.state.guildsById);
   const restForChannel = useAppStateSelector((v) => v.restForChannel);
   const { user } = useAuth();
   const toasts = useToasts();
@@ -68,7 +67,6 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
   if (activeChannelId && my.channelId === activeChannelId) return null;
 
   const channelLabel = channel?.name ?? 'Voice channel';
-  const guild = channel?.guildId ? guildsById[channel.guildId] : null;
 
   async function toggleMute() {
     if (!my?.channelId) return;
@@ -136,19 +134,20 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
   return (
     <div className="border-t border-line bg-bg-2 px-3 py-2">
       <div className="flex items-center gap-2">
-        <Volume2 size={14} className="text-emerald-400 shrink-0" />
+        <Volume2 size={14} className="text-emerald-500 shrink-0" />
+        {/* iOS parity (Voice.swift VoicePanel): a green "Voice Connected"
+            label over the channel title. The guild name is deliberately
+            not shown here — iOS only carries the two lines. */}
         <div className="flex-1 min-w-0">
-          <div className="text-xs text-ink-1 font-medium truncate">{channelLabel}</div>
-          {guild && (
-            <div className="text-[0.65rem] text-ink-3 truncate">{guild.name}</div>
-          )}
+          <div className="text-[11px] font-semibold text-emerald-500 truncate">
+            Voice Connected
+          </div>
+          <div className="text-xs text-ink-2 truncate">{channelLabel}</div>
         </div>
         <button
           onClick={() => void toggleMute()}
-          className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${
-            my.selfMute
-              ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
-              : 'text-ink-2 hover:text-ink-1 hover:bg-bg-3'
+          className={`w-8 h-8 flex items-center justify-center rounded-full bg-bg-3 transition-colors ${
+            my.selfMute ? 'text-red-400 hover:brightness-110' : 'text-ink-1 hover:brightness-110'
           }`}
           title={my.selfMute ? 'Unmute' : 'Mute'}
           aria-label={my.selfMute ? 'Unmute microphone' : 'Mute microphone'}
@@ -157,10 +156,8 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
         </button>
         <button
           onClick={() => void toggleDeafen()}
-          className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${
-            deafened
-              ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
-              : 'text-ink-2 hover:text-ink-1 hover:bg-bg-3'
+          className={`w-8 h-8 flex items-center justify-center rounded-full bg-bg-3 transition-colors ${
+            deafened ? 'text-red-400 hover:brightness-110' : 'text-ink-1 hover:brightness-110'
           }`}
           title={deafened ? 'Undeafen' : 'Deafen'}
           aria-label={deafened ? 'Undeafen' : 'Deafen'}
@@ -169,7 +166,7 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
         </button>
         <button
           onClick={() => void leave()}
-          className="w-7 h-7 flex items-center justify-center rounded text-[#ED4245] hover:text-white hover:bg-[#ED4245] transition-colors"
+          className="w-8 h-8 flex items-center justify-center rounded-full bg-red-500 text-white hover:brightness-110 transition-colors"
           title="Leave call"
           aria-label="Leave call"
         >

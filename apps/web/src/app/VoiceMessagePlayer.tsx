@@ -14,12 +14,18 @@
  * Audio source is the same CDN URL as any other attachment; the
  * <audio> element handles streaming + decoding. We don't pre-fetch
  * — the browser does it on play.
+ *
+ * If server-side media retention has aged out the original
+ * (`blobExpiredAt`), the url no longer resolves and there is no thumbnail
+ * to fall back to, so the chip renders a non-playable "no longer stored"
+ * state instead of a play button that would 404.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Attachment } from '@zekktris/client';
 import { decryptedMediaURL } from '../lib/e2ee';
-import { Play, Pause } from '../lib/icons';
+import { EXPIRED_TITLE, isBlobExpired } from '../lib/mediaRetention';
+import { Play, Pause, Clock } from '../lib/icons';
 
 interface Props {
   attachment: Attachment;
@@ -54,9 +60,20 @@ export function VoiceMessagePlayer({ attachment, channelId }: Props) {
   // the CDN URL directly; for an encrypted (.zke) note we fetch + decrypt
   // the bytes and play a local blob URL instead (null until ready).
   const encrypted = attachment.filename.endsWith('.zke');
-  const [srcUrl, setSrcUrl] = useState<string | null>(encrypted ? null : attachment.url);
+  // Voice notes have no thumbnail, so retention only reaches them when the
+  // operator opted into reaping un-thumbnailed originals. When it has, the
+  // audio is gone: keep `srcUrl` null so play stays disabled, and never
+  // point <audio> at the dead url.
+  const expired = isBlobExpired(attachment);
+  const [srcUrl, setSrcUrl] = useState<string | null>(
+    encrypted || expired ? null : attachment.url,
+  );
 
   useEffect(() => {
+    if (expired) {
+      setSrcUrl(null);
+      return;
+    }
     if (!encrypted) {
       setSrcUrl(attachment.url);
       return;
@@ -83,7 +100,7 @@ export function VoiceMessagePlayer({ attachment, channelId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [attachment.url, attachment.filename, channelId, encrypted]);
+  }, [attachment.url, attachment.filename, channelId, encrypted, expired]);
   // Browsers can take a moment after play() before they report
   // currentTime > 0; we drive a stable progress fraction via an rAF
   // loop while playing rather than only on `timeupdate` events
@@ -183,6 +200,28 @@ export function VoiceMessagePlayer({ attachment, channelId }: Props) {
       a.currentTime = frac * totalSec;
       setCurrentSec(a.currentTime);
     }
+  }
+
+  if (expired) {
+    // Same chip shape as a playable note (so the message doesn't reflow),
+    // with the transport swapped for a plain statement of what happened.
+    return (
+      <div
+        className="mt-1 flex w-full max-w-md items-center gap-2.5 rounded-lg border border-line bg-bg-2 px-3 py-2"
+        title={EXPIRED_TITLE}
+      >
+        <span
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-bg-3 text-ink-3"
+          aria-hidden
+        >
+          <Clock size={14} />
+        </span>
+        <span className="min-w-0 flex-1 text-sm text-ink-3">Voice message no longer stored</span>
+        <span className="shrink-0 text-xs tabular-nums text-ink-3">
+          {formatDuration(totalSec)}
+        </span>
+      </div>
+    );
   }
 
   return (

@@ -70,6 +70,11 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
   if (!isDmVoice && channel.type !== 'guild_voice') {
     throw errors.notFound('Voice channel');
   }
+  // Resolved channel permissions for the GUILD path, hoisted so the LiveKit
+  // grant below can gate publishing on SPEAK / STREAM. Stays null for DM
+  // voice, which has no guild permission scope.
+  let guildPerms: bigint | null = null;
+
   if (isDmVoice) {
     // DM voice: verify the caller is a recipient. ensureRecipient throws
     // NOT_FOUND if not, which surfaces the same "channel doesn't exist
@@ -132,6 +137,7 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
     }
     await ensureMember(channel.guildId, userId);
     const perms = await computeMemberChannelPermissions(channelId, userId);
+    guildPerms = perms;
     if (!hasPermission(perms, Permissions.VIEW_CHANNEL)) throw errors.notFound('Voice channel');
     if (!hasPermission(perms, Permissions.CONNECT)) throw errors.forbidden('Cannot join this voice channel');
     // Onboarding gate — pending members can't join voice channels
@@ -275,6 +281,10 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
   // disabled (channels.voiceDisabled) — the channel still works as a
   // presence/hangout space but nobody can talk.
   let canPublish = true;
+  // Publishable sources implied by guild PERMISSIONS (as opposed to the
+  // parental-controls clamp below). The two are intersected so whichever is
+  // stricter wins.
+  let permissionSources: TrackSource[] | undefined;
   if (!isDmVoice && channel.guildId) {
     if (channel.voiceDisabled) {
       canPublish = false;
@@ -286,6 +296,19 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
       .limit(1);
     if (guildRow?.afkChannelId === channelId) {
       canPublish = false;
+    }
+    // SPEAK / STREAM enforcement. CONNECT is checked above, but SPEAK and
+    // STREAM were never enforced anywhere: the token granted canPublish with
+    // every source, so a member explicitly DENIED Speak could still transmit
+    // audio, and one denied Stream could still screen-share. The SFU only
+    // honours what the token says, so this is the one place it can be gated.
+    if (guildPerms !== null) {
+      if (!hasPermission(guildPerms, Permissions.SPEAK)) {
+        canPublish = false;
+      } else if (!hasPermission(guildPerms, Permissions.STREAM)) {
+        // May talk, may not share camera or screen.
+        permissionSources = [TrackSource.MICROPHONE];
+      }
     }
   }
 
@@ -306,6 +329,13 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
     if (childRestr.allowStream) {
       publishSources.push(TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO);
     }
+  }
+  // Intersect the permission-derived clamp with the supervision one — a
+  // source must be allowed by BOTH to end up in the grant.
+  if (permissionSources) {
+    publishSources = publishSources
+      ? publishSources.filter((src) => permissionSources.includes(src))
+      : permissionSources;
   }
 
   // If the user MOVED OUT of a 1:1 DM call into this channel, finalize the

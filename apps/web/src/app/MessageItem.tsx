@@ -879,7 +879,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
                 <AvatarImage src={repliedTo.author?.avatarUrl ?? null} />
               </span>
               <span className="font-medium text-ink-2 shrink-0">
-                @{repliedTo.author?.displayName ?? repliedTo.author?.username ?? 'unknown'}
+                {repliedTo.author?.displayName ?? repliedTo.author?.username ?? 'unknown'}
               </span>
               <span className="truncate">{replyPreviewText(repliedTo, filterProfanity)}</span>
             </>

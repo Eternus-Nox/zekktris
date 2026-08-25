@@ -1086,7 +1086,7 @@ export function ProfileCard({
                   >
                     <Edit size={14} className="shrink-0" />
                     <span className="truncate">
-                      {dmNickname ? `Nickname: ${dmNickname}` : 'Set nickname (only you)'}
+                      {dmNickname ? 'Edit Nickname' : 'Set Nickname'}
                     </span>
                   </button>
                 ))}

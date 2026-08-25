@@ -207,19 +207,63 @@ export const envSchema = z.object({
    *  mutates existing files. */
   MAX_VIDEO_UPLOAD_SIZE_MB: z.coerce.number().int().min(0).max(10_000).default(0),
   MAX_FILES_PER_MESSAGE: z.coerce.number().int().min(1).max(100).default(10),
-  /** Auto-delete message attachments older than this many days. 0 (default) =
-   *  DISABLED. When > 0 this is DESTRUCTIVE: it hard-removes old photos/videos/
-   *  voice notes from chat history (and tombstones messages left with no body).
-   *  ALWAYS excludes pinned messages and E2EE channels. To prevent accidents it
-   *  starts in LOG-ONLY mode (see ATTACHMENT_RETENTION_DRY_RUN). */
-  ATTACHMENT_RETENTION_DAYS: z.coerce.number().int().min(0).default(0),
-  /** When the retention sweep is enabled (DAYS > 0), default to a DRY RUN that
-   *  only LOGS what it would reclaim and deletes nothing. Set to 'false' to
-   *  actually delete. */
+  /** Age out the FULL-SIZE bytes of message attachments older than this many
+   *  days. Default 90 = ENABLED; set 0 to disable.
+   *
+   *  This expires BLOBS, not messages: the message, its text, the attachment
+   *  row (filename/size/dimensions) and the small thumbnail are all kept
+   *  forever — only the original object is removed, and clients render an
+   *  "original expired, thumbnail kept" state from `blobExpiredAt`.
+   *
+   *  Never touches a thumbnail row, and never touches an attachment that has
+   *  NO thumbnail (there the full blob is the only copy — see
+   *  ATTACHMENT_RETENTION_REAP_UNTHUMBED). Also excludes pinned messages.
+   *  E2EE channels ARE included: encrypted originals are the bulk of stored
+   *  bytes, and their client-encrypted thumbnails are separate self-contained
+   *  objects that keep decrypting fine once the original is gone.
+   *  ENABLED at 90 days (user decision, 2026-08-14). ~96% of stored bytes are
+   *  E2EE originals from native clients, so this is the only lever that moves
+   *  the storage bill. Set to 0 to disable.
+   *
+   *  NOTE FOR ANYONE CHANGING THIS: the compose file pins the same two vars
+   *  (docker-compose.yml, `ATTACHMENT_RETENTION_DAYS` / `..._DRY_RUN`), so a
+   *  compose deployment takes ITS defaults, not these. Both must agree or the
+   *  code default is silently dead. That mismatch already caused one false
+   *  "retention is on" report.
+   *
+   *  Safe against shipped clients — verified, not assumed. Both native apps now
+   *  render inline from the thumbnail and never fall back to an expired
+   *  original: iOS MessageViews.swift (`att.thumbnailUrl.flatMap { assetURL($0) }
+   *  ?? url`) and Android `inlineImageUrl` (ChatScreen.kt:2131,
+   *  `thumbnailUrl ?: if (blobExpired) null else url`). An earlier revert
+   *  happened precisely because Android was NOT thumbnail-first at the time. */
+  ATTACHMENT_RETENTION_DAYS: z.coerce.number().int().min(0).default(90),
+  /** Whether the sweep only LOGS what it would reclaim (true) or actually
+   *  deletes (false). Defaults to 'false' — it really deletes — since retention
+   *  is enabled above and a permanently-dry sweep reclaims nothing.
+   *
+   *  The safety is not this flag: it is that a blob is only expired when a
+   *  surviving thumbnail proves the image is still viewable, and that
+   *  thumbnail-less attachments are skipped unless
+   *  ATTACHMENT_RETENTION_REAP_UNTHUMBED is separately turned on.
+   *
+   *  To PREVIEW: set ATTACHMENT_RETENTION_DRY_RUN=true for one cycle. The sweep
+   *  logs candidates, reclaimable bytes and skip counts, and touches nothing. */
   ATTACHMENT_RETENTION_DRY_RUN: z
     .string()
-    .default('true')
+    .default('false')
     .transform((v) => v !== 'false' && v !== '0'),
+  /** Opt-in: also expire originals that have NO thumbnail (attachments that
+   *  predate thumbnails, plus files/voice notes that never get one). OFF by
+   *  default, and deliberately separate from enabling retention at all —
+   *  because for those rows the full-size object is the ONLY copy, so reaping
+   *  it destroys the image outright instead of downgrading it to a preview.
+   *  With this off the sweep SKIPS them and reports how many/how much it left
+   *  behind, so the operator can see the trade before opting in. */
+  ATTACHMENT_RETENTION_REAP_UNTHUMBED: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true' || v === '1'),
   /**
    * Periodic image-compression sweep: re-encodes attachments older
    * than 7 days at lower quality to reduce disk footprint. Requires

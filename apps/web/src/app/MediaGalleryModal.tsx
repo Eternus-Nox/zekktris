@@ -5,15 +5,25 @@
  * Buckets client-side so encrypted (.zke) attachments classify by their inner
  * filename; encrypted photos decrypt in-browser (same path as Attachments.tsx)
  * and open in the shared ImageLightbox. Plain files download via the CDN URL.
+ *
+ * Attachments whose full-size original has been aged out by server-side
+ * media retention (`blobExpiredAt`) keep their grid cell — rendered from the
+ * preserved thumbnail — but stop being clickable, since the lightbox and the
+ * file rows both open `url`, which no longer resolves.
  */
 
 import { useCallback, useEffect, useState } from 'react';
 import type { Attachment, Channel } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { decryptedMediaURL, getKeyVersion, subscribeToKeyChanges } from '../lib/e2ee';
+import {
+  EXPIRED_TITLE,
+  ExpiredBadge,
+  isBlobExpired,
+} from '../lib/mediaRetention';
 import { ImageLightbox } from './ImageLightbox';
 import { Portal } from '../lib/Portal';
-import { Lock, Paperclip, X } from '../lib/icons';
+import { Clock, Lock, Paperclip, X } from '../lib/icons';
 
 const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'heif', 'bmp', 'tiff'];
 
@@ -149,15 +159,19 @@ function GalleryPhoto({
   onOpen: (x: { src: string; filename?: string }) => void;
 }) {
   const encrypted = a.filename.endsWith('.zke');
+  // Server-side retention aged out the full-size original: `a.url` is still
+  // populated but dead, so the grid cell may only use the kept thumbnail and
+  // the tile must not open the lightbox.
+  const expired = isBlobExpired(a);
   // Grid cell uses the small thumbnail when present; the lightbox opens full.
-  const inlineSrc = a.thumbnailUrl ?? a.url;
-  const [src, setSrc] = useState<string | null>(encrypted ? null : inlineSrc);
+  const inlineSrc = a.thumbnailUrl ?? (expired ? null : a.url);
+  const [src, setSrc] = useState<string | null>(encrypted || !inlineSrc ? null : inlineSrc);
   const [keyVersion, setKeyVersion] = useState(getKeyVersion());
 
   useEffect(() => subscribeToKeyChanges(() => setKeyVersion(getKeyVersion())), []);
 
   useEffect(() => {
-    if (!encrypted) return;
+    if (!encrypted || !inlineSrc) return;
     let cancelled = false;
     (async () => {
       try {
@@ -184,6 +198,29 @@ function GalleryPhoto({
     if (full ?? src) onOpen({ src: (full ?? src)!, filename: realName(a) });
   };
 
+  const inner = src ? (
+    <img src={src} alt={realName(a)} loading="lazy" className="h-full w-full object-cover" />
+  ) : (
+    <span className="flex h-full w-full items-center justify-center text-ink-4">
+      {expired ? <Clock size={16} /> : <Lock size={16} />}
+    </span>
+  );
+
+  if (expired) {
+    // Not a button: there is no full-size image left to open.
+    return (
+      <div
+        className="relative aspect-square overflow-hidden rounded bg-bg-3"
+        title={EXPIRED_TITLE}
+        role="img"
+        aria-label={`${realName(a)} — original no longer stored`}
+      >
+        {inner}
+        <ExpiredBadge />
+      </div>
+    );
+  }
+
   return (
     <button
       type="button"
@@ -191,13 +228,7 @@ function GalleryPhoto({
       className="aspect-square overflow-hidden rounded bg-bg-3"
       title={realName(a)}
     >
-      {src ? (
-        <img src={src} alt={realName(a)} loading="lazy" className="h-full w-full object-cover" />
-      ) : (
-        <span className="flex h-full w-full items-center justify-center text-ink-4">
-          <Lock size={16} />
-        </span>
-      )}
+      {inner}
     </button>
   );
 }
@@ -205,6 +236,20 @@ function GalleryPhoto({
 function GalleryFile({ a }: { a: Attachment }) {
   const encrypted = a.filename.endsWith('.zke');
   const name = realName(a);
+  if (isBlobExpired(a)) {
+    // No download link — the url is dead. Row stays so the file is still
+    // listed with its real name.
+    return (
+      <div
+        className="flex items-center gap-3 rounded-md bg-bg-2 px-3 py-2 text-sm"
+        title={EXPIRED_TITLE}
+      >
+        <Clock size={16} className="text-ink-3" />
+        <span className="flex-1 truncate text-ink-2">{name}</span>
+        <span className="shrink-0 text-xs text-ink-3">Original no longer stored</span>
+      </div>
+    );
+  }
   if (encrypted) {
     return (
       <div className="flex items-center gap-3 rounded-md bg-bg-2 px-3 py-2 text-sm">

@@ -70,6 +70,12 @@ else
     DB_PASSWORD="$(openssl rand -hex 24)"
     JWT_SECRET="$(openssl rand -hex 32)"
     JWT_REFRESH_SECRET="$(openssl rand -hex 32)"
+    # At-rest encryption for TOTP secrets and bot tokens. This MUST be
+    # substituted: .env.example ships a non-empty placeholder, and env.ts
+    # only treats the EMPTY string as "unset" — so leaving the placeholder
+    # in place fails validation and the api exits(1) before binding, which
+    # `restart: unless-stopped` turns into an endless crash loop.
+    FIELD_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 
     # ── Public URL ─────────────────────────────────────────────────────
     # Default is the production deployment for this fork. Replace if you
@@ -107,6 +113,7 @@ else
         -e "s|change-me-to-a-long-random-string|${DB_PASSWORD}|g" \
         -e "s|replace-with-32-bytes-of-random-hex|${JWT_SECRET}|" \
         -e "s|replace-with-different-32-bytes-of-random-hex|${JWT_REFRESH_SECRET}|" \
+        -e "s|replace-with-field-key-32-bytes-of-random-hex-or-leave-blank|${FIELD_ENCRYPTION_KEY}|" \
         -e "s|^PUBLIC_URL=.*|PUBLIC_URL=${PUBLIC_URL_DEFAULT}|" \
         -e "s|^COOKIE_SECURE=.*|COOKIE_SECURE=${COOKIE_SECURE_DEFAULT}|" \
         -e "s|^LIVEKIT_API_KEY=.*|LIVEKIT_API_KEY=${LIVEKIT_API_KEY_DEFAULT}|" \

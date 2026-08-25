@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { db, schema } from '../src/db';
@@ -44,6 +44,16 @@ async function memberUser(): Promise<bigint> {
 // the same profanity bar as messages. PATCH /users/@me rejects a tag that
 // matches the shared banned-words preset.
 describe.runIf(dbReady)('PATCH /users/@me — clan tag profanity', () => {
+  // The filter is DB-backed, so it matches nothing against an empty
+  // security_banned_words table. In a real instance the list is seeded on
+  // first boot (index.ts → seedPresetWordsIfEmpty); these tests mount the
+  // router directly and never run that path, so seed it explicitly rather
+  // than depending on whatever another suite happened to leave behind.
+  beforeAll(async () => {
+    const { seedPresetWordsIfEmpty } = await import('../src/services/security');
+    await seedPresetWordsIfEmpty();
+  });
+
   afterAll(async () => {
     await cleanupAll();
     await closeDb();

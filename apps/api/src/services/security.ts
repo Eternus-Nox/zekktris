@@ -150,7 +150,7 @@ export async function removeBannedWord(word: string): Promise<void> {
  * severity, duplicates skipped). Slurs file as 'blocked', general profanity as
  * 'watch'. Returns how many new words were added.
  */
-export async function addPresetWords(addedBy: bigint): Promise<number> {
+export async function addPresetWords(addedBy: bigint | null): Promise<number> {
   const { BLOCKED_WORDS_PRESET, WATCH_WORDS_PRESET } = await import('../data/bannedWordsPreset');
   const mk = (list: string[], severity: WordSeverity) =>
     list
@@ -166,6 +166,34 @@ export async function addPresetWords(addedBy: bigint): Promise<number> {
     .returning({ word: schema.securityBannedWords.word });
   wordsCacheAt = 0;
   return inserted.length;
+}
+
+/**
+ * First-boot seed of the banned-words list.
+ *
+ * `wordFilterEnabled` defaults to TRUE, but the word list itself was only ever
+ * populated by an admin pressing "add preset words" in the Security tab. Until
+ * someone did, `loadWordMatchers()` compiled nothing and `containsListedWord()`
+ * returned null for every input — so on a fresh instance the identity
+ * profanity bar (usernames, display names, guild nicknames, clan tags) and the
+ * AutoMod word tier were silently inert. A safety feature that is off until
+ * someone finds a button is not a safety feature.
+ *
+ * Seeds only when the table is COMPLETELY empty, so an operator's own
+ * additions and removals are never overwritten. Note the deliberate
+ * trade-off: an admin who removes every word will get the presets back on the
+ * next restart. Emptying the list entirely is indistinguishable from a fresh
+ * install; to run with no word filter, turn `wordFilterEnabled` off instead.
+ *
+ * `addedBy` is null — this is a system action, not an admin's.
+ */
+export async function seedPresetWordsIfEmpty(): Promise<number> {
+  const existing = await db
+    .select({ word: schema.securityBannedWords.word })
+    .from(schema.securityBannedWords)
+    .limit(1);
+  if (existing.length > 0) return 0;
+  return addPresetWords(null);
 }
 
 /**
@@ -219,7 +247,9 @@ export type SecurityEventKind =
   | 'staff_monetization'
   | 'staff_observe'
   | 'staff_guild_delete'
-  | 'staff_user_delete';
+  | 'staff_user_delete'
+  /** A user closed their OWN account via DELETE /users/@me. */
+  | 'user_self_delete';
 
 export async function logEvent(input: {
   kind: SecurityEventKind;

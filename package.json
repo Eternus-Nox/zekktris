@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "A communications app for communities",
-  "license": "AGPL-3.0",
+  "license": "UNLICENSED",
   "packageManager": "pnpm@9.12.0",
   "engines": {
     "node": ">=20"

@@ -9,9 +9,11 @@
  * Failure displays the server's error message in red.
  */
 
-import { useState, useRef, useEffect, useCallback, type FormEvent, type KeyboardEventHandler, type Ref, type RefObject } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo, type FormEvent, type KeyboardEventHandler, type Ref, type RefObject } from 'react';
 import { ZekktrisMark } from '../lib/ZekktrisMark';
 import { Eye, EyeOff, Key, QrCode } from '../lib/icons';
+import { qrEncode, qrToSvg } from '../lib/qr';
+import { localDeviceLabel } from '../lib/deviceInfo';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { ApiError } from '@zekktris/client';
 import { useAuth } from './AuthContext';
@@ -501,173 +503,279 @@ export function LoginPage() {
   );
 }
 
-/** Pull the 16-digit code out of a raw scan/paste: a `/login/device?c=…` URL,
-    or bare digits (spaces stripped). */
-function extractQuickLoginCode(raw: string): string {
-  const m = raw.match(/[?&]c=(\d{6,})/);
-  if (m) return m[1]!;
-  return raw.replace(/\D/g, '');
+/** mm:ss for the request-expiry countdown. */
+function countdown(seconds: number): string {
+  const s = Math.max(0, seconds);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
+/** Consecutive poll failures tolerated before we stop and offer a retry. A
+    device-login attempt that silently polls a dead network forever is the
+    failure mode this bounds. */
+const MAX_POLL_FAILURES = 5;
+/** Ceiling for the local network-error backoff, in seconds. Server-driven
+    `slow_down` intervals are honoured as sent and are not subject to this. */
+const MAX_BACKOFF_SECONDS = 30;
+
 /**
- * Redeem a quick-login code shown on another (already-signed-in) device.
- * Reached via the "Log in with another device" link OR by scanning the QR
- * (which points a phone camera at /login/device?c=… and auto-submits).
+ * Log in on THIS (logged-out) device by having a device that is already signed
+ * in approve it — the OAuth 2.0 device-authorization shape, a.k.a. "TV login".
+ *
+ * This page holds the weak end of the flow and must behave:
+ *
+ *   - `deviceCode` is the credential that collects the session. It stays in
+ *     component state for the life of the attempt and is NEVER rendered,
+ *     QR'd, logged, put in the URL, or persisted. Only `userCode` is shown.
+ *   - The QR encodes the approval URL, not a session — scanning it can only
+ *     take the approver to a confirmation screen, never sign anyone in.
+ *   - Polling stops on unmount, on approval, on denial, on expiry, and after
+ *     MAX_POLL_FAILURES consecutive network errors. A forever-poll would
+ *     hammer the API from an abandoned tab.
+ *   - The server's `interval` is authoritative and is re-read from every
+ *     response, so a `slow_down` immediately widens the gap.
+ *   - The approved grant is delivered EXACTLY ONCE. It is handed to
+ *     adoptDeviceSession the instant it arrives, before anything that could
+ *     throw, because there is no way to ask for it again.
  */
 export function DeviceLoginPage() {
-  const { loginWithDeviceCode, token, hydrating } = useAuth();
+  const { rest, adoptDeviceSession, token, hydrating } = useAuth();
   const nav = useNavigate();
-  const [searchParams] = useSearchParams();
-  const [code, setCode] = useState(() => extractQuickLoginCode(searchParams.get('c') ?? ''));
-  const [pending, setPending] = useState(false);
+  const [request, setRequest] = useState<{
+    userCode: string;
+    /** SECRET — display nothing derived from this. */
+    deviceCode: string;
+    interval: number;
+  } | null>(null);
+  const [phase, setPhase] = useState<
+    'starting' | 'waiting' | 'approved' | 'denied' | 'expired' | 'error'
+  >('starting');
   const [err, setErr] = useState<string | null>(null);
-  const [scanning, setScanning] = useState(false);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const barcodeSupported =
-    typeof window !== 'undefined' &&
-    'BarcodeDetector' in window &&
-    typeof navigator !== 'undefined' &&
-    !!navigator.mediaDevices?.getUserMedia;
-
-  const submit = useCallback(
-    async (raw: string) => {
-      const c = extractQuickLoginCode(raw);
-      if (c.length < 6) {
-        setErr('Enter the code shown on your other device.');
-        return;
-      }
-      setPending(true);
-      setErr(null);
-      try {
-        await loginWithDeviceCode(c);
-        nav('/', { replace: true });
-      } catch (e) {
-        setErr(e instanceof ApiError ? e.message : 'Could not sign in with that code.');
-      } finally {
-        setPending(false);
-      }
-    },
-    [loginWithDeviceCode, nav],
+  const [secondsLeft, setSecondsLeft] = useState(0);
+  // Which account we actually landed in. Shown on the success card because a
+  // guessed userCode can bind a device to the *guesser's* account — the only
+  // way the user notices is if we tell them whose account this is.
+  const [signedInAs, setSignedInAs] = useState<{ displayName: string; username: string } | null>(
+    null,
   );
 
-  // Arriving from a scanned QR URL (?c=…) → sign in immediately.
-  const autoCode = searchParams.get('c');
-  useEffect(() => {
-    if (autoCode) void submit(autoCode);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const begin = useCallback(async () => {
+    setPhase('starting');
+    setErr(null);
+    setRequest(null);
+    try {
+      const r = await rest.startDeviceLogin({ deviceName: localDeviceLabel() });
+      setRequest({ userCode: r.userCode, deviceCode: r.deviceCode, interval: r.interval });
+      setSecondsLeft(r.expiresIn);
+      setPhase('waiting');
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : 'Could not start a login request.');
+      setPhase('error');
+    }
+  }, [rest]);
 
-  // Camera QR scan (Chromium/desktop; feature-gated so Safari/iOS falls back to
-  // manual entry). Runs only while `scanning`; tears the camera down on exit.
+  // Open the request once on mount. The ref guard matters: StrictMode double-
+  // invokes effects in dev, and without it every dev page load would burn two
+  // of the 10-per-15-minutes start budget and show a code for the request it
+  // is no longer polling.
+  const started = useRef(false);
   useEffect(() => {
-    if (!scanning) return;
-    let raf = 0;
+    // Never open a request for someone who is already signed in — this page
+    // redirects them below, and the effect still runs on that render.
+    if (hydrating || token) return;
+    if (started.current) return;
+    started.current = true;
+    void begin();
+  }, [hydrating, token, begin]);
+
+  // The poll loop. Keyed on the request so a restart tears the old one down.
+  useEffect(() => {
+    if (!request || phase !== 'waiting') return;
     let cancelled = false;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const detector = new (window as any).BarcodeDetector({ formats: ['qr_code'] });
-    void (async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let interval = request.interval;
+    let failures = 0;
+
+    const tick = async () => {
+      if (cancelled) return;
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment' },
-        });
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play();
+        const r = await rest.pollDeviceLogin(request.deviceCode);
+        // NOTE the order: approval is banked BEFORE the `cancelled` check, on
+        // purpose. The server consumed the grant to answer this call, so if we
+        // bailed here because the user happened to navigate away mid-flight,
+        // that session would be stranded — approved, paid for, and collectable
+        // by nobody. AuthProvider outlives this page, so persisting from a
+        // torn-down effect is safe; only the local setState calls below are
+        // worth skipping.
+        if (r.status === 'approved') {
+          adoptDeviceSession(r);
+          if (cancelled) return;
+          setSignedInAs({ displayName: r.user.displayName, username: r.user.username });
+          setPhase('approved');
+          return;
         }
-        const tick = async () => {
-          if (cancelled || !videoRef.current) return;
-          try {
-            const codes = await detector.detect(videoRef.current);
-            if (codes[0]?.rawValue) {
-              setScanning(false);
-              void submit(codes[0].rawValue as string);
-              return;
-            }
-          } catch {
-            /* per-frame detect can throw before the first frame — ignore */
-          }
-          raf = requestAnimationFrame(() => void tick());
-        };
-        raf = requestAnimationFrame(() => void tick());
-      } catch {
-        setErr('Could not open the camera. Type the code instead.');
-        setScanning(false);
+        if (cancelled) return;
+        failures = 0;
+        if (r.status === 'denied') {
+          setPhase('denied');
+          return;
+        }
+        if (r.status === 'expired') {
+          setPhase('expired');
+          return;
+        }
+        // pending | slow_down — the server's interval always wins.
+        interval = Math.max(1, r.interval);
+      } catch (e) {
+        if (cancelled) return;
+        failures += 1;
+        if (failures >= MAX_POLL_FAILURES) {
+          setErr(
+            e instanceof ApiError ? e.message : 'Lost contact with Zekktris while waiting.',
+          );
+          setPhase('error');
+          return;
+        }
+        // Transient failure (offline, 429, a blip) — back off locally rather
+        // than abandoning an attempt the user may be mid-approval on.
+        interval = Math.min(MAX_BACKOFF_SECONDS, interval * 2);
       }
-    })();
+      timer = setTimeout(() => void tick(), interval * 1000);
+    };
+
+    // First poll after one interval: the request was created moments ago, so
+    // polling immediately would only earn a slow_down.
+    timer = setTimeout(() => void tick(), interval * 1000);
     return () => {
       cancelled = true;
-      cancelAnimationFrame(raf);
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
+      if (timer) clearTimeout(timer);
     };
-  }, [scanning, submit]);
+  }, [request, phase, rest, adoptDeviceSession]);
+
+  // Local expiry clock. The server expires the request on its own schedule;
+  // this exists so the screen stops claiming to be waiting for something that
+  // is already dead.
+  useEffect(() => {
+    if (phase !== 'waiting') return;
+    if (secondsLeft <= 0) {
+      setPhase('expired');
+      return;
+    }
+    const t = setTimeout(() => setSecondsLeft((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [phase, secondsLeft]);
+
+  // The approval target. Scanning this takes the phone to a confirmation
+  // screen — the code in it is public by construction and yields nothing on
+  // its own.
+  const approvalUrl = request
+    ? `${window.location.origin}/approve-device?code=${encodeURIComponent(request.userCode)}`
+    : null;
+  const qrSvg = useMemo(
+    () => (approvalUrl ? qrToSvg(qrEncode(approvalUrl), 220) : null),
+    [approvalUrl],
+  );
 
   if (hydrating) return null;
-  if (token) return <Navigate to="/" replace />;
+  // Once approved we hold a token but stay put: the success card names the
+  // account, which is the user's only chance to notice they were signed into
+  // someone else's.
+  if (token && phase !== 'approved') return <Navigate to="/" replace />;
 
   return (
-    <AuthShell heading="Log in with another device">
+    <AuthShell heading={phase === 'approved' ? "You're signed in" : 'Log in with another device'}>
       <div className="space-y-4">
-        <p className="text-sm text-ink-2 leading-snug">
-          On a device you&apos;re already signed in on, open{' '}
-          <span className="text-ink-1">Settings → Log in on another device</span> and enter the
-          16-digit code here — or scan the QR.
-        </p>
-        {scanning ? (
-          <div className="space-y-2">
-            <video
-              ref={videoRef}
-              playsInline
-              muted
-              className="w-full rounded-md bg-black aspect-square object-cover"
-            />
+        {phase === 'approved' && (
+          <div className="space-y-4">
+            <div className="rounded-md border border-emerald-600/40 bg-emerald-600/15 px-3 py-3">
+              <div className="text-sm font-medium text-emerald-200">Approved — you&apos;re in.</div>
+              {signedInAs && (
+                <div className="mt-1 text-sm text-ink-2">
+                  Signed in as{' '}
+                  <span className="text-ink-1 font-medium">{signedInAs.displayName}</span>{' '}
+                  <span className="text-ink-3">@{signedInAs.username}</span>
+                </div>
+              )}
+            </div>
+            <p className="text-sm text-ink-3 leading-snug">
+              Not your account? Sign out immediately and change the password on the account you
+              meant to use.
+            </p>
             <button
               type="button"
-              onClick={() => setScanning(false)}
-              className="block w-full text-center text-xs text-ink-3 hover:text-ink-2 underline"
+              onClick={() => nav('/', { replace: true })}
+              className="w-full bg-gradient-to-br from-accent to-accent-2 hover:brightness-110 text-bg-0 font-semibold rounded-md py-2 transition-all shadow-[0_0_0_1px_var(--accent-glow),0_4px_18px_var(--accent-glow)]"
             >
-              Cancel scan
+              Continue
             </button>
           </div>
-        ) : (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              void submit(code);
-            }}
-            className="space-y-4"
-          >
-            <Field
-              label="16-digit code"
-              type="text"
-              value={code}
-              onChange={setCode}
-              autoComplete="one-time-code"
-            />
-            {err && <ErrorBanner message={err} />}
-            <SubmitButton pending={pending}>Sign in</SubmitButton>
-            {barcodeSupported && (
-              <button
-                type="button"
-                onClick={() => {
-                  setErr(null);
-                  setScanning(true);
-                }}
-                className="w-full flex items-center justify-center gap-2 bg-bg-1/60 border rounded-md py-2 text-sm font-medium hover:bg-bg-3 transition-colors"
-                style={{ borderColor: 'var(--zk-line)' }}
-              >
-                Scan QR code
-              </button>
-            )}
-          </form>
         )}
-        <p className="text-sm text-center">
-          <Link to="/login" className="text-ink-3 hover:text-accent hover:underline">
-            Back to sign in
-          </Link>
-        </p>
+
+        {phase !== 'approved' && (
+          <>
+            <p className="text-sm text-ink-2 leading-snug">
+              On a phone or computer you&apos;re already signed in on, scan this code with the
+              camera — or open{' '}
+              <span className="text-ink-1">Settings → Security → Sign in a new device</span> and
+              type the code below. You&apos;ll be asked to confirm there before this device is
+              signed in.
+            </p>
+
+            {phase === 'starting' && (
+              <div className="text-sm text-ink-3 py-8 text-center">Getting a code…</div>
+            )}
+
+            {phase === 'waiting' && request && (
+              <div className="space-y-3">
+                {qrSvg && (
+                  <div
+                    className="bg-white rounded-md p-2 flex justify-center mx-auto max-w-[15rem]"
+                    // Our own generator's output from a URL we built — no
+                    // remote or user-supplied markup reaches this.
+                    dangerouslySetInnerHTML={{ __html: qrSvg }}
+                  />
+                )}
+                <div className="text-center font-mono text-2xl tracking-[0.3em] text-ink-1">
+                  {request.userCode}
+                </div>
+                <div className="text-center text-xs text-ink-3">
+                  Waiting for approval · expires in {countdown(secondsLeft)}
+                </div>
+                <p className="text-xs text-ink-3 leading-snug text-center">
+                  Only enter this code on your own device. Anyone who asks you for it is trying to
+                  take your account.
+                </p>
+              </div>
+            )}
+
+            {(phase === 'denied' || phase === 'expired' || phase === 'error') && (
+              <div className="space-y-3">
+                <ErrorBanner
+                  message={
+                    phase === 'denied'
+                      ? 'That request was denied on your other device. Nothing was signed in.'
+                      : phase === 'expired'
+                        ? 'That code expired before it was approved.'
+                        : (err ?? 'Something went wrong.')
+                  }
+                />
+                <button
+                  type="button"
+                  onClick={() => void begin()}
+                  className="w-full flex items-center justify-center gap-2 bg-bg-1/60 border rounded-md py-2 text-sm font-medium hover:bg-bg-3 transition-colors"
+                  style={{ borderColor: 'var(--zk-line)' }}
+                >
+                  Get a new code
+                </button>
+              </div>
+            )}
+
+            <p className="text-sm text-center">
+              <Link to="/login" className="text-ink-3 hover:text-accent hover:underline">
+                Back to sign in
+              </Link>
+            </p>
+          </>
+        )}
       </div>
     </AuthShell>
   );

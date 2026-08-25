@@ -166,6 +166,9 @@ export async function runCompressionSweep(): Promise<{
       and(
         isNull(schema.attachments.compressedAt),
         lt(schema.attachments.createdAt, cutoff),
+        // Media retention already reclaimed this original's bytes — there is
+        // no file left to re-encode, so don't spend batch budget stat-ing it.
+        isNull(schema.attachments.blobExpiredAt),
       ),
     )
     .limit(BATCH_LIMIT);

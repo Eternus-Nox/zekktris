@@ -30,6 +30,8 @@
  *   guardian_angel    — actively supervising a child account
  *   first_contact     — joined a voice channel (user_voice_stats)
  *   event_horizon     — total voice time: 1h / 10h (user_voice_stats)
+ *   nudge_nudge       — poked 1 / 3 / 5 DISTINCT people (poke_tallies)
+ *   poke_magnet       — 5 DISTINCT people have poked you (poke_tallies)
  *
  * Tier convention (set by veteran / chatterbox / social; every ladder here
  * follows it): one entry per rung, id `family_<goal>`, the SAME `name` across
@@ -74,6 +76,36 @@ const FOUNDER_TIERS = [100, 500];
 const WELCOME_TIERS = [10, 50];
 
 /**
+ * Poke ladder (sent) — DISTINCT people, never poke volume.
+ *
+ * Sized to THIS instance (~10 accounts), not to round numbers. The metric is
+ * hard-capped by headcount: pokes are 1:1-DM-only and self-pokes are rejected,
+ * so the ceiling is (accounts − 1) ≈ 9. A 10/25/50 ladder copied from `social`
+ * would be three tiles nobody here can ever reach — `social_50` already is one
+ * — so the top rung is 5: a MAJORITY of everyone you could possibly poke, which
+ * means most of the instance has an open DM with you. 3 is the mid rung (about
+ * a third of the instance, a week of ordinary use), and 1 is the discovery rung
+ * — the poke button is easy to never notice, and the catalog already leans on
+ * goal-1 tiles for that job (first_contact, discovered, off_the_record).
+ * Rungs may be APPENDED if the instance grows; ids never change (see above).
+ */
+const POKE_SENT_TIERS = [1, 3, 5];
+/**
+ * Poke badge (received) — deliberately ONE high bar, not a mirror ladder.
+ *
+ * Reciprocity here is a single tap (the poke popover's whole purpose is to
+ * offer poke-back), so a 1/3/5 received ladder would track the sent ladder
+ * almost exactly and park two families showing the SAME number side by side on
+ * the shelf. And "someone poked you" asks nothing of the user, so there is no
+ * goal-1 rung on this side. Five different people choosing to poke you is a
+ * real signal at this headcount and is strictly harder than the sent top rung,
+ * which you can reach unilaterally. Progress still renders (0/5), the same way
+ * night_owl and marathon carry a single distant bar.
+ */
+const POKE_RECEIVED_GOAL = 5;
+const POKE_RECEIVED_TIERS = [POKE_RECEIVED_GOAL];
+
+/**
  * Founding Member cutoff — accounts created strictly BEFORE this instant.
  *
  * Chosen as the end of the launch month: v1.0 shipped 2026-08-06 (desktop
@@ -96,6 +128,45 @@ function num(x: unknown): number {
   if (typeof x === 'bigint') return Number(x);
   if (typeof x === 'string') return parseInt(x, 10) || 0;
   return 0;
+}
+
+/**
+ * Progress FLOOR for a cumulative ladder, read off the sticky
+ * `user_achievements` ledger: given how many rungs of a family are already
+ * recorded there, the threshold of the highest one.
+ *
+ * Why a floor is needed at all — the cascade trap. `welcome_committee` has to
+ * COALESCE around `messages.author_id` being ON DELETE SET NULL, because
+ * COUNT(DISTINCT) skips NULLs and a greeted user closing their account walked
+ * the greeter's progress BACKWARDS. `poke_tallies` has the same exposure
+ * through a worse door: BOTH its FKs are ON DELETE CASCADE, so a departing
+ * account does not blank a column, it DELETES the pair row outright. Nothing
+ * survives to COALESCE, so unlike welcome_committee the fix cannot live in the
+ * aggregate — it has to come from a record the delete doesn't reach, and the
+ * ledger (rows are sticky, never deleted) already is one.
+ *
+ * The line this draws: un-earning because YOUR OWN state changed — you cleared
+ * your avatar, your server shrank, you unfriended someone — is honest, and this
+ * file accepts it everywhere by design. Un-earning because a THIRD PARTY
+ * deleted their account is not: you really did poke five people, and at this
+ * headcount one departure is a whole rung, plausibly for several users at once.
+ *
+ * Safe by construction. The ledger only ever receives ids that were computed as
+ * earned, so a floor can never manufacture a badge nobody unlocked; it is
+ * monotone, so it cannot oscillate; and it feeds back into a value that is
+ * already ≥ it, so it changes no notification (the rung it restores is by
+ * definition already in the ledger, and syncAndNotifyAchievements only
+ * announces ids the INSERT ... ON CONFLICT DO NOTHING actually returns).
+ *
+ * Earned rungs are always a PREFIX of the ascending tier list — every rung of a
+ * family reads the same `value` — which is what makes a plain count of recorded
+ * rungs enough to name the highest one, with no id parsing. If a rung is ever
+ * inserted MID-ladder, this under-reports for exactly one sync and then
+ * self-heals: it fails low, never high.
+ */
+function ledgerFloor(tiers: readonly number[], rungsRecorded: number): number {
+  if (rungsRecorded <= 0) return 0;
+  return tiers[Math.min(rungsRecorded, tiers.length) - 1] ?? 0;
 }
 
 export async function achievementsForUser(userId: bigint): Promise<Achievement[]> {
@@ -444,6 +515,44 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
         SELECT ${schema.userVoiceStats.totalSeconds} FROM ${schema.userVoiceStats}
         WHERE ${schema.userVoiceStats.userId} = ${userId}
       ), 0)`,
+      // Pokes, both directions. COUNT(*) over `poke_tallies`, whose PK is
+      // (initiator_id, recipient_id): one row per PERSON, so these are
+      // distinct-people counts BY CONSTRUCTION rather than by a DISTINCT clause
+      // — poking the same person a thousand times only bumps that row's
+      // poke_count, which nothing here reads. Both sides are index-only (the PK
+      // covers "people I poked", idx_poke_tallies_recipient covers "people who
+      // poked me").
+      //
+      // The `pokes` table itself cannot answer either question: it is a display
+      // buffer pruned to the newest 6 rows per (channel, RECIPIENT) on every
+      // insert — and pruned on the RECIPIENT key, so one person poking
+      // repeatedly deletes an earlier poker's rows. Anything lifetime-scoped
+      // read from it would both under-count and regress when a third party
+      // pokes. That is exactly why poke_tallies exists.
+      pokedDistinct: sql<number>`(
+        SELECT COUNT(*) FROM ${schema.pokeTallies}
+        WHERE ${schema.pokeTallies.initiatorId} = ${userId}
+      )`,
+      pokedByDistinct: sql<number>`(
+        SELECT COUNT(*) FROM ${schema.pokeTallies}
+        WHERE ${schema.pokeTallies.recipientId} = ${userId}
+      )`,
+      // Rungs already recorded for each poke family — the anti-regression floor
+      // (see ledgerFloor). Both FKs on poke_tallies cascade on user delete, so
+      // the raw counts above walk backwards when someone else closes their
+      // account; these two lookups are what make that not un-earn a badge.
+      // `starts_with` rather than LIKE on purpose: '_' is a LIKE wildcard, and
+      // these prefixes are full of them.
+      pokeSentRungs: sql<number>`(
+        SELECT COUNT(*) FROM ${schema.userAchievements}
+        WHERE ${schema.userAchievements.userId} = ${userId}
+          AND starts_with(${schema.userAchievements.achievementId}, 'poke_sent_')
+      )`,
+      pokeRecvRungs: sql<number>`(
+        SELECT COUNT(*) FROM ${schema.userAchievements}
+        WHERE ${schema.userAchievements.userId} = ${userId}
+          AND starts_with(${schema.userAchievements.achievementId}, 'poke_received_')
+      )`,
     })
     .from(schema.users)
     .where(eq(schema.users.id, userId))
@@ -537,6 +646,57 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
       goal: tier,
     });
   }
+
+  // ── Pokes (Nudge Nudge sent / Poke Magnet received) ────────────────────
+  // Farmability. Both directions cost ONE SIGNUP PER POINT and no more. The
+  // tally PK is (initiator_id, recipient_id), so someone you poke a thousand
+  // times is one row — repeat pokes bump poke_count, which nothing here reads.
+  // That is the `welcome_committee` lesson applied up front rather than after
+  // shipping: counting poke EVENTS would let a single alt and the 10s
+  // per-target timer hand over the top rung before lunch. Fan-out is closed
+  // too — the route is 1:1-DM-only (`ctx.channel.type !== 'dm'` rejects group
+  // DMs) and refuses self-pokes, so one poke can only ever create one pair row.
+  //
+  // What that does NOT buy is immunity, and the ladder is priced accordingly.
+  // At this headcount the top rung is 5, so faking it honestly costs ~4 alts,
+  // each needing a real signup (DOB gate + email) AND a DM path to you (friend
+  // accept, or a shared server with allowDmsFromServerMembers). Same cost model
+  // `founder` accepts, minus the prohibitive scale — cheap enough that these are
+  // worth a tile and not worth trusting as a reputation signal, which is the
+  // right ceiling for a poke badge.
+  //
+  // Both values are clamped up to what the ledger already recorded: the tally's
+  // FKs cascade on user delete, so the raw counts fall when a THIRD PARTY closes
+  // their account. See ledgerFloor for why that is the one regression this file
+  // does not accept.
+  const poked = Math.max(
+    num(extra?.pokedDistinct),
+    ledgerFloor(POKE_SENT_TIERS, num(extra?.pokeSentRungs)),
+  );
+  const pokedBy = Math.max(
+    num(extra?.pokedByDistinct),
+    ledgerFloor(POKE_RECEIVED_TIERS, num(extra?.pokeRecvRungs)),
+  );
+  for (const tier of POKE_SENT_TIERS) {
+    out.push({
+      id: `poke_sent_${tier}`,
+      name: 'Nudge Nudge',
+      description: tier === 1 ? 'Poked someone.' : `Poked ${tier} different people.`,
+      marker: tier === 1 ? '👉' : `${tier}`,
+      value: poked,
+      earned: poked >= tier,
+      goal: tier,
+    });
+  }
+  out.push({
+    id: `poke_received_${POKE_RECEIVED_GOAL}`,
+    name: 'Poke Magnet',
+    description: `Poked by ${POKE_RECEIVED_GOAL} different people.`,
+    marker: '🧲',
+    value: pokedBy,
+    earned: pokedBy >= POKE_RECEIVED_GOAL,
+    goal: POKE_RECEIVED_GOAL,
+  });
 
   const e2eeDms = num(extra?.e2eeDms);
   out.push({
@@ -659,6 +819,16 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
  * is suppressed. Do NOT generalise this into a time-windowed silence for the
  * other new badges: those are genuine unlocks people really earned, and their
  * rollout burst is accepted deliberately.
+ *
+ * The poke badges (nudge_nudge / poke_magnet) are NOT listed here and must not
+ * be: each one marks a real act at a real moment. They also need no suppression
+ * to roll out quietly, which is a property of the data rather than a policy.
+ * `poke_tallies` shipped empty and migration 0120 backfilled nothing — the old
+ * `pokes` buffer was pruned to 6 rows per channel+recipient, so there was no
+ * history left to reconstruct from. Every account therefore computes 0/0 on
+ * deploy, the lowest rung has goal 1, and nothing is earned, so nothing reaches
+ * the ledger and no push is sent to anybody. The first person to poke someone
+ * after deploy earns Nudge Nudge for actually poking someone.
  */
 const NEVER_NOTIFY_IDS = new Set<string>(['founding_member']);
 

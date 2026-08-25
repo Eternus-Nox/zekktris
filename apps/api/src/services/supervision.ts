@@ -173,6 +173,9 @@ export async function acceptLink(childId: bigint, parentId: bigint) {
   });
   // Make sure a restrictions row exists with defaults.
   await ensureRestrictions(childId);
+  // Activation changes the child's effective restrictions (an unlinked minor
+  // goes from STRICT lockdown to the guardian's row); push it now.
+  await notifySupervisionChanged(childId);
 }
 
 /**
@@ -293,6 +296,8 @@ export async function acceptChildInitiatedLink(parentId: bigint, childId: bigint
     if (updated.length === 0) throw errors.badRequest('No pending request from that account');
   });
   await ensureRestrictions(childId);
+  // Same activation transition as acceptLink, parent-accepted direction.
+  await notifySupervisionChanged(childId);
 }
 
 /**
@@ -341,6 +346,14 @@ export async function removeLinkBetween(actorId: bigint, otherId: bigint) {
         eq(schema.parentChildLinks.childId, link.childId),
       ),
     );
+
+  // Ending a link flips the child's effective restrictions the other way — an
+  // adult child is released outright, a 13–17 child drops to the unlinked
+  // STRICT profile. Either way their device must stop using the old set now.
+  // Audience is the child even when the PARENT removed the link (they're the
+  // subject of the state that changed); the removing parent already has the
+  // result in their own response.
+  await notifySupervisionChanged(link.childId);
 }
 
 export async function ensureRestrictions(childId: bigint) {
@@ -522,20 +535,7 @@ export async function supervisionSummary(userId: bigint) {
     // The current user's own restrictions, if they're a supervised
     // child (null otherwise). Lets the client disable restricted
     // actions and offer the "ask your parent" path proactively.
-    restrictions: myRestrictions
-      ? {
-          canAddFriends: myRestrictions.canAddFriends,
-          canRemoveFriends: myRestrictions.canRemoveFriends,
-          allowVoice: myRestrictions.allowVoice,
-          allowVideo: myRestrictions.allowVideo,
-          allowStream: myRestrictions.allowStream,
-          allowCreateGuild: myRestrictions.allowCreateGuild,
-          allowJoinGuilds: myRestrictions.allowJoinGuilds,
-          allowMessaging: myRestrictions.allowMessaging,
-          dmPolicy: myRestrictions.dmPolicy,
-          filterProfanity: myRestrictions.filterProfanity,
-        }
-      : null,
+    restrictions: myRestrictions ? toRestrictionsDTO(myRestrictions) : null,
     // Age-driven supervision state for the current user.
     isMinor: minor,
     graceActive,
@@ -679,14 +679,16 @@ export async function dmBlockedBySupervision(a: bigint, b: bigint): Promise<bool
   return false;
 }
 
-/** Parent-facing read of a child's restrictions (defaults if no row yet). */
-export async function getRestrictions(childId: bigint) {
-  const [row] = await db
-    .select()
-    .from(schema.childRestrictions)
-    .where(eq(schema.childRestrictions.childId, childId))
-    .limit(1);
-  const r = row ?? { childId, ...DEFAULT_RESTRICTIONS, updatedAt: new Date() };
+/**
+ * Explicit field pick for the wire — NOT a spread of the row. Every reader
+ * (parent GET, the child's own summary, and the FAMILY_SUPERVISION_UPDATE
+ * frame) goes through here so a column added to child_restrictions can't
+ * silently reach one surface and not the others, and so the three shapes
+ * can't drift apart.
+ */
+type RestrictionRowLike = Omit<typeof schema.childRestrictions.$inferSelect, 'childId' | 'updatedAt'>;
+
+function toRestrictionsDTO(r: RestrictionRowLike) {
   return {
     canAddFriends: r.canAddFriends,
     canRemoveFriends: r.canRemoveFriends,
@@ -699,6 +701,67 @@ export async function getRestrictions(childId: bigint) {
     dmPolicy: r.dmPolicy,
     filterProfanity: r.filterProfanity,
   };
+}
+
+/** Parent-facing read of a child's restrictions (defaults if no row yet). */
+export async function getRestrictions(childId: bigint) {
+  const [row] = await db
+    .select()
+    .from(schema.childRestrictions)
+    .where(eq(schema.childRestrictions.childId, childId))
+    .limit(1);
+  return toRestrictionsDTO(row ?? { childId, ...DEFAULT_RESTRICTIONS, updatedAt: new Date() });
+}
+
+/**
+ * The subject's OWN supervision snapshot: the effective restrictions plus
+ * the age/link state their client gates on. Everything here is already
+ * visible to that user via GET /family/me, and NOTHING here identifies a
+ * guardian — this DTO is what we push to the child, so it must never carry
+ * parent-side data.
+ */
+export async function supervisionStateFor(userId: bigint) {
+  const [effective, parents, blockedGuildIds, minor] = await Promise.all([
+    getEffectiveRestrictions(userId),
+    getActiveParentIds(userId),
+    listBlockedGuildIds(userId),
+    isMinorUser(userId),
+  ]);
+  return {
+    restrictions: effective ? toRestrictionsDTO(effective) : null,
+    supervised: parents.length > 0,
+    isMinor: minor,
+    // Mirrors supervisionSummary: an unlinked 13–17 account is locked down.
+    restrictedHeavily: minor && parents.length === 0,
+    blockedGuildIds,
+  };
+}
+
+/**
+ * Push the subject's supervision state to their own connections.
+ *
+ * Call this after ANY write that changes what that user may do: a guardian
+ * editing restrictions, a link activating or ending, a server being
+ * blocked/unblocked, the 18+ auto-release. Without it a connected device
+ * keeps enforcing the restrictions it loaded at startup — a parent lifting
+ * a DM/messaging restriction did nothing until the child cold-started the
+ * app, which is the wrong latency for a parental control.
+ *
+ * Audience is the subject alone, so the guardian's own Family view is not
+ * touched (and the child learns nothing new about the guardian).
+ *
+ * Best-effort: the write has already committed, so a bus/serialization
+ * failure must not turn a successful mutation into an error response.
+ */
+export async function notifySupervisionChanged(userId: bigint): Promise<void> {
+  try {
+    dispatch.familySupervisionUpdate({
+      childId: userId,
+      state: await supervisionStateFor(userId),
+    });
+  } catch {
+    /* best-effort */
+  }
 }
 
 export type RestrictionPatch = Partial<{
@@ -723,6 +786,8 @@ export async function setRestrictions(parentId: bigint, childId: bigint, patch: 
       target: schema.childRestrictions.childId,
       set: { ...patch, updatedAt: new Date() },
     });
+  // Live-apply on the child's devices instead of at their next cold start.
+  await notifySupervisionChanged(childId);
   return getRestrictions(childId);
 }
 
@@ -758,6 +823,9 @@ export async function setGuildBlocked(
         ),
       );
   }
+  // blockedGuildIds rides the same snapshot, so a block/unblock reaches the
+  // child's UI as fast as a restriction change does.
+  await notifySupervisionChanged(childId);
 }
 
 /** Enforcement: is this guild off-limits for this (supervised) user? */

@@ -15,6 +15,7 @@ import { ConfirmEmailPage } from './app/ConfirmEmailPage';
 import { VerifyEmailPage } from './app/VerifyEmail';
 import { InvitePage } from './app/InvitePage';
 import { TermsPage, PrivacyPage } from './app/LegalPage';
+import { ApproveDevicePage } from './app/DeviceApproval';
 import { AppStateProvider } from './state/AppState';
 import { TypingProvider } from './state/Typing';
 import { ToastProvider } from './state/Toasts';
@@ -84,6 +85,11 @@ export function App() {
               <Routes>
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/login/device" element={<DeviceLoginPage />} />
+                {/* Where the QR shown by /login/device points. Its own page
+                    rather than a Shell pane: it is a security decision that
+                    arrives out-of-band from a camera scan, and it should not
+                    land three clicks deep in Settings. */}
+                <Route path="/approve-device" element={<ApproveDevicePage />} />
                 <Route path="/register" element={<RegisterPage />} />
                 <Route path="/forgot-password" element={<ForgotPasswordPage />} />
                 <Route path="/reset-password" element={<ResetPasswordPage />} />

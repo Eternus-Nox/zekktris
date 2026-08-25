@@ -36,7 +36,18 @@
       "cache": false
     },
     "test": {
-      "cache": false
+      "cache": false,
+      "env": [
+        "DATABASE_URL",
+        "REDIS_URL",
+        "NODE_ENV",
+        "UPLOAD_DIR",
+        "JWT_SECRET",
+        "JWT_REFRESH_SECRET",
+        "LIVEKIT_API_KEY",
+        "LIVEKIT_API_SECRET",
+        "LIVEKIT_WS_URL"
+      ]
     }
   }
 }

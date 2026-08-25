@@ -57,6 +57,27 @@ export const users = pgTable(
     /** Last status the user actively set; what others see when online. */
     status: userStatusEnum('status').notNull().default('offline'),
     customStatus: text('custom_status'),
+    /**
+     * "Last online" — the last moment we OBSERVED this user holding a live
+     * gateway connection while visible. Stamped on gateway connect
+     * (IDENTIFY / RESUME) and on the final disconnect, never on token
+     * refresh: `sessions.lastUsedAt` keeps advancing while a phone sits idle
+     * in a pocket, so it answers "when did a token last refresh", not "when
+     * was this person last here". (admin.ts still uses that aggregate for
+     * its own account-activity column; this one is presence.)
+     *
+     * PRIVACY — must NOT advance while the user's status is 'invisible'.
+     * Invisible reads as plain 'offline' everywhere; if this column kept
+     * ticking, an observer could diff it and infer "they're online right
+     * now", which defeats the whole point of Invisible. Every writer is
+     * gated on status <> 'invisible', so the value FREEZES at the last
+     * visible moment and thaws only when they return non-invisible.
+     *
+     * NULL = never observed online since the column shipped (no backfill —
+     * seeding it from session activity would bake in exactly the
+     * token-refresh signal this column exists to avoid).
+     */
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
     /** Instance-level admin (server owner / operator), not per-guild. */
     isAdmin: boolean('is_admin').notNull().default(false),
     /** Instance-level MODERATOR — a scoped staff tier below administrator:

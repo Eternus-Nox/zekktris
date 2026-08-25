@@ -122,9 +122,22 @@
 		@cdnfile file
 		handle @cdnfile {
 			header Cache-Control "public, max-age=31536000, immutable"
-			@cdndanger path_regexp \.(html?|xht|xhtml|svg|svgz|xml|js|mjs|css)$
-			header @cdndanger Content-Disposition "attachment"
-			header @cdndanger Content-Type "application/octet-stream"
+			# DEFAULT-DENY, mirroring the API's INLINE_SAFE_MIME allow-list in
+			# routes/cdn.ts. This was previously a deny-list of dangerous
+			# extensions, which had two holes the Node handler does not:
+			#   1. Caddy's path_regexp is case-SENSITIVE, so `payload.HTML` never
+			#      matched `\.html?$` — while Go's mime.TypeByExtension IS
+			#      case-insensitive and still resolved it to text/html, serving
+			#      attacker HTML inline on the app's own origin (stored XSS).
+			#   2. A file with no extension matched nothing at all.
+			# Neither is theoretical: sanitizeFilename (services/uploads.ts) keeps
+			# the client-supplied name verbatim and neither requires nor appends
+			# an extension, so the on-disk name is attacker-controlled through
+			# every upload surface. Inverting to an allow-list closes both —
+			# anything not positively recognised as inline-safe media downloads.
+			@cdnunsafe not path_regexp (?i)\.(png|jpe?g|gif|webp|avif|mp3|m4a|aac|flac|wav|ogg|oga|opus|mp4|m4v|webm|mov|pdf|txt)$
+			header @cdnunsafe Content-Disposition "attachment"
+			header @cdnunsafe Content-Type "application/octet-stream"
 			file_server
 		}
 		# Not on disk → let the API handle it (current behavior).

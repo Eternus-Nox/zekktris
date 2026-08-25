@@ -14,7 +14,7 @@ import { Hono } from 'hono';
 import { validate } from '../lib/validate';
 import { RateLimiter } from '../lib/rateLimit';
 import { z } from 'zod';
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, isNotNull, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors, AppError } from '../errors';
 import { log } from '../log';
@@ -22,9 +22,12 @@ import {
   requireAuth,
   requireUserId,
   requireSessionId,
+  requireHumanSession,
 } from '../auth/middleware';
 import { hashPassword, verifyPassword } from '../auth/passwords';
 import { consumeStepUp, assertStepUpPassword } from '../auth/stepUp';
+import { registry } from '../gateway/registry';
+import { clearRefreshCookie } from '../auth/cookies';
 import {
   listUserSessions,
   getSession,
@@ -590,6 +593,11 @@ usersRouter.patch(
       .where(eq(schema.users.id, userId))
       .returning();
     if (!user) throw errors.internal('Date of birth update returned no row');
+    // DOB is an input to getEffectiveRestrictions, so this write can move the
+    // account between adult / supervised-minor / unlinked-STRICT. The caller's
+    // own tab learns that from the response, but their OTHER connected devices
+    // would keep the pre-change gates until a cold start.
+    await supervision.notifySupervisionChanged(userId);
     const subs = await import('../services/subscriptions');
     const membership = await subs.getEffectiveSubscription(userId);
     return c.json({ user: toSelfUser(user, membership) });
@@ -1611,8 +1619,22 @@ usersRouter.get('/@me/relationships', requireAuth, async (c) => {
         username: r.target.username,
         displayName: r.target.displayName,
         avatarUrl: r.target.avatarUrl,
-        status: r.target.status,
-        customStatus: r.target.customStatus,
+        // 'invisible' is a private setting — it reads as plain 'offline' to
+        // everyone else (same mask toPublicUser and every presence broadcast
+        // apply). Emitting it raw here handed any friend the one bit that
+        // Invisible exists to hide: "offline in the UI, but actually
+        // connected right now."
+        status: r.target.status === 'invisible' ? 'offline' : r.target.status,
+        customStatus: r.target.status === 'invisible' ? null : r.target.customStatus,
+        // "Last online" — FRIENDS ONLY. Someone with a pending request in
+        // either direction, or someone you've blocked, has no presence
+        // relationship with you and gets null. (Invisible needs no extra
+        // mask here: the column stops advancing the moment its owner goes
+        // invisible, so it already reads as their last visible moment.)
+        lastSeenAt:
+          r.type === 'friend' && r.target.lastSeenAt
+            ? r.target.lastSeenAt.toISOString()
+            : null,
       },
     })),
   });
@@ -2678,5 +2700,130 @@ usersRouter.delete(
     const bots = await import('../services/bots');
     await bots.deleteBotCommand(BigInt(commandId), ownerId);
     return c.json({ ok: true });
+  },
+);
+
+
+// ───────────────────────────────────────────────────────────────────────────
+// DELETE /users/@me — self-serve account deletion
+// ───────────────────────────────────────────────────────────────────────────
+//
+// The published Terms and Privacy Policy both state that a user can "delete
+// your account at any time from Settings". Until this route existed that was
+// simply untrue: the ONLY deletion path was DELETE /admin/users/:id, which
+// explicitly refuses to act on the caller's own account ("You cannot delete
+// your own account from here"). For a consumer service that stores minors'
+// data, a policy promising a right the software does not implement is the
+// kind of gap that matters, so this closes it.
+//
+// Deliberately mirrors the admin path's mechanics (owner check → orphan-guild
+// purge → revoke + disconnect → hard delete) so there is exactly one deletion
+// semantic, not two that drift.
+//
+// Gated by step-up re-auth: the current password, plus a TOTP code when 2FA is
+// enabled. Account deletion is irreversible and destroys the user's messages'
+// authorship, so a transient stolen access token must not be enough — the same
+// reasoning that already guards passkey enrolment and 2FA changes.
+const deleteAccountBody = z.object({
+  password: z.string().min(1),
+  // Required only when the account has TOTP armed.
+  totpCode: z.string().trim().min(6).max(10).optional(),
+});
+
+usersRouter.delete(
+  '/@me',
+  requireAuth,
+  // Bots authenticate with a static token and have no password to step up
+  // with; account deletion is a human action on a human account.
+  requireHumanSession,
+  validate('json', deleteAccountBody),
+  async (c) => {
+    const userId = requireUserId(c);
+    const { password, totpCode } = c.req.valid('json');
+
+    // Step 1 — prove possession of the password. Consumes the shared per-user
+    // step-up budget, so this can't be used to brute-force it.
+    await assertStepUpPassword(userId, password);
+
+    // Step 2 — and the second factor, when armed. Checked AFTER the password
+    // so a wrong password never reveals whether 2FA is on.
+    const [me] = await db
+      .select({
+        totpEnabled: schema.users.totpEnabled,
+        username: schema.users.username,
+      })
+      .from(schema.users)
+      .where(and(eq(schema.users.id, userId), isNull(schema.users.deletedAt)))
+      .limit(1);
+    if (!me) throw errors.notFound('User');
+    if (me.totpEnabled) {
+      if (!totpCode) throw errors.badRequest('A two-factor code is required');
+      // verifyForLogin also accepts a RECOVERY code, which is what we want:
+      // someone who has lost their authenticator must still be able to close
+      // their account rather than being locked into it.
+      const twoFactor = await import('../services/twoFactor');
+      const ok = await twoFactor.verifyForLogin({ userId, code: totpCode });
+      if (!ok) throw errors.invalidCredentials();
+    }
+
+    // Step 3 — owned servers block deletion, because guilds.owner_id is
+    // ON DELETE RESTRICT. Surface it as a clear instruction rather than a raw
+    // FK violation. Only ACTIVE guilds block: one the user already deleted is
+    // gone from their perspective and shouldn't trap their account.
+    const ownedActive = await db
+      .select({ id: schema.guilds.id })
+      .from(schema.guilds)
+      .where(and(eq(schema.guilds.ownerId, userId), isNull(schema.guilds.deletedAt)))
+      .limit(1);
+    if (ownedActive.length > 0) {
+      throw errors.badRequest(
+        'You own one or more servers. Transfer ownership or delete those servers first.',
+      );
+    }
+
+    // Soft-deleted guilds still hold an owner_id RESTRICT reference — purge
+    // them so the account delete can proceed. Child rows cascade off guilds.id.
+    await db
+      .delete(schema.guilds)
+      .where(and(eq(schema.guilds.ownerId, userId), isNotNull(schema.guilds.deletedAt)));
+
+    // Step 4 — boot every session and live socket before the row disappears.
+    await revokeAllUserSessions(userId);
+    for (const conn of registry.byUserId(userId)) {
+      try {
+        conn.close(4004, 'account deleted');
+      } catch {
+        // already closing
+      }
+    }
+
+    const deleted = await db
+      .delete(schema.users)
+      .where(eq(schema.users.id, userId))
+      .returning({ id: schema.users.id });
+    if (deleted.length === 0) throw errors.notFound('User');
+
+    // Audit trail. The user row is gone so user_id can't reference it — the
+    // who lives in the detail text, matching the admin delete path.
+    try {
+      const { logEvent } = await import('../services/security');
+      await logEvent({
+        kind: 'user_self_delete',
+        userId: null,
+        actorId: null,
+        guildId: null,
+        channelId: null,
+        detail: `Account @${me.username} (${userId}) deleted by its owner`,
+      });
+    } catch (err) {
+      // Never fail the deletion because the audit write failed — it already
+      // happened.
+      log.error('self-delete audit log failed', { err });
+    }
+
+    // The refresh cookie now points at a revoked session on a deleted user;
+    // clear it so the browser doesn't retry with a dead credential.
+    clearRefreshCookie(c);
+    return c.json({ deleted: true });
   },
 );

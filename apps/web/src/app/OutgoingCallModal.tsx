@@ -8,8 +8,8 @@
  *
  * UX:
  *   - Large callee avatar (96px) with alien-pulse ring.
- *   - "Calling…" subtitle with an animated dot pulse.
- *   - One large red Hangup button (no Accept — the caller initiated
+ *   - Quiet grey "Calling…" subtitle (no pulsing dot — iOS parity).
+ *   - One large red Cancel button (no Accept — the caller initiated
  *     the call; the only positive action here is canceling it).
  *
  * The modal automatically goes away the moment the partner answers
@@ -131,13 +131,9 @@ export function OutgoingCallModal({ channel }: { channel: Channel }) {
             <div className="text-lg font-semibold text-ink-1 max-w-full break-words">
               {calleeName}
             </div>
-            <div className="text-sm text-amber-300/90 flex items-center justify-center gap-1.5 mt-1">
-              {/* Two-stage ping dot: outer fades, inner stays. Same
-                  visual idiom as the old strip. */}
-              <span className="relative flex h-2 w-2 shrink-0">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-400" />
-              </span>
+            {/* Quiet grey "Calling…" with no pulsing dot — matches iOS
+                (Voice.swift OutgoingCallView: 14pt Theme.ink3, no dot). */}
+            <div className="text-sm text-ink-3 flex items-center justify-center gap-1.5 mt-1">
               <span>Calling…</span>
             </div>
           </div>
@@ -147,10 +143,10 @@ export function OutgoingCallModal({ channel }: { channel: Channel }) {
             onClick={() => void hangup()}
             disabled={busy}
             className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-full bg-red-500/15 hover:bg-red-500/25 border border-red-500/40 text-red-300 text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-wait"
-            aria-label="Hang up"
+            aria-label="Cancel"
           >
             <PhoneOff size={16} />
-            <span>{busy ? 'Hanging up…' : 'Hang up'}</span>
+            <span>{busy ? 'Cancelling…' : 'Cancel'}</span>
           </button>
         </div>
       </div>

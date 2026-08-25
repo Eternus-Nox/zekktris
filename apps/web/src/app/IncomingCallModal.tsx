@@ -11,7 +11,7 @@
  *     ring — the same visual cue used elsewhere for "active voice
  *     transmission."
  *   - Display name + "Incoming call…" subtitle.
- *   - Two large buttons: green Answer (Phone) and red Decline (PhoneOff).
+ *   - Two large buttons: green Accept (Phone) and red Decline (PhoneOff).
  *   - Backdrop click is NOT a dismiss — accidental backdrop taps
  *     shouldn't drop a call. Use Decline explicitly.
  *   - Esc-to-decline IS supported as a keyboard escape hatch.
@@ -408,10 +408,10 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
               onClick={() => void accept()}
               disabled={busy}
               className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-full bg-green-500/15 hover:bg-green-500/25 border border-green-500/40 text-green-300 text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-wait"
-              aria-label="Answer call"
+              aria-label="Accept call"
             >
               <Phone size={16} />
-              <span>{busy ? 'Connecting…' : 'Answer'}</span>
+              <span>{busy ? 'Connecting…' : 'Accept'}</span>
             </button>
           </div>
         </div>

@@ -39,6 +39,22 @@ async function main(): Promise<void> {
     log.error('bootstrap admin task failed', { err });
   });
 
+  // First-install seed of the instance word filter. wordFilterEnabled
+  // defaults on, but the list itself was only ever populated by an admin
+  // pressing a button in the Security tab — so until then the identity
+  // profanity bar (usernames, display names, nicknames, clan tags) and the
+  // AutoMod word tier matched nothing at all. No-ops unless the table is
+  // completely empty. Same error isolation as the admin bootstrap above: a
+  // seeding failure is logged, never fatal.
+  await import('./services/security')
+    .then((m) => m.seedPresetWordsIfEmpty())
+    .then((n) => {
+      if (n > 0) log.info('seeded default banned-words list', { words: n });
+    })
+    .catch((err: unknown) => {
+      log.error('banned-words seed failed', { err });
+    });
+
   const app = createApp();
 
   const server: ServerType = serve({
@@ -655,14 +671,18 @@ async function main(): Promise<void> {
 
   // ── Media-retention sweep (opt-in) ─────────────────────────────────────
   //
-  // Hard-deletes message attachments older than ATTACHMENT_RETENTION_DAYS to
-  // cap monotonic media growth. DISABLED by default (days=0). When enabled it
-  // starts in DRY-RUN (logs what it WOULD reclaim, deletes nothing) unless
-  // ATTACHMENT_RETENTION_DRY_RUN=false. Excludes pinned + E2EE. First run 6min
-  // after boot, then daily.
+  // Ages out the FULL-SIZE bytes of attachments older than
+  // ATTACHMENT_RETENTION_DAYS to cap monotonic media growth. Messages, message
+  // text, attachment rows and thumbnails all survive — only the original
+  // object goes. ENABLED by default (days=90) and it really deletes
+  // (ATTACHMENT_RETENTION_DRY_RUN defaults false); set DRY_RUN=true for one
+  // cycle to preview instead. Excludes pinned messages, thumbnail
+  // rows, and (unless ATTACHMENT_RETENTION_REAP_UNTHUMBED=true) anything with
+  // no thumbnail to fall back on. First run 6min after boot, then daily.
   let retentionTimer: ReturnType<typeof setInterval> | null = null;
   if (env.ATTACHMENT_RETENTION_DAYS > 0) {
     const dryRun = env.ATTACHMENT_RETENTION_DRY_RUN;
+    const reapUnthumbed = env.ATTACHMENT_RETENTION_REAP_UNTHUMBED;
     const runRetention = () =>
       void (async () => {
         try {
@@ -670,13 +690,22 @@ async function main(): Promise<void> {
           const r = await runAttachmentRetentionSweep({
             days: env.ATTACHMENT_RETENTION_DAYS,
             dryRun,
+            reapUnthumbed,
           });
           if (r.candidates > 0) {
             log.info(
               dryRun
                 ? 'attachment retention (DRY RUN — would reclaim)'
                 : 'attachment retention sweep',
-              { candidates: r.candidates, deleted: r.deleted, mb: Math.round(r.bytes / 1048576) },
+              {
+                candidates: r.candidates,
+                expired: r.expired,
+                mb: Math.round(r.bytes / 1048576),
+                // What retention did NOT reach, and why: no thumbnail means
+                // the original is the only copy (see REAP_UNTHUMBED).
+                skippedNoThumbnail: r.skippedNoThumbnail,
+                skippedMb: Math.round(r.skippedNoThumbnailBytes / 1048576),
+              },
             );
           }
         } catch (err) {
@@ -688,6 +717,7 @@ async function main(): Promise<void> {
     log.info('attachment retention sweep scheduled', {
       days: env.ATTACHMENT_RETENTION_DAYS,
       dryRun,
+      reapUnthumbed,
     });
   } else {
     log.info('attachment retention sweep disabled (ATTACHMENT_RETENTION_DAYS=0)');

@@ -9,12 +9,25 @@
  * For v1 we don't show video/audio inline — they'd require us to handle
  * playback controls correctly across formats, which is its own pass.
  * Other types just get the file-card treatment.
+ *
+ * Media retention: when the server has aged out an attachment's full-size
+ * original (`blobExpiredAt` set), `url` is still populated but no longer
+ * resolves. Every branch below therefore gates on `isBlobExpired` BEFORE
+ * touching `url`: the kept thumbnail renders with a small badge, the tile
+ * stops being a button, and the attachment is dropped from the lightbox
+ * set entirely so no click can reach a dead path. See lib/mediaRetention.
  */
 
 import { useEffect, useState } from 'react';
 import type { Attachment } from '@zekktris/client';
 import { Lock, Paperclip } from '../lib/icons';
 import { decryptedMediaURL, getKeyVersion, subscribeToKeyChanges } from '../lib/e2ee';
+import {
+  EXPIRED_TITLE,
+  ExpiredBadge,
+  ExpiredMediaCard,
+  isBlobExpired,
+} from '../lib/mediaRetention';
 import { ImageLightbox } from './ImageLightbox';
 import { VoiceMessagePlayer } from './VoiceMessagePlayer';
 
@@ -70,6 +83,10 @@ export function Attachments({
   const others = plain.filter(
     (a) => !IMAGE_TYPES.test(a.contentType) && !VIDEO_TYPES.test(a.contentType),
   );
+  // The lightbox opens the FULL-SIZE original, so images whose original has
+  // aged out are excluded from the set (and their tiles aren't buttons).
+  // Indices below are into THIS array, not `images`.
+  const openable = images.filter((a) => !isBlobExpired(a));
 
   return (
     <div className="mt-1 space-y-1">
@@ -92,44 +109,91 @@ export function Attachments({
       )}
       {images.length > 0 && (
         <div className="flex flex-wrap gap-2">
-          {images.map((img, i) => (
-            <button
-              key={img.id}
-              type="button"
-              onClick={() => setLightboxIndex(i)}
-              className="block group/img"
-              title={img.filename}
-              aria-label={`Open ${img.filename}`}
-            >
-              <img
-                // Inline loads the small server thumbnail when present; the
-                // lightbox (below) opens the full image.
-                src={img.thumbnailUrl ?? img.url}
-                alt={img.filename}
-                width={img.width ?? undefined}
-                height={img.height ?? undefined}
-                loading="lazy"
-                decoding="async"
-                className="rounded-md max-w-sm max-h-80 border border-line group-hover/img:border-accent/60 transition-colors object-contain cursor-zoom-in"
-              />
-            </button>
-          ))}
+          {images.map((img) => {
+            if (isBlobExpired(img)) {
+              // Original gone. Render the kept thumbnail, unclickable — the
+              // lightbox would only have the dead `url` to open.
+              return img.thumbnailUrl ? (
+                <span key={img.id} className="relative inline-block" title={EXPIRED_TITLE}>
+                  <img
+                    src={img.thumbnailUrl}
+                    alt={img.filename}
+                    width={img.width ?? undefined}
+                    height={img.height ?? undefined}
+                    loading="lazy"
+                    decoding="async"
+                    className="rounded-md max-w-sm max-h-80 border border-line object-contain"
+                  />
+                  <ExpiredBadge />
+                </span>
+              ) : (
+                // No thumbnail survived either (only reachable when the
+                // operator opted into reaping un-thumbnailed originals).
+                <ExpiredMediaCard
+                  key={img.id}
+                  filename={img.filename}
+                  subtitle={formatSize(img.size)}
+                />
+              );
+            }
+            return (
+              <button
+                key={img.id}
+                type="button"
+                onClick={() => setLightboxIndex(openable.indexOf(img))}
+                className="block group/img"
+                title={img.filename}
+                aria-label={`Open ${img.filename}`}
+              >
+                <img
+                  // Inline loads the small server thumbnail when present; the
+                  // lightbox (below) opens the full image.
+                  src={img.thumbnailUrl ?? img.url}
+                  alt={img.filename}
+                  width={img.width ?? undefined}
+                  height={img.height ?? undefined}
+                  loading="lazy"
+                  decoding="async"
+                  className="rounded-md max-w-sm max-h-80 border border-line group-hover/img:border-accent/60 transition-colors object-contain cursor-zoom-in"
+                />
+              </button>
+            );
+          })}
         </div>
       )}
       {videos.length > 0 && (
         <div className="flex flex-col gap-1">
-          {videos.map((v) => (
-            <video
-              key={v.id}
-              src={v.url}
-              controls
-              // preload="none" + a reserved aspect box: scrolling past a video
-              // no longer fires a metadata range-fetch, and the row height is
-              // stable before/after load (no reflow that jars the virtual list).
-              preload="none"
-              className="rounded-md w-full max-w-sm aspect-video object-contain border border-line bg-black"
-            />
-          ))}
+          {videos.map((v) =>
+            isBlobExpired(v) ? (
+              // Never hand a dead url to <video> — it would 404 on play (or
+              // immediately, on browsers that ignore preload="none").
+              v.thumbnailUrl ? (
+                <span key={v.id} className="relative block w-full max-w-sm" title={EXPIRED_TITLE}>
+                  <img
+                    src={v.thumbnailUrl}
+                    alt={v.filename}
+                    loading="lazy"
+                    decoding="async"
+                    className="rounded-md w-full aspect-video object-contain border border-line bg-black"
+                  />
+                  <ExpiredBadge />
+                </span>
+              ) : (
+                <ExpiredMediaCard key={v.id} filename={v.filename} subtitle={formatSize(v.size)} />
+              )
+            ) : (
+              <video
+                key={v.id}
+                src={v.url}
+                controls
+                // preload="none" + a reserved aspect box: scrolling past a video
+                // no longer fires a metadata range-fetch, and the row height is
+                // stable before/after load (no reflow that jars the virtual list).
+                preload="none"
+                className="rounded-md w-full max-w-sm aspect-video object-contain border border-line bg-black"
+              />
+            ),
+          )}
         </div>
       )}
       {others.length > 0 && (
@@ -141,7 +205,7 @@ export function Attachments({
       )}
       {lightboxIndex !== null && (
         <ImageLightbox
-          images={images.map((img) => ({ src: img.url, filename: img.filename }))}
+          images={openable.map((img) => ({ src: img.url, filename: img.filename }))}
           initialIndex={lightboxIndex}
           onClose={() => setLightboxIndex(null)}
         />
@@ -187,8 +251,10 @@ function EncryptedImageGallery({
   useEffect(() => subscribeToKeyChanges(() => setKeyVersion(getKeyVersion())), []);
 
   // Key the decrypt effect on the concrete URLs (thumb + full, stable across
-  // re-renders) + the channel key version, not the array identity.
-  const urlKey = attachments.map((a) => `${a.thumbnailUrl ?? ''}|${a.url}`).join('||');
+  // re-renders) + expiry + the channel key version, not the array identity.
+  const urlKey = attachments
+    .map((a) => `${a.thumbnailUrl ?? ''}|${a.url}|${a.blobExpiredAt ?? ''}`)
+    .join('||');
   useEffect(() => {
     if (!channelId) {
       setUrls(attachments.map(() => null));
@@ -200,9 +266,13 @@ function EncryptedImageGallery({
       // (keyed by channel+url, invalidated on key change) — do NOT revoke
       // them here, or a sibling/gallery view reusing the same cached URL
       // would break. Inline loads the THUMBNAIL when present (tiny download +
-      // decrypt); falls back to the full image for old messages.
+      // decrypt); falls back to the full image for old messages — but NOT
+      // when the original has aged out, since that fetch would 404.
       const out = await Promise.all(
-        attachments.map((a) => decryptedMediaURL(a.thumbnailUrl ?? a.url, channelId)),
+        attachments.map((a) => {
+          const src = a.thumbnailUrl ?? (isBlobExpired(a) ? null : a.url);
+          return src ? decryptedMediaURL(src, channelId) : Promise.resolve(null);
+        }),
       );
       if (cancelled) return;
       setUrls(out);
@@ -219,7 +289,13 @@ function EncryptedImageGallery({
     if (lightboxIndex === null || !channelId) return;
     let cancelled = false;
     void (async () => {
-      const out = await Promise.all(attachments.map((a) => decryptedMediaURL(a.url, channelId)));
+      const out = await Promise.all(
+        // Expired originals are skipped — they're not in the lightbox set
+        // either, so there is nothing to decrypt and the fetch would 404.
+        attachments.map((a) =>
+          isBlobExpired(a) ? Promise.resolve(null) : decryptedMediaURL(a.url, channelId),
+        ),
+      );
       if (!cancelled) setFullUrls(out);
     })();
     return () => {
@@ -228,9 +304,11 @@ function EncryptedImageGallery({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lightboxIndex, urlKey, channelId, keyVersion]);
 
-  // The lightbox set is the successfully-decrypted images (with real names).
+  // The lightbox set is the successfully-decrypted images (with real names)
+  // whose full-size original still exists — it opens `a.url`, so an expired
+  // attachment must never make it in.
   const ready = attachments
-    .map((a, i) => ({ a, url: urls[i] }))
+    .map((a, i) => ({ a, url: isBlobExpired(a) ? null : urls[i] }))
     .filter((x): x is { a: Attachment; url: string } => !!x.url);
 
   return (
@@ -242,6 +320,40 @@ function EncryptedImageGallery({
           // Reserve the exact slot up front (when dims are known) so decrypt
           // doesn't shove the rest of the conversation.
           const slot = encSlotStyle(a);
+          if (isBlobExpired(a)) {
+            // The kept thumbnail decrypts exactly as before (own row, own
+            // IV, own key lookup) — it just isn't clickable any more.
+            if (url) {
+              return (
+                <span key={a.id} className="relative inline-block" title={EXPIRED_TITLE}>
+                  <img
+                    src={url}
+                    alt={realName}
+                    loading="lazy"
+                    decoding="async"
+                    style={slot}
+                    className="rounded-md max-w-sm max-h-80 border border-line object-contain"
+                  />
+                  <ExpiredBadge />
+                </span>
+              );
+            }
+            // Still decrypting the preview → hold the slot; no preview at
+            // all → say so rather than spinning forever on nothing.
+            return a.thumbnailUrl ? (
+              <span
+                key={a.id}
+                className={`relative rounded-md border border-line bg-bg-2 flex items-center justify-center text-ink-3 ${slot ? '' : 'w-40 h-40'}`}
+                style={slot}
+                title={EXPIRED_TITLE}
+              >
+                <Lock size={16} />
+                <ExpiredBadge />
+              </span>
+            ) : (
+              <ExpiredMediaCard key={a.id} filename={realName} subtitle={formatSize(a.size)} />
+            );
+          }
           if (!url) {
             return (
               <span
@@ -296,6 +408,16 @@ function EncryptedImageGallery({
 }
 
 function FileCard({ attachment }: { attachment: Attachment }) {
+  if (isBlobExpired(attachment)) {
+    // Downloading would 404 — drop the link entirely rather than offer it.
+    return (
+      <ExpiredMediaCard
+        filename={attachment.filename}
+        subtitle={formatSize(attachment.size)}
+        className="max-w-md"
+      />
+    );
+  }
   return (
     <a
       href={attachment.url}
@@ -350,6 +472,10 @@ function EncryptedAttachment({
   const realName = attachment.filename.replace(/\.zke$/, '');
   const looksImage = /\.(png|jpe?g|gif|webp|avif)$/i.test(realName);
   const looksVideo = VIDEO_EXT.test(realName);
+  // Server-side retention removed the full-size original. `attachment.url`
+  // still reads like a valid path but no longer resolves, so every fetch
+  // below has to fall back to the (kept) thumbnail or to nothing at all.
+  const expired = isBlobExpired(attachment);
 
   useEffect(() => {
     let cancelled = false;
@@ -358,17 +484,29 @@ function EncryptedAttachment({
         setState('locked');
         return;
       }
+      // Cached + owned by the shared decrypted-media cache — do not revoke.
+      // Images load the small thumbnail inline when present; the lightbox
+      // decrypts the full image on open (see below). Videos use the full url.
+      // Once the original has expired the thumbnail is the ONLY thing we may
+      // fetch, whatever the media type — and if there isn't one, nothing.
+      const inlineSrc = expired
+        ? attachment.thumbnailUrl
+        : looksImage && attachment.thumbnailUrl
+          ? attachment.thumbnailUrl
+          : attachment.url;
+      if (!inlineSrc) {
+        setObjectUrl(null);
+        setState('failed');
+        return;
+      }
       setState('loading');
       try {
-        // Cached + owned by the shared decrypted-media cache — do not revoke.
-        // Images load the small thumbnail inline when present; the lightbox
-        // decrypts the full image on open (see below). Videos use the full url.
-        const inlineSrc =
-          looksImage && attachment.thumbnailUrl ? attachment.thumbnailUrl : attachment.url;
         const url = await decryptedMediaURL(
           inlineSrc,
           channelId,
-          looksVideo ? videoMimeFromName(realName) : undefined,
+          // The thumbnail is an image even when the attachment is a video —
+          // only tag the mime when we're actually fetching the video itself.
+          !expired && looksVideo ? videoMimeFromName(realName) : undefined,
         );
         if (cancelled) return;
         if (!url) {
@@ -384,11 +522,21 @@ function EncryptedAttachment({
     return () => {
       cancelled = true;
     };
-  }, [attachment.url, attachment.thumbnailUrl, channelId, looksImage, looksVideo, realName, keyVersion]);
+  }, [
+    attachment.url,
+    attachment.thumbnailUrl,
+    channelId,
+    expired,
+    looksImage,
+    looksVideo,
+    realName,
+    keyVersion,
+  ]);
 
   // Decrypt the FULL image only when the lightbox opens (inline is the thumb).
+  // Never runs for an expired original — that lightbox is never opened.
   useEffect(() => {
-    if (!lightboxOpen || !channelId || !looksImage || !attachment.thumbnailUrl) return;
+    if (!lightboxOpen || !channelId || !looksImage || !attachment.thumbnailUrl || expired) return;
     let cancelled = false;
     void (async () => {
       const url = await decryptedMediaURL(attachment.url, channelId);
@@ -397,7 +545,50 @@ function EncryptedAttachment({
     return () => {
       cancelled = true;
     };
-  }, [lightboxOpen, attachment.url, attachment.thumbnailUrl, channelId, looksImage, keyVersion]);
+  }, [
+    lightboxOpen,
+    attachment.url,
+    attachment.thumbnailUrl,
+    channelId,
+    expired,
+    looksImage,
+    keyVersion,
+  ]);
+
+  // Expired original — decide BEFORE the image/video branches below, which
+  // would otherwise put a decrypted *thumbnail* into a <video> element or
+  // wire a lightbox onto bytes that no longer exist.
+  if (expired) {
+    if (state === 'ready' && objectUrl) {
+      return (
+        <span className="relative inline-block" title={EXPIRED_TITLE}>
+          <img
+            src={objectUrl}
+            alt={realName}
+            loading="lazy"
+            decoding="async"
+            style={encSlotStyle(attachment, 320, 280)}
+            className="max-w-[320px] max-h-[280px] rounded-lg border border-line object-contain"
+          />
+          <ExpiredBadge />
+        </span>
+      );
+    }
+    if (state === 'loading' && attachment.thumbnailUrl) {
+      // Preview still decrypting — hold the slot rather than flashing the
+      // "no preview" card and then replacing it.
+      return (
+        <span
+          className="relative inline-flex items-center justify-center rounded-lg border border-line bg-bg-2 text-ink-3 w-40 h-40"
+          title={EXPIRED_TITLE}
+        >
+          <Lock size={16} />
+          <ExpiredBadge />
+        </span>
+      );
+    }
+    return <ExpiredMediaCard filename={realName} subtitle={formatSize(attachment.size)} />;
+  }
 
   if (state === 'ready' && objectUrl && looksImage) {
     // No per-image E2EE lock — like iOS, the decrypted image shows no badge;

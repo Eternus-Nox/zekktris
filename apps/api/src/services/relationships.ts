@@ -23,7 +23,7 @@
 
 import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
-import { errors } from '../errors';
+import { errors, AppError } from '../errors';
 
 type RelType = 'outgoing_request' | 'incoming_request' | 'friend' | 'blocked';
 
@@ -220,6 +220,20 @@ export async function acceptFriendRequest(userId: bigint, targetId: bigint): Pro
   if (!existing || existing.type !== 'incoming_request') {
     throw errors.notFound('Friend request');
   }
+  // Parental controls. The SEND path (routes/users.ts) enforced
+  // canAddFriends, but ACCEPT did not — so a supervised child barred from
+  // adding friends could still befriend anyone who requested them first,
+  // which made the restriction meaningless (the child only had to ask the
+  // other party to send the request). Enforced here in the service so every
+  // caller is covered, not just the one route.
+  const supervision = await import('./supervision');
+  const restr = await supervision.getEffectiveRestrictions(userId);
+  if (restr && !restr.canAddFriends) {
+    throw new AppError('FORBIDDEN', 'Adding friends is restricted by your parent', {
+      supervisionRestricted: 'friend',
+      targetUserId: String(targetId),
+    });
+  }
   await db.transaction(async (tx) => {
     // CRITICAL: the UPDATEs include a `type` predicate so we don't
     // overwrite a 'blocked' row that landed between our initial
@@ -411,6 +425,15 @@ export async function listRelationships(userId: bigint) {
         avatarUrl: schema.users.avatarUrl,
         status: schema.users.status,
         customStatus: schema.users.customStatus,
+        /**
+         * "Last online". Selected here (free — the users row is already
+         * joined) but NOT unconditionally serialized: the route emits it
+         * only for `type = 'friend'` rows, so a pending request or a
+         * blocked user never learns when the other party was last around.
+         * The column itself is frozen while its owner is invisible (see
+         * services/presence.ts), so it can't be diffed to unmask them.
+         */
+        lastSeenAt: schema.users.lastSeenAt,
       },
     })
     .from(schema.relationships)

@@ -800,7 +800,7 @@ export function VoiceView({
         className="px-4 h-12 border-b flex items-center gap-2 shrink-0 pl-12 xl:pl-4 pr-12 xl:pr-4"
         style={{ borderBottomColor: 'var(--zk-line-soft)' }}
       >
-        <Volume2 size={18} className="text-accent shrink-0" />
+        <Volume2 size={14} className="text-ink-3 shrink-0" />
         <span className="font-semibold truncate">
           {displayName ?? channel.name ?? '(unnamed)'}
         </span>
@@ -864,7 +864,7 @@ export function VoiceView({
         <ArenaStarfield />
         {participants.length === 0 ? (
           <div className="flex-1 flex items-center justify-center text-ink-3 text-sm">
-            No one's in this voice channel yet.
+            No one else here yet
           </div>
         ) : hasFeatured ? (
           /* Stream present. Featured area fills available height;
@@ -1482,7 +1482,7 @@ const ParticipantTile = memo(function ParticipantTile({
         )}
       </div>
       {!hideName && (
-        <span className="text-[0.7rem] sm:text-sm text-ink-1 truncate max-w-full leading-tight text-center">
+        <span className="text-[0.7rem] sm:text-sm text-white truncate max-w-full leading-tight text-center px-[7px] py-[2px] rounded-full bg-black/55">
           {label}
         </span>
       )}
