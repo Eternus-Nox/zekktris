@@ -2,6 +2,13 @@ package com.zekktris.ui.screens
 
 import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
+import kotlin.math.roundToInt
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -220,7 +227,35 @@ fun ChatScreen(store: AppStore, state: AppState) {
         replyTo = found
     }
 
-    Column(Modifier.fillMaxSize().background(p.bg1)) {
+    // Swipe right anywhere on the chat to close it, following the finger, then
+    // settling open or closed on release.
+    //
+    // Scoped to a HORIZONTAL drag that starts moving rightward, so it cannot
+    // steal the vertical scroll of the message list — awaitHorizontalTouchSlop
+    // only wins the gesture once the pointer has travelled further across than
+    // down, which is what `detectHorizontalDragGestures` gives us.
+    val closeThresholdPx = with(LocalDensity.current) { 96.dp.toPx() }
+    var dragX by remember(channelId) { mutableFloatStateOf(0f) }
+    val dragOffset by animateFloatAsState(dragX, label = "chatSwipe")
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .offset { IntOffset(dragOffset.roundToInt(), 0) }
+            .pointerInput(channelId) {
+                detectHorizontalDragGestures(
+                    onDragEnd = {
+                        if (dragX > closeThresholdPx) store.closeChannel()
+                        dragX = 0f
+                    },
+                    onDragCancel = { dragX = 0f },
+                ) { _, delta ->
+                    // Rightward only, and never drag past the screen edge.
+                    dragX = (dragX + delta).coerceIn(0f, size.width.toFloat())
+                }
+            }
+            .background(p.bg1),
+    ) {
         ChatHeader(
             state, channel,
             onBack = { store.closeChannel() },

@@ -18,6 +18,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Spacer
+import com.zekktris.ui.components.ScreenScaffold
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -108,27 +111,28 @@ fun MembersSheet(store: AppStore, state: AppState, guildId: String, onDismiss: (
         }
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = p.bg2) {
-        Column(Modifier.fillMaxWidth().heightIn(max = 560.dp).padding(bottom = 20.dp)) {
-            Text(
-                "MEMBERS — ${members.size}",
-                color = ZkInk.ink3, fontFamily = ZkSans, fontWeight = FontWeight.Bold, fontSize = 10.sp, letterSpacing = 0.5.sp,
-                modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 4.dp),
-            )
-            if (members.isEmpty()) {
-                Text("Loading members…", color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
-            } else {
-                Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
-                    sections.forEach { sec ->
-                        MemberSectionLabel("${sec.label} — ${sec.members.size}", sec.color)
-                        sec.members.forEach { m ->
-                            MemberRow(
-                                m, statusOf(m),
-                                nameColor = store.memberColorRGB(guildId, m.userId)?.let { roleColorOf(it) },
-                            ) { store.openProfile(m.user) }
-                        }
+    // FULL SCREEN with a back button, not a draggable sheet. A roster is a
+    // destination you read and scroll, not a quick action: the sheet capped it at
+    // 560dp, so on a busy server most of the list sat below the fold behind a
+    // drag handle, and the scroll gesture fought the sheet's own dismiss drag.
+    // ScreenScaffold is the same full-screen idiom the rest of the app uses, so
+    // the back chevron matches every other page.
+    BackHandler(onBack = onDismiss)
+    ScreenScaffold(title = "Members — ${members.size}", onBack = onDismiss) {
+        if (members.isEmpty()) {
+            Text("Loading members…", color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
+        } else {
+            Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
+                sections.forEach { sec ->
+                    MemberSectionLabel("${sec.label} — ${sec.members.size}", sec.color)
+                    sec.members.forEach { m ->
+                        MemberRow(
+                            m, statusOf(m),
+                            nameColor = store.memberColorRGB(guildId, m.userId)?.let { roleColorOf(it) },
+                        ) { store.openProfile(m.user) }
                     }
                 }
+                Spacer(Modifier.height(24.dp))
             }
         }
     }
