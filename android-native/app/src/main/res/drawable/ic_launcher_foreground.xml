@@ -1,8 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive-icon FOREGROUND — the Z sigil, taken verbatim from
+  apps/web/public/icon.svg (the same path iOS's AppIcon renders).
+
+  The old version here was a hand-drawn approximation: a four-point STROKED
+  zigzag ("M40,42 L68,42 L40,66 L68,66") in flat cyan. The real mark is a solid
+  filled path with a diagonal cyan -> violet -> pink gradient, so the launcher
+  icon did not match iOS or the web at all.
+
+  SCALE, and why it is not 1.0: an adaptive icon's canvas is 108dp but the
+  launcher only ever shows roughly the central 72dp — the rest is bled off by the
+  mask and the parallax. On iOS the Z spans 640/1024 = 62.5% of a canvas that is
+  fully visible. To read the same size, it must span 62.5% of Android's VISIBLE
+  72dp, i.e. 45dp of the 108dp canvas. In viewport units that is 45/108 * 1024 =
+  427 across, against the source's 640 — hence 0.667, pivoted on the centre.
+  Scaling to fill the safe zone instead would make the Android icon noticeably
+  chunkier than the other two platforms.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp" android:height="108dp"
-    android:viewportWidth="108" android:viewportHeight="108">
-    <path
-        android:strokeColor="#3DD7EC" android:strokeWidth="9"
-        android:strokeLineCap="round" android:strokeLineJoin="round"
-        android:pathData="M40,42 L68,42 L40,66 L68,66" />
+    android:viewportWidth="1024" android:viewportHeight="1024">
+
+    <group android:pivotX="512" android:pivotY="512"
+        android:scaleX="0.667" android:scaleY="0.667">
+        <path
+            android:pathData="M192,224 L832,224 L832,352 L416,704 L832,704 L832,832 L192,832 L192,704 L608,352 L192,352 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient android:type="linear"
+                    android:startX="0" android:startY="0"
+                    android:endX="1024" android:endY="1024">
+                    <item android:offset="0" android:color="#FF3DD7EC" />
+                    <item android:offset="0.5" android:color="#FF9D7BFF" />
+                    <item android:offset="1" android:color="#FFEC5FB5" />
+                </gradient>
+            </aapt:attr>
+        </path>
+        <!-- The SVG's 3px hairline at 25% white, which lifts the mark off the
+             background at small sizes. -->
+        <path
+            android:pathData="M192,224 L832,224 L832,352 L416,704 L832,704 L832,832 L192,832 L192,704 L608,352 L192,352 Z"
+            android:strokeColor="#40F3F6FA" android:strokeWidth="3"
+            android:strokeLineJoin="round" />
+    </group>
 </vector>

@@ -1,5 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive-icon BACKGROUND, generated to match apps/web/public/icon.svg — the
+  single brand source that iOS's AppIcon-1024 is also rendered from.
+
+  Viewport is 1024 so the coordinates are the SVG's own; width/height are the
+  108dp the adaptive-icon system expects. No rounded corners here: the launcher
+  applies its own mask (circle, squircle, teardrop…), and baking a radius in
+  would show as a dark rim inside it.
+
+  Two layers, same as the SVG: the vertical "abyss" gradient, then the radial
+  halo over it.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp" android:height="108dp"
-    android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#0A0F1C" android:pathData="M0,0h108v108h-108z" />
+    android:viewportWidth="1024" android:viewportHeight="1024">
+
+    <path android:pathData="M0,0h1024v1024h-1024z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear"
+                android:startX="0" android:startY="0"
+                android:endX="0" android:endY="1024">
+                <item android:offset="0" android:color="#FF0A0F1C" />
+                <item android:offset="1" android:color="#FF131A2A" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <path android:pathData="M0,0h1024v1024h-1024z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="radial"
+                android:centerX="512" android:centerY="512"
+                android:gradientRadius="594">
+                <item android:offset="0" android:color="#523DD7EC" />
+                <item android:offset="0.45" android:color="#299D7BFF" />
+                <item android:offset="1" android:color="#00EC5FB5" />
+            </gradient>
+        </aapt:attr>
+    </path>
 </vector>
