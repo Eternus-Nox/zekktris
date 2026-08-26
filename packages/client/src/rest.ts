@@ -3020,6 +3020,18 @@ export class RestClient {
     return this.request('POST', `/admin/users/${userId}/reset-dob-lock`);
   }
 
+  /**
+   * [ADMIN ONLY] Who this user exchanges 1:1 DMs with, whether they are friends,
+   * and how many messages each conversation holds.
+   *
+   * Never includes message content — counts and identity only. Moderators cannot
+   * reach this: the admin router's moderator allowlist is fail-safe and this
+   * route is deliberately absent from it.
+   */
+  async adminUserDmPeers(userId: string): Promise<AdminDmPeersResponse> {
+    return this.request('GET', `/admin/users/${userId}/dm-peers`);
+  }
+
   // Billing (Stripe supporter memberships) --------------------------------
 
   /** Whether card payments are configured on this server. */
@@ -3813,6 +3825,23 @@ export interface AdminPeekChannel {
   topic: string | null;
   position: number;
   nsfw: boolean;
+}
+
+export interface AdminDmPeer {
+  /** The shared DM channel. */
+  channelId: string;
+  user: { id: string; username: string; displayName: string | null; avatarUrl: string | null };
+  /** True when the subject has this person as a friend. */
+  isFriend: boolean;
+  /** Messages in that conversation (deleted excluded). Content is never sent. */
+  messageCount: number;
+}
+
+export interface AdminDmPeersResponse {
+  /** Sorted by messageCount, busiest first. */
+  peers: AdminDmPeer[];
+  /** True when the subject has more DM channels than the server will enumerate. */
+  capped: boolean;
 }
 
 export interface AdminPeekMessage {

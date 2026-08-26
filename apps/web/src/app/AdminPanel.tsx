@@ -49,6 +49,7 @@ import {
   type StorageListing,
   type StorageCategory,
   type AdminUser,
+  type AdminDmPeersResponse,
 } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { AdminSecurityTab } from './AdminSecurityTab';
@@ -59,7 +60,7 @@ import { AvatarImage } from '../lib/AvatarImage';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { TierBadge } from '../lib/TierBadge';
 import { ExpiredBadge, ExpiredMediaCard, EXPIRED_TITLE } from '../lib/mediaRetention';
-import { Hash, Lock, Search as SearchIcon, Shield, Volume2, X as CloseIcon, Users, Archive, BarChart, ChevronLeft, Eye, Trash } from '../lib/icons';
+import { Hash, Lock, Search as SearchIcon, Shield, Volume2, X as CloseIcon, Users, UserPlus, UserMinus, Archive, BarChart, ChevronLeft, Eye, Trash } from '../lib/icons';
 
 type Tab =
   | 'overview'
@@ -536,6 +537,24 @@ function UsersTab() {
   const { rest, user: self } = useAuth();
   const toasts = useToasts();
   const [users, setUsers] = useState<AdminUser[] | null>(null);
+  // DM correspondents, lazily fetched per user and cached. ADMIN ONLY — the
+  // button that populates this is gated on selfIsAdmin, and the endpoint is
+  // admin-only server-side too (the moderator allowlist is fail-safe and this
+  // route is deliberately not on it). Never carries message content.
+  const [dmPeers, setDmPeers] = useState<Record<string, AdminDmPeersResponse | 'loading' | undefined>>({});
+  async function toggleDmPeers(u: AdminUser) {
+    if (dmPeers[u.id]) {
+      setDmPeers((m) => ({ ...m, [u.id]: undefined }));
+      return;
+    }
+    setDmPeers((m) => ({ ...m, [u.id]: 'loading' }));
+    try {
+      const r = await rest.adminUserDmPeers(u.id);
+      setDmPeers((m) => ({ ...m, [u.id]: r }));
+    } catch {
+      setDmPeers((m) => ({ ...m, [u.id]: undefined }));
+    }
+  }
   const [q, setQ] = useState('');
   const [bannedOnly, setBannedOnly] = useState(false);
   const [pending, setPending] = useState<string | null>(null); // userId currently mutating
@@ -885,6 +904,15 @@ function UsersTab() {
                         implicitly and a redundant "sign out a banned
                         user" button is just noise. Moderators can't act
                         on staff accounts (server rejects it too). */}
+                    {selfIsAdmin && (
+                      <button
+                        onClick={() => toggleDmPeers(u)}
+                        className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 transition-colors"
+                        title="Who this user exchanges direct messages with. Counts and friend status only — never message content."
+                      >
+                        {dmPeers[u.id] ? 'Hide DMs' : 'DM contacts'}
+                      </button>
+                    )}
                     {!u.bannedAt && (selfIsAdmin || (!u.isAdmin && !u.isModerator)) && (
                       <button
                         onClick={() => forceLogout(u)}
@@ -1063,6 +1091,47 @@ function UsersTab() {
                       Bans revoke sessions and evict from all voice — the account
                       can’t use text or voice until it’s lifted.
                     </span>
+                  </div>
+                )}
+                {/* DM correspondents. Admin-only, lazily loaded. Shows who the
+                    user talks to privately, whether they are friends, and how
+                    many messages — never a word of content. */}
+                {dmPeers[u.id] === 'loading' && (
+                  <div className="w-full text-xs text-ink-3 px-1 pb-1">Loading DM contacts…</div>
+                )}
+                {dmPeers[u.id] && dmPeers[u.id] !== 'loading' && (
+                  <div className="w-full mt-1 rounded-md border border-line bg-bg-1 p-2">
+                    {(dmPeers[u.id] as AdminDmPeersResponse).peers.length === 0 ? (
+                      <div className="text-xs text-ink-3">No direct-message conversations.</div>
+                    ) : (
+                      <ul className="flex flex-col gap-1">
+                        {(dmPeers[u.id] as AdminDmPeersResponse).peers.map((pr) => (
+                          <li key={pr.channelId} className="flex items-center gap-2 text-xs">
+                            {pr.isFriend ? (
+                              <span title="Friends" className="text-emerald-500 shrink-0">
+                                <UserPlus size={13} />
+                              </span>
+                            ) : (
+                              <span title="Not friends" className="text-ink-4 shrink-0">
+                                <UserMinus size={13} />
+                              </span>
+                            )}
+                            <span className="text-ink-1 truncate">
+                              {pr.user.displayName ?? pr.user.username}
+                            </span>
+                            <span className="text-ink-4 truncate">@{pr.user.username}</span>
+                            <span className="ml-auto text-ink-3 tabular-nums shrink-0">
+                              {pr.messageCount.toLocaleString()} msg
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {(dmPeers[u.id] as AdminDmPeersResponse).capped && (
+                      <div className="text-[11px] text-ink-4 mt-1.5">
+                        Showing the most recent conversations only.
+                      </div>
+                    )}
                   </div>
                 )}
               </li>

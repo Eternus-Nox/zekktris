@@ -777,6 +777,113 @@ const listGuildsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(500).optional(),
 });
 
+/**
+ * ADMIN ONLY — a user's 1:1 DM correspondents, with friend status and how many
+ * messages that conversation holds.
+ *
+ * Deliberately NOT on MODERATOR_ALLOWED. The allowlist is fail-safe (anything
+ * unlisted is admin-only), so this is admin-gated by construction — but say it
+ * out loud, because the capability is "see who this person privately messages",
+ * which is well outside a moderator's chartered scope and is exactly the kind of
+ * endpoint someone might later "fix" by adding to the list. Don't.
+ *
+ * NEVER returns message content — counts, identity and friend status only. Most
+ * DMs here are E2EE and the server could not read them anyway; there is no code
+ * path in this handler that touches message bodies.
+ *
+ * Cost: four bounded queries regardless of how many conversations the user has —
+ * their DM channel ids, the other participant of each, one grouped COUNT over
+ * `messages_channel_time_idx`, and one friend lookup. No per-conversation query.
+ * Capped at MAX_DM_PEERS channels, ordered by most recent activity, so a user
+ * with thousands of DMs cannot turn this into a table scan.
+ */
+const MAX_DM_PEERS = 200;
+
+adminRouter.get(
+  '/users/:id/dm-peers',
+  validate('param', userIdParam),
+  async (c) => {
+    const targetId = BigInt(c.req.valid('param').id);
+
+    // 1. The user's 1:1 DM channels (group DMs excluded — "who do they talk to"
+    //    is a pairwise question, and a group's members are not correspondents).
+    const myChannels = await db
+      .select({ channelId: schema.dmRecipients.channelId })
+      .from(schema.dmRecipients)
+      .innerJoin(schema.channels, eq(schema.channels.id, schema.dmRecipients.channelId))
+      .where(and(eq(schema.dmRecipients.userId, targetId), eq(schema.channels.type, 'dm')))
+      .orderBy(desc(schema.dmRecipients.channelId))
+      .limit(MAX_DM_PEERS);
+    const channelIds = myChannels.map((r) => r.channelId);
+    if (channelIds.length === 0) {
+      await auditStaff(c, 'staff_dm_peers' as SecurityEventKind, 'viewed DM correspondents (none)', {
+        userId: targetId,
+      });
+      return c.json({ peers: [], capped: false });
+    }
+
+    // 2. The other participant of each of those channels.
+    const others = await db
+      .select({
+        channelId: schema.dmRecipients.channelId,
+        id: schema.users.id,
+        username: schema.users.username,
+        displayName: schema.users.displayName,
+        avatarUrl: schema.users.avatarUrl,
+      })
+      .from(schema.dmRecipients)
+      .innerJoin(schema.users, eq(schema.users.id, schema.dmRecipients.userId))
+      .where(
+        and(
+          inArray(schema.dmRecipients.channelId, channelIds),
+          sql`${schema.dmRecipients.userId} <> ${targetId}`,
+        ),
+      );
+
+    // 3. One grouped count for every channel at once.
+    const counts = await db
+      .select({
+        channelId: schema.messages.channelId,
+        n: sql<number>`count(*)::int`.as('n'),
+      })
+      .from(schema.messages)
+      .where(and(inArray(schema.messages.channelId, channelIds), isNull(schema.messages.deletedAt)))
+      .groupBy(schema.messages.channelId);
+    const countByChannel = new Map(counts.map((r) => [r.channelId.toString(), r.n]));
+
+    // 4. One friend lookup. `relationships` is directional, so a friendship is
+    //    the row FROM this user; the reciprocal row exists but reading one
+    //    direction is enough and keeps this a single indexed read.
+    const friendRows = await db
+      .select({ targetId: schema.relationships.targetId })
+      .from(schema.relationships)
+      .where(and(eq(schema.relationships.userId, targetId), eq(schema.relationships.type, 'friend')));
+    const friendIds = new Set(friendRows.map((r) => r.targetId.toString()));
+
+    const peers = others
+      .map((o) => ({
+        channelId: o.channelId.toString(),
+        user: {
+          id: o.id.toString(),
+          username: o.username,
+          displayName: o.displayName,
+          avatarUrl: o.avatarUrl,
+        },
+        isFriend: friendIds.has(o.id.toString()),
+        messageCount: countByChannel.get(o.channelId.toString()) ?? 0,
+      }))
+      .sort((a, b) => b.messageCount - a.messageCount);
+
+    await auditStaff(
+      c,
+      'staff_dm_peers' as SecurityEventKind,
+      `viewed DM correspondents (${peers.length})`,
+      { userId: targetId },
+    );
+    return c.json({ peers, capped: channelIds.length >= MAX_DM_PEERS });
+  },
+);
+
 adminRouter.get('/guilds', validate('query', listGuildsQuery), async (c) => {
   const q = c.req.valid('query');
   const conds = [isNull(schema.guilds.deletedAt)];
