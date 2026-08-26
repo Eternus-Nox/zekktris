@@ -1492,8 +1492,22 @@ messagesRouter.post(
             data: { ...routeData, isE2EE: false, ...(imageUrl ? { imageUrl } : {}) },
           }));
         }
-      } catch {
-        // Push is non-critical; failure here mustn't surface anywhere.
+      } catch (err) {
+        // Push is non-critical: a failure here must never surface to the
+        // sender or fail the send. But swallowing it SILENTLY made a whole
+        // class of bug undiagnosable — "I don't get notifications for photos"
+        // looks identical to "no notification was ever attempted", with
+        // nothing in the logs either way. Log it (no message content, no
+        // recipient ids beyond the count) so the next occurrence is
+        // debuggable. Still never rethrown.
+        log.warn('message push fan-out failed', {
+          channelId: channelId.toString(),
+          isDM: ctx.isDM,
+          e2ee: ctx.channel.e2eeEnabled ?? false,
+          attachments: saved.length,
+          hasContent: payload.content.length > 0,
+          err: err instanceof Error ? err.message : String(err),
+        });
       }
     })();
 
