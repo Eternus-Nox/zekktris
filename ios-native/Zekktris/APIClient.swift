@@ -12,6 +12,32 @@ struct APIError: LocalizedError {
     var errorDescription: String? { message }
 }
 
+/// The outcome of one `/auth/refresh` attempt.
+///
+/// Mirrors the web contract in `packages/client/src/rest.ts` (`RefreshOutcome`).
+/// The distinction that matters is `fatal`: ONLY that means "the session is
+/// over, clear the credentials". Collapsing every failure into a single `false`
+/// — which is what this used to be — is why an offline moment, a 502 during a
+/// deploy, or a lost rotation race deleted the keychain token AND the 30-day
+/// refresh cookie and dropped the user on the login screen.
+enum RefreshOutcome: Sendable {
+    /// The refresh cookie was exchanged for a fresh access token.
+    case success
+    /// Network error, timeout, 5xx, the 409 the api returns when a concurrent
+    /// rotation won the race, or an unparseable body. The refresh cookie is
+    /// almost certainly still good — we simply couldn't ask. Keep the
+    /// credentials; the next request tries again.
+    case transient
+    /// 401/403 from `/auth/refresh` only: the refresh token is revoked or
+    /// expired and no amount of retrying brings the session back.
+    case fatal
+
+    var isSuccess: Bool {
+        if case .success = self { return true }
+        return false
+    }
+}
+
 /// One file part for a multipart message send.
 struct UploadFile {
     let data: Data
@@ -41,6 +67,17 @@ final class APIClient {
     /// (Session) can persist it. The gateway listens for the notification
     /// below to re-IDENTIFY with the fresh token after a reconnect.
     var onTokenRefresh: ((String) -> Void)?
+    /// Invoked exactly once per refresh attempt that ends `.fatal` — i.e. only
+    /// when `/auth/refresh` answered 401 or 403. The owner (Session) treats
+    /// this as a hard sign-out.
+    ///
+    /// Deliberately NOT invoked for network errors, timeouts, 5xx, or the 409
+    /// the api returns when a concurrent rotation won the race. Those are
+    /// transient, the refresh cookie is still good, and clearing the keychain
+    /// for them is what turned every offline moment and every api restart into
+    /// "it signed me out again". Mirrors `onRefreshFailed` in
+    /// `packages/client/src/rest.ts`.
+    var onRefreshFatal: (() -> Void)?
     static let tokenRefreshedNotification = Notification.Name("zk.accessTokenRefreshed")
 
     private let session: URLSession = {
@@ -69,46 +106,115 @@ final class APIClient {
     /// cold-start burst (getMe + loadGuilds/loadDMs/loadReadStates all 401 at
     /// once) could launch TWO refreshes; the loser's rotation wiped the fresh
     /// cookie → every later refresh failed → spurious force-logout.
-    private var refreshTask: Task<Bool, Never>?
+    private var refreshTask: Task<RefreshOutcome, Never>?
     private let refreshLock = NSLock()
 
+    /// Backoff ladder for a TRANSIENT refresh failure, in ms between attempts
+    /// (so four attempts, ~5.6 s of waiting before jitter in the worst case).
+    ///
+    /// Kept deliberately short, for the same reason web keeps it short: when
+    /// the api answers 409 the token we're presenting has been superseded, and
+    /// the server only treats that as benign concurrency for a couple of
+    /// minutes before it starts calling it token theft — a client that kept
+    /// retrying for minutes would talk itself into a revoked session.
+    private static let refreshRetryDelaysMs: [UInt64] = [400, 1_200, 4_000]
+
+    /// Spread a ladder rung over ±50% at random, so devices whose access tokens
+    /// were minted together don't retry in lockstep against an api that is
+    /// already struggling (which is exactly when this ladder runs).
+    private static func jitteredNanos(_ delayMs: UInt64) -> UInt64 {
+        UInt64(Double(delayMs) * (0.5 + Double.random(in: 0...1)) * 1_000_000)
+    }
+
     /// Exchange the refresh cookie (stored by URLSession from login's
-    /// Set-Cookie) for a fresh access token. Returns false when the cookie
-    /// is missing/expired/revoked — i.e. the user genuinely must sign in.
-    func refreshAccessToken() async -> Bool {
+    /// Set-Cookie) for a fresh access token.
+    ///
+    /// Returns a TRI-STATE, not a Bool. This used to collapse "401, the token
+    /// really is revoked" and "timed out / offline / 502 while the api
+    /// restarted / unparseable body" into one `false`, and the callers then
+    /// treated that as a dead session — `Session.bootstrap` deleted the
+    /// keychain token and the 30-day refresh cookie because a 20 s request
+    /// timeout looked identical to a revoke. Only `.fatal` (401/403 from
+    /// `/auth/refresh` itself) may ever clear credentials.
+    func refreshAccessToken() async -> RefreshOutcome {
         // Atomically claim or join the single in-flight refresh. The lock is
         // confined to a synchronous closure (no `await` inside) so it never
         // spans a suspension point — required under Swift 6 strict
         // concurrency, where holding NSLock across an await is a hard error.
-        let work: Task<Bool, Never> = refreshLock.withLock {
+        let work: Task<RefreshOutcome, Never> = refreshLock.withLock {
             if let inFlight = refreshTask { return inFlight }
-            let task = Task<Bool, Never> { [session, decoder] in
-                struct RefreshResponse: Decodable { let accessToken: String }
-                guard let url = URL(string: Config.apiBaseURL + "/auth/refresh") else { return false }
-                var req = URLRequest(url: url)
-                req.httpMethod = "POST"
-                req.setValue("application/json", forHTTPHeaderField: "Accept")
-                guard let (data, resp) = try? await session.data(for: req),
-                      let http = resp as? HTTPURLResponse,
-                      (200..<300).contains(http.statusCode),
-                      let decoded = try? decoder.decode(RefreshResponse.self, from: data)
-                else { return false }
-                self.token = decoded.accessToken
-                self.onTokenRefresh?(decoded.accessToken)
-                NotificationCenter.default.post(
-                    name: APIClient.tokenRefreshedNotification, object: decoded.accessToken)
-                return true
-            }
+            let task = Task<RefreshOutcome, Never> { await self.refreshWithBackoff() }
             refreshTask = task
             return task
         }
-        let ok = await work.value
+        let outcome = await work.value
         // Clear only if this is still the in-flight task — a newer refresh may
         // have already replaced it, and a late joiner must not wipe it.
         refreshLock.withLock {
             if let current = refreshTask, current == work { refreshTask = nil }
         }
-        return ok
+        return outcome
+    }
+
+    /// Refresh, retrying only the failures worth retrying. Stops the moment we
+    /// have a token or a fatal answer; otherwise walks the backoff ladder and
+    /// gives up TRANSIENTLY — the caller keeps its credentials and the next
+    /// request will try again.
+    ///
+    /// Runs inside the single coalesced `refreshTask`, so `onRefreshFatal`
+    /// fires at most once per refresh no matter how many callers joined.
+    private func refreshWithBackoff() async -> RefreshOutcome {
+        var outcome = await refreshOnce()
+        var rung = 0
+        while case .transient = outcome, rung < Self.refreshRetryDelaysMs.count {
+            let delayMs = Self.refreshRetryDelaysMs[rung]
+            rung += 1
+            try? await Task.sleep(nanoseconds: Self.jitteredNanos(delayMs))
+            outcome = await refreshOnce()
+        }
+        if case .fatal = outcome { onRefreshFatal?() }
+        return outcome
+    }
+
+    /// One `/auth/refresh` round trip. Never throws — every failure mode is
+    /// classified into the tri-state instead.
+    private func refreshOnce() async -> RefreshOutcome {
+        struct RefreshResponse: Decodable { let accessToken: String }
+        guard let url = URL(string: Config.apiBaseURL + "/auth/refresh") else { return .transient }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        // Tighter than the session-wide 20 s: up to four attempts can run
+        // behind one caller's 401, so the whole ladder has to stay inside the
+        // window in which the server still treats a superseded token as benign
+        // concurrency rather than theft.
+        req.timeoutInterval = 10
+        let data: Data
+        let resp: URLResponse
+        do {
+            (data, resp) = try await session.data(for: req)
+        } catch {
+            // Network-level failure: offline, DNS, connection reset, the app
+            // resumed before the radio came back. The refresh cookie is almost
+            // certainly still good — we simply couldn't ask.
+            return .transient
+        }
+        guard let http = resp as? HTTPURLResponse else { return .transient }
+        // The only two answers that actually mean "this session is over".
+        if http.statusCode == 401 || http.statusCode == 403 { return .fatal }
+        // 409 = a concurrent rotation won the race (or this is a retry of a
+        // refresh whose response was lost and the server couldn't replay it);
+        // 5xx = the api is restarting or a proxy answered for it. Both are
+        // worth retrying; neither is a logout.
+        guard (200..<300).contains(http.statusCode) else { return .transient }
+        // A 200 with an unreadable body means something interposed (proxy,
+        // captive portal), not that the session died.
+        guard let decoded = try? decoder.decode(RefreshResponse.self, from: data) else { return .transient }
+        token = decoded.accessToken
+        onTokenRefresh?(decoded.accessToken)
+        NotificationCenter.default.post(
+            name: APIClient.tokenRefreshedNotification, object: decoded.accessToken)
+        return .success
     }
 
     /// Whether an expired-token failure on this path is eligible for a
@@ -158,7 +264,7 @@ final class APIClient {
         // Access tokens are short-lived (15 min): a 401 usually just means
         // "expired" — refresh via the cookie and replay the request once.
         if http.statusCode == 401, canRetryAfterRefresh(path, authorized: authorized, isRetry: isRetry),
-           await refreshAccessToken() {
+           await refreshAccessToken().isSuccess {
             return try await send(method, path, bodyData: bodyData, authorized: authorized, isRetry: true)
         }
         guard (200..<300).contains(http.statusCode) else {
@@ -218,7 +324,7 @@ final class APIClient {
               let http = resp as? HTTPURLResponse else { return false }
         if bearerOverride == nil, http.statusCode == 401,
            canRetryAfterRefresh(path, authorized: authorized, isRetry: isRetry),
-           await refreshAccessToken() {
+           await refreshAccessToken().isSuccess {
             return await sendNoDecode(method, path, authorized: authorized, isRetry: true)
         }
         return (200..<300).contains(http.statusCode)
@@ -241,7 +347,7 @@ final class APIClient {
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw APIError(status: 0, message: "No HTTP response") }
         if http.statusCode == 401, canRetryAfterRefresh(path, authorized: authorized, isRetry: isRetry),
-           await refreshAccessToken() {
+           await refreshAccessToken().isSuccess {
             return try await sendVoid(method, path, bodyData: bodyData, authorized: authorized, isRetry: true)
         }
         guard (200..<300).contains(http.statusCode) else {
@@ -267,7 +373,7 @@ final class APIClient {
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw APIError(status: 0, message: "No HTTP response") }
         if http.statusCode == 401, canRetryAfterRefresh(path, authorized: authorized, isRetry: isRetry),
-           await refreshAccessToken() {
+           await refreshAccessToken().isSuccess {
             return try await sendRawData(method, path, bodyData: bodyData, authorized: authorized, isRetry: true)
         }
         guard (200..<300).contains(http.statusCode) else {
@@ -312,7 +418,79 @@ final class APIClient {
         return try await send("POST", "/auth/login", bodyData: body, authorized: false)
     }
 
+    // ── Device-approval login ("approve this sign-in on your phone") ────────
+    // The logged-out device calls start + poll (both PUBLIC); the signed-in
+    // phone calls lookup + approve/deny (all AUTHED). See Models.swift for the
+    // two-secrets contract and apps/api/src/auth/device-login-store.ts for why
+    // the approval screen is a security control.
+
+    /// [public] Open a request from a logged-out device. `deviceName` is a
+    /// self-declared label the approver sees CLEARLY MARKED AS A CLAIM — the
+    /// server sanitizes it. The returned `deviceCode` is secret: never render,
+    /// QR, log or persist it.
+    func startDeviceLogin(deviceName: String?) async throws -> DeviceLoginStart {
+        // The body is required server-side; `{}` is the empty form.
+        var payload: [String: Any] = [:]
+        if let deviceName, !deviceName.isEmpty { payload["deviceName"] = deviceName }
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        return try await send("POST", "/auth/device-login/start", bodyData: body, authorized: false)
+    }
+
+    /// [public] Ask for the outcome, presenting the SECRET deviceCode. Only
+    /// throws on transport/HTTP failures — pending/denied/expired are values.
+    func pollDeviceLogin(deviceCode: String) async throws -> DeviceLoginPoll {
+        let body = try JSONSerialization.data(withJSONObject: ["deviceCode": deviceCode])
+        return try await send("POST", "/auth/device-login/poll", bodyData: body, authorized: false)
+    }
+
+    /// [authed] What is this code asking for? Feeds the approval screen — the
+    /// only defence against an attacker phishing an approval out of the user.
+    /// 404 when the code is unknown or expired, 429 when the per-user lookup
+    /// limiter (the real brute-force guard) trips.
+    func lookupDeviceLogin(userCode: String) async throws -> DeviceLoginRequestInfo {
+        let body = try JSONSerialization.data(withJSONObject: ["userCode": userCode])
+        return try await sendAuthRouteAuthorized("/auth/device-login/lookup", bodyData: body)
+    }
+
+    /// [authed] Approve — binds the request to this user and signs that device
+    /// in. Terminal. 404 unknown/expired, 409 already answered.
+    func approveDeviceLogin(userCode: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["userCode": userCode])
+        let _: OkWrap = try await sendAuthRouteAuthorized("/auth/device-login/approve", bodyData: body)
+    }
+
+    /// [authed] Deny. Terminal, and decided atomically against a racing
+    /// approve, so the waiting device sees exactly one outcome.
+    func denyDeviceLogin(userCode: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["userCode": userCode])
+        let _: OkWrap = try await sendAuthRouteAuthorized("/auth/device-login/deny", bodyData: body)
+    }
+
+    /// POST to an AUTHED endpoint that lives under `/auth/`, with a one-shot
+    /// refresh-and-replay on 401.
+    ///
+    /// `canRetryAfterRefresh` deliberately excludes every `/auth/` path (a
+    /// login/refresh call must never recurse into a refresh). The device-login
+    /// approval routes are the exception that proves the rule: they are
+    /// ordinary authed endpoints that merely happen to sit under `/auth/`, and
+    /// without this the whole flow fails with a bare 401 whenever the 15-minute
+    /// access token happens to have expired — which, for a screen you only open
+    /// when a second device needs you, is most of the time. Handled here rather
+    /// than by loosening the global predicate, so the real auth endpoints keep
+    /// their exclusion.
+    private func sendAuthRouteAuthorized<T: Decodable>(_ path: String, bodyData: Data) async throws -> T {
+        do {
+            return try await send("POST", path, bodyData: bodyData)
+        } catch let err as APIError where err.status == 401 {
+            guard await refreshAccessToken().isSuccess else { throw err }
+            return try await send("POST", path, bodyData: bodyData, isRetry: true)
+        }
+    }
+
     // ── Quick login (log in on another device) ──────────────────────────────
+    // DEPRECATED direction (the code was the whole credential) — superseded by
+    // the device-approval calls above. Delete alongside the
+    // `/auth/quick-login/*` routes (checklist: apps/api/src/routes/auth.ts:415).
     /// [authed] Mint (or re-randomize) a quick-login code for this device's
     /// user. Uses the existing bearer token; never touches the session.
     func generateQuickLoginCode() async throws -> QuickLoginCode {
@@ -534,7 +712,7 @@ final class APIClient {
         }
         guard let http = resp as? HTTPURLResponse else { throw APIError(status: 0, message: "No HTTP response") }
         if http.statusCode == 401, canRetryAfterRefresh(path, authorized: true, isRetry: isRetry),
-           await refreshAccessToken() {
+           await refreshAccessToken().isSuccess {
             return try await uploadMultipart(path, fields: fields, fileField: fileField,
                                              filename: filename, contentType: contentType,
                                              fileData: fileData, type, isRetry: true)
@@ -1011,7 +1189,7 @@ final class APIClient {
 
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw APIError(status: 0, message: "No HTTP response") }
-        if http.statusCode == 401, await refreshAccessToken(), let fresh = token {
+        if http.statusCode == 401, await refreshAccessToken().isSuccess, let fresh = token {
             // One replay with the rotated token (mirrors send()'s retry).
             req.setValue("Bearer \(fresh)", forHTTPHeaderField: "Authorization")
             let (data2, resp2) = try await session.data(for: req)

@@ -165,9 +165,13 @@ class Gateway(
                             else { close(CloseReason(CloseReason.Codes.NORMAL, "no-token")); return }
                         } else {
                             // Likely an expired access token — refresh once. If refresh
-                            // also fails (refresh token dead), fall onto the slow auth
-                            // ladder instead of hammering reconnects.
-                            inAuthBackoff = !api.refreshAccessToken()
+                            // didn't produce one (dead refresh token, OR a transient
+                            // outage), fall onto the slow auth ladder instead of
+                            // hammering reconnects. Deliberately reads only "did we get
+                            // a token": the SESSION-ending decision belongs to
+                            // AppStore via ApiClient.onRefreshFatal, and the socket
+                            // just backs off either way.
+                            inAuthBackoff = api.refreshAccessToken() != RefreshOutcome.Success
                             close(CloseReason(CloseReason.Codes.NORMAL, "invalid-session"))
                             return
                         }

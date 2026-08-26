@@ -16,6 +16,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // LiveKit's transitive audioswitch dependency is published on JitPack.
+        maven { url = uri("https://jitpack.io") }
     }
 }
 

@@ -101,8 +101,15 @@ struct WatchStreaksView: View {
                 }
             }
         } else {
+            // The empty branch IS the placeholder pass: `placeholder(in:)` returns
+            // `rows: []`, so this is what the watch-face complication picker draws,
+            // under `.redacted(reason: .placeholder)`. Without `.unredacted()` the
+            // flame becomes a grey square inside AccessoryWidgetBackground's circle.
+            // Only the empty branches need it — the populated ones above are never
+            // reached by that pass, and marking them would instead punch them
+            // through Always-On PRIVACY redaction, which is not wanted.
             switch family {
-            case .accessoryCircular: ZStack { AccessoryWidgetBackground(); Image(systemName: "flame").foregroundStyle(amber) }
+            case .accessoryCircular: ZStack { AccessoryWidgetBackground(); Image(systemName: "flame").foregroundStyle(amber).unredacted() }
             case .accessoryInline: Label("No streaks", systemImage: "flame")
             default: Text("No streaks yet").font(.caption2).foregroundStyle(.secondary)
             }
@@ -111,6 +118,13 @@ struct WatchStreaksView: View {
 }
 
 /// Shared "not configured yet" placeholder.
+///
+/// This is also what every provider's `placeholder(in:)` renders (friend == nil),
+/// i.e. what the watch-face complication picker shows. WidgetKit draws that
+/// pass with `.redacted(reason: .placeholder)`, which turns the SF Symbol into a
+/// grey rounded square — leaving only `AccessoryWidgetBackground`'s circle
+/// around it. `.unredacted()` on the glyph keeps the symbol visible; the label
+/// stays redactable so Always-On privacy redaction still hides it.
 struct WatchUnconfigured: View {
     let symbol: String
     let text: String
@@ -118,7 +132,7 @@ struct WatchUnconfigured: View {
     var body: some View {
         switch family {
         case .accessoryCircular:
-            ZStack { AccessoryWidgetBackground(); Image(systemName: symbol) }
+            ZStack { AccessoryWidgetBackground(); Image(systemName: symbol).unredacted() }
         case .accessoryInline:
             Label(text, systemImage: symbol)
         default:

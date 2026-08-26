@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Pre-Android-12 auto-backup rules. Same exclusions, same reasons as
+  data_extraction_rules.xml — API 30 and below ignore dataExtractionRules
+  entirely and minSdk is 26, so both files are required. Keep them in sync.
+
+  `datastore` carries the cleartext refresh cookie (full account takeover if it
+  leaves the device); zk_e2ee_keys is undecryptable off-device and bricks E2EE
+  DMs if restored. Excluding the whole datastore directory also covers the .tmp
+  file DataStore writes during a commit.
+-->
+<full-backup-content>
+    <exclude domain="file" path="datastore" />
+    <exclude domain="sharedpref" path="zk_e2ee_keys.xml" />
+</full-backup-content>

@@ -34,7 +34,7 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSCameraUsageDescription</key>
-	<string>Zekktris uses your camera for video calls and to set your avatar.</string>
+	<string>Zekktris uses your camera for video calls, to set your avatar, and to scan the sign-in code shown on another device.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Zekktris uses Face ID to unlock the app and keep your conversations private.</string>
 	<key>NSMicrophoneUsageDescription</key>

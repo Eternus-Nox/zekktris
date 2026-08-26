@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 import LocalAuthentication
 
 /// Owns authentication state: the access token (persisted in Keychain), the
@@ -20,6 +21,22 @@ final class Session: ObservableObject {
     @Published var needs2FA = false
     /// When true, a signed-in session is gated behind a biometric unlock.
     @Published var locked = false
+    /// What to tell the user on the lock screen after a failed/cancelled
+    /// unlock. nil while nothing has gone wrong. Cleared on the next attempt.
+    @Published var unlockError: String?
+    /// True while an authentication sheet is on screen — the lock screen shows
+    /// a spinner and refuses to queue a second prompt behind the first.
+    @Published private(set) var unlocking = false
+
+    /// True while a LocalAuthentication sheet is up. The system sheet can push
+    /// the app out of the foreground, so the scene-phase hooks below must not
+    /// read that as "the user left the app" — otherwise arming the lock would
+    /// fight the prompt that is trying to clear it. Mirrors Android's
+    /// `authInProgress` (android-native MainActivity.kt).
+    private var authInProgress = false
+    /// Set when the app really did leave the foreground with the lock enabled;
+    /// consumed on the next activation to re-arm the lock.
+    private var sawBackground = false
 
     private let faceIDKey = "zk.faceID"
     private let userCacheKey = "zk.cachedUser"
@@ -64,6 +81,20 @@ final class Session: ObservableObject {
             keychain.set(newToken, for: tokenKey)
             RefreshCookieStore.capture()
         }
+        // The ONLY path that may end the session. APIClient calls this when
+        // /auth/refresh itself answered 401/403 — the refresh token is revoked
+        // or expired and no retry will bring it back. Everything else (offline,
+        // 20s timeout, 5xx mid-deploy, the 409 a concurrent rotation returns)
+        // comes back `.transient` and must leave the keychain and the refresh
+        // cookie exactly where they are.
+        api.onRefreshFatal = { [weak self] in
+            Task { @MainActor in
+                // A fast re-login can land while a doomed refresh is still in
+                // flight; never tear down a session we've since replaced.
+                guard let self, self.phase == .signedIn else { return }
+                self.logout()
+            }
+        }
         guard let saved = keychain.get(tokenKey), !saved.isEmpty else {
             phase = .signedOut
             return
@@ -73,21 +104,24 @@ final class Session: ObservableObject {
         // a cold launch goes straight to the Face ID gate — never back to the
         // login form — even if we're offline or the refresh hiccups.
         currentUser = cachedUser()
-        // Gate on the saved setting alone — probing biometric availability
-        // can block (XPC to the biometric daemon), so it must never run
-        // inline here. unlock() resolves availability async and waves the
-        // user through if biometrics have since become unavailable.
+        // Gate on the saved setting alone — probing biometric availability can
+        // block (XPC to the biometric daemon), so it must never run inline
+        // here. unlock() resolves availability async and, if the device really
+        // can't authenticate at all, keeps the gate up and offers Sign out
+        // rather than waving the user through (see `unlock`). This arms the
+        // COLD-launch lock; `noteBecameActive()` re-arms it on a warm resume.
         locked = faceIDEnabled
         phase = .signedIn
-        // Refresh the user in the background. getMe auto-refreshes an expired
-        // access token via the refresh cookie, so a 401 here means the
-        // refresh token itself is dead (revoked / >30 days) — only then sign
-        // out. Transient/offline failures keep the session.
-        do {
-            currentUser = try await api.getMe()
-        } catch {
-            if (error as? APIError)?.status == 401 { logout() }
-        }
+        // Refresh the user in the background, best-effort. Deliberately NO
+        // sign-out here: this used to read a 401 from getMe as "the refresh
+        // token is dead", but getMe 401s identically when the refresh behind it
+        // merely timed out, hit a 502 during a deploy, or lost a rotation race
+        // — and `logout()` then deleted the keychain token AND the 30-day
+        // refresh cookie, destroying the one credential that would have worked
+        // five seconds later. A genuinely dead refresh token now arrives via
+        // `onRefreshFatal` above; anything else keeps the session (we're
+        // already signed in off the cached user).
+        currentUser = (try? await api.getMe()) ?? currentUser
     }
 
     func login(email: String, password: String, code: String? = nil) async {
@@ -155,7 +189,42 @@ final class Session: ObservableObject {
         }
     }
 
+    // ── Device-approval login (THIS device is the one being signed in) ──────
+    // The signed-in half (lookup/approve/deny) talks to APIClient.shared
+    // directly from the approval screen — it needs no Session state, and must
+    // never disturb the live session it is authenticating with.
+
+    /// Open a request and get the code to display. `deviceCode` inside the
+    /// result is SECRET: keep it in memory, never render or persist it.
+    func startDeviceLogin() async -> DeviceLoginStart? {
+        authError = nil
+        do { return try await api.startDeviceLogin(deviceName: UIDevice.current.model) }
+        catch { authError = message(for: error); return nil }
+    }
+
+    /// One poll. Returns nil on a TRANSPORT failure so the caller simply keeps
+    /// waiting — a dropped packet or a 20s timeout must not look like a denial,
+    /// and must not paint an error under a code that is still perfectly valid.
+    func pollDeviceLogin(deviceCode: String) async -> DeviceLoginPoll? {
+        try? await api.pollDeviceLogin(deviceCode: deviceCode)
+    }
+
+    /// The request was approved on the other device — adopt the session it
+    /// returned. Same landing as login()/passkey: persist() flips the app to
+    /// signed-in, which unmounts the whole auth flow (and this sheet with it).
+    ///
+    /// The server delivers `approved` EXACTLY ONCE, so this must not fail
+    /// silently: everything it does is local and synchronous.
+    func adoptDeviceLogin(_ session: AuthSession) {
+        authError = nil
+        needs2FA = false
+        persist(session)
+    }
+
     // ── Quick login (log in on another device) ──────────────────────────────
+    // DEPRECATED direction — replaced by the device-approval calls above.
+    // Delete with the `/auth/quick-login/*` routes (checklist:
+    // apps/api/src/routes/auth.ts:415).
     /// Mint (or re-randomize) a quick-login code for this device's user. Does
     /// NOT touch the current session.
     func generateQuickLoginCode() async -> QuickLoginCode? {
@@ -219,6 +288,11 @@ final class Session: ObservableObject {
         RefreshCookieStore.clear()
         currentUser = nil
         phase = .signedOut
+        // The lock gates a SIGNED-IN session; a leftover armed lock would flash
+        // the lock screen over the next sign-in.
+        locked = false
+        unlockError = nil
+        sawBackground = false
         // Snapshot the token to revoke with, then drop it from the client
         // IMMEDIATELY. The teardown below makes up to three network calls
         // that can stall for many seconds; if the user signs back in
@@ -470,18 +544,69 @@ final class Session: ObservableObject {
 
     // MARK: Biometric lock
 
-    /// Attempt to unlock a locked session via Face ID / Touch ID.
+    /// The app left the foreground. Arms the lock for the next activation.
+    ///
+    /// Mirrors Android's `ON_STOP` arm (android-native MainActivity.kt): keyed
+    /// on backgrounding, NOT on merely going inactive, so pulling down
+    /// Notification Center or getting a banner doesn't demand Face ID.
+    func noteEnteredBackground() {
+        guard faceIDEnabled, !authInProgress else { return }
+        sawBackground = true
+    }
+
+    /// The app came back to the foreground — re-lock if it really was away.
+    ///
+    /// The lock used to be armed exactly once, in `bootstrap()`, so it only
+    /// ever fired on a COLD launch. iOS keeps an app alive for days, so a
+    /// warm resume came back straight into the signed-in session: the
+    /// "sometimes it doesn't ask for Face ID" report, and a direct
+    /// contradiction of the Settings copy ("Require Face ID when opening
+    /// Zekktris"). Mirrors Android's `ON_START`.
+    func noteBecameActive() {
+        defer { sawBackground = false }
+        guard sawBackground, faceIDEnabled, phase == .signedIn else { return }
+        unlockError = nil
+        locked = true
+    }
+
+    /// Attempt to unlock a locked session via Face ID / Touch ID / passcode.
+    ///
+    /// Never unlocks on anything but a successful authentication: see the
+    /// fail-closed guard below.
     func unlock() async {
-        // Escape hatch: if biometrics are gone (disabled in system settings,
-        // new device), don't trap the user at the gate.
+        // One prompt at a time. The lock screen prompts on appear, on every
+        // return to the foreground, and on the button — all three can land
+        // together after a resume.
+        guard locked, !authInProgress else { return }
+        authInProgress = true
+        unlocking = true
+        unlockError = nil
+        defer {
+            authInProgress = false
+            unlocking = false
+        }
         let probe = await Biometrics.resolve()
-        guard probe.available else {
-            locked = false
+        // FAIL CLOSED. This used to do `locked = false` whenever the probe came
+        // back unavailable — a single transient answer from the biometric
+        // daemon waved the user straight into a signed-in session with no
+        // authentication at all, which is a security hole and not just a bug.
+        // The policy we evaluate accepts the device passcode too, so the only
+        // way to reach this branch is a device with neither biometrics nor a
+        // passcode; Sign out on the lock screen is the escape hatch.
+        guard probe.deviceAuthAvailable else {
+            unlockError = "\(probe.label) and the device passcode are both unavailable. "
+                + "Sign out and sign in again to continue."
             return
         }
-        let ok = await Biometrics.authenticate(reason: "Unlock Zekktris")
-        if ok { locked = false }
+        let result = await Biometrics.authenticate(reason: "Unlock Zekktris")
+        if result.success {
+            locked = false
+            unlockError = nil
+            return
+        }
+        unlockError = Biometrics.message(for: result.errorCode, label: probe.label)
     }
+
     /// Toggle the biometric lock. Enabling first verifies the user can pass a
     /// biometric check (so they don't lock themselves out). Returns an error
     /// string on failure, nil on success.
@@ -489,12 +614,18 @@ final class Session: ObservableObject {
         if on {
             let probe = await Biometrics.resolve()
             guard probe.available else { return "\(probe.label) isn't set up on this device." }
-            let ok = await Biometrics.authenticate(reason: "Enable \(probe.label) unlock")
-            guard ok else { return nil }   // user canceled; leave toggle off
+            // The confirm prompt can background us; don't let its own scene
+            // transition arm the lock we're in the middle of enabling.
+            authInProgress = true
+            let result = await Biometrics.authenticate(reason: "Enable \(probe.label) unlock")
+            authInProgress = false
+            guard result.success else { return nil }   // user canceled; leave toggle off
             faceIDEnabled = true
         } else {
             faceIDEnabled = false
             locked = false
+            unlockError = nil
+            sawBackground = false
         }
         objectWillChange.send()
         return nil
@@ -513,43 +644,135 @@ final class Session: ObservableObject {
 /// construction). The probe runs once, off-main, via `resolve()`, and the
 /// result is cached for the life of the process.
 enum Biometrics {
-    struct Probe {
+    struct Probe: Sendable {
+        /// Biometrics are enrolled and usable. Gates ENABLING the lock (a
+        /// passcode-only device shouldn't be offered "Unlock with Face ID").
         let available: Bool
+        /// Biometrics OR the device passcode can authorise — i.e. what
+        /// `.deviceOwnerAuthentication` (the policy `authenticate` evaluates)
+        /// will actually accept. This is what the unlock gate reads, so a
+        /// biometry lockout after five bad scans leaves the passcode as a
+        /// legitimate way in instead of a dead lock screen.
+        let deviceAuthAvailable: Bool
         let label: String
+        /// The daemon didn't answer in time. Not cached, and treated as "let
+        /// evaluatePolicy be the judge" rather than as an answer either way.
+        var indeterminate = false
+    }
+
+    /// What the probe reports when `canEvaluatePolicy` doesn't come back. The
+    /// prompt is still attempted: `evaluatePolicy` is the real gate, and it
+    /// fails closed, so an optimistic `deviceAuthAvailable` can't let anyone in.
+    private static let stalledProbe = Probe(
+        available: false, deviceAuthAvailable: true, label: "Face ID", indeterminate: true)
+
+    /// A finished authentication attempt: whether it passed, and the raw
+    /// `LAError` code when it didn't (previously discarded, which is why a
+    /// biometry lockout was indistinguishable from a user cancel).
+    struct AuthResult: Sendable {
+        let success: Bool
+        let errorCode: Int?
     }
 
     @MainActor private static var cached: Probe?
 
     /// One-shot, off-main availability probe. Instant after the first call.
+    ///
+    /// Bounded by `timeout`: this XPC has been observed to stall right after
+    /// boot, and with a fail-closed unlock a stalled probe would mean a lock
+    /// screen that never prompts and never recovers.
     @MainActor
-    static func resolve() async -> Probe {
+    static func resolve(timeout: Double = 3) async -> Probe {
         if let cached { return cached }
-        let probe = await Task.detached(priority: .userInitiated) { () -> Probe in
+        let work = Task.detached(priority: .userInitiated) { () -> Probe in
             let ctx = LAContext()
-            let ok = ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
+            let bio = ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
+            let anyOwner = ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil)
             let label: String
             switch ctx.biometryType {
             case .faceID: label = "Face ID"
             case .touchID: label = "Touch ID"
             default: label = "Biometrics"
             }
-            return Probe(available: ok, label: label)
-        }.value
-        cached = probe
+            return Probe(available: bio, deviceAuthAvailable: anyOwner, label: label)
+        }
+        let probe = await withTaskGroup(of: Probe.self, returning: Probe.self) { group in
+            group.addTask { await work.value }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                return Biometrics.stalledProbe
+            }
+            let first = await group.next() ?? Biometrics.stalledProbe
+            group.cancelAll()
+            return first
+        }
+        // Never memoize a non-answer — the next call gets a real probe.
+        if !probe.indeterminate { cached = probe }
         return probe
     }
 
-    static func authenticate(reason: String) async -> Bool {
-        await Task.detached(priority: .userInitiated) { () -> Bool in
+    /// Present the system authentication sheet.
+    ///
+    /// Uses `.deviceOwnerAuthentication` (biometrics WITH passcode fallback),
+    /// not `.deviceOwnerAuthenticationWithBiometrics`. Under the old policy a
+    /// biometry lockout (five failed scans) made `canEvaluatePolicy` false, so
+    /// this returned false forever while the memoized probe still claimed
+    /// biometrics were available — the lock screen's only button silently did
+    /// nothing, with no way forward. Passcode fallback is the correct policy
+    /// for an app lock and is what makes the retry affordance meaningful.
+    static func authenticate(reason: String) async -> AuthResult {
+        await Task.detached(priority: .userInitiated) { () -> AuthResult in
             let ctx = LAContext()
             var error: NSError?
-            guard ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else { return false }
-            return await withCheckedContinuation { cont in
-                ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { success, _ in
-                    cont.resume(returning: success)
+            guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
+                return AuthResult(success: false, errorCode: error?.code)
+            }
+            let result = await withCheckedContinuation { cont in
+                ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, err in
+                    let code = err.map { $0 as NSError }?.code
+                    cont.resume(returning: AuthResult(success: success, errorCode: code))
                 }
             }
+            // Hold the context alive until the reply has landed: `ctx` is a
+            // local whose last use would otherwise be the evaluatePolicy call,
+            // and ARC releasing it mid-evaluation cancels the prompt.
+            //
+            // This deliberately sits AFTER the await rather than inside the
+            // completion handler. That handler is `@Sendable`, and LAContext is
+            // not Sendable, so capturing `ctx` in it is a hard ERROR under
+            // strict concurrency — one that a simulator build only warns about
+            // but a device/Xcode build rejects. Using `ctx` after the
+            // suspension keeps it alive across the whole call without the
+            // closure capturing it at all.
+            withExtendedLifetime(ctx) {}
+            return result
         }.value
+    }
+
+    /// User-facing text for a failed attempt. Every branch has to leave the
+    /// user a next step — the whole point of surfacing this is that a silent
+    /// failure left them on a lock screen with nothing to do.
+    static func message(for errorCode: Int?, label: String) -> String {
+        guard let errorCode, let code = LAError.Code(rawValue: errorCode) else {
+            return "Couldn't unlock. Tap Try again."
+        }
+        switch code {
+        case .userCancel, .appCancel, .systemCancel:
+            return "Unlock cancelled. Tap Try again."
+        case .authenticationFailed:
+            return "\(label) didn't match. Try again, or use your device passcode."
+        case .biometryLockout:
+            return "\(label) is locked out after too many attempts. "
+                + "Tap Try again and enter your device passcode."
+        case .userFallback:
+            return "Tap Try again and enter your device passcode."
+        case .passcodeNotSet:
+            return "Set a device passcode to unlock Zekktris, or sign out below."
+        case .biometryNotAvailable, .biometryNotEnrolled:
+            return "\(label) isn't available. Tap Try again and use your device passcode."
+        default:
+            return "Couldn't unlock. Tap Try again."
+        }
     }
 }
 

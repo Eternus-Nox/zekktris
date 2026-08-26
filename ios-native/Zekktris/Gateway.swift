@@ -241,11 +241,12 @@ final class Gateway: ObservableObject {
             // on REST 401s, so after the app idles in the background past expiry
             // the foreground reconnect IDENTIFYs with a stale token and lands
             // here. Attempt ONE immediate token refresh and reconnect; if that
-            // refresh fails, fall back to the SLOW auth retry. Never latch —
-            // `refreshAccessToken()` returns false for a dropped packet, a 5xx
-            // and a genuine revoke ALIKE, so latching on it wedged realtime dead
-            // (send worked over REST, receive never did) for the rest of the
-            // foreground session. See `scheduleAuthRetry`.
+            // refresh doesn't produce a token, fall back to the SLOW auth
+            // retry. Never latch — a dropped packet and a 5xx come back
+            // `.transient`, and even a `.fatal` is handled by Session signing
+            // out, so latching here wedged realtime dead (send worked over
+            // REST, receive never did) for the rest of the foreground session.
+            // See `scheduleAuthRetry`.
             heartbeatTask?.cancel(); heartbeatTask = nil
             ackWatchdogTask?.cancel(); ackWatchdogTask = nil
             if identifyRefreshAttempted {
@@ -255,7 +256,7 @@ final class Gateway: ObservableObject {
             identifyRefreshAttempted = true
             status = .connecting
             Task { @MainActor in
-                let ok = await APIClient.shared.refreshAccessToken()
+                let ok = await APIClient.shared.refreshAccessToken().isSuccess
                 // This Task is not stored, so `disconnect()` cannot cancel it. A
                 // sign-out landing during the refresh round-trip would otherwise
                 // reopen the socket for a signed-out user. Re-check after the await.
@@ -410,10 +411,12 @@ final class Gateway: ObservableObject {
     /// IDENTIFY was rejected and a token refresh didn't rescue it.
     ///
     /// This must NOT latch the socket closed. `APIClient.refreshAccessToken()`
-    /// returns `false` indistinguishably for a dropped packet, a 5xx, a decode
-    /// failure, and a real revoke — so treating it as "genuine revoke/ban" meant
-    /// a single network blip during a token refresh killed realtime for the rest
-    /// of the foreground session. `handleClose`, `scheduleReconnect` and the ack
+    /// answers `.transient` for a dropped packet, a 5xx, a 409 and a decode
+    /// failure alike — none of which mean the session is gone — so treating a
+    /// non-success as "genuine revoke/ban" meant a single network blip during a
+    /// token refresh killed realtime for the rest of the foreground session. (A
+    /// genuine revoke comes back `.fatal`, and Session signs the user out on
+    /// that; this path never has to.) `handleClose`, `scheduleReconnect` and the ack
     /// watchdog all bail on `intentionallyClosed`, and only a foreground
     /// transition or a push tap calls `forceReconnect()` — so a user sitting in
     /// an open DM never recovered: REST sends kept working off the refresh

@@ -47,6 +47,13 @@ struct PublicUser: Codable, Identifiable, Hashable {
     var staffColor: String?
     /// Optional soft glow layered on the shimmer (only when staffColor is set).
     var staffGlow: Bool?
+    /// "Last online" instant (ISO-8601), or nil. Populated ONLY by
+    /// GET /users/@me/relationships and only for rows of type "friend" —
+    /// every other surface (member lists, message authors, GET /users/:id)
+    /// omits it. Meaningless while the friend reads as online; render it
+    /// only under an away/dnd/offline friend. Invisible users freeze this
+    /// server-side at their last visible moment, so it never leaks presence.
+    var lastSeenAt: String?
 
     /// Best display label with sensible fallbacks.
     var name: String { displayName ?? username ?? "Unknown" }
@@ -542,9 +549,24 @@ struct Attachment: Codable, Identifiable, Hashable {
     var waveform: String?
     /// Inline preview thumbnail URL (its own attachment). nil = load full inline.
     var thumbnailUrl: String?
+    /// ISO-8601 timestamp of when media retention aged out the FULL-SIZE object,
+    /// or nil while the original is still stored (the normal case). Defaulted so
+    /// payloads from before blob expiry shipped still decode.
+    ///
+    /// Non-nil means `url` no longer resolves — never fetch, open, play, save or
+    /// share it. Everything the expired state needs survives: `thumbnailUrl`
+    /// (kept forever, and only ever expired when a thumbnail exists) plus
+    /// filename/size/width/height. The server deliberately keeps `url`
+    /// populated (it is non-optional in every shipped client), so gate on THIS
+    /// field — never on a missing or empty url.
+    var blobExpiredAt: String?
 
     var isImage: Bool { (contentType ?? "").hasPrefix("image/") }
     var isVideo: Bool { (contentType ?? "").hasPrefix("video/") }
+    /// The server no longer stores the full-size original: render from the
+    /// thumbnail and keep every full-size path (lightbox, player, save, share)
+    /// shut.
+    var blobExpired: Bool { blobExpiredAt != nil }
 }
 
 struct PollOption: Codable, Identifiable, Hashable {
@@ -603,9 +625,150 @@ struct AuthSession: Codable {
 
 /// A short-lived, single-use quick-login code for signing in on another
 /// device (shown as digits + encoded in a QR). `expiresIn` is seconds.
+///
+/// DEPRECATED direction — the signed-in device minted the code and the code
+/// WAS the whole credential, so anyone who read it off the screen owned the
+/// account. Replaced by the device-approval flow below. Delete alongside the
+/// `/auth/quick-login/*` routes (checklist: apps/api/src/routes/auth.ts:415).
 struct QuickLoginCode: Codable {
     let code: String
     let expiresIn: Int
+}
+
+// ── Device-approval login ("approve this sign-in on your phone") ────────────
+// The INVERTED quick-login, and the OAuth 2.0 Device Authorization Grant
+// (RFC 8628) shape: the LOGGED-OUT device starts a request and displays a
+// short code; the already signed-in phone scans/types it, is shown what it is
+// about to approve, and approves. Nothing on the new device's screen is enough
+// to take over the account.
+//
+// TWO SECRETS, NOT INTERCHANGEABLE (server rationale:
+// apps/api/src/auth/device-login-store.ts — read it before changing this):
+//   userCode    SHORT. Printed on the new device and encoded in its QR, so
+//               assume every shoulder-surfer in the room has it. It can only
+//               ever be used by an AUTHENTICATED caller to look up and decide
+//               a request. Knowing it NEVER yields a session.
+//   deviceCode  256-bit. Returned once, to the device that started the
+//               request. NEVER render it, never put it in a QR, never log it,
+//               never write it to disk. It alone collects the tokens.
+
+/// Result of POST /auth/device-login/start (the logged-out device).
+struct DeviceLoginStart: Codable {
+    /// Display + QR this. Server sends it pre-formatted `ABCD-EFGH`.
+    let userCode: String
+    /// SECRET — hold in memory only, for the lifetime of the sheet.
+    let deviceCode: String
+    /// Seconds until the request expires (server default 300).
+    let expiresIn: Int
+    /// Minimum seconds between polls. Adopt any larger value the server sends.
+    let interval: Int
+}
+
+/// Claimed platform of the requesting device. UNTRUSTED — derived from the
+/// User-Agent the requesting device wrote about itself.
+enum DeviceLoginPlatform: String, Codable, Hashable {
+    case ios, android, web, desktop, unknown
+
+    /// Unknown/newer values decode to `.unknown` rather than throwing, so a
+    /// server that learns a new platform label never breaks the approval
+    /// screen — the one screen that must always render.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = DeviceLoginPlatform(rawValue: raw) ?? .unknown
+    }
+
+    var label: String {
+        switch self {
+        case .ios: return "iPhone or iPad"
+        case .android: return "Android"
+        case .web: return "Web browser"
+        case .desktop: return "Desktop app"
+        case .unknown: return "Unknown"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .ios: return "iphone"
+        case .android: return "candybarphone"
+        case .web: return "globe"
+        case .desktop: return "desktopcomputer"
+        case .unknown: return "questionmark.square.dashed"
+        }
+    }
+}
+
+/// The device asking to be signed in, as shown on the approval screen.
+///
+/// THE SPLIT BELOW IS THE WHOLE POINT — render both halves, labelled.
+/// `ipAddress` / `sameNetwork` / `requestedAt` are observed by the server and
+/// a remote phisher cannot forge them. `declaredName` / `userAgent` /
+/// `platform` / `locale` are whatever the requesting device claimed about
+/// itself; an attacker will happily call themselves "Your iPhone".
+struct DeviceLoginDeviceInfo: Codable, Hashable {
+    /// UNTRUSTED, device-supplied label.
+    let declaredName: String?
+    /// UNTRUSTED, device-supplied User-Agent.
+    let userAgent: String?
+    /// UNTRUSTED — derived from the User-Agent.
+    let platform: DeviceLoginPlatform
+    /// UNTRUSTED — from Accept-Language. A locale, NOT a location.
+    let locale: String?
+    /// Server-observed source IP of the requesting device.
+    let ipAddress: String?
+    /// Server-observed: the requester shares the approver's /24 (or IPv6 /48).
+    /// A hint, not proof — but a remote attacker can never make it true, so a
+    /// `false` gets a loud warning on the approval screen.
+    let sameNetwork: Bool
+    /// ISO-8601.
+    let requestedAt: String
+    /// Always nil today — the server does no GeoIP and will not guess. The
+    /// approval screen shows "Unavailable" rather than pretending.
+    let approxLocation: String?
+}
+
+/// Result of POST /auth/device-login/lookup (the signed-in phone).
+struct DeviceLoginRequestInfo: Codable, Hashable {
+    let userCode: String
+    /// Seconds left before the request expires.
+    let expiresIn: Int
+    let device: DeviceLoginDeviceInfo
+}
+
+/// Result of POST /auth/device-login/poll. Every case arrives as HTTP 200 —
+/// these are states of a polling loop, not errors.
+enum DeviceLoginPoll: Decodable {
+    /// Keep polling, no faster than `interval`.
+    case pending(interval: Int)
+    /// Polled too fast — adopt the (larger) `interval`.
+    case slowDown(interval: Int)
+    /// The user refused on their phone. Terminal.
+    case denied
+    /// Unknown / consumed / timed-out code. Terminal; start over.
+    case expired
+    /// Done — delivered EXACTLY ONCE. Persist it here or it is gone.
+    case approved(AuthSession)
+
+    private enum CodingKeys: String, CodingKey { case status, interval }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        switch try c.decode(String.self, forKey: .status) {
+        case "pending":
+            self = .pending(interval: (try? c.decode(Int.self, forKey: .interval)) ?? 5)
+        case "slow_down":
+            self = .slowDown(interval: (try? c.decode(Int.self, forKey: .interval)) ?? 10)
+        case "denied":
+            self = .denied
+        case "approved":
+            self = .approved(try AuthSession(from: decoder))
+        default:
+            // "expired" and anything this build doesn't know: stop polling.
+            // Failing SAFE here means a future status can never strand the
+            // device in a hot loop.
+            self = .expired
+        }
+    }
 }
 
 // ── Response envelopes ──────────────────────────────────────────────────────
@@ -1173,6 +1336,15 @@ struct PeekAttachment: Codable, Identifiable, Hashable {
     var url: String?
     var contentType: String?
     var size: Int?
+    /// Kept forever by attachment retention; `url` may be a dead path.
+    var thumbnailUrl: String?
+    /// Non-nil ⇒ the FULL-SIZE object has been reclaimed. `url` is still
+    /// populated and still points at the dead path, so gate on THIS, never on a
+    /// missing url. A parent reviewing months-old DMs is the reader most likely
+    /// to hit expired media, and before this field existed the peek view showed
+    /// them a permanently spinning placeholder.
+    var blobExpiredAt: String?
+    var blobExpired: Bool { blobExpiredAt != nil }
 }
 
 /// One message in an observed channel / supervised DM.

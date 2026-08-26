@@ -2,6 +2,7 @@ import SwiftUI
 import LiveKit
 import AudioToolbox
 import AVFAudio
+import AVFoundation
 
 /// Wraps a single LiveKit `Room` for guild voice channels. The server's
 /// `joinVoice` returns a token + wsUrl; we connect, publish the mic, and let
@@ -30,12 +31,31 @@ final class VoiceManager: ObservableObject {
         didSet {
             Self.callAudioActive =
                 state == .connecting || state == .connected || state == .reconnecting
+            // CONNECT cue — ONCE per genuine join. `state` reaches .connected
+            // from two directions: performConnect's success path and the
+            // RoomDelegate connection-state callback, and the delegate re-fires
+            // it every time LiveKit recovers from .reconnecting. Without this
+            // latch a flapping network would machine-gun the sound. The latch
+            // is cleared only when a NEW session starts or the room is torn
+            // down (see performConnect / performDisconnect), never in here.
+            if state == .connected, !hasAnnouncedConnect {
+                hasAnnouncedConnect = true
+                VoiceSounds.play(.connect)
+            }
         }
     }
+    /// Guards the CONNECT cue against reconnect/resume re-entry (see the didSet).
+    private var hasAnnouncedConnect = false
     @Published private(set) var isMuted = false
     /// When deafened, all remote audio is muted for the local listener (and the
     /// mic is muted too, mirroring Discord). Restored on undeafen.
-    @Published private(set) var isDeafened = false
+    /// Deafened also silences every voice UI cue — deafened means no audio, so
+    /// a join/leave blip that ignored it would be a bug. Mirrored into
+    /// `VoiceSounds.suppressed` here (a derived flag, like `callAudioActive`)
+    /// rather than re-checked at each call site, so no cue can forget.
+    @Published private(set) var isDeafened = false {
+        didSet { VoiceSounds.suppressed = isDeafened }
+    }
     private var wasMutedBeforeDeafen = false
     /// Speaker (loudspeaker) vs receiver (earpiece) output. Defaults ON for
     /// calls — LiveKit otherwise routes a call to the EARPIECE
@@ -43,11 +63,24 @@ final class VoiceManager: ObservableObject {
     /// feels like "we can't hear each other." This drives
     /// AudioManager.shared.isSpeakerOutputPreferred (LiveKit reconfigures the
     /// AVAudioSession accordingly). Local-only; not synced to the server.
-    @Published private(set) var isSpeakerOn = true
+    /// Seeded from the user's last choice, NOT hard-coded true. Loudspeaker is
+    /// only the default for someone who has never picked earpiece.
+    @Published private(set) var isSpeakerOn = VoiceManager.storedSpeakerPreference
+
+    /// Persisted so the choice survives the call. `connect()` used to reset this
+    /// to `true` on EVERY call, so picking the earpiece never lasted beyond the
+    /// current one ("it keeps going back to speakerphone").
+    private static let speakerDefaultsKey = "zk.speakerOn"
+    private static var storedSpeakerPreference: Bool {
+        // Absent key => true (loudspeaker), matching the previous default for a
+        // fresh install. `object(forKey:)` distinguishes "unset" from "false".
+        UserDefaults.standard.object(forKey: speakerDefaultsKey) as? Bool ?? true
+    }
 
     /// Route call audio to the loudspeaker (on) or the earpiece (off).
     func setSpeaker(_ on: Bool) {
         isSpeakerOn = on
+        UserDefaults.standard.set(on, forKey: Self.speakerDefaultsKey)
         AudioManager.shared.isSpeakerOutputPreferred = on
         // LiveKit only swaps the session category/mode (speaker→.videoChat /
         // receiver→.voiceChat) on this preference and NEVER issues a port
@@ -71,6 +104,16 @@ final class VoiceManager: ObservableObject {
     /// keyed by user id, so the arena can render video tiles.
     @Published private(set) var localVideoTrack: VideoTrack?
     @Published private(set) var remoteVideoTracks: [String: VideoTrack] = [:]
+    /// The camera quality the CURRENTLY LIVE publication was actually created
+    /// with — not the saved preference, which the user can change at any time.
+    /// nil whenever no camera publication exists. toggleCamera compares the two
+    /// to decide whether a re-enable can take the cheap unmute path or has to
+    /// republish; see the long note there.
+    private var publishedCameraQuality: CameraQuality?
+    /// Set only for the brief window of a deliberate quality republish, so the
+    /// didUnpublishTrack delegate doesn't clear localVideoTrack out from under
+    /// the replacement track we are about to publish.
+    private var isRepublishingCamera = false
     @Published var lastError: String?
     /// LiveKit identities (== user snowflakes) currently speaking. Drives the
     /// green ring in the voice/stage UI.
@@ -108,13 +151,81 @@ final class VoiceManager: ObservableObject {
     /// worker thread (EXC_BAD_ACCESS) on call-end.
     private var isTearingDown = false
 
+    /// Serializes connect/disconnect so the two can NEVER overlap on the same
+    /// Room. `isTearingDown` alone was not enough:
+    ///   - connect() awaited disconnect(), but disconnect() EARLY-RETURNS when a
+    ///     teardown is already in flight — so connect proceeded immediately,
+    ///     then reset `isTearingDown = false`, clobbering the running teardown's
+    ///     own guard and building a second Room beside the draining one; and
+    ///   - `room` is assigned BEFORE `try await r.connect(...)`, so a hangup /
+    ///     decline landing mid-connect ran disconnect() on the very Room that
+    ///     connect() was still awaiting — concurrent connect + close on one
+    ///     transport.
+    /// Either way LiveKit reached Room.cleanUpRTC(withError:) -> TransportMode
+    /// .close() while WebRTC was still using the transport, and the WebRTC
+    /// worker thread null-dereffed (EXC_BAD_ACCESS at 0x28). Confirmed from a
+    /// symbolicated device crash: faulting thread "worker_thread" entirely
+    /// inside LiveKitWebRTC, with the CallKit-driven Swift task blocked in
+    /// TransportMode.close(). It reproduced on decline AND hangup because both
+    /// end paths tear down, and it was worst on a VoIP-launched, backgrounded,
+    /// LOCKED device where connect is slow enough for the user to end the call
+    /// mid-connect.
+    /// Every enqueued op runs to completion before the next begins.
+    private var sessionChain: Task<Void, Never>?
+
+    /// Run `op` after any in-flight connect/disconnect finishes.
+    private func serialized(_ op: @escaping @MainActor @Sendable () async -> Void) async {
+        let previous = sessionChain
+        let t = Task { @MainActor in
+            _ = await previous?.result
+            await op()
+        }
+        sessionChain = t
+        _ = await t.result
+    }
+
     var isConnected: Bool { state == .connected }
 
     func connect(url: String, token: String, e2eeKey: Data? = nil, publishMic: Bool = true) async {
-        await disconnect()
-        // Fresh session — never inherit a prior teardown's guard (in case a
-        // previous disconnect is still draining), or mic/deafen would no-op.
-        isTearingDown = false
+        await serialized { [weak self] in
+            await self?.performConnect(url: url, token: token, e2eeKey: e2eeKey, publishMic: publishMic)
+        }
+    }
+
+    /// Room-wide options, shared by the encrypted and plain connect paths so
+    /// they can never drift apart.
+    ///
+    /// `dynacast` is the important bit. The Swift SDK defaults it to FALSE
+    /// (RoomOptions' designated init), so without this the phone encodes every
+    /// simulcast rung unconditionally — including rungs no viewer in the room
+    /// has subscribed to. Our camera is software VP8 (see cameraPublishOptions
+    /// for why it can't be hardware H.264), so those unwatched rungs are paid
+    /// for in CPU and therefore in heat; thermal throttling then starves the
+    /// encoder and smears the picture, which is one half of the "blurry and
+    /// never recovers" report. With dynacast on, the SFU tells us which layers
+    /// are actually wanted and the rest are paused. The web client has run
+    /// dynacast:true all along — this is parity, not a new behaviour.
+    ///
+    /// `adaptiveStream` is deliberately LEFT at its default (false). That knob
+    /// governs what we SUBSCRIBE to (auto-pausing/downgrading remote video
+    /// based on the size of the view rendering it), and our tiles are rendered
+    /// through a custom arena layout that it cannot measure correctly.
+    private static func roomOptions(encryption: EncryptionOptions?) -> RoomOptions {
+        RoomOptions(dynacast: true, encryptionOptions: encryption)
+    }
+
+    private func performConnect(url: String, token: String, e2eeKey: Data?, publishMic: Bool) async {
+        // Already inside the serial chain, so call the raw teardown directly —
+        // routing through disconnect() would deadlock waiting on ourselves.
+        await performDisconnect()
+        // A brand-new session: re-arm the CONNECT cue so this join announces
+        // itself (performDisconnect already cleared it; this is explicit so the
+        // arming can't be lost if the teardown took an early-return path).
+        hasAnnouncedConnect = false
+        // Clear the previous attempt's error. The banner now reads this while
+        // CONNECTED (to surface a mic that wouldn't open), not only on .failed,
+        // so a stale message must not be able to outlive the call that made it.
+        lastError = nil
         // state = .connecting drives callAudioActive=true via its didSet, so
         // voice-message playback/recording is blocked from re-categorizing or
         // deactivating the shared session for the call's lifetime.
@@ -122,12 +233,15 @@ final class VoiceManager: ObservableObject {
         // Push-to-talk starts muted regardless of publishMic — the mic only
         // opens while the talk button is held.
         isMuted = pushToTalkEnabled ? true : !publishMic
-        // Route to the loudspeaker by default — set BEFORE connecting so LiveKit
-        // configures the session for speaker when the audio engine starts.
-        // Without this, calls default to the earpiece and sound silent unless
-        // the phone is held to the ear.
-        isSpeakerOn = true
-        AudioManager.shared.isSpeakerOutputPreferred = true
+        // Seed the route from the user's SAVED choice — set BEFORE connecting so
+        // LiveKit configures the session accordingly when the audio engine
+        // starts. (Loudspeaker remains the default for anyone who has never
+        // chosen otherwise: without it, calls come out the earpiece and sound
+        // silent unless the phone is held to the ear.) This used to hard-code
+        // `true`, which silently discarded the earpiece choice on every single
+        // call — the user picked earpiece, and the next call was loud again.
+        isSpeakerOn = Self.storedSpeakerPreference
+        AudioManager.shared.isSpeakerOutputPreferred = isSpeakerOn
         let r: Room
         if let e2eeKey {
             // Encrypted 1:1 call: key LiveKit's media E2EE with the DM key.
@@ -146,20 +260,44 @@ final class VoiceManager: ObservableObject {
                 sharedKey: e2eeKey.base64EncodedString()
             )
             let encryption = EncryptionOptions(keyProvider: keyProvider, encryptionType: .gcm)
-            r = Room(delegate: self, roomOptions: RoomOptions(encryptionOptions: encryption))
+            r = Room(delegate: self, roomOptions: Self.roomOptions(encryption: encryption))
         } else {
-            r = Room(delegate: self)
+            r = Room(delegate: self, roomOptions: Self.roomOptions(encryption: nil))
         }
         room = r
         do {
             try await r.connect(url: url, token: token)
-            // In PTT mode the mic stays off at connect — it opens only on hold.
-            if publishMic && !pushToTalkEnabled { try await r.localParticipant.setMicrophone(enabled: true) }
-            state = .connected
         } catch {
+            // Connect itself failed. The SDK's own failure path already ran
+            // cleanUp(), which closed the signal socket, so there is nothing of
+            // ours left to tear down and dropping the reference is safe here.
             lastError = error.localizedDescription
             state = .failed // didSet clears callAudioActive
             room = nil
+            return
+        }
+        // The room is UP and the SFU has us in its roster. Publishing the mic is
+        // a SEPARATE step and must never be able to kill the session.
+        //
+        // setMicrophone opens the audio device (track.start()) BEFORE it sends
+        // AddTrack, so a permission/audio-session failure throws with the call
+        // fully connected. This used to share the do/catch above, and the catch
+        // set `room = nil` — but VoiceManager.room is the ONLY strong reference
+        // (every SDK back-pointer is weak), so the Room deallocated on the spot,
+        // closing both PeerConnections WITHOUT ever sending a Leave. The server
+        // could then only reap us through its ICE watchdog: four sessions in
+        // production sat as silent zombie participants for ~21s each, with the
+        // user shown nothing but a red label. Now a mic that won't open leaves
+        // you connected-and-muted, with the reason on screen.
+        state = .connected
+        // In PTT mode the mic stays off at connect — it opens only on hold.
+        if publishMic && !pushToTalkEnabled {
+            do {
+                try await r.localParticipant.setMicrophone(enabled: true)
+            } catch {
+                isMuted = true
+                lastError = "Microphone unavailable — you're connected but muted. (\(error.localizedDescription))"
+            }
         }
     }
 
@@ -279,8 +417,65 @@ final class VoiceManager: ObservableObject {
         guard isCameraOn,
               let track = localVideoTrack as? LocalVideoTrack,
               let capturer = track.capturer as? CameraCapturer else { return }
-        do { try await capturer.switchCameraPosition() }
-        catch { lastError = error.localizedDescription }
+        do {
+            try await capturer.switchCameraPosition()
+            // A flip swaps the AVCaptureDevice — re-apply the focus tuning to
+            // the NEW device or the back camera runs whatever mode it was in.
+            applyCameraFocusTuning()
+        } catch { lastError = error.localizedDescription }
+    }
+
+    /// Put the capture hardware into its video-appropriate auto modes.
+    ///
+    /// WebRTC's camera capturer configures format/fps but never touches focus,
+    /// so the lens runs whatever mode the device was left in. Two things matter:
+    ///  - `isSmoothAutoFocusEnabled` is Apple's video autofocus (gradual,
+    ///    invisible refocus instead of the stills-style hunting "pulse") and it
+    ///    DEFAULTS OFF — this is the user-visible win;
+    ///  - explicitly asserting continuous focus/exposure/white-balance guards
+    ///    against a stale LOCKED mode surviving a previous session or format
+    ///    change. A locked lens is permanent optical blur that no encoder
+    ///    setting can fix — the class of blur the bitrate work can't touch.
+    /// Android needs no twin: libwebrtc's Camera2Session.chooseFocusMode already
+    /// selects continuous-video AF (verified in the shipped AAR's bytecode).
+    ///
+    /// Runs on the main actor DELIBERATELY: lockForConfiguration + property
+    /// writes are fast, and hopping actors would capture the non-Sendable
+    /// AVCaptureDevice — the diagnostic class that compiles as a warning in
+    /// simulator builds but errors in the user's Xcode.
+    private func applyCameraFocusTuning(retry: Bool = true) {
+        guard isCameraOn,
+              let track = localVideoTrack as? LocalVideoTrack,
+              let capturer = track.capturer as? CameraCapturer else { return }
+        guard let device = capturer.device else {
+            // The capture session can still be spinning up in the beat after
+            // publish, before the SDK exposes the device. One short retry —
+            // no polling.
+            if retry {
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    self?.applyCameraFocusTuning(retry: false)
+                }
+            }
+            return
+        }
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            if device.isSmoothAutoFocusSupported { device.isSmoothAutoFocusEnabled = true }
+            if device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusMode = .continuousAutoFocus
+            }
+            if device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposureMode = .continuousAutoExposure
+            }
+            if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+                device.whiteBalanceMode = .continuousAutoWhiteBalance
+            }
+        } catch {
+            // Fixed-focus front cameras (older iPhones) and config races land
+            // here — non-fatal, the device keeps its current behaviour.
+        }
     }
 
     /// Live camera-quality entitlement check, wired by AppStore.start() to
@@ -354,17 +549,109 @@ final class VoiceManager: ObservableObject {
         case .k2: bitrate = 6_000_000
         case .k4: bitrate = 10_000_000
         }
+        // degradationPreference MUST be explicit. Leaving it at its `.auto`
+        // default maps to nil (DegradationPreference.toRTCType), and the SDK
+        // then substitutes `.maintainResolution` (LocalParticipant.swift:672) —
+        // an SDK-chosen fallback, not a WebRTC default and not our decision.
+        //
+        // maintain-resolution forbids the encoder from shedding pixels. With a
+        // SOFTWARE VP8 encoder pushing 1080p30 (the default tier) on a phone
+        // that throttles, it therefore holds 1920x1080 and dumps the shortfall
+        // into the quantizer: a full-size, permanently smeared picture. And
+        // because the resolution axis is switched off in BOTH directions, there
+        // is no scale-back-up when the thermal/uplink pressure clears — which
+        // is exactly the "blurry and never auto-corrects" report.
+        //
+        // .balanced restores the two-way adaptation loop. This does NOT touch
+        // codec negotiation, so the documented H.264-invisible-to-web interop
+        // regression above is not reintroduced — the two are orthogonal.
         return VideoPublishOptions(
             encoding: VideoEncoding(maxBitrate: bitrate, maxFps: q == .low ? 15 : 30),
             simulcast: true,
-            preferredCodec: .vp8)
+            simulcastLayers: cameraSimulcastLayers(q),
+            preferredCodec: .vp8,
+            degradationPreference: .balanced)
     }
 
-    /// Publish/unpublish the local camera (front camera, hardware H.264 at the
-    /// user's chosen quality).
+    /// The two LOWER simulcast rungs to publish beneath the full-resolution
+    /// one, per quality tier.
+    ///
+    /// Why this has to be spelled out: when `simulcastLayers` is empty the SDK
+    /// falls back to `defaultSimulcastLayers`, which is the FIXED pair
+    /// [180p@160k, 360p@450k] — those constants do not scale with what we are
+    /// actually capturing. Utils.computeVideoEncodings then builds
+    /// [low, mid, capture], so on the default 1080p tier the published ladder
+    /// is 320x180 / 640x360 / 1920x1080 with NOTHING in between. A viewer whose
+    /// link settles anywhere from roughly 0.5 to 3 Mbps cannot hold the top
+    /// rung and drops to 640x360 — which the web client then upscales AND
+    /// crops to fill a large object-cover tile. That is the reported blur, and
+    /// it is a publisher-side gap, so no amount of viewer-side adaptation can
+    /// fix it. 2K and 4K are worse still: the same 360p floor under a far
+    /// bigger top rung.
+    ///
+    /// So each tier gets rungs proportional to ITS capture size, keeping the
+    /// step between neighbours near 1.5–2x. Only the first two entries are
+    /// read (Utils takes presets[0] and presets[1]); they are the SDK's own
+    /// VideoParameters presets so the bitrates stay the SDK's tuned values.
+    private func cameraSimulcastLayers(_ q: CameraQuality) -> [VideoParameters] {
+        switch q {
+        // 640x480 capture: max dimension is 640, which is < 960, so
+        // computeVideoEncodings takes the two-rung branch and DISCARDS the mid
+        // preset entirely. Supplying a ladder here would change nothing except
+        // the floor, and the SDK's 4:3 default floor already matches this
+        // 4:3-captured tier. Leave it to the defaults.
+        case .low: return []
+        // 1280x720 -> 320x180, 640x360, 1280x720. Same as the SDK default, but
+        // pinned explicitly so a future SDK default change can't move it.
+        case .medium, .auto: return [.presetH180_169, .presetH360_169]
+        // 1920x1080 -> 640x360, 1280x720, 1920x1080.
+        case .high: return [.presetH360_169, .presetH720_169]
+        // 2560x1440 -> 960x540, 1920x1080, 2560x1440.
+        case .k2: return [.presetH540_169, .presetH1080_169]
+        // 3840x2160 -> 1280x720, 1920x1080, 3840x2160.
+        case .k4: return [.presetH720_169, .presetH1080_169]
+        }
+    }
+
+    /// Publish/unpublish the local camera (front camera, VP8 at the user's
+    /// chosen quality).
     func toggleCamera() async {
         let next = !isCameraOn
         do {
+            let q = savedCameraQuality
+            // A quality change only reaches the wire on a FRESH publish.
+            //
+            // LocalParticipant.set(source:enabled:) short-circuits when a
+            // publication already exists and we are enabling: it calls
+            // publication.unmute() and returns, without ever LOOKING at the
+            // captureOptions/publishOptions we passed. And camera-off only
+            // MUTES (cameras and mics are special-cased there; everything else
+            // gets unpublished). So the publication survives the whole call and
+            // every re-enable silently reuses the dimensions, bitrate, codec
+            // and simulcast ladder chosen on the FIRST camera-on. Changing the
+            // quality in Settings mid-call therefore did nothing at all — while
+            // the UI promised "Changes apply the next time you turn your camera
+            // on".
+            //
+            // So when the live publication was built with a different quality,
+            // tear it down first and let setCamera take its create-and-publish
+            // branch. Unchanged quality keeps the cheap unmute path — this must
+            // not turn the ordinary camera toggle into a renegotiation.
+            //
+            // A nil publishedCameraQuality counts as "different": either there
+            // is no publication (the `existing` lookup then finds nothing and
+            // this whole block is skipped) or a previous attempt failed partway
+            // and we can no longer vouch for the live settings.
+            if next, publishedCameraQuality != q, let lp = room?.localParticipant,
+               let existing = lp.localVideoTracks.first(where: { $0.source != .screenShareVideo })
+            {
+                // The delegate's didUnpublishTrack would otherwise land during
+                // the setCamera below and nil out the NEW track.
+                isRepublishingCamera = true
+                try await lp.unpublish(publication: existing)
+                publishedCameraQuality = nil
+                localVideoTrack = nil
+            }
             // setCamera returns the publication on BOTH paths. The first
             // enable PUBLISHES a track (didPublishTrack fires, caching
             // localVideoTrack); but disable only MUTES the publication (it
@@ -373,7 +660,13 @@ final class VoiceManager: ObservableObject {
             // this, localVideoTrack stayed nil after a re-enable: the local
             // tile never reappeared even though the camera was live and
             // publishing to peers (an invisible-but-broadcasting hazard).
-            let q = savedCameraQuality
+            // The republish above lands on the publish path, so this read-back
+            // covers it too.
+            //
+            // cameraPublishOptions still pins preferredCodec: .vp8, which is
+            // load-bearing here: a fresh publish re-runs codec negotiation, and
+            // that is exactly where the iOS-H.264-invisible-to-web regression
+            // documented above lived.
             let pub = try await room?.localParticipant.setCamera(
                 enabled: next,
                 captureOptions: cameraCaptureOptions(q),
@@ -381,10 +674,26 @@ final class VoiceManager: ObservableObject {
             isCameraOn = next
             if next {
                 if let vt = pub?.track as? VideoTrack { localVideoTrack = vt }
+                // Record what the live publication was actually built with, so
+                // the next toggle can tell "same quality, just unmute" from
+                // "user changed it, must republish".
+                if pub != nil { publishedCameraQuality = q }
+                // Covers fresh publish, unmute, AND the quality-change
+                // republish — all of them land here on success.
+                applyCameraFocusTuning()
             } else {
                 localVideoTrack = nil
+                // NOT cleared: camera-off leaves the publication in place
+                // (muted), still carrying these encoder settings.
             }
+            isRepublishingCamera = false
         } catch {
+            isRepublishingCamera = false
+            // The unpublish may already have succeeded before a later step
+            // threw, so don't leave a stale quality claiming a publication that
+            // no longer matches; the next toggle then republishes rather than
+            // unmuting something that isn't there.
+            if next { publishedCameraQuality = nil }
             lastError = error.localizedDescription
         }
     }
@@ -533,6 +842,10 @@ final class VoiceManager: ObservableObject {
     }
 
     func disconnect() async {
+        await serialized { [weak self] in await self?.performDisconnect() }
+    }
+
+    private func performDisconnect() async {
         // Single-shot, and clear the room ref + reset published state
         // SYNCHRONOUSLY before awaiting the SDK disconnect. Niling `room` first
         // closes the re-entrancy window: any concurrent disconnect()/toggleMute/
@@ -544,6 +857,7 @@ final class VoiceManager: ObservableObject {
             // Defensive: this early-return path doesn't transition `state`, so
             // sync the derived flag directly in case state was left non-idle.
             Self.callAudioActive = false
+            hasAnnouncedConnect = false
             return
         }
         isTearingDown = true
@@ -551,15 +865,31 @@ final class VoiceManager: ObservableObject {
         // state = .idle releases the shared session (didSet clears
         // callAudioActive) so voice messages may use it again.
         state = .idle
+        // The room is gone: the NEXT .connected is a genuine new join, not a
+        // reconnect, so re-arm the CONNECT cue.
+        hasAnnouncedConnect = false
         isMuted = false
         isDeafened = false
         isCameraOn = false
         localVideoTrack = nil
+        // The publication dies with the room, so the next call must publish
+        // fresh rather than believing a stale quality still describes it.
+        publishedCameraQuality = nil
+        isRepublishingCamera = false
         remoteVideoTracks.removeAll()
         screenTracks.removeAll()
         speakingUserIds = []
         audioPubs.removeAll()
         await r.disconnect()
+        // Restore the engine's resting state HERE — after the room is fully
+        // gone. This is now the authoritative restore; CallManager.forget()
+        // used to do it synchronously inside the CXEndCallAction handler, i.e.
+        // BEFORE this teardown had even started, which re-enabled the LiveKit
+        // audio engine against a Room that was about to be destroyed. A device
+        // crash caught that mid-act: the main thread sat in
+        // [AVAudioSession currentRoute] under a LiveKit route-change observer
+        // while this teardown ran, and the WebRTC worker null-dereffed.
+        try? AudioManager.shared.setEngineAvailability(.default)
         isTearingDown = false
     }
 }
@@ -654,6 +984,12 @@ extension VoiceManager: RoomDelegate {
         Task { @MainActor in
             guard room === self.room else { return }
             if publication.track is VideoTrack, publication.source != .screenShareVideo {
+                // Suppressed during a deliberate quality republish: that
+                // unpublish is immediately followed by a fresh publish, and
+                // this notification can arrive after the replacement track has
+                // already been cached — nilling it here would leave the camera
+                // live but the self-tile blank.
+                guard !self.isRepublishingCamera else { return }
                 self.localVideoTrack = nil
             }
         }
@@ -1120,7 +1456,12 @@ struct VoiceChannelView: View {
             switch voice.state {
             // Steady-state "Connected" removed — being in the channel is
             // indication enough. Transient/diagnostic states stay.
-            case .connected: EmptyView()
+            // Connected but something non-fatal went wrong — in practice a mic
+            // that wouldn't open. The call is live and the user is in the
+            // roster, but they're muted and need to know why; silence here is
+            // what made "nobody can hear me" impossible to self-diagnose.
+            case .connected:
+                if let err = voice.lastError { label(err, color: Theme.danger) } else { EmptyView() }
             case .connecting: label("Connecting…", color: Theme.ink3)
             case .reconnecting: label("Reconnecting…", color: Theme.accent3)
             case .failed: label(voice.lastError ?? "Connection failed", color: Theme.danger)

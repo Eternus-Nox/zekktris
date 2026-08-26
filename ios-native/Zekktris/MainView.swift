@@ -739,7 +739,7 @@ struct ServerRailView: View {
                         url: session.currentUser?.avatarUrl,
                         name: session.currentUser?.name ?? "?",
                         size: 48,
-                        status: store.status(for: session.currentUser?.id, fallback: session.currentUser?.status),
+                        status: store.status(for: session.currentUser?.id),
                         ringColor: Theme.bg0,
                         squircle: true,
                         decoration: session.currentUser?.avatarDecoration
@@ -1560,7 +1560,7 @@ private struct DMRow: View {
                 url: dm.dmAvatarUser?.avatarUrl,
                 name: store.dmDisplayTitle(dm),
                 size: 36,
-                status: store.status(for: dm.dmAvatarUser?.id, fallback: dm.dmAvatarUser?.status),
+                status: store.status(for: dm.dmAvatarUser?.id),
                 ringColor: Theme.bg2,
                 toneId: dm.dmAvatarUser?.id
             )
@@ -1579,10 +1579,16 @@ private struct DMRow: View {
                 }
             }
             if let u = dm.dmAvatarUser { NameTag(u) }
-            Text(store.dmDisplayTitle(dm))
-                .font(.zkSans(15, weight: unread ? .semibold : .regular))
-                .foregroundColor(unread ? Theme.ink1 : Theme.ink2)
-                .lineLimit(1)
+            // Staff names shimmer here too, matching every other place a name is
+            // shown. The convenience init no-ops for non-staff (and for a nil
+            // peer), so everyone else renders exactly as before — plain Text in
+            // the unread/read color. Note the shimmer applies to
+            // dmDisplayTitle, which may be a private DM nickname: the mark
+            // follows the PERSON, not the string.
+            StaffName(dm.dmAvatarUser,
+                      text: store.dmDisplayTitle(dm),
+                      color: unread ? Theme.ink1 : Theme.ink2,
+                      font: .zkSans(15, weight: unread ? .semibold : .regular))
             if let streak = dm.streak, streak > 0 {
                 StreakChip(days: streak)
             }
@@ -1727,26 +1733,53 @@ struct FriendsView: View {
                     .foregroundColor(Theme.ink3)
             } else {
                 ForEach(friends) { rel in
-                    Button {
-                        Task {
-                            if let ch = await store.startDM(with: rel.user) {
-                                store.selectChannel(ch)
-                                dismiss()
+                    // The row is no longer ONE big button: a Button nested in
+                    // another Button's label never receives the tap, and the
+                    // call action needs its own hit target. Leading block =
+                    // open the DM (unchanged behavior); the two trailing icons
+                    // are peers, not children.
+                    HStack(spacing: 6) {
+                        Button { openDM(with: rel.user) } label: {
+                            HStack(spacing: 10) {
+                                Avatar(url: rel.user.avatarUrl, name: rel.user.name, size: 36, status: store.status(for: rel.user.id), decoration: rel.user.avatarDecoration)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(rel.user.name)
+                                        .font(.zkSans(15))
+                                        .foregroundColor(Theme.ink1)
+                                        .lineLimit(1)
+                                    Text(presenceLine(for: rel))
+                                        .font(.zkSans(11))
+                                        .foregroundColor(Theme.ink3)
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
                             }
+                            .contentShape(Rectangle())
                         }
-                    } label: {
-                        HStack(spacing: 10) {
-                            Avatar(url: rel.user.avatarUrl, name: rel.user.name, size: 36, status: store.presence[rel.user.id], decoration: rel.user.avatarDecoration)
-                            Text(rel.user.name)
-                                .font(.zkSans(15))
-                                .foregroundColor(Theme.ink1)
-                            Spacer()
+                        .buttonStyle(.plain)
+
+                        Button { openDM(with: rel.user) } label: {
                             Image(systemName: "message.fill")
                                 .font(.system(size: 14))
                                 .foregroundColor(Theme.ink3)
+                                .frame(width: 34, height: 34)
+                                .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Message \(rel.user.name)")
+
+                        // Voice call — same path the profile card and the DM
+                        // header use (open/reuse the DM, then openVoice).
+                        Button { callFriend(rel.user) } label: {
+                            Image(systemName: "phone.fill")
+                                .font(.system(size: 14))
+                                .foregroundColor(Theme.ink3)
+                                .frame(width: 34, height: 34)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Call \(rel.user.name)")
                     }
-                    .buttonStyle(.plain)
                     .contextMenu {
                         Button(role: .destructive) {
                             Task { await store.removeFriend(rel.user) }
@@ -1761,6 +1794,48 @@ struct FriendsView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// Open (or reuse) the DM with this friend and close the sheet.
+    private func openDM(with user: PublicUser) {
+        Task {
+            if let ch = await store.startDM(with: user) {
+                store.selectChannel(ch)
+                dismiss()
+            }
+        }
+    }
+
+    /// Start a voice call with this friend — mirrors ProfileCardView.call():
+    /// open/reuse the 1:1 DM, then hand it to the app's existing openVoice.
+    private func callFriend(_ user: PublicUser) {
+        Task {
+            guard let ch = await store.startDM(with: user) else { return }
+            dismiss()
+            store.openVoice(ch)
+        }
+    }
+
+    /// Second line under a friend's name.
+    ///   online              → "Online" (a timestamp here would be noise)
+    ///   away / do not disturb → the status AND when they were last active
+    ///   offline             → "Last online 3d ago"
+    /// Invisible never reaches us as anything but plain offline, and the
+    /// server freezes lastSeenAt the moment someone goes invisible, so this
+    /// can't show a fresh timestamp for a hidden user.
+    private func presenceLine(for rel: Relationship) -> String {
+        let status = store.status(for: rel.user.id)
+        if status == "online" { return "Online" }
+        let ago = rel.user.lastSeenAt.flatMap { shortAgo($0) }
+        switch status {
+        case "idle":
+            // "idle" is the wire value; "Away" is what the user reads.
+            return ago.map { "Away · Active \($0)" } ?? "Away"
+        case "dnd":
+            return ago.map { "Do Not Disturb · Active \($0)" } ?? "Do Not Disturb"
+        default:
+            return ago.map { "Last online \($0)" } ?? "Offline"
         }
     }
 
@@ -1909,7 +1984,7 @@ struct SettingsView: View {
     @State private var showSessions = false
     @State private var showTwoFactor = false
     @State private var showPasskeys = false
-    @State private var showQuickLogin = false
+    @State private var showDeviceLogin = false
     @State private var showBots = false
     @State private var showAchievements = false
     @State private var showTermsSheet = false
@@ -1954,7 +2029,9 @@ struct SettingsView: View {
 
     private let statuses: [(String, String, Color)] = [
         ("Online", "online", Theme.online),
-        ("Idle", "idle", Theme.idle),
+        // DISPLAY LABEL ONLY — the wire/DB value stays "idle" (renaming the
+        // enum would break every already-shipped client against the server).
+        ("Away", "idle", Theme.idle),
         ("Do Not Disturb", "dnd", Theme.dnd),
         ("Invisible", "invisible", Theme.offline),
     ]
@@ -2260,6 +2337,19 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
+    /// The shimmer color to paint your OWN name with in Settings, or nil for
+    /// plain text. Same gate `StaffName(_ user:)` applies to everyone else's
+    /// name (SelfUser isn't a PublicUser, so it can't use that init directly):
+    /// staff-only, and only while the shimmer is actually turned on. Reads the
+    /// SAVED value — the live editor below has its own preview swatch, so an
+    /// unsaved toggle doesn't retroactively repaint the header.
+    private var selfStaffColor: String? {
+        guard let u = session.currentUser,
+              u.isAdmin == true || u.isModerator == true,
+              let hex = u.staffColor, !hex.isEmpty else { return nil }
+        return hex
+    }
+
     private var profileHeader: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Profile banner — tap (or the camera chip) to change.
@@ -2311,7 +2401,7 @@ struct SettingsView: View {
                     // Live presence — currentUser.status is a snapshot from
                     // launch (often 'offline' because getMe ran before the
                     // gateway identified). The presence map has the truth.
-                    status: store.status(for: user?.id, fallback: user?.status),
+                    status: store.status(for: user?.id),
                     // Blend the presence dot's ring into the header background.
                     ringColor: Theme.bg1,
                     // Show the selected avatar decoration here too — the
@@ -2325,9 +2415,20 @@ struct SettingsView: View {
                 .background(Circle().fill(Theme.bg1).frame(width: 84, height: 84))
                 .padding(.top, -38)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(session.currentUser?.name ?? "You")
-                        .font(.zkSans(21, weight: .bold))
-                        .foregroundColor(store.memberColor(user?.id ?? "") ?? Theme.ink1)
+                    // Your own name shimmers here exactly as it does to
+                    // everyone else — same StaffName view, same gate. Not
+                    // entitled (non-staff) or opted out (shimmer toggled off,
+                    // so staffColor is nil) → plain text, as before.
+                    StaffName(text: session.currentUser?.name ?? "You",
+                              staffColor: selfStaffColor,
+                              glow: selfStaffColor != nil && session.currentUser?.staffGlow == true,
+                              // Plain ink1, NOT memberColor: this is your own name in
+                          // SETTINGS, which is guild-agnostic. memberColor resolves
+                          // against the *currently selected* guild's roles, so your
+                          // Settings name would change colour as you switch servers.
+                          // Android passes ZkInk.ink1 here for the same reason.
+                          color: Theme.ink1,
+                              font: .zkSans(21, weight: .bold))
                     if let username = session.currentUser?.username {
                         Text("@\(username)")
                             .font(.zkSans(14))
@@ -3223,8 +3324,12 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("SECURITY")
             // bioProbe resolves off-main in .task — probing LocalAuthentication
-            // inline here blocked the main thread and froze Settings open.
-            if let probe = bioProbe {
+            // inline here blocked the main thread and froze Settings open. An
+            // `indeterminate` probe is the daemon failing to answer inside the
+            // timeout, NOT an answer: keep showing "checking" rather than
+            // telling the user their hardware doesn't exist (reopening Settings
+            // re-probes, since a non-answer is never memoized).
+            if let probe = bioProbe, !probe.indeterminate {
                 if probe.available {
                     Toggle(isOn: Binding(
                         get: { faceIDOn },
@@ -3287,9 +3392,12 @@ struct SettingsView: View {
             }
             .buttonStyle(.plain)
 
-            Button { showQuickLogin = true } label: {
+            // Device-approval login: this phone SCANS the code the new device
+            // is showing and approves it. (The old direction — this phone
+            // minting a code — is gone; the code was the whole credential.)
+            Button { showDeviceLogin = true } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: "qrcode").font(.system(size: 14)).foregroundColor(Theme.ink3).frame(width: 20)
+                    Image(systemName: "qrcode.viewfinder").font(.system(size: 14)).foregroundColor(Theme.ink3).frame(width: 20)
                     Text("Log in on another device").font(.system(size: 15)).foregroundColor(Theme.ink1)
                     Spacer()
                     Image(systemName: "chevron.right").font(.system(size: 12)).foregroundColor(Theme.ink4)
@@ -3357,7 +3465,7 @@ struct SettingsView: View {
         .sheet(isPresented: $showSessions) { SessionsSheet() }
         .sheet(isPresented: $showTwoFactor) { TwoFactorSheet() }
         .sheet(isPresented: $showPasskeys) { PasskeysSheet() }
-        .sheet(isPresented: $showQuickLogin) { QuickLoginSheet() }
+        .sheet(isPresented: $showDeviceLogin) { DeviceLoginApproveSheet() }
         .sheet(isPresented: $showBots) { BotsView() }
     }
 
@@ -8305,7 +8413,7 @@ struct EventAttendeesView: View {
     private func attendeeRow(_ a: EventRsvp) -> some View {
         Button { store.openProfile(a.user); dismiss() } label: {
             HStack(spacing: 10) {
-                Avatar(url: a.user.avatarUrl, name: a.user.name, size: 32, status: store.presence[a.user.id])
+                Avatar(url: a.user.avatarUrl, name: a.user.name, size: 32, status: store.status(for: a.user.id))
                 Text(a.user.name).font(.zkSans(15)).foregroundColor(Theme.ink1)
                 Spacer()
             }
@@ -8796,6 +8904,12 @@ struct ReorderChannelsView: View {
 /// Quick-login generator: shows a one-time QR + 16-digit code so the user can
 /// sign in on another device. Re-randomizes on demand, counts down, and
 /// invalidates the code on dismiss. Never touches this device's session.
+///
+/// DEPRECATED AND UNREACHABLE — Settings now opens `DeviceLoginApproveSheet`
+/// instead. This direction made the displayed code the entire credential, so
+/// anyone who saw the screen owned the account; the device-approval flow in
+/// AuthViews.swift replaces it. Delete with the `/auth/quick-login/*` routes
+/// (checklist: apps/api/src/routes/auth.ts:415).
 struct QuickLoginSheet: View {
     @EnvironmentObject private var session: Session
     @Environment(\.dismiss) private var dismiss
@@ -9088,11 +9202,22 @@ struct PeekMessageList: View {
                 }
                 if let atts = m.attachments, !atts.isEmpty {
                     ForEach(atts) { at in
-                        if at.contentType?.hasPrefix("image/") == true, let url = assetURL(at.url) {
+                        // Thumbnail first — it survives retention and is the right
+                        // size for this 220pt box anyway. The full-size original
+                        // is used only when it still exists: once `blobExpiredAt`
+                        // is set the bytes are gone, and `url` still points at the
+                        // dead path, so loading it left this view stuck on the
+                        // `else` branch below — a spinner that never resolves.
+                        if at.contentType?.hasPrefix("image/") == true,
+                           let url = assetURL(at.thumbnailUrl) ?? (at.blobExpired ? nil : assetURL(at.url)) {
                             // Inline image preview, like the real chat view.
                             AsyncImage(url: url) { phase in
                                 if case .success(let image) = phase {
                                     image.resizable().scaledToFit()
+                                } else if case .failure = phase {
+                                    Rectangle().fill(Theme.bg2)
+                                        .overlay(Text("Preview unavailable")
+                                            .font(.zkSans(11)).foregroundColor(Theme.ink3))
                                 } else {
                                     Rectangle().fill(Theme.bg2)
                                         .overlay(ProgressView().tint(Theme.accent))

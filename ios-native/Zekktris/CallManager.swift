@@ -2,6 +2,7 @@ import Foundation
 import CallKit
 import AVFAudio
 import LiveKit
+import UIKit
 
 /// CallKit bridge: 1:1 DM calls ring and behave like normal phone calls —
 /// full-screen system UI on the lock screen, answer/decline/mute from the
@@ -20,6 +21,10 @@ final class CallManager: NSObject, ObservableObject {
     var onAnswer: ((String) -> Void)?
     /// Decline a ringing call or hang up an active one for this channel.
     var onEnd: ((String) -> Void)?
+    /// A ring expired unanswered (the 45s safety net). Distinct from onEnd: the
+    /// user never acted, so the store must clear its own ringing UI and decline
+    /// server-side so the caller stops ringing.
+    var onRingTimeout: ((String) -> Void)?
     /// System call-screen mute toggled.
     var onSetMuted: ((Bool) -> Void)?
     /// CallKit activated the audio session — the store re-asserts the mic so
@@ -33,6 +38,11 @@ final class CallManager: NSObject, ObservableObject {
     private var channelByUUID: [UUID: String] = [:]
     /// UUIDs still in the ringing (unanswered) state.
     private var ringing: Set<UUID> = []
+    /// UUIDs whose audio session CallKit actually activated. Used by forget()
+    /// to tell "this call had live audio, a room teardown is coming, don't
+    /// touch the engine gate" from "this call never got audio, restoring the
+    /// gate here is the safety net it was written to be."
+    private var audioActivated: Set<UUID> = []
     /// Per-ring safety-net timeouts. iOS fires no delegate method when an
     /// incoming call it displayed simply times out unanswered and the system
     /// auto-dismisses the UI — the app must proactively end it. Normally the
@@ -46,9 +56,52 @@ final class CallManager: NSObject, ObservableObject {
         config.maximumCallGroups = 1
         config.maximumCallsPerCallGroup = 1
         config.supportedHandleTypes = [.generic]
+        // THE ONLY route from the system call screen back into the app.
+        //
+        // For an audio-only call (supportsVideo false / hasVideo false) iOS keeps
+        // its own in-call UI up after the answer action is fulfilled — it does NOT
+        // foreground the VoIP app, and there is no public API that can. The single
+        // affordance is the app-icon button in the system button grid, and that
+        // button only exists if iconTemplateImageData is set. It never was, so
+        // answering from the lock screen left the user stranded on the CallKit
+        // screen while the app sat correctly staged on its .voice route in the
+        // background — the "stays in CallKit instead of transferring to the app"
+        // report.
+        //
+        // Deliberately NOT fixed by flipping hasVideo/supportsVideo to force a
+        // foreground: that turns an audio call into a video ring and puts CallKit
+        // into video mode, which also fights the .videoChat session category the
+        // answer handler configures.
+        config.iconTemplateImageData = Self.callKitTemplateIcon()
         provider = CXProvider(configuration: config)
         super.init()
         provider.setDelegate(self, queue: nil)
+    }
+
+    /// 40x40 template mark for the CallKit in-call button grid.
+    ///
+    /// Generated in code rather than shipped as an asset because CallKit imposes
+    /// two invariants that art can silently violate: the image MUST be square (a
+    /// non-square icon throws when the provider config is applied) and only its
+    /// ALPHA channel is used — iOS tints the shape itself, so colour is ignored.
+    /// Rendering it here guarantees both, and leaves no binary artwork to drift
+    /// out of sync with the app icon.
+    private static func callKitTemplateIcon() -> Data? {
+        let side: CGFloat = 40
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: side, height: side))
+        let image = renderer.image { _ in
+            let glyph = "Z" as NSString
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 30, weight: .heavy),
+                .foregroundColor: UIColor.black,
+            ]
+            let size = glyph.size(withAttributes: attrs)
+            glyph.draw(
+                at: CGPoint(x: (side - size.width) / 2, y: (side - size.height) / 2),
+                withAttributes: attrs
+            )
+        }
+        return image.pngData()
     }
 
     // MARK: Bookkeeping
@@ -62,15 +115,31 @@ final class CallManager: NSObject, ObservableObject {
     }
 
     private func forget(_ channelId: String) {
+        var wasAudioActivated = false
         if let u = uuidByChannel.removeValue(forKey: channelId) {
             channelByUUID.removeValue(forKey: u)
             ringing.remove(u)
             ringTimeouts.removeValue(forKey: u)?.cancel()
+            wasAudioActivated = audioActivated.remove(u) != nil
         }
-        // Safety: ensure the engine gate isn't left closed if a call ended
-        // before CallKit's didActivate/didDeactivate fired (e.g. the caller
-        // cancelled as we answered). .default is the resting state.
-        try? AudioManager.shared.setEngineAvailability(.default)
+        // Safety net ONLY: restore the resting engine state when this call never
+        // had its audio session activated (e.g. the caller cancelled as we
+        // answered, or a ring was declined) — there is no room teardown to race
+        // in that case.
+        //
+        // If the call WAS activated, do NOT touch the gate here. forget() runs
+        // synchronously inside the CXEndCallAction handler, i.e. BEFORE the
+        // teardown it triggers (onEnd defers leaveCurrentVoice into a Task), so
+        // flipping the gate to .default here re-enabled the LiveKit audio engine
+        // against a Room that was about to be destroyed. A device crash caught
+        // exactly that: the main thread inside [AVAudioSession currentRoute]
+        // under a LiveKit route-change observer while the room tore down, and
+        // the WebRTC worker null-dereffed. For activated calls the restore now
+        // happens in provider(_:didDeactivate:) and, authoritatively, at the end
+        // of VoiceManager.performDisconnect() once the Room is actually gone.
+        if !wasAudioActivated {
+            try? AudioManager.shared.setEngineAvailability(.default)
+        }
     }
 
     // MARK: Incoming
@@ -129,7 +198,17 @@ final class CallManager: NSObject, ObservableObject {
                     try? await Task.sleep(nanoseconds: 45_000_000_000)
                     guard let self, self.ringing.contains(u) else { return }
                     self.provider.reportCall(with: u, endedAt: nil, reason: .unanswered)
-                    if let cid = self.channelByUUID[u] { self.forget(cid) }
+                    // Tell the STORE too, before forgetting the call. Dismissing
+                    // only CallKit's copy left the in-app ringing overlay (and
+                    // its ringtone) running forever — the phone kept ringing for
+                    // a call the system had already given up on — and never
+                    // declined server-side, so the caller sat there ringing into
+                    // a dead end. onRingTimeout clears incomingCall and POSTs the
+                    // decline.
+                    if let cid = self.channelByUUID[u] {
+                        self.onRingTimeout?(cid)
+                        self.forget(cid)
+                    }
                 }
             }
         }
@@ -195,6 +274,7 @@ extension CallManager: CXProviderDelegate {
             uuidByChannel.removeAll()
             channelByUUID.removeAll()
             ringing.removeAll()
+            audioActivated.removeAll()
             try? AudioManager.shared.setEngineAvailability(.default)
         }
     }
@@ -232,6 +312,11 @@ extension CallManager: CXProviderDelegate {
             if let channelId = channelByUUID[action.callUUID] {
                 ringing.remove(action.callUUID)
                 ringTimeouts.removeValue(forKey: action.callUUID)?.cancel()
+                // Answering means this call gets a live audio session AND a
+                // LiveKit Room, so its teardown owns the engine-gate restore —
+                // forget() must not race it. (didActivate carries no call UUID,
+                // so we record it here, where we do know which call it is.)
+                audioActivated.insert(action.callUUID)
                 onAnswer?(channelId)
             }
             action.fulfill()

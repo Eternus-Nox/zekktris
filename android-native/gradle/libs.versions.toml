@@ -16,6 +16,13 @@ datastore = "1.1.1"
 coil = "2.7.0"
 firebaseBom = "33.7.0"
 googleServices = "4.4.2"
+livekit = "2.26.1"
+zxing = "3.5.3"
+media3 = "1.4.1"
+securityCrypto = "1.1.0-alpha06"
+credentials = "1.3.0"
+biometric = "1.1.0"
+fragment = "1.8.5"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -40,6 +47,28 @@ ktor-serialization-kotlinx-json = { group = "io.ktor", name = "ktor-serializatio
 ktor-client-websockets = { group = "io.ktor", name = "ktor-client-websockets", version.ref = "ktor" }
 ktor-client-logging = { group = "io.ktor", name = "ktor-client-logging", version.ref = "ktor" }
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
+# Animated GIF/WebP/APNG decoder — for animated custom emoji / stickers.
+coil-gif = { group = "io.coil-kt", name = "coil-gif", version.ref = "coil" }
+livekit-android = { group = "io.livekit", name = "livekit-android", version.ref = "livekit" }
+# Pure-Java QR encoder (BitMatrix) for the 2FA otpauth QR — no Android deps.
+zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
+# Media3 ExoPlayer — inline video-attachment playback.
+media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }
+media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
+# Media3 Transformer + Effect — the 720p re-encode MediaPrep runs on a picked
+# video BEFORE it is encrypted. Once a clip is E2EE ciphertext the server can
+# never transcode it (no key, and it reads as application/octet-stream), so the
+# client is the only place this can happen. media3-transformer pulls
+# media3-effect transitively; it is declared explicitly because `Presentation`
+# (the 720p scaler) is imported directly.
+media3-transformer = { group = "androidx.media3", name = "media3-transformer", version.ref = "media3" }
+media3-effect = { group = "androidx.media3", name = "media3-effect", version.ref = "media3" }
+# Keystore-backed EncryptedSharedPreferences for the derived E2EE DM keys.
+androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
+androidx-credentials = { group = "androidx.credentials", name = "credentials", version.ref = "credentials" }
+androidx-credentials-play-services = { group = "androidx.credentials", name = "credentials-play-services-auth", version.ref = "credentials" }
+androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }
+androidx-fragment-ktx = { group = "androidx.fragment", name = "fragment-ktx", version.ref = "fragment" }
 # Firebase Cloud Messaging (push). BoM pins the messaging artifact version.
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }

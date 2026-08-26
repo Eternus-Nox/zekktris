@@ -11,6 +11,13 @@ import os
 /// app runs outside Xcode — used to pin where an incoming ring is dropped.
 private let callLog = Logger(subsystem: "com.zekktris.native", category: "calls")
 
+/// Upload-preparation log — before/after byte counts for every picked photo or
+/// video, plus any video export that fell back to the original. Visible in
+/// Console.app (subsystem com.zekktris.native, category "media") so the storage
+/// win can be confirmed on a real device without instrumenting the server.
+/// Sizes only; no filenames, no pixels, nothing derived from message content.
+private let mediaLog = Logger(subsystem: "com.zekktris.native", category: "media")
+
 /// Small haptic helpers. Centralized so message/poke feedback is consistent.
 enum Haptics {
     /// 2–3 quick taps for an incoming message from someone else.
@@ -133,6 +140,15 @@ struct AchievementBanner: Identifiable, Equatable {
     let achievementId: String
     let name: String
     let detail: String
+}
+
+/// A device-login user code that arrived by deep link and is waiting on the
+/// approval screen. Carries ONLY the (public) short code — the deviceCode that
+/// actually collects a session never leaves the device that started the
+/// request, and nothing here approves anything on its own.
+struct PendingDeviceLogin: Identifiable, Equatable {
+    let id = UUID()
+    let userCode: String
 }
 
 /// Holds the live application data — the user's guilds, the selected guild's
@@ -300,6 +316,11 @@ final class AppStore: ObservableObject {
     /// banner (foreground only). Set by the ACHIEVEMENT_UNLOCK gateway event.
     @Published var achievementBanner: AchievementBanner?
 
+    /// A `zekktris://device-login?code=…` link arrived — RootView presents the
+    /// approval screen for it. Set ONLY by handleDeepLink; it carries a code to
+    /// look up, never a decision. Cleared when the sheet closes.
+    @Published var pendingDeviceLogin: PendingDeviceLogin?
+
     /// Direct-message channels for the current user.
     @Published var dms: [Channel] = []
     @Published var relationships: [Relationship] = []
@@ -388,6 +409,12 @@ final class AppStore: ObservableObject {
         // Apply the saved theme before the first render so there's no flash
         // of the default palette on launch.
         Theme.current = ThemePalette.palette(for: themeId)
+        // Share Suggestions are switched off (see `ShareSuggestions
+        // .donationsEnabled`), but a build that shipped with them ON may have
+        // written contacts into this device's system share/Siri index — turning
+        // donation off removes none of them. One-shot per install, then a single
+        // UserDefaults read on every launch after.
+        ShareSuggestions.purgeLegacyDonationsIfNeeded()
         wireCallKit()
         wirePushRouting()
         Self.shared = self
@@ -445,6 +472,15 @@ final class AppStore: ObservableObject {
                     await self.loadDMs()
                     if let dm = self.dms.first(where: { $0.id == channelId }) {
                         self.openVoice(dm)
+                    } else {
+                        // We answered system-side but cannot resolve the DM (the
+                        // loadDMs failed on a waking radio, or the channel is
+                        // gone). Silently returning left the CallKit call
+                        // "connected" with NOTHING behind it — the system call
+                        // screen stays up forever, tapping through reaches no
+                        // call, and the caller rings into a dead end. End it
+                        // instead so both sides get a clean result.
+                        CallManager.shared.endFromApp(channelId: channelId)
                     }
                 }
             }
@@ -457,6 +493,17 @@ final class AppStore: ObservableObject {
             } else if self.voiceChannelId == channelId {
                 Task { await self.leaveCurrentVoice() }
             }
+        }
+        CallManager.shared.onRingTimeout = { [weak self] channelId in
+            guard let self else { return }
+            // The ring expired unanswered. CallKit has already dismissed its own
+            // call; clear OUR ringing UI (which otherwise kept the overlay and
+            // ringtone going indefinitely) and decline server-side so the caller
+            // stops ringing into a dead end.
+            if let call = self.incomingCall, call.channelId == channelId {
+                self.incomingCall = nil
+            }
+            Task { await self.api.declineCall(channelId: channelId) }
         }
         CallManager.shared.onSetMuted = { [weak self] muted in
             guard let self else { return }
@@ -530,39 +577,50 @@ final class AppStore: ObservableObject {
         // open loads fresh and the next send has a live session behind it.
         foregroundReconnectDebounced()
         func open(_ ch: Channel) {
-            if ch.isDM { showDMs() }
-            if autojoin { openVoice(ch); return }
+            // MUST be read BEFORE showDMs(): that call nils `selectedChannel`, so
+            // reading this after it made `alreadyOpen` unconditionally FALSE for
+            // every DM. The whole alreadyOpen branch below was therefore dead code
+            // on the exact path it was written for — which is why this bug
+            // survived several rounds of fixes aimed squarely at it.
             let alreadyOpen = selectedChannel?.id == ch.id
-            // Deep-link to the exact message the tapped notification is for, and
-            // (guild only) prefill a reply to its author.
-            if let messageId {
-                if alreadyOpen {
-                    // Already open — scroll to it now; reply to it if it's loaded.
-                    pendingScrollAnchorId = messageId
-                    if !ch.isDM, let m = messages.first(where: { $0.id == messageId }) {
-                        replyingTo = m
-                    }
-                } else {
-                    // loadMessages will fetch a window AROUND this id, scroll to
-                    // it, and (guild) set replyingTo once it's loaded.
-                    pendingJumpMessageId = messageId
-                    if !ch.isDM { pendingReplyMessageId = messageId }
-                    selectChannel(ch)
-                }
-            } else if !alreadyOpen {
-                selectChannel(ch)
-            }
-            // If the channel was ALREADY the selected one (its message view is
-            // still on screen from before we suspended), re-selecting does NOT
-            // re-run that view's on-appear load — so the message this
-            // notification is FOR, which arrived while we were suspended, never
-            // gets fetched. That's the "tapped the notification, it opened the
-            // DM, but the new message wasn't there until I backed out and
-            // reopened it" bug. Re-run the same load a reopen does. loadMessages
-            // merges in-flight/optimistic sends and retries on a waking radio;
-            // when we're already current it's a cheap refetch.
+            if ch.isDM { showDMs(preservingSelection: alreadyOpen) }
+            if autojoin { openVoice(ch); return }
             if alreadyOpen {
-                Task { await loadMessages(ch) }
+                // We're already sitting in this conversation, so the view will NOT
+                // remount and nothing reloads on its own — this Task is the only
+                // thing that fetches. Do exactly ONE latest-window merge.
+                //
+                // Deliberately NOT also calling loadMessages(): it REPLACES the
+                // array while this merges into it, so the two race, and a replace
+                // whose fetch fails on a waking radio (the norm right after a push
+                // tap) can drop the very rows the merge just brought in. The merge
+                // is also non-disruptive — it keeps scroll position and in-flight
+                // optimistic sends, which a replace does not.
+                //
+                // Drop any stale deep-link jump first: refreshOpenChannelLatest
+                // bails outright while pendingJumpMessageId != nil (:1972), and a
+                // notification tap means "show me the new message", not "hold my
+                // place at an old one".
+                pendingJumpMessageId = nil
+                Task {
+                    await refreshOpenChannelLatest()
+                    if let messageId {
+                        pendingScrollAnchorId = messageId
+                        if !ch.isDM, let m = messages.first(where: { $0.id == messageId }) {
+                            replyingTo = m
+                        }
+                    }
+                }
+            } else if let messageId {
+                // Not open: loadMessages fetches a window AROUND this id, scrolls
+                // to it, and (guild) sets replyingTo once it's loaded. The route
+                // genuinely changes here, so the view remounts and .onAppear →
+                // openChannel → loadMessages runs.
+                pendingJumpMessageId = messageId
+                if !ch.isDM { pendingReplyMessageId = messageId }
+                selectChannel(ch)
+            } else {
+                selectChannel(ch)
             }
         }
         if let dm = dms.first(where: { $0.id == channelId }) { open(dm); return }
@@ -1035,6 +1093,16 @@ final class AppStore: ObservableObject {
             try? await Task.sleep(nanoseconds: 2_700_000_000) // ~4s after foreground
             await reconcileOpenChannel()
         }
+        // Guaranteed floor over the after-cursor reconciles above: also pull the
+        // LATEST window and merge it (see refreshOpenChannelLatest) — the same
+        // recovery re-opening the channel performs — so the open conversation
+        // can NEVER sit stale after a resume, even if every reconcile above
+        // missed. Once immediately, once after the socket has had time to settle.
+        Task {
+            await refreshOpenChannelLatest()
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            await refreshOpenChannelLatest()
+        }
         // Refresh the watch with the freshest token + targets on foreground.
         syncWatch()
     }
@@ -1189,9 +1257,22 @@ final class AppStore: ObservableObject {
     /// Handle a `zekktris://` deep link (currently from the Home/Lock-Screen
     /// widget). `zekktris://dm/<channelId>` opens that DM at the composer.
     func handleDeepLink(_ url: URL) {
-        guard url.scheme == "zekktris", url.host == "dm" else { return }
-        let cid = url.pathComponents.first(where: { $0 != "/" }) ?? ""
-        openDMById(cid)
+        guard url.scheme == "zekktris" else { return }
+        switch url.host {
+        case "dm":
+            let cid = url.pathComponents.first(where: { $0 != "/" }) ?? ""
+            openDMById(cid)
+        case "device-login":
+            // A QR/link carrying a device-login user code. This ONLY opens the
+            // approval screen — it approves nothing. A link is exactly how a
+            // phisher would deliver a code, and that screen is what stops the
+            // attack (see DeviceLoginApprovalScreen in AuthViews.swift).
+            if let code = DeviceLoginCode.extract(from: url.absoluteString) {
+                pendingDeviceLogin = PendingDeviceLogin(userCode: code)
+            }
+        default:
+            break
+        }
     }
 
     /// Open a DM by channel id — resolve locally, else reload the DM list then
@@ -1241,6 +1322,11 @@ final class AppStore: ObservableObject {
         stopAutoPresence()
         stopOpenChannelPolling()
         gateway.disconnect()
+        // Sign-out must revoke every Share Suggestion. These live in the SYSTEM
+        // index, not in app state, so clearing `dms` below does nothing to them:
+        // without this the share sheet of a signed-out phone keeps listing the
+        // previous account's contacts by name and face, in every other app.
+        ShareSuggestions.deleteAll()
         currentUserId = nil
         currentUser = nil
         didInitialReady = false
@@ -1332,12 +1418,35 @@ final class AppStore: ObservableObject {
         Task { await loadRoles(guild) }
     }
 
-    func showDMs() {
+    /// Switch the rail to DM mode.
+    ///
+    /// `preservingSelection` keeps `stack` + `selectedChannel` intact. ONLY the
+    /// notification-tap path passes true, and only when the tapped DM is ALREADY
+    /// the open conversation — because the reset below is destructive and, on
+    /// that one path, silently fatal:
+    ///
+    /// `resetStack()` + `selectedChannel = nil`, followed (in the SAME MainActor
+    /// turn) by re-pushing the identical `.messages(ch)` route, is INVISIBLE to
+    /// SwiftUI. The stack goes [.messages(X)] → [] → [.messages(X)], but the turn
+    /// is coalesced into one render whose routeKey (MainView.swift:542,
+    /// "m-<id>-<depth>") is UNCHANGED. Same identity → same view instance →
+    /// MessageListView's `.onAppear` (MessageViews.swift:333) does not re-fire →
+    /// `openChannel()` never runs. That matters because openChannel is the ONLY
+    /// writer that restores `selectedChannel` (:1491) — so it stayed nil, which
+    /// in turn disabled EVERY recovery path, all of which guard on it:
+    /// refreshOpenChannelLatest (:1968), reconcileOpenChannel (:1920), the 3s
+    /// open-channel poll (:1157), and even the live MESSAGE_CREATE append
+    /// (:4936). The conversation then sat stale with no network activity at all
+    /// until the user backed out and re-entered (pop() → a real render of the
+    /// root → a genuine identity change on re-entry → remount → load).
+    func showDMs(preservingSelection: Bool = false) {
         railPage = nil
         railContent = .normal
         inDMs = true
-        resetStack()
-        selectedChannel = nil
+        if !preservingSelection {
+            resetStack()
+            selectedChannel = nil
+        }
         if dms.isEmpty { Task { await loadDMs() } }
     }
 
@@ -1364,6 +1473,10 @@ final class AppStore: ObservableObject {
 
     func selectChannel(_ channel: Channel) {
         noteInteraction()
+        // Opening a DM is the strongest "this is a person I talk to" signal we
+        // get, so it re-ranks the conversation in the system share sheet.
+        // No-op for guild channels and cheap/throttled for DMs.
+        donateShareSuggestion(channel)
         // Tell MainView this open is a cache hit (so it paints instantly) — it
         // then skips the route cross-fade and the conversation pops into place.
         openingCachedChannel = messageCache[channel.id] != nil
@@ -1443,15 +1556,23 @@ final class AppStore: ObservableObject {
     func openChannel(_ channel: Channel) {
         guard selectedChannel?.id != channel.id else {
             // The view remounted for the channel that's ALREADY selected — e.g.
-            // tapping a push notification INTO the open channel, or (wide layout)
-            // Threads → re-tapping the same channel. We keep scroll/decrypt state
-            // (no reset), but still top up from the server: otherwise this path
-            // leaves only the after-cursor reconcile from foregroundReconnect,
-            // which can lose the read-replica race right after a cold foreground
-            // and strand the just-arrived message until the 12s poll. Dedup-safe
-            // (upsert), and reconcileOpenChannel falls back to a full loadMessages
-            // when nothing numeric is loaded yet.
-            Task { await reconcileOpenChannel() }
+            // tapping a push notification INTO the open channel, re-tapping the
+            // same DM in the list (going "back into" a conversation you were just
+            // in), or (wide layout) Threads → re-tapping the same channel. We keep
+            // scroll/decrypt state (no reset), but still top up from the server.
+            //
+            // Use refreshOpenChannelLatest() — a LATEST-window fetch (no cursor),
+            // exactly what re-opening from scratch does — rather than the
+            // after-cursor reconcileOpenChannel(). An after-cursor fetch only asks
+            // for rows NEWER than what's loaded; if the store never saw the new
+            // message (it arrived purely as a push while the gateway was asleep,
+            // so `messages`/`dms.lastMessageId` don't know a newer id exists) the
+            // reconcile's `knownLatest > after` guard is false and it fetches
+            // nothing — the just-arrived message stays stranded until the 12s
+            // poll. The latest-window merge always pulls the true tail and upserts
+            // it in (dedup-safe), so "go back into the DM and the new message is
+            // there" holds even when only a notification told us about it.
+            Task { await refreshOpenChannelLatest() }
             return
         }
         // The route animation has already consumed the cache-hit hint; clear it
@@ -1500,8 +1621,23 @@ final class AppStore: ObservableObject {
         Task { await loadPins(channel) }
     }
 
-    /// Resolved status for a user — live presence wins over the DTO fallback.
-    func status(for userId: String?, fallback: String? = nil) -> String {
+    /// THE presence resolver: one map, one answer, every surface.
+    ///
+    /// There is deliberately NO `fallback:` parameter. It used to take one, and
+    /// that parameter *was* the split-brain: each call site handed it a
+    /// different per-object embedded status — a `listMembers` snapshot in the
+    /// member list, a PER-MESSAGE `message.author.status` in the message row, a
+    /// DM-list snapshot in the chat header — so two surfaces showing the same
+    /// person side by side resolved to two different frozen values the moment
+    /// `presence` had no entry. (The message-row one never refreshes at all: it
+    /// is embedded at fetch time.)
+    ///
+    /// The answer is to keep the MAP complete rather than to paper over holes
+    /// per-site — see `seedPresence`, which every REST loader now feeds
+    /// (members, DM recipients, relationships, event attendees, message
+    /// authors). Android reached the same shape in `AppStore.kt presenceOf` +
+    /// `seedPresence`.
+    func status(for userId: String?) -> String {
         if let userId {
             // The SELF user: the server never echoes our own presence back to
             // us, and currentUser.status is a stale pre-connect snapshot (often
@@ -1514,7 +1650,47 @@ final class AppStore: ObservableObject {
             }
             if let s = presence[userId] { return s }
         }
-        return fallback ?? "offline"
+        return "offline"
+    }
+
+    /// Snapshot of `presence` to hand to `seedPresence` — take it immediately
+    /// BEFORE the fetch suspends.
+    ///
+    /// Folds buffered live events in first so the snapshot reflects known live
+    /// state; events arriving DURING the fetch stay buffered and the debounced
+    /// flush applies them afterwards, so a live event still wins.
+    private func presenceSnapshot() -> [String: String] {
+        flushPendingPresence()
+        return presence
+    }
+
+    /// Fill the presence map from REST user snapshots — the ONE seeding rule,
+    /// shared by every loader. (Android: `AppStore.kt seedPresence`.)
+    ///
+    /// The REST `status` is the point-in-time DB baseline, and applying it
+    /// REPAIRS an entry that a missed PRESENCE_UPDATE left stale — which is the
+    /// whole reason seeding exists (an "only write when missing" merge lets a
+    /// single dropped event pin a user offline forever). But a live event that
+    /// landed WHILE the fetch was in flight is fresher and must win, or locking
+    /// the phone mid-load downgrades a just-online friend back to the snapshot.
+    ///
+    /// Nothing carries a timestamp, so freshness is inferred by diffing across
+    /// the await. `before` is the map captured immediately before the network
+    /// call; `presence` now also includes anything applied during it:
+    ///   • entry changed during the fetch   → a live event won; keep it
+    ///   • entry unchanged during the fetch → apply the REST baseline
+    ///
+    /// One assignment at the end: per-entry writes publish N times and
+    /// re-render every observer once per user.
+    private func seedPresence(_ users: [PublicUser], before: [String: String]) {
+        guard !users.isEmpty else { return }
+        var seeded = presence
+        for u in users {
+            guard let s = u.status else { continue }
+            let changedDuringFetch = presence[u.id] != before[u.id]
+            if !changedDuringFetch { seeded[u.id] = s }
+        }
+        if seeded != presence { presence = seeded }
     }
 
     // MARK: Loading
@@ -1583,6 +1759,23 @@ final class AppStore: ObservableObject {
         if changed { presence = next }
     }
 
+    // DELIBERATELY NOT STAMPING `lastSeenAt` LOCALLY on an observed
+    // online→offline transition. It looks like a harmless freshness fix, and
+    // it re-opens the exact hole the server's SQL guard exists to close.
+    //
+    // Going Invisible is broadcast as `offline`, indistinguishable from a real
+    // disconnect. But the server only advances `last_seen_at` on a genuine
+    // disconnect — never when its owner goes invisible. So a local stamp makes
+    // the two cases diverge on refresh:
+    //
+    //   real disconnect → "just now",  refresh → still "just now"
+    //   went Invisible  → "just now",  refresh → snaps back to "5h ago"
+    //
+    // A timestamp that jumps BACKWARDS is a reliable tell for "this person went
+    // invisible, they're online right now" — precisely the bit Invisible
+    // exists to hide. Showing a slightly stale value until the next
+    // `loadRelationships()` is the correct trade.
+
     /// Debounce a flush of `pendingPresence` (~200ms). Coalesces a burst of
     /// presence events into one `presence` write. `presenceFlushScheduled`
     /// ensures only one timer is in flight.
@@ -1599,17 +1792,12 @@ final class AppStore: ObservableObject {
     private func performLoadDMs() async {
         loadingDMs = true
         defer { loadingDMs = false }
-        // Fold any buffered presence into `presence` first, so the
-        // pre-suspend snapshot (presenceBefore, below) reflects known live
-        // state; events arriving DURING the fetch stay buffered and the
-        // debounced flush applies them after — so a live event still wins.
-        flushPendingPresence()
         // Snapshot presence BEFORE the network call suspends. Any gateway
         // PRESENCE_UPDATE applied while we're awaiting mutates `presence`
         // (same MainActor, so it's serialized, not a data race) — diffing
-        // against this snapshot tells us which users got a fresher live
-        // status mid-fetch. See the merge note below.
-        let presenceBefore = presence
+        // against this snapshot tells `seedPresence` which users got a fresher
+        // live status mid-fetch.
+        let presenceBefore = presenceSnapshot()
         do {
             let fetched = try await api.listDMs()
             // Most-recently-active first. Numeric snowflake comparison — plain
@@ -1631,35 +1819,10 @@ final class AppStore: ObservableObject {
                 }
                 pendingCallerCancels.removeAll()
             }
-            // Merge presence — DON'T blindly overwrite with REST.
-            //
-            // REST status is the point-in-time DB baseline, but a live
-            // PRESENCE_UPDATE that lands WHILE this fetch is in flight is
-            // fresher and must win. Otherwise locking the phone mid-load
-            // downgrades a just-online friend back to the stale snapshot, so
-            // they show offline until the next event (the bug). We also can't
-            // just keep the live map (the old "only-when-missing" guard let a
-            // single MISSED update pin a user offline forever).
-            //
-            // No timestamps exist on the map or the REST status, so we infer
-            // freshness by diffing across the await: `presenceBefore` is the
-            // pre-suspend snapshot; `presence` now includes any events applied
-            // during the network call. Per recipient:
-            //   • status changed during the fetch  → a live event won; keep it
-            //   • status unchanged during the fetch → apply the REST baseline
-            //     (this still repairs a stale/missed-event entry — the whole
-            //     reason REST seeding exists).
-            var seeded = presence
-            for dm in dms {
-                for r in dm.recipients ?? [] {
-                    guard let s = r.status else { continue }
-                    let changedDuringFetch = presence[r.id] != presenceBefore[r.id]
-                    if !changedDuringFetch { seeded[r.id] = s }
-                }
-            }
-            // Single assignment — per-entry writes publish N times and
-            // re-render every observer once per recipient.
-            if seeded != presence { presence = seeded }
+            // Seed presence from the DM recipients through the shared rule
+            // (see seedPresence): REST repairs a stale entry, a live event that
+            // landed mid-fetch still wins.
+            seedPresence(dms.flatMap { $0.recipients ?? [] }, before: presenceBefore)
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
         }
@@ -1706,6 +1869,85 @@ final class AppStore: ObservableObject {
                             avatarURL: assetURL($0.dmAvatarUser?.avatarUrl)?.absoluteString) }
         WidgetBridge.publish(dms: Array(items), token: api.token)
         WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    // MARK: Share Suggestions (system share sheet)
+
+    /// May we offer this account's conversations as share targets at all?
+    ///
+    /// A donation puts a contact's name + face into the share sheet of EVERY
+    /// other app on the device, outside anything Zekktris can gate — so a
+    /// supervised account that isn't allowed to DM must not donate, and anything
+    /// already donated has to be revoked (see `loadFamily`). An unsupervised
+    /// account has no `restrictions` blob and is always allowed.
+    ///
+    /// NOT A LIVE-SESSION TEST — this is NEW-1 on
+    /// `ShareSuggestions.donationsEnabled`, and it is why donations are off.
+    /// `stop()` nils `family`, and "no family blob" reads as allowed here, so a
+    /// continuation resuming after sign-out passes this guard. It is still the
+    /// right *supervision* check; it just cannot be the only gate. Anyone
+    /// re-enabling donation must pair it with a positive check on a live
+    /// `currentUserId`, captured at donate time and re-checked at write time.
+    var shareSuggestionsAllowed: Bool {
+        guard let family else { return true }
+        if family.restrictedHeavily == true { return false }
+        guard let r = family.restrictions else { return true }
+        return r.allowMessaging && r.dmPolicy != "none"
+    }
+
+    /// Donate a DM to iOS Share Suggestions so it can be offered as a direct
+    /// share target in other apps. Conversation identity only — the recipients,
+    /// the name the VIEWER sees (personal nickname wins, same as everywhere
+    /// else), and their avatar. Never message content, so E2EE DMs donate the
+    /// same payload plaintext ones do.
+    ///
+    /// Cheap + throttled inside `ShareSuggestions`, so it's safe on every open
+    /// and every send.
+    ///
+    /// CURRENTLY A NO-OP: `ShareSuggestions.donate` hard-returns on
+    /// `donationsEnabled == false`. This body is kept intact (rather than
+    /// deleted) so the one thing that turns the feature back on is that flag,
+    /// and so the gaps below stay attached to the code they describe. Revocation
+    /// — `deleteConversation` / `deleteAll` at the call sites in `stop()`,
+    /// `blockUser`, `closeDM`, `CHANNEL_DELETE` and `loadFamily` — is NOT
+    /// disabled and must stay live.
+    func donateShareSuggestion(_ channel: Channel) {
+        guard channel.isDM, shareSuggestionsAllowed else { return }
+        // Bots aren't share targets, and a DM with nobody left in it would
+        // donate a faceless row.
+        let peers = (channel.recipients ?? []).filter { $0.isBot != true }
+        guard !peers.isEmpty else { return }
+        // A blocked person must not be re-offered as a share target — otherwise
+        // simply opening the (still-listed) DM would undo the revocation
+        // `blockUser` just performed.
+        //
+        // KNOWN-BROKEN (NEW-3, held shut by `donationsEnabled`): this bails on a
+        // blocked participant in a GROUP DM too, which `blockUser` deliberately
+        // leaves donated because the group is still live for everyone else. The
+        // group's entry then can never be refreshed or corrected, freezing the
+        // blocked member's name and face in the system index — worse than no
+        // guard. Scope it to 1:1 DMs, matching `blockUser`, before re-enabling.
+        guard !peers.contains(where: { relationshipType(with: $0.id) == "blocked" }) else { return }
+        // Re-arm after a sign-out / supervision `deleteAll()` latched donations
+        // off: reaching here means a live session that the supervision gate
+        // allows. Mirrors Android's `ShareShortcuts.enable()` in
+        // `refreshShareShortcuts`.
+        ShareSuggestions.enable()
+        let recipients = peers.map {
+            ShareSuggestions.Recipient(
+                id: $0.id,
+                name: dmNickname($0.id) ?? $0.name,
+                avatarURL: assetURL($0.avatarUrl)
+            )
+        }
+        ShareSuggestions.donate(
+            ShareSuggestions.Conversation(
+                channelId: channel.id,
+                title: dmDisplayTitle(channel),
+                isGroup: channel.type == "group_dm",
+                recipients: recipients
+            )
+        )
     }
 
     /// Reorder sibling channels within a group (a category, or the
@@ -1758,6 +2000,7 @@ final class AppStore: ObservableObject {
         // so it can't leak into a later, unrelated load.
         let jumpId = pendingJumpMessageId
         pendingJumpMessageId = nil
+        let presenceBefore = presenceSnapshot()
         do {
             let fetched = try await api.messages(channelId: channel.id, limit: 50, around: jumpId)
             // The API returns newest-first; show oldest-first (bottom = newest).
@@ -1789,6 +2032,16 @@ final class AppStore: ObservableObject {
                 merged.sort { $0.createdAt < $1.createdAt }
             }
             messages = merged
+            // Seed presence from the message AUTHORS. The message row's dot
+            // reads the map like every other surface now, and its old
+            // per-message `message.author.status` fallback was the worst of the
+            // lot: a different frozen snapshot for every row, sitting one inch
+            // from a member list showing a different frozen snapshot for the
+            // same person. (The DTO resolves author.status at query time, so
+            // these are current-at-fetch, not message-creation-time, values.)
+            // For a user who has since left the guild this is the ONLY
+            // presence source we get.
+            seedPresence(merged.compactMap { $0.author }, before: presenceBefore)
             // A full page implies there may be older history to page back into.
             hasMoreMessages = fetched.count >= 50
             decryptVisible()
@@ -1922,6 +2175,32 @@ final class AppStore: ObservableObject {
         } catch {
             // Best-effort background refresh — don't surface a toast.
         }
+    }
+
+    /// BULLETPROOF catch-up for the OPEN conversation. Fetches the LATEST
+    /// window (no `after` cursor — the exact call re-opening the channel makes,
+    /// which the user has confirmed always recovers a missed message) and
+    /// MERGES it via `upsert` so it never resets scroll or drops loaded history.
+    ///
+    /// This exists because the after-cursor `reconcileOpenChannel` — however
+    /// many times we retry it — can still leave the open chat stale on a
+    /// resume-from-suspension: a slow/failed cursor fetch, the reconcile
+    /// coalescing window swallowing the retry, or the socket resume racing the
+    /// network all produce the "I foreground into the DM and the new message
+    /// isn't there until I back out and re-enter" symptom. The plain latest
+    /// fetch shares none of those failure modes, so it's the guaranteed floor:
+    /// every foreground and every notification-tap-into-an-already-open chat
+    /// runs it, and a message that slipped through every live path appears
+    /// without the user having to leave and re-enter.
+    func refreshOpenChannelLatest() async {
+        guard let channel = selectedChannel else { return }
+        // Don't fight an in-progress deep-link jump to an OLD message (that
+        // loads a window AROUND the id); a latest-window merge would append a
+        // disjoint block and yank the view. Every other case wants the latest.
+        if pendingJumpMessageId != nil { return }
+        guard let latest = try? await api.messages(channelId: channel.id, limit: 50) else { return }
+        guard channel.id == selectedChannel?.id, pendingJumpMessageId == nil else { return }
+        for m in latest.sorted(by: { $0.createdAt < $1.createdAt }) { upsert(m) }
     }
 
     // MARK: Read state / unread
@@ -2156,12 +2435,27 @@ final class AppStore: ObservableObject {
                 await voice.connect(url: url, token: token, e2eeKey: key)
                 // Leave raced the connect — tear the just-connected room back down.
                 guard voiceChannelId == channel.id else { await voice.disconnect(); return }
+                // connect() swallows its own failure (it sets .failed rather than
+                // throwing), so this catch block is never entered for an SFU
+                // failure and the slot stays claimed. openVoice's
+                // `voiceChannelId != channel.id` gate then silently refuses every
+                // retry — the user has to hang up a call they were never in
+                // before they can try again. Production showed exactly that:
+                // seven failed joins spread over ten hours, each needing a manual
+                // hangup first. Surrender the slot when the join didn't take.
+                if !voice.isConnected { voiceChannelId = nil }
             } else {
                 voiceTokenMissing = true
             }
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
-            voiceChannelId = nil
+            // Only surrender the slot if it's still OURS. A slow join that fails
+            // AFTER the user has already started (and connected) a different
+            // call would otherwise nil the newer call's voiceChannelId — leaving
+            // a live LiveKit room with no call UI anywhere and the mic still
+            // publishing ("people can still hear me but there's no call
+            // screen"). Mirrors the success path's guard at :2236.
+            if voiceChannelId == channel.id { voiceChannelId = nil }
         }
     }
 
@@ -2190,6 +2484,14 @@ final class AppStore: ObservableObject {
         }
         popVoiceRoutes()
         if let id { CallManager.shared.callEnded(channelId: id, remoteEnded: false) }
+        // HANGUP cue. This is the single chokepoint for EVERY call end — the red
+        // button, the CallKit End action, the 1:1 auto-end when the peer leaves,
+        // a server evict/decline, and READY reconciliation all funnel through
+        // here — so the sound fires exactly once whether we hung up or they did.
+        // (`isLeavingVoice` above collapses the overlapping triggers, so it can't
+        // double-fire.) Played BEFORE voice.disconnect(): the call still owns the
+        // audio session, so the cue never has to touch session configuration.
+        if id != nil { VoiceSounds.play(.hangup) }
         await voice.disconnect()
         if let id { await api.leaveVoice(channelId: id) }
     }
@@ -2245,14 +2547,26 @@ final class AppStore: ObservableObject {
     func refreshStage() async {
         guard let id = stageChannelId else { return }
         guard let res = try? await api.listStageParticipants(channelId: id) else { return }
+        // A leave (or a hop to another stage) can land while the roster fetch is
+        // in flight — publishing a stale roster would repopulate a stage we've
+        // already walked out of. Mirrors joinVoice's post-await guard.
+        guard stageChannelId == id else { return }
         stageParticipants = res.participants
         // If a moderator flipped my speaker status, re-fetch a token gated on
         // the new role and reconnect (audience↔speaker needs a new publish grant).
         if let uid = currentUserId, let me = res.participants.first(where: { $0.userId == uid }), me.isSpeaker != myStageSpeaker {
             myStageSpeaker = me.isSpeaker
-            if let again = try? await api.joinStage(channelId: id),
-               let token = again.token, let url = again.wsUrl, !token.isEmpty, !url.isEmpty {
-                await voice.connect(url: url, token: token, publishMic: me.isSpeaker)
+            if let again = try? await api.joinStage(channelId: id) {
+                // Re-check BEFORE connecting: a leave that raced this in-flight
+                // promotion would otherwise bring a LIVE, PUBLISHING MIC up in a
+                // stage the user has already left. The re-join above also put us
+                // back in the server's stage roster, so undo it on the way out.
+                guard stageChannelId == id else { await api.leaveStage(channelId: id); return }
+                if let token = again.token, let url = again.wsUrl, !token.isEmpty, !url.isEmpty {
+                    await voice.connect(url: url, token: token, publishMic: me.isSpeaker)
+                    // Leave raced the connect — tear the just-connected room back down.
+                    guard stageChannelId == id else { await voice.disconnect(); return }
+                }
             }
         }
     }
@@ -2352,11 +2666,29 @@ final class AppStore: ObservableObject {
         // stays closest; remove+append used to shuffle a user to the
         // outermost orbit on every mute toggle). Removals compact the
         // order so the next joiner inherits the freed orbit.
+        //
+        // JOIN/LEAVE cues ride the same three branches, because they already
+        // encode exactly the transitions we want:
+        //   - update-in-place  = a mute/deafen/video toggle, NOT an arrival — silent
+        //   - remove           = they left this channel (or moved away)  → LEAVE
+        //   - append           = they arrived in this channel            → JOIN
+        // Never for ourselves (our own arrival/exit is CONNECT/HANGUP, and
+        // doubling them is wrong) and never for another channel: `active` is the
+        // channel we are connected to, and a state for anywhere else matches no
+        // branch. Participants already present when WE joined came in via
+        // joinVoice's snapshot, so entering a busy channel doesn't blip either.
+        // VoiceSounds rate-limits these, so five people arriving at once is one
+        // blip rather than a chord.
+        let isOther = vs.userId != currentUserId
         if let i = voiceStates.firstIndex(where: { $0.userId == vs.userId }) {
             if vs.channelId == active { voiceStates[i] = vs }
-            else { voiceStates.remove(at: i) }
+            else {
+                voiceStates.remove(at: i)
+                if isOther { VoiceSounds.play(.leave) }
+            }
         } else if vs.channelId == active {
             voiceStates.append(vs)
+            if isOther { VoiceSounds.play(.join) }
         }
 
 
@@ -2369,16 +2701,28 @@ final class AppStore: ObservableObject {
         // answer before loadDMs), resolve it once and re-check — mirrors
         // handleIncomingCall's loadDMs-and-retry. group_dm / guild voice are
         // intentionally excluded (they legitimately keep one person).
+        // The event MUST be about this DM's own peer. Without that check the
+        // guard was just "some other user moved to some other channel", which is
+        // true for e.g. a friend joining an unrelated guild voice channel — and
+        // because an OUTGOING call has no peer present for its entire ring-out,
+        // `peerStillPresent` is false the whole time, so any such stray event
+        // hung up the user's own ringing call ("it hangs up by itself / their
+        // phone just stops ringing"). `recipients` already excludes self, so for
+        // a 1:1 DM it is exactly the peer.
         if vs.userId != currentUserId, vs.channelId != active {
             let peerStillPresent = voiceStates.contains { $0.userId != currentUserId && $0.channelId == active }
             if !peerStillPresent {
                 if let dm = dms.first(where: { $0.id == active }) {
-                    if dm.type == "dm" { Task { await leaveCurrentVoice() } }
+                    if dm.type == "dm",
+                       dm.recipients?.contains(where: { $0.id == vs.userId }) == true {
+                        Task { await leaveCurrentVoice() }
+                    }
                 } else {
                     Task { [weak self] in
                         await self?.loadDMs()
                         guard let self, self.voiceChannelId == active,
                               let dm = self.dms.first(where: { $0.id == active }), dm.type == "dm",
+                              dm.recipients?.contains(where: { $0.id == vs.userId }) == true,
                               !self.voiceStates.contains(where: { $0.userId != self.currentUserId && $0.channelId == active })
                         else { return }
                         await self.leaveCurrentVoice()
@@ -2623,11 +2967,28 @@ final class AppStore: ObservableObject {
 
     // MARK: Reactions
 
+    /// Per-device optimistic reaction directions we've applied locally and are
+    /// still awaiting the gateway echo for. Keyed by channel+message+emoji+add/rem
+    /// so a rapid same-device toggle (add then remove) tracks each echo separately.
+    /// Lets us swallow only THIS device's own echoes while letting an own-reaction
+    /// made on ANOTHER device through to update the open DM live.
+    private var pendingSelfReactionKeys: Set<String> = []
+
+    private func reactionKey(_ channelId: String, _ messageId: String, _ emoji: String, add: Bool) -> String {
+        "\(channelId)|\(messageId)|\(emoji)|\(add ? "add" : "rem")"
+    }
+
     /// Toggle the current user's reaction for an emoji, optimistically.
     func toggleReaction(_ message: Message, emoji: String) async {
         guard let channelId = selectedChannel?.id,
               let mi = messages.firstIndex(where: { $0.id == message.id }) else { return }
         let hasMine = (messages[mi].reactions ?? []).first(where: { $0.emoji == emoji })?.me == true
+        // Record the optimistic direction so we can distinguish this device's own
+        // gateway echo (swallow it) from the same reaction made on another device
+        // (apply it live). The failure revert below is local-only — no server call,
+        // no echo — so we do NOT insert a key there.
+        let add = !hasMine
+        pendingSelfReactionKeys.insert(reactionKey(channelId, message.id, emoji, add: add))
         applyReaction(messageId: message.id, emoji: emoji, delta: hasMine ? -1 : 1, isMe: true)
         do {
             if hasMine {
@@ -2642,11 +3003,20 @@ final class AppStore: ObservableObject {
         }
     }
 
-    /// Apply a reaction event from the gateway. Our own reactions are skipped
-    /// (already applied optimistically); others adjust the count only.
+    /// Apply a reaction event from the gateway. Our own reaction echoes from THIS
+    /// device are swallowed (already applied optimistically); an own-reaction made
+    /// on ANOTHER device is applied live with `me` so both the count and the
+    /// "reacted by me" highlight update; everyone else's adjusts the count only.
     private func handleReactionEvent(add: Bool, channelId: String, messageId: String, userId: String?, emoji: String) {
         guard channelId == selectedChannel?.id else { return }
-        if let userId, userId == currentUserId { return }
+        if let userId, userId == currentUserId {
+            let key = reactionKey(channelId, messageId, emoji, add: add)
+            if pendingSelfReactionKeys.remove(key) != nil { return } // echo of this device's optimistic tap
+            // Own reaction from another device: apply live, isMe:true so the
+            // highlight (not just the count) updates.
+            applyReaction(messageId: messageId, emoji: emoji, delta: add ? 1 : -1, isMe: true)
+            return
+        }
         applyReaction(messageId: messageId, emoji: emoji, delta: add ? 1 : -1, isMe: false)
     }
 
@@ -2736,6 +3106,12 @@ final class AppStore: ObservableObject {
             // no-op. Outside the selection guard: a DM you navigated away from
             // mid-send should still bump.
             bumpChannelLastMessage(channel.id, message.id)
+            // Sending is the other half of the Share Suggestions signal (the
+            // first is opening). Only the CONVERSATION is donated here — never
+            // `content`/`wire`, so an E2EE DM donates exactly what a plaintext
+            // one does. Outside the selection guard for the same reason as the
+            // bump above.
+            donateShareSuggestion(channel)
         } catch {
             markSendFailed(nonce)
             errorText = (error as? APIError)?.message ?? error.localizedDescription
@@ -3032,6 +3408,34 @@ final class AppStore: ObservableObject {
         let nonce = UUID().uuidString
         uploading = true
         defer { uploading = false }
+
+        // STEP 1 — shrink the media BEFORE anything else touches it, and in
+        // particular before encryption. Once a blob is encrypted it is opaque
+        // `application/octet-stream` to the server, which skips both the WebP
+        // backstop and the nightly compression sweep, and has no key anyway —
+        // so this is the ONLY moment an E2EE photo/video can be made smaller.
+        // See MediaPrep for the measured 37x gap this closes.
+        //
+        // Detached so a 1920px re-encode (and especially a 720p video export)
+        // never runs on the main actor; `uploading` is already true, so the
+        // composer shows its spinner for the duration.
+        let inputs = attachments.map {
+            MediaPrep.Input(data: $0.data, filename: $0.filename, contentType: $0.contentType)
+        }
+        let prepared = await Task.detached(priority: .userInitiated) {
+            await MediaPrep.prepareAll(inputs)
+        }.value
+        for item in prepared {
+            if item.videoExportFailed {
+                // Non-fatal by design: the original goes up rather than
+                // blocking the send. Logged so an oversized upload can be
+                // explained after the fact.
+                mediaLog.notice("video export failed, uploading original (\(item.originalBytes, privacy: .public) bytes)")
+            } else if item.data.count != item.originalBytes {
+                mediaLog.info("prepared \(item.originalBytes, privacy: .public) -> \(item.data.count, privacy: .public) bytes")
+            }
+        }
+
         do {
             var files: [UploadFile] = []
             var wireCaption = caption
@@ -3040,7 +3444,27 @@ final class AppStore: ObservableObject {
                     e2eeError = "Unlock this conversation to send."
                     return false
                 }
-                for att in attachments {
+                for att in prepared {
+                    // A THUMBNAIL IS MANDATORY for an E2EE image. The server
+                    // cannot generate one (it only ever sees ciphertext), so if
+                    // the client doesn't ship one this attachment is stored as a
+                    // preview-less original forever — which is what left 90 of
+                    // the 268 E2EE images on the live server unreapable and
+                    // unpreviewable. This used to be best-effort and silent.
+                    // Failing the send loudly is the lesser harm: the composer
+                    // restores the picks on `false`, so the user just retries.
+                    var thumbData: Data?
+                    if att.isImage {
+                        guard let plainThumb = att.thumbnail else {
+                            errorText = "Couldn't build a preview for \(att.filename), so it wasn't sent. Try again, or pick a different photo."
+                            return false
+                        }
+                        guard let encThumb = E2EE.encryptData(plainThumb, key: key) else {
+                            errorText = "Encryption failed."
+                            return false
+                        }
+                        thumbData = encThumb
+                    }
                     guard let enc = E2EE.encryptData(att.data, key: key) else {
                         errorText = "Encryption failed."
                         return false
@@ -3048,25 +3472,13 @@ final class AppStore: ObservableObject {
                     // Pixel dims (images only), sent as plaintext metadata so the
                     // recipient reserves the slot before decrypt — the server
                     // can't measure the ciphertext. Dims aren't sensitive (same
-                    // as the plaintext voice duration/waveform).
-                    var w: Int?, h: Int?, thumbData: Data?
-                    if att.contentType.hasPrefix("image/"),
-                       let sz = UIImage(data: att.data)?.size, sz.width > 0, sz.height > 0 {
-                        w = Int(sz.width); h = Int(sz.height)
-                        // Small ENCRYPTED thumbnail so the recipient loads a tiny
-                        // preview inline instead of the full multi-MB blob. Same
-                        // channel key; the server only ever sees ciphertext.
-                        if let thumb = ImageDownsampler.decode(att.data, maxPixels: 480),
-                           let jpeg = thumb.jpegData(compressionQuality: 0.6),
-                           let encThumb = E2EE.encryptData(jpeg, key: key) {
-                            thumbData = encThumb
-                        }
-                    }
+                    // as the plaintext voice duration/waveform). They describe
+                    // the POST-downscale bytes, EXIF-corrected.
                     files.append(UploadFile(
                         data: enc,
                         filename: att.filename + ".zke",
                         contentType: "application/octet-stream",
-                        width: w, height: h, thumbData: thumbData
+                        width: att.width, height: att.height, thumbData: thumbData
                     ))
                 }
                 if !caption.isEmpty {
@@ -3077,7 +3489,12 @@ final class AppStore: ObservableObject {
                     wireCaption = encCaption
                 }
             } else {
-                files = attachments.map {
+                // The plain path already had a server-side backstop, but doing
+                // it here too is what the server asks for ("clients are expected
+                // to compress + convert before upload" — services/uploads.ts)
+                // and it saves the same bytes on the way UP. The server still
+                // generates the thumbnail for non-E2EE uploads.
+                files = prepared.map {
                     UploadFile(data: $0.data, filename: $0.filename, contentType: $0.contentType)
                 }
             }
@@ -3429,8 +3846,16 @@ final class AppStore: ObservableObject {
     func loadRelationships() async {
         loadingRelationships = true
         defer { loadingRelationships = false }
+        let presenceBefore = presenceSnapshot()
         do {
-            relationships = try await api.listRelationships()
+            let fetched = try await api.listRelationships()
+            relationships = fetched
+            // Friends render off the presence map like every other surface, and
+            // a friend who shares no guild and no DM appears in NO other REST
+            // snapshot — so without this seed the map holds nothing for them and
+            // their row drew no dot AT ALL, while `rel.user.status` in the very
+            // same struct said "online". (Android: AppStore.kt loadRelationships.)
+            seedPresence(fetched.map { $0.user }, before: presenceBefore)
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
         }
@@ -3523,6 +3948,14 @@ final class AppStore: ObservableObject {
     func blockUser(_ user: PublicUser) async {
         do {
             try await api.blockUser(targetId: user.id)
+            // Blocking doesn't close the DM, so its Share Suggestion would
+            // otherwise keep offering the blocked person's name and face in
+            // every other app's share sheet. Revoke it. 1:1 only — a group DM is
+            // still a live conversation for everyone else in it.
+            for dm in dms where dm.type == "dm"
+                && (dm.recipients ?? []).contains(where: { $0.id == user.id }) {
+                ShareSuggestions.deleteConversation(dm.id)
+            }
             await loadRelationships()
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
@@ -3953,6 +4386,21 @@ final class AppStore: ObservableObject {
         defer { loadingFamily = false }
         do { family = try await api.familyMe() }
         catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
+        // Supervision can revoke DMs at any time (a parent flips a switch, the
+        // grace period lapses into restricted-heavily), and anything donated
+        // while messaging was allowed is still sitting in the SYSTEM share
+        // sheet. This withdraws it whenever loadFamily() comes back denying
+        // DMs: at sign-in / cold `start()`, when the Parental Controls screen
+        // appears, after this device requests/accepts/removes a family link,
+        // on FAMILY_REQUEST_CREATE / FAMILY_FLAG_CREATE, and — the case that
+        // matters for latency — on FAMILY_SUPERVISION_UPDATE, which the server
+        // pushes to the subject after ANY write that changes what they may do.
+        // That last one is unconditional (it does not require `family` to
+        // already be loaded), so a parent revoking DMs mid-session withdraws
+        // the donations on this device within a round-trip, not at the child's
+        // next launch. If the connection is down, the wipe still lands on the
+        // next loadFamily() above.
+        if !shareSuggestionsAllowed { ShareSuggestions.deleteAll() }
     }
 
     func familyRequestLink(username: String) async {
@@ -3997,19 +4445,19 @@ final class AppStore: ObservableObject {
     // MARK: Guild members (name resolution)
 
     func loadMembers(_ guild: Guild) async {
+        // Snapshot BEFORE the fetch suspends. This used to be missing: the old
+        // inline seed claimed "same rule as loadDMs" in its comment but had no
+        // `presenceBefore`, so it applied the pre-flip REST baseline
+        // unconditionally and CLOBBERED any PRESENCE_UPDATE that landed during
+        // the in-flight listMembers — a window the 200 ms presence coalescing
+        // debounce actively widens.
+        let presenceBefore = presenceSnapshot()
         do {
             let list = try await api.listMembers(guildId: guild.id)
             var map: [String: GuildMember] = [:]
             for m in list { map[m.userId] = m }
             members = map
-            // Point-in-time presence seeding, same rule as loadDMs: the
-            // fresh REST status overwrites the map so member dots converge
-            // on every (re)load even when live deltas were missed.
-            var seeded = presence
-            for m in list {
-                if let s = m.user.status { seeded[m.userId] = s }
-            }
-            if seeded != presence { presence = seeded }
+            seedPresence(list.map { $0.user }, before: presenceBefore)
         } catch {
             // Non-fatal — names just fall back to a generic label.
         }
@@ -4235,6 +4683,10 @@ final class AppStore: ObservableObject {
         do {
             try await api.closeDM(channelId: channel.id)
             dms.removeAll { $0.id == channel.id }
+            // Revoke the share-sheet suggestion with it — a closed conversation
+            // that keeps offering itself as a share target in other apps is a
+            // leak of a contact the user just removed.
+            ShareSuggestions.deleteConversation(channel.id)
             if selectedChannel?.id == channel.id { clearChannel() }
         } catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
@@ -4511,7 +4963,14 @@ final class AppStore: ObservableObject {
         guard let g = selectedGuild else { eventAttendees = []; return }
         loadingAttendees = true
         defer { loadingAttendees = false }
-        do { eventAttendees = try await api.listEventAttendees(guildId: g.id, eventId: event.id, status: status) }
+        let presenceBefore = presenceSnapshot()
+        do {
+            let fetched = try await api.listEventAttendees(guildId: g.id, eventId: event.id, status: status)
+            eventAttendees = fetched
+            // Attendee rows draw a dot from the map like everything else; an
+            // attendee we've never otherwise loaded had no entry at all.
+            seedPresence(fetched.map { $0.user }, before: presenceBefore)
+        }
         catch { eventAttendees = [] }
     }
     func loadMyEvents() async {
@@ -4567,7 +5026,20 @@ final class AppStore: ObservableObject {
 
     // MARK: Profile cards
 
-    func openProfile(_ user: PublicUser) { profileUser = user }
+    func openProfile(_ user: PublicUser) {
+        profileUser = user
+        // Fill a HOLE in the presence map, nothing more. The card resolves its
+        // dot through `status(for:)` like every other surface now, and
+        // `openProfile(byId:)` can hand us someone who appears in no other
+        // snapshot (a mention chip for a non-member). Deliberately never
+        // OVERWRITES an existing entry: this `user` may be a struct the caller
+        // has been holding since it was rendered, and letting a stale embedded
+        // status win over live presence is exactly the split-brain the
+        // `fallback:` parameter used to cause.
+        if user.id != currentUserId, presence[user.id] == nil, let s = user.status {
+            presence[user.id] = s
+        }
+    }
     /// Open a profile from a mention id. Guild members resolve instantly from
     /// the cached member list; anyone else (e.g. the other person in a DM) is
     /// fetched. Used by tappable @user mention chips.
@@ -5055,6 +5527,14 @@ final class AppStore: ObservableObject {
                         }
                     }
                 } else {
+                    // A DM that went away must stop being offered as a system
+                    // share target too. `closeDM` covers the local user's own
+                    // close; this is every REMOTE removal (the other side closed
+                    // it, a block, moderation) — clearing `dms` below does
+                    // nothing to the donation, which lives in the system index.
+                    if name == "CHANNEL_DELETE", ch.isDM {
+                        ShareSuggestions.deleteConversation(ch.id)
+                    }
                     Task { await loadDMs() }
                 }
             }
@@ -5206,6 +5686,23 @@ final class AppStore: ObservableObject {
             // Parental-controls activity: refresh the summary if it's loaded
             // so badges/requests appear without reopening the Family screen.
             if family != nil { Task { await loadFamily() } }
+        case "FAMILY_SUPERVISION_UPDATE":
+            // OUR OWN supervision changed (a guardian edited restrictions, a
+            // link was accepted or ended, a server was blocked/unblocked, the
+            // 18+ sweep released us). This event is addressed to the subject
+            // alone, so receiving it means every local supervision gate is
+            // stale. Unlike the two above, this is NOT conditioned on `family`
+            // already being loaded: the gates it feeds (DM/messaging policy,
+            // the share-sheet donation wipe at the end of loadFamily) must
+            // tighten even if the Family screen was never opened and the
+            // startup load failed.
+            //
+            // The frame carries the new effective restrictions, but `family` is
+            // a FamilySummary — it also holds the guardian list and grace
+            // fields this payload deliberately omits — so re-read /family/me
+            // instead of splicing a partial shape in. loadFamily() keeps the
+            // last good snapshot if that fetch fails.
+            Task { await loadFamily() }
         default:
             break
         }
@@ -5309,6 +5806,16 @@ final class AppStore: ObservableObject {
             return
         }
         if let idx = messages.firstIndex(where: { $0.id == message.id }) {
+            // An edit changes the stored ciphertext; the id-keyed plaintext (and any
+            // link previews unfurled from the OLD plaintext) are now stale. Drop them
+            // so decryptOne re-derives instead of early-returning on decrypted[id] != nil.
+            // No-op for plain-text channels (decrypted[id] is nil) and for non-content
+            // MESSAGE_UPDATEs like pins/reaction tallies (identical text ⇒ preserved).
+            if messages[idx].text != message.text {
+                decrypted[message.id] = nil
+                e2eeEmbeds[message.id] = nil
+                e2eeEmbedResolving.remove(message.id)
+            }
             let incoming = preservingSelfState(message, from: messages[idx])
             messages[idx] = incoming
         } else {

@@ -37,7 +37,12 @@ import com.zekktris.ui.theme.ZkStatus
 import com.zekktris.ui.theme.ZkTheme
 
 @Composable
-fun LoginScreen(store: AppStore, state: AppState, onBack: () -> Unit) {
+fun LoginScreen(
+    store: AppStore,
+    state: AppState,
+    onDeviceLogin: () -> Unit = {},
+    onBack: () -> Unit,
+) {
     val p = ZkTheme.palette
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -127,6 +132,28 @@ fun LoginScreen(store: AppStore, state: AppState, onBack: () -> Unit) {
             ) {
                 if (state.authBusy) CircularProgressIndicator(color = p.bg0, modifier = Modifier.height(20.dp))
                 else Text(if (needs2FA) "Verify" else "Log In", fontWeight = FontWeight.SemiBold)
+            }
+
+            if (!needs2FA) {
+                val ctx = androidx.compose.ui.platform.LocalContext.current
+                TextButton(
+                    onClick = { store.loginWithPasskey(ctx) },
+                    enabled = !state.authBusy,
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                ) {
+                    Text("Sign in with a passkey", color = p.accent, fontWeight = FontWeight.SemiBold)
+                }
+                // Device-approval login: this device shows a code, a phone the
+                // user is already signed in on approves it. The way in for
+                // someone who can't type their password on this screen at all
+                // (a TV, a borrowed laptop, a forgotten password on a phone).
+                TextButton(
+                    onClick = onDeviceLogin,
+                    enabled = !state.authBusy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Log in from another device", color = p.accent, fontWeight = FontWeight.SemiBold)
+                }
             }
 
             TextButton(

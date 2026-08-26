@@ -1,11 +1,33 @@
 import SwiftUI
 import UIKit
+import LiveKit
 
 @main
 struct ZekktrisApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var session = Session()
     @StateObject private var store = AppStore()
+
+    init() {
+        // Warm LiveKit's audio stack OFF the CallKit path.
+        //
+        // `AudioManager.shared` is a lazy static whose init reaches
+        // RTC.peerConnectionFactory — which synchronously does LKRTCInitializeSSL,
+        // configures field trials, and builds the whole PeerConnectionFactory
+        // (incl. enumerating VideoToolbox codecs) ON THE CALLING THREAD.
+        //
+        // On a cold VoIP-push launch where the user declines from the lock
+        // screen, no Room is ever created, so the FIRST touch of AudioManager was
+        // CallManager.forget() — i.e. the entire WebRTC bootstrap ran on the MAIN
+        // thread inside the CXEndCallAction handler, before action.fulfill().
+        // CallKit gives an action a bounded window; blowing it makes the system
+        // give up on the action and can get the app terminated, which is one way
+        // the call "stays" on the CallKit screen.
+        //
+        // AudioManager.prepare() exists for exactly this (its body is `_ = shared`).
+        // Detached + low priority so it never blocks first paint.
+        Task.detached(priority: .utility) { AudioManager.prepare() }
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -57,15 +79,30 @@ struct RootView: View {
                     LockView()
                 } else {
                     MainView()
+                        // A device-login code arrived by deep link. Presented
+                        // here (not from Settings) so the link works wherever
+                        // the user is — and only while signed in AND unlocked,
+                        // since approving is an account-level act.
+                        .sheet(item: $store.pendingDeviceLogin) { pending in
+                            DeviceLoginApprovalSheet(userCode: pending.userCode)
+                        }
                 }
             }
         }
         .task { await session.bootstrap() }
         .onChange(of: scenePhase) { _, newPhase in
-            // Biometric lock is required once per cold launch (set in bootstrap),
-            // not on every background — the session stays unlocked until the app
-            // is fully closed. We only refresh the gateway when returning.
+            // Re-arm the biometric lock across a WARM resume. It used to be set
+            // once per cold launch, so an app that had merely been backgrounded
+            // (which on iOS can be days) came back straight into the session —
+            // the "sometimes Face ID doesn't ask" report, and the opposite of
+            // what Settings promises. Armed on .background only (not .inactive,
+            // so a notification pull-down or the app switcher doesn't demand a
+            // scan), and Session's `authInProgress` guard keeps the auth sheet's
+            // own scene transition from arming the lock it is clearing. Mirrors
+            // Android's ON_STOP/ON_START pair in MainActivity.kt.
+            if newPhase == .background { session.noteEnteredBackground() }
             if newPhase == .active {
+                session.noteBecameActive()
                 // Debounced: a notification tap (openFromPush) may have just
                 // fired the same revive — don't tear the socket down twice.
                 store.foregroundReconnectDebounced()
@@ -302,10 +339,19 @@ struct AuthFlowView: View {
 }
 
 /// Biometric lock screen shown over a signed-in session when Face ID /
-/// Touch ID unlock is enabled. Prompts automatically on appear.
+/// Touch ID unlock is enabled. Prompts automatically on appear and on every
+/// return to the foreground, and always leaves a way forward when it fails.
 struct LockView: View {
     @EnvironmentObject private var session: Session
+    @Environment(\.scenePhase) private var scenePhase
     @State private var bioLabel = "Face ID"
+    /// Whether the app actually left the foreground since the last prompt.
+    /// Keyed on `.background`, never `.inactive`: the auth sheet itself makes
+    /// the scene inactive, so re-prompting on that would loop a cancel
+    /// straight back into another prompt with no way to stop it.
+    @State private var leftForeground = false
+
+    private var failed: Bool { session.unlockError != nil }
 
     var body: some View {
         ZStack {
@@ -317,21 +363,67 @@ struct LockView: View {
                 Text("Zekktris is locked")
                     .font(.zkSans(18, weight: .semibold))
                     .foregroundColor(Theme.ink1)
+                // Any cancel or failure used to leave this screen with no
+                // explanation and no automatic retry — a dead end the user had
+                // to force-quit out of. Say what happened, then offer the way on.
+                if let error = session.unlockError {
+                    Text(error)
+                        .font(.zkSans(13))
+                        .foregroundColor(Theme.ink2)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 36)
+                }
                 Button { Task { await session.unlock() } } label: {
                     HStack(spacing: 8) {
-                        Image(systemName: "faceid")
-                        Text("Unlock with \(bioLabel)")
+                        if session.unlocking {
+                            ProgressView().tint(.white)
+                        } else {
+                            Image(systemName: failed ? "arrow.clockwise" : "faceid")
+                        }
+                        Text(failed ? "Try again" : "Unlock with \(bioLabel)")
                             .font(.zkSans(15, weight: .semibold))
                     }
                     .foregroundColor(.white)
                     .padding(.horizontal, 20).padding(.vertical, 12)
                     .background(Theme.accent).clipShape(Capsule())
                 }
+                .disabled(session.unlocking)
+                // Last resort when the device itself can't authenticate (no
+                // passcode set, hardware gone). Signing out is the only exit
+                // that doesn't involve waving an unauthenticated user into a
+                // signed-in session.
+                Button("Sign out") { session.logout() }
+                    .font(.zkSans(13))
+                    .foregroundColor(Theme.ink3)
+                    .padding(.top, 4)
             }
         }
         .task {
-            bioLabel = (await Biometrics.resolve()).label
+            // Start the prompt FIRST and resolve the label alongside it. Both
+            // go through `canEvaluatePolicy`, which XPCs the biometric daemon
+            // and can stall for seconds at cold launch; awaiting the label
+            // first put that stall in front of every unlock.
+            Task { @MainActor in bioLabel = (await Biometrics.resolve()).label }
             await session.unlock()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // `.task` runs once per appearance, so a lock screen that was
+            // already up when the app went away never re-prompted: the user
+            // came back to a lock screen just sitting there. Re-prompt on every
+            // real return to the foreground. `unlock()` drops the call if a
+            // prompt is already in flight.
+            switch phase {
+            case .background:
+                leftForeground = true
+            case .active:
+                if leftForeground {
+                    leftForeground = false
+                    Task { await session.unlock() }
+                }
+            default:
+                break
+            }
         }
     }
 }

@@ -7,28 +7,76 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import com.zekktris.MainActivity
 import com.zekktris.R
 
 /**
- * Owns the notification channel and posts FOREGROUND notifications.
+ * Owns the notification channels and posts notifications.
  *
- * When the app is backgrounded, FCM messages carry a `notification` block that
- * the system draws itself (using the default icon + channel wired in the
- * manifest meta-data) — this class is not involved there. It's used only from
- * [ZekMessagingService.onMessageReceived], which fires while the app is in the
- * foreground, so the user still sees a heads-up for a new message.
+ * Since the server sends Android pushes DATA-ONLY (no `notification` block), the
+ * OS never draws a banner itself — [ZekMessagingService.onMessageReceived] runs
+ * in every app state and calls into here to build the visible notification. That
+ * is what lets a message notification carry an inline Reply action and an
+ * incoming call ring full-screen with Answer / Decline.
  */
 object NotificationHelper {
 
     private const val NOTIFICATION_ID = 1
+    private const val CALL_NOTIFICATION_ID = 4300
+
+    /** Low-importance channel for the ongoing-call foreground-service notification. */
+    const val CALL_CHANNEL_ID = "zk_call"
+
+    /** High-importance channel for an INCOMING call ring (loud, heads-up, ringtone). */
+    const val RING_CHANNEL_ID = "zk_ring"
+
+    // Inline quick-reply plumbing (read back in QuickReplyReceiver).
+    const val KEY_REPLY_TEXT = "zk_reply_text"
+    const val ACTION_REPLY = "com.zekktris.action.REPLY"
+    const val ACTION_DECLINE_CALL = "com.zekktris.action.DECLINE_CALL"
+    const val EXTRA_CHANNEL_ID = "zk_channel_id"
+    const val EXTRA_IS_E2EE = "zk_is_e2ee"
+    const val EXTRA_ANSWER_CALL_CHANNEL_ID = "answerCallChannelId"
 
     fun notificationChannelId(context: Context): String =
         context.getString(R.string.default_notification_channel_id)
+
+    /** Idempotent — the persistent "in a call" notification channel. */
+    fun ensureCallChannel(context: Context) {
+        val mgr = context.getSystemService(NotificationManager::class.java) ?: return
+        if (mgr.getNotificationChannel(CALL_CHANNEL_ID) != null) return
+        val channel = NotificationChannel(CALL_CHANNEL_ID, "Calls", NotificationManager.IMPORTANCE_LOW).apply {
+            description = "Ongoing voice calls"
+            setSound(null, null)
+        }
+        mgr.createNotificationChannel(channel)
+    }
+
+    /** Idempotent — the incoming-call RING channel (max importance so it heads-up
+     *  and can raise a full-screen intent, with the system ringtone). */
+    fun ensureRingChannel(context: Context) {
+        val mgr = context.getSystemService(NotificationManager::class.java) ?: return
+        if (mgr.getNotificationChannel(RING_CHANNEL_ID) != null) return
+        val channel = NotificationChannel(RING_CHANNEL_ID, "Incoming calls", NotificationManager.IMPORTANCE_HIGH).apply {
+            description = "Ringing voice and video calls"
+            enableVibration(true)
+            vibrationPattern = longArrayOf(0, 400, 200, 400, 200, 400)
+            val ring = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            val attrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+            setSound(ring, attrs)
+        }
+        mgr.createNotificationChannel(channel)
+    }
 
     /** Idempotent — safe to call on every app start and before every post. */
     fun ensureChannel(context: Context) {
@@ -41,25 +89,36 @@ object NotificationHelper {
         mgr.createNotificationChannel(channel)
     }
 
-    fun show(context: Context, title: String, body: String, data: Map<String, String>) {
+    /**
+     * Post a message notification with an inline Reply action. [channelId] routes
+     * a tap (and the reply) back to the right conversation; [isE2EE] tells the
+     * reply handler to encrypt on-device before sending.
+     */
+    fun showMessage(
+        context: Context,
+        channelId: String?,
+        title: String,
+        body: String,
+        isE2EE: Boolean,
+        messageId: String? = null,
+    ) {
         if (!canPost(context)) return
         ensureChannel(context)
 
-        // Route back to the tapped conversation, if the push carried one. Keyed
-        // on the same `channelId` the server ships and the iOS app reads.
-        val routeChannelId = data["channelId"]
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            routeChannelId?.let { putExtra("channelId", it) }
+            channelId?.let { putExtra("channelId", it) }
+            // Deep-link target: tap scrolls to this message (iOS parity).
+            messageId?.let { putExtra("messageId", it) }
         }
         val pending = PendingIntent.getActivity(
             context,
-            (routeChannelId ?: "").hashCode(),
+            (channelId ?: "").hashCode(),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val notification = NotificationCompat.Builder(context, notificationChannelId(context))
+        val builder = NotificationCompat.Builder(context, notificationChannelId(context))
             .setSmallIcon(R.drawable.ic_stat_notify)
             .setContentTitle(title)
             .setContentText(body)
@@ -67,12 +126,115 @@ object NotificationHelper {
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pending)
+
+        // Inline Reply — only for a real conversation. The PendingIntent MUST be
+        // mutable so the system can attach the typed RemoteInput results.
+        if (channelId != null) {
+            val remoteInput = RemoteInput.Builder(KEY_REPLY_TEXT).setLabel("Reply").build()
+            val replyIntent = Intent(context, QuickReplyReceiver::class.java).apply {
+                action = ACTION_REPLY
+                putExtra(EXTRA_CHANNEL_ID, channelId)
+                putExtra(EXTRA_IS_E2EE, isE2EE)
+            }
+            val replyPending = PendingIntent.getBroadcast(
+                context,
+                channelId.hashCode(),
+                replyIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+            )
+            builder.addAction(
+                NotificationCompat.Action.Builder(R.drawable.ic_stat_notify, "Reply", replyPending)
+                    .addRemoteInput(remoteInput)
+                    .setAllowGeneratedReplies(true)
+                    .build(),
+            )
+        }
+
+        NotificationManagerCompat.from(context)
+            .notify(channelId ?: "zekktris", NOTIFICATION_ID, builder.build())
+    }
+
+    /**
+     * Ring an incoming call: a high-priority, ongoing notification that raises a
+     * full-screen [IncomingCallActivity] (over the lock screen) and offers
+     * Answer / Decline actions.
+     */
+    fun showIncomingCall(context: Context, channelId: String, callerName: String) {
+        if (!canPost(context)) return
+        ensureRingChannel(context)
+
+        val fullScreen = Intent(context, IncomingCallActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_CHANNEL_ID, channelId)
+            putExtra("callerName", callerName)
+        }
+        val fullScreenPending = PendingIntent.getActivity(
+            context,
+            ("ringfs-$channelId").hashCode(),
+            fullScreen,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        // Answer → open the call screen (same as the full-screen intent).
+        val answerPending = PendingIntent.getActivity(
+            context,
+            ("ringans-$channelId").hashCode(),
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra(EXTRA_ANSWER_CALL_CHANNEL_ID, channelId)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        // Decline → REST decline in the background, no UI.
+        val declinePending = PendingIntent.getBroadcast(
+            context,
+            ("ringdec-$channelId").hashCode(),
+            Intent(context, CallActionReceiver::class.java).apply {
+                action = ACTION_DECLINE_CALL
+                putExtra(EXTRA_CHANNEL_ID, channelId)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val notification = NotificationCompat.Builder(context, RING_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_notify)
+            .setContentTitle(callerName)
+            .setContentText("Incoming call")
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            // An ongoing ring has no self-cancel path, so a call nobody answers
+            // (caller hung up, process killed before the gateway said so) would
+            // pin the notification forever. 45s matches the iOS ring timeout.
+            .setTimeoutAfter(45_000)
+            .setFullScreenIntent(fullScreenPending, true)
+            .addAction(R.drawable.ic_stat_notify, "Decline", declinePending)
+            .addAction(R.drawable.ic_stat_notify, "Answer", answerPending)
             .build()
 
-        // Tag by conversation so rapid repeats from one channel collapse into a
-        // single, updating notification (mirrors the server's FCM `tag`).
-        NotificationManagerCompat.from(context)
-            .notify(routeChannelId ?: "zekktris", NOTIFICATION_ID, notification)
+        NotificationManagerCompat.from(context).notify("call-$channelId", CALL_NOTIFICATION_ID, notification)
+    }
+
+    /** Dismiss the incoming-call ring for [channelId] (answered / declined / ended). */
+    fun cancelIncomingCall(context: Context, channelId: String) {
+        NotificationManagerCompat.from(context).cancel("call-$channelId", CALL_NOTIFICATION_ID)
+    }
+
+    /**
+     * Dismiss any delivered notifications for [channelId] once the user has read
+     * the conversation. Notifications are tagged with the channel id, so we sweep
+     * the active set and cancel every notification carrying that tag (plus our
+     * own known (tag,id) as a fallback if the tag was stripped).
+     */
+    fun clearForChannel(context: Context, channelId: String) {
+        val mgr = context.getSystemService(NotificationManager::class.java) ?: return
+        runCatching {
+            mgr.activeNotifications.forEach { sbn ->
+                if (sbn.tag == channelId) mgr.cancel(sbn.tag, sbn.id)
+            }
+        }
+        NotificationManagerCompat.from(context).cancel(channelId, NOTIFICATION_ID)
     }
 
     private fun canPost(context: Context): Boolean =

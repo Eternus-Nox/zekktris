@@ -6,6 +6,10 @@ import WatchKit
 /// token + targets).
 struct ContentView: View {
     @EnvironmentObject private var sync: WatchSyncStore
+    /// Distinguishes a real user-facing launch from watchOS launching us into
+    /// the BACKGROUND to service a WatchConnectivity action — that distinction
+    /// is what keeps the root .task inside Carousel's 15s wall-clock budget.
+    @Environment(\.scenePhase) private var scenePhase
     @State private var path: [PokeTarget] = []
 
     var body: some View {
@@ -82,7 +86,20 @@ struct ContentView: View {
         // On open, pull the latest token + DM list from the phone (if reachable)
         // so a cold launch populates right away instead of stalling on
         // "Open Zekktris on your iPhone" until the phone next foregrounds.
-        .task { await sync.requestFreshSync() }
+        //
+        // GATED ON .active ON PURPOSE. watchOS also launches this app INTO THE
+        // BACKGROUND to service a WatchConnectivity action, and SwiftUI still
+        // builds the root view there — so this .task fired during background
+        // launches and spent up to 4s awaiting the phone inside Carousel's
+        // 15-second wall-clock allowance for the whole action. The watch was
+        // SIGKILLed for exactly that ("CSLHandleBackgroundWCSessionAction
+        // watchdog transgression. Exhausted wall time allowance of 15.00
+        // seconds"). A background launch already gets its payload delivered
+        // through the WCSession delegate; it does not need this foreground sync.
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            await sync.requestFreshSync()
+        }
     }
 
     private func notice(systemImage: String, text: String) -> some View {
@@ -269,7 +286,14 @@ struct MessagesView: View {
         if result == nil {
             // A read is idempotent, so one refresh + retry is safe — recovers a
             // token that expired since the last sync, or a transient miss.
-            if let creds2 = await sync.credentials() {
+            // The refresh is SHORT-timeout here: credentials() -> requestFreshSync()
+            // defaults to 4s, and this is already the second one in the chain, so
+            // the default put a failing load at ~8s of phone-waiting plus two
+            // network attempts — enough to threaten the watchdog budget on a slow
+            // link. We already hold a token; this retry only hopes for a fresher
+            // one, so it is not worth a long stall.
+            await sync.requestFreshSync(timeout: 1.5)
+            if let creds2 = sync.token.flatMap({ t in sync.apiBaseURL.map { (token: t, base: $0) } }) {
                 result = await WatchPokeAPI.fetchMessages(baseURL: creds2.base, token: creds2.token, channelId: target.id, e2eeKey: target.e2eeKey)
             }
         }

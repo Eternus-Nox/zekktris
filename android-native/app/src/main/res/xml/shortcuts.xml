@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sharing Shortcuts declaration (referenced from MainActivity's
+  android.app.shortcuts meta-data).
+
+  A dynamic shortcut only becomes a DIRECT SHARE target if its category set
+  matches one declared here AND the incoming share's MIME type matches one of
+  the <data> entries. The mime list therefore has to track what the composer can
+  actually attach (ChatScreen's picker uses "*/*", capped by MAX_ATTACH_MB), and
+  it must stay in step with MainActivity's SEND / SEND_MULTIPLE intent-filters —
+  a type present in one and missing from the other either never reaches us or
+  reaches us with no people offered.
+
+  The categories string is duplicated in ShareShortcuts.CATEGORY; keep both.
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <share-target android:targetClass="com.zekktris.MainActivity">
+        <data android:mimeType="text/plain" />
+        <data android:mimeType="image/*" />
+        <data android:mimeType="video/*" />
+        <data android:mimeType="audio/*" />
+        <data android:mimeType="application/*" />
+        <category android:name="com.zekktris.category.SHARE_TARGET" />
+    </share-target>
+</shortcuts>

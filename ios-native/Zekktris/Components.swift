@@ -723,6 +723,29 @@ func messageDate(_ iso: String) -> Date? {
     return d
 }
 
+/// Compact "how long ago" phrase for an ISO timestamp — "just now", "5m ago",
+/// "3h ago", "2d ago", "4w ago", "1y ago". Callers prefix the wording
+/// ("Active 5m ago", "Last online 3d ago"), which is why the "ago" lives here:
+/// the sub-minute case has no unit to hang it off. Returns nil when the string
+/// doesn't parse. Reuses the memoized `messageDate` parser above rather than
+/// spinning up another ISO8601DateFormatter.
+func shortAgo(_ iso: String, now: Date = Date()) -> String? {
+    guard let d = messageDate(iso) else { return nil }
+    // Clock skew (or a stamp written a beat in the future) reads as "just now"
+    // rather than a nonsense negative.
+    let secs = max(0, now.timeIntervalSince(d))
+    if secs < 60 { return "just now" }
+    let mins = Int(secs / 60)
+    if mins < 60 { return "\(mins)m ago" }
+    let hours = mins / 60
+    if hours < 24 { return "\(hours)h ago" }
+    let days = hours / 24
+    if days < 7 { return "\(days)d ago" }
+    let weeks = days / 7
+    if weeks < 52 { return "\(weeks)w ago" }
+    return "\(max(1, days / 365))y ago"
+}
+
 /// "Today" / "Yesterday" / "January 5, 2026" label for a message date divider.
 func dateDividerLabel(_ iso: String) -> String {
     guard let date = messageDate(iso) else { return "" }

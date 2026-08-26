@@ -3,10 +3,24 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Voice calls (LiveKit / WebRTC). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <!-- Raise the incoming-call ring over the lock screen. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <application
         android:name=".ZekApp"
         android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher"
@@ -15,18 +29,52 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:theme="@style/Theme.Zekktris"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- System share sheet. The MIME list must stay in step with the
+                 <share-target> in res/xml/shortcuts.xml: a type declared here
+                 but not there reaches us with no direct-share people offered,
+                 and one declared only there is never matched at all.
+
+                 singleTop above (rather than a second MainActivity instance)
+                 keeps a share tapped while the app is already running landing
+                 in onNewIntent on the live instance. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="audio/*" />
+                <data android:mimeType="application/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="audio/*" />
+                <data android:mimeType="application/*" />
+            </intent-filter>
+
+            <!-- Dynamic Sharing Shortcuts (recent DMs) bind to the
+                 <share-target> declared in this resource. It has to hang off
+                 the LAUNCHER activity — that is where the system looks. -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <!-- Firebase Cloud Messaging. onNewToken registers the device with the
-             server; onMessageReceived shows notifications while the app is
-             foregrounded (backgrounded ones are drawn by the system from the
-             message's `notification` block). -->
+             server; onMessageReceived renders every push (the server sends them
+             data-only, so it runs in the background/killed too) — message banners
+             with an inline reply, and incoming-call rings. -->
         <service
             android:name=".push.ZekMessagingService"
             android:exported="false">
@@ -34,6 +82,43 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+
+        <!-- Inline notification quick-reply (RemoteInput) + call Decline action.
+             Not exported — only our own PendingIntents target them. -->
+        <receiver
+            android:name=".push.QuickReplyReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".push.CallActionReceiver"
+            android:exported="false" />
+
+        <!-- Full-screen incoming-call ring, shown over the lock screen. -->
+        <activity
+            android:name=".push.IncomingCallActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:showOnLockScreen="true"
+            android:theme="@style/Theme.Zekktris" />
+
+        <!-- Ongoing-call foreground service (keeps mic capture alive when the
+             app is backgrounded during a voice call). -->
+        <service
+            android:name=".voice.CallService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- FileProvider for camera capture: the system camera app writes the
+             photo to a cache file we expose via a content:// URI. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- Small status-bar icon + channel used for system-drawn (backgrounded)
              notifications. Must match the channel we create in NotificationHelper. -->

@@ -3,6 +3,7 @@ import PhotosUI
 import UIKit
 import UniformTypeIdentifiers
 import AVKit
+import AVFoundation
 import ImageIO
 
 /// Profanity mask for the parental "blur swear words" filter. When a supervised
@@ -102,6 +103,305 @@ enum ImageDownsampler {
     }
 }
 
+/// Shrinks picked media BEFORE it is uploaded — and, critically, BEFORE it is
+/// encrypted.
+///
+/// WHY THIS HAS TO LIVE ON THE CLIENT. The server has two compression
+/// backstops, and an E2EE attachment is invisible to both by construction: the
+/// WebP re-encode (`services/uploads.ts`, `encodeWebp(maxDim: 1920, quality:
+/// 80)`) and the nightly sweep (`services/imageCompression.ts`) each gate on
+/// `contentType` starting with `image/`, and every `.zke` blob is uploaded as
+/// `application/octet-stream`. The server holds no channel key, so it could not
+/// re-encode the bytes even if it wanted to. Measured on the live server before
+/// this existed: a plain image averaged **84 KB** on disk while an E2EE image
+/// averaged **~3,100 KB** — the same photos from the same people, 37x the
+/// bytes, purely because of which path they took. 96% of all stored bytes were
+/// `.zke`.
+///
+/// The contract deliberately matches the web client
+/// (`apps/web/src/lib/compressImage.ts`: 1920px longest edge, quality ~0.8) so
+/// every client puts the same thing on disk.
+///
+/// ORIENTATION. This is the one way a downscale can be actively worse than no
+/// downscale, so it is handled twice over:
+///  1. `ImageDownsampler.decode` passes `kCGImageSourceCreateThumbnailWith
+///     Transform: true`, so ImageIO applies the EXIF orientation while
+///     producing the reduced bitmap — the pixels come out upright and the
+///     resulting `UIImage` is `.up`.
+///  2. `encode` still calls `normalizedUp` before touching `.cgImage` (the
+///     WebP path writes the CGImage directly and would otherwise drop a
+///     rotation), and the reported pixel dimensions come from
+///     `UIImage.size` / EXIF-aware `sourceDimensions`, which are transposed for
+///     the 90-degree orientations (EXIF 5-8).
+/// Nothing downstream re-applies an orientation tag, so an upright bitmap with
+/// no tag is exactly right.
+///
+/// Everything here is pure and off-main-safe: call it from a detached task.
+enum MediaPrep {
+    /// Longest-edge bound for a MAIN image upload (web parity).
+    static let imageMaxPixels: CGFloat = 1920
+    /// Lossy quality for a main image upload (web parity: 0.82).
+    static let imageQuality: CGFloat = 0.8
+    /// Longest-edge bound for the inline preview. Unchanged from the previous
+    /// behaviour, and equal to the server's own 480px thumbnails.
+    static let thumbMaxPixels: CGFloat = 480
+    /// Lossy quality for the inline preview. Unchanged.
+    static let thumbQuality: CGFloat = 0.6
+    /// Videos smaller than this skip the export: a transcode round-trip costs
+    /// the user seconds and battery for a trivial saving.
+    static let videoExportMinBytes = 5 * 1024 * 1024
+    /// 720p. The two `video.mov.zke` blobs on the server averaged 44 MB each.
+    static let videoExportPreset = AVAssetExportPreset1280x720
+
+    /// One picked attachment on the way in.
+    struct Input: Sendable {
+        let data: Data
+        let filename: String
+        let contentType: String
+    }
+
+    /// One attachment on the way out. `data`/`filename`/`contentType` are what
+    /// should actually be uploaded — they differ from the input whenever the
+    /// re-encode was a win.
+    struct Prepared: Sendable {
+        var data: Data
+        var filename: String
+        var contentType: String
+        /// Pixel dimensions OF THE BYTES IN `data` (EXIF-corrected). Sent as
+        /// plaintext metadata so a recipient can reserve the layout slot for an
+        /// E2EE image the server cannot measure.
+        var width: Int?
+        var height: Int?
+        /// PLAINTEXT inline-preview bytes. The caller encrypts these in an E2EE
+        /// conversation. nil means we could not decode the image at all — see
+        /// the hard-fail in `AppStore.sendAttachments`.
+        var thumbnail: Data?
+        /// Declared-image input (drives the "a thumbnail is mandatory" rule).
+        var isImage: Bool
+        /// Original byte count, for the savings log.
+        var originalBytes: Int
+        /// A video whose 720p export was attempted and failed, so the ORIGINAL
+        /// bytes are going up. Deliberately non-fatal: never block a send on a
+        /// transcode.
+        var videoExportFailed: Bool
+    }
+
+    /// Prepare a batch. Images are downscaled + re-encoded; videos are exported
+    /// to 720p; anything else (a future arbitrary-file picker) passes through
+    /// completely untouched.
+    static func prepareAll(_ inputs: [Input]) async -> [Prepared] {
+        var out: [Prepared] = []
+        out.reserveCapacity(inputs.count)
+        for input in inputs {
+            if input.contentType.hasPrefix("video/") {
+                out.append(await prepareVideo(input))
+            } else if input.contentType.hasPrefix("image/") {
+                out.append(prepareImage(input))
+            } else {
+                out.append(Prepared(
+                    data: input.data, filename: input.filename,
+                    contentType: input.contentType, width: nil, height: nil,
+                    thumbnail: nil, isImage: false,
+                    originalBytes: input.data.count, videoExportFailed: false))
+            }
+        }
+        return out
+    }
+
+    // MARK: Images
+
+    private static func prepareImage(_ input: Input) -> Prepared {
+        var out = Prepared(
+            data: input.data, filename: input.filename,
+            contentType: input.contentType, width: nil, height: nil,
+            thumbnail: nil, isImage: true,
+            originalBytes: input.data.count, videoExportFailed: false)
+
+        let srcOpts = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let src = CGImageSourceCreateWithData(input.data as CFData, srcOpts) else {
+            // Undecodable as an image. Leave the bytes alone and leave
+            // `thumbnail` nil — the E2EE path treats that as fatal.
+            return out
+        }
+        if let dims = sourceDimensions(src) {
+            out.width = dims.width
+            out.height = dims.height
+        }
+
+        // Every image gets a preview, including the ones we do not re-encode.
+        if let small = ImageDownsampler.decode(input.data, maxPixels: thumbMaxPixels),
+           let encoded = encode(small, quality: thumbQuality) {
+            out.thumbnail = encoded.data
+        }
+
+        // Multi-frame sources (animated GIF / APNG / HEICS) must not be
+        // re-encoded — ImageIO would hand back a single still and we would
+        // silently destroy the animation. The still thumbnail above is fine.
+        guard CGImageSourceGetCount(src) <= 1 else { return out }
+
+        guard let full = ImageDownsampler.decode(input.data, maxPixels: imageMaxPixels),
+              let encoded = encode(full, quality: imageQuality) else {
+            return out
+        }
+        // Only take the re-encode when it is actually smaller. A modest,
+        // already-compressed image can grow under a second lossy pass, and
+        // paying quality for extra bytes is strictly worse than doing nothing.
+        guard encoded.data.count < input.data.count else { return out }
+
+        out.data = encoded.data
+        out.contentType = encoded.mime
+        let base = (input.filename as NSString).deletingPathExtension
+        out.filename = (base.isEmpty ? "image" : base) + "." + encoded.ext
+        // Dimensions must describe the bytes we are actually uploading.
+        out.width = Int(full.size.width.rounded())
+        out.height = Int(full.size.height.rounded())
+        return out
+    }
+
+    /// EXIF-aware pixel dimensions read from the header, without decoding.
+    /// Orientations 5-8 are the 90-degree rotations, where the displayed size
+    /// is the transpose of the stored size.
+    private static func sourceDimensions(_ src: CGImageSource) -> (width: Int, height: Int)? {
+        guard let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+              let w = props[kCGImagePropertyPixelWidth] as? Int,
+              let h = props[kCGImagePropertyPixelHeight] as? Int else { return nil }
+        let orientation = (props[kCGImagePropertyOrientation] as? Int) ?? 1
+        return (orientation >= 5 && orientation <= 8) ? (h, w) : (w, h)
+    }
+
+    /// Encode a (already downscaled) bitmap. Prefers WebP for web/Android/iOS
+    /// parity and alpha support, but ImageIO only gained a WebP *encoder* on
+    /// some OS versions, so availability is probed at runtime and JPEG (opaque)
+    /// / PNG (has alpha) are the fallbacks. All three decode everywhere the app
+    /// runs — unlike HEIC, which is why HEIC is deliberately not a target here.
+    private static func encode(_ image: UIImage, quality: CGFloat) -> (data: Data, ext: String, mime: String)? {
+        let upright = normalizedUp(image)
+        if webpEncodingAvailable, let webp = webpData(upright, quality: quality) {
+            return (webp, "webp", "image/webp")
+        }
+        if hasAlpha(upright), let png = upright.pngData() {
+            return (png, "png", "image/png")
+        }
+        if let jpeg = upright.jpegData(compressionQuality: quality) {
+            return (jpeg, "jpg", "image/jpeg")
+        }
+        return upright.pngData().map { ($0, "png", "image/png") }
+    }
+
+    /// Bake any residual EXIF rotation into the pixels. `ImageDownsampler`
+    /// already does this on its fast path, but it falls back to a plain
+    /// `UIImage(data:)` (orientation still pending) when thumbnailing fails —
+    /// and the WebP encoder writes `.cgImage` straight out, which would ignore
+    /// it and hand the recipient a sideways photo.
+    private static func normalizedUp(_ image: UIImage) -> UIImage {
+        guard image.imageOrientation != .up else { return image }
+        let format = UIGraphicsImageRendererFormat.preferred()
+        format.scale = 1
+        format.opaque = !hasAlpha(image)
+        // `image.size` is already the DISPLAY size (transposed for a 90-degree
+        // orientation) and `draw(in:)` applies the transform, so this both
+        // rotates the pixels and lands on the right canvas.
+        return UIGraphicsImageRenderer(size: image.size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: image.size))
+        }
+    }
+
+    private static func hasAlpha(_ image: UIImage) -> Bool {
+        guard let info = image.cgImage?.alphaInfo else { return false }
+        switch info {
+        case .none, .noneSkipFirst, .noneSkipLast: return false
+        default: return true
+        }
+    }
+
+    private static let webpEncodingAvailable: Bool = {
+        let types = (CGImageDestinationCopyTypeIdentifiers() as NSArray) as? [String] ?? []
+        return types.contains(UTType.webP.identifier)
+    }()
+
+    private static func webpData(_ image: UIImage, quality: CGFloat) -> Data? {
+        guard let cg = image.cgImage else { return nil }
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(
+            out, UTType.webP.identifier as CFString, 1, nil) else { return nil }
+        let props: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: quality]
+        CGImageDestinationAddImage(dest, cg, props as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return out as Data
+    }
+
+    // MARK: Video
+
+    /// Export to 720p H.264/MP4 before upload. Any failure falls back to the
+    /// ORIGINAL bytes and flags `videoExportFailed` — a send is never blocked on
+    /// a transcode, because a video that will not export is still a video the
+    /// user wants to send.
+    ///
+    /// `AVAssetExportSession` preserves the source's `preferredTransform`, so a
+    /// portrait clip stays portrait; there is no rotation hazard on this path.
+    private static func prepareVideo(_ input: Input) async -> Prepared {
+        var out = Prepared(
+            data: input.data, filename: input.filename,
+            contentType: input.contentType, width: nil, height: nil,
+            thumbnail: nil, isImage: false,
+            originalBytes: input.data.count, videoExportFailed: false)
+        guard input.data.count > videoExportMinBytes else { return out }
+
+        let tmp = FileManager.default.temporaryDirectory
+        let ext = (input.filename as NSString).pathExtension
+        let inURL = tmp.appendingPathComponent("zk-src-\(UUID().uuidString).\(ext.isEmpty ? "mov" : ext)")
+        let outURL = tmp.appendingPathComponent("zk-720-\(UUID().uuidString).mp4")
+        defer {
+            try? FileManager.default.removeItem(at: inURL)
+            try? FileManager.default.removeItem(at: outURL)
+        }
+        // AVAsset needs a file URL; the picker only ever hands us bytes.
+        do {
+            try input.data.write(to: inURL, options: .atomic)
+        } catch {
+            out.videoExportFailed = true
+            return out
+        }
+        let asset = AVURLAsset(url: inURL)
+        guard let session = AVAssetExportSession(asset: asset, presetName: videoExportPreset) else {
+            out.videoExportFailed = true
+            return out
+        }
+        session.shouldOptimizeForNetworkUse = true
+        guard await runExport(session, to: outURL),
+              let exported = try? Data(contentsOf: outURL) else {
+            out.videoExportFailed = true
+            return out
+        }
+        // A short clip that is already small can come back bigger; keep whichever
+        // is smaller. Not a failure — nothing went wrong, the export just did not
+        // pay off.
+        guard exported.count < input.data.count else { return out }
+
+        let base = (input.filename as NSString).deletingPathExtension
+        out.data = exported
+        out.filename = (base.isEmpty ? "video" : base) + ".mp4"
+        out.contentType = "video/mp4"
+        return out
+    }
+
+    /// The iOS 17 floor still needs `exportAsynchronously` + `status`, both of
+    /// which are deprecated as of iOS 18; marking this helper deprecated keeps
+    /// the call sites quiet without pretending the API is gone. The completion
+    /// handler is `NS_SWIFT_SENDABLE` while `AVAssetExportSession` is
+    /// `NS_SWIFT_NONSENDABLE`, so the closure captures ONLY the continuation —
+    /// the session is read back afterwards, outside the closure.
+    @available(iOS, deprecated: 18.0, message: "Kept for the iOS 17 deployment floor.")
+    private static func runExport(_ session: AVAssetExportSession, to url: URL) async -> Bool {
+        session.outputURL = url
+        session.outputFileType = .mp4
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            session.exportAsynchronously { cont.resume() }
+        }
+        return session.status == .completed
+    }
+}
+
 /// A channel's message timeline plus the composer. Auto-scrolls to the newest
 /// message and keeps the composer pinned above the keyboard.
 struct MessageListView: View {
@@ -132,9 +432,24 @@ struct MessageListView: View {
     @State private var showSearch = false
     @State private var showPins = false
     @State private var lastTypingSent = Date.distantPast
-    /// Tracks the newest message id so the auto-scroll fires only on appends
-    /// (new/sent messages), not when older history is prepended.
-    @State private var lastBottomId: String?
+    /// The channel whose initial landing has already been performed.
+    ///
+    /// THE LANDING IS KEYED ON CHANNEL IDENTITY, not on `store.messages.count`.
+    /// The count-keyed trigger this replaces could not fire on the case that
+    /// matters most: re-opening a conversation you have already visited this
+    /// session seeds 50 rows from the message cache and then *replaces* them
+    /// with a fresh 50-row latest window, so the count goes 50 → 50 even when
+    /// the tail changed. `onChange(of:count)` never ran, the initial landing
+    /// never happened, and a freshly-created ScrollView renders at offset 0 —
+    /// the OLDEST of the loaded 50. Web keys the same reset on channel
+    /// identity (`apps/web/src/app/MessageView.tsx`, `channelId !==
+    /// prevChannelRef.current`).
+    @State private var landedChannelId: String?
+    /// Where THIS open landed. Re-applied while the settle window is active so
+    /// late-sizing content (embeds, photos, E2EE decrypts) and the cache →
+    /// server row swap can't leave the chosen row off screen. `nil` once a
+    /// jump anchor owns the position.
+    @State private var landing: Landing?
     /// Set shortly after the initial scroll-to-bottom so the load-older trigger
     /// can't fire during first layout (which would yank the user into history).
     @State private var didInitialScroll = false
@@ -144,6 +459,17 @@ struct MessageListView: View {
     /// AFTER the initial scroll, pushing the newest content below the fold. The
     /// window is bounded so it can't fight a user who scrolls up later.
     @State private var stickToBottomOnGrow = false
+    /// Near-bottom gate for the incoming-message auto-scroll (web parity).
+    /// ScrollViewReader exposes no scroll offset, so nearness is tracked by the
+    /// bottom sentinel row's onAppear/onDisappear: while the sentinel is inside
+    /// the lazy render window we're "near the bottom" and incoming messages may
+    /// pull the list down; once the user scrolls up into history the sentinel
+    /// disappears and incoming messages must NOT yank them (the unread divider
+    /// already handles catch-up). The user's OWN sends always scroll.
+    @State private var isNearBottom = true
+    /// Live geometry backing `isNearBottom` (see SentinelOffsetKey).
+    @State private var sentinelOffset: CGFloat = .greatestFiniteMagnitude
+    @State private var viewportHeight: CGFloat = 0
 
     /// Reports the message list's laid-out content height, so a late growth
     /// (image load / embed render / E2EE decrypt) can re-pin us to the bottom
@@ -152,6 +478,65 @@ struct MessageListView: View {
         static var defaultValue: CGFloat = 0
         static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
     }
+
+    /// Distance from the top of the scroll VIEWPORT to the top of the bottom
+    /// sentinel, in the scroll view's own coordinate space. Shrinks toward the
+    /// viewport height as you approach the bottom of the list.
+    ///
+    /// This replaces `onAppear`/`onDisappear` on the sentinel as the driver of
+    /// `isNearBottom`. Those are unreliable here: the sentinel is a 1pt
+    /// `Color.clear` inside a `LazyVStack`, and a lazy stack keeps a prefetch
+    /// buffer around the visible window — so the sentinel can stay "appeared"
+    /// while scrolled well off-screen and `onDisappear` simply never fires.
+    /// With `isNearBottom` initialised to `true`, that left the gate stuck open
+    /// forever: the jump-to-newest button never rendered, and it never
+    /// recovered. Geometry is continuous and can't get wedged.
+    private struct SentinelOffsetKey: PreferenceKey {
+        static var defaultValue: CGFloat = .greatestFiniteMagnitude
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+    }
+
+    /// Height of the scroll viewport (not the content).
+    private struct ViewportHeightKey: PreferenceKey {
+        static var defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+    }
+
+    /// Coordinate space the sentinel offset is measured in.
+    private var chatScrollSpace: String { "chatScroll-\(channel.id)" }
+
+    /// How close the sentinel must get to the bottom of the viewport to count
+    /// as "at the bottom". One row-ish of slack so a half-row overhang doesn't
+    /// flip the gate.
+    private static let nearBottomSlop: CGFloat = 24
+
+    /// The single expression of "where does this open land". Everything that
+    /// positions the list on open goes through it, so there is exactly one
+    /// target and it can be re-applied verbatim while the open settles.
+    private enum Landing: Equatable {
+        /// The newest message: DMs always, and any channel with nothing unread.
+        case bottom
+        /// A guild channel with unread history lands on the "New messages"
+        /// divider. Carries the FROZEN BOUNDARY id, not the target row: the row
+        /// is re-resolved at every apply (see `unreadLandingId`), because the
+        /// cache-seeded rows this landing was chosen against get replaced by the
+        /// fresh latest window a moment later — and `scrollTo` a row that is no
+        /// longer in the list is a silent no-op.
+        case unread(String)
+    }
+
+    /// What the message list looks like from the landing logic's point of
+    /// view. Observing (count, newest id) rather than count alone is the whole
+    /// point: a cached re-open swaps 50 rows for a different 50 rows, and a
+    /// count-only key is blind to it.
+    private struct ListKey: Equatable {
+        let count: Int
+        let lastId: String?
+    }
+
+    /// How far back from the newest message the unread-divider landing may
+    /// put you — roughly a screenful of rows.
+    private static let unreadLandingMaxRowsBack = 15
 
     var body: some View {
         VStack(spacing: 0) {
@@ -211,7 +596,25 @@ struct MessageListView: View {
                                     }
                             }
 
-                            Color.clear.frame(height: 1).id(bottomAnchor)
+                            // Bottom sentinel: scroll target AND the near-bottom
+                            // tracker (see isNearBottom above).
+                            //
+                            // onAppear/onDisappear used to drive `isNearBottom`
+                            // from here. They can't be trusted for a 1pt
+                            // `Color.clear` in a LazyVStack (see
+                            // SentinelOffsetKey), so the flag is now derived
+                            // from this view's measured offset instead. onAppear
+                            // is kept ONLY as an optimistic open — the geometry
+                            // reading corrects it either way on the next frame.
+                            Color.clear.frame(height: 1)
+                                .onAppear { isNearBottom = true }
+                                .id(bottomAnchor)
+                                .background(GeometryReader { sp in
+                                    Color.clear.preference(
+                                        key: SentinelOffsetKey.self,
+                                        value: sp.frame(in: .named(chatScrollSpace)).minY,
+                                    )
+                                })
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
@@ -219,45 +622,94 @@ struct MessageListView: View {
                             Color.clear.preference(key: ContentHeightKey.self, value: gp.size.height)
                         })
                     }
+                    // A conversation is read from the bottom up. Without this,
+                    // content shorter than the viewport renders TOP-aligned —
+                    // a three-message DM sits at the top of the screen with a
+                    // large gap above the composer, and no `scrollTo` can fix
+                    // it because there is nothing to scroll. It also means a
+                    // freshly-created ScrollView starts at the newest row
+                    // rather than at offset 0 (the oldest of the loaded 50),
+                    // which is the floor under every landing below.
+                    .defaultScrollAnchor(.bottom)
+                    // Named space the bottom sentinel measures itself against,
+                    // plus the viewport height to compare it to. Both feed the
+                    // near-bottom gate below.
+                    .coordinateSpace(name: chatScrollSpace)
+                    .background(GeometryReader { vp in
+                        Color.clear.preference(key: ViewportHeightKey.self, value: vp.size.height)
+                    })
+                    .onPreferenceChange(ViewportHeightKey.self) { h in
+                        viewportHeight = h
+                        recomputeNearBottom()
+                    }
+                    .onPreferenceChange(SentinelOffsetKey.self) { y in
+                        sentinelOffset = y
+                        recomputeNearBottom()
+                    }
                     .onPreferenceChange(ContentHeightKey.self) { _ in
                         // Late-sizing content (webhook embeds, photos/attachments
                         // loading, E2EE text decrypting) grows the rows AFTER the
-                        // initial scroll, pushing the newest below the fold. While
-                        // the open settle window is active, re-pin to the bottom on
-                        // each growth so the open stays landed on the latest.
-                        // Yields to a jump anchor / unread divider (they own the
-                        // position) and stops after the window so it can't fight a
-                        // user who has since scrolled up.
-                        guard stickToBottomOnGrow,
-                              store.pendingScrollAnchorId == nil,
-                              store.unreadBoundaryId == nil,
-                              store.messages.last != nil else { return }
-                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                        // landing, pushing the chosen row off screen. While the
+                        // open settle window is active, re-apply THE SAME landing
+                        // on each growth.
+                        //
+                        // This used to bail out for a guild channel with unread
+                        // (`channel.isDM || store.unreadBoundaryId == nil`), which
+                        // — together with the count-keyed trigger that never fired
+                        // on a cached re-open — meant such a channel performed
+                        // ZERO scrolls and opened 50 messages up. Re-applying the
+                        // landing is correct for the divider case too, because the
+                        // divider IS the chosen position.
+                        guard stickToBottomOnGrow, store.pendingScrollAnchorId == nil else { return }
+                        applyLanding(proxy)
                     }
-                    .onChange(of: store.messages.count) {
-                        // Only auto-scroll to the bottom when the newest message
-                        // changed (append/initial). Prepended history keeps its
-                        // place via the anchor restore below.
-                        let wasEmpty = (lastBottomId == nil)
-                        let newest = store.messages.last?.id
-                        if newest != lastBottomId {
-                            lastBottomId = newest
-                            if wasEmpty, let boundary = store.unreadBoundaryId,
-                               let firstUnread = firstUnreadId(boundary) {
-                                // Initial load with unread → land on the divider.
-                                proxy.scrollTo(firstUnread, anchor: .top)
-                            } else if wasEmpty {
-                                // Initial fill of this channel → just BE at the
-                                // bottom. No animation: animating here reads as
-                                // the view "scrolling down to" the newest message
-                                // on every open, which is what we don't want.
+                    .onChange(of: ListKey(count: store.messages.count,
+                                         lastId: store.messages.last?.id)) { old, new in
+                        // 1. This open hasn't landed yet — a cold open, where the
+                        //    rows arrive after onAppear. Land now.
+                        if landedChannelId != channel.id {
+                            landInitial(proxy)
+                            return
+                        }
+                        // An APPEND grows the list AND moves the tail. Requiring
+                        // both is what keeps a PREPEND (older page paged in:
+                        // count grows, newest id unchanged) from being followed
+                        // to the bottom — that case is owned by the anchor
+                        // restore below.
+                        let appended = new.count > old.count && new.lastId != old.lastId
+                        let ownSend = appended
+                            && store.messages.last?.authorId != nil
+                            && store.messages.last?.authorId == store.currentUserId
+                        // 2. The user's own send always lands on what they just
+                        //    sent, and it ENDS a divider landing — they've engaged
+                        //    with the bottom of the conversation.
+                        if ownSend {
+                            landing = .bottom
+                            withAnimation(.easeOut(duration: 0.2)) {
                                 proxy.scrollTo(bottomAnchor, anchor: .bottom)
-                            } else {
-                                // A new message arrived while we're viewing →
-                                // a gentle scroll-to-bottom is appropriate here.
-                                withAnimation(.easeOut(duration: 0.2)) {
-                                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
-                                }
+                            }
+                            return
+                        }
+                        // 3. Still inside the open settle window. The cache-seeded
+                        //    rows were just REPLACED by the fresh latest window —
+                        //    often the same count with a different tail, which the
+                        //    old count-only key could not see at all — so the
+                        //    current offset is meaningless. Re-apply the landing
+                        //    rather than treating the swap as an append. (Yields
+                        //    to a jump/prepend anchor, which owns the position —
+                        //    same guard the height-growth re-pin uses.)
+                        if stickToBottomOnGrow, store.pendingScrollAnchorId == nil {
+                            applyLanding(proxy)
+                            return
+                        }
+                        // 4. Steady state: follow an APPEND only while the user is
+                        //    near the bottom. If they've scrolled up to read
+                        //    history, do NOTHING — an incoming message must not
+                        //    yank them down (the unread divider handles catch-up),
+                        //    and a deletion (count shrink) never scrolls.
+                        if appended, isNearBottom {
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                proxy.scrollTo(bottomAnchor, anchor: .bottom)
                             }
                         }
                     }
@@ -265,6 +717,17 @@ struct MessageListView: View {
                         // After an older page prepends, jump back to the message
                         // that was previously at the top so the view doesn't lurch.
                         guard let anchor else { return }
+                        // Anchored jumps (deep links, prepend restores) land
+                        // mid-history — close the near-bottom gate so an incoming
+                        // message can't yank the user off the anchor. If the
+                        // anchor is in fact near the bottom, the sentinel's
+                        // onAppear reopens the gate on the same layout pass.
+                        isNearBottom = false
+                        // The anchor now owns the position: retire this open's
+                        // landing so the settle window can't drag the user back
+                        // off the message they jumped to once the anchor clears.
+                        landing = nil
+                        landedChannelId = channel.id
                         // Two-phase restore: once synchronously (limits the
                         // visible flash), then again on the next runloop turn
                         // AFTER the freshly-prepended LazyVStack rows have
@@ -279,26 +742,24 @@ struct MessageListView: View {
                         }
                     }
                     .onAppear {
-                        // Treat the next messages-count change as the initial
-                        // fill: do NOT seed lastBottomId from the previous
-                        // channel's still-resident rows (a wide-layout / same-
-                        // stack switch doesn't clear them before this fires),
-                        // which would poison the wasEmpty gate above and skip the
-                        // land-on-newest branch — leaving the open mid-history.
-                        lastBottomId = nil
-                        // Re-pin to the bottom as late-sizing content settles
+                        // A fresh open: nothing has landed for this channel yet.
+                        // (Both hosts key the page on the route — MainView
+                        // `.id(routeKey)` — so this fires once per channel open.)
+                        landedChannelId = nil
+                        landing = nil
+                        // A fresh open lands at, or a screenful above, the bottom,
+                        // so start the gate open; the sentinel's onDisappear closes
+                        // it as soon as the user scrolls up into history.
+                        isNearBottom = true
+                        // Re-apply the landing as late-sizing content settles
                         // (see stickToBottomOnGrow + the height preference above).
                         stickToBottomOnGrow = true
-                        // If rows are already present (e.g. an iPad sidebar
-                        // switch), land on the newest after layout — unless a
-                        // jump anchor or unread divider owns the position.
-                        DispatchQueue.main.async {
-                            if store.pendingScrollAnchorId == nil,
-                               store.unreadBoundaryId == nil,
-                               store.messages.last != nil {
-                                proxy.scrollTo(bottomAnchor, anchor: .bottom)
-                            }
-                        }
+                        // Rows are usually ALREADY present here: openChannel seeds
+                        // them synchronously from the message cache. Land on the
+                        // next runloop turn, once that seed has happened and the
+                        // LazyVStack has laid the rows out. If the cache was empty
+                        // this is a no-op and the ListKey change above lands it.
+                        DispatchQueue.main.async { landInitial(proxy) }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                             didInitialScroll = true
                         }
@@ -323,6 +784,34 @@ struct MessageListView: View {
                             }
                         }
                     }
+                    // Jump-to-newest, pinned to the bottom-right of the message
+                    // list. LAST in the chain on purpose: an overlay's content
+                    // contributes preferences to whatever sits ABOVE it, so
+                    // adding it here keeps it out of the ContentHeightKey
+                    // reduction the landing logic reads.
+                    //
+                    // Anchoring it to the ScrollView (rather than to the
+                    // composer's safeAreaInset) is what makes it track the
+                    // composer for free: a reply bar, attachment chips or the
+                    // keyboard all grow the bottom inset, the list shrinks, and
+                    // the button rides up with it — no height measurement.
+                    .overlay(alignment: .bottomTrailing) {
+                        // REUSES the near-bottom gate the incoming-message
+                        // auto-scroll already owns (`isNearBottom`, driven by the
+                        // bottom sentinel) instead of adding a second threshold
+                        // that could disagree with it: "new messages won't pull
+                        // the list down" and "show the jump button" are the same
+                        // state, and they must never be true separately.
+                        //
+                        // A plain `if` — no opacity fade, no `.transition`. At
+                        // the bottom the button must be ABSENT from the
+                        // hierarchy, not invisible: a faded-out/transitioning
+                        // view can linger as a hit-test region, and this one
+                        // hovers 2pt above the send button.
+                        if !isNearBottom {
+                            jumpToLatestButton(proxy)
+                        }
+                    }
                 }
                 .background(Theme.bg1.opacity(0.9))
             }
@@ -331,7 +820,12 @@ struct MessageListView: View {
         .onAppear { store.openChannel(channel) }
         // Swipe-back is handled at the navigation container (MainView.compactNav)
         // so the page can follow the finger and reveal the screen behind it.
-        .safeAreaInset(edge: .bottom) {
+        // `spacing: 0` is load-bearing, not tidying. Without it SwiftUI
+        // inserts its DEFAULT 8pt between the ScrollView and the inset, so
+        // the list's bottom edge stops 8pt short of the composer's top
+        // hairline — dead band nobody drew, and it silently turned the
+        // jump-to-newest button's 2pt gap into a measured 10pt.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             if !isLocked { composer }
         }
         .sheet(isPresented: $showEnableSheet) {
@@ -340,6 +834,160 @@ struct MessageListView: View {
         .sheet(isPresented: $showDmSettings) {
             DmSettingsSheet(channel: channel)
         }
+    }
+
+    // MARK: Open landing
+
+    /// Choose and perform this channel's initial landing — ONCE per open,
+    /// keyed on channel identity.
+    ///
+    /// Safe to call from every trigger; the `landedChannelId` guard makes the
+    /// extra calls free. That is what lets one routine cover both a
+    /// cache-seeded open (rows already resident at `onAppear`) and a cold open
+    /// (rows arrive later, via the ListKey change) without either path needing
+    /// its own speculative scroll.
+    private func landInitial(_ proxy: ScrollViewProxy) {
+        guard landedChannelId != channel.id else { return }
+        // A deep link / jump anchor owns the position. Mark the open as landed
+        // so nothing later fights it, and leave `landing` nil so the settle
+        // window is a no-op.
+        if store.pendingScrollAnchorId != nil {
+            landedChannelId = channel.id
+            landing = nil
+            return
+        }
+        // Nothing to land on yet — a later trigger will call back.
+        guard !store.messages.isEmpty else { return }
+
+        landedChannelId = channel.id
+        if !channel.isDM, let boundary = store.unreadBoundaryId,
+           unreadLandingId(boundary) != nil {
+            // Guild channels with unread → land on the divider. DMs always land
+            // at the very bottom (iMessage-style: the newest message is what you
+            // want to see on open).
+            //
+            // Landing mid-history: close the near-bottom gate (the sentinel never
+            // appeared, so its onDisappear can't) — if the divider is in fact
+            // close to the bottom the sentinel's onAppear reopens it.
+            isNearBottom = false
+            landing = .unread(boundary)
+        } else {
+            landing = .bottom
+        }
+        applyLanding(proxy)
+    }
+
+    /// Re-apply this open's chosen landing. No-op before a landing has been
+    /// chosen, and after a jump anchor has taken ownership of the position.
+    private func applyLanding(_ proxy: ScrollViewProxy) {
+        switch landing {
+        case .bottom:
+            // No animation: animating here reads as the view "scrolling down to"
+            // the newest message on every open, which is what we don't want.
+            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+        case .unread(let boundary):
+            // Re-resolved against the CURRENT rows every time — see Landing.
+            if let target = unreadLandingId(boundary) {
+                proxy.scrollTo(target, anchor: .top)
+            }
+        case nil:
+            break
+        }
+    }
+
+    /// "You are scrolled up" → tap to come back to the newest message.
+    ///
+    /// Deliberately distinct from web's bottom-CENTRE "New messages" pill,
+    /// which reports that new messages ARRIVED. This one reports only where
+    /// you are, so it lives at the trailing edge and the two never collide.
+    ///
+    /// Geometry (iOS is the design source of truth here — web and Android
+    /// mirror these numbers): a 36pt disc, `Theme.bg2` fill with the same 1pt
+    /// `Theme.line` border the composer box uses, inside a 44pt tap target.
+    /// The target grows UP and LEFT only (`alignment: .bottomTrailing`), so
+    /// the disc — not the padding — is what sits on the trailing inset and
+    /// 2pt above the composer's top hairline. That is what keeps the
+    /// touchable area off the send button, which the disc is centred over.
+    /// Single writer for `isNearBottom`, from measured geometry.
+    ///
+    /// The sentinel sits at the very end of the content, so its top edge in the
+    /// scroll's coordinate space is at `viewportHeight` exactly when the list is
+    /// scrolled fully down. Anything meaningfully below that means there is
+    /// still content underneath → show the jump button.
+    ///
+    /// Guarded on `viewportHeight > 0` so the first frame (before the viewport
+    /// has been measured) can't briefly declare "not near bottom" and flash the
+    /// button on open.
+    private func recomputeNearBottom() {
+        guard viewportHeight > 0, sentinelOffset != .greatestFiniteMagnitude else { return }
+        let near = sentinelOffset <= viewportHeight + Self.nearBottomSlop
+        if near != isNearBottom { isNearBottom = near }
+    }
+
+    /// What a tap does. Extracted so the high-priority gesture and the
+    /// accessibility action invoke exactly the same thing.
+    private func jumpToLatest(_ proxy: ScrollViewProxy) {
+        // Tapping is engagement with the bottom of the conversation, the
+        // same as sending: retire a "New messages" divider landing so the
+        // open settle window can't drag the user back up to it.
+        landing = .bottom
+        withAnimation(.easeOut(duration: 0.2)) {
+            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+        }
+        // `isNearBottom` is NOT set here. The sentinel's measured offset owns
+        // it and updates as the list settles; writing it from two places is how
+        // the gate and the button drift apart.
+    }
+
+    private func jumpToLatestButton(_ proxy: ScrollViewProxy) -> some View {
+        // NOT a `Button`. A Button's tap is an ordinary gesture, so while the
+        // list is still decelerating UIKit spends the first tap stopping the
+        // scroll and the press is swallowed — you have to wait for the list to
+        // settle, then tap again. A `.highPriorityGesture` tap wins that race,
+        // so the button works mid-flick, scrolling up or down.
+        //
+        // Accessibility is restored explicitly below (a plain view carries
+        // none of Button's semantics for free).
+        Group {
+            Image(systemName: "chevron.down")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(Theme.ink2)
+                .frame(width: 36, height: 36)
+                .background(Theme.bg2)
+                .clipShape(Circle())
+                .overlay(Circle().strokeBorder(Theme.line, lineWidth: 1))
+                // Lifts the disc off whatever message row is behind it; the
+                // fill is opaque for the same reason (bg2, not bg2/0.6 as in
+                // the composer box, which has the bar behind it).
+                .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
+                // 44pt minimum tap target, same idiom as the header back
+                // button.
+                .frame(width: 44, height: 44, alignment: .bottomTrailing)
+                .contentShape(Rectangle())
+        }
+        // Beats the scroll view's own gesture, so a tap lands while the list is
+        // still decelerating instead of being spent stopping it.
+        .highPriorityGesture(TapGesture().onEnded { jumpToLatest(proxy) })
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("Jump to newest messages")
+        .accessibilityAction { jumpToLatest(proxy) }
+        // CONCENTRIC WITH THE SEND BUTTON, matching Android and web. The send
+        // button's centre sits 39.5pt in from the trailing edge: 16 (the
+        // composer's .padding(.horizontal, 16)) + 8 (the input row's
+        // .padding(.horizontal, 8)) + 15.5 (half the 31pt layout width of
+        // `arrow.up.circle.fill` at .system(size: 26) — an SF Symbol's box is
+        // ~1.2x its point size, measured 31.0 on device). Subtract this disc's
+        // 18pt radius → 21.5. Flush with the composer BOX's edge would be 16,
+        // which lands the disc 5.5pt right of the send button and reads as a
+        // misalignment rather than a decision.
+        .padding(.trailing, 21.5)
+        // The 2pt gap. Measured from the ScrollView's bottom edge, which IS
+        // the composer's top hairline — the composer is a bottom safeAreaInset
+        // on the page, so it shortens the list rather than covering it. True
+        // only because that inset is declared `spacing: 0`; with SwiftUI's
+        // default spacing this reads 10pt on device.
+        .padding(.bottom, 2)
     }
 
     /// 1:1 DM read receipts (web parity): "Read" anchors on the newest own
@@ -399,7 +1047,7 @@ struct MessageListView: View {
             showHeader: showHeader,
             dmReceipt: dmReceipt(for: message, anchors: anchors),
             currentUserId: store.currentUserId,
-            authorStatus: store.status(for: message.authorId, fallback: message.author?.status),
+            authorStatus: store.status(for: message.authorId),
             // Role colors are guild-scoped: a DM / group-DM has no guild, so a
             // name there must never inherit the role color from whatever server
             // was open last (the store's members/roles aren't cleared on the
@@ -449,7 +1097,7 @@ struct MessageListView: View {
                     url: channel.dmAvatarUser?.avatarUrl,
                     name: store.dmDisplayTitle(channel),
                     size: 28,
-                    status: store.status(for: channel.dmAvatarUser?.id, fallback: channel.dmAvatarUser?.status),
+                    status: store.status(for: channel.dmAvatarUser?.id),
                     ringColor: Theme.bg2,
                     toneId: channel.dmAvatarUser?.id
                 )
@@ -467,10 +1115,26 @@ struct MessageListView: View {
                             .offset(x: 4, y: -4)
                     }
                 }
-                Text(store.dmDisplayTitle(channel))
-                    .font(.zkSans(16, weight: .semibold))
-                    .foregroundColor(Theme.ink1)
-                    .lineLimit(1)
+                // Tapping the name opens the peer's profile — the SAME
+                // full-screen profile card every other surface opens
+                // (store.openProfile → the presenter in MainView). 1:1 DMs
+                // only: a group DM's title isn't one person.
+                if channel.type == "dm", let peer = channel.dmAvatarUser {
+                    Button { store.openProfile(peer) } label: {
+                        Text(store.dmDisplayTitle(channel))
+                            .font(.zkSans(16, weight: .semibold))
+                            .foregroundColor(Theme.ink1)
+                            .lineLimit(1)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Opens their profile")
+                } else {
+                    Text(store.dmDisplayTitle(channel))
+                        .font(.zkSans(16, weight: .semibold))
+                        .foregroundColor(Theme.ink1)
+                        .lineLimit(1)
+                }
                 if let streak = (store.dms.first(where: { $0.id == channel.id })?.streak ?? channel.streak),
                    streak > 0 {
                     StreakChip(days: streak)
@@ -1178,6 +1842,13 @@ struct MessageListView: View {
         // profile picture again after a server message" case.
         if isNoticeRow(previous) { return true }
         if current.authorId != previous.authorId { return true }
+        // Break the group on a time gap: a message sent a minute or more after
+        // the previous one re-shows the avatar + name + timestamp, so separate
+        // exchanges don't read as one clump. (Same-author grouping previously
+        // had NO time bound — messages hours apart on the same day merged.)
+        if let dp = messageDate(previous.createdAt),
+           let dc = messageDate(current.createdAt),
+           dc.timeIntervalSince(dp) >= 60 { return true }
         // A message YOU sent that someone else has reacted to re-shows your
         // avatar once it's "settled" — already seen, or older than 5 minutes —
         // so a reacted message is clearly attributed. Gated on settled so a
@@ -1233,9 +1904,28 @@ struct MessageListView: View {
         return !snowflakeGreater(store.messages[index - 1].id, than: boundary)
     }
 
-    /// Id of the first loaded message past the unread boundary (for scroll-to).
-    private func firstUnreadId(_ boundary: String) -> String? {
-        store.messages.first(where: { snowflakeGreater($0.id, than: boundary) })?.id
+    /// The row a guild channel with unread history lands on: the first loaded
+    /// message past the frozen unread boundary, CLAMPED so the landing can
+    /// never sit further back than `unreadLandingMaxRowsBack` rows from the
+    /// newest.
+    ///
+    /// Unclamped (the previous `firstUnreadId`), a channel whose unread count
+    /// meets or exceeds the 50-message window — or whose read state was synced
+    /// stale from another device — makes EVERY loaded message newer than the
+    /// boundary, so the target resolves to `store.messages.first` and the open
+    /// lands on the OLDEST loaded row. That is the "way too far up" in the bug
+    /// report, and it is self-reinforcing: sitting at the top with
+    /// `hasMoreMessages` true means the first flick pages in another 50.
+    ///
+    /// The divider-landing policy itself is deliberate and matches web — only
+    /// the distance is capped.
+    private func unreadLandingId(_ boundary: String) -> String? {
+        guard let first = store.messages.firstIndex(where: {
+            snowflakeGreater($0.id, than: boundary)
+        }) else { return nil }
+        let clamped = max(first, store.messages.count - Self.unreadLandingMaxRowsBack)
+        guard clamped >= 0, clamped < store.messages.count else { return nil }
+        return store.messages[clamped].id
     }
 }
 
@@ -1547,12 +2237,20 @@ struct MessageRow: View, Equatable {
             (isEncrypted(att) ? encryptedInnerIsImage(att) : (att.isImage || att.isVideo))
         }
         guard media.count == 1, let only = media.first, isGridImage(only) else { return nil }
+        // Save/Copy/Share all resolve the FULL-SIZE bytes; once retention has
+        // aged the original out there are none to resolve, so the actions drop
+        // out of the menu rather than failing silently on a dead URL.
+        guard !only.blobExpired else { return nil }
         return only
     }
 
     /// Resolve the full-resolution UIImage for a single image attachment —
     /// decrypting E2EE bytes off the main actor, or loading the plain URL.
     private func loadSingleImage(_ att: Attachment) async -> UIImage? {
+        // Belt-and-braces: the menu already hides these actions for an expired
+        // original (singleSavableImage), and neither branch below has anything
+        // to fetch once the full-size object is gone.
+        guard !att.blobExpired else { return nil }
         if isEncrypted(att) {
             guard let data = await store.decryptedAttachmentData(att, in: channel) else { return nil }
             return await Task.detached(priority: .userInitiated) { UIImage(data: data) }.value
@@ -2320,13 +3018,14 @@ struct MessageRow: View, Equatable {
     private func singleMedia(_ att: Attachment) -> some View {
         if isEncrypted(att) {
             EncryptedAttachmentView(store: store, attachment: att, channel: channel, e2eeUnlockVersion: data.e2eeUnlockVersion)
-        } else if att.isImage, let url = assetURL(att.url) {
+        } else if att.isImage, let inlineURL = inlineAttachmentURL(att) {
             // Reserve the image's final on-screen size UP FRONT from its known
             // width/height so loading doesn't reflow the row (and the bottom).
             let dim = imageDisplaySize(att)
             // Inline shows the small server thumbnail when present; the tap opens
-            // the full image (full `url`).
-            let inlineURL = att.thumbnailUrl.flatMap { assetURL($0) } ?? url
+            // the full image (full `url`) — unless retention has aged the
+            // original out, in which case the thumbnail IS all that's left, so
+            // the tap is inert and a small badge says why.
             CachedImage(url: inlineURL, contentMode: .fit) {
                 if dim != nil {
                     Rectangle().fill(Theme.bg3).overlay(ProgressView().tint(Theme.accent))
@@ -2336,15 +3035,23 @@ struct MessageRow: View, Equatable {
             } failure: {
                 fileChip(att)
             }
-            .onTapGesture { store.openLightbox(url) }
+            .onTapGesture {
+                guard !att.blobExpired, let full = assetURL(att.url) else { return }
+                store.openLightbox(full)
+            }
             .frame(width: dim?.width, height: dim?.height)
             .frame(maxWidth: 240, maxHeight: 240, alignment: .leading)
             .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(alignment: .bottomLeading) {
+                if att.blobExpired { ExpiredOriginalBadge() }
+            }
             // Long-press → the message row's context menu (Add reaction, Reply,
             // …, plus Save/Copy/Share for this photo). NOT a nested .imageActions
             // menu here — that used to swallow the reaction menu on single photos.
-        } else if att.isVideo, let url = assetURL(att.url) {
-            videoChip(att, url: url)
+        } else if att.isVideo {
+            // Expired video: no playable original left, so the chip renders
+            // inert rather than opening a dead URL into a stuck player.
+            videoChip(att, url: att.blobExpired ? nil : assetURL(att.url))
         } else {
             fileChip(att)
         }
@@ -2355,15 +3062,22 @@ struct MessageRow: View, Equatable {
     /// message's photos; tapping a video opens the full-screen player.
     @ViewBuilder
     private func mediaGrid(_ media: [Attachment]) -> some View {
-        // Images for the paged lightbox = plain images AND encrypted images.
-        let images = media.filter { isGridImage($0) }
+        // Images for the paged lightbox = plain images AND encrypted images —
+        // MINUS any whose original has expired, since the lightbox is a
+        // full-size view and those bytes are gone. They still render inline
+        // from their thumbnail; they just aren't openable.
+        let images = media.filter { isGridImage($0) && !$0.blobExpired }
+        // Same for "Save all": only what can still be fetched at full size.
+        let savable = media.filter { !$0.blobExpired }
         let cols = [GridItem(.flexible(), spacing: 4), GridItem(.flexible(), spacing: 4)]
         VStack(alignment: .leading, spacing: 6) {
             LazyVGrid(columns: cols, spacing: 4) {
                 ForEach(media) { att in gridCell(att, images: images) }
             }
             .frame(maxWidth: 260)
-            SaveAllButton(store: store, media: media, channel: channel)
+            if !savable.isEmpty {
+                SaveAllButton(store: store, media: savable, channel: channel)
+            }
         }
     }
 
@@ -2371,14 +3085,20 @@ struct MessageRow: View, Equatable {
     private func gridCell(_ att: Attachment, images: [Attachment]) -> some View {
         if isEncrypted(att) {
             // Encrypted photo: decrypting square thumbnail. Tap → paged
-            // lightbox across the message's photos (plain + decrypted E2EE).
+            // lightbox across the message's photos (plain + decrypted E2EE) —
+            // but not once the original expired: the lightbox is full-size and
+            // that ciphertext is gone (the encrypted thumbnail survives).
             EncryptedThumb(store: store, attachment: att, channel: channel, e2eeUnlockVersion: data.e2eeUnlockVersion) {
+                guard !att.blobExpired else { return }
                 Task { await store.openImageLightbox(images: images, tapped: att.id, in: channel) }
             }
-        } else if att.isImage, let url = assetURL(att.url) {
+            .overlay(alignment: .bottomLeading) {
+                if att.blobExpired { ExpiredOriginalBadge() }
+            }
+        } else if att.isImage, let inlineURL = inlineAttachmentURL(att) {
             // Inline grid cell shows the small server thumbnail when present;
-            // the tap opens the full image via openImageLightbox.
-            let inlineURL = att.thumbnailUrl.flatMap { assetURL($0) } ?? url
+            // the tap opens the full image via openImageLightbox — inert once
+            // the original expired (the thumbnail is all that's left).
             Rectangle()
                 .fill(Theme.bg3)
                 .aspectRatio(1, contentMode: .fit)
@@ -2390,22 +3110,43 @@ struct MessageRow: View, Equatable {
                     }
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(alignment: .bottomLeading) {
+                    if att.blobExpired { ExpiredOriginalBadge() }
+                }
                 .contentShape(Rectangle())
                 .onTapGesture {
+                    guard !att.blobExpired else { return }
                     Task { await store.openImageLightbox(images: images, tapped: att.id, in: channel) }
                 }
-        } else if att.isVideo, let url = assetURL(att.url) {
+        } else if att.isVideo {
+            let playURL = att.blobExpired ? nil : assetURL(att.url)
             Rectangle()
                 .fill(Color.black)
                 .aspectRatio(1, contentMode: .fit)
                 .overlay(
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 30))
-                        .foregroundColor(.white.opacity(0.9))
+                    // No play glyph once the original is gone — there is
+                    // nothing left to play.
+                    Group {
+                        if playURL != nil {
+                            Image(systemName: "play.circle.fill")
+                                .font(.system(size: 30))
+                                .foregroundColor(.white.opacity(0.9))
+                        } else {
+                            Image(systemName: "clock")
+                                .font(.system(size: 22))
+                                .foregroundColor(.white.opacity(0.75))
+                        }
+                    }
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(alignment: .bottomLeading) {
+                    if att.blobExpired { ExpiredOriginalBadge() }
+                }
                 .contentShape(Rectangle())
-                .onTapGesture { videoToPlay = VideoItem(url: url) }
+                .onTapGesture {
+                    guard let playURL else { return }
+                    videoToPlay = VideoItem(url: playURL)
+                }
         } else {
             fileChip(att)
         }
@@ -2426,14 +3167,14 @@ struct MessageRow: View, Equatable {
 
     private func fileChip(_ att: Attachment) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: "doc.fill").foregroundColor(Theme.ink3)
+            Image(systemName: att.blobExpired ? "clock" : "doc.fill").foregroundColor(Theme.ink3)
             VStack(alignment: .leading, spacing: 1) {
                 Text(att.filename ?? "file")
                     .font(.zkSans(13, weight: .medium))
                     .foregroundColor(Theme.ink1)
                     .lineLimit(1)
-                if let size = att.size {
-                    Text(byteString(size))
+                if let sub = chipSubtitle(att) {
+                    Text(sub)
                         .font(.zkSans(11))
                         .foregroundColor(Theme.ink3)
                 }
@@ -2444,26 +3185,29 @@ struct MessageRow: View, Equatable {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
-    /// Tappable video attachment chip → opens the full-screen player.
-    private func videoChip(_ att: Attachment, url: URL) -> some View {
+    /// Tappable video attachment chip → opens the full-screen player. `url` is
+    /// nil once retention aged the original out — the chip then renders inert
+    /// (no play glyph, no tap) instead of handing a dead URL to AVPlayer, which
+    /// would sit on a spinner forever.
+    private func videoChip(_ att: Attachment, url: URL?) -> some View {
         Button {
-            videoToPlay = VideoItem(url: url)
+            if let url { videoToPlay = VideoItem(url: url) }
         } label: {
             HStack(spacing: 8) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 6).fill(Theme.bg1)
                         .frame(width: 40, height: 40)
-                    Image(systemName: "play.fill")
+                    Image(systemName: url == nil ? "clock" : "play.fill")
                         .font(.system(size: 15))
-                        .foregroundColor(Theme.accent)
+                        .foregroundColor(url == nil ? Theme.ink3 : Theme.accent)
                 }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(att.filename ?? "video")
                         .font(.zkSans(13, weight: .medium))
                         .foregroundColor(Theme.ink1)
                         .lineLimit(1)
-                    if let size = att.size {
-                        Text(byteString(size))
+                    if let sub = chipSubtitle(att) {
+                        Text(sub)
                             .font(.zkSans(11))
                             .foregroundColor(Theme.ink3)
                     }
@@ -2476,6 +3220,7 @@ struct MessageRow: View, Equatable {
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
+        .disabled(url == nil)
     }
 
     @ViewBuilder
@@ -2511,6 +3256,62 @@ private func byteString(_ bytes: Int) -> String {
     if b >= mb { return String(format: "%.1f MB", b / mb) }
     if b >= kb { return String(format: "%.0f KB", b / kb) }
     return "\(bytes) B"
+}
+
+// MARK: - Expired originals (attachment blob retention)
+//
+// Media retention ages out the FULL-SIZE object of old attachments and stamps
+// `blobExpiredAt`. It is OFF unless an operator turns it on: the server's
+// ATTACHMENT_RETENTION_DAYS defaults to 0 (disabled) and, once set,
+// ATTACHMENT_RETENTION_DRY_RUN defaults to true (log-only), with
+// docker-compose.yml pinning both to those defaults. So on a stock deployment
+// nothing ever expires — but the client must still handle it, because any
+// instance may enable it. The message, its text, the attachment
+// row (filename/size/dimensions) and the small thumbnail all survive — only the
+// original bytes are gone, and `url` is deliberately still populated (it is
+// non-optional in every shipped client), so it now points at a dead path.
+// Everything that would fetch the full size — inline fallback, lightbox, video
+// player, Save/Copy/Share, gallery, E2EE decrypt — must gate on `blobExpired`,
+// never on a missing url.
+
+/// The URL to render INLINE for a plain (non-E2EE) image: the small server
+/// thumbnail when there is one, else the original — but never the original once
+/// it has expired, since that path no longer resolves. nil ⇒ nothing renderable
+/// (an expired attachment with no thumbnail, which retention doesn't produce);
+/// callers fall back to the file chip.
+private func inlineAttachmentURL(_ att: Attachment) -> URL? {
+    if let thumb = att.thumbnailUrl.flatMap({ assetURL($0) }) { return thumb }
+    return att.blobExpired ? nil : assetURL(att.url)
+}
+
+/// Secondary line under a file/video chip: the size, plus the expired note once
+/// the server has dropped the original.
+private func chipSubtitle(_ att: Attachment) -> String? {
+    let size = att.size.map { byteString($0) }
+    guard att.blobExpired else { return size }
+    return size.map { "\($0) · original expired" } ?? "Original expired"
+}
+
+/// Calm corner marker for a photo/video whose full-size original the server no
+/// longer stores. Sits over the surviving thumbnail — deliberately small and
+/// unobtrusive (the picture is still there; only the original went).
+private struct ExpiredOriginalBadge: View {
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "clock")
+                .font(.system(size: 9, weight: .semibold))
+            Text("Original expired")
+                .font(.zkSans(10, weight: .medium))
+        }
+        .foregroundColor(.white.opacity(0.92))
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(Color.black.opacity(0.45))
+        .clipShape(Capsule())
+        .padding(6)
+        // Decorative only — never steal the tap/long-press from the photo.
+        .allowsHitTesting(false)
+    }
 }
 
 struct ReactionPill: View {
@@ -3531,7 +4332,7 @@ struct ProfileCardView: View {
 
     private var isSelf: Bool { user.id == session.currentUser?.id }
     private var relType: String? { store.relationshipType(with: user.id) }
-    private var liveStatus: String { store.status(for: user.id, fallback: user.status) }
+    private var liveStatus: String { store.status(for: user.id) }
     /// Banner height — a single fixed height shared across the profile view,
     /// profile settings, server settings, and the server header banner.
     private var bannerHeight: CGFloat { 250 }
@@ -3980,7 +4781,7 @@ struct MemberListView: View {
         var offline = MemberSection(id: "offline", label: "Offline", color: nil, members: [])
 
         for m in allMembers {
-            let st = store.status(for: m.userId, fallback: m.user.status)
+            let st = store.status(for: m.userId)
             if st == "offline" || st == "invisible" { offline.members.append(m); continue }
             var bestIdx = -1
             for rid in (m.roleIds ?? []) {
@@ -4096,7 +4897,7 @@ struct MemberListView: View {
     private func memberRow(_ m: GuildMember) -> some View {
         HStack(spacing: 10) {
             Avatar(url: m.user.avatarUrl, name: m.user.name, size: 32,
-                   status: store.status(for: m.userId, fallback: m.user.status),
+                   status: store.status(for: m.userId),
                    ringColor: Theme.bg1, decoration: m.user.avatarDecoration)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
@@ -4544,9 +5345,13 @@ private struct EncryptedThumb: View {
                 // both the byte fetch and the ImageIO re-decode.
                 if let cached = EncryptedThumbCache.image(attachment.id, 400) { image = cached; return }
                 // Prefer the small encrypted thumbnail (tiny download + decrypt);
-                // fall back to the full blob for old messages without one.
+                // fall back to the full blob for old messages without one — but
+                // never once retention expired that blob (the fetch would 404
+                // and the decrypt fail; the thumbnail is kept forever).
                 var data = await store.decryptedThumbnailData(attachment, in: channel)
-                if data == nil { data = await store.decryptedAttachmentData(attachment, in: channel) }
+                if data == nil, !attachment.blobExpired {
+                    data = await store.decryptedAttachmentData(attachment, in: channel)
+                }
                 if let data {
                     let decoded = await Task.detached(priority: .userInitiated) {
                         ImageDownsampler.decode(data, maxPixels: 400)
@@ -5310,12 +6115,20 @@ struct EncryptedAttachmentView: View {
                     // stacked/re-presented the viewer ("tap again → opens multiple,
                     // still there after exiting one").
                     .onTapGesture {
+                        // Once retention has expired the original there is no
+                        // full-size view to open — the lightbox would download +
+                        // decrypt a blob that no longer exists. Inert, exactly
+                        // like the plain-image path; the badge says why.
+                        guard !attachment.blobExpired else { return }
                         // Carry the inline thumbnail as an instant placeholder AND a
                         // decrypt-failure fallback; the page swaps in the full-res
                         // decode on-appear.
                         store.openLightbox(
                             items: [LightboxItem(image: image, encrypted: (attachment, channel))],
                             startIndex: 0)
+                    }
+                    .overlay(alignment: .bottomLeading) {
+                        if attachment.blobExpired { ExpiredOriginalBadge() }
                     }
                     // Per-image E2EE lock badge removed — the lock by the DM
                     // header already signals the whole conversation is encrypted.
@@ -5357,20 +6170,27 @@ struct EncryptedAttachmentView: View {
                 .buttonStyle(.plain)
             } else {
                 HStack(spacing: 8) {
-                    Image(systemName: failed ? "lock.slash" : "lock.doc")
-                        .foregroundColor(failed ? Theme.dangerSoft : Theme.accent)
+                    Image(systemName: failed ? "lock.slash" : (attachment.blobExpired ? "clock" : "lock.doc"))
+                        .foregroundColor(failed ? Theme.dangerSoft
+                                         : (attachment.blobExpired ? Theme.ink3 : Theme.accent))
                     VStack(alignment: .leading, spacing: 1) {
                         Text(displayName)
                             .font(.zkSans(13, weight: .medium))
                             .foregroundColor(Theme.ink1)
                             .lineLimit(1)
+                        // An expired original is not a decrypt failure — say so
+                        // plainly instead of implying the key is bad. A real
+                        // decrypt failure still wins, since that's the actionable
+                        // one (unlock the conversation).
                         Text(failed
                              ? "Couldn't decrypt"
-                             : (loading ? "Decrypting…" : "Encrypted file"))
+                             : (attachment.blobExpired
+                                ? (chipSubtitle(attachment) ?? "Original expired")
+                                : (loading ? "Decrypting…" : "Encrypted file")))
                             .font(.zkSans(11))
                             .foregroundColor(failed ? Theme.dangerSoft : Theme.ink3)
                     }
-                    if loading && !failed { ProgressView().scaleEffect(0.7) }
+                    if loading && !failed && !attachment.blobExpired { ProgressView().scaleEffect(0.7) }
                 }
                 .padding(8)
                 .background(Theme.bg3)
@@ -5397,6 +6217,14 @@ struct EncryptedAttachmentView: View {
             loading = true
             failed = false
             if isVideo {
+                // Encrypted video has no thumbnail, so an expired original means
+                // there is nothing left to decrypt: stop at the chip (which reads
+                // "original expired") instead of downloading a dead blob and
+                // reporting it as a decrypt failure.
+                guard !attachment.blobExpired else {
+                    loading = false
+                    return
+                }
                 // Video has no thumbnail — decrypt the full blob to a temp file.
                 guard let data = await store.decryptedAttachmentData(attachment, in: channel) else {
                     loading = false
@@ -5422,10 +6250,13 @@ struct EncryptedAttachmentView: View {
                     return
                 }
                 // Decrypt the small thumbnail (tiny download + decrypt); fall back
-                // to the full blob for old messages. Decode off-main. The lightbox
-                // / Save decrypt the FULL image on tap.
+                // to the full blob for old messages — but never once retention
+                // expired that blob. Decode off-main. The lightbox / Save decrypt
+                // the FULL image on tap (also gated on blobExpired).
                 var data = await store.decryptedThumbnailData(attachment, in: channel)
-                if data == nil { data = await store.decryptedAttachmentData(attachment, in: channel) }
+                if data == nil, !attachment.blobExpired {
+                    data = await store.decryptedAttachmentData(attachment, in: channel)
+                }
                 guard let data else {
                     loading = false
                     failed = true
@@ -5550,7 +6381,13 @@ struct MediaGalleryView: View {
         var start = 0
         for att in media {
             let it: LightboxItem?
-            if att.filename?.hasSuffix(".zke") == true {
+            if att.blobExpired {
+                // Retention aged the full-size object out; the lightbox is a
+                // full-size view, so this photo isn't in the pageable set (it
+                // still shows as a thumbnail in the grid, badged). Tapping one
+                // does nothing rather than paging to a dead URL.
+                it = nil
+            } else if att.filename?.hasSuffix(".zke") == true {
                 // Carry a LAZY encrypted reference — the visible LightboxPage
                 // decrypts + downsamples on-appear. This loops over the whole
                 // loaded set (potentially hundreds); eagerly downloading +
@@ -5600,13 +6437,20 @@ private struct GalleryThumb: View {
                                 .foregroundColor(Theme.ink3)
                         }
                     }
-                } else if let url = assetURL(attachment.url) {
+                } else if let url = inlineAttachmentURL(attachment) {
+                    // Thumbnail first (it's a 108pt cell), and NEVER the
+                    // original once retention expired it.
                     RetryingImage(url: url)
                 }
             }
             .clipped()
+            .overlay(alignment: .bottomLeading) {
+                if attachment.blobExpired { ExpiredOriginalBadge() }
+            }
             .contentShape(Rectangle())
-            .onTapGesture { onOpen(attachment.id) }
+            // An expired photo has no full-size view to open — the grid
+            // thumbnail is the whole of what survives.
+            .onTapGesture { if !attachment.blobExpired { onOpen(attachment.id) } }
             .task(id: store.e2eeUnlockVersion) {
                 guard isEncrypted, decrypted == nil else { return }
                 // Decoded-thumb cache (shared with the inline thumb at 400px):
@@ -5621,7 +6465,9 @@ private struct GalleryThumb: View {
                 // decoded multi-megapixel JPEGs on the main thread, hitching the
                 // gallery grid. Mirrors the inline EncryptedThumb path.
                 var data = await store.decryptedThumbnailData(attachment, in: channel)
-                if data == nil { data = await store.decryptedAttachmentData(attachment, in: channel) }
+                if data == nil, !attachment.blobExpired {
+                    data = await store.decryptedAttachmentData(attachment, in: channel)
+                }
                 if let data {
                     let decoded = await Task.detached(priority: .userInitiated) {
                         ImageDownsampler.decode(data, maxPixels: 400)
@@ -5643,22 +6489,25 @@ private struct GalleryFileRow: View {
     private var isEncrypted: Bool { attachment.filename?.hasSuffix(".zke") == true }
 
     var body: some View {
+        // Retention aged the file's bytes out: no download affordance and no
+        // tap — the row stays as a record of what was shared.
+        let expired = attachment.blobExpired
         HStack(spacing: 12) {
-            Image(systemName: isEncrypted ? "lock.doc.fill" : "doc.fill")
-                .foregroundColor(Theme.accent).frame(width: 28)
+            Image(systemName: expired ? "clock" : (isEncrypted ? "lock.doc.fill" : "doc.fill"))
+                .foregroundColor(expired ? Theme.ink3 : Theme.accent).frame(width: 28)
             VStack(alignment: .leading, spacing: 1) {
                 Text(displayName).font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1).lineLimit(1)
-                if let size = attachment.size {
-                    Text(byteString(size)).font(.zkSans(11)).foregroundColor(Theme.ink3)
+                if let sub = chipSubtitle(attachment) {
+                    Text(sub).font(.zkSans(11)).foregroundColor(Theme.ink3)
                 }
             }
             Spacer()
-            if !isEncrypted { Image(systemName: "arrow.down.circle").foregroundColor(Theme.ink3) }
+            if !isEncrypted && !expired { Image(systemName: "arrow.down.circle").foregroundColor(Theme.ink3) }
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
         .contentShape(Rectangle())
         .onTapGesture {
-            if !isEncrypted, let url = assetURL(attachment.url) { openURL(url) }
+            if !isEncrypted, !expired, let url = assetURL(attachment.url) { openURL(url) }
         }
     }
 }

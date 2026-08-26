@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ backup/transfer rules.
+
+  `datastore` holds the Preferences DataStore behind PersistentCookieStorage,
+  which persists the long-lived zekktris_refresh cookie in cleartext. That value
+  IS the session: the server does a hash lookup with no device, IP, or user-agent
+  binding, and rotation slides the 30-day TTL forward indefinitely. filesDir sits
+  inside Auto Backup's default include set, so without this exclusion the
+  credential rides a cloud backup or device-to-device transfer off the phone and
+  restores into a working session on another device.
+
+  zk_e2ee_keys is the EncryptedSharedPreferences file behind E2EEKeyStore: its
+  contents are sealed by a hardware-backed Keystore master key that CANNOT leave
+  the device. Restoring the file onto a new phone therefore hands
+  EncryptedSharedPreferences.create() a blob it can never open — the store fails
+  closed forever and E2EE DMs are permanently unreadable AND unrepairable (put()
+  silently no-ops). Exclude it so a restored device starts with a fresh file and
+  the user simply re-enters the DM password.
+
+  Both blocks must repeat every exclusion: declaring only <cloud-backup> leaves
+  <device-transfer> fully permissive.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="datastore" />
+        <exclude domain="sharedpref" path="zk_e2ee_keys.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="datastore" />
+        <exclude domain="sharedpref" path="zk_e2ee_keys.xml" />
+    </device-transfer>
+</data-extraction-rules>
