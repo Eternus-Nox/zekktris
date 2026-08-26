@@ -483,14 +483,23 @@ struct MessageListView: View {
     /// sentinel, in the scroll view's own coordinate space. Shrinks toward the
     /// viewport height as you approach the bottom of the list.
     ///
-    /// This replaces `onAppear`/`onDisappear` on the sentinel as the driver of
-    /// `isNearBottom`. Those are unreliable here: the sentinel is a 1pt
-    /// `Color.clear` inside a `LazyVStack`, and a lazy stack keeps a prefetch
-    /// buffer around the visible window — so the sentinel can stay "appeared"
-    /// while scrolled well off-screen and `onDisappear` simply never fires.
-    /// With `isNearBottom` initialised to `true`, that left the gate stuck open
-    /// forever: the jump-to-newest button never rendered, and it never
-    /// recovered. Geometry is continuous and can't get wedged.
+    /// Two earlier drivers of `isNearBottom` failed, both for the same reason —
+    /// they depended on the bottom sentinel, which lives inside the LazyVStack:
+    ///
+    /// 1. `onAppear`/`onDisappear` on the sentinel. A lazy stack keeps a
+    ///    prefetch buffer, so the sentinel stayed "appeared" while scrolled well
+    ///    off-screen and `onDisappear` never fired. With `isNearBottom`
+    ///    initialised to `true`, the gate stuck open forever and the button
+    ///    never rendered at all.
+    /// 2. Measuring the sentinel's own offset. Better, but the sentinel is
+    ///    eventually UNMOUNTED on scroll-up; its reader then stops reporting and
+    ///    the reading freezes wherever it last was. The button showed up, but
+    ///    late and inconsistently.
+    ///
+    /// So this is measured on the content CONTAINER, which is never unmounted.
+    /// The value is the content's bottom edge in the scroll's coordinate space:
+    /// it equals the viewport height at rest and grows continuously as you
+    /// scroll up, from the very first point of movement.
     private struct SentinelOffsetKey: PreferenceKey {
         static var defaultValue: CGFloat = .greatestFiniteMagnitude
         static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
@@ -505,10 +514,14 @@ struct MessageListView: View {
     /// Coordinate space the sentinel offset is measured in.
     private var chatScrollSpace: String { "chatScroll-\(channel.id)" }
 
-    /// How close the sentinel must get to the bottom of the viewport to count
-    /// as "at the bottom". One row-ish of slack so a half-row overhang doesn't
-    /// flip the gate.
-    private static let nearBottomSlop: CGFloat = 24
+    /// How far the content's bottom edge may sit below the viewport before we
+    /// stop calling it "at the bottom".
+    ///
+    /// Deliberately small: the button should appear as soon as you start
+    /// scrolling up, not after a screenful. It is not zero only so that a
+    /// sub-pixel overhang or the 8pt bottom padding at rest can't flicker the
+    /// button on and off while the list is stationary.
+    private static let nearBottomSlop: CGFloat = 8
 
     /// The single expression of "where does this open land". Everything that
     /// positions the list on open goes through it, so there is exactly one
@@ -609,17 +622,27 @@ struct MessageListView: View {
                             Color.clear.frame(height: 1)
                                 .onAppear { isNearBottom = true }
                                 .id(bottomAnchor)
-                                .background(GeometryReader { sp in
-                                    Color.clear.preference(
-                                        key: SentinelOffsetKey.self,
-                                        value: sp.frame(in: .named(chatScrollSpace)).minY,
-                                    )
-                                })
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
                         .background(GeometryReader { gp in
-                            Color.clear.preference(key: ContentHeightKey.self, value: gp.size.height)
+                            Color.clear
+                                .preference(key: ContentHeightKey.self, value: gp.size.height)
+                                // Bottom edge of ALL content, in the scroll's space.
+                                //
+                                // Measured HERE, on the content container, and not on
+                                // the bottom sentinel: the sentinel lives inside the
+                                // LazyVStack, so scrolling up eventually unmounts it,
+                                // its GeometryReader stops reporting, and the reading
+                                // freezes at whatever it last said. That is why the
+                                // button appeared late and erratically — the gate only
+                                // moved while the sentinel happened to still be
+                                // mounted. This container is never unmounted, so the
+                                // measurement is continuous the whole way up.
+                                .preference(
+                                    key: SentinelOffsetKey.self,
+                                    value: gp.frame(in: .named(chatScrollSpace)).maxY,
+                                )
                         })
                     }
                     // A conversation is read from the bottom up. Without this,
