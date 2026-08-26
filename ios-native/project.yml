@@ -94,7 +94,7 @@ targets:
             CFBundleURLSchemes:
               - zekktris
         NSMicrophoneUsageDescription: "Zekktris uses your microphone for voice channels, calls, and voice messages."
-        NSCameraUsageDescription: "Zekktris uses your camera for video calls and to set your avatar."
+        NSCameraUsageDescription: "Zekktris uses your camera for video calls, to set your avatar, and to scan the sign-in code shown on another device."
         NSPhotoLibraryAddUsageDescription: "Zekktris can save images you receive to your photo library."
         NSFaceIDUsageDescription: "Zekktris uses Face ID to unlock the app and keep your conversations private."
         UIBackgroundModes:
