@@ -13,6 +13,7 @@
 		0EFBBAFB7A69E99A08A0F085 /* Voice.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5F187A696EC8CAC9D837A4F /* Voice.swift */; };
 		1ECD00762CE6B71CBD905B52 /* Push.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3049E4EB8347C9C4E63FA39 /* Push.swift */; };
 		227DD5A0D5676051EA56657B /* JetBrainsMono-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 86ECD5DCF6CB056EA07F1A9B /* JetBrainsMono-Medium.ttf */; };
+		27638A6C8F63388B3B895964 /* ShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 37A083098F843E8AF223886B /* ShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		2C2672024252799B5D014E44 /* AppGroupConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 434FBD6DE9C340459E70525C /* AppGroupConfig.swift */; };
 		2D16875745A1CBD992981562 /* WidgetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0EE40EF9EADCC209250FFCE /* WidgetViews.swift */; };
 		3259E7D959A061BFF99A02AF /* ZekktrisWatchWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 99031E00C093F83039CEEAED /* ZekktrisWatchWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -60,6 +61,7 @@
 		B564E41886BEAA13D091CBCC /* JetBrainsMono-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = CD7CC7291325678F55762B95 /* JetBrainsMono-SemiBold.ttf */; };
 		B732344CDFFAFFFE8A324419 /* WatchSyncStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8884A77FFC709AF748B2E291 /* WatchSyncStore.swift */; };
 		BBD9EE37F74230292A31026A /* WatchWidgetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 715C83CE44FC0812FC56D391 /* WatchWidgetViews.swift */; };
+		BC4FC81F63EC0455F9867E7C /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCD6E4D657E7A9B38D5F14DB /* ShareViewController.swift */; };
 		C11C9FD38A8F9B33DF12D3B2 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4B0548FCFD7075D00943D03 /* AppStore.swift */; };
 		C234B5240DBA7B0A01661E94 /* E2EE.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */; };
 		C5D817A008230AC223C44C4A /* BotViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C38FD52C3DBB5206CBB9098 /* BotViews.swift */; };
@@ -81,6 +83,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		603367B16CD47F23005B46F6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4230464D4664DE2E7495AA74 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9A8EFAE8194308946CC4AFA6;
+			remoteInfo = ShareExtension;
+		};
 		777D3621B503C4A4DE961665 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 4230464D4664DE2E7495AA74 /* Project object */;
@@ -130,6 +139,7 @@
 			dstSubfolderSpec = 13;
 			files = (
 				858ABCCC32EE73463A04909D /* NotificationService.appex in Embed Foundation Extensions */,
+				27638A6C8F63388B3B895964 /* ShareExtension.appex in Embed Foundation Extensions */,
 				D3334478A455BF1E2ADB4E82 /* ZekktrisWidgets.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
@@ -167,6 +177,7 @@
 		2FE126AEC7DC839E13F12E94 /* Zekktris.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Zekktris.entitlements; sourceTree = "<group>"; };
 		32957B535EA27A17B00EEBCF /* VoiceMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceMessage.swift; sourceTree = "<group>"; };
 		348070364D0F2CD557EC0A83 /* ZekktrisWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZekktrisWatchApp.swift; sourceTree = "<group>"; };
+		37A083098F843E8AF223886B /* ShareExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		42797CA878D26DB332BEF804 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
 		434FBD6DE9C340459E70525C /* AppGroupConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppGroupConfig.swift; sourceTree = "<group>"; };
 		4FC2ECC7C7A8019B6C7482EF /* WidgetShared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetShared.swift; sourceTree = "<group>"; };
@@ -201,7 +212,9 @@
 		B5F187A696EC8CAC9D837A4F /* Voice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Voice.swift; sourceTree = "<group>"; };
 		B649CA162B4B72D1D2BBD4CC /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		BC1F393C4A0BBFFFEDDCA4AA /* VoiceSounds.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceSounds.swift; sourceTree = "<group>"; };
+		C374F4D26FF9A00B145E91BE /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C6F2371BB09C7603E340AE1B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		CCD6E4D657E7A9B38D5F14DB /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		CD7CC7291325678F55762B95 /* JetBrainsMono-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "JetBrainsMono-SemiBold.ttf"; sourceTree = "<group>"; };
 		CE1387DD790845EB4E42BE03 /* ZekktrisWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ZekktrisWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		D29D733AAD46444723023905 /* Session.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Session.swift; sourceTree = "<group>"; };
@@ -218,6 +231,7 @@
 		F044CCA495FD5434BA02A43A /* NotificationMedia.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationMedia.swift; sourceTree = "<group>"; };
 		F6D2DCE87AACD4BDB1B2308C /* SpaceGrotesk-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SpaceGrotesk-Bold.ttf"; sourceTree = "<group>"; };
 		F73381ACD912C04D2E50CF06 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		F7CF64E610D3120A721D2BCB /* ShareExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ShareExtension.entitlements; sourceTree = "<group>"; };
 		F8BBAD9D14CEB87EDC845C3A /* Zekktris.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Zekktris.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -282,6 +296,7 @@
 			isa = PBXGroup;
 			children = (
 				153D869B664631D0160444DE /* NotificationService */,
+				6EEADE56E23EA63321ACCCBF /* ShareExtension */,
 				429C77DDB5D4A1CEE2773387 /* Zekktris */,
 				20559DE324DFD23DBD140716 /* ZekktrisTests */,
 				D0B5CC8462D17645C6FE8B54 /* ZekktrisWatch */,
@@ -328,10 +343,21 @@
 			path = Zekktris;
 			sourceTree = "<group>";
 		};
+		6EEADE56E23EA63321ACCCBF /* ShareExtension */ = {
+			isa = PBXGroup;
+			children = (
+				C374F4D26FF9A00B145E91BE /* Info.plist */,
+				F7CF64E610D3120A721D2BCB /* ShareExtension.entitlements */,
+				CCD6E4D657E7A9B38D5F14DB /* ShareViewController.swift */,
+			);
+			path = ShareExtension;
+			sourceTree = "<group>";
+		};
 		B1C1C1E50B8397F67EB5AB5D /* Products */ = {
 			isa = PBXGroup;
 			children = (
 				9F04BA5F3CFE3113F86B1600 /* NotificationService.appex */,
+				37A083098F843E8AF223886B /* ShareExtension.appex */,
 				F8BBAD9D14CEB87EDC845C3A /* Zekktris.app */,
 				277229C270351E02BC92CD92 /* ZekktrisTests.xctest */,
 				8CD61D15591F11BF7866AFF1 /* ZekktrisWatch.app */,
@@ -444,6 +470,7 @@
 			);
 			dependencies = (
 				D5FE364969D49D3271240C78 /* PBXTargetDependency */,
+				379C493C86D217BCF3401F15 /* PBXTargetDependency */,
 				49806BA2D038D2D546CAFCE7 /* PBXTargetDependency */,
 				55571124CFE61B905EE8B2C5 /* PBXTargetDependency */,
 			);
@@ -471,6 +498,23 @@
 			productName = ZekktrisTests;
 			productReference = 277229C270351E02BC92CD92 /* ZekktrisTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		9A8EFAE8194308946CC4AFA6 /* ShareExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E86397EB11EE7ED4E752CD16 /* Build configuration list for PBXNativeTarget "ShareExtension" */;
+			buildPhases = (
+				7A8A28AD338A2A78CF56C995 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ShareExtension;
+			packageProductDependencies = (
+			);
+			productName = ShareExtension;
+			productReference = 37A083098F843E8AF223886B /* ShareExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 		C1960D6A2A12F2676FCA48CF /* ZekktrisWatchWidgets */ = {
 			isa = PBXNativeTarget;
@@ -518,6 +562,9 @@
 						DevelopmentTeam = 4QF34MB8R3;
 						ProvisioningStyle = Automatic;
 					};
+					9A8EFAE8194308946CC4AFA6 = {
+						DevelopmentTeam = 4QF34MB8R3;
+					};
 					C1960D6A2A12F2676FCA48CF = {
 						DevelopmentTeam = 4QF34MB8R3;
 						ProvisioningStyle = Automatic;
@@ -542,6 +589,7 @@
 			projectRoot = "";
 			targets = (
 				2521858B9357B3605F1FC370 /* NotificationService */,
+				9A8EFAE8194308946CC4AFA6 /* ShareExtension */,
 				4F148025DEECAC5AAA31FEFD /* Zekktris */,
 				850076A771ABAE975BB63823 /* ZekktrisTests */,
 				312CAE62D3D4F580F37A218D /* ZekktrisWatch */,
@@ -616,6 +664,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		7A8A28AD338A2A78CF56C995 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BC4FC81F63EC0455F9867E7C /* ShareViewController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		9F1C1476DE77542FDAD236D3 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -680,6 +736,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		379C493C86D217BCF3401F15 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9A8EFAE8194308946CC4AFA6 /* ShareExtension */;
+			targetProxy = 603367B16CD47F23005B46F6 /* PBXContainerItemProxy */;
+		};
 		49806BA2D038D2D546CAFCE7 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 312CAE62D3D4F580F37A218D /* ZekktrisWatch */;
@@ -756,6 +817,24 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
+		};
+		684045F320CDCE520B139680 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ShareExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zekktris.native.share;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
 		};
 		71AE7B7595102FF711DAE81E /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -891,6 +970,24 @@
 				WATCHOS_DEPLOYMENT_TARGET = 10.0;
 			};
 			name = Debug;
+		};
+		E093C2D12269F5388CF38BCC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ShareExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zekktris.native.share;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
 		};
 		E15F51AAFCAC98E1D62F1409 /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -1108,6 +1205,15 @@
 			buildConfigurations = (
 				A55BE5544AED5600A54C9CE4 /* Debug */,
 				430B159712443BBC1FEAA918 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		E86397EB11EE7ED4E752CD16 /* Build configuration list for PBXNativeTarget "ShareExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				684045F320CDCE520B139680 /* Debug */,
+				E093C2D12269F5388CF38BCC /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

@@ -47,6 +47,14 @@ targets:
       # can decrypt E2EE message previews on-device (xcodegen auto-adds it to
       # the Embed App Extensions build phase).
       - target: NotificationService
+      # Bundles + embeds the Share Extension, which is what makes Zekktris appear
+      # in the system share sheet at all. The donated INSendMessageIntents
+      # (ShareSuggestions) populate the suggested-people row, but iOS only offers
+      # those suggestions for an app that can actually RECEIVE the share —
+      # without this target the donations surfaced nothing, which is exactly the
+      # "no recent contacts in the share sheet" symptom.
+      - target: ShareExtension
+        embed: true
       # Bundles + embeds the watchOS companion ("Zekktris" on the watch) into the app
       # so it ships to a paired Apple Watch (Embed Watch Content phase).
       - target: ZekktrisWatch
@@ -134,6 +142,40 @@ targets:
   # LiveKit) and reads the per-DM key from the shared app-group keychain. The
   # server ships the ciphertext with mutable-content so this runs before the
   # notification is shown; see apps/api/src/routes/messages.ts.
+  ShareExtension:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: ShareExtension
+    entitlements:
+      path: ShareExtension/ShareExtension.entitlements
+    info:
+      path: ShareExtension/Info.plist
+      properties:
+        CFBundleDisplayName: Zekktris
+        # MUST match the app's version/build or App Store upload is rejected.
+        CFBundleShortVersionString: "5.0"
+        CFBundleVersion: "5"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            # Why these numbers: the share sheet only offers Zekktris when the
+            # payload is something a message can actually carry. Generous on
+            # images (a multi-photo share is the common case) and deliberately
+            # modest elsewhere.
+            NSExtensionActivationSupportsText: true
+            NSExtensionActivationSupportsWebURLWithMaxCount: 10
+            NSExtensionActivationSupportsImageWithMaxCount: 10
+            NSExtensionActivationSupportsMovieWithMaxCount: 5
+            NSExtensionActivationSupportsFileWithMaxCount: 10
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.share
+        CODE_SIGN_ENTITLEMENTS: ShareExtension/ShareExtension.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+
   NotificationService:
     type: app-extension
     platform: iOS

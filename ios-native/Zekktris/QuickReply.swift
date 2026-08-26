@@ -183,7 +183,7 @@ enum ShareSuggestions {
     ///    corrected again, so a blocked member's name and face stay frozen in the
     ///    system index permanently. That guard must match `blockUser`'s scope —
     ///    1:1 DMs only.
-    static let donationsEnabled = false
+    static let donationsEnabled = true
 
     /// Namespace for `INPersonHandle.value`, so a consumer can tell a Zekktris
     /// id apart from a phone number or an email address.
@@ -288,6 +288,9 @@ enum ShareSuggestions {
         // NEW-1/2/3 on `donationsEnabled`) can reach a donation by any path.
         guard donationsEnabled else { return }
         guard enabled, !conversation.channelId.isEmpty, !conversation.recipients.isEmpty else { return }
+        // A new, deliberate donation supersedes an earlier revocation for this
+        // channel (unblocked, or the DM re-opened).
+        revoked.remove(conversation.channelId)
         if !force, let last = lastDonatedAt[conversation.channelId],
            Date().timeIntervalSince(last) < minInterval { return }
         lastDonatedAt[conversation.channelId] = Date()
@@ -305,9 +308,20 @@ enum ShareSuggestions {
     /// UNCONDITIONAL, and stays that way while `donationsEnabled` is false: this
     /// is a *revocation*, and the entries it revokes were written by builds that
     /// shipped with donation on. See NEW-2 for the race this does not yet close.
+    /// Channels whose donation was revoked while one may still be in flight.
+    ///
+    /// NEW-2 FIX. `generation` is global — it says "the whole session died",
+    /// which is right for sign-out but cannot say "this ONE conversation died".
+    /// Without this, a `performDonation` parked on the first (uncached) avatar
+    /// fetch resumes after `deleteConversation`, passes both generation checks,
+    /// and re-donates the contact the user just blocked or whose DM was just
+    /// deleted — the exact window you hit by opening a DM and blocking from it.
+    private static var revoked: Set<String> = []
+
     static func deleteConversation(_ channelId: String) {
         guard !channelId.isEmpty else { return }
         lastDonatedAt[channelId] = nil
+        revoked.insert(channelId)
         INInteraction.delete(with: channelId, completion: nil)
     }
 
@@ -325,6 +339,7 @@ enum ShareSuggestions {
         enabled = false
         generation &+= 1
         lastDonatedAt.removeAll()
+        revoked.removeAll()
         avatarCache.removeAll()
         INInteraction.deleteAll(completion: nil)
     }
@@ -335,7 +350,7 @@ enum ShareSuggestions {
             // Every avatar is a network fetch WITH RETRY, i.e. a long suspension
             // during which `deleteAll()` can run. Bail the moment the session
             // this donation belongs to is gone.
-            guard generation == epoch else { return }
+            guard generation == epoch, !revoked.contains(conversation.channelId) else { return }
             if let data = await avatarData(recipient.avatarURL) {
                 images[recipient.id] = INImage(imageData: data)
             }
@@ -386,7 +401,7 @@ enum ShareSuggestions {
         // Deleted wholesale by `deleteConversation(_:)`.
         interaction.groupIdentifier = conversation.channelId
         // Last look before the write.
-        guard generation == epoch else { return }
+        guard generation == epoch, !revoked.contains(conversation.channelId) else { return }
         // Best-effort: a rejected donation only costs us a share suggestion, and
         // there is nothing useful to tell the user about it.
         try? await interaction.donate()
@@ -396,7 +411,7 @@ enum ShareSuggestions {
         // session is cosmetic; keeping one on a signed-out session leaks a
         // contact's name and face into every other app's share sheet, where
         // nothing removes it until some later sign-out.
-        if generation != epoch {
+        if generation != epoch || revoked.contains(conversation.channelId) {
             INInteraction.delete(with: conversation.channelId, completion: nil)
         }
     }

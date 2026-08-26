@@ -1262,6 +1262,14 @@ final class AppStore: ObservableObject {
         case "dm":
             let cid = url.pathComponents.first(where: { $0 != "/" }) ?? ""
             openDMById(cid)
+        case "share":
+            // The Share Extension staged a payload in the App Group and opened
+            // us. It deliberately does not send anything itself — it has no
+            // session, no network stack and no E2EE keys for the target channel,
+            // so sending there would mean a second, weaker copy of the send path.
+            // We open the conversation with the payload staged in the composer;
+            // the user presses send. Never auto-sent, matching Android.
+            consumeStagedShare()
         case "device-login":
             // A QR/link carrying a device-login user code. This ONLY opens the
             // approval screen — it approves nothing. A link is exactly how a
@@ -1273,6 +1281,42 @@ final class AppStore: ObservableObject {
         default:
             break
         }
+    }
+
+    /// Payload handed over by the Share Extension, if any.
+    struct StagedShare {
+        let channelId: String?
+        let text: String?
+        /// Filenames inside the App Group's SharedInbox directory.
+        let files: [String]
+    }
+
+    /// Most recent staged share, for the composer to pick up.
+    @Published var pendingShare: StagedShare?
+
+    /// Read and CLEAR the staged share. Clearing is not optional: leaving it
+    /// behind means the next unrelated launch re-opens someone's conversation
+    /// with a stale photo attached.
+    func consumeStagedShare() {
+        let key = "zk.share.staged.v1"
+        guard let d = UserDefaults(suiteName: AppGroupConfig.identifier),
+              let raw = d.dictionary(forKey: key) else { return }
+        d.removeObject(forKey: key)
+
+        // Ignore anything stale — a payload staged days ago is not what the user
+        // is doing now, and silently attaching it would be baffling.
+        if let at = raw["at"] as? TimeInterval,
+           Date().timeIntervalSince1970 - at > 300 { return }
+
+        let staged = StagedShare(
+            channelId: raw["channelId"] as? String,
+            text: raw["text"] as? String,
+            files: (raw["files"] as? [String]) ?? [],
+        )
+        pendingShare = staged
+        // If the user picked a suggested person in the share sheet, go straight
+        // there. Otherwise the payload waits for whichever conversation they open.
+        if let cid = staged.channelId, !cid.isEmpty { openDMById(cid) }
     }
 
     /// Open a DM by channel id — resolve locally, else reload the DM list then
@@ -1889,6 +1933,14 @@ final class AppStore: ObservableObject {
     /// re-enabling donation must pair it with a positive check on a live
     /// `currentUserId`, captured at donate time and re-checked at write time.
     var shareSuggestionsAllowed: Bool {
+        // NEW-1 FIX: a LIVE session is required, positively. This used to test
+        // only the supervision blob, and `stop()` nils `family` on sign-out — so
+        // a signed-out session read "no restrictions" as "allowed", and a send()
+        // continuation resuming after logout could re-arm the latch and donate a
+        // contact onto a signed-out phone. Android was protected by its
+        // `phase != Ready` check; iOS had no equivalent. `stop()` also nils
+        // currentUserId, so this is the same signal.
+        guard currentUserId != nil else { return false }
         guard let family else { return true }
         if family.restrictedHeavily == true { return false }
         guard let r = family.restrictions else { return true }
@@ -1921,13 +1973,14 @@ final class AppStore: ObservableObject {
         // simply opening the (still-listed) DM would undo the revocation
         // `blockUser` just performed.
         //
-        // KNOWN-BROKEN (NEW-3, held shut by `donationsEnabled`): this bails on a
-        // blocked participant in a GROUP DM too, which `blockUser` deliberately
-        // leaves donated because the group is still live for everyone else. The
-        // group's entry then can never be refreshed or corrected, freezing the
-        // blocked member's name and face in the system index — worse than no
-        // guard. Scope it to 1:1 DMs, matching `blockUser`, before re-enabling.
-        guard !peers.contains(where: { relationshipType(with: $0.id) == "blocked" }) else { return }
+        // NEW-3 FIX: scoped to 1:1, matching `blockUser`. Bailing on a blocked
+        // participant of a GROUP DM was worse than no guard at all: `blockUser`
+        // deliberately leaves group donations in place (the group is still live
+        // for its other members), so refusing to re-donate meant the existing
+        // entry could never be refreshed — freezing the blocked member's name and
+        // face in the system index permanently.
+        if channel.type == "dm",
+           peers.contains(where: { relationshipType(with: $0.id) == "blocked" }) { return }
         // Re-arm after a sign-out / supervision `deleteAll()` latched donations
         // off: reaching here means a live session that the supervision gate
         // allows. Mirrors Android's `ShareShortcuts.enable()` in
