@@ -1186,6 +1186,12 @@ private fun MessageList(
         }
         return
     }
+    // Built ONCE for the whole list, not per row. Each is `remember`ed on the
+    // narrow state slices it reads, so it stays the same instance across the
+    // unrelated AppState emits (presence, typing, read acks) that were previously
+    // recomposing every visible row while scrolling.
+    val mentionResolve = com.zekktris.ui.components.rememberMentionResolver(state)
+    val emojiUrl = com.zekktris.ui.components.rememberEmojiResolver(state)
     // The list plus a floating "jump to newest" affordance, stacked.
     Box(modifier.background(p.bg1)) {
         LazyColumn(
@@ -1220,7 +1226,7 @@ private fun MessageList(
                 // Red "New messages" divider at the frozen unread boundary.
                 if (i == unreadIdx) UnreadDivider()
                 if (m.metadata?.kind == "poke") {
-                    PokeNoticeRow(state, m)
+                    PokeNoticeRow(state.me, m)
                     return@itemsIndexed
                 }
                 // Streak-expiry warning → centered quiet notice, never an authored
@@ -1240,7 +1246,7 @@ private fun MessageList(
                 // Call record → quiet gutter notice, not an authored row
                 // (iOS systemRow, MessageViews.swift:1405-1427).
                 if (m.type == "system_call") {
-                    CallNoticeRow(state, m)
+                    CallNoticeRow(state.me, m)
                     return@itemsIndexed
                 }
                 var grouped = !newDay && prev != null &&
@@ -1272,7 +1278,36 @@ private fun MessageList(
                     }
                     if (runPos % 6 == 0) grouped = false
                 }
-                MessageRow(store, state, messages, m, grouped, onLongPress, onImageTap, onVideoTap, onEncImageTap, showReceipt = m.id == receiptAnchorId, highlighted = m.id == highlightedId, onJumpTo = onJumpTo)
+                // Resolve the row's inputs HERE, not inside the row. These reads
+                // happen in the list scope, which recomposes on state change
+                // anyway; passing the results down as primitives is what lets an
+                // individual row skip. See the note on MessageRow's signature.
+                val rowRepliedTo = m.replyToId?.let { rid -> messages.firstOrNull { it.id == rid } }
+                MessageRow(
+                    store = store,
+                    selectedGuildId = state.selectedGuildId,
+                    joinGuild = if (m.type == "system_join") {
+                        state.selectedGuildId?.let { gid -> state.guilds.firstOrNull { it.id == gid } }
+                    } else null,
+                    isDM = state.currentChannel?.isDM == true,
+                    isFailed = state.failedSendIds.contains(m.id),
+                    maskProfane = state.family?.restrictions?.filterProfanity == true,
+                    e2eeUnlocked = state.e2eeUnlocked.contains(m.channelId),
+                    repliedTo = rowRepliedTo,
+                    repliedToUnlocked = rowRepliedTo != null && state.e2eeUnlocked.contains(rowRepliedTo.channelId),
+                    guildEmojis = state.guildEmojis,
+                    mentionResolve = mentionResolve,
+                    emojiUrl = emojiUrl,
+                    msg = m,
+                    grouped = grouped,
+                    onLongPress = onLongPress,
+                    onImageTap = onImageTap,
+                    onVideoTap = onVideoTap,
+                    onEncImageTap = onEncImageTap,
+                    showReceipt = m.id == receiptAnchorId,
+                    highlighted = m.id == highlightedId,
+                    onJumpTo = onJumpTo,
+                )
             }
         }
         // Jump to newest. Gated on the SAME `atBottom` derivation the
@@ -1350,12 +1385,12 @@ private fun UnreadDivider() {
 /** system_call notice: "Call ended · 5m 23s", red "Missed call from X" only for
  *  the callee, "No answer" for the caller — no avatar (iOS systemRow). */
 @Composable
-private fun CallNoticeRow(state: AppState, msg: Message) {
+private fun CallNoticeRow(me: com.zekktris.data.model.SelfUser?, msg: Message) {
     val missed = msg.metadata?.missed == true
-    val alert = missed && msg.metadata?.initiatorId != state.me?.id
+    val alert = missed && msg.metadata?.initiatorId != me?.id
     val caller = msg.author?.bestName ?: "Someone"
     val summary = if (missed) {
-        if (msg.metadata?.initiatorId == state.me?.id) "No answer" else "Missed call from $caller"
+        if (msg.metadata?.initiatorId == me?.id) "No answer" else "Missed call from $caller"
     } else {
         val total = (msg.metadata?.durationMs ?: 0L) / 1000
         val label = when {
@@ -1386,9 +1421,9 @@ private fun CallNoticeRow(state: AppState, msg: Message) {
 /** Legacy persisted pokes (metadata.kind == "poke") render as a centered
  *  notice line — no avatar — and break author grouping (iOS parity). */
 @Composable
-private fun PokeNoticeRow(state: AppState, msg: Message) {
+private fun PokeNoticeRow(me: com.zekktris.data.model.SelfUser?, msg: Message) {
     val type = msg.metadata?.pokeType ?: "poke"
-    val mine = msg.metadata?.initiatorId == state.me?.id
+    val mine = msg.metadata?.initiatorId == me?.id
     val text = if (mine) "You ${pokeSentVerb(type)}"
     else "${msg.author?.bestName ?: "Someone"} ${pokeVerb(type)}"
     Row(
@@ -1422,8 +1457,30 @@ private fun DayDivider(label: String) {
 @Composable
 private fun MessageRow(
     store: AppStore,
-    state: AppState,
-    messages: List<Message>,
+    // NARROWED ON PURPOSE — do not reintroduce `state: AppState` or the whole
+    // message list here.
+    //
+    // Kotlin 2.1.20 + the Compose plugin means strong skipping is on, so unstable
+    // parameters are compared by INSTANCE. AppState is a fresh instance on every
+    // state change and the message list is a fresh list whenever messages change,
+    // so passing either handed every visible row a new value on every presence
+    // tick, typing indicator or unread update — recomposing every row, images and
+    // embeds included, precisely while the user was scrolling. `store` is fine:
+    // it is the same instance for the life of the screen.
+    //
+    // Everything below is a primitive or a small stable value the CALLER resolves,
+    // so a row now recomposes only when its own inputs actually change.
+    selectedGuildId: String?,
+    joinGuild: com.zekktris.data.model.Guild?,
+    isDM: Boolean,
+    isFailed: Boolean,
+    maskProfane: Boolean,
+    e2eeUnlocked: Boolean,
+    repliedTo: Message?,
+    repliedToUnlocked: Boolean,
+    guildEmojis: List<com.zekktris.data.model.GuildEmoji>,
+    mentionResolve: (Char, String) -> String,
+    emojiUrl: (String) -> String?,
     msg: Message,
     grouped: Boolean,
     onLongPress: (Message) -> Unit,
@@ -1437,20 +1494,18 @@ private fun MessageRow(
     val p = ZkTheme.palette
     // system_join renders under the SERVER's identity — guild name + icon, no
     // profile tap, no tag/shimmer (iOS MessageViews.swift:1648-1667).
-    val joinGuild = if (msg.type == "system_join") {
-        state.selectedGuildId?.let { gid -> state.guilds.firstOrNull { it.id == gid } }
-    } else null
+    // joinGuild is resolved by the caller (see the narrowing note above).
     // In a DM, the viewer's personal nickname for the author wins (iOS parity),
     // but never over a webhook's explicit author-name override.
-    val dmNick = if (state.currentChannel?.isDM == true) store.dmNickname(msg.authorId) else null
+    val dmNick = if (isDM) store.dmNickname(msg.authorId) else null
     val name = joinGuild?.name ?: msg.authorOverrideName ?: dmNick ?: msg.author?.bestName ?: "Unknown"
     val avatarUrl = joinGuild?.iconUrl ?: msg.authorOverrideAvatar ?: msg.author?.avatarUrl
     val pending = msg.id.startsWith("pending-")
-    val failed = pending && state.failedSendIds.contains(msg.id)
+    val failed = pending && isFailed
     val profileTapEnabled = msg.author != null && joinGuild == null
     // Parental control: one flag for BOTH the body and the reply quote, matching
     // iOS rowData (display + repliedDisplay are masked together).
-    val maskProfane = state.family?.restrictions?.filterProfanity == true
+    val maskProfane = maskProfane
     // Brief accent wash when this row is the jump-to target.
     val flash by androidx.compose.animation.animateColorAsState(
         if (highlighted) p.accent.copy(alpha = 0.14f) else androidx.compose.ui.graphics.Color.Transparent,
@@ -1471,12 +1526,12 @@ private fun MessageRow(
         // Reply reference: small quoted line above the message. Tapping it jumps
         // to the quoted message when it's in the loaded window.
         msg.replyToId?.let { rid ->
-            val ref = messages.firstOrNull { it.id == rid }
+            val ref = repliedTo
             // Same treatment as the body below: decrypt E2EE replies (else the
             // quote shows raw ciphertext), memoize so the crypto doesn't re-run
             // on every recompose, and mask it for a supervised child — iOS masks
             // repliedDisplay alongside display (MessageViews.swift rowData).
-            val refUnlocked = ref != null && state.e2eeUnlocked.contains(ref.channelId)
+            val refUnlocked = ref != null && repliedToUnlocked
             val refBody: String? = remember(ref?.channelId, ref?.content, refUnlocked, maskProfane) {
                 if (ref == null) null else {
                     val rendered = store.renderContent(ref.channelId, ref.content)
@@ -1528,8 +1583,8 @@ private fun MessageRow(
                     val realAuthor = if (msg.authorOverrideName != null || joinGuild != null) null else msg.author
                     // Guild channels color the name by the member's highest
                     // colored role (iOS authorColorRGB); DMs stay ink1.
-                    val roleColor = if (realAuthor != null && state.currentChannel?.isDM == false) {
-                        store.memberColorRGB(state.selectedGuildId, msg.authorId)?.let {
+                    val roleColor = if (realAuthor != null && !isDM) {
+                        store.memberColorRGB(selectedGuildId, msg.authorId)?.let {
                             Color(0xFF000000.toInt() or it)
                         }
                     } else null
@@ -1540,7 +1595,14 @@ private fun MessageRow(
                         StaffName(
                             user = realAuthor, text = name, baseColor = roleColor ?: ZkInk.ink1, fontSize = 15.sp,
                             fontWeight = FontWeight.Medium,
-                            modifier = Modifier.clickable(enabled = profileTapEnabled) { msg.author?.let { store.openProfile(it) } },
+                            // weight(fill = false) so the name yields to the
+                            // timestamp and takes what is left, instead of being
+                            // measured first and ellipsized early. Without it a
+                            // long username was cut off well before it had to be
+                            // — the DM header at :965 already does this.
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .clickable(enabled = profileTapEnabled) { msg.author?.let { store.openProfile(it) } },
                         )
                         Text(
                             shortTime(msg.createdAt),
@@ -1559,14 +1621,14 @@ private fun MessageRow(
                     // memoized display string (iOS rowData) — a supervised
                     // child must never see the raw body, and keying on the flag
                     // re-renders when family loads or the parent toggles it.
-                    val e2eeUnlocked = state.e2eeUnlocked.contains(msg.channelId)
+                    
                     val display = remember(msg.content, e2eeUnlocked, maskProfane) {
                         val rendered = store.renderContent(msg.channelId, msg.content)
                         if (maskProfane) ProfanityFilter.mask(rendered) else rendered
                     }
                     Row(verticalAlignment = Alignment.Bottom) {
                         MessageContent(
-                            display, state,
+                            display, mentionResolve, emojiUrl,
                             modifier = Modifier.weight(1f, fill = false).padding(top = 1.dp),
                         )
                         if (msg.editedAt != null) {
@@ -1585,12 +1647,12 @@ private fun MessageRow(
                 msg.poll?.let { PollCard(msg, it, store) }
                 MessageMedia(
                     store, msg.channelId, msg.attachments,
-                    e2eeUnlocked = state.e2eeUnlocked.contains(msg.channelId),
+                    e2eeUnlocked = e2eeUnlocked,
                     onImageTap = onImageTap, onVideoTap = onVideoTap, onEncImageTap = onEncImageTap,
                 )
                 msg.embeds?.takeIf { it.isNotEmpty() }?.forEach { EmbedView(it) }
                 if (msg.reactions.isNotEmpty()) {
-                    ReactionChips(msg, state) { emoji -> store.toggleReaction(msg.channelId, msg.id, emoji) }
+                    ReactionChips(msg, guildEmojis) { emoji -> store.toggleReaction(msg.channelId, msg.id, emoji) }
                 }
                 if (showReceipt && !pending) {
                     val label = when {
@@ -1635,7 +1697,7 @@ private fun MessageRow(
 private val CUSTOM_REACTION = Regex("^:([a-zA-Z0-9_]{2,32}):$")
 
 @Composable
-private fun ReactionChips(msg: Message, state: AppState, onToggle: (String) -> Unit) {
+private fun ReactionChips(msg: Message, guildEmojis: List<com.zekktris.data.model.GuildEmoji>, onToggle: (String) -> Unit) {
     val p = ZkTheme.palette
     Row(
         Modifier.padding(top = 4.dp).horizontalScroll(rememberScrollState()),
@@ -1645,7 +1707,7 @@ private fun ReactionChips(msg: Message, state: AppState, onToggle: (String) -> U
             // A custom `:name:` reaction resolves to the guild emoji image; a
             // plain unicode reaction renders as text (matches iOS/web glyph).
             val customUrl = CUSTOM_REACTION.find(r.emoji)?.groupValues?.get(1)?.let { name ->
-                state.guildEmojis.firstOrNull { it.name == name }?.let { Config.absoluteUrl(it.url) ?: it.url }
+                guildEmojis.firstOrNull { it.name == name }?.let { Config.absoluteUrl(it.url) ?: it.url }
             }
             // iOS ReactionPill (MessageViews.swift:3103-3119): radius 6, 6/3
             // padding, a border on EVERY pill, and an always-ink2 regular count.

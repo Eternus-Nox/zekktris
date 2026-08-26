@@ -52,10 +52,18 @@ import com.zekktris.ui.theme.ZkTheme
  * bare http(s) links (accent). Emoji-only messages render jumbo.
  */
 @Composable
-fun MessageContent(text: String, state: AppState, modifier: Modifier = Modifier) {
+fun MessageContent(
+    text: String,
+    // The RESOLVERS, not the whole AppState. Both are `remember`ed on the narrow
+    // state slices they read, so they are stable across unrelated state emits —
+    // whereas AppState itself is a new instance every emit, which under Compose
+    // strong skipping recomposed every message row on every presence tick.
+    // Hoisting them to the list scope is what lets a row skip.
+    resolve: (Char, String) -> String,
+    emojiUrl: (String) -> String?,
+    modifier: Modifier = Modifier,
+) {
     val p = ZkTheme.palette
-    val resolve = rememberMentionResolver(state)
-    val emojiUrl = rememberEmojiResolver(state)
     // Parsing is pure but was re-running for every visible row on every
     // recomposition — i.e. on every unrelated AppState emit (a peer typing, a
     // read ack, a presence change) — on the main thread. Memoize it; the
@@ -274,7 +282,7 @@ private fun hasCloser(text: String, from: Int, marker: String): Boolean =
  *  Remembered on the state slices it reads so the parse it keys can survive
  *  AppState emits that touch nothing a mention resolves against. */
 @Composable
-private fun rememberMentionResolver(state: AppState): (Char, String) -> String =
+fun rememberMentionResolver(state: AppState): (Char, String) -> String =
     remember(state.me, state.membersByGuild, state.dms, state.channelsByGuild) {
         { kind: Char, id: String ->
             when (kind) {
@@ -292,7 +300,7 @@ private fun rememberMentionResolver(state: AppState): (Char, String) -> String =
 
 /** Resolver: custom-emoji `:name:` → absolute image URL (null if not a known guild emoji). */
 @Composable
-private fun rememberEmojiResolver(state: AppState): (String) -> String? =
+fun rememberEmojiResolver(state: AppState): (String) -> String? =
     remember(state.guildEmojis) {
         val byName = state.guildEmojis.associate { it.name to (Config.absoluteUrl(it.url) ?: it.url) }
         // Bound to a typed val first: a block ending in a bare lambda literal parses
