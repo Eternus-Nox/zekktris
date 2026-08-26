@@ -161,15 +161,22 @@ targets:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
           NSExtensionAttributes:
+            # The NSExtensionActivationSupports* keys MUST be nested inside
+            # NSExtensionActivationRule, not siblings of it. Declaring them as
+            # siblings builds and runs fine locally but App Store Connect
+            # rejects the upload with error 90360, "Missing Info.plist value. A
+            # value for the key 'NSExtensionActivationRule' ... is required."
+            #
             # Why these numbers: the share sheet only offers Zekktris when the
             # payload is something a message can actually carry. Generous on
             # images (a multi-photo share is the common case) and deliberately
             # modest elsewhere.
-            NSExtensionActivationSupportsText: true
-            NSExtensionActivationSupportsWebURLWithMaxCount: 10
-            NSExtensionActivationSupportsImageWithMaxCount: 10
-            NSExtensionActivationSupportsMovieWithMaxCount: 5
-            NSExtensionActivationSupportsFileWithMaxCount: 10
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 10
+              NSExtensionActivationSupportsImageWithMaxCount: 10
+              NSExtensionActivationSupportsMovieWithMaxCount: 5
+              NSExtensionActivationSupportsFileWithMaxCount: 10
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.share
