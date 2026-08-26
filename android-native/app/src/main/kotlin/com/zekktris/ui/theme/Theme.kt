@@ -84,9 +84,17 @@ fun ZkTheme(
     CompositionLocalProvider(LocalZkPalette provides palette) {
         MaterialTheme(colorScheme = colors, typography = ZkTypography) {
             // Make bare Text() default to Space Grotesk (Material only applies
-            // the typography to its own components, not to LocalTextStyle).
+            // the typography to its own components, not to LocalTextStyle) AND
+            // to the trimmed leading. The second half matters as much as the
+            // first: a `Text(fontSize = 10.sp)` inherits the ambient lineHeight
+            // unchanged, so without this every small label sits in a box sized
+            // for 15sp body text with the difference split above and below it.
             CompositionLocalProvider(
-                LocalTextStyle provides LocalTextStyle.current.copy(fontFamily = ZkSans),
+                LocalTextStyle provides LocalTextStyle.current.copy(
+                    fontFamily = ZkSans,
+                    platformStyle = ZkBaseTextStyle.platformStyle,
+                    lineHeightStyle = ZkBaseTextStyle.lineHeightStyle,
+                ),
                 content = content,
             )
         }
