@@ -910,7 +910,7 @@ function UsersTab() {
                         className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 transition-colors"
                         title="Who this user exchanges direct messages with. Counts and friend status only — never message content."
                       >
-                        {dmPeers[u.id] ? 'Hide DMs' : 'DM contacts'}
+                        {dmPeers[u.id] ? 'Hide contacts' : 'Contacts'}
                       </button>
                     )}
                     {!u.bannedAt && (selfIsAdmin || (!u.isAdmin && !u.isModerator)) && (

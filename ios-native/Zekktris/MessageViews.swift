@@ -619,8 +619,17 @@ struct MessageListView: View {
                             // from this view's measured offset instead. onAppear
                             // is kept ONLY as an optimistic open — the geometry
                             // reading corrects it either way on the next frame.
+                            // NO onAppear here. It used to set isNearBottom = true
+                            // as an "optimistic open", and that is what kept the
+                            // jump button hidden until you had scrolled a long way:
+                            // a LazyVStack fires onAppear every time this re-enters
+                            // its render buffer, slamming the gate back open on
+                            // every pass. Only once the sentinel genuinely unmounted
+                            // did the geometry reading get to win. The gate is now
+                            // written by recomputeNearBottom() alone, plus the
+                            // one-shot landing seeds; this view is purely a scroll
+                            // target.
                             Color.clear.frame(height: 1)
-                                .onAppear { isNearBottom = true }
                                 .id(bottomAnchor)
                         }
                         .padding(.horizontal, 16)
@@ -743,8 +752,8 @@ struct MessageListView: View {
                         // Anchored jumps (deep links, prepend restores) land
                         // mid-history — close the near-bottom gate so an incoming
                         // message can't yank the user off the anchor. If the
-                        // anchor is in fact near the bottom, the sentinel's
-                        // onAppear reopens the gate on the same layout pass.
+                        // anchor is in fact near the bottom, the geometry pass
+                        // reopens the gate on the next frame.
                         isNearBottom = false
                         // The anchor now owns the position: retire this open's
                         // landing so the settle window can't drag the user back
@@ -771,8 +780,8 @@ struct MessageListView: View {
                         landedChannelId = nil
                         landing = nil
                         // A fresh open lands at, or a screenful above, the bottom,
-                        // so start the gate open; the sentinel's onDisappear closes
-                        // it as soon as the user scrolls up into history.
+                        // so seed the gate open; the geometry pass closes it as soon
+                        // as the user scrolls up into history.
                         isNearBottom = true
                         // Re-apply the landing as late-sizing content settles
                         // (see stickToBottomOnGrow + the height preference above).
@@ -889,9 +898,8 @@ struct MessageListView: View {
             // at the very bottom (iMessage-style: the newest message is what you
             // want to see on open).
             //
-            // Landing mid-history: close the near-bottom gate (the sentinel never
-            // appeared, so its onDisappear can't) — if the divider is in fact
-            // close to the bottom the sentinel's onAppear reopens it.
+            // Landing mid-history: close the near-bottom gate — if the divider is
+            // in fact close to the bottom, the geometry pass reopens it.
             isNearBottom = false
             landing = .unread(boundary)
         } else {
