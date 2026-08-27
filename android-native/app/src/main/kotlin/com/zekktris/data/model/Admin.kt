@@ -225,3 +225,23 @@ data class MonetizationConfig(
     val uploadCapsMb: UploadCapsMb = UploadCapsMb(),
 )
 @Serializable data class MonetizationConfigWrap(val config: MonetizationConfig)
+
+/**
+ * One person the subject exchanges 1:1 DMs with. ADMIN-ONLY: counts, identity and
+ * friend status, never message content — most of these DMs are E2EE and the
+ * server cannot read them either. The read is audit-logged (staff_dm_peers).
+ */
+@Serializable
+data class AdminDmPeer(
+    val channelId: String,
+    val user: PublicUser,
+    val isFriend: Boolean = false,
+    val messageCount: Int = 0,
+)
+
+@Serializable
+data class AdminDmPeersWrap(
+    val peers: List<AdminDmPeer> = emptyList(),
+    /** True when the subject has more DM channels than the server enumerates. */
+    val capped: Boolean = false,
+)

@@ -4847,6 +4847,75 @@ private struct DiscoverRow: View {
 
 // MARK: Admin (instance)
 
+
+/// ADMIN-ONLY roster of who a user exchanges 1:1 DMs with.
+///
+/// Counts, identity and friend status only — never message content. Most of
+/// these conversations are E2EE, so the server could not surface content even if
+/// this view asked for it. The read is audit-logged server-side (staff_dm_peers).
+private struct AdminDmPeersView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    let user: AdminUser
+    @State private var peers: [AdminDmPeer] = []
+    @State private var capped = false
+    @State private var loading = true
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if loading {
+                    ProgressView().tint(Theme.accent).frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let error {
+                    Text(error).font(.zkSans(13)).foregroundColor(Theme.ink3).padding()
+                } else if peers.isEmpty {
+                    Text("No direct-message conversations.")
+                        .font(.zkSans(13)).foregroundColor(Theme.ink3).padding()
+                } else {
+                    List {
+                        ForEach(peers) { p in
+                            HStack(spacing: 10) {
+                                Image(systemName: p.isFriend ? "person.fill.checkmark" : "person.fill.xmark")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(p.isFriend ? Theme.online : Theme.ink4)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(p.user.displayName ?? p.user.username ?? "Unknown").font(.zkSans(14)).foregroundColor(Theme.ink1)
+                                    Text("@" + (p.user.username ?? "")).font(.zkSans(11)).foregroundColor(Theme.ink4)
+                                }
+                                Spacer(minLength: 8)
+                                Text("\(p.messageCount)")
+                                    .font(.zkMono(12)).foregroundColor(Theme.ink3)
+                            }
+                            .listRowBackground(Theme.bg2)
+                        }
+                        if capped {
+                            Text("Showing the most recent conversations only.")
+                                .font(.zkSans(11)).foregroundColor(Theme.ink4)
+                                .listRowBackground(Theme.bg2)
+                        }
+                    }
+                    .scrollContentBackground(.hidden)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Theme.bg1)
+            .navigationTitle("Contacts — \(user.username)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+        }
+        .task {
+            do {
+                let w = try await store.api.adminUserDmPeers(userId: user.id)
+                peers = w.peers; capped = w.capped
+            } catch {
+                self.error = "Couldn't load contacts."
+            }
+            loading = false
+        }
+    }
+}
+
 struct AdminView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var session: Session
@@ -4859,6 +4928,9 @@ struct AdminView: View {
     @State private var deletingGuild: AdminGuild?
     @State private var observingGuild: AdminGuild?
     @State private var deleteCandidate: AdminUser?
+    /// Subject of the ADMIN-ONLY "Contacts" sheet (who they DM, friend status,
+    /// message counts). nil = closed.
+    @State private var dmPeersFor: AdminUser?
     // Operational metrics + voice diagnostic (Overview tab).
     @State private var metrics: InstanceMetrics?
     @State private var voiceDiag: LivekitDiagnostic?
@@ -4934,6 +5006,7 @@ struct AdminView: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { PageBackButton() } }
             .sheet(isPresented: $showStorageItems) { StorageItemsView() }
             .sheet(item: $observingGuild) { g in AdminObserveView(guild: g) }
+            .sheet(item: $dmPeersFor) { u in AdminDmPeersView(user: u) }
             .task { await store.loadAdminStats() }
         }
     }
@@ -5337,6 +5410,17 @@ struct AdminView: View {
                             Button(role: .destructive) { Task { await store.adminBan(u, duration: "perm") } } label: { Text("Permanent") }
                         } label: {
                             Label("Ban", systemImage: "nosign")
+                        }
+                    }
+                    // ADMIN ONLY, deliberately not offered to moderators: seeing
+                    // who someone privately messages is well outside a
+                    // moderator's chartered scope. The server enforces this too —
+                    // the admin router's moderator allowlist is fail-safe and
+                    // this route is absent from it — so a mod who reached the
+                    // endpoint anyway would get a 403.
+                    if session.currentUser?.isAdmin == true {
+                        Button { dmPeersFor = u } label: {
+                            Label("Contacts", systemImage: "person.2")
                         }
                     }
                     Button { Task { await store.adminLogout(u) } } label: {

@@ -1323,6 +1323,13 @@ class AppStore(
         scope.launch { runCatching { api.adminBanUser(userId, duration) }; reload() }
     }
 
+    /**
+     * [ADMIN ONLY] Who this user exchanges 1:1 DMs with. Suspend rather than
+     * fire-and-forget because the screen renders the result directly. `api` is
+     * private, so screens reach it through here.
+     */
+    suspend fun adminUserDmPeers(userId: String) = api.adminUserDmPeers(userId)
+
     fun adminUnban(userId: String, reload: () -> Unit) {
         scope.launch { runCatching { api.adminUnbanUser(userId) }; reload() }
     }

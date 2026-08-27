@@ -60,7 +60,7 @@ import { AvatarImage } from '../lib/AvatarImage';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { TierBadge } from '../lib/TierBadge';
 import { ExpiredBadge, ExpiredMediaCard, EXPIRED_TITLE } from '../lib/mediaRetention';
-import { Hash, Lock, Search as SearchIcon, Shield, Volume2, X as CloseIcon, Users, UserPlus, UserMinus, Archive, BarChart, ChevronLeft, Eye, Trash } from '../lib/icons';
+import { Hash, Lock, Search as SearchIcon, Shield, Volume2, X as CloseIcon, Users, UserPlus, UserMinus, Archive, BarChart, ChevronLeft, Eye, Trash, Calendar, Bookmark, LogOut, Plus, RefreshCw, Ban, CheckCircle } from '../lib/icons';
 
 type Tab =
   | 'overview'
@@ -866,7 +866,7 @@ function UsersTab() {
                   </div>
                 </div>
                 {!isSelf && (
-                  <div className="flex flex-wrap items-center gap-1.5 shrink-0 ml-auto">
+                  <div className="flex flex-wrap items-center justify-end gap-1.5 min-w-0 ml-auto">
                     {/* Button order (operator spec): Role · DOB · Membership ·
                         Sign out · Ban · Delete. Role, Membership (gifting) +
                         Delete are admin-only; moderators also can't ban/
@@ -875,28 +875,28 @@ function UsersTab() {
                       <button
                         onClick={() => openPanel('role', u.id)}
                         disabled={pending === u.id}
-                        className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors"
+                        className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
                         title="Set this user's instance role"
                       >
-                        Role
+                        <Shield size={13} className="shrink-0" /><span className="hidden sm:inline">Role</span>
                       </button>
                     )}
                     <button
                       onClick={() => openPanel('dob', u.id)}
                       disabled={pending === u.id}
-                      className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors"
+                      className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
                       title="View this user's date of birth"
                     >
-                      DOB
+                      <Calendar size={13} className="shrink-0" /><span className="hidden sm:inline">DOB</span>
                     </button>
                     {selfIsAdmin && (
                       <button
                         onClick={() => openPanel('gift', u.id)}
                         disabled={pending === u.id}
-                        className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors"
+                        className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
                         title="Gift or reset this user's supporter membership"
                       >
-                        Membership
+                        <Bookmark size={13} className="shrink-0" /><span className="hidden sm:inline">Membership</span>
                       </button>
                     )}
                     {/* Sign-out button — only shown when the user isn't
@@ -907,20 +907,20 @@ function UsersTab() {
                     {selfIsAdmin && (
                       <button
                         onClick={() => toggleDmPeers(u)}
-                        className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 transition-colors"
+                        className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 transition-colors inline-flex items-center gap-1.5"
                         title="Who this user exchanges direct messages with. Counts and friend status only — never message content."
                       >
-                        {dmPeers[u.id] ? 'Hide contacts' : 'Contacts'}
+                        <Users size={13} className="shrink-0" /><span className="hidden sm:inline">{dmPeers[u.id] ? 'Hide contacts' : 'Contacts'}</span>
                       </button>
                     )}
                     {!u.bannedAt && (selfIsAdmin || (!u.isAdmin && !u.isModerator)) && (
                       <button
                         onClick={() => forceLogout(u)}
                         disabled={pending === u.id}
-                        className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors"
+                        className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
                         title="Force sign-out from all devices (account stays active)"
                       >
-                        Sign out
+                        <LogOut size={13} className="shrink-0" /><span className="hidden sm:inline">Sign out</span>
                       </button>
                     )}
                     {(selfIsAdmin || (!u.isAdmin && !u.isModerator)) && (
@@ -931,10 +931,11 @@ function UsersTab() {
                           u.bannedAt
                             ? 'bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1'
                             : 'bg-red-500/10 hover:bg-red-500/20 text-red-400'
-                        }`}
+                        } inline-flex items-center gap-1.5`}
                         title={u.bannedAt ? 'Unban' : 'Ban (choose duration)'}
                       >
-                        {u.bannedAt ? 'Unban' : 'Ban'}
+                        {u.bannedAt ? <CheckCircle size={13} className="shrink-0" /> : <Ban size={13} className="shrink-0" />}
+                        <span className="hidden sm:inline">{u.bannedAt ? 'Unban' : 'Ban'}</span>
                       </button>
                     )}
                     {selfIsAdmin && (
@@ -944,7 +945,7 @@ function UsersTab() {
                         className="text-xs px-2.5 py-1.5 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 disabled:opacity-50 transition-colors"
                         title="Permanently delete this account"
                       >
-                        Delete
+                        <Trash size={13} className="shrink-0" /><span className="hidden sm:inline">Delete</span>
                       </button>
                     )}
                   </div>
@@ -985,7 +986,7 @@ function UsersTab() {
                       disabled={pending === u.id}
                       className="text-xs px-2.5 py-1 rounded border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40"
                     >
-                      Gift
+                      <Plus size={13} className="shrink-0" /><span className="hidden sm:inline">Gift</span>
                     </button>
                     {selfIsAdmin && u.subscriptionTier && (
                       <button
@@ -994,7 +995,7 @@ function UsersTab() {
                         className="text-xs px-2.5 py-1 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-40"
                         title="Remove the membership and clear their paid cosmetics"
                       >
-                        Reset membership
+                        <RefreshCw size={13} className="shrink-0" /><span className="hidden sm:inline">Reset membership</span>
                       </button>
                     )}
                   </div>

@@ -59,6 +59,10 @@ import com.zekktris.AppState
 import com.zekktris.AppStore
 import com.zekktris.data.model.AdminGuild
 import com.zekktris.data.model.AdminStorage
+import androidx.activity.compose.BackHandler
+import androidx.compose.material.icons.filled.PersonRemove
+import androidx.compose.material.icons.filled.PersonAdd
+import com.zekktris.data.model.AdminDmPeer
 import com.zekktris.data.model.AdminUser
 import com.zekktris.data.model.Channel
 import com.zekktris.data.model.PeekGuildResult
@@ -330,9 +334,17 @@ private fun UserRow(store: AppStore, u: AdminUser, isAdmin: Boolean, reload: () 
     // Two-step gift flow inside the same dropdown: pick a tier, then a duration.
     var giftMode by remember { mutableStateOf(false) }
     var giftTier by remember { mutableStateOf<String?>(null) }
+    // Subject of the ADMIN-ONLY "Contacts" screen. null = closed.
+    var dmPeersFor by remember { mutableStateOf<AdminUser?>(null) }
     // Destructive confirm before delete (iOS confirmationDialog parity).
     var confirmDelete by remember { mutableStateOf(false) }
     fun closeMenu() { menu = false; giftMode = false; giftTier = null }
+    // Full-screen overlay, presented over the row's own content so it takes the
+    // whole page rather than sitting in a draggable sheet.
+    dmPeersFor?.let { subject ->
+        AdminDmPeersScreen(store, subject) { dmPeersFor = null }
+        return
+    }
     if (confirmDelete) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { confirmDelete = false },
@@ -397,6 +409,15 @@ private fun UserRow(store: AppStore, u: AdminUser, isAdmin: Boolean, reload: () 
                             DropdownMenuItem(text = { Text("Reset DOB", fontFamily = ZkSans) }, onClick = { closeMenu(); store.adminResetDobLock(u.id, reload) })
                         }
                         if (isAdmin) {
+                            // ADMIN ONLY, deliberately not offered to moderators:
+                            // seeing who someone privately messages is well outside
+                            // a moderator's chartered scope. The server enforces it
+                            // too — the admin router's moderator allowlist is
+                            // fail-safe and this route is absent from it.
+                            DropdownMenuItem(
+                                text = { Text("Contacts", fontFamily = ZkSans) },
+                                onClick = { closeMenu(); dmPeersFor = u },
+                            )
                             if (!u.isAdmin) DropdownMenuItem(text = { Text("Make administrator", fontFamily = ZkSans) }, onClick = { closeMenu(); store.adminSetRole(u.id, "administrator", reload) })
                             if (!u.isModerator) DropdownMenuItem(text = { Text("Make moderator", fontFamily = ZkSans) }, onClick = { closeMenu(); store.adminSetRole(u.id, "moderator", reload) })
                             if (u.isStaff) DropdownMenuItem(text = { Text("Remove role", fontFamily = ZkSans) }, onClick = { closeMenu(); store.adminSetRole(u.id, "none", reload) })
@@ -716,6 +737,65 @@ private fun Badge(label: String, color: Color) {
         modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(3.dp)).background(color.copy(alpha = 0.2f)).padding(horizontal = 4.dp, vertical = 1.dp),
     )
 }
+
+/**
+ * ADMIN-ONLY roster of who a user exchanges 1:1 DMs with.
+ *
+ * Counts, identity and friend status only — never message content. Most of these
+ * conversations are E2EE, so the server could not surface content even if this
+ * asked. The read is audit-logged server-side (staff_dm_peers).
+ *
+ * Full screen with a back chevron, matching the member roster rather than a
+ * draggable sheet.
+ */
+@Composable
+private fun AdminDmPeersScreen(store: AppStore, user: AdminUser, onBack: () -> Unit) {
+    var peers by remember(user.id) { mutableStateOf<List<AdminDmPeer>?>(null) }
+    var capped by remember(user.id) { mutableStateOf(false) }
+    var failed by remember(user.id) { mutableStateOf(false) }
+    LaunchedEffect(user.id) {
+        runCatching { store.adminUserDmPeers(user.id) }
+            .onSuccess { peers = it.peers; capped = it.capped }
+            .onFailure { failed = true }
+    }
+    BackHandler(onBack = onBack)
+    ScreenScaffold(title = "Contacts — ${user.username}", onBack = onBack) {
+        val list = peers
+        when {
+            failed -> Text("Couldn't load contacts.", color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
+            list == null -> Text("Loading…", color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
+            list.isEmpty() -> Text("No direct-message conversations.", color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
+            else -> LazyColumn(Modifier.fillMaxSize()) {
+                items(list, key = { it.channelId }) { pr ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            if (pr.isFriend) Icons.Filled.PersonAdd else Icons.Filled.PersonRemove,
+                            contentDescription = if (pr.isFriend) "Friends" else "Not friends",
+                            tint = if (pr.isFriend) ZkStatus.online else ZkInk.ink4,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Column(Modifier.padding(start = 10.dp).weight(1f)) {
+                            Text(pr.user.bestName, color = ZkInk.ink1, fontFamily = ZkSans, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("@${pr.user.username ?: ""}", color = ZkInk.ink4, fontFamily = ZkSans, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        Text("${pr.messageCount}", color = ZkInk.ink3, fontFamily = ZkMono, fontSize = 12.sp)
+                    }
+                }
+                if (capped) item {
+                    Text(
+                        "Showing the most recent conversations only.",
+                        color = ZkInk.ink4, fontFamily = ZkSans, fontSize = 11.sp,
+                        modifier = Modifier.padding(16.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
 
 @Composable
 private fun SearchField(value: String, onChange: (String) -> Unit, placeholder: String, modifier: Modifier = Modifier, onSubmit: () -> Unit) {

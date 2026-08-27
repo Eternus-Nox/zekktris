@@ -1,6 +1,7 @@
 package com.zekktris.data
 
 import com.zekktris.data.model.AckWrap
+import com.zekktris.data.model.AdminDmPeersWrap
 import com.zekktris.data.model.AuthResponse
 import com.zekktris.data.model.Channel
 import com.zekktris.data.model.ChannelWrap
@@ -1877,6 +1878,15 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
         }.joinToString("&")
         return authorized(HttpMethod.Get, "/admin/users?$params").decodeOrThrow<AdminUsersWrap>().users
     }
+
+    /**
+     * [ADMIN ONLY] Who this user exchanges 1:1 DMs with, with friend status and
+     * message counts. Never message content. Moderators cannot reach this: the
+     * admin router's moderator allowlist is fail-safe and this route is
+     * deliberately absent from it, so a mod gets 403.
+     */
+    suspend fun adminUserDmPeers(userId: String): AdminDmPeersWrap =
+        authorized(HttpMethod.Get, "/admin/users/$userId/dm-peers").decodeOrThrow()
 
     suspend fun adminGuilds(query: String?): List<AdminGuild> {
         val q = if (query.isNullOrBlank()) "" else "&q=" + java.net.URLEncoder.encode(query, "UTF-8")

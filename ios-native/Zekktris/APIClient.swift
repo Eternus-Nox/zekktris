@@ -1685,6 +1685,13 @@ extension APIClient {
     // ── Admin observe + parental oversight ───────────────────────────────────
     /// Ghost-mode guild snapshot: the guild row + EVERY channel (no
     /// permission filtering) so an operator can review without joining.
+    /// [ADMIN ONLY] Who this user exchanges 1:1 DMs with, whether they're friends,
+    /// and how many messages each conversation holds. Never message content.
+    /// Moderators cannot reach this — the admin router's moderator allowlist is
+    /// fail-safe and this route is deliberately absent from it.
+    func adminUserDmPeers(userId: String) async throws -> AdminDmPeersWrap {
+        return try await send("GET", "/admin/users/\(userId)/dm-peers")
+    }
     func adminPeekGuild(guildId: String) async throws -> PeekGuildResult {
         return try await send("GET", "/admin/guilds/\(guildId)/peek")
     }

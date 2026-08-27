@@ -1324,6 +1324,23 @@ struct PeekGuild: Codable {
     var createdAt: String?
     var memberCount: Int?
 }
+/// One person the subject exchanges 1:1 DMs with. ADMIN-ONLY view; carries counts
+/// and friend status, never message content (most of these DMs are E2EE and the
+/// server cannot read them either).
+struct AdminDmPeer: Codable, Identifiable {
+    let channelId: String
+    let user: PublicUser
+    let isFriend: Bool
+    let messageCount: Int
+    var id: String { channelId }
+}
+
+struct AdminDmPeersWrap: Codable {
+    let peers: [AdminDmPeer]
+    /// True when the subject has more DM channels than the server enumerates.
+    let capped: Bool
+}
+
 struct PeekGuildResult: Codable {
     let guild: PeekGuild
     let channels: [Channel]
