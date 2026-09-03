@@ -410,6 +410,33 @@ struct MessageListView: View {
     let channel: Channel
 
     @State private var draft = ""
+
+    /// Per-channel draft persistence.
+    ///
+    /// `draft` is view state, so it died with the view: closing the app — or just
+    /// backing out of a chat — threw away whatever was half-typed. Drafts are
+    /// saved per channel and restored on open, the way every messaging app
+    /// behaves.
+    ///
+    /// UserDefaults rather than the keychain or a file: a draft is small, local,
+    /// and not a secret the app is responsible for beyond the device. Note this
+    /// means a draft in an E2EE channel is stored in plaintext on-device, which
+    /// is the same exposure as the keyboard's own autocorrect history — but say
+    /// it out loud rather than let it be discovered later.
+    private static let draftStoreKey = "zk.drafts.v1"
+
+    private static func loadDraft(_ channelId: String) -> String {
+        (UserDefaults.standard.dictionary(forKey: draftStoreKey)?[channelId] as? String) ?? ""
+    }
+
+    /// Saving an EMPTY draft removes the entry rather than storing "", so the
+    /// dictionary can't grow one dead key per channel ever visited.
+    private static func saveDraft(_ text: String, for channelId: String) {
+        var all = UserDefaults.standard.dictionary(forKey: draftStoreKey) as? [String: String] ?? [:]
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { all.removeValue(forKey: channelId) } else { all[channelId] = text }
+        UserDefaults.standard.set(all, forKey: draftStoreKey)
+    }
     // Plain @State (not @FocusState) because the composer is now a UITextView
     // representable (ComposerTextView) that bridges focus through this binding
     // — see its Coordinator. Image paste needs the UITextView; @FocusState
@@ -692,7 +719,26 @@ struct MessageListView: View {
                         // ZERO scrolls and opened 50 messages up. Re-applying the
                         // landing is correct for the divider case too, because the
                         // divider IS the chosen position.
-                        guard stickToBottomOnGrow, store.pendingScrollAnchorId == nil else { return }
+                        // Two ways this re-applies:
+                        //
+                        // 1. `stickToBottomOnGrow` — the bounded window after an
+                        //    open, which also covers a DIVIDER landing (there the
+                        //    divider, not the bottom, is the position to hold).
+                        // 2. Any time we landed at the BOTTOM and the user is still
+                        //    there. This one is not time-bounded on purpose. The
+                        //    window is 1.5s, but a photo, a link embed or an E2EE
+                        //    decrypt can finish sizing well after that — and when it
+                        //    did, nothing re-pinned, so the growth pushed the newest
+                        //    message off-screen and the chat sat scrolled up. That
+                        //    was the "randomly opens scrolled up" report: a race
+                        //    against how fast the content happened to load.
+                        //
+                        // `isNearBottom` is the right gate rather than a longer
+                        // timer: it says the user is still at the bottom, so this
+                        // cannot fight someone who has scrolled up into history.
+                        let holdingBottom = landing == .bottom && isNearBottom
+                        guard stickToBottomOnGrow || holdingBottom,
+                              store.pendingScrollAnchorId == nil else { return }
                         applyLanding(proxy)
                     }
                     .onChange(of: ListKey(count: store.messages.count,
@@ -849,7 +895,17 @@ struct MessageListView: View {
             }
         }
         .background(Theme.bg1.opacity(0.9))
-        .onAppear { store.openChannel(channel) }
+        .onAppear {
+            store.openChannel(channel)
+            // Restore whatever was half-typed here. Only when the composer is
+            // empty, so a draft can't clobber text the user is already entering
+            // (this fires again on returning from a sheet).
+            if draft.isEmpty { draft = Self.loadDraft(channel.id) }
+        }
+        // Persist on every keystroke rather than on disappear: the app can be
+        // killed from the switcher without any teardown callback running, which
+        // is exactly the "closed the app" case this is meant to survive.
+        .onChange(of: draft) { _, text in Self.saveDraft(text, for: channel.id) }
         // Swipe-back is handled at the navigation container (MainView.compactNav)
         // so the page can follow the finger and reveal the screen behind it.
         // `spacing: 0` is load-bearing, not tidying. Without it SwiftUI
