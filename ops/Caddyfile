@@ -30,6 +30,46 @@
 	# (see docker-compose proxy ports).
 	servers {
 		protocols h1 h2 h3
+
+		# ── Real client IP behind Cloudflare ──────────────────────────────
+		#
+		# zekktris.com is proxied by Cloudflare, so the peer that connects to
+		# Caddy is always a Cloudflare edge node, never the user. Until this
+		# block existed, X-Real-IP was set from {remote_host} — the edge — for
+		# EVERY request, and getClientIp() (which trusts X-Real-IP first)
+		# believed it. So everything keyed on the client IP was really keyed on
+		# Cloudflare: per-IP rate limits shared across every user behind the same
+		# edge node, IP bans that would ban a slice of Cloudflare rather than a
+		# person, and the wrong addresses in audit logs and the sessions UI.
+		#
+		# Cloudflare's published edge ranges (www.cloudflare.com/ips-v4 and
+		# /ips-v6, fetched 2026-09-04). They change rarely, and if Cloudflare
+		# adds one, requests from it are simply untrusted and client_ip falls
+		# back to the edge address — it degrades to the old behaviour rather
+		# than opening a spoofing hole. Re-fetch when that happens.
+		#
+		# Deliberately NOT `private_ranges`: this same file serves LAN and
+		# localhost deployments, and trusting private ranges would let any
+		# machine on the LAN forge its own source address.
+		trusted_proxies static \
+ 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 \
+ 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 \
+ 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 \
+ 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 \
+ 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 \
+ 2a06:98c0::/29 2c0f:f248::/32
+		# Read the client from CF-Connecting-IP instead of the default
+		# X-Forwarded-For. Cloudflare OVERWRITES this header with the real
+		# connecting address, so unlike the leftmost X-Forwarded-For entry it
+		# cannot be forged by the client. It is only consulted for requests that
+		# arrived FROM a trusted proxy, so anyone hitting the origin directly
+		# with a handcrafted CF-Connecting-IP is untrusted and Caddy uses their
+		# actual peer address.
+		client_ip_headers Cf-Connecting-Ip
+		# A no-op while the header above carries exactly one address, but if
+		# X-Forwarded-For is ever added back to that list, right-to-left parsing
+		# is what stops the client-controlled leftmost entry being believed.
+		trusted_proxies_strict
 	}
 }
 
@@ -142,7 +182,7 @@
 		}
 		# Not on disk → let the API handle it (current behavior).
 		reverse_proxy api:3000 {
-			header_up X-Real-IP {remote_host}
+			header_up X-Real-IP {client_ip}
 		}
 	}
 
@@ -155,7 +195,7 @@
 		reverse_proxy api:3000 {
 			# Pass through the original Host so the API can compute absolute
 			# URLs for invite links, CDN URLs, etc.
-			header_up X-Real-IP {remote_host}
+			header_up X-Real-IP {client_ip}
 		}
 	}
 
@@ -169,7 +209,7 @@
 				keepalive 5m
 				keepalive_idle_conns 100
 			}
-			header_up X-Real-IP {remote_host}
+			header_up X-Real-IP {client_ip}
 		}
 	}
 
@@ -200,7 +240,7 @@
 				keepalive 5m
 				keepalive_idle_conns 100
 			}
-			header_up X-Real-IP {remote_host}
+			header_up X-Real-IP {client_ip}
 		}
 	}
 
