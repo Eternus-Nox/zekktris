@@ -2,6 +2,7 @@ package com.zekktris.push
 
 import android.content.Context
 import android.os.Build
+import android.util.Log
 import com.google.firebase.messaging.FirebaseMessaging
 import com.zekktris.data.ApiClient
 import kotlinx.coroutines.CoroutineScope
@@ -88,8 +89,21 @@ class PushManager(
         if (attemptsLeft <= 0) return
         // Registering without a session 401s and is silently discarded — that's a
         // retryable "not yet", not a success.
-        if (api.ensureAccessToken() == null) return
-        val token = known ?: currentToken() ?: return
+        if (api.ensureAccessToken() == null) {
+            Log.w(TAG, "register skipped: no access token yet")
+            return
+        }
+        // Every bail here used to be silent, which made "Android notifications
+        // don't work" indistinguishable from "the app never even asked". If
+        // Play Services can't mint a token — no Play Services, a
+        // google-services.json whose package doesn't match applicationId, no
+        // network at sign-in — the device stays pushless with nothing to see.
+        // Say so, on the one tag worth grepping for.
+        val token = known ?: currentToken()
+        if (token == null) {
+            Log.e(TAG, "register aborted: FirebaseMessaging returned no token")
+            return
+        }
         // Spend the budget only once we have BOTH a session and a token, i.e. on
         // a real network attempt. Charging the bails above let three foregrounds
         // in a signed-out window exhaust it and leave the device pushless.
@@ -99,18 +113,37 @@ class PushManager(
         // returns until its FCM_* env vars are set both come back as ordinary
         // responses — treating those as success retired the retry on exactly the
         // failures it exists to survive, leaving the device pushless for good.
-        if (runCatching { api.registerDeviceToken(token, deviceLabel) }.getOrDefault(false)) {
+        val result = runCatching { api.registerDeviceToken(token, deviceLabel) }
+        if (result.getOrDefault(false)) {
             attemptsLeft = 0
+            Log.i(TAG, "device token registered with the server")
+        } else {
+            // A non-2xx (the 503 the server returns until its FCM_* env vars
+            // are set, or a 401) or a thrown request. Both are retryable, and
+            // both were previously invisible.
+            Log.w(
+                TAG,
+                "register failed, $attemptsLeft attempt(s) left: " +
+                    (result.exceptionOrNull()?.toString() ?: "server rejected the token"),
+            )
         }
     }
 
     private suspend fun currentToken(): String? = suspendCancellableCoroutine { cont ->
         FirebaseMessaging.getInstance().token
             .addOnSuccessListener { cont.resume(it) }
-            .addOnFailureListener { cont.resume(null) }
+            .addOnFailureListener { err ->
+                // The reason matters and used to be discarded: MISSING_INSTANCEID_SERVICE
+                // means no Play Services, SERVICE_NOT_AVAILABLE is transient,
+                // and an auth error usually means google-services.json does not
+                // match this build's applicationId.
+                Log.e(TAG, "FirebaseMessaging could not mint a token", err)
+                cont.resume(null)
+            }
     }
 
     private companion object {
         const val MAX_REGISTER_ATTEMPTS = 3
+        const val TAG = "ZekPush"
     }
 }
