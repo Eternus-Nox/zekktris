@@ -266,7 +266,31 @@ enum CommunicationNotification {
             // Lets the user allow or silence this one conversation inside a
             // Focus, and lets iOS collapse the thread properly.
             content.filterCriteria = channelId
-            completion(try? content.updating(from: intent))
+            guard let updated = try? content.updating(from: intent) else {
+                completion(nil)
+                return
+            }
+            // `updating(from:)` hands back a NEW content object, and anything it
+            // does not carry across is gone. The category is the one that
+            // matters: it is what attaches the inline Reply action, and
+            // therefore what lets Siri take a spoken reply after announcing the
+            // message through headphones. Without it the notification can only
+            // be dismissed — announced but unanswerable.
+            //
+            // Restore ONLY when the value was actually lost. `updating(from:)`
+            // sets its own thread identifier to group a conversation, and
+            // overwriting that would break the grouping it just established.
+            guard let restored = updated.mutableCopy() as? UNMutableNotificationContent else {
+                completion(updated)
+                return
+            }
+            if restored.categoryIdentifier.isEmpty {
+                restored.categoryIdentifier = content.categoryIdentifier
+            }
+            if restored.threadIdentifier.isEmpty {
+                restored.threadIdentifier = content.threadIdentifier
+            }
+            completion(restored)
         }
     }
 }

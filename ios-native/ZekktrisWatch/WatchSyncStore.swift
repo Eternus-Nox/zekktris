@@ -53,6 +53,25 @@ final class WatchSyncStore: NSObject, ObservableObject {
 
     override init() {
         super.init()
+        // SEED FROM THE APP GROUP FIRST. WCSession.activate() is asynchronous
+        // and applicationContext is only redelivered once activation finishes,
+        // so a cold-launched watch app starts with no token at all — which is
+        // why the FIRST send after opening the app failed and the next one
+        // worked. Worse, with the phone unreachable (out of range, or its app
+        // not running) the context may never arrive and the send fails outright.
+        //
+        // The token is already persisted in the app-group keychain for the
+        // widget's one-tap poke; the app simply was not reading it back. So the
+        // last known credentials are available immediately, and the WC sync
+        // below refreshes them rather than being the only source.
+        // CREDENTIALS ONLY. Deliberately NOT the targets: WatchWidgetDM carries
+        // no e2ee flag, and PokeTarget.e2ee defaults to false — seeding from it
+        // would mark every encrypted DM as plaintext and let the watch send
+        // unencrypted into an E2EE channel, which is the exact leak that flag
+        // exists to prevent. Targets stay authoritative from the phone.
+        token = WatchWidgetBridge.token()
+        apiBaseURL = WatchWidgetBridge.baseURL()
+
         guard WCSession.isSupported() else { return }
         WCSession.default.delegate = self
         WCSession.default.activate()
@@ -95,6 +114,17 @@ final class WatchSyncStore: NSObject, ObservableObject {
     func requestFreshSync(timeout: TimeInterval = 4) async {
         guard WCSession.isSupported() else { return }
         let session = WCSession.default
+        // Activation is ASYNCHRONOUS. Returning here because it has not finished
+        // yet is the other half of the first-send failure: the pull was skipped,
+        // so nothing refreshed the token before the request went out. Wait for
+        // it, bounded — the caller already tolerates up to `timeout`.
+        var waited: TimeInterval = 0
+        while session.activationState != .activated, waited < 2 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            waited += 0.1
+        }
+        // Still not reachable (phone asleep or out of range) is fine now: the
+        // seeded credentials from the app group carry the send on their own.
         guard session.activationState == .activated, session.isReachable else { return }
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             var finished = false
