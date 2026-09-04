@@ -12,10 +12,14 @@ import android.media.RingtoneManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.app.Person
 import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import com.zekktris.MainActivity
 import com.zekktris.R
+import com.zekktris.share.ShareShortcuts
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Owns the notification channels and posts notifications.
@@ -94,6 +98,10 @@ object NotificationHelper {
      * a tap (and the reply) back to the right conversation; [isE2EE] tells the
      * reply handler to encrypt on-device before sending.
      */
+    /**
+     * MUST be called off the main thread — it blocks briefly on the sender's
+     * avatar. [ZekMessagingService.onMessageReceived] already runs on a worker.
+     */
     fun showMessage(
         context: Context,
         channelId: String?,
@@ -101,6 +109,10 @@ object NotificationHelper {
         body: String,
         isE2EE: Boolean,
         messageId: String? = null,
+        senderId: String? = null,
+        senderName: String? = null,
+        senderAvatarUrl: String? = null,
+        groupName: String? = null,
     ) {
         if (!canPost(context)) return
         ensureChannel(context)
@@ -122,10 +134,54 @@ object NotificationHelper {
             .setSmallIcon(R.drawable.ic_stat_notify)
             .setContentTitle(title)
             .setContentText(body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pending)
+
+        // MessagingStyle — the Android counterpart to the iOS communication
+        // notification. It is what makes the system treat this as a message
+        // FROM A PERSON rather than an app alert: the sender's face on the
+        // notification, correct grouping of a back-and-forth, and eligibility
+        // for the Conversations section and bubbles.
+        //
+        // The conversation treatment additionally requires a matching LONG-LIVED
+        // dynamic shortcut, which ShareShortcuts already publishes for recent
+        // 1:1 DMs keyed by channel id — so setShortcutId lines the notification
+        // up with one when it exists. When it does not (an older conversation
+        // that fell out of the published set, or a guild channel), the styling
+        // still applies and only the Conversations placement is lost.
+        val displayName = senderName?.takeIf { it.isNotBlank() } ?: title
+        val sender = Person.Builder()
+            .setKey(senderId ?: displayName)   // stable across a rename
+            .setName(displayName)
+            .apply {
+                // Blocking, bounded: this runs on the FCM worker thread, and a
+                // notification nobody can see yet is worth a moment's wait. A
+                // timeout costs the face, never the notification.
+                val icon = senderId?.let { id ->
+                    runBlocking {
+                        withTimeoutOrNull(3_000) {
+                            ShareShortcuts.personIcon(context, id, displayName, senderAvatarUrl)
+                        }
+                    }
+                }
+                if (icon != null) setIcon(icon)
+            }
+            .build()
+        val style = NotificationCompat.MessagingStyle(
+            // "You" is the local participant. Only ever rendered for messages
+            // attributed to us, which this notification never carries.
+            Person.Builder().setName("You").build(),
+        ).addMessage(body, System.currentTimeMillis(), sender)
+        // A guild channel (or group DM) names itself; a 1:1 is named by its
+        // sender, so it gets no conversation title at all.
+        if (!groupName.isNullOrBlank()) {
+            style.conversationTitle = groupName
+            style.isGroupConversation = true
+        }
+        builder.setStyle(style)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+        channelId?.let { builder.setShortcutId(it) }
 
         // Inline Reply — only for a real conversation. The PendingIntent MUST be
         // mutable so the system can attach the typed RemoteInput results.

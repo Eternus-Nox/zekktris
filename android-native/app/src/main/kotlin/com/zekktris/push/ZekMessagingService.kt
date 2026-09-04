@@ -63,6 +63,22 @@ class ZekMessagingService : FirebaseMessagingService() {
 
         // messageId (when the server push carries it, same field iOS reads from
         // userInfo) lets a tap deep-link to the exact message.
-        NotificationHelper.showMessage(applicationContext, channelId, title, body, isE2EE, data["messageId"])
+        // Sender identity for the MessagingStyle conversation notification. The
+        // server sends these on the same payloads that already put the sender's
+        // NAME in the title; a preview-off E2EE push carries none of them and so
+        // falls back to a plain notification, which is the point — it must not
+        // put a face to a message the recipient chose not to preview.
+        NotificationHelper.showMessage(
+            applicationContext,
+            channelId,
+            title,
+            body,
+            isE2EE,
+            data["messageId"],
+            senderId = data["authorId"],
+            senderName = data["authorName"],
+            senderAvatarUrl = data["senderAvatar"],
+            groupName = data["groupName"],
+        )
     }
 }
