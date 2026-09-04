@@ -75,7 +75,16 @@ data class SendMessageBody(
 @Serializable
 data class DeviceTokenBody(
     val token: String,
-    val platform: String = "android",
+    // NO DEFAULT, deliberately. kotlinx.serialization omits a property whose
+    // value equals its default unless encodeDefaults is on (it is not, and
+    // turning it on globally would change every PATCH body that relies on
+    // absence meaning "leave alone"). With `= "android"` here, the field was
+    // dropped from the request EVEN THOUGH the call site passes it explicitly,
+    // so the server applied its own default of 'ios' and filed every Android
+    // FCM token as an APNs one. It then never matched listAndroidTokens, so no
+    // Android push could ever be sent — and APNs kept 400ing the FCM token and
+    // pruning the row, which is why the ios count oscillated.
+    val platform: String,
     val label: String? = null,
 )
 
