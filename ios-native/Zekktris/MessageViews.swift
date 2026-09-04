@@ -497,6 +497,9 @@ struct MessageListView: View {
     /// Live geometry backing `isNearBottom` (see SentinelOffsetKey).
     @State private var sentinelOffset: CGFloat = .greatestFiniteMagnitude
     @State private var viewportHeight: CGFloat = 0
+    /// True once `onScrollGeometryChange` has driven the gate at least once, at
+    /// which point the preference-based fallback stops writing it.
+    @State private var usesScrollGeometry = false
 
     /// Reports the message list's laid-out content height, so a late growth
     /// (image load / embed render / E2EE decrypt) can re-pin us to the bottom
@@ -705,6 +708,28 @@ struct MessageListView: View {
                         sentinelOffset = y
                         recomputeNearBottom()
                     }
+                    // PRIMARY driver of the near-bottom gate on iOS 18+.
+                    //
+                    // The preference above measures the content container's
+                    // bottom edge against the scroll's coordinate space, which
+                    // is correct but depends on SwiftUI republishing a
+                    // preference from inside the scrolling content on every
+                    // frame — and it does not do that reliably. The gate then
+                    // freezes at whatever it last read, which is exactly the
+                    // reported behaviour: scrolling up never showed the button,
+                    // some unrelated relayout later shoved the reading through
+                    // and it appeared, and after tapping it the gate never
+                    // reopened so the button stayed on screen at the bottom.
+                    // Stale in BOTH directions, from one stale input.
+                    //
+                    // onScrollGeometryChange is built for this and fires with
+                    // the live offset while the scroll is moving. Kept
+                    // availability-gated with the preference path as the iOS 17
+                    // fallback rather than replacing it.
+                    .modifier(NearBottomGeometry(slop: Self.nearBottomSlop) { near in
+                        usesScrollGeometry = true
+                        if near != isNearBottom { isNearBottom = near }
+                    })
                     .onPreferenceChange(ContentHeightKey.self) { _ in
                         // Late-sizing content (webhook embeds, photos/attachments
                         // loading, E2EE text decrypting) grows the rows AFTER the
@@ -1006,6 +1031,9 @@ struct MessageListView: View {
     /// has been measured) can't briefly declare "not near bottom" and flash the
     /// button on open.
     private func recomputeNearBottom() {
+        // Stand down once the scroll-geometry driver has reported: two writers
+        // disagreeing is how the gate and the button drifted apart before.
+        guard !usesScrollGeometry else { return }
         guard viewportHeight > 0, sentinelOffset != .greatestFiniteMagnitude else { return }
         let near = sentinelOffset <= viewportHeight + Self.nearBottomSlop
         if near != isNearBottom { isNearBottom = near }
@@ -6679,5 +6707,35 @@ private struct PokePopover: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .top)
         .background(Theme.bg2)
+    }
+}
+
+/// Reports whether a scroll view is at (or within `slop` of) its bottom, from
+/// the LIVE scroll geometry rather than a preference published from inside the
+/// scrolling content.
+///
+/// Split out as a ViewModifier purely so the availability check can wrap a
+/// single modifier: `onScrollGeometryChange` is iOS 18+, and on iOS 17 this is
+/// a no-op, leaving the `SentinelOffsetKey` preference path to drive the gate.
+private struct NearBottomGeometry: ViewModifier {
+    let slop: CGFloat
+    let onChange: (Bool) -> Void
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onScrollGeometryChange(for: Bool.self) { geo in
+                // Distance from the bottom of the scrollable range. The bottom
+                // content inset counts: the composer sits in it, so ignoring it
+                // would leave the gate permanently short of "at the bottom" by
+                // the composer's height and the button would never disappear.
+                let bottomEdge = geo.contentSize.height + geo.contentInsets.bottom
+                let visibleBottom = geo.contentOffset.y + geo.containerSize.height
+                return bottomEdge - visibleBottom <= slop
+            } action: { _, near in
+                onChange(near)
+            }
+        } else {
+            content
+        }
     }
 }
