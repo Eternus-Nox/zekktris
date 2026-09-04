@@ -115,12 +115,20 @@ final class NotificationService: UNNotificationServiceExtension {
 ///   • the conversation showing up in Focus "Allow notifications from people"
 ///     and in the share sheet's suggested-people row.
 ///
-/// NO ENTITLEMENT NEEDED, and do not add one: donating the intent is what
-/// authorises `updating(from:)`, which is why the donation below is gated on
-/// its completion rather than fired and forgotten.
-/// `com.apple.developer.usernotifications.communication` is NOT a self-serve
-/// capability — adding it fails signing outright with "Entitlement ... not
-/// found and could not be included in profile" (tried 2026-09-04).
+/// NO ENTITLEMENT NEEDED — VERIFIED ON DEVICE 2026-09-04: a real APNs push
+/// produced the communication treatment and Siri announced it through AirPods,
+/// with no `com.apple.developer.usernotifications.communication` in the
+/// entitlements. Donating the intent is what authorises `updating(from:)`,
+/// which is why the donation below is gated on its completion rather than
+/// fired and forgotten.
+///
+/// Do NOT add that entitlement "to be safe". It is not a self-serve capability
+/// and adding it fails signing outright — "Entitlement ... not found and could
+/// not be included in profile" (hit 2026-09-04, cost a build cycle).
+///
+/// The simulator cannot test any of this: `simctl push` does not honour
+/// mutable-content, so the extension never runs at all (confirmed by a poke
+/// payload coming through with its body un-blanked). Test on a device.
 ///
 /// Everything here is best-effort anyway: if the donation or `updating(from:)`
 /// fails, `apply` returns nil and the notification is delivered in its
