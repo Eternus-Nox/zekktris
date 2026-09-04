@@ -6724,13 +6724,26 @@ private struct NearBottomGeometry: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 18.0, *) {
             content.onScrollGeometryChange(for: Bool.self) { geo in
-                // Distance from the bottom of the scrollable range. The bottom
-                // content inset counts: the composer sits in it, so ignoring it
-                // would leave the gate permanently short of "at the bottom" by
-                // the composer's height and the button would never disappear.
-                let bottomEdge = geo.contentSize.height + geo.contentInsets.bottom
-                let visibleBottom = geo.contentOffset.y + geo.containerSize.height
-                return bottomEdge - visibleBottom <= slop
+                // Distance from the bottom of the scrollable range, computed TWO
+                // ways, taking whichever says we are closer.
+                //
+                // Not belt-and-braces for its own sake. The slop is 8pt while
+                // the composer's bottom inset is many times that, so getting the
+                // inset term wrong in either direction misses by far more than
+                // the tolerance — and one of those directions leaves the button
+                // stuck on screen at the bottom of the conversation, which is
+                // the single worst outcome and the bug being fixed. `min` biases
+                // to hiding it: appearing an instant late while scrolling up is
+                // a blemish, refusing to disappear is broken.
+                //
+                //  • bounds-based: at rest at the bottom, the scroll's maxY has
+                //    reached the content plus its bottom inset.
+                //  • visibleRect-based: visibleRect is already inset-adjusted,
+                //    so its maxY meets contentSize exactly at the bottom.
+                let byInsets = (geo.contentSize.height + geo.contentInsets.bottom)
+                    - (geo.contentOffset.y + geo.containerSize.height)
+                let byVisible = geo.contentSize.height - geo.visibleRect.maxY
+                return min(byInsets, byVisible) <= slop
             } action: { _, near in
                 onChange(near)
             }
