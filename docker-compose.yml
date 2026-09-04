@@ -173,7 +173,18 @@ services:
       IMAGE_COMPRESS_SWEEP_INTERVAL_HOURS: ${IMAGE_COMPRESS_SWEEP_INTERVAL_HOURS:-24}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
-      WORKER_ID: ${WORKER_ID:-0}
+      # Snowflake worker id. LEFT EMPTY ON PURPOSE — do not restore the old
+      # `:-0` default.
+      #
+      # Compose declares this once for the whole service, so a literal default
+      # is handed identically to every replica: `--scale api=3` would give all
+      # three worker 0 and they would mint COLLIDING ids for messages, users,
+      # channels — every primary key in the system. Empty means "unpinned", and
+      # cluster.ts then leases a distinct slot per process from Redis.
+      #
+      # Set it explicitly ONLY when the orchestrator gives each replica its own
+      # value; a non-empty value here skips the Redis coordination entirely.
+      WORKER_ID: ${WORKER_ID:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Optional: set to enable the Prometheus scrape endpoint GET /metrics
       # (>=16 chars). Unset → the endpoint is disabled (404). Scrapers send it
