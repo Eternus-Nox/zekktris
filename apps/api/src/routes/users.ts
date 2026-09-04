@@ -1524,6 +1524,33 @@ usersRouter.post(
   async (c) => {
     const userId = requireUserId(c);
     const body = c.req.valid('json');
+
+    // Guard against a token filed under the wrong transport. `platform`
+    // defaults to 'ios' when absent, which is convenient until a client omits
+    // it BY ACCIDENT — the Android client did for months, because
+    // kotlinx.serialization drops a property equal to its default even when
+    // the call site sets it explicitly. Every FCM token was then stored as an
+    // APNs one: it never matched listAndroidTokens so no Android push could be
+    // sent at all, and APNs kept 400ing it and pruning the row. A silent 2xx
+    // the whole time.
+    //
+    // The two token formats are unmistakable. An APNs device token is 64 hex
+    // characters; an FCM registration token is far longer and always contains
+    // a ':' separating the instance id. So a mismatch is detectable here, and
+    // failing loudly beats storing a row that can never work.
+    const looksLikeFcm = body.token.includes(':');
+    if (body.platform !== 'android' && looksLikeFcm) {
+      throw errors.badRequest(
+        `token looks like an FCM registration token but platform is '${body.platform}' — ` +
+          "send platform:'android' for Android devices",
+      );
+    }
+    if (body.platform === 'android' && !looksLikeFcm) {
+      throw errors.badRequest(
+        "token does not look like an FCM registration token but platform is 'android'",
+      );
+    }
+
     const { upsertDeviceToken } = await import('../services/apns');
     if (body.platform === 'android') {
       const { initFcm } = await import('../services/fcm');

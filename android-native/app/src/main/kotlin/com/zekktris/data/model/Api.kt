@@ -65,6 +65,12 @@ data class OpenDMBody(val recipientId: String)
 // POST /channels/{id}/messages — JSON send body.
 @Serializable
 data class SendMessageBody(
+    // Safe DESPITE being a non-null default: kotlinx omits it when it equals
+    // "" and the server's sendMessageSchema independently defaults content to
+    // '' — so an attachment-only send behaves identically either way. If
+    // either default ever changes, this silently diverges (that is exactly how
+    // DeviceTokenBody.platform filed every Android token as iOS), so the two
+    // must stay in step.
     val content: String = "",
     val nonce: String? = null,
     val replyToId: String? = null,
