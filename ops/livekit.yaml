@@ -25,6 +25,36 @@ rtc:
   # of timing out. Keep it open in the firewall alongside UDP 7882.
   tcp_port: 7881
 
+  # ── Interface filter — NOT ENABLED YET, read before turning on ────────────
+  #
+  # This host has EIGHT interfaces (the real LAN one plus Docker bridges and
+  # libvirt: 172.17/18/24/29.0.1, 192.168.122/144/208.1). Host networking means
+  # LiveKit enumerates all of them, advertises an ICE candidate for each, and
+  # tries to STUN-validate the external IP from each — which is where the
+  # "could not validate external IP" warnings come from. Only the real LAN
+  # interface can ever work; every other candidate is dead weight a remote
+  # client grinds through before finding a route.
+  #
+  # `includes` matches on INTERFACE NAME, exactly — verified against
+  # mediatransportutil 2e8ba344fca3, the commit livekit v1.9.12 pins:
+  # `slices.Contains(preferredInterfaces, iface.Name)`. It is NOT a CIDR or an
+  # IP address, and a name that matches nothing leaves LiveKit with no
+  # interfaces to gather on, which breaks voice ENTIRELY. So confirm the name
+  # first — on this host, the one holding 192.168.1.253:
+  #
+  #     ip -o -4 addr show | grep 192.168.1.253
+  #
+  # then put that name below and restart the container. Filtering local
+  # interfaces does not affect use_external_ip: the public candidate is still
+  # discovered and advertised, so remote clients keep working.
+  #
+  # interfaces:
+  #   includes: ["br0"]   # <- REPLACE with the confirmed name
+  #
+  # (`skip_external_ip_validation` would silence the warnings instead, but it
+  # does not exist at the pinned version — it was added to LiveKit later, and
+  # setting it here would do nothing at all.)
+
   # NOTE: how the advertised media IP is resolved (use_external_ip / node_ip)
   # is set via environment variables in docker-compose.yml, NOT here. Keeping
   # use_external_ip out of this file avoids livekit/livekit#4049, where a
