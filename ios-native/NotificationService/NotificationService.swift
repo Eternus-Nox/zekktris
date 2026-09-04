@@ -115,11 +115,16 @@ final class NotificationService: UNNotificationServiceExtension {
 ///   • the conversation showing up in Focus "Allow notifications from people"
 ///     and in the share sheet's suggested-people row.
 ///
-/// Requires the `com.apple.developer.usernotifications.communication`
-/// entitlement on this extension AND the capability enabled on its App ID.
-/// Without it `updating(from:)` throws, `apply` returns nil, and the
-/// notification is delivered in its ordinary form — so a provisioning gap
-/// degrades the feature instead of breaking notifications.
+/// NO ENTITLEMENT NEEDED, and do not add one: donating the intent is what
+/// authorises `updating(from:)`, which is why the donation below is gated on
+/// its completion rather than fired and forgotten.
+/// `com.apple.developer.usernotifications.communication` is NOT a self-serve
+/// capability — adding it fails signing outright with "Entitlement ... not
+/// found and could not be included in profile" (tried 2026-09-04).
+///
+/// Everything here is best-effort anyway: if the donation or `updating(from:)`
+/// fails, `apply` returns nil and the notification is delivered in its
+/// ordinary form.
 ///
 /// PRIVACY — read before loosening the gate. A notification whose title is NOT
 /// already the sender's name is one the server deliberately made anonymous:
