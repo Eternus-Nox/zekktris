@@ -26,8 +26,35 @@ import { sweepStreakWarnings } from './services/streaks';
 import { pruneDeadInvites } from './services/invites';
 import { sweepParentLinksByAge } from './services/supervisionAgeSweep';
 import { refreshDiscoverableMemberCounts } from './services/discovery';
+import { initClusterIdentity, startLeaderElection, isLeader, releaseCluster } from './cluster';
+
+/**
+ * setInterval for GLOBAL background work — work that mutates shared state and
+ * must therefore happen ONCE across the cluster, not once per replica.
+ *
+ * Several of the sweeps below delete rows; running them concurrently on three
+ * replicas is how data goes missing. `isLeader()` is a synchronous field read
+ * (see cluster.ts) so this costs nothing, and it returns true unconditionally
+ * on a single instance, leaving today's behaviour untouched.
+ *
+ * NOT for per-process housekeeping — an in-memory cache sweep has to run in
+ * every process that owns a cache. Those keep using plain setInterval.
+ */
+function leaderInterval(fn: () => void, ms: number): ReturnType<typeof setInterval> {
+  return setInterval(() => {
+    if (!isLeader()) return;
+    fn();
+  }, ms);
+}
 
 async function main(): Promise<void> {
+  // FIRST: settle this process's snowflake worker id. Must precede
+  // runStartupChecks(), which generates a batch of ids to verify monotonicity
+  // and would otherwise latch the generator at the default worker 0.
+  await initClusterIdentity();
+  // Campaign for the right to run the global sweeps started further down.
+  startLeaderElection();
+
   await runStartupChecks();
 
   // First-install bootstrap. If BOOTSTRAP_ADMIN_EMAIL is set and no
@@ -127,7 +154,7 @@ async function main(): Promise<void> {
         .catch((err) => log.error('session purge failed', { err }));
     };
     setTimeout(runOnce, 5 * 60 * 1000);
-    sweepTimer = setInterval(runOnce, intervalMs);
+    sweepTimer = leaderInterval(runOnce, intervalMs);
     log.info('inactivity sweep scheduled', {
       ttlDays: env.INACTIVITY_TTL_DAYS,
       intervalHours: env.INACTIVITY_SWEEP_INTERVAL_HOURS,
@@ -144,7 +171,7 @@ async function main(): Promise<void> {
   // service is bounded internally at 1000 rows per call so a sudden
   // burst doesn't lock the messages table. Same error-isolation
   // pattern as the inactivity sweep: log + continue, never crash.
-  const dmSweepTimer = setInterval(() => {
+  const dmSweepTimer = leaderInterval(() => {
     void sweepExpiredDmMessages().catch((err) =>
       log.error('DM auto-delete sweep failed', { err }),
     );
@@ -174,7 +201,7 @@ async function main(): Promise<void> {
     // warns that day instead of waiting up to a full 30-min interval (which,
     // under deploy churn, could skip the whole day).
     setTimeout(runStreakWarnings, 30_000);
-    streakWarnTimer = setInterval(runStreakWarnings, 30 * 60_000);
+    streakWarnTimer = leaderInterval(runStreakWarnings, 30 * 60_000);
     log.info('streak-warning sweep scheduled', {
       hoursBefore: env.STREAK_WARN_HOURS_BEFORE,
     });
@@ -217,7 +244,7 @@ async function main(): Promise<void> {
         }
       })();
     setTimeout(runCompress, 10 * 60 * 1000);
-    compressTimer = setInterval(runCompress, intervalMs);
+    compressTimer = leaderInterval(runCompress, intervalMs);
     log.info('image compression sweep scheduled', {
       quality: env.IMAGE_COMPRESS_QUALITY,
       intervalHours: env.IMAGE_COMPRESS_SWEEP_INTERVAL_HOURS,
@@ -242,7 +269,7 @@ async function main(): Promise<void> {
         })
         .catch((err) => log.error('invite prune sweep failed', { err }));
     setTimeout(runInvitePrune, 60_000);
-    invitePruneTimer = setInterval(runInvitePrune, 6 * 60 * 60 * 1000); // 6h
+    invitePruneTimer = leaderInterval(runInvitePrune, 6 * 60 * 60 * 1000); // 6h
     log.info('invite prune sweep scheduled', {
       graceDays: env.INVITE_PRUNE_GRACE_DAYS,
     });
@@ -265,7 +292,7 @@ async function main(): Promise<void> {
         })
         .catch((err) => log.error('supervision age sweep failed', { err }));
     setTimeout(runParentLinkAge, 5 * 60_000);
-    parentLinkAgeTimer = setInterval(runParentLinkAge, intervalMs);
+    parentLinkAgeTimer = leaderInterval(runParentLinkAge, intervalMs);
     log.info('supervision age sweep scheduled', {
       intervalHours: env.PARENT_LINK_AGE_CHECK_INTERVAL_HOURS,
     });
@@ -296,7 +323,7 @@ async function main(): Promise<void> {
       .catch((err) => log.error('auto-unban sweep failed', { err }));
   };
   setTimeout(runSubscriptionSweep, 6 * 60_000);
-  const subscriptionSweepTimer = setInterval(runSubscriptionSweep, 60 * 60 * 1000);
+  const subscriptionSweepTimer = leaderInterval(runSubscriptionSweep, 60 * 60 * 1000);
 
   // ── Discovery member-count refresh ────────────────────────────────────
   //
@@ -312,7 +339,7 @@ async function main(): Promise<void> {
       })
       .catch((err) => log.error('discovery member-count refresh failed', { err }));
   setTimeout(runDiscoveryCountRefresh, 30_000);
-  const discoveryCountTimer = setInterval(runDiscoveryCountRefresh, 10 * 60_000); // 10m
+  const discoveryCountTimer = leaderInterval(runDiscoveryCountRefresh, 10 * 60_000); // 10m
 
   // ── Event status sweep ────────────────────────────────────────────────
   //
@@ -322,7 +349,7 @@ async function main(): Promise<void> {
   // excluded from the scan. Once per minute matches the UI's
   // minute-level start-time precision. Cheap when no events are
   // live (index has no matching rows).
-  const eventSweepTimer = setInterval(() => {
+  const eventSweepTimer = leaderInterval(() => {
     void (async () => {
       try {
         const { runEventStatusSweep } = await import('./services/events');
@@ -354,7 +381,7 @@ async function main(): Promise<void> {
   // Vote-attempt rejection on expired polls is already handled by
   // vote(); this sweep keeps data hygiene and gives clients a live
   // "Final results" indicator without manual refresh.
-  const pollSweepTimer = setInterval(() => {
+  const pollSweepTimer = leaderInterval(() => {
     void (async () => {
       try {
         const { runPollExpirySweep } = await import('./services/polls');
@@ -412,7 +439,7 @@ async function main(): Promise<void> {
   // move is broadcast as a VOICE_STATE_UPDATE so every client, including
   // the moved member's own (which re-joins the AFK room), stays in sync.
   // Same log-and-continue isolation as the other sweeps.
-  const afkSweepTimer = setInterval(() => {
+  const afkSweepTimer = leaderInterval(() => {
     void (async () => {
       try {
         const { sweepAfkMutedMembers } = await import('./services/voice');
@@ -455,7 +482,7 @@ async function main(): Promise<void> {
   // Per-row try/catch isolates failures: one user's broken row
   // (e.g. lost permission to a channel) shouldn't stop the worker
   // from processing other users' messages in the same batch.
-  const scheduledMsgTimer = setInterval(() => {
+  const scheduledMsgTimer = leaderInterval(() => {
     void (async () => {
       try {
         const scheduledSvc = await import('./services/scheduledMessages');
@@ -608,7 +635,7 @@ async function main(): Promise<void> {
   // Each archived thread gets a CHANNEL_UPDATE broadcast so connected
   // clients see the transition live — ForumView grays the post out in
   // its list; MessageView switches the stream to read-only.
-  const threadArchiveSweepTimer = setInterval(() => {
+  const threadArchiveSweepTimer = leaderInterval(() => {
     void (async () => {
       try {
         const { runThreadAutoArchiveSweep } = await import('./services/threads');
@@ -667,7 +694,7 @@ async function main(): Promise<void> {
     })();
   // Defer the first run so boot stays fast.
   setTimeout(runAttachmentGc, 5 * 60 * 1000);
-  attachmentGcTimer = setInterval(runAttachmentGc, 60 * 60 * 1000);
+  attachmentGcTimer = leaderInterval(runAttachmentGc, 60 * 60 * 1000);
 
   // ── Media-retention sweep (opt-in) ─────────────────────────────────────
   //
@@ -713,7 +740,7 @@ async function main(): Promise<void> {
         }
       })();
     setTimeout(runRetention, 6 * 60 * 1000);
-    retentionTimer = setInterval(runRetention, 24 * 60 * 60 * 1000);
+    retentionTimer = leaderInterval(runRetention, 24 * 60 * 60 * 1000);
     log.info('attachment retention sweep scheduled', {
       days: env.ATTACHMENT_RETENTION_DAYS,
       dryRun,
@@ -767,6 +794,16 @@ async function main(): Promise<void> {
       await closeEventBus();
     } catch (err) {
       log.error('event bus close failed during shutdown', { err });
+    }
+
+    // Hand back the sweep leadership and this process's worker-id slot now,
+    // rather than leaving them to expire. On a rolling restart that lets the
+    // replacement replica pick both up immediately instead of leaving the
+    // sweeps unowned for up to a lease.
+    try {
+      await releaseCluster();
+    } catch (err) {
+      log.error('cluster release failed during shutdown', { err });
     }
 
     // Stop accepting new connections; finish in-flight ones. Idle

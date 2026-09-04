@@ -29,7 +29,31 @@ if (env.WORKER_ID < 0 || BigInt(env.WORKER_ID) > MAX_WORKER_ID) {
   throw new Error(`WORKER_ID out of range: ${env.WORKER_ID}`);
 }
 
-const workerId = BigInt(env.WORKER_ID);
+let workerId = BigInt(env.WORKER_ID);
+/** Latched by the first generated id — see setWorkerId. */
+let issued = false;
+
+/**
+ * Set this process's worker id, once, before any id is generated.
+ *
+ * The env var alone cannot do this job under `docker compose --scale`: one
+ * `WORKER_ID` is declared for the whole service, so every replica would be
+ * worker 0 and mint COLLIDING ids. `cluster.ts` leases a distinct slot per
+ * process and calls this before the startup checks run.
+ *
+ * Changing the worker id after ids exist would let this process re-issue
+ * timestamps another worker has already used, so that is refused rather than
+ * silently honoured.
+ */
+export function setWorkerId(id: number): void {
+  if (issued) {
+    throw new Error('setWorkerId called after ids were already generated');
+  }
+  if (id < 0 || BigInt(id) > MAX_WORKER_ID) {
+    throw new Error(`WORKER_ID out of range: ${id}`);
+  }
+  workerId = BigInt(id);
+}
 let lastTimestamp = -1n;
 let sequence = 0n;
 
@@ -53,6 +77,7 @@ function waitNextMs(after: bigint): bigint {
  * float precision loss above 2^53.
  */
 export function nextSnowflake(): bigint {
+  issued = true;
   let now = currentMs();
 
   if (now < lastTimestamp) {
