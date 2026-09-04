@@ -261,6 +261,19 @@ services:
       APNS_TEAM_ID: ${APNS_TEAM_ID:-}
       APNS_BUNDLE_ID: ${APNS_BUNDLE_ID:-}
       APNS_PRODUCTION: ${APNS_PRODUCTION:-true}
+      # FCM (Android push). Every variable this service gets is listed
+      # explicitly — there is no env_file — so these three were set in .env but
+      # never reached the process, initFcm() saw undefined, and every Android
+      # device-token registration 503'd. iOS was unaffected, which is why the
+      # symptom looked Android-specific.
+      #
+      # FCM_PRIVATE_KEY is the service account's PEM. A .env value cannot carry
+      # real newlines, so use base64 of the whole PEM (the loader also accepts a
+      # raw PEM with literal \n escapes, but base64 avoids the escaping
+      # entirely). Empty is fine and simply leaves Android push off.
+      FCM_PROJECT_ID: ${FCM_PROJECT_ID:-}
+      FCM_CLIENT_EMAIL: ${FCM_CLIENT_EMAIL:-}
+      FCM_PRIVATE_KEY: ${FCM_PRIVATE_KEY:-}
       # Defaults baked into the Dockerfile: NODE_ENV, HOST, PORT, UPLOAD_DIR
     volumes:
       # Attachments. The CDN endpoint streams from this same directory.
