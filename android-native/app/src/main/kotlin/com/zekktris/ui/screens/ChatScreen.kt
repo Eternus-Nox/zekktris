@@ -2336,7 +2336,16 @@ private fun Composer(
     val p = ZkTheme.palette
     val ctx = LocalContext.current
     val ioScope = androidx.compose.runtime.rememberCoroutineScope()
-    var text by remember(channelId) { mutableStateOf("") }
+    // Restore whatever was half-typed here last time. Keyed on channelId so
+    // switching conversations swaps drafts rather than carrying one across.
+    var text by remember(channelId) { mutableStateOf(Drafts.load(ctx, channelId)) }
+    // Persist on EVERY change, not on teardown: Android can kill the process
+    // from the recents switcher with no lifecycle callback, which is precisely
+    // the case a draft exists to survive. One collector per channel rather than
+    // a coroutine per keystroke.
+    LaunchedEffect(channelId) {
+        androidx.compose.runtime.snapshotFlow { text }.collect { Drafts.save(ctx, channelId, it) }
+    }
     var pendingFiles by remember(channelId) { mutableStateOf<List<PendingFile>>(emptyList()) }
 
     // @-mention autocomplete: the trailing @word (at start or after whitespace,

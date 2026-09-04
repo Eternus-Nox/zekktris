@@ -483,6 +483,9 @@ class AppStore(
             // Contact names + faces must not outlive the session in the SYSTEM
             // share sheet, which is outside the app and outside the app lock.
             clearShareShortcuts()
+            // Same reasoning one step further in: a half-typed message is
+            // plaintext on disk and must not be waiting for whoever signs in next.
+            com.zekktris.ui.screens.Drafts.clearAll(appContext)
             _state.value = AppState(phase = Phase.Auth)
         }
     }
@@ -815,6 +818,7 @@ class AppStore(
             // Same reason as forceSignOut: a signed-out phone must stop offering
             // this account's contacts in the system share sheet.
             clearShareShortcuts()
+            com.zekktris.ui.screens.Drafts.clearAll(appContext)
             _state.value = AppState(phase = Phase.Auth)
         }
     }
