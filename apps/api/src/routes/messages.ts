@@ -1293,6 +1293,12 @@ messagesRouter.post(
           firstImage && !ctx.channel.e2eeEnabled
             ? `${env.PUBLIC_URL}${firstImage.thumbnail?.url ?? firstImage.url}`
             : undefined;
+        // Sender's avatar for the iOS communication-notification styling (the
+        // face on the lock screen, and the voice Siri announces through
+        // AirPods). `avatarUrl` is validated `/cdn/...` on write, so the same
+        // PUBLIC_URL join imageUrl uses is safe here — this can never be an
+        // attacker-supplied absolute URL.
+        const senderAvatar = author?.avatarUrl ? `${env.PUBLIC_URL}${author.avatarUrl}` : undefined;
         // Push notification layout: title is the author's name; body
         // is just the message text. iOS auto-inserts a "from Zekktris"
         // subtitle between them for PWA notifications (unremovable —
@@ -1354,12 +1360,17 @@ messagesRouter.post(
         // resolved level then decides whether the push actually goes out (below).
         // Author is always excluded.
         let targetUserIds: bigint[] = [];
+        // Three or more participants — a GROUP DM. Only used to give the iOS
+        // notification a group name, so it reads as the group conversation it
+        // is instead of looking like a 1:1 from whoever happened to speak.
+        let isGroupDM = false;
         const mentioned = new Set<string>(); // who this message actually @mentions
         if (isDM) {
           // Reuse the recipient snapshot from the sync path; only re-query if
           // the re-subscribe block threw before populating it.
           const recipients = dmRecipients ?? (await dms.listAllRecipients(channelId));
           targetUserIds = recipients.filter((id) => id !== userId);
+          isGroupDM = recipients.length > 2;
         } else if (ctx.channel.guildId) {
           // NOTE: this is a full channel-viewer computation per message
           // (O(members) permission math). Acceptable for typical guilds; if a
@@ -1427,7 +1438,13 @@ messagesRouter.post(
           // key is available) fall back to the "Encrypted message" body. The
           // ciphertext is only attached when it fits APNs' ~4 KB payload budget
           // with headroom; larger messages just show the fallback.
-          const E2EE_PUSH_MAX = 3500;
+          // APNs rejects a payload over ~4 KB outright — no notification at
+          // all — and nothing downstream checks the size, so this cap is the
+          // only guard. Trimmed from 3500 to make room for the
+          // communication-notification fields (`senderAvatar` is a ~90-char
+          // absolute CDN URL, plus a group name); the headroom pays for the
+          // title, body, routing data and badge that ride alongside.
+          const E2EE_PUSH_MAX = 3300;
           // Per-recipient preview prefs + app-icon badge counts are independent
           // bulk reads — run them in parallel instead of serially. (Guild
           // branch keeps its single badge await; nothing to parallelize there.)
@@ -1442,6 +1459,20 @@ messagesRouter.post(
           // The channel id is already in `url`/`tag`, so adding it to `data`
           // leaks nothing new.
           const replyData = { ...routeData, isE2EE: isE2EEContent };
+          // iOS COMMUNICATION NOTIFICATIONS. The Notification Service Extension
+          // rebuilds these as an INSendMessageIntent, which is what gets the
+          // sender's face onto the lock screen and lets Siri announce the
+          // message through AirPods and take a spoken reply.
+          //
+          // Attached ONLY to payloads that already put the sender's NAME in the
+          // title. The preview-off payload deliberately hides who the message
+          // is from, so it must carry nothing the extension could dress it up
+          // with. The NSE enforces the same rule independently rather than
+          // trusting this — see NotificationService.swift.
+          const commData = {
+            ...(senderAvatar ? { senderAvatar } : {}),
+            ...(isGroupDM ? { groupName: ctx.channel.name ?? 'Group' } : {}),
+          };
           const common = { url, tag: channelId.toString(), kind: 'message' as const };
           // Bulk fan-out: one token query per transport + bounded send burst,
           // with each recipient's own preview-pref / E2EE / badge payload.
@@ -1457,9 +1488,13 @@ messagesRouter.post(
                   badge,
                   // NSE decrypt payload (e2ee = ciphertext) only when it
                   // fits; either way the reply data rides along.
+                  // mutable-content unconditionally now: even when the
+                  // ciphertext is too big to ship, the extension still has the
+                  // communication styling to apply.
+                  mutableContent: true,
                   ...(fits
-                    ? { mutableContent: true, data: { ...replyData, e2ee: payload.content } }
-                    : { data: replyData }),
+                    ? { data: { ...replyData, ...commData, e2ee: payload.content } }
+                    : { data: { ...replyData, ...commData } }),
                 }
               : showContent
                 ? imageUrl
@@ -1469,9 +1504,19 @@ messagesRouter.post(
                       ...common,
                       badge,
                       mutableContent: true,
-                      data: { ...replyData, imageUrl },
+                      data: { ...replyData, ...commData, imageUrl },
                     }
-                  : { title: contentTitle, body: contentBody, ...common, badge, data: replyData }
+                  : {
+                      title: contentTitle,
+                      body: contentBody,
+                      ...common,
+                      badge,
+                      // Runs the extension for a plain text DM too — without
+                      // it there is no communication styling on the ordinary
+                      // message, which is most of them.
+                      mutableContent: true,
+                      data: { ...replyData, ...commData },
+                    }
                 : { title: genericTitle, body: genericBody, ...common, badge, data: replyData };
           });
         } else {
@@ -1488,8 +1533,17 @@ messagesRouter.post(
             tag: channelId.toString(),
             kind: 'message' as const,
             badge: badges.get(target.toString()) ?? 0,
-            ...(imageUrl ? { mutableContent: true } : {}),
-            data: { ...routeData, isE2EE: false, ...(imageUrl ? { imageUrl } : {}) },
+            // Always, not just for images: the extension also applies the
+            // communication styling (sender's face + Siri announcement).
+            mutableContent: true,
+            data: {
+              ...routeData,
+              isE2EE: false,
+              ...(senderAvatar ? { senderAvatar } : {}),
+              // A guild channel IS the group conversation, so it names itself.
+              groupName: `#${channelName}`,
+              ...(imageUrl ? { imageUrl } : {}),
+            },
           }));
         }
       } catch (err) {

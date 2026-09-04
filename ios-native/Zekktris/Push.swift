@@ -82,7 +82,13 @@ final class PushManager: ObservableObject {
             textInputButtonTitle: "Send", textInputPlaceholder: "Message")
         let message = UNNotificationCategory(
             identifier: "message", actions: [reply],
-            intentIdentifiers: [], options: [])
+            // Tells Siri this category is a message conversation, which is what
+            // lets a spoken "reply" after an AirPods announcement land on the
+            // Reply action above. Pairs with the communication styling the
+            // Notification Service Extension applies (see
+            // NotificationService.swift); without both, Siri reads the message
+            // out but can't take an answer.
+            intentIdentifiers: ["INSendMessageIntent"], options: [])
         UNUserNotificationCenter.current().setNotificationCategories([call, message])
     }
 

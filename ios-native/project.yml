@@ -125,6 +125,15 @@ targets:
         # App ID (automatic signing enables it on archive; verify in the portal).
         com.apple.developer.associated-domains:
           - webcredentials:zekktris.com
+        # Communication Notifications. Lets the Notification Service Extension
+        # re-file a message push as an INSendMessageIntent, which is what puts
+        # the sender's face on the lock screen and lets Siri announce the
+        # message through AirPods and take a spoken reply. Requires the
+        # capability enabled on the com.zekktris.native App ID (and on
+        # com.zekktris.native.NotificationService — see that target below);
+        # without it the extension's updating(from:) throws and notifications
+        # fall back to their plain form.
+        com.apple.developer.usernotifications.communication: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native
@@ -208,6 +217,9 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.com.zekktris.native
+        # This is the target that actually calls updating(from:), so the
+        # capability must be on ITS App ID too, not only the app's.
+        com.apple.developer.usernotifications.communication: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.NotificationService
