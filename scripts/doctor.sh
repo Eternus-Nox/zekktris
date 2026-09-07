@@ -183,12 +183,31 @@ fi
 # ── LiveKit ─────────────────────────────────────────────────────────────────
 head2 "Voice"
 if [[ -n "$COMPOSE" ]] && docker inspect -f '{{.State.Running}}' zekktris-livekit >/dev/null 2>&1; then
-    STARTED="$(docker inspect -f '{{.State.StartedAt}}' zekktris-livekit 2>/dev/null)"
-    ADVERTISED="$(docker logs --since "$STARTED" zekktris-livekit 2>&1 \
-        | grep -o '"externalIP": "[0-9.]*"' | grep -oE '[0-9]+(\.[0-9]+){3}' | tail -1)"
+    # Prefer what the watchdog remembered. LiveKit prints its STUN-discovered
+    # address once at startup and compose rotates these logs (10 MB × 5), so
+    # after a few days there is nothing in the log to read — which is why this
+    # check reported "could not compare" on a perfectly healthy server, and why
+    # the watchdog itself had quietly stopped working.
+    ADVERTISED=""
+    if [[ -f "$ROOT/.livekit-wan.state" ]]; then
+        read -r _ ADVERTISED < "$ROOT/.livekit-wan.state" || true
+    fi
+    if [[ -z "$ADVERTISED" ]]; then
+        ADVERTISED="$(docker logs zekktris-livekit 2>&1 \
+            | grep -o '"externalIP": "[0-9.]*"' | grep -oE '[0-9]+(\.[0-9]+){3}' | tail -1)"
+    fi
     ACTUAL="$(curl -fsS -m 10 https://api.ipify.org 2>/dev/null)"
-    if [[ -z "$ADVERTISED" || -z "$ACTUAL" ]]; then
-        warn "could not compare LiveKit's advertised IP with the WAN address"
+    if [[ -z "$ADVERTISED" ]]; then
+        # No record and nothing in the log. Running the watchdog once creates
+        # the record, so this is fixable rather than merely reportable.
+        if [[ "$FIX" == "1" && -x "$WATCHDOG" ]]; then
+            "$WATCHDOG" >/dev/null 2>&1
+            fixed "ran the LiveKit watchdog to record its advertised address"
+        else
+            warn "no record of LiveKit's advertised address (run ops/livekit-wan-watchdog.sh once)"
+        fi
+    elif [[ -z "$ACTUAL" ]]; then
+        warn "could not look up the WAN address to compare against"
     elif [[ "$ADVERTISED" == "$ACTUAL" ]]; then
         ok "LiveKit advertises the current WAN address ($ACTUAL)"
     elif [[ "$FIX" == "1" ]]; then

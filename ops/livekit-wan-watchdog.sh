@@ -39,13 +39,44 @@ is_ipv4() {
 # by hand, the file is lost, the SFU picks a different address), whereas the log
 # is the SFU's own account of what it decided. Bounded by the container's start
 # time so this stays cheap on a long-running container.
+# Where the discovered address is remembered between runs. See below for why
+# reading the log is not enough on its own.
+STATE="${LIVEKIT_WAN_STATE:-$(dirname "$0")/../.livekit-wan.state}"
+
 advertised_ip() {
-    local started
+    local started state_started state_ip from_log
     started=$(docker inspect -f '{{.State.StartedAt}}' "$CONTAINER" 2>/dev/null) || return 1
-    docker logs --since "$started" "$CONTAINER" 2>&1 \
+
+    # THE LOG IS NOT A DURABLE SOURCE. LiveKit prints its STUN-discovered
+    # address once, at startup, and compose rotates these logs (10 MB × 5). On
+    # a busy server those lines are gone within days — after which this
+    # function returned nothing, the watchdog skipped every run, and the thing
+    # written to catch silent voice breakage broke silently itself. Exactly the
+    # failure it exists to prevent.
+    #
+    # So the log is read only when it is FRESH — when the container has
+    # restarted since we last looked, which is also the only moment the address
+    # can have changed. Otherwise the remembered value stands.
+    if [[ -f "$STATE" ]]; then
+        read -r state_started state_ip < "$STATE" || true
+        if [[ "$state_started" == "$started" && -n "${state_ip:-}" ]]; then
+            printf '%s' "$state_ip"
+            return 0
+        fi
+    fi
+
+    # Container is new (or nothing is remembered): the startup lines are recent,
+    # so take the LAST one — that is this boot's discovery.
+    from_log="$(docker logs "$CONTAINER" 2>&1 \
         | grep -o '"externalIP": "[0-9.]*"' \
         | grep -oE '[0-9]+(\.[0-9]+){3}' \
-        | tail -1
+        | tail -1)"
+    if is_ipv4 "$from_log"; then
+        printf '%s %s\n' "$started" "$from_log" > "$STATE" 2>/dev/null || true
+        printf '%s' "$from_log"
+        return 0
+    fi
+    return 1
 }
 
 # Our WAN address right now. Two independent providers must AGREE before we
@@ -91,6 +122,11 @@ fi
 log "WAN address changed: SFU is advertising $advertised, we are actually $current"
 log "restarting $CONTAINER so it re-discovers (this drops calls in progress)"
 if docker restart "$CONTAINER" >/dev/null 2>&1; then
+    # Remember what it will now be advertising, keyed to the NEW start time, so
+    # the next run compares against reality rather than re-reading a log that
+    # will rotate away again.
+    NEW_STARTED=$(docker inspect -f '{{.State.StartedAt}}' "$CONTAINER" 2>/dev/null)
+    printf '%s %s\n' "$NEW_STARTED" "$current" > "$STATE" 2>/dev/null || true
     log "restarted $CONTAINER"
 else
     log "ERROR: failed to restart $CONTAINER"
