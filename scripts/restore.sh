@@ -65,15 +65,30 @@ else fail "docker compose not found"; fi
 # -l lists the archive's table of contents and fails on a truncated or corrupt
 # file — which is the failure a backup script cannot detect at write time.
 step "Verifying the database dump"
+# Cheap structural check first, no container needed: every pg_dump custom-format
+# archive starts with the magic string "PGDMP".
+MAGIC="$(head -c 5 "$STAGE/db.dump" 2>/dev/null || true)"
+[[ "$MAGIC" == "PGDMP" ]] || fail "not a pg_dump custom-format archive (header reads '${MAGIC}') — this bundle cannot restore an instance"
+ok "archive header valid"
+
 if $COMPOSE ps db --format '{{.State}}' 2>/dev/null | grep -q running; then
-    if $COMPOSE exec -T db pg_restore -l /dev/stdin < "$STAGE/db.dump" > "$STAGE/toc" 2>"$STAGE/toc.err"; then
+    # Copy into the container and list from a REAL FILE. pg_restore needs to
+    # seek to read a custom archive's table of contents, and a pipe is not
+    # seekable — feeding it through /dev/stdin fails at the header even when
+    # the dump is perfect, which is a verification that cries wolf on a good
+    # backup. Exactly the wrong failure mode for a tool whose job is to tell
+    # you the backup is sound.
+    $COMPOSE exec -T db sh -c 'cat > /tmp/zk-verify.dump' < "$STAGE/db.dump"
+    if $COMPOSE exec -T db pg_restore -l /tmp/zk-verify.dump > "$STAGE/toc" 2>"$STAGE/toc.err"; then
         ok "dump is readable — $(grep -c ';' "$STAGE/toc" 2>/dev/null || echo '?') archive entries"
     else
         cat "$STAGE/toc.err" >&2
+        $COMPOSE exec -T db rm -f /tmp/zk-verify.dump >/dev/null 2>&1 || true
         fail "the dump is CORRUPT or truncated — this bundle cannot restore an instance"
     fi
+    $COMPOSE exec -T db rm -f /tmp/zk-verify.dump >/dev/null 2>&1 || true
 else
-    warn "db container not running — skipped dump verification"
+    warn "db container not running — skipped the full table-of-contents check"
 fi
 ok "uploads archive: $(tar -tf "$STAGE/uploads.tar" 2>/dev/null | wc -l | tr -d ' ') entries"
 
@@ -122,8 +137,12 @@ step "Restoring database"
 # rather than merges. Ordinary object-ownership noise is expected on a fresh
 # volume, so a non-zero exit is reported but not fatal; the row counts below
 # are the real check.
-$COMPOSE exec -T db pg_restore -U commune -d commune --clean --if-exists --no-owner < "$STAGE/db.dump" \
+# Same reason as the verification above: land the archive as a real file inside
+# the container rather than piping it, so pg_restore can seek.
+$COMPOSE exec -T db sh -c 'cat > /tmp/zk-restore.dump' < "$STAGE/db.dump"
+$COMPOSE exec -T db pg_restore -U commune -d commune --clean --if-exists --no-owner /tmp/zk-restore.dump \
     2>"$STAGE/restore.err" || warn "pg_restore reported issues (often harmless ownership noise)"
+$COMPOSE exec -T db rm -f /tmp/zk-restore.dump >/dev/null 2>&1 || true
 RESTORED="$($COMPOSE exec -T db psql -U commune -d commune -tAc "select count(*) from users" 2>/dev/null | tr -d '[:space:]' || echo 0)"
 [[ "${RESTORED:-0}" -gt 0 ]] || { sed -n '1,20p' "$STAGE/restore.err" >&2; fail "restore produced no users — the instance is NOT usable"; }
 ok "${RESTORED} users restored"
