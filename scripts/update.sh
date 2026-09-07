@@ -123,12 +123,32 @@ fi
 
 # ── Back up first ───────────────────────────────────────────────────────────
 if [[ "$DO_BACKUP" == "1" ]]; then
+    # A stopped stack still has a database volume worth protecting — a
+    # migration applies at boot, and "the stack was down" is no reason to skip
+    # the safety net. backup.sh needs the db container, so start just that one
+    # and wait, rather than refusing to run or silently backing up nothing.
+    if ! $COMPOSE ps db --format '{{.State}}' 2>/dev/null | grep -q running; then
+        step "Starting the database for the pre-update backup"
+        $COMPOSE up -d db >/dev/null 2>&1 || fail "could not start the db service"
+        for _ in $(seq 1 30); do
+            $COMPOSE exec -T db pg_isready -U commune >/dev/null 2>&1 && break
+            sleep 1
+        done
+    fi
     step "Taking a pre-update backup"
     # Database + config only: it is seconds rather than minutes, and the
     # attachments on disk are not what an update can damage. A schema migration
     # is, which is exactly what this protects.
-    "$SCRIPT_DIR/backup.sh" --no-uploads >/dev/null || fail "pre-update backup failed — refusing to update without one"
-    ok "backup taken"
+    if "$SCRIPT_DIR/backup.sh" --no-uploads >/dev/null 2>&1; then
+        ok "backup taken"
+    elif $COMPOSE exec -T db psql -U commune -d commune -tAc 'select 1' >/dev/null 2>&1; then
+        fail "pre-update backup failed — refusing to update without one"
+    else
+        # A database with nothing in it yet (first run on a fresh volume) has
+        # nothing to lose, and demanding a backup of it would block the very
+        # first deploy. Anything else is a real failure and stops above.
+        warn "no database to back up yet — continuing (first deploy)"
+    fi
 else
     warn "skipping the pre-update backup (--no-backup)"
 fi
