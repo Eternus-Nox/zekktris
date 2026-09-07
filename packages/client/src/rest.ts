@@ -2935,7 +2935,8 @@ export class RestClient {
       | 'update'
       | 'restart'
       | 'schedule-on'
-      | 'schedule-off',
+      | 'schedule-off'
+      | 'doctor',
     /** Restore only, and required for it: the exact bundle filename. A restore
      *  replaces the whole database, so naming the bundle IS the confirmation —
      *  there is deliberately no "restore the latest one" shortcut. */

@@ -145,6 +145,14 @@ for req in "$REQ_DIR"/*.json; do
             write_schedule_status
             [[ $RC -eq 0 ]] && echo "automatic backups disabled" >> "$LOG"
             ;;
+        doctor)
+            # --fix: creates missing directories, installs the cron entries,
+            # restarts LiveKit on a WAN-address change, takes a first backup.
+            # Deliberately never rebuilds the stack — that is update.sh, it is
+            # disruptive, and a health check that redeploys production on its
+            # own initiative is worse than whatever it was fixing.
+            "$SCRIPT_DIR/doctor.sh" --fix > "$LOG" 2>&1; RC=$?
+            ;;
         restart)
             # Rebuild and recreate, the plain "apply what is on disk" action.
             if docker compose version >/dev/null 2>&1; then

@@ -2292,7 +2292,8 @@ function HostBackupPanel() {
       | 'update'
       | 'restart'
       | 'schedule-on'
-      | 'schedule-off',
+      | 'schedule-off'
+      | 'doctor',
     label: string,
     file?: string,
   ) => {
@@ -2394,6 +2395,13 @@ function HostBackupPanel() {
           className="px-3 py-1.5 text-xs rounded-md border border-line hover:bg-bg-2 disabled:opacity-50"
         >
           Full backup (with attachments)
+        </button>
+        <button
+          onClick={() => void run('doctor', 'Setup check')}
+          disabled={busy || status?.pending}
+          className="px-3 py-1.5 text-xs rounded-md border border-line hover:bg-bg-2 disabled:opacity-50"
+        >
+          Check &amp; repair setup
         </button>
         <button
           onClick={() => void run('verify', 'Verification')}

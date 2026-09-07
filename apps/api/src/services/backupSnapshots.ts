@@ -123,6 +123,7 @@ export const MAINTENANCE_ACTIONS = [
   'restart',
   'schedule-on',
   'schedule-off',
+  'doctor',
 ] as const;
 export type MaintenanceAction = (typeof MAINTENANCE_ACTIONS)[number];
 
