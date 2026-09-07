@@ -1256,8 +1256,60 @@ export function toForwardSource(args: {
   sourceAuthor: User | null;
   sourceChannel: Channel | null;
   sourceAttachments: Attachment[];
+  /**
+   * The frozen copy taken at forward time, off the FORWARD's own row.
+   *
+   * When present it supplies every content-bearing field, and the live source
+   * is used only for the things that are not content: the channel id (so
+   * "jump to original" still works) and whether the source has since been
+   * deleted. That is what closes the access hole — the reader's view of the
+   * text no longer depends on a source they may have no right to read.
+   *
+   * Deletion still redacts, deliberately. The pre-existing rule that a forward
+   * must not be a backdoor past an author deleting their message is a product
+   * decision, and snapshotting is not a reason to quietly reverse it.
+   */
+  snapshot?: {
+    content: string | null;
+    authorName: string | null;
+    authorAvatar: string | null;
+    channelName: string | null;
+    createdAt: Date | null;
+    attachments: unknown;
+  } | null;
 }): ForwardSourceDTO {
   const m = args.sourceMessage;
+  const snap = args.snapshot ?? null;
+  if (snap && snap.createdAt) {
+    const deleted = !!m?.deletedAt;
+    const snapAttachments = Array.isArray(snap.attachments)
+      ? (snap.attachments as unknown as AttachmentDTO[])
+      : [];
+    return {
+      messageId: args.sourceMessageId.toString(),
+      // Author and channel still come from the LIVE rows. Attribution — who
+      // sent it, which channel — is what the forward chip is FOR and was never
+      // the leak; the leak was the content. Keeping them live also keeps the
+      // author id real, so profile links and "jump to original" keep working,
+      // rather than inventing a synthetic user with a fake id.
+      channel: args.sourceChannel
+        ? {
+            id: args.sourceChannel.id.toString(),
+            name: args.sourceChannel.name,
+            type: args.sourceChannel.type,
+          }
+        : null,
+      author: args.sourceAuthor ? toPublicUser(args.sourceAuthor) : null,
+      // The frozen fields: everything a reader could not otherwise be entitled
+      // to see. Deletion still redacts — a forward must not be a backdoor past
+      // an author deleting their message, and snapshotting is not a reason to
+      // quietly reverse that.
+      content: deleted ? '' : snap.content ?? '',
+      attachments: deleted ? [] : snapAttachments,
+      createdAt: snap.createdAt.toISOString(),
+      deleted,
+    };
+  }
   if (!m) {
     return {
       messageId: args.sourceMessageId.toString(),

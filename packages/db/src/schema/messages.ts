@@ -85,6 +85,24 @@ export const messages = pgTable(
         deleted we want the forward to remain with a "[unavailable]"
         placeholder rather than disappear silently from history. */
     forwardedFromMessageId: bigint('forwarded_from_message_id', { mode: 'bigint' }),
+    /** SNAPSHOT of the source, taken at forward time — when the forwarder's
+        access to it was actually checked.
+        Before these columns the forward stored only the pointer above, and
+        every render dereferenced the LIVE source with no re-check of the
+        current viewer's access: someone who could see the forward but not the
+        source channel saw its content anyway, and kept seeing it after access
+        was revoked. Reading a frozen copy removes the question entirely.
+        `forwardedCreatedAt` is the "has a snapshot" marker — the 0123
+        migration backfills it for every existing forward, including ones whose
+        source is already gone, so a set pointer always implies a snapshot. */
+    forwardedContent: text('forwarded_content'),
+    forwardedAuthorName: text('forwarded_author_name'),
+    forwardedAuthorAvatar: text('forwarded_author_avatar'),
+    forwardedChannelName: text('forwarded_channel_name'),
+    forwardedCreatedAt: timestamp('forwarded_created_at', { withTimezone: true }),
+    /** Source attachments as they were, so an image-only original still
+        renders. URLs only — no copy-on-forward, same as before. */
+    forwardedAttachments: jsonb('forwarded_attachments'),
     /** When set, this message was posted by a webhook. The webhookId is
         the id from the webhooks table. The authorId still points to the
         webhook's owner (createdBy) so audit + mention counts work, but

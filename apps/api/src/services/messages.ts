@@ -178,6 +178,9 @@ export interface CreateMessageInput {
    * can view the destination channel; that's the deliberate semantic.
    */
   forwardedFromMessageId?: bigint | null;
+  /** Frozen copy of the forward's source, captured by the caller at forward
+      time — see {@link snapshotForwardSource}. */
+  forwardSnapshot?: ForwardSnapshot | null;
   /** When set, this message attaches a sticker. Renders as a standalone
       ~160px image instead of (or alongside) text content. The route
       layer validates the sticker belongs to the destination's guild. */
@@ -333,6 +336,12 @@ export async function createMessage(input: CreateMessageInput): Promise<MessageW
         authorOverrideName: input.authorOverrideName ?? null,
         authorOverrideAvatar: input.authorOverrideAvatar ?? null,
         forwardedFromMessageId: input.forwardedFromMessageId ?? null,
+        forwardedContent: input.forwardSnapshot?.content ?? null,
+        forwardedAuthorName: input.forwardSnapshot?.authorName ?? null,
+        forwardedAuthorAvatar: input.forwardSnapshot?.authorAvatar ?? null,
+        forwardedChannelName: input.forwardSnapshot?.channelName ?? null,
+        forwardedCreatedAt: input.forwardSnapshot?.createdAt ?? null,
+        forwardedAttachments: input.forwardSnapshot?.attachments ?? null,
         stickerId: input.stickerId ?? null,
         embeds: input.embeds ?? null,
       })
@@ -720,6 +729,48 @@ export async function loadStickersForMessages(stickerIds: bigint[]) {
  * channel doesn't transfer the votes; sharing the question + options
  * via plain content is the cleaner semantic).
  */
+/** A forward's source, frozen at the moment the forwarder's access to it was
+ *  verified. Read back instead of dereferencing the live source. */
+export interface ForwardSnapshot {
+  content: string;
+  authorName: string | null;
+  authorAvatar: string | null;
+  channelName: string | null;
+  createdAt: Date;
+  attachments: Array<{ id: string; url: string; filename: string; contentType: string | null; size: number }>;
+}
+
+/**
+ * Capture a source message for forwarding.
+ *
+ * MUST be called only after the caller's access to the source has been
+ * checked — that check is the entire reason the snapshot is trustworthy
+ * later, when the reader may be someone else entirely.
+ */
+export async function snapshotForwardSource(sourceId: bigint): Promise<ForwardSnapshot | null> {
+  const loaded = await loadForwardSources([sourceId]);
+  const source = loaded.messages.get(sourceId);
+  if (!source) return null;
+  const author = source.authorId ? loaded.authors.get(source.authorId) ?? null : null;
+  const channel = loaded.channels.get(source.channelId) ?? null;
+  return {
+    content: source.content ?? '',
+    // Display name, falling back to username — the same precedence the DTO
+    // uses, resolved now so a later rename cannot rewrite old forwards.
+    authorName: author?.displayName ?? author?.username ?? null,
+    authorAvatar: author?.avatarUrl ?? null,
+    channelName: channel?.name ?? null,
+    createdAt: source.createdAt,
+    attachments: (loaded.attachments.get(sourceId) ?? []).map((a) => ({
+      id: a.id.toString(),
+      url: a.url,
+      filename: a.filename,
+      contentType: a.contentType ?? null,
+      size: a.size,
+    })),
+  };
+}
+
 export async function loadForwardSources(sourceMessageIds: bigint[]) {
   if (sourceMessageIds.length === 0) {
     return {
@@ -1230,6 +1281,18 @@ export async function hydrateMessages(
         sourceAuthor: sm?.authorId ? forwardSources.authors.get(sm.authorId) ?? null : null,
         sourceChannel: sm ? forwardSources.channels.get(sm.channelId) ?? null : null,
         sourceAttachments: forwardSources.attachments.get(m.forwardedFromMessageId) ?? [],
+        // The frozen copy on THIS forward's own row. Present for every forward
+        // from 0123 onward (the migration backfilled the existing ones), so
+        // the live source below is consulted only for attribution and the
+        // deleted flag — never for content the reader may not be entitled to.
+        snapshot: {
+          content: m.forwardedContent,
+          authorName: m.forwardedAuthorName,
+          authorAvatar: m.forwardedAuthorAvatar,
+          channelName: m.forwardedChannelName,
+          createdAt: m.forwardedCreatedAt,
+          attachments: m.forwardedAttachments,
+        },
       });
     }
     return toMessage({

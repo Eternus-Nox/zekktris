@@ -801,6 +801,7 @@ messagesRouter.post(
     // a leaked message id from a private channel could be re-shared
     // to a public channel by anyone who knows the id.
     let forwardedFromMessageId: bigint | null = null;
+    let forwardSnapshot: messages.ForwardSnapshot | null = null;
     if (payload.forwardFromMessageId) {
       const sourceId = BigInt(payload.forwardFromMessageId);
       const sourceRows = await db
@@ -835,6 +836,17 @@ messagesRouter.post(
       // (loadChannelContext throws notFound otherwise, so reaching here
       // means they're authorized).
       forwardedFromMessageId = sourceId;
+
+      // SNAPSHOT THE SOURCE, right here — the one moment access to it has
+      // actually been verified, by the checks immediately above.
+      //
+      // Storing only the pointer meant every later render dereferenced the
+      // live source with no re-check of the CURRENT viewer's access, so a
+      // recipient who could see the forward but not the source channel read
+      // its content anyway, and kept reading it after access was revoked.
+      // Freezing it also stops edits to the source rewriting history inside
+      // every forward of it, which is what WhatsApp and Slack do.
+      forwardSnapshot = await messages.snapshotForwardSource(sourceId);
     }
 
     // ── Sticker validation ──────────────────────────────────────────────
@@ -940,6 +952,7 @@ messagesRouter.post(
         allowEveryoneMention: allowEveryone,
         hasAttachedPoll: !!payload.poll,
         forwardedFromMessageId,
+        forwardSnapshot,
         stickerId,
         attachments: saved.flatMap((s, i) => {
           // Tag the first (and only) attachment with voice metadata when the
@@ -1070,6 +1083,18 @@ messagesRouter.post(
         sourceAuthor: sm?.authorId ? sources.authors.get(sm.authorId) ?? null : null,
         sourceChannel: sm ? sources.channels.get(sm.channelId) ?? null : null,
         sourceAttachments: sources.attachments.get(forwardedFromMessageId) ?? [],
+        // The frozen copy on THIS forward's own row. Present for every forward
+        // from 0123 onward (the migration backfilled the existing ones), so
+        // the live source below is consulted only for attribution and the
+        // deleted flag — never for content the reader may not be entitled to.
+        snapshot: {
+          content: result.message.forwardedContent,
+          authorName: result.message.forwardedAuthorName,
+          authorAvatar: result.message.forwardedAuthorAvatar,
+          channelName: result.message.forwardedChannelName,
+          createdAt: result.message.forwardedCreatedAt,
+          attachments: result.message.forwardedAttachments,
+        },
       });
     }
 

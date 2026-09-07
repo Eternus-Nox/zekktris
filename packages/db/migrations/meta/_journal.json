@@ -855,6 +855,13 @@
       "when": 1784600310000,
       "tag": "0122_attachment_blob_expiry",
       "breakpoints": true
+    },
+    {
+      "idx": 122,
+      "version": "7",
+      "when": 1784600320000,
+      "tag": "0123_forward_snapshot",
+      "breakpoints": true
     }
   ]
 }
