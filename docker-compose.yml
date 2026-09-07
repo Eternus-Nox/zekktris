@@ -291,6 +291,12 @@ services:
       - ${APPDATA_PATH:-/mnt/user/appdata/zekktris}/uploads:/data/uploads
       # APNs key drop-zone (see APNS_* above). Safe to leave empty.
       - ./secrets:/keys:ro
+      # Backup bundles written by scripts/backup.sh on the HOST, mounted
+      # READ-ONLY so the admin API can report on them and can never delete or
+      # alter one. Taking a backup stays on the host: it needs pg_dump against
+      # the db container, and giving this container the Docker socket to reach
+      # that would be a root-equivalent handle behind an HTTP endpoint.
+      - ${APPDATA_PATH:-/mnt/user/appdata/zekktris}/backups:/data/backups:ro
     depends_on:
       db:
         condition: service_healthy

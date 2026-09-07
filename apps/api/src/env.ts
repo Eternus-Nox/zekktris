@@ -238,6 +238,12 @@ export const envSchema = z.object({
    *  `thumbnailUrl ?: if (blobExpired) null else url`). An earlier revert
    *  happened precisely because Android was NOT thumbnail-first at the time. */
   ATTACHMENT_RETENTION_DAYS: z.coerce.number().int().min(0).default(90),
+  /** Where scripts/backup.sh writes its bundles, as seen FROM THIS CONTAINER.
+   *  Mounted read-only in docker-compose.yml — the API reports on backups, it
+   *  never takes or deletes one (that needs the host, and giving this process
+   *  the Docker socket to reach it would be a root-equivalent handle behind an
+   *  HTTP endpoint). */
+  BACKUP_DIR: z.string().default('/data/backups'),
   /** Whether the sweep only LOGS what it would reclaim (true) or actually
    *  deletes (false). Defaults to 'false' — it really deletes — since retention
    *  is enabled above and a permanently-dry sweep reclaims nothing.

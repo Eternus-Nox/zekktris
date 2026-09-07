@@ -303,6 +303,23 @@ adminRouter.get(
   },
 );
 
+// GET /admin/backups → what the host's cron has actually produced.
+//
+// Reporting only. Taking a backup needs the host (pg_dump against the db
+// container, plus the uploads tree), and handing this process the Docker
+// socket to reach them would put a root-equivalent handle on the host behind
+// an HTTP endpoint. The directory is mounted read-only, so this cannot delete
+// a bundle either.
+//
+// Deliberately NOT a download: a full bundle is over a gigabyte here, and
+// streaming that through an admin's browser is a bad experience and a memory
+// hazard in the container. What an admin needs to see is whether backups are
+// happening at all — the gap that went unnoticed for months.
+adminRouter.get('/backups', async (c) => {
+  const { readBackupStatus } = await import('../services/backupSnapshots');
+  return c.json(await readBackupStatus());
+});
+
 adminRouter.post('/backup/restore', async (c) => {
   const userId = requireUserId(c);
   // The bundle can be large (many guilds, embedded images); read it raw and
