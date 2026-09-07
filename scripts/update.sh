@@ -68,21 +68,48 @@ if ! git rev-parse HEAD >/dev/null 2>&1; then
     fail "not a usable git repository: $ROOT"
 fi
 CURRENT="$(git rev-parse HEAD)"
-git fetch --quiet origin || fail "could not reach the git remote"
-TARGET="$(git rev-parse origin/master)"
 
-if [[ "$CURRENT" == "$TARGET" ]]; then
-    ok "already up to date ($(git rev-parse --short HEAD))"
-    exit 0
+# TWO TOPOLOGIES, and this box is the second one.
+#
+# A clone that PULLS has an upstream to fetch from. But this checkout IS the
+# origin — the development machine pushes straight into it (receive.
+# denyCurrentBranch=updateInstead), so the working tree is already whatever was
+# last pushed and there is nothing upstream to fetch. Fetching from a
+# non-existent remote was a hard failure at the first step.
+DEPLOY_ONLY=0
+if ! git remote get-url origin >/dev/null 2>&1; then
+    DEPLOY_ONLY=1
+    ok "no upstream — this checkout receives pushes directly"
+elif ! git fetch --quiet origin 2>/dev/null; then
+    DEPLOY_ONLY=1
+    warn "upstream unreachable — deploying the working tree as it stands"
 fi
 
-echo
-git --no-pager log --oneline "$CURRENT..$TARGET" | sed 's/^/    /'
-echo
+if [[ "$DEPLOY_ONLY" == "1" ]]; then
+    TARGET="$CURRENT"
+    ok "deploying $(git rev-parse --short HEAD)"
+    # Which migrations are on disk but not yet applied is the API's business —
+    # it runs them at boot and its startup checks are the gate. What can be said
+    # here is which ones arrived recently, so a schema change is not a surprise.
+    RECENT="$(git log --since='7 days ago' --name-only --pretty=format: -- packages/db/migrations/ 2>/dev/null | grep '\.sql$' | sort -u || true)"
+    if [[ -n "$RECENT" ]]; then
+        warn "migrations added in the last 7 days (applied at boot, NOT undone by a rollback):"
+        echo "$RECENT" | sed 's/^/      /'
+    fi
+else
+    TARGET="$(git rev-parse origin/master)"
+    if [[ "$CURRENT" == "$TARGET" ]]; then
+        ok "already up to date ($(git rev-parse --short HEAD))"
+        exit 0
+    fi
+    echo
+    git --no-pager log --oneline "$CURRENT..$TARGET" | sed 's/^/    /'
+    echo
+fi
 
 # Migrations are the part that cannot be rolled back by swapping an image, so
 # call them out separately and loudly.
-PENDING_MIGRATIONS="$(git diff --name-only "$CURRENT..$TARGET" -- packages/db/migrations/ | grep -c '\.sql$' || true)"
+PENDING_MIGRATIONS="$(git diff --name-only "$CURRENT..$TARGET" -- packages/db/migrations/ 2>/dev/null | grep -c '\.sql$' || true)"
 if [[ "${PENDING_MIGRATIONS:-0}" -gt 0 ]]; then
     warn "${PENDING_MIGRATIONS} new migration(s) — these apply at boot and a rollback of the image does NOT undo them"
     git diff --name-only "$CURRENT..$TARGET" -- packages/db/migrations/ | grep '\.sql$' | sed 's/^/      /'
@@ -107,8 +134,10 @@ else
 fi
 
 # ── Update ──────────────────────────────────────────────────────────────────
-step "Pulling $TARGET"
-git merge --ff-only origin/master || fail "cannot fast-forward — the working tree has diverged; resolve it by hand"
+if [[ "$DEPLOY_ONLY" == "0" ]]; then
+    step "Pulling $TARGET"
+    git merge --ff-only origin/master || fail "cannot fast-forward — the working tree has diverged; resolve it by hand"
+fi
 
 step "Rebuilding"
 $COMPOSE build api proxy
@@ -133,6 +162,16 @@ fi
 # The code goes back. Any migration that already ran does NOT — which is why
 # the backup above is not optional and why new migrations are called out before
 # anything is touched.
+if [[ "$DEPLOY_ONLY" == "1" ]]; then
+    # Nothing to roll back TO: the code never moved, this was a rebuild of what
+    # was already checked out. Pretending to roll back would just rebuild the
+    # same failing tree.
+    echo
+    fail "The rebuild did not come up healthy. The code is unchanged, so this is
+    a build or runtime failure rather than a bad update.
+    Check: $COMPOSE logs api --tail 80"
+fi
+
 warn "the new build did not come up healthy — rolling the code back to $CURRENT"
 git reset --hard "$CURRENT" >/dev/null
 $COMPOSE build api proxy && $COMPOSE up -d
