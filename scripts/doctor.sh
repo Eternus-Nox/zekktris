@@ -74,7 +74,7 @@ else
     bad "not a usable git repository — updates cannot run"
 fi
 
-FREE_G=$(df -Pg / 2>/dev/null | awk 'NR==2{print $4}')
+FREE_G=$(df -Pk / 2>/dev/null | awk 'NR==2{printf "%d", $4/1048576}')
 if [[ -n "${FREE_G:-}" ]] && [[ "$FREE_G" -lt 5 ]]; then
     bad "only ${FREE_G}G free on / — builds need ~3G and a full disk takes the box down"
 else
@@ -96,7 +96,11 @@ done
 # ── Cron ────────────────────────────────────────────────────────────────────
 head2 "Scheduled jobs"
 AGENT_LINE="* * * * * $SCRIPT_DIR/agent.sh >> /var/log/zk-agent.log 2>&1 # zekktris-agent"
-WATCHDOG_LINE="*/5 * * * * $SCRIPT_DIR/livekit-wan-watchdog.sh >> /var/log/zk-livekit.log 2>&1 # zekktris-livekit"
+# It lives in ops/, not scripts/ — doctor looked in the wrong place and
+# silently skipped installing it, which is precisely the sort of quiet gap
+# this script exists to catch.
+WATCHDOG="$ROOT/ops/livekit-wan-watchdog.sh"
+WATCHDOG_LINE="*/5 * * * * $WATCHDOG >> /var/log/zk-livekit.log 2>&1 # zekktris-livekit"
 
 ensure_cron() { # <marker> <line> <description>
     if crontab -l 2>/dev/null | grep -qF "$1"; then
@@ -111,7 +115,7 @@ ensure_cron() { # <marker> <line> <description>
 # would be picked up by the agent that is not running. This script runs on the
 # host, so it is the one place that CAN bootstrap it.
 ensure_cron "# zekktris-agent" "$AGENT_LINE" "maintenance agent (admin buttons)"
-if [[ -f "$SCRIPT_DIR/livekit-wan-watchdog.sh" ]]; then
+if [[ -f "$WATCHDOG" ]]; then
     ensure_cron "# zekktris-livekit" "$WATCHDOG_LINE" "LiveKit WAN-address watchdog"
 fi
 if crontab -l 2>/dev/null | grep -qF "# zekktris-backup"; then
@@ -213,7 +217,13 @@ else
     else
         ok "newest backup ${AGE_H}h old"
     fi
-    if head -c 5 "$NEWEST" 2>/dev/null | grep -q PGDMP || tar -xzOf "$NEWEST" db.dump 2>/dev/null | head -c 5 | grep -q PGDMP; then
+    # `head -c 5` closes the pipe as soon as it has its bytes, killing tar with
+    # SIGPIPE — and under `pipefail` that made the whole test fail, reporting a
+    # perfectly good 1.1 GB bundle as unusable. A health check that cries wolf
+    # about the backups is worse than one that stays quiet, so the tar segment
+    # is allowed to die: what matters is the five bytes, not how tar exited.
+    MAGIC="$({ tar -xzOf "$NEWEST" db.dump 2>/dev/null || true; } | head -c 5)"
+    if [[ "$MAGIC" == "PGDMP" ]]; then
         ok "newest bundle's dump header is valid"
     else
         bad "newest bundle does not look like a usable backup (./scripts/restore.sh --check)"

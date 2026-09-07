@@ -41,7 +41,18 @@ case "${1:-}" in
         exit 0 ;;
 esac
 BUNDLE="${1:-}"
-[[ -n "$BUNDLE" && -f "$BUNDLE" ]] || fail "bundle not found: ${BUNDLE:-<none>}"
+# No path given: check the newest bundle. `--check` with no argument is the
+# natural thing to type, and making it an error taught nothing.
+if [[ -z "$BUNDLE" ]]; then
+    APPDATA_FOR_DEFAULT="$(grep -E '^APPDATA_PATH=' .env 2>/dev/null | cut -d= -f2- | tr -d '"'"'"'' || true)"
+    APPDATA_FOR_DEFAULT="${APPDATA_FOR_DEFAULT:-/mnt/user/appdata/zekktris}"
+    for dir in "$ROOT/backups" "$APPDATA_FOR_DEFAULT/backups"; do
+        CANDIDATE="$(ls -1t "$dir"/zekktris-*.tar.gz 2>/dev/null | head -1)"
+        [[ -n "$CANDIDATE" ]] && { BUNDLE="$CANDIDATE"; break; }
+    done
+    [[ -n "$BUNDLE" ]] && echo "  (no bundle given — using the newest: $(basename "$BUNDLE"))"
+fi
+[[ -n "$BUNDLE" && -f "$BUNDLE" ]] || fail "bundle not found: ${1:-<none given, and no backups on disk>}"
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
