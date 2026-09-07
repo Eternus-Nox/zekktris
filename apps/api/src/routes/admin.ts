@@ -325,15 +325,18 @@ adminRouter.get(
 // hazard in the container. What an admin needs to see is whether backups are
 // happening at all — the gap that went unnoticed for months.
 adminRouter.get('/backups', async (c) => {
-  const { readBackupStatus, readLastMaintenance, isMaintenancePending } = await import(
-    '../services/backupSnapshots'
-  );
-  const [status, lastJob, pending] = await Promise.all([
+  const { readBackupStatus, readLastMaintenance, isMaintenancePending, readScheduleStatus } =
+    await import('../services/backupSnapshots');
+  const [status, lastJob, pending, schedule] = await Promise.all([
     readBackupStatus(),
     readLastMaintenance(),
     isMaintenancePending(),
+    readScheduleStatus(),
   ]);
-  return c.json({ ...status, lastJob, pending });
+  // `agentRunning` is derived, not reported: the agent writes schedule.json on
+  // every tick, so its absence means nothing is picking requests up — which is
+  // what the UI must say before offering buttons that would silently do nothing.
+  return c.json({ ...status, lastJob, pending, schedule, agentRunning: schedule !== null });
 });
 
 // POST /admin/maintenance → ask the HOST to run one action.

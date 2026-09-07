@@ -114,7 +114,16 @@ export async function readBackupStatus(): Promise<BackupStatus> {
  * a command, so this cannot become arbitrary execution on the host no matter
  * what an attacker puts in the file.
  */
-export const MAINTENANCE_ACTIONS = ['backup', 'backup-full', 'verify', 'restore', 'update', 'restart'] as const;
+export const MAINTENANCE_ACTIONS = [
+  'backup',
+  'backup-full',
+  'verify',
+  'restore',
+  'update',
+  'restart',
+  'schedule-on',
+  'schedule-off',
+] as const;
 export type MaintenanceAction = (typeof MAINTENANCE_ACTIONS)[number];
 
 export interface MaintenanceResult {
@@ -198,5 +207,29 @@ export async function isMaintenancePending(): Promise<boolean> {
     return (await readdir(join(env.CONTROL_DIR, 'requests'))).some((f) => f.endsWith('.json'));
   } catch {
     return false;
+  }
+}
+
+/**
+ * Whether the host has automatic backups scheduled.
+ *
+ * Written by the agent on every tick from the real crontab, not from a
+ * setting we store — so the toggle reflects the machine even if someone
+ * edited cron by hand, rather than confidently showing a schedule that
+ * isn't there.
+ *
+ * Null when the agent has never run, which is itself the answer: nothing is
+ * scheduled, because nothing is running the schedule.
+ */
+export async function readScheduleStatus(): Promise<{
+  enabled: boolean;
+  nightly: string;
+  weekly: string;
+} | null> {
+  try {
+    const raw = await readFile(join(env.CONTROL_DIR, 'status', 'schedule.json'), 'utf8');
+    return JSON.parse(raw) as { enabled: boolean; nightly: string; weekly: string };
+  } catch {
+    return null;
   }
 }

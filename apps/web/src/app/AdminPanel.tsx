@@ -2284,7 +2284,15 @@ function HostBackupPanel() {
   }, []);
 
   const run = async (
-    action: 'backup' | 'backup-full' | 'verify' | 'restore' | 'update' | 'restart',
+    action:
+      | 'backup'
+      | 'backup-full'
+      | 'verify'
+      | 'restore'
+      | 'update'
+      | 'restart'
+      | 'schedule-on'
+      | 'schedule-off',
     label: string,
     file?: string,
   ) => {
@@ -2339,6 +2347,37 @@ function HostBackupPanel() {
             <div className="text-xs text-ink-3">A job is queued, waiting for the host agent…</div>
           )}
         </>
+      )}
+
+      {/* The agent is the thing that executes every button below. Without it
+          they queue requests nothing ever picks up, so say so plainly rather
+          than letting an admin click and wonder. It also cannot be installed
+          from here — a toggle's request would be picked up BY the agent. */}
+      {status && !status.agentRunning && (
+        <div className="text-xs rounded-md border border-amber-700/50 text-amber-400 p-2 leading-relaxed">
+          <strong>The maintenance agent isn't running.</strong> These controls queue work for it,
+          so nothing below will happen until it is installed on the host — once, by hand:
+          <code className="block mt-1 break-all">
+            * * * * * {status.directory.replace(/\/backups$/, '')}/../scripts/agent.sh
+          </code>
+        </div>
+      )}
+
+      {status?.schedule && (
+        <label className="flex items-center gap-2 text-xs text-ink-2">
+          <input
+            type="checkbox"
+            checked={status.schedule.enabled}
+            disabled={busy || status.pending}
+            onChange={(e) =>
+              void run(
+                e.target.checked ? 'schedule-on' : 'schedule-off',
+                e.target.checked ? 'Automatic backups' : 'Disabling automatic backups',
+              )
+            }
+          />
+          Automatic backups — {status.schedule.nightly}, {status.schedule.weekly}
+        </label>
       )}
 
       <div className="flex flex-wrap gap-2 pt-1">

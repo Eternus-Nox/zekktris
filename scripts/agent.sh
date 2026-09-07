@@ -42,6 +42,33 @@ mkdir -p "$REQ_DIR" "$STATUS_DIR"
 exec 9>"$LOCK"
 flock -n 9 || exit 0
 
+# ── Scheduled backups ───────────────────────────────────────────────────────
+# Managed through the admin toggle, which is why every line we own carries a
+# marker: crontab edits are somebody's whole machine, and this must only ever
+# add or remove ITS OWN entries, never rewrite what else is in there.
+CRON_MARK="# zekktris-backup"
+SCHEDULE_DB="30 3 * * * $SCRIPT_DIR/backup.sh --no-uploads >> /var/log/zk-backup.log 2>&1 $CRON_MARK"
+SCHEDULE_FULL="0 4 * * 0 $SCRIPT_DIR/backup.sh >> /var/log/zk-backup.log 2>&1 $CRON_MARK"
+
+schedule_enabled() { crontab -l 2>/dev/null | grep -qF "$CRON_MARK"; }
+
+schedule_on() {
+    # Nightly database-only (seconds, ~12 MB) plus a weekly full one with
+    # attachments. One cadence cannot be both cheap enough to run daily and
+    # complete enough to rebuild from, so it is two.
+    { crontab -l 2>/dev/null | grep -vF "$CRON_MARK"; echo "$SCHEDULE_DB"; echo "$SCHEDULE_FULL"; } | crontab -
+}
+schedule_off() { crontab -l 2>/dev/null | grep -vF "$CRON_MARK" | crontab -; }
+
+# Report the real state on EVERY tick, not just after a change — so the toggle
+# reflects the crontab even if someone edited it by hand.
+write_schedule_status() {
+    printf '{"enabled":%s,"nightly":"03:30 database-only","weekly":"Sun 04:00 full"}\n' \
+        "$(if schedule_enabled; then echo true; else echo false; fi)" \
+        > "$STATUS_DIR/schedule.json"
+}
+write_schedule_status
+
 shopt -s nullglob
 for req in "$REQ_DIR"/*.json; do
     # Read the action with a strict pattern rather than a JSON parser: this runs
@@ -107,6 +134,16 @@ for req in "$REQ_DIR"/*.json; do
                 "$SCRIPT_DIR/restore.sh" --force "$TARGET" > "$LOG" 2>&1
                 RC=$?
             fi
+            ;;
+        schedule-on)
+            schedule_on > "$LOG" 2>&1; RC=$?
+            write_schedule_status
+            [[ $RC -eq 0 ]] && echo "scheduled: nightly database-only, weekly full" >> "$LOG"
+            ;;
+        schedule-off)
+            schedule_off > "$LOG" 2>&1; RC=$?
+            write_schedule_status
+            [[ $RC -eq 0 ]] && echo "automatic backups disabled" >> "$LOG"
             ;;
         restart)
             # Rebuild and recreate, the plain "apply what is on disk" action.

@@ -2927,7 +2927,15 @@ export class RestClient {
   /** Ask the HOST to run one maintenance action. Queued, not immediate: the
    *  agent polls once a minute. Instance-admin gated. */
   adminRunMaintenance(
-    action: 'backup' | 'backup-full' | 'verify' | 'restore' | 'update' | 'restart',
+    action:
+      | 'backup'
+      | 'backup-full'
+      | 'verify'
+      | 'restore'
+      | 'update'
+      | 'restart'
+      | 'schedule-on'
+      | 'schedule-off',
     /** Restore only, and required for it: the exact bundle filename. A restore
      *  replaces the whole database, so naming the bundle IS the confirmation —
      *  there is deliberately no "restore the latest one" shortcut. */
@@ -3714,6 +3722,10 @@ export interface HostBackupStatus {
   stale: boolean;
   snapshots: HostBackupSnapshot[];
   pending: boolean;
+  /** Null when the host agent has never run — which means the buttons here
+   *  would queue work nothing picks up. */
+  schedule: { enabled: boolean; nightly: string; weekly: string } | null;
+  agentRunning: boolean;
   lastJob: {
     action: string;
     startedAt: string;
