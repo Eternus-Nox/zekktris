@@ -90,7 +90,18 @@ if $COMPOSE ps db --format '{{.State}}' 2>/dev/null | grep -q running; then
 else
     warn "db container not running — skipped the full table-of-contents check"
 fi
-ok "uploads archive: $(tar -tf "$STAGE/uploads.tar" 2>/dev/null | wc -l | tr -d ' ') entries"
+UPLOAD_ENTRIES="$(tar -tf "$STAGE/uploads.tar" 2>/dev/null | wc -l | tr -d ' ')"
+if grep -q '^includes_uploads=no' "$STAGE/MANIFEST" 2>/dev/null; then
+    # A --no-uploads bundle is a legitimate thing to take often, and a
+    # legitimate thing to restore ON TOP of an instance that still has its
+    # files. It is NOT a complete instance on its own, and restoring one onto
+    # a bare machine leaves every image and file in every conversation broken —
+    # so say so rather than reporting "0 entries" and looking successful.
+    warn "this bundle has NO attachments (--no-uploads)"
+    warn "only restore it where the uploads directory already exists, or pair it with a full bundle"
+else
+    ok "uploads archive: ${UPLOAD_ENTRIES} entries"
+fi
 
 if [[ "$MODE" == "check" ]]; then
     echo

@@ -24,7 +24,16 @@
 # Safe to run against a live stack: pg_dump takes a consistent snapshot without
 # locking writers.
 #
-# Usage:  ./scripts/backup.sh [output-directory]      (default ./backups)
+# Usage:
+#   ./scripts/backup.sh [output-dir]        full bundle (default ./backups)
+#   ./scripts/backup.sh --no-uploads        database + config only
+#   ./scripts/backup.sh --keep 14           keep the newest 14, delete older
+#
+# The uploads directory dwarfs everything else — 1.1 GB against a 12 MB
+# database on this instance — so the two useful cadences are a frequent
+# --no-uploads bundle and an occasional full one. Retention defaults to 7
+# because without it a nightly full backup fills the disk in a week, and a
+# disk full enough to break the server is not a backup strategy.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -43,7 +52,18 @@ ok()   { echo "  ${GREEN}✓${RESET} $*"; }
 warn() { echo "  ${YELLOW}!${RESET} $*"; }
 fail() { echo "  ${RED}✗${RESET} $*" >&2; exit 1; }
 
-OUT_DIR="${1:-$ROOT/backups}"
+KEEP=7
+WITH_UPLOADS=1
+OUT_DIR=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-uploads) WITH_UPLOADS=0; shift ;;
+        --keep) KEEP="${2:-7}"; shift 2 ;;
+        -h|--help) sed -n '27,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) OUT_DIR="$1"; shift ;;
+    esac
+done
+OUT_DIR="${OUT_DIR:-$ROOT/backups}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
@@ -80,7 +100,11 @@ ok "database: $(( DB_BYTES / 1024 )) KiB"
 
 # ── uploads ─────────────────────────────────────────────────────────────────
 step "Archiving uploads"
-if [[ -d "$APPDATA/uploads" ]]; then
+if [[ "$WITH_UPLOADS" == "0" ]]; then
+    warn "--no-uploads: attachments are NOT in this bundle"
+    warn "restoring it alone leaves every image and file in every conversation broken"
+    tar -cf "$STAGE/uploads.tar" -T /dev/null
+elif [[ -d "$APPDATA/uploads" ]]; then
     tar -cf "$STAGE/uploads.tar" -C "$APPDATA" uploads 2>/dev/null || \
         warn "some files could not be read (permissions?) — bundle may be incomplete"
     ok "uploads: $(du -h "$STAGE/uploads.tar" | cut -f1)"
@@ -110,6 +134,9 @@ fi
     echo "db_bytes=$DB_BYTES"
     echo "uploads_bytes=$(wc -c < "$STAGE/uploads.tar" | tr -d ' ')"
     echo "images=$($COMPOSE images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | tr '\n' ' ' || echo unknown)"
+    # Read back by restore.sh, which refuses to silently restore an instance
+    # whose attachments are not in the bundle.
+    echo "includes_uploads=$(if [[ "$WITH_UPLOADS" == "1" ]]; then echo yes; else echo no; fi)"
 } > "$STAGE/MANIFEST"
 
 # ── seal ────────────────────────────────────────────────────────────────────
@@ -123,6 +150,17 @@ chmod 600 "$BUNDLE"
 echo
 ok "Backup complete: ${BOLD}${BUNDLE}${RESET}"
 ok "Size: $(du -h "$BUNDLE" | cut -f1)"
+# ── retention ───────────────────────────────────────────────────────────────
+# Prune AFTER the new bundle is sealed, never before: a rotation that deletes
+# the old backup and then fails to write the new one leaves nothing at all.
+if [[ "$KEEP" -gt 0 ]]; then
+    mapfile -t OLD < <(ls -1t "$OUT_DIR"/zekktris-*.tar.gz 2>/dev/null | tail -n +$(( KEEP + 1 )) || true)
+    if [[ ${#OLD[@]} -gt 0 ]]; then
+        for f in "${OLD[@]}"; do rm -f "$f"; done
+        ok "pruned ${#OLD[@]} bundle(s), keeping the newest $KEEP"
+    fi
+fi
+
 echo
 warn "This bundle contains the database, the encryption keys and the push"
 warn "credentials. Treat a copy of it as a copy of the server."
