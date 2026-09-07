@@ -2917,6 +2917,25 @@ export class RestClient {
     return this.request('POST', '/admin/backup/restore', backup);
   }
 
+  /** On-disk backup bundles written by scripts/backup.sh on the host, plus the
+   *  last maintenance job the host agent ran. Reporting only — the API never
+   *  takes or deletes a backup (that needs the host). Instance-admin gated. */
+  adminBackupStatus(): Promise<HostBackupStatus> {
+    return this.request('GET', '/admin/backups');
+  }
+
+  /** Ask the HOST to run one maintenance action. Queued, not immediate: the
+   *  agent polls once a minute. Instance-admin gated. */
+  adminRunMaintenance(
+    action: 'backup' | 'backup-full' | 'verify' | 'restore' | 'update' | 'restart',
+    /** Restore only, and required for it: the exact bundle filename. A restore
+     *  replaces the whole database, so naming the bundle IS the confirmation —
+     *  there is deliberately no "restore the latest one" shortcut. */
+    file?: string,
+  ): Promise<{ queued: boolean; action: string }> {
+    return this.request('POST', '/admin/maintenance', file ? { action, file } : { action });
+  }
+
   // ── Admin: instance security ──────────────────────────────────────────────
 
   adminSecurityConfig(): Promise<{ config: SecurityConfig }> {
@@ -3675,6 +3694,36 @@ export interface InstanceBackup {
 }
 
 /** Per-guild outcome from POST /admin/backup/restore. */
+/** One backup bundle on the host's disk. */
+export interface HostBackupSnapshot {
+  filename: string;
+  bytes: number;
+  takenAt: string;
+  ageHours: number;
+}
+
+/** What the host's backup cron has actually produced, plus the last job the
+ *  maintenance agent ran. `stale` is the one an admin should react to: it means
+ *  the newest bundle is over 36 hours old, or there is no bundle at all. */
+export interface HostBackupStatus {
+  configured: boolean;
+  directory: string;
+  count: number;
+  totalBytes: number;
+  newest: HostBackupSnapshot | null;
+  stale: boolean;
+  snapshots: HostBackupSnapshot[];
+  pending: boolean;
+  lastJob: {
+    action: string;
+    startedAt: string;
+    finishedAt: string;
+    exitCode: number;
+    ok: boolean;
+    output: string;
+  } | null;
+}
+
 export interface InstanceRestoreResult {
   sourceGuildId: string;
   name: string;

@@ -56,6 +56,7 @@ import { AdminSecurityTab } from './AdminSecurityTab';
 import { AdminVoiceLiveTab } from './AdminVoiceLiveTab';
 import { AdminTabHeader, StatCard, fmtUptime } from './AdminUI';
 import { useToasts } from '../state/Toasts';
+import type { HostBackupStatus } from '@zekktris/client';
 import { AvatarImage } from '../lib/AvatarImage';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { TierBadge } from '../lib/TierBadge';
@@ -126,7 +127,7 @@ export function AdminPanel() {
         { id: 'storage', label: 'Storage' },
         { id: 'security', label: 'Security' },
         { id: 'monetization', label: 'Monetization' },
-        { id: 'backup', label: 'Backup' },
+        { id: 'backup', label: 'Backup & Maintenance' },
       ];
   const effectiveTab: Tab = tabs.some((t) => t.id === tab) ? tab : tabs[0]!.id;
 
@@ -2246,6 +2247,218 @@ function ObserveMessage({ message: m }: { message: AdminPeekMessage }) {
   );
 }
 
+/**
+ * Host backups — the REAL ones.
+ *
+ * The configuration export below this panel captures guild settings, roles and
+ * channels; it has never included users, memberships or messages. That
+ * distinction went unnoticed for a long time precisely because it was labelled
+ * "backup", so this panel sits ABOVE it and answers the question an admin
+ * actually has: is this instance backed up, and when.
+ *
+ * The buttons QUEUE work for a host-side agent (scripts/agent.sh, on cron)
+ * rather than doing it here. The API cannot take a backup or rebuild the stack
+ * itself — both need the host, and reaching it would mean giving this server
+ * the Docker socket, which is root on that machine behind an HTTP endpoint.
+ */
+function HostBackupPanel() {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const [status, setStatus] = useState<HostBackupStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      setStatus(await rest.adminBackupStatus());
+    } catch {
+      setStatus(null);
+    }
+  };
+  useEffect(() => {
+    void load();
+    // The agent polls once a minute, so a queued job's result lands within
+    // about that long — poll while the panel is open so the outcome appears
+    // without the admin reloading and wondering whether it ran.
+    const t = setInterval(() => void load(), 15_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const run = async (
+    action: 'backup' | 'backup-full' | 'verify' | 'restore' | 'update' | 'restart',
+    label: string,
+    file?: string,
+  ) => {
+    setBusy(true);
+    try {
+      await rest.adminRunMaintenance(action, file);
+      toasts.push(`${label} queued — the host agent runs it within a minute`, 'success');
+      void load();
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : `Could not queue ${label}`, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const fmtSize = (n: number) =>
+    n > 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} GB` : `${Math.round(n / 1024 ** 2)} MB`;
+
+  return (
+    <section className="border border-line rounded-md p-4 space-y-3">
+      <h3 className="text-sm font-semibold text-ink-1">Server backups</h3>
+
+      {status === null || !status.configured ? (
+        <p className="text-xs text-amber-400 leading-relaxed">
+          No backup directory found. Backups are taken on the host by{' '}
+          <code>scripts/backup.sh</code>; until one runs, this instance has no restorable
+          copy of its messages, accounts or attachments.
+        </p>
+      ) : (
+        <>
+          <div
+            className={`text-xs leading-relaxed ${status.stale ? 'text-amber-400' : 'text-ink-2'}`}
+          >
+            {status.newest ? (
+              <>
+                Newest backup <strong>{status.newest.ageHours}h ago</strong> (
+                {fmtSize(status.newest.bytes)}) · {status.count} kept ·{' '}
+                {fmtSize(status.totalBytes)} total
+                {status.stale && ' — older than expected, check the backup cron'}
+              </>
+            ) : (
+              <>No backups yet — nothing here is recoverable.</>
+            )}
+          </div>
+          {status.lastJob && (
+            <div className="text-xs text-ink-3">
+              Last job: <strong>{status.lastJob.action}</strong>{' '}
+              {status.lastJob.ok ? 'succeeded' : `FAILED (exit ${status.lastJob.exitCode})`}
+            </div>
+          )}
+          {status.pending && (
+            <div className="text-xs text-ink-3">A job is queued, waiting for the host agent…</div>
+          )}
+        </>
+      )}
+
+      <div className="flex flex-wrap gap-2 pt-1">
+        <button
+          onClick={() => void run('backup', 'Database backup')}
+          disabled={busy || status?.pending}
+          className="px-3 py-1.5 text-xs rounded-md border border-line hover:bg-bg-2 disabled:opacity-50"
+        >
+          Back up database
+        </button>
+        <button
+          onClick={() => void run('backup-full', 'Full backup')}
+          disabled={busy || status?.pending}
+          className="px-3 py-1.5 text-xs rounded-md border border-line hover:bg-bg-2 disabled:opacity-50"
+        >
+          Full backup (with attachments)
+        </button>
+        <button
+          onClick={() => void run('verify', 'Verification')}
+          disabled={busy || status?.pending || !status?.newest}
+          className="px-3 py-1.5 text-xs rounded-md border border-line hover:bg-bg-2 disabled:opacity-50"
+        >
+          Verify newest
+        </button>
+        <button
+          onClick={() => void run('update', 'Update')}
+          disabled={busy || status?.pending}
+          className="px-3 py-1.5 text-xs rounded-md border border-line hover:bg-bg-2 disabled:opacity-50"
+        >
+          Update &amp; restart
+        </button>
+      </div>
+
+      {/* Verification result, stated plainly. "A backup exists" and "a backup
+          would actually restore" are different claims, and only the second one
+          is worth anything — so the panel never asserts it without having run
+          the check. */}
+      {status?.lastJob?.action === 'verify' && (
+        <div
+          className={`text-xs rounded-md border p-2 leading-relaxed ${
+            status.lastJob.ok
+              ? 'border-emerald-700/50 text-emerald-400'
+              : 'border-red-700/50 text-red-400'
+          }`}
+        >
+          {status.lastJob.ok ? (
+            <>
+              <strong>Verified.</strong> The newest bundle's database dump was read end to end
+              and is safe to restore from.
+            </>
+          ) : (
+            <>
+              <strong>Verification FAILED.</strong> The newest bundle cannot restore this
+              instance. Take a fresh backup and verify it before relying on any of these.
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Restore. Destructive, so it is the only control here that makes you
+          name the thing you are replacing the instance with. */}
+      {status?.newest && (
+        <details className="pt-1">
+          <summary className="text-xs text-ink-3 cursor-pointer">Restore from a backup…</summary>
+          <div className="mt-2 space-y-2 border border-red-900/40 rounded-md p-3">
+            <p className="text-xs text-red-400 leading-relaxed">
+              Restoring <strong>replaces the entire database</strong> — every message and
+              account since that backup is gone. Verify the bundle first, then type its exact
+              filename to confirm.
+            </p>
+            <RestoreConfirm
+              expected={status.newest.filename}
+              disabled={busy || status.pending}
+              onConfirm={(file) => void run('restore', 'Restore', file)}
+            />
+          </div>
+        </details>
+      )}
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Update takes its own backup first, applies any new migrations at boot, and rolls the
+        code back automatically if the new build fails its startup checks. Migrations are not
+        undone by that rollback — which is why it backs up first.
+      </p>
+    </section>
+  );
+}
+
+/** Type-the-filename confirmation for a restore. Deliberately more friction
+ *  than a confirm() dialog: this is the one admin control that can destroy the
+ *  instance, and a muscle-memory "OK" should not be able to reach it. */
+function RestoreConfirm({
+  expected,
+  disabled,
+  onConfirm,
+}: {
+  expected: string;
+  disabled: boolean;
+  onConfirm: (file: string) => void;
+}) {
+  const [typed, setTyped] = useState('');
+  return (
+    <>
+      <code className="block text-[11px] text-ink-3 break-all">{expected}</code>
+      <input
+        value={typed}
+        onChange={(e) => setTyped(e.target.value)}
+        placeholder="type the filename above"
+        className="w-full px-2 py-1 text-xs rounded border border-line bg-bg-1"
+      />
+      <button
+        onClick={() => onConfirm(expected)}
+        disabled={disabled || typed.trim() !== expected}
+        className="px-3 py-1.5 text-xs rounded-md border border-red-700/60 text-red-400 hover:bg-red-950/30 disabled:opacity-40"
+      >
+        Restore this backup
+      </button>
+    </>
+  );
+}
+
 // ── Backup tab (instance-level config backup / restore) ─────────────────────
 //
 // Instance-admin tool: download a single JSON bundling every guild's config
@@ -2322,12 +2535,14 @@ function BackupAdminTab() {
     <div className="space-y-6 max-w-3xl">
       <AdminTabHeader
         icon={Archive}
-        title="Backup & Restore"
-        subtitle="Download every server's configuration as one file, or rebuild servers from a backup."
+        title="Backup & Maintenance"
+        subtitle="Server backups taken on the host, and the configuration export."
       />
 
+      <HostBackupPanel />
+
       <section className="border border-line rounded-md p-4 space-y-3">
-        <h3 className="text-sm font-semibold text-ink-1">Download instance backup</h3>
+        <h3 className="text-sm font-semibold text-ink-1">Export server configuration</h3>
         <p className="text-xs text-ink-3 leading-relaxed">
           Bundles each server's settings, roles, channel structure, and permission overrides into one
           JSON file. This is a <strong>configuration</strong> backup — it does not include users,

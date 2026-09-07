@@ -297,6 +297,12 @@ services:
       # the db container, and giving this container the Docker socket to reach
       # that would be a root-equivalent handle behind an HTTP endpoint.
       - ${APPDATA_PATH:-/mnt/user/appdata/zekktris}/backups:/data/backups:ro
+      # Maintenance request queue. WRITABLE, unlike the backups mount above —
+      # but the API only ever drops a small JSON file naming one of a fixed set
+      # of actions, which scripts/agent.sh (running on the host, via cron)
+      # picks up and executes. That keeps the Docker socket, and therefore root
+      # on this machine, out of reach of anything that can talk to the API.
+      - ${APPDATA_PATH:-/mnt/user/appdata/zekktris}/control:/data/control
     depends_on:
       db:
         condition: service_healthy

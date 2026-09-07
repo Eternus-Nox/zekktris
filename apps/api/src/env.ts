@@ -244,6 +244,10 @@ export const envSchema = z.object({
    *  the Docker socket to reach it would be a root-equivalent handle behind an
    *  HTTP endpoint). */
   BACKUP_DIR: z.string().default('/data/backups'),
+  /** Where admin-triggered maintenance requests are dropped for the host agent
+   *  (scripts/agent.sh) to pick up. Writable, unlike BACKUP_DIR — but only ever
+   *  written with a JSON file naming one of a fixed set of actions. */
+  CONTROL_DIR: z.string().default('/data/control'),
   /** Whether the sweep only LOGS what it would reclaim (true) or actually
    *  deletes (false). Defaults to 'false' — it really deletes — since retention
    *  is enabled above and a permanently-dry sweep reclaims nothing.

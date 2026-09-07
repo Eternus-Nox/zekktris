@@ -37,6 +37,7 @@ import * as voice from '../services/voice';
 import * as dispatch from '../gateway/dispatch';
 import { leftVoiceStateDTO, toAttachment } from '../lib/dto';
 import { registry } from '../gateway/registry';
+import { MAINTENANCE_ACTIONS } from '../services/backupSnapshots';
 import {
   listStorageItems,
   deleteStorageItem,
@@ -71,6 +72,14 @@ const MODERATOR_ALLOWED: { method: string; pattern: RegExp }[] = [
 // is strictly more than a moderator's chartered scope (security log, ban, peek
 // PUBLIC guild channels). Admin-only is the decision, not an oversight — don't
 // "fix" it by adding it here.
+//
+// Also deliberately absent, and for a much sharper reason: /backups and
+// /maintenance. Those queue work that runs on the HOST as root — a backup, a
+// rebuild, and a RESTORE that replaces the entire database. That is instance
+// ownership, not moderation, and no moderator charter includes it. The gate
+// below denies anything unlisted, so this stays admin-only by construction —
+// adding either pattern here would hand a moderator the ability to wipe the
+// instance.
 
 adminRouter.use('*', requireAuth, requireStaff, async (c, next) => {
   if (!staffIsAdmin(c)) {
@@ -316,9 +325,53 @@ adminRouter.get(
 // hazard in the container. What an admin needs to see is whether backups are
 // happening at all — the gap that went unnoticed for months.
 adminRouter.get('/backups', async (c) => {
-  const { readBackupStatus } = await import('../services/backupSnapshots');
-  return c.json(await readBackupStatus());
+  const { readBackupStatus, readLastMaintenance, isMaintenancePending } = await import(
+    '../services/backupSnapshots'
+  );
+  const [status, lastJob, pending] = await Promise.all([
+    readBackupStatus(),
+    readLastMaintenance(),
+    isMaintenancePending(),
+  ]);
+  return c.json({ ...status, lastJob, pending });
 });
+
+// POST /admin/maintenance → ask the HOST to run one action.
+//
+// This process cannot run any of them itself. A backup needs pg_dump against
+// the db container; an update rebuilds the very container serving this
+// request. Both would need the Docker socket, which is a root-equivalent
+// handle on the host reachable over HTTP — so instead this writes a request
+// that scripts/agent.sh picks up with the privileges it already has.
+//
+// The action name is the ONLY thing that crosses that boundary, and the agent
+// uses it to select a branch of a fixed `case`, never to build a command. The
+// zod enum here is convenience; the agent's allowlist is the actual boundary.
+adminRouter.post(
+  '/maintenance',
+  validate(
+    'json',
+    z.object({
+      action: z.enum(MAINTENANCE_ACTIONS),
+      /** Restore only: the exact bundle filename. Required, and matched to a
+          strict pattern in the service — a restore REPLACES the entire
+          database, so it must never be something a stray click can trigger.
+          Naming the bundle is the confirmation. */
+      file: z.string().max(128).optional(),
+    }),
+  ),
+  async (c) => {
+    const userId = requireUserId(c);
+    const { action, file } = c.req.valid('json');
+    const { requestMaintenance } = await import('../services/backupSnapshots');
+    const result = await requestMaintenance(action, userId, file);
+    if (!result.queued) throw errors.badRequest(result.reason ?? 'could not queue the job');
+    // Running a backup or an update is a staff action against the whole
+    // instance; it belongs in the same log as bans and peeks.
+    await auditStaff(c, 'staff_observe', `Queued host maintenance: ${action}`);
+    return c.json({ queued: true, action });
+  },
+);
 
 adminRouter.post('/backup/restore', async (c) => {
   const userId = requireUserId(c);
