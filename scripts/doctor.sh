@@ -58,6 +58,22 @@ APPDATA="${APPDATA:-/mnt/user/appdata/zekktris}"
 head2 "Host"
 if [[ -z "$COMPOSE" ]]; then bad "docker compose not found"; else ok "docker compose: $COMPOSE"; fi
 
+# Git's ownership guard. On an Unraid share the files belong to the share's
+# uid while this runs as root, so git refuses every command with a "dubious
+# ownership" fatal — which blocks update.sh entirely and reads like the repo
+# is broken rather than a one-line config away from working.
+if git rev-parse HEAD >/dev/null 2>&1; then
+    ok "git can read this repository"
+elif git rev-parse HEAD 2>&1 | grep -q 'dubious ownership'; then
+    if [[ "$FIX" == "1" ]] && git config --global --add safe.directory "$ROOT" 2>/dev/null; then
+        fixed "marked $ROOT as a safe.directory for git"
+    else
+        bad "git refuses this directory (dubious ownership) — updates cannot run"
+    fi
+else
+    bad "not a usable git repository — updates cannot run"
+fi
+
 FREE_G=$(df -Pg / 2>/dev/null | awk 'NR==2{print $4}')
 if [[ -n "${FREE_G:-}" ]] && [[ "$FREE_G" -lt 5 ]]; then
     bad "only ${FREE_G}G free on / — builds need ~3G and a full disk takes the box down"

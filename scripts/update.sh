@@ -56,6 +56,17 @@ else fail "docker compose not found"; fi
 
 # ── What would change ───────────────────────────────────────────────────────
 step "Checking for updates"
+# Git refuses to operate on a repo owned by another user, which is the normal
+# state on an Unraid share (the files belong to the share's uid, this runs as
+# root). The raw "dubious ownership" fatal reads like corruption, so name it.
+if ! git rev-parse HEAD >/dev/null 2>&1; then
+    if git rev-parse HEAD 2>&1 | grep -q 'dubious ownership'; then
+        fail "git refuses this directory because it is owned by another user. Fix it once with:
+      git config --global --add safe.directory $ROOT
+    (or run ./scripts/doctor.sh --fix, which does it for you)"
+    fi
+    fail "not a usable git repository: $ROOT"
+fi
 CURRENT="$(git rev-parse HEAD)"
 git fetch --quiet origin || fail "could not reach the git remote"
 TARGET="$(git rev-parse origin/master)"
