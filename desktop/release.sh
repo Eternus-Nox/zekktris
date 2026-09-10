@@ -1,31 +1,43 @@
 #!/usr/bin/env bash
-# Zekktris Desktop — one-command release pipeline (run on macOS)
-# =============================================================
-# Builds the desktop app for macOS + Windows + Linux and publishes the
-# installers + the auto-update feed to the server's desktop-updates folder.
-# Caddy serves that folder at https://<host>/desktop/updates/ — the SAME
-# place the website download buttons AND the Electron auto-updater read from.
-# So one run ships an update to every desktop platform at once.
+# Zekktris Desktop — one-command release pipeline
+# ===============================================
+# Builds the desktop app and publishes the installers + the auto-update feed to
+# the server's desktop-updates folder. Caddy serves that folder at
+# https://<host>/desktop/updates/ — the SAME place the website download buttons
+# AND the Electron auto-updater read from.
 #
-#   ./release.sh                 # interactive: pick (1) macOS only, or
-#                                #   (2) Linux + Windows via Docker (wine image)
-#   ./release.sh --mac-only      # just macOS (fast local iteration; no prompt)
-#   ./release.sh --cross docker  # all 3 incl. mac, Win+Linux in Docker (no prompt)
-#   ./release.sh --no-bump       # rebuild + republish without bumping the version
-#   ./release.sh --set-version 2.1.0
-#   ./release.sh --dry-run       # show what it WOULD build/publish, do nothing
+# WHERE TO RUN IT — two hosts, and they are not interchangeable:
 #
-# Build matrix on a Mac:
-#   macOS   — built natively (dmg + zip). The zip is what Squirrel.Mac
-#             auto-update consumes; the dmg is the website download.
-#   Windows — NSIS installer, built in the official electron-builder Docker
-#             image (it bundles wine). `--cross wine` uses a locally-installed
-#             wine instead; `--mac-only` skips it.
-#   Linux   — AppImage, built in the same Docker image (or locally with wine off).
+#   Unraid (Linux, x86_64) — Windows + Linux. The ONLY place the Windows
+#       installer can be built: electron-builder runs the NSIS installer under
+#       wine, and wine cannot even boot under emulation on Apple Silicon
+#       (proven 2026-08-06 — not a RAM problem, not fixable in config). Needs
+#       no Node on the host; the Docker image installs and builds. Publishes
+#       straight into ../desktop-updates. Does NOT bump the version: that comes
+#       from git, bumped on the Mac and pushed.
 #
-# Configure the publish target ONCE in desktop/.env.release (gitignored) — see
-# .env.release.example. Either an SSH target (rsync over SSH to the host) or a
-# locally-mounted share:
+#         cd /mnt/user/appdata/zekktris/desktop && bash release.sh
+#
+#       `bash release.sh`, not `./release.sh` — the exec bit does not survive
+#       the SMB share.
+#
+#   macOS — the Mac build (dmg + zip), plus Linux. Bumps the version.
+#
+#         ./release.sh                   # interactive: (1) macOS, (2) Linux
+#         ./release.sh --mac-only        # just macOS, no prompt
+#
+# Flags:
+#   --no-bump                  don't bump (on Unraid: republish a version on purpose)
+#   --bump patch|minor|major   Mac only
+#   --set-version X.Y.Z        Mac only
+#   --mac-only                 Mac only
+#   --cross docker|wine|skip   how to build Windows + Linux (default docker)
+#   --publish-dir DIR          publish into a local/mounted folder
+#   --publish-ssh user@host:DIR
+#   --dry-run                  show what it WOULD build/publish, do nothing
+#
+# On the Mac, set the publish target ONCE in desktop/.env.release (gitignored,
+# see .env.release.example):
 #   ZK_PUBLISH_SSH="root@tower:/mnt/user/appdata/zekktris/desktop-updates"
 #   ZK_PUBLISH_DIR="/Volumes/appdata/zekktris/desktop-updates"
 # Optional — fold the freshly-built Android APK into the same publish so the
@@ -37,6 +49,8 @@ cd "$(dirname "$0")"
 # ── Defaults (override via flags or .env.release) ───────────────────────────
 BUMP="patch"          # patch | minor | major | none
 SETVER=""             # explicit X.Y.Z (wins over BUMP)
+VERSION_FLAG="0"      # --bump / --set-version was passed
+NO_BUMP_FLAG="0"      # --no-bump was passed
 CROSS="docker"        # docker | wine | skip  (how to build win+linux)
 MAC_ARCH="universal"  # universal | arm64 | x64  (universal runs on Intel + Apple Silicon)
 MAC_SIGN="0"          # 1 to code-sign+notarize macOS (needs identity set up); 0 = unsigned
@@ -54,9 +68,9 @@ if [ -f .env.release ]; then set -a; . ./.env.release; set +a; fi
 # ── Args ────────────────────────────────────────────────────────────────────
 while [ $# -gt 0 ]; do
   case "$1" in
-    --bump) BUMP="${2:?}"; shift 2 ;;
-    --no-bump) BUMP="none"; shift ;;
-    --set-version) SETVER="${2:?}"; BUMP="none"; shift 2 ;;
+    --bump) BUMP="${2:?}"; VERSION_FLAG="1"; shift 2 ;;
+    --no-bump) BUMP="none"; NO_BUMP_FLAG="1"; shift ;;
+    --set-version) SETVER="${2:?}"; BUMP="none"; VERSION_FLAG="1"; shift 2 ;;
     --cross) CROSS="${2:?}"; EXPLICIT_TARGET="1"; shift 2 ;;
     --mac-only) ONLY_MAC="1"; EXPLICIT_TARGET="1"; shift ;;
     --mac-arch) MAC_ARCH="${2:?}"; shift 2 ;;
@@ -64,7 +78,7 @@ while [ $# -gt 0 ]; do
     --publish-ssh) ZK_PUBLISH_SSH="${2:?}"; shift 2 ;;
     --publish-dir) ZK_PUBLISH_DIR="${2:?}"; shift 2 ;;
     --dry-run) DRYRUN="1"; shift ;;
-    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,/^set -euo/p' "$0" | grep -v '^set -euo'; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -74,19 +88,42 @@ warn() { printf '\033[33m!! \033[0m %s\n' "$*" >&2; }
 die() { printf '\033[31mxx \033[0m %s\n' "$*" >&2; exit 1; }
 run() { if [ "$DRYRUN" = "1" ]; then echo "  [dry-run] $*"; else eval "$@"; fi; }
 
-[ "$(uname -s)" = "Darwin" ] || warn "This script is meant to run on macOS (you're on $(uname -s)). Continuing anyway."
+# Read the version without Node — the Unraid host has none.
+pkg_version() {
+  sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' package.json | head -1
+}
 
-# ── Interactive build-target menu ────────────────────────────────────────────
+# ── Host ────────────────────────────────────────────────────────────────────
+ON_MAC="0"; [ "$(uname -s)" = "Darwin" ] && ON_MAC="1"
+# Apple Silicon builds macOS + Linux, never Windows (see the header).
+WIN_OK="1"; [ "$ON_MAC" = "1" ] && [ "$(uname -m)" = "arm64" ] && WIN_OK="0"
+
+if [ "$ON_MAC" = "0" ]; then
+  [ "$ONLY_MAC" = "1" ] && die "macOS builds need a Mac. On this host, run without --mac-only."
+  # The version lives in git. Bumping it here would edit a tracked file inside
+  # the live server checkout, and the next push from the Mac is refused until
+  # someone untangles it.
+  [ "$VERSION_FLAG" = "1" ] && die "Bump the version on the Mac, not here: in desktop/ run 'npm version patch --no-git-tag-version', commit, push — then re-run this."
+  BUMP="none"; DO_MAC="0"; EXPLICIT_TARGET="1"
+  [ "$CROSS" = "skip" ] && die "--cross skip leaves nothing to build on this host."
+  # Default publish target: the folder Caddy serves, right beside this checkout.
+  if [ -z "$ZK_PUBLISH_SSH" ] && [ -z "$ZK_PUBLISH_DIR" ] && [ -d ../desktop-updates ]; then
+    ZK_PUBLISH_DIR="$(cd ../desktop-updates && pwd)"
+  fi
+fi
+
+# ── Interactive build-target menu (Mac) ──────────────────────────────────────
 # When run from a terminal without an explicit target flag (--mac-only /
 # --cross), ask what to build. Flags still bypass this for automated runs.
-#   1) macOS only       — native dmg + zip; skips Windows + Linux.
-#   2) Linux + Windows  — built in the electron-builder Docker image (bundles
-#                         wine); skips mac. Needs the Docker daemon (colima) up.
 if [ "$EXPLICIT_TARGET" = "0" ] && [ -t 0 ]; then
   echo
   say "What do you want to build?"
   printf '    1) macOS only\n'
-  printf '    2) Linux + Windows (Docker wine image)\n'
+  if [ "$WIN_OK" = "1" ]; then
+    printf '    2) Linux + Windows (Docker wine image)\n'
+  else
+    printf '    2) Linux only (Windows is built on Unraid — bash release.sh there)\n'
+  fi
   printf '\033[36m==>\033[0m Choose [1/2]: '
   read -r _choice || die "No selection — aborted."
   case "$_choice" in
@@ -100,23 +137,57 @@ fi
 # electron-updater only offers an update when the PUBLISHED version is higher
 # than the installed one, so the version MUST change for an update to reach
 # anyone. Bump it (or set it explicitly) before building.
-CUR="$(node -p "require('./package.json').version")"
+CUR="$(pkg_version)"
+[ -n "$CUR" ] || die "Could not read the version from package.json."
 if [ -n "$SETVER" ]; then
   say "Setting version $CUR → $SETVER"
   run "npm version \"$SETVER\" --no-git-tag-version >/dev/null"
 elif [ "$BUMP" != "none" ]; then
   say "Bumping version ($BUMP) from $CUR"
   run "npm version \"$BUMP\" --no-git-tag-version >/dev/null"
-else
+elif [ "$ON_MAC" = "1" ]; then
   warn "Not bumping (current $CUR). Clients already on $CUR will NOT see this as an update."
 fi
-VER="$(node -p "require('./package.json').version")"
+VER="$(pkg_version)"
+
+# On Unraid the version comes from git, so the easy mistake is forgetting to
+# bump it on the Mac: the build succeeds, publishes, and no client ever sees
+# it as an update. Catch that before spending minutes on a build.
+if [ "$ON_MAC" = "0" ] && [ "$NO_BUMP_FLAG" = "0" ] && [ -n "$ZK_PUBLISH_DIR" ] \
+   && [ -f "$ZK_PUBLISH_DIR/latest.yml" ]; then
+  PUB="$(sed -n 's/^version:[[:space:]]*//p' "$ZK_PUBLISH_DIR/latest.yml" | head -1 | tr -d "\"'")"
+  NEWEST="$(printf '%s\n%s\n' "$PUB" "$VER" | sort -V | tail -1)"
+  if [ -n "$PUB" ] && { [ "$PUB" = "$VER" ] || [ "$NEWEST" != "$VER" ]; }; then
+    die "package.json says v$VER but v$PUB is already published, so no client would see this as an update. Bump it on the Mac (desktop/: npm version patch --no-git-tag-version), commit, push, then re-run. (--no-bump republishes the same version on purpose.)"
+  fi
+fi
 say "Releasing Zekktris desktop v$VER"
 
-# ── 2. Install deps + build the shell bundles ───────────────────────────────
-say "Installing deps + building main/preload (npm install && npm run build)"
-run "npm install"
-run "npm run build"
+# ── 2. Build the shell bundles on the host (only when the host builds) ──────
+# The Docker path installs and builds inside the container, so a Windows +
+# Linux run needs no Node on the host — which is what lets it run on Unraid.
+if [ "$DO_MAC" = "1" ] || [ "$CROSS" = "wine" ]; then
+  say "Installing deps + building main/preload (npm install && npm run build)"
+  run "npm install"
+  run "npm run build"
+fi
+
+# ── Clear the previous run's artifacts ──────────────────────────────────────
+# Publishing copies every matching file in release/, so a leftover from an
+# older build ships as if it were new. Not hypothetical: the server checkout's
+# release/ held a June macOS dmg + latest-mac.yml that a Windows run there
+# would have published over the current Mac download. Each run publishes only
+# what it built.
+PUBLISH_GLOBS=('latest.yml' 'latest-mac.yml' 'latest-linux.yml' '*.blockmap'
+               'Zekktris.exe' 'Zekktris.dmg' 'Zekktris.zip' 'Zekktris.AppImage')
+if [ -d release ]; then
+  for g in "${PUBLISH_GLOBS[@]}"; do
+    for f in release/$g; do
+      [ -e "$f" ] || continue
+      if [ "$DRYRUN" = "1" ]; then echo "  [dry-run] rm $f"; else rm -f "$f"; fi
+    done
+  done
+fi
 
 # ── 3. macOS (native) ───────────────────────────────────────────────────────
 if [ "$DO_MAC" = "1" ]; then
@@ -137,10 +208,15 @@ fi
 if [ "$ONLY_MAC" = "1" ] || [ "$CROSS" = "skip" ]; then
   warn "Skipping Windows + Linux (mac-only)."
 else
+  TARGETS="--win --linux"
+  if [ "$WIN_OK" = "0" ]; then
+    TARGETS="--linux"
+    warn "Skipping Windows: it cannot be built on Apple Silicon. Build it on Unraid (bash release.sh)."
+  fi
   case "$CROSS" in
     docker)
-      command -v docker >/dev/null || die "Docker not found. Install Docker Desktop, or use --cross wine, or --mac-only."
-      say "Building Windows + Linux in the electron-builder Docker image (wine)"
+      command -v docker >/dev/null || die "Docker not found. Install Docker, or use --cross wine, or --mac-only."
+      say "Building ($TARGETS) in the electron-builder Docker image"
       # Mount the project; shadow node_modules with an anonymous volume so the
       # container's Linux/wine npm install never clobbers the host's macOS
       # node_modules (esbuild/electron are platform-specific). Cache electron
@@ -151,12 +227,12 @@ else
         -v \"\${HOME}/.cache/electron\":/root/.cache/electron \
         -v \"\${HOME}/.cache/electron-builder\":/root/.cache/electron-builder \
         electronuserland/builder:wine \
-        /bin/bash -c \"cd /project && npm install && npm run build && npx electron-builder --win --linux --publish never\""
+        /bin/bash -c \"cd /project && npm install && npm run build && npx electron-builder $TARGETS --publish never\""
       ;;
     wine)
       command -v wine >/dev/null || die "wine not found. 'brew install --cask wine-stable', or use --cross docker."
-      say "Building Windows + Linux locally (wine)"
-      run "npx electron-builder --win --linux --publish never"
+      say "Building ($TARGETS) locally (wine)"
+      run "npx electron-builder $TARGETS --publish never"
       ;;
     *) die "Unknown --cross value: $CROSS (use docker|wine|skip)" ;;
   esac
@@ -166,16 +242,15 @@ fi
 # These are exactly what electron-updater + the website need: the installers,
 # the per-OS manifests, and the .blockmap delta files. We push a curated list
 # (not the whole release/ dir, which also has unpacked app folders).
-if [ ! -d release ]; then
-  if [ "$DRYRUN" = "1" ]; then
-    say "[dry-run] would collect installers + latest*.yml + *.blockmap from release/ and publish them"
-    exit 0
-  fi
-  die "release/ not found — the build produced no output."
+# A dry run built nothing and deleted nothing, so whatever sits in release/
+# now is exactly the stale leftovers a real run would have cleared. Listing
+# them as "would publish" would be a lie.
+if [ "$DRYRUN" = "1" ]; then
+  say "[dry-run] would publish this run's installers + latest*.yml + *.blockmap → ${ZK_PUBLISH_DIR:-${ZK_PUBLISH_SSH:-<no publish target set>}}"
+  exit 0
 fi
+[ -d release ] || die "release/ not found — the build produced no output."
 cd release
-PUBLISH_GLOBS=(latest.yml latest-mac.yml latest-linux.yml *.blockmap \
-               Zekktris.exe Zekktris.dmg Zekktris.zip Zekktris.AppImage)
 PRESENT=()
 for g in "${PUBLISH_GLOBS[@]}"; do
   for f in $g; do [ -e "$f" ] && PRESENT+=("$f"); done
@@ -202,6 +277,7 @@ publish() { # publish <dest-is-ssh:0|1> <dest>
     run "rsync -av ${PRESENT[*]} \"$dest/\""
     [ -n "$ZK_APK_PATH" ] && [ -f "$ZK_APK_PATH" ] && run "rsync -av \"$ZK_APK_PATH\" \"$dest/Zekktris.apk\""
   fi
+  return 0
 }
 
 [ -n "$ZK_PUBLISH_SSH" ] && publish 1 "$ZK_PUBLISH_SSH"
