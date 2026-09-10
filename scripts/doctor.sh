@@ -168,6 +168,32 @@ if [[ -n "$COMPOSE" ]]; then
     fi
 fi
 
+# ── Client IP ───────────────────────────────────────────────────────────────
+# Compares what Cloudflare says the visitor's address is (Cf-Connecting-Ip)
+# with what Caddy resolved and forwarded to the API (client_ip). They must be
+# equal. When they are not, every per-IP control — rate limits, bans, the
+# sessions list — is keyed on the proxy hop instead of the person. That
+# happened twice: first against Cloudflare edge IPs, then, after the fix,
+# against the tunnel connector's Docker gateway (172.19.0.1) — every user on
+# one address, and no error anywhere.
+head2 "Client IP"
+if [[ -n "$COMPOSE" ]] && docker inspect zekktris-proxy >/dev/null 2>&1; then
+    LINE="$(docker logs --tail 300 zekktris-proxy 2>&1 | grep '"Cf-Connecting-Ip"' | tail -1)"
+    if [[ -z "$LINE" ]]; then
+        warn "no Cloudflare-fronted request in the recent proxy log to check"
+    else
+        SEEN="$(printf '%s' "$LINE" | grep -o '"client_ip": "[^"]*"' | head -1 | sed -E 's/.*: "([^"]*)"/\1/')"
+        CF="$(printf '%s' "$LINE" | grep -o '"Cf-Connecting-Ip": \["[^"]*"' | head -1 | sed -E 's/.*\["([^"]*)"/\1/')"
+        if [[ -n "$CF" && "$SEEN" == "$CF" ]]; then
+            ok "the API sees the real visitor address ($CF)"
+        else
+            bad "Caddy resolves visitors to $SEEN but Cloudflare says $CF — per-IP limits and bans are keyed on the proxy, not the person (rebuild proxy: docker compose build proxy && docker compose up -d proxy)"
+        fi
+    fi
+else
+    warn "proxy container not found — skipped the client-IP check"
+fi
+
 # ── Push ────────────────────────────────────────────────────────────────────
 head2 "Push"
 if [[ -f "$SCRIPT_DIR/fcm-test.mjs" ]] && grep -qE '^FCM_PROJECT_ID=.+' .env 2>/dev/null; then
