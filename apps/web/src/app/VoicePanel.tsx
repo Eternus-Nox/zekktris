@@ -30,6 +30,7 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
   const voiceStatesByUser = useAppStateSelector((v) => v.state.voiceStatesByUser);
   const channelsByGuild = useAppStateSelector((v) => v.state.channelsByGuild);
   const restForChannel = useAppStateSelector((v) => v.restForChannel);
+  const mergeChannelVoiceStates = useAppStateSelector((v) => v.mergeChannelVoiceStates);
   const { user } = useAuth();
   const toasts = useToasts();
   const my = selfVoiceState(voiceStatesByUser, user?.id);
@@ -68,6 +69,29 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
 
   const channelLabel = channel?.name ?? 'Voice channel';
 
+  /**
+   * A 409 from the mute/deafen sync means the server no longer has us in this
+   * channel — typically the gateway evicted us after its socket had been down
+   * a while, with LiveKit media still connected. Leaving that call running is
+   * worse than ending it: audio works but every control fails, and our roster
+   * disagrees with everyone else's. So end it cleanly, resync the roster from
+   * the server, and say plainly what happened.
+   */
+  async function onServerSyncFailed(e: unknown, channelId: string, fallback: string) {
+    if (e instanceof ApiError && e.status === 409) {
+      await disconnectVoice();
+      try {
+        const r = await (await restForChannel(channelId)).listVoiceStates(channelId);
+        mergeChannelVoiceStates(channelId, r.voiceStates);
+      } catch {
+        // The roster heals on the next gateway event; the call is already down.
+      }
+      toasts.push('You were disconnected from voice — rejoin to continue.', 'info');
+      return;
+    }
+    toasts.push(e instanceof ApiError ? e.message : fallback, 'error');
+  }
+
   async function toggleMute() {
     if (!my?.channelId) return;
     const nextMuted = !my.selfMute;
@@ -90,7 +114,7 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
           : { selfMute: nextMuted },
       );
     } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Server mute sync failed', 'error');
+      await onServerSyncFailed(e, my.channelId, 'Server mute sync failed');
     }
   }
 
@@ -117,7 +141,7 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
         selfMute: next,
       });
     } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Server deafen sync failed', 'error');
+      await onServerSyncFailed(e, my.channelId, 'Server deafen sync failed');
     }
   }
 

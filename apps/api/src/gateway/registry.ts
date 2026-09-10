@@ -137,6 +137,13 @@ class Registry {
    * cleanup fires at exactly the same moment as before: when the user's last
    * LIVE socket goes away.
    */
+  /** Whether the user has at least one live (non-detached) socket. The public
+   *  read of userLiveCount, for the voice-eviction recheck in server.ts: it
+   *  awaits LiveKit, and must not evict someone who reconnected meanwhile. */
+  isUserLive(userId: bigint): boolean {
+    return this.userLiveCount(userId) > 0;
+  }
+
   private userLiveCount(userId: bigint): number {
     const set = this.byUser.get(userId);
     if (!set) return 0;

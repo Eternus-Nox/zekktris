@@ -502,8 +502,30 @@ export function VoiceView({
         dropDeafen ? { selfMute: next, selfDeaf: false } : { selfMute: next },
       );
     } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Mute sync failed', 'error');
+      await onServerSyncFailed(e, myVoice.channelId, 'Mute sync failed');
     }
+  }
+
+  /**
+   * A 409 from the mute/deafen sync means the server no longer has us in this
+   * channel — typically the gateway evicted us after its socket had been down
+   * a while, with LiveKit media still connected. Same response as VoicePanel:
+   * end the call cleanly, resync the roster, say what happened — rather than a
+   * cryptic error over a call whose controls have all stopped working.
+   */
+  async function onServerSyncFailed(e: unknown, channelId: string, fallback: string) {
+    if (e instanceof ApiError && e.status === 409) {
+      await disconnectVoice();
+      try {
+        const r = await (await restForChannel(channelId)).listVoiceStates(channelId);
+        mergeChannelVoiceStates(channelId, r.voiceStates);
+      } catch {
+        // The roster heals on the next gateway event; the call is already down.
+      }
+      toasts.push('You were disconnected from voice — rejoin to continue.', 'info');
+      return;
+    }
+    toasts.push(e instanceof ApiError ? e.message : fallback, 'error');
   }
 
   async function toggleDeafen() {
@@ -537,7 +559,7 @@ export function VoiceView({
         selfMute: next,
       });
     } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Deafen sync failed', 'error');
+      await onServerSyncFailed(e, myVoice.channelId, 'Deafen sync failed');
     }
   }
 

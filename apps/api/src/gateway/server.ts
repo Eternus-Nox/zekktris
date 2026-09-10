@@ -112,6 +112,11 @@ export function attachGateway(httpServer: HttpServer): void {
   // Pending voice-eviction timers keyed by userId (see grace period in
   // onUserFullyDisconnected below).
   const VOICE_EVICT_GRACE_MS = 45_000;
+  /** How many more grace windows to wait while LiveKit still reports the user
+   *  in their room. 40 x 45s = 30 minutes: long enough to ride out any real
+   *  signalling outage, bounded so a client whose gateway is permanently dead
+   *  but whose media lingers is eventually cleaned up. */
+  const VOICE_EVICT_MAX_RECHECKS = 40;
   const pendingVoiceEvictions = new Map<string, ReturnType<typeof setTimeout>>();
 
   // When a user's final gateway connection drops we have two pieces of
@@ -133,11 +138,7 @@ export function attachGateway(httpServer: HttpServer): void {
     // 1:1 auto-hangup kill perfectly good calls. We wait, and cancel if
     // the user re-identifies in time. Presence offline-flip waits with
     // it (harmless either way).
-    const pending = setTimeout(() => {
-      pendingVoiceEvictions.delete(userId.toString());
-      runDisconnectCleanup(userId);
-    }, VOICE_EVICT_GRACE_MS);
-    pendingVoiceEvictions.set(userId.toString(), pending);
+    armVoiceEviction(userId, 0);
   };
   registry.onUserConnected = (userId: bigint) => {
     const key = userId.toString();
@@ -148,10 +149,49 @@ export function attachGateway(httpServer: HttpServer): void {
     }
   };
 
-  function runDisconnectCleanup(userId: bigint): void {
+  /**
+   * Arm (or re-arm) the grace timer that evicts a fully-disconnected user
+   * from voice.
+   *
+   * The socket going away is a SIGNALLING outage; it is not the user leaving
+   * the call. LiveKit media is a separate connection and routinely survives
+   * it, so before evicting we ask LiveKit whether they are still in the room.
+   * Evicting on the socket alone deleted the voice row while leaving the
+   * participant connected — audio kept working and every mute, deafen and
+   * leave from that client then 409'd "not in voice".
+   *
+   * The entry stays in pendingVoiceEvictions for the whole async check, so a
+   * reconnect during it (onUserConnected clears the entry) still cancels. The
+   * live-count test after the await is the ground truth for the same thing.
+   */
+  function armVoiceEviction(userId: bigint, rechecks: number): void {
+    const key = userId.toString();
+    const pending = setTimeout(() => {
+      void (async () => {
+        if (pendingVoiceEvictions.get(key) !== pending) return;
+        const onSfu = await voice.isStillOnSfu(userId).catch(() => null);
+        // The await can span a reconnect. Either signal means they're back.
+        if (pendingVoiceEvictions.get(key) !== pending || registry.isUserLive(userId)) return;
+        if (onSfu === true && rechecks < VOICE_EVICT_MAX_RECHECKS) {
+          // Still in the room: the call is alive. Wait another window.
+          armVoiceEviction(userId, rechecks + 1);
+          return;
+        }
+        pendingVoiceEvictions.delete(key);
+        // Evicting someone LiveKit still reports present (the recheck cap)
+        // must remove them from the room too, or this recreates the very
+        // orphan the recheck exists to prevent. Absent or unknown: the row
+        // alone, as before.
+        runDisconnectCleanup(userId, { evictFromSfu: onSfu === true });
+      })();
+    }, VOICE_EVICT_GRACE_MS);
+    pendingVoiceEvictions.set(key, pending);
+  }
+
+  function runDisconnectCleanup(userId: bigint, opts?: { evictFromSfu?: boolean }): void {
     void (async () => {
       try {
-        const result = await voice.leaveVoice(userId);
+        const result = await voice.leaveVoice(userId, opts);
         if (result.priorState) {
           dispatch.voiceStateUpdate({
             guildId: result.priorState.guildId,

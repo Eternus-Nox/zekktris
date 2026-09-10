@@ -544,6 +544,55 @@ async function sfuRemoveParticipant(row: schema.VoiceState): Promise<void> {
 }
 
 /**
+ * Is this user still connected to the SFU for their current voice row?
+ *
+ * The gateway's disconnect cleanup needs this before it evicts. A dropped
+ * gateway socket is a SIGNALLING outage, not proof the user left the call —
+ * LiveKit media is a separate connection and routinely outlives it. Evicting
+ * on the socket alone deleted the voice_states row while the participant stayed
+ * in the room: the ORPHAN state livekitLive.ts exists to detect. Audio kept
+ * flowing, and every mute/deafen/leave from that client 409'd "not in voice".
+ *
+ *   true  — LiveKit reports them in the room: the call is alive, don't evict.
+ *   false — no voice row, or LiveKit positively says they're not there.
+ *   null  — can't tell (LiveKit unconfigured or unreachable). The caller keeps
+ *           its old behaviour; guessing "present" would strand real ghosts.
+ */
+export async function isStillOnSfu(userId: bigint): Promise<boolean | null> {
+  const [row] = await db
+    .select()
+    .from(schema.voiceStates)
+    .where(eq(schema.voiceStates.userId, userId))
+    .limit(1);
+  if (!row) return false;
+  const apiKey = env.LIVEKIT_API_KEY;
+  const apiSecret = env.LIVEKIT_API_SECRET;
+  const httpUrl =
+    env.LIVEKIT_HTTP_URL ??
+    env.LIVEKIT_WS_URL?.replace(/^wss?:/i, (m) =>
+      m.toLowerCase() === 'wss:' ? 'https:' : 'http:',
+    );
+  if (!apiKey || !apiSecret || !httpUrl) return null;
+  try {
+    const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret);
+    await svc.getParticipant(roomNameForRow(row), userId.toString());
+    return true;
+  } catch (err) {
+    // Twirp NotFound: the room or the participant is gone — a positive
+    // answer, and the one that means eviction is correct. Anything else
+    // (timeout, refused, 5xx) is "don't know", which must not be read as
+    // "absent" either.
+    const e = err as { status?: number; code?: string };
+    if (e.status === 404 || e.code === 'not_found') return false;
+    log.warn?.('livekit presence check failed', {
+      userId: userId.toString(),
+      err: (err as Error).message,
+    });
+    return null;
+  }
+}
+
+/**
  * Bank the elapsed seconds of a finished voice segment into the per-user
  * stats row (achievements: event_horizon). Upsert so the first segment
  * creates the row. Callers fire-and-forget — stats never block voice flow.
