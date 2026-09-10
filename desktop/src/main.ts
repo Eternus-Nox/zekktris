@@ -77,16 +77,22 @@ function launchedAtLogin(): boolean {
 // ── Performance + WebRTC tuning ─────────────────────────────────────────────
 // Set before the app is ready. These give smooth voice + screen-share
 // and lower CPU on a chat/voice workload:
-//   - hardware H.264 encode/decode for video & screen tracks
-//   - GPU rasterization + zero-copy for smoother scrolling/compositing
+//   - hardware H.264 encode/decode for video & screen tracks (Linux VAAPI)
 //   - PipeWire capturer so screen share works on Linux/Wayland (no-op
 //     elsewhere)
+//
+// DO NOT force GPU rasterization, zero-copy, or OOP canvas raster here.
+// Chromium already enables GPU raster by default on every GPU it trusts;
+// the `enable-gpu-rasterization` / `enable-zero-copy` switches exist to
+// turn those paths on for the GPUs and drivers it has deliberately
+// blocklisted for rendering bugs. Forcing them bought nothing on good
+// hardware, and on bad drivers they flicker — zero-copy is off by default
+// on Windows for that reason. They were the prime suspect for the Windows
+// app flickering on a fresh install until the GPU shader cache warmed up.
 app.commandLine.appendSwitch(
   'enable-features',
-  'WebRtcHideLocalIpsWithMdns,WebRTCPipeWireCapturer,VaapiVideoDecoder,VaapiVideoEncoder,CanvasOopRasterization',
+  'WebRtcHideLocalIpsWithMdns,WebRTCPipeWireCapturer,VaapiVideoDecoder,VaapiVideoEncoder',
 );
-app.commandLine.appendSwitch('enable-gpu-rasterization');
-app.commandLine.appendSwitch('enable-zero-copy');
 // Don't throttle timers/rendering when the window is backgrounded —
 // critical so the gateway WebSocket, voice, and notifications keep
 // running smoothly while the window is minimized or behind others.
