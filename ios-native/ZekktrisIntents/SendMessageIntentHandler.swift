@@ -1,5 +1,12 @@
 import Foundation
 import Intents
+import os.log
+
+/// Console.app / Xcode: filter on subsystem `com.zekktris.native.intents`.
+/// Every refusal logs WHICH precondition failed, because the symptom Siri
+/// shows the user ("you'll have to continue in the app") is the same for all
+/// of them.
+private let siriLog = Logger(subsystem: "com.zekktris.native.intents", category: "siri")
 
 /// Resolve + send for Siri's `INSendMessageIntent`.
 ///
@@ -58,6 +65,14 @@ final class SendMessageIntentHandler: NSObject, INSendMessageIntentHandling {
         // No token means signed out (or the app has never published one) —
         // say so now rather than after Siri has read the message back.
         let signedIn = (WidgetBridge.token()?.isEmpty == false)
+        if !signedIn {
+            // The app publishes the token to the app-group keychain on sign-in,
+            // on foreground and on every refresh. Missing here means either the
+            // user is signed out, or this extension cannot read the App Group —
+            // check that `group.com.zekktris.native` is on the App ID for
+            // com.zekktris.native.intents, not just on the app's.
+            siriLog.error("no token in the app group — cannot send without the app")
+        }
         completion(INSendMessageIntentResponse(code: signedIn ? .ready : .failureRequiringAppLaunch,
                                                userActivity: nil))
     }
@@ -69,34 +84,44 @@ final class SendMessageIntentHandler: NSObject, INSendMessageIntentHandling {
         completion: @escaping (INSendMessageIntentResponse) -> Void
     ) {
         let text = (intent.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty,
-              let target = SiriDirectory.target(for: intent),
-              let token = WidgetBridge.token(), !token.isEmpty
-        else {
-            completion(INSendMessageIntentResponse(code: .failureRequiringAppLaunch, userActivity: nil))
+        guard !text.isEmpty else {
+            completion(INSendMessageIntentResponse(code: .failure, userActivity: nil))
             return
         }
-        // A MISSING flag is not "plaintext" — it means this conversation was
-        // published to the App Group by a build that predates the flag, so
-        // whether it is encrypted is simply unknown. Defaulting to false there
-        // would send plaintext into an encrypted DM the first time Siri is used
-        // after an update, which is the one outcome this whole path exists to
-        // prevent. Refuse; the app republishes the list on its next foreground.
-        guard let isE2EE = target.isE2EE else {
+        guard let token = WidgetBridge.token(), !token.isEmpty else {
+            siriLog.error("no token in the app group — cannot send without the app")
             completion(INSendMessageIntentResponse(code: .failureRequiringAppLaunch, userActivity: nil))
             return
         }
         // Only value types cross into the task: capturing the intent (or self)
         // here is the non-Sendable capture that builds locally and errors in a
         // stricter-concurrency build.
-        let channelId = target.id
+        let conversationId = intent.conversationIdentifier
+        let heard = intent.recipients?.first.map {
+            $0.displayName.isEmpty ? ($0.personHandle?.value ?? "") : $0.displayName
+        } ?? ""
         Task {
-            let sent = await SiriSendAPI.send(
-                channelId: channelId, text: text, isE2EE: isE2EE, token: token,
+            guard let target = await SiriDirectory.resolve(
+                conversationId: conversationId, heard: heard, token: token,
+            ) else {
+                siriLog.error("no conversation matched \(heard, privacy: .private)")
+                completion(INSendMessageIntentResponse(code: .failure, userActivity: nil))
+                return
+            }
+            let result = await SiriSendAPI.send(
+                channelId: target.id, text: text, isE2EE: target.isE2EE, token: token,
             )
-            completion(INSendMessageIntentResponse(
-                code: sent ? .success : .failureRequiringAppLaunch, userActivity: nil,
-            ))
+            switch result {
+            case .sent:
+                completion(INSendMessageIntentResponse(code: .success, userActivity: nil))
+            case .needsApp:
+                // Locked conversation: the key for it isn't on this device, so
+                // only the app can send. This is the one case where telling the
+                // user to open the app is the correct answer.
+                completion(INSendMessageIntentResponse(code: .failureRequiringAppLaunch, userActivity: nil))
+            case .failed:
+                completion(INSendMessageIntentResponse(code: .failure, userActivity: nil))
+            }
         }
     }
 }
@@ -118,8 +143,47 @@ enum SiriDirectory {
         return id.isEmpty ? nil : id
     }
 
-    /// The conversation Siri means: the donated conversation id when there is
-    /// one, otherwise the named recipient.
+    /// One conversation, known to be a 1:1 DM, with its encryption state
+    /// settled — everything the send needs.
+    struct Target {
+        let id: String
+        let isE2EE: Bool
+    }
+
+    /// The conversation Siri means.
+    ///
+    /// The App Group snapshot is the FAST path, not the source of truth. It can
+    /// be stale (the app hasn't foregrounded since sign-in) or written by a
+    /// build that didn't record whether a DM is encrypted — and treating either
+    /// as "no such conversation" is what made Siri fall back to "you'll have to
+    /// open the app" for something it could have simply sent. So when the
+    /// snapshot can't answer confidently, ask the server: the token is right
+    /// here, and the channel list says which DMs exist and which are encrypted.
+    static func resolve(conversationId: String?, heard: String, token: String) async -> Target? {
+        let snapshot = WidgetBridge.recentDMs()
+        if let conversationId {
+            // A donated conversation. Trust it only when the snapshot also
+            // knows the encryption state, since guessing that is unsafe.
+            if let hit = snapshot.first(where: { $0.id == conversationId }), let e2ee = hit.isE2EE {
+                return Target(id: hit.id, isE2EE: e2ee)
+            }
+            if let remote = await SiriRemote.directMessages(token: token)
+                .first(where: { $0.id == conversationId }) {
+                return Target(id: remote.id, isE2EE: remote.isE2EE)
+            }
+        }
+        if let hit = rank(heard: heard, in: snapshot).first, let e2ee = hit.isE2EE {
+            return Target(id: hit.id, isE2EE: e2ee)
+        }
+        // Nothing usable locally — the server knows.
+        let remote = await SiriRemote.directMessages(token: token)
+        guard let hit = rank(heard: heard, in: remote.map(\.asWidgetDM)).first,
+              let match = remote.first(where: { $0.id == hit.id }) else { return nil }
+        return Target(id: match.id, isE2EE: match.isE2EE)
+    }
+
+    /// The conversation Siri means, from the snapshot alone. Used by recipient
+    /// resolution, which runs before the send and only needs a name.
     static func target(for intent: INSendMessageIntent) -> WidgetDM? {
         let all = WidgetBridge.recentDMs()
         if let conversationId = intent.conversationIdentifier,
@@ -267,18 +331,36 @@ enum SiriDirectory {
 // MARK: - Sending
 
 enum SiriSendAPI {
+    /// What happened, at the granularity Siri can act on: sending the user to
+    /// the app is only right when the app is genuinely the only thing that can
+    /// do it, and saying so when the network merely hiccuped is what makes the
+    /// feature feel like it doesn't work.
+    enum Outcome {
+        case sent
+        /// Only the app can proceed — the conversation is locked here, or the
+        /// published token is no longer valid and only the app can refresh it.
+        case needsApp
+        case failed
+    }
+
     /// POST the message. Mirrors QuickReply.send (the notification reply path),
     /// including its refusal to put plaintext in an encrypted conversation, but
     /// with a standalone URLSession call rather than the app's APIClient.
-    static func send(channelId: String, text: String, isE2EE: Bool, token: String) async -> Bool {
+    static func send(channelId: String, text: String, isE2EE: Bool, token: String) async -> Outcome {
         var wire = text
         if isE2EE {
-            guard let key = e2eeKey(forChannel: channelId),
-                  let encrypted = E2EE.encrypt(text, key: key) else { return false }
+            guard let key = e2eeKey(forChannel: channelId) else {
+                siriLog.error("encrypted conversation with no key on this device")
+                return .needsApp
+            }
+            guard let encrypted = E2EE.encrypt(text, key: key) else {
+                siriLog.error("encryption failed")
+                return .failed
+            }
             wire = encrypted
         }
         guard let url = URL(string: "\(Config.apiBaseURL)/channels/\(channelId)/messages") else {
-            return false
+            return .failed
         }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -290,8 +372,19 @@ enum SiriSendAPI {
             "nonce": UUID().uuidString,
         ])
         guard let (_, response) = try? await URLSession.shared.data(for: req),
-              let http = response as? HTTPURLResponse else { return false }
-        return (200..<300).contains(http.statusCode)
+              let http = response as? HTTPURLResponse else {
+            siriLog.error("send request never completed")
+            return .failed
+        }
+        if (200..<300).contains(http.statusCode) { return .sent }
+        // A stale published token: the app refreshes it on foreground, and
+        // nothing out here can.
+        if http.statusCode == 401 {
+            siriLog.error("token rejected — the app needs to refresh it")
+            return .needsApp
+        }
+        siriLog.error("send failed, HTTP \(http.statusCode)")
+        return .failed
     }
 
     /// Per-DM key by channel id, from the app-group keychain where the app
@@ -305,5 +398,61 @@ enum SiriSendAPI {
             if let bytes = Data(base64Encoded: b64), bytes.count == E2EE.keyBytes { return bytes }
         }
         return nil
+    }
+}
+
+// MARK: - Asking the server directly
+
+/// The DM list, straight from the API.
+///
+/// The extension has a token, so it never has to be stranded by a stale App
+/// Group snapshot. This is also the authoritative answer for whether a
+/// conversation is encrypted — the one thing that must not be guessed.
+enum SiriRemote {
+    struct Conversation {
+        let id: String
+        let isE2EE: Bool
+        let displayName: String
+        let username: String?
+
+        /// Reuse the same ranking the snapshot path uses.
+        var asWidgetDM: WidgetDM {
+            WidgetDM(id: id, name: displayName, streak: 0, avatarURL: nil,
+                     isE2EE: isE2EE, peerUserId: nil, peerUsername: username)
+        }
+    }
+
+    /// One-to-one DMs only — `type == "dm"` excludes group DMs, and server
+    /// channels are not in this endpoint's response at all.
+    static func directMessages(token: String) async -> [Conversation] {
+        guard let url = URL(string: "\(Config.apiBaseURL)/users/@me/channels") else { return [] }
+        var req = URLRequest(url: url)
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let channels = root["channels"] as? [[String: Any]] else {
+            siriLog.error("could not read the DM list from the server")
+            return []
+        }
+        return channels.compactMap { channel in
+            guard (channel["type"] as? String) == "dm",
+                  let id = channel["id"] as? String else { return nil }
+            let recipients = (channel["recipients"] as? [[String: Any]]) ?? []
+            let peer = recipients.first
+            let display = (peer?["displayName"] as? String)
+                ?? (peer?["username"] as? String)
+                ?? (channel["name"] as? String)
+                ?? ""
+            guard !display.isEmpty else { return nil }
+            return Conversation(
+                id: id,
+                isE2EE: (channel["e2eeEnabled"] as? Bool) ?? false,
+                displayName: display,
+                username: peer?["username"] as? String,
+            )
+        }
     }
 }
