@@ -4462,6 +4462,8 @@ struct ProfileCardView: View {
     @State private var nicknameError: String?
     @State private var showContactPicker = false
     @State private var contactLinkMessage: String?
+    /// The card the user picked, held until the picker has finished dismissing.
+    @State private var pendingContactId: String?
 
     private var isSelf: Bool { user.id == session.currentUser?.id }
     private var relType: String? { store.relationshipType(with: user.id) }
@@ -4690,6 +4692,35 @@ struct ProfileCardView: View {
         }
     }
 
+    /// Runs once the contact picker has finished dismissing.
+    private func linkPickedContact() {
+        guard let contactId = pendingContactId else { return }
+        pendingContactId = nil
+        guard let username = user.username, !username.isEmpty else {
+            contactLinkMessage = "This account has no username to add."
+            return
+        }
+        switch ContactsLink.link(username: username, userId: user.id, toContactWithId: contactId) {
+        case .linked(let name):
+            // Re-donate right away: the donation is what carries the contact
+            // identifier to Siri, and waiting for the next time this DM is
+            // opened would make the link look like it hadn't worked.
+            if let dm = store.dms.first(where: { channel in
+                channel.type == "dm"
+                    && (channel.recipients ?? []).contains { $0.id == user.id }
+            }) {
+                store.donateShareSuggestion(dm)
+            }
+            contactLinkMessage =
+                "Added \u{201C}\(username)\u{201D} to \(name). Try \u{201C}Hey Siri, message \(name) on Zekktris\u{201D}."
+        case .permissionDenied:
+            contactLinkMessage =
+                "Zekktris needs access to Contacts to add this. Settings › Zekktris › Contacts."
+        case .failed(let reason):
+            contactLinkMessage = reason
+        }
+    }
+
     @ViewBuilder
     private var actions: some View {
         VStack(spacing: 10) {
@@ -4781,32 +4812,17 @@ struct ProfileCardView: View {
         }
         // On the container, not on an EmptyView child: a sheet attached to
         // EmptyView has nothing to present from.
-        .sheet(isPresented: $showContactPicker) {
+        //
+        // The write happens in onDismiss, NOT in the pick callback. Presenting
+        // an alert while the picker is still dismissing drops it on the floor,
+        // so the previous version could fail — or succeed — completely
+        // silently, which is precisely what "I added it and nothing happened"
+        // looks like.
+        .sheet(isPresented: $showContactPicker, onDismiss: linkPickedContact) {
             ContactPickerSheet(
                 onPick: { contactId in
+                    pendingContactId = contactId
                     showContactPicker = false
-                    guard let username = user.username else { return }
-                    switch ContactsLink.link(
-                        username: username, userId: user.id, toContactWithId: contactId,
-                    ) {
-                    case .linked(let name):
-                        // Re-donate the conversation right away: the donation is
-                        // what carries the contact identifier to Siri, and
-                        // waiting for the next time this DM is opened would mean
-                        // the link appears not to work.
-                        if let dm = store.dms.first(where: { channel in
-                            channel.type == "dm"
-                                && (channel.recipients ?? []).contains { $0.id == user.id }
-                        }) {
-                            store.donateShareSuggestion(dm)
-                        }
-                        contactLinkMessage =
-                            "Added to \(name). Try \u{201C}Hey Siri, message \(name) on Zekktris\u{201D}."
-                    case .permissionDenied:
-                        contactLinkMessage = "Zekktris needs access to Contacts to add this."
-                    case .failed(let reason):
-                        contactLinkMessage = reason
-                    }
                 },
                 onCancel: { showContactPicker = false },
             )
