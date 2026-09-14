@@ -443,6 +443,7 @@ private fun ChannelListPane(store: AppStore, state: AppState, guildId: String, g
     // Per-category '+' pre-scopes creation to that category (iOS createInCategory).
     var createInCategory by remember(guildId) { mutableStateOf<String?>(null) }
     var channelMenuFor by remember(guildId) { mutableStateOf<Channel?>(null) }
+    var showReorderChannels by remember(guildId) { mutableStateOf(false) }
     var editChannelFor by remember(guildId) { mutableStateOf<Channel?>(null) }
     // Load the member roster once per guild so non-owner managers' permission
     // bits resolve for the settings/channel-management gates (owner short-circuits).
@@ -522,10 +523,14 @@ private fun ChannelListPane(store: AppStore, state: AppState, guildId: String, g
 
     if (showMembers) MembersSheet(store, state, guildId, onDismiss = { showMembers = false })
     if (showInvite) InviteSheet(store, state, guildId, onDismiss = { showInvite = false })
+    if (showReorderChannels) {
+        ReorderChannelsSheet(store, state, guildId, onDismiss = { showReorderChannels = false })
+    }
     if (showGuildMenu) {
         GuildMenuSheet(
             store, state, guildId, isOwner, canManageChannels, canManageGuild,
             onCreateChannel = { showGuildMenu = false; createInCategory = null; showCreateChannel = true },
+            onReorderChannels = { showGuildMenu = false; showReorderChannels = true },
             onServerSettings = { showGuildMenu = false; store.openGuildSettings(guildId) },
             onInvite = { showGuildMenu = false; showInvite = true },
             onDismiss = { showGuildMenu = false },

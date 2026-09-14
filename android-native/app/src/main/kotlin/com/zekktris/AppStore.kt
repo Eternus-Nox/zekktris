@@ -2492,6 +2492,51 @@ class AppStore(
         }
     }
 
+    /**
+     * Persist a whole channel order as `{id, position, parentId}` rows.
+     *
+     * `position` is the index WITHIN the sibling group — top-level categories,
+     * top-level channels and each category's children are numbered
+     * independently. That is what the server stores and what iOS and the web
+     * send, so all three clients agree on what a position means.
+     *
+     * Optimistic: the sidebar renders straight off `channelsByGuild`, so the
+     * new order is applied locally first and a failure refetches the server's
+     * version rather than trying to invert the change.
+     */
+    fun applyChannelOrder(
+        guildId: String,
+        entries: List<Triple<String, Int, String?>>,
+        onError: (String) -> Unit = {},
+    ) {
+        val byId = entries.associateBy { it.first }
+        _state.update { st ->
+            val current = st.channelsByGuild[guildId] ?: return@update st
+            val next = current.map { ch ->
+                val e = byId[ch.id] ?: return@map ch
+                ch.copy(position = e.second, parentId = e.third)
+            }
+            st.copy(channelsByGuild = st.channelsByGuild + (guildId to next))
+        }
+        scope.launch {
+            // An explicit JSON null is "move to the top level"; omitting the key
+            // would mean "leave the parent alone", which is never what a drag
+            // means here.
+            val wire = entries.map { (id, position, parent) ->
+                Triple<String, Int, kotlinx.serialization.json.JsonElement?>(
+                    id,
+                    position,
+                    if (parent == null) kotlinx.serialization.json.JsonNull else JsonPrimitive(parent),
+                )
+            }
+            val ok = runCatching { api.reorderChannels(guildId, wire) }.isSuccess
+            if (!ok) {
+                refreshGuildChannels(guildId)
+                onError("Couldn't save the new order.")
+            }
+        }
+    }
+
     private suspend fun refreshGuildChannels(guildId: String) {
         val c = runCatching { api.listChannels(guildId) }.getOrDefault(emptyList())
         _state.update { it.copy(channelsByGuild = it.channelsByGuild + (guildId to c)) }

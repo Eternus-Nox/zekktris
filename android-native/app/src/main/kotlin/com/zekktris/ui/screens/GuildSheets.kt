@@ -297,6 +297,7 @@ fun GuildMenuSheet(
     onCreateChannel: () -> Unit,
     onServerSettings: () -> Unit,
     onInvite: () -> Unit = {},
+    onReorderChannels: () -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     val p = ZkTheme.palette
@@ -307,6 +308,7 @@ fun GuildMenuSheet(
             GuildMenuRow("Invite People") { onDismiss(); onInvite() }
             if (canManageGuild) GuildMenuRow("Server Settings") { onDismiss(); onServerSettings() }
             if (canManageChannels) GuildMenuRow("Create Channel") { onDismiss(); onCreateChannel() }
+            if (canManageChannels) GuildMenuRow("Reorder Channels") { onDismiss(); onReorderChannels() }
             GuildMenuRow("Mark All as Read") { store.markGuildRead(guildId); onDismiss() }
             GuildMenuRow(if (muted) "Unmute Server" else "Mute Server") { store.setGuildMuted(guildId, !muted); onDismiss() }
             if (!isOwner) {
