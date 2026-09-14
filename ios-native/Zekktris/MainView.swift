@@ -8907,26 +8907,42 @@ struct ReorderServersView: View {
 
 // MARK: - Reorder channels
 
-/// Drag-to-reorder channels within each group (uncategorized + per category)
-/// via a native List in edit mode. Server-backed (reorderChannels positions
-/// endpoint), so the new order syncs to every client. Re-parenting a channel
-/// into a different category still uses the channel-edit "Category" field.
+/// Drag-to-reorder the channel tree: channels inside a category, channels
+/// BETWEEN categories, and the categories themselves.
+///
+/// ONE FLAT LIST, not a section per category. SwiftUI's `.onMove` only ever
+/// moves rows within the ForEach it is attached to, so the section-per-category
+/// layout this screen used to have could reorder inside a category and nothing
+/// else — re-parenting meant leaving and using the channel-edit "Category"
+/// field. Flattening makes "drag a channel into another category" the same
+/// gesture as "drag it up one slot".
+///
+/// Two rules keep the flat list meaning the same thing as the tree:
+///   * A channel belongs to the nearest category ABOVE it, or to the top level
+///     when there is none — so dropping it under a different heading is what
+///     re-parents it.
+///   * A category moves as a BLOCK, carrying its channels with it, and may only
+///     land on a block boundary. Dropping one into the middle of another
+///     category's children would render as it owning the rows above it.
+///
+/// Positions are per sibling group (top-level categories, top-level channels,
+/// and each category's children are numbered independently) — the same scheme
+/// the server stores and the web client sends.
 struct ReorderChannelsView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
-    @State private var groups: [ChannelGroup] = []
+    @State private var rows: [Row] = []
 
-    struct ChannelGroup: Identifiable {
-        let id: String          // "" = uncategorized, else category id
-        let title: String
-        var channels: [Channel]
-        let parentId: String?   // nil = uncategorized
+    struct Row: Identifiable {
+        let channel: Channel
+        var id: String { channel.id }
+        var isCategory: Bool { channel.isCategory }
     }
 
     var body: some View {
         NavigationStack {
             Group {
-                if groups.allSatisfy({ $0.channels.isEmpty }) {
+                if rows.isEmpty {
                     VStack(spacing: 8) {
                         Image(systemName: "number").font(.system(size: 30)).foregroundColor(Theme.ink3)
                         Text("No channels to reorder").font(.system(size: 14)).foregroundColor(Theme.ink3)
@@ -8934,20 +8950,17 @@ struct ReorderChannelsView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List {
-                        ForEach(groups.indices, id: \.self) { i in
-                            if !groups[i].channels.isEmpty {
-                                Section(groups[i].title) {
-                                    ForEach(groups[i].channels) { ch in row(ch) }
-                                        .onMove { from, to in
-                                            groups[i].channels.move(fromOffsets: from, toOffset: to)
-                                            let g = groups[i]
-                                            Task { await store.reorderChannels(g.channels, parentId: g.parentId) }
-                                        }
-                                }
+                        Section {
+                            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                                rowView(row, indented: isUnderCategory(index))
                             }
+                            .onMove(perform: move)
+                        } footer: {
+                            Text("Drag a channel under a category heading to move it there, or above every heading to take it out. Dragging a category takes its channels with it.")
+                                .font(.zkSans(12)).foregroundColor(Theme.ink3)
                         }
                     }
-                    .listStyle(.insetGrouped)
+                    .listStyle(.plain)
                     .environment(\.editMode, .constant(.active))
                     .scrollContentBackground(.hidden)
                 }
@@ -8955,29 +8968,104 @@ struct ReorderChannelsView: View {
             .background(Theme.bg1.ignoresSafeArea())
             .navigationTitle("Reorder Channels").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button { dismiss() } label: { Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold)).foregroundColor(Theme.ink2).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Close") } }
-            .onAppear { buildGroups() }
+            .onAppear { buildRows() }
         }
     }
 
-    private func buildGroups() {
+    /// Flatten the tree the way the sidebar renders it: top-level channels
+    /// first, then each category followed by its own channels.
+    private func buildRows() {
         let all = store.channels.sorted { ($0.position ?? 0, $0.id) < ($1.position ?? 0, $1.id) }
-        var result: [ChannelGroup] = []
-        let uncat = all.filter { !$0.isCategory && !$0.isThread && $0.parentId == nil }
-        result.append(ChannelGroup(id: "", title: "UNCATEGORIZED", channels: uncat, parentId: nil))
+        var out: [Row] = []
+        out += all.filter { !$0.isCategory && !$0.isThread && $0.parentId == nil }.map { Row(channel: $0) }
         for cat in all.filter({ $0.isCategory }) {
-            let kids = all.filter { !$0.isCategory && !$0.isThread && $0.parentId == cat.id }
-            result.append(ChannelGroup(id: cat.id, title: (cat.name ?? "Category").uppercased(), channels: kids, parentId: cat.id))
+            out.append(Row(channel: cat))
+            out += all.filter { !$0.isCategory && !$0.isThread && $0.parentId == cat.id }.map { Row(channel: $0) }
         }
-        groups = result
+        rows = out
     }
 
-    private func row(_ ch: Channel) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: channelIcon(ch)).font(.system(size: 13)).foregroundColor(Theme.ink3).frame(width: 18)
-            Text(ch.name ?? "channel").font(.system(size: 15)).foregroundColor(Theme.ink1).lineLimit(1)
-        }
-        .listRowBackground(Theme.bg2)
+    /// A row is a category's child exactly when some category precedes it —
+    /// top-level channels are always above the first heading.
+    private func isUnderCategory(_ index: Int) -> Bool {
+        guard index > 0 else { return false }
+        return rows[..<index].contains { $0.isCategory }
     }
+
+    private func move(from source: IndexSet, to destination: Int) {
+        guard let start = source.first, start < rows.count else { return }
+        if rows[start].isCategory {
+            // Take the heading and everything under it.
+            var end = start + 1
+            while end < rows.count, !rows[end].isCategory { end += 1 }
+            let block = Array(rows[start..<end])
+            var rest = rows
+            rest.removeSubrange(start..<end)
+            // `destination` indexes the list BEFORE the block was lifted out.
+            var dest = destination > start ? destination - (end - start) : destination
+            dest = max(0, min(dest, rest.count))
+            rest.insert(contentsOf: block, at: boundary(at: dest, in: rest))
+            rows = rest
+        } else {
+            rows.move(fromOffsets: source, toOffset: destination)
+        }
+        commit()
+    }
+
+    /// The nearest index at or after `index` where a category may sit: the start
+    /// of another category's block, or the end of the list. Snapping FORWARD is
+    /// also what keeps every top-level channel above every heading, which is the
+    /// order the sidebar renders.
+    private func boundary(at index: Int, in list: [Row]) -> Int {
+        var i = max(0, min(index, list.count))
+        while i < list.count, !list[i].isCategory { i += 1 }
+        return i
+    }
+
+    /// Write the flat order back out as per-sibling-group positions.
+    private func commit() {
+        var entries: [[String: Any]] = []
+        var currentCategory: String?
+        var categoryIndex = 0
+        var topLevelIndex = 0
+        var childIndex: [String: Int] = [:]
+        for row in rows {
+            if row.isCategory {
+                currentCategory = row.id
+                entries.append(["id": row.id, "position": categoryIndex, "parentId": NSNull()])
+                categoryIndex += 1
+            } else if let parent = currentCategory {
+                let i = childIndex[parent] ?? 0
+                entries.append(["id": row.id, "position": i, "parentId": parent])
+                childIndex[parent] = i + 1
+            } else {
+                entries.append(["id": row.id, "position": topLevelIndex, "parentId": NSNull()])
+                topLevelIndex += 1
+            }
+        }
+        Task { await store.applyChannelOrder(entries) }
+    }
+
+    @ViewBuilder
+    private func rowView(_ row: Row, indented: Bool) -> some View {
+        if row.isCategory {
+            HStack(spacing: 8) {
+                Image(systemName: "folder.fill").font(.system(size: 12)).foregroundColor(Theme.ink3).frame(width: 18)
+                Text((row.channel.name ?? "Category").uppercased())
+                    .font(.zkMono(11)).tracking(Theme.capTracking(11))
+                    .foregroundColor(Theme.ink2).lineLimit(1)
+            }
+            .listRowBackground(Theme.bg3)
+        } else {
+            HStack(spacing: 8) {
+                Image(systemName: channelIcon(row.channel)).font(.system(size: 13)).foregroundColor(Theme.ink3).frame(width: 18)
+                Text(row.channel.name ?? "channel").font(.system(size: 15)).foregroundColor(Theme.ink1).lineLimit(1)
+            }
+            .padding(.leading, indented ? 16 : 0)
+            .listRowBackground(Theme.bg2)
+        }
+    }
+
     private func channelIcon(_ c: Channel) -> String {
         if c.isVoice { return "speaker.wave.2.fill" }
         if c.isForum { return "list.bullet.rectangle" }

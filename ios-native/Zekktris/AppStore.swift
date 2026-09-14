@@ -2014,21 +2014,33 @@ final class AppStore: ObservableObject {
     /// Reorder sibling channels within a group (a category, or the
     /// uncategorized top level). Optimistically renumbers local positions so
     /// the list re-sorts immediately; reverts via reload on failure.
-    func reorderChannels(_ ordered: [Channel], parentId: String?) async {
+    /// Persist a whole channel order as `{id, position, parentId}` rows.
+    ///
+    /// `position` is the index WITHIN the sibling group — top-level categories,
+    /// top-level channels, and each category's children are numbered
+    /// independently. That is what the server stores and what the web client
+    /// sends (apps/web/src/lib/useChannelDragReorder.ts), so all three clients
+    /// agree on what a position means.
+    ///
+    /// Replaces an older single-parent version that took one `parentId` for the
+    /// entire batch and so could only ever reorder inside one group — it could
+    /// not express "this channel moved to that category", which is the whole
+    /// point of dragging across headings.
+    func applyChannelOrder(_ entries: [[String: Any]]) async {
         guard let g = selectedGuild else { return }
-        var payload: [[String: Any]] = []
-        for (i, c) in ordered.enumerated() {
-            var entry: [String: Any] = ["id": c.id, "position": i]
-            if let parentId { entry["parentId"] = parentId } else { entry["parentId"] = NSNull() }
-            payload.append(entry)
+        // Optimistic: the sidebar renders straight off `channels`, so patch it
+        // before the round-trip. The CHANNEL_UPDATE echoes that follow re-apply
+        // the same values, and a rejection falls back to a refetch below.
+        for entry in entries {
+            guard let id = entry["id"] as? String,
+                  let position = entry["position"] as? Int,
+                  let idx = channels.firstIndex(where: { $0.id == id }) else { continue }
+            channels[idx].position = position
+            // NSNull (top level) fails the String cast and lands as nil, which
+            // is exactly the value the sidebar treats as "no category".
+            channels[idx].parentId = entry["parentId"] as? String
         }
-        for (i, c) in ordered.enumerated() {
-            if let idx = channels.firstIndex(where: { $0.id == c.id }) {
-                channels[idx].position = i
-                channels[idx].parentId = parentId
-            }
-        }
-        do { try await api.reorderChannels(guildId: g.id, channels: payload) }
+        do { try await api.reorderChannels(guildId: g.id, channels: entries) }
         catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
             await loadChannels(g)
