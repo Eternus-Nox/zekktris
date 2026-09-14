@@ -17,6 +17,9 @@ struct WidgetDM: Codable, Identifiable, Hashable {
     /// The peer's USER id (the channel id is `id`). Lets Siri match a donated
     /// `zekktris:<userId>` person handle back to this conversation.
     var peerUserId: String?
+    /// The peer's @username. `name` is their DISPLAY name, and someone talking
+    /// to Siri may say either — so both are matched against.
+    var peerUsername: String?
 }
 
 /// Data shared between the Zekktris app and its WidgetKit extension. The widget

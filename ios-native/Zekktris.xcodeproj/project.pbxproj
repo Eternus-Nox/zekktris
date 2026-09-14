@@ -18,6 +18,7 @@
 		27638A6C8F63388B3B895964 /* ShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 37A083098F843E8AF223886B /* ShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		2C2672024252799B5D014E44 /* AppGroupConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 434FBD6DE9C340459E70525C /* AppGroupConfig.swift */; };
 		2D16875745A1CBD992981562 /* WidgetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0EE40EF9EADCC209250FFCE /* WidgetViews.swift */; };
+		2F6F138EE71E68A44DC859A1 /* AppGroupConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 434FBD6DE9C340459E70525C /* AppGroupConfig.swift */; };
 		3259E7D959A061BFF99A02AF /* ZekktrisWatchWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 99031E00C093F83039CEEAED /* ZekktrisWatchWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		3441AE559F956CE8C64D8687 /* WatchWidgetIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 609F7D5BBAA10FCDC2739F91 /* WatchWidgetIntents.swift */; };
 		3445E237D9A0C54F32D81D30 /* WatchWidgetBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB1DABCBB91052FA798E7BFE /* WatchWidgetBridge.swift */; };
@@ -53,12 +54,14 @@
 		92E6E84B74CF01CF64C5210C /* AppGroupConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 434FBD6DE9C340459E70525C /* AppGroupConfig.swift */; };
 		9330D51D07F8A62847C1E2AC /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0503A3312574F4248568EACD /* Keychain.swift */; };
 		945EBB0F93E4183EF692AF1E /* AppGroupConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 434FBD6DE9C340459E70525C /* AppGroupConfig.swift */; };
+		9537BD424046C27022CC2387 /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FC2ECC7C7A8019B6C7482EF /* WidgetShared.swift */; };
 		9C1E60E7802356A65D7C1CDD /* WidgetImageLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E56F3B9B18649AA5DCAF83CB /* WidgetImageLoader.swift */; };
 		9E1A75A8BAB2748E9A35535E /* SpaceGrotesk-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = DF250E920030B813A94072A4 /* SpaceGrotesk-Regular.ttf */; };
 		9ECF08B0968CA9FBA09E6362 /* ZekktrisIntents.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 6661A5CF9DA76B2731A6AAB5 /* ZekktrisIntents.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A514C1446C16D0AF24BB8D9B /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B649CA162B4B72D1D2BBD4CC /* ContentView.swift */; };
 		A8063E459DE41FBCAAC5EC8D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B00D99F1C7CCFC6FE3B52D73 /* Assets.xcassets */; };
 		A90F73EFD16C394262103F98 /* PokeVariant.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D00B64A7AC23ACDD826C35B /* PokeVariant.swift */; };
+		ABCEA9F732358EDF3CB28667 /* SendMessageIntentHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF547DB82BDDE0604BB84EB0 /* SendMessageIntentHandler.swift */; };
 		AF2C74E0B31E81C6B6F9546F /* SharedKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F69951F17F4C7BBEDE00D3C /* SharedKeychain.swift */; };
 		B26BC052C9E385A53EC2292A /* WatchPokeAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 233EF9A75E0571B25B186F9F /* WatchPokeAPI.swift */; };
 		B29E4E9752B76243C01B8643 /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FC2ECC7C7A8019B6C7482EF /* WidgetShared.swift */; };
@@ -66,6 +69,7 @@
 		B732344CDFFAFFFE8A324419 /* WatchSyncStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8884A77FFC709AF748B2E291 /* WatchSyncStore.swift */; };
 		BBD9EE37F74230292A31026A /* WatchWidgetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 715C83CE44FC0812FC56D391 /* WatchWidgetViews.swift */; };
 		BC4FC81F63EC0455F9867E7C /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCD6E4D657E7A9B38D5F14DB /* ShareViewController.swift */; };
+		C0985C16FCB2E569EB51D256 /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0503A3312574F4248568EACD /* Keychain.swift */; };
 		C11C9FD38A8F9B33DF12D3B2 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4B0548FCFD7075D00943D03 /* AppStore.swift */; };
 		C234B5240DBA7B0A01661E94 /* E2EE.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */; };
 		C5D817A008230AC223C44C4A /* BotViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C38FD52C3DBB5206CBB9098 /* BotViews.swift */; };
@@ -85,6 +89,7 @@
 		F082A7FF9275D75777E1D74D /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FC2ECC7C7A8019B6C7482EF /* WidgetShared.swift */; };
 		F24D38116C5941C2D8004ADE /* PasskeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB8B74BA93612A97CCC5774D /* PasskeyManager.swift */; };
 		F3C4943EE5FC3B46FFE78387 /* QuickReply.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFE18E68345DE840AF9E6901 /* QuickReply.swift */; };
+		F3EBD149CC0B0179BD3F768F /* SiriRecipientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C401E906C22A9E53C7908A8E /* SiriRecipientTests.swift */; };
 		F4402FE8FFBA4C809D2DD0FD /* SendMessageIntentHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF547DB82BDDE0604BB84EB0 /* SendMessageIntentHandler.swift */; };
 		F816A18B6CB5F68B337E8717 /* IntentHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F175F018043C54FCDA4B7EC /* IntentHandler.swift */; };
 		FC5535B3D3B221AE63A95A60 /* ZekktrisWatchWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D19B4E695D14C90A678D638 /* ZekktrisWatchWidgetBundle.swift */; };
@@ -233,6 +238,7 @@
 		BC1F393C4A0BBFFFEDDCA4AA /* VoiceSounds.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceSounds.swift; sourceTree = "<group>"; };
 		BF547DB82BDDE0604BB84EB0 /* SendMessageIntentHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendMessageIntentHandler.swift; sourceTree = "<group>"; };
 		C374F4D26FF9A00B145E91BE /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		C401E906C22A9E53C7908A8E /* SiriRecipientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SiriRecipientTests.swift; sourceTree = "<group>"; };
 		C6F2371BB09C7603E340AE1B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		CBE3E96F8CE23FAF737BDDF0 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		CCD6E4D657E7A9B38D5F14DB /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
@@ -309,6 +315,7 @@
 			isa = PBXGroup;
 			children = (
 				DB43CE87C9AB5904A9B51CBD /* E2EECallKeyTests.swift */,
+				C401E906C22A9E53C7908A8E /* SiriRecipientTests.swift */,
 			);
 			path = ZekktrisTests;
 			sourceTree = "<group>";
@@ -716,8 +723,13 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				2F6F138EE71E68A44DC859A1 /* AppGroupConfig.swift in Sources */,
 				C234B5240DBA7B0A01661E94 /* E2EE.swift in Sources */,
 				E5E21274421C59B237724A61 /* E2EECallKeyTests.swift in Sources */,
+				C0985C16FCB2E569EB51D256 /* Keychain.swift in Sources */,
+				ABCEA9F732358EDF3CB28667 /* SendMessageIntentHandler.swift in Sources */,
+				F3EBD149CC0B0179BD3F768F /* SiriRecipientTests.swift in Sources */,
+				9537BD424046C27022CC2387 /* WidgetShared.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

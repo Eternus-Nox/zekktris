@@ -1917,13 +1917,20 @@ final class AppStore: ObservableObject {
         // 30 rather than 12: the widget only ever shows a handful, but this is
         // also the list Siri resolves "message <name>" against, and a voice
         // request for someone you spoke to last week should still find them.
+        //
+        // The `type == "dm"` filter is load-bearing beyond the widget: this list
+        // is the ONLY thing the Siri extension can address, so one-to-one DMs
+        // are the only conversations Siri can send to. Group DMs and server
+        // channels are unaddressable by construction, not by a check that could
+        // be forgotten.
         let items = dms
             .filter { $0.type == "dm" }
             .prefix(30)
             .map { WidgetDM(id: $0.id, name: $0.dmTitle, streak: $0.streak ?? 0,
                             avatarURL: assetURL($0.dmAvatarUser?.avatarUrl)?.absoluteString,
                             isE2EE: $0.isE2EE,
-                            peerUserId: $0.dmAvatarUser?.id) }
+                            peerUserId: $0.dmAvatarUser?.id,
+                            peerUsername: $0.dmAvatarUser?.username) }
         WidgetBridge.publish(dms: Array(items), token: api.token)
         WidgetCenter.shared.reloadAllTimelines()
     }

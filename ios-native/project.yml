@@ -409,6 +409,13 @@ targets:
     sources:
       - path: ZekktrisTests
       - path: Zekktris/E2EE.swift
+      # Siri recipient matching. Compiled in (rather than @testable-importing
+      # the extension, which a unit-test bundle can't do) so the ranking that
+      # decides WHO a voice message goes to is covered.
+      - path: ZekktrisIntents/SendMessageIntentHandler.swift
+      - path: Zekktris/WidgetShared.swift
+      - path: Zekktris/AppGroupConfig.swift
+      - path: Zekktris/Keychain.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.tests
