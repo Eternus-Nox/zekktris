@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import Intents
 import UserNotifications
 import PushKit
 
@@ -54,8 +55,22 @@ final class PushManager: ObservableObject {
                 self.refreshStatus()
                 guard granted else { return }
                 UIApplication.shared.registerForRemoteNotifications()
+                // Ask for Siri in the same breath. iOS queues the two prompts
+                // rather than stacking them, and this is the moment the user has
+                // already agreed to be interrupted by messages — which is what
+                // "send a message with Siri" is for. Asked once; a denied or
+                // already-answered state returns immediately.
+                PushManager.requestSiriAuthorizationIfNeeded()
             }
         }
+    }
+
+    /// Ask for Siri access so "send a message to <name> on Zekktris" reaches the
+    /// ZekktrisIntents extension. Harmless when the SiriKit capability is not
+    /// enabled on the App ID — the request simply isn't granted.
+    static func requestSiriAuthorizationIfNeeded() {
+        guard INPreferences.siriAuthorizationStatus() == .notDetermined else { return }
+        INPreferences.requestSiriAuthorization { _ in }
     }
 
     /// Notification categories (matched against the server's `category`):

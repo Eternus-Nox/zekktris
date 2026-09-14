@@ -9,6 +9,14 @@ struct WidgetDM: Codable, Identifiable, Hashable {
     /// fetches + caches it to show the real profile picture. Optional so older
     /// published payloads (pre-avatar) still decode.
     var avatarURL: String?
+    /// Whether this conversation is end-to-end encrypted. The Siri extension
+    /// needs it to decide between sending the text and encrypting it first —
+    /// and, when it can't find the key, to refuse rather than put plaintext in
+    /// an encrypted DM.
+    var isE2EE: Bool?
+    /// The peer's USER id (the channel id is `id`). Lets Siri match a donated
+    /// `zekktris:<userId>` person handle back to this conversation.
+    var peerUserId: String?
 }
 
 /// Data shared between the Zekktris app and its WidgetKit extension. The widget

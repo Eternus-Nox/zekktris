@@ -63,6 +63,10 @@ targets:
       # widget) into the app (Embed Foundation Extensions phase).
       - target: ZekktrisWidgets
         embed: true
+      # Bundles + embeds the SiriKit Messaging extension so "send a message to
+      # <name> on Zekktris" works without launching the app.
+      - target: ZekktrisIntents
+        embed: true
     info:
       path: Zekktris/Info.plist
       properties:
@@ -97,6 +101,8 @@ targets:
         NSCameraUsageDescription: "Zekktris uses your camera for video calls, to set your avatar, and to scan the sign-in code shown on another device."
         NSPhotoLibraryAddUsageDescription: "Zekktris can save images you receive to your photo library."
         NSFaceIDUsageDescription: "Zekktris uses Face ID to unlock the app and keep your conversations private."
+        NSSiriUsageDescription: "Zekktris lets you send messages with Siri. Siri is told who you talk to and what you dictate, so it can send the message for you."
+
         UIBackgroundModes:
           - audio
           - voip
@@ -125,6 +131,14 @@ targets:
         # App ID (automatic signing enables it on archive; verify in the portal).
         com.apple.developer.associated-domains:
           - webcredentials:zekktris.com
+        # SiriKit (Messaging domain) — "send a message to <name> on Zekktris",
+        # handled by the ZekktrisIntents extension. UNLIKE the communication
+        # entitlement below, this one IS self-serve: enable **SiriKit** for the
+        # com.zekktris.native App ID in the Apple Developer portal. If it is not
+        # enabled there, signing fails with "Entitlement com.apple.developer.siri
+        # not found and could not be included in profile" — remove this key and
+        # the ZekktrisIntents target to get building again.
+        com.apple.developer.siri: true
         # DO NOT ADD `com.apple.developer.usernotifications.communication`.
         # Tried 2026-09-04 and it breaks signing: Xcode reports "Entitlement
         # ... not found and could not be included in profile" because it is not
@@ -345,6 +359,49 @@ targets:
   # no LiveKit) so the crypto / call-key interop contract can be tested fast.
   # Run with:  xcodegen generate && xcodebuild test -scheme Zekktris \
   #              -destination 'platform=iOS Simulator,name=iPhone 16'
+  # SiriKit Messaging extension — "Hey Siri, send a message to Sam on Zekktris".
+  # Runs OUT OF PROCESS: it reads the recent DM list + token from the App Group
+  # (WidgetShared) and the per-DM E2EE keys from the app-group keychain, exactly
+  # as the widget and the Notification Service Extension do, so a send never
+  # needs the app to launch. Compiles the same shared files they do — no
+  # APIClient, no LiveKit.
+  ZekktrisIntents:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: ZekktrisIntents
+      - path: Zekktris/WidgetShared.swift
+      - path: Zekktris/AppGroupConfig.swift
+      - path: Zekktris/Keychain.swift
+      - path: Zekktris/Config.swift
+      - path: Zekktris/E2EE.swift
+    info:
+      path: ZekktrisIntents/Info.plist
+      properties:
+        CFBundleDisplayName: Zekktris
+        # MUST match the app's version/build or App Store upload is rejected.
+        CFBundleShortVersionString: "5.0"
+        CFBundleVersion: "5"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.intents-service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).IntentHandler
+          NSExtensionAttributes:
+            IntentsSupported:
+              - INSendMessageIntent
+    entitlements:
+      path: ZekktrisIntents/ZekktrisIntents.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.zekktris.native
+        # Same portal requirement as the app target — see the note there.
+        com.apple.developer.siri: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.intents
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+
   ZekktrisTests:
     type: bundle.unit-test
     platform: iOS

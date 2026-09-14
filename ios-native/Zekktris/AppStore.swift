@@ -1914,11 +1914,16 @@ final class AppStore: ObservableObject {
     /// extension can render the "Quick DM" widget and fire a one-tap poke, then
     /// nudge WidgetKit to reload. Cheap + idempotent (latest-wins).
     func syncWidgets() {
+        // 30 rather than 12: the widget only ever shows a handful, but this is
+        // also the list Siri resolves "message <name>" against, and a voice
+        // request for someone you spoke to last week should still find them.
         let items = dms
             .filter { $0.type == "dm" }
-            .prefix(12)
+            .prefix(30)
             .map { WidgetDM(id: $0.id, name: $0.dmTitle, streak: $0.streak ?? 0,
-                            avatarURL: assetURL($0.dmAvatarUser?.avatarUrl)?.absoluteString) }
+                            avatarURL: assetURL($0.dmAvatarUser?.avatarUrl)?.absoluteString,
+                            isE2EE: $0.isE2EE,
+                            peerUserId: $0.dmAvatarUser?.id) }
         WidgetBridge.publish(dms: Array(items), token: api.token)
         WidgetCenter.shared.reloadAllTimelines()
     }

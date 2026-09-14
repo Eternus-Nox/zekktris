@@ -11,6 +11,8 @@
 		08E3953FF3F26CE678E0E278 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 682FD7D3EE885FC488962C33 /* NotificationService.swift */; };
 		0DE415A258AB346699002B14 /* LICENSE-SpaceGrotesk-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = 0F28B4D6989428AF6FAB483B /* LICENSE-SpaceGrotesk-OFL.txt */; };
 		0EFBBAFB7A69E99A08A0F085 /* Voice.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5F187A696EC8CAC9D837A4F /* Voice.swift */; };
+		0FC78BDB61C2EAD86E677849 /* E2EE.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */; };
+		10EA7076B4CB653C04A45FE9 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42797CA878D26DB332BEF804 /* Config.swift */; };
 		1ECD00762CE6B71CBD905B52 /* Push.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3049E4EB8347C9C4E63FA39 /* Push.swift */; };
 		227DD5A0D5676051EA56657B /* JetBrainsMono-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 86ECD5DCF6CB056EA07F1A9B /* JetBrainsMono-Medium.ttf */; };
 		27638A6C8F63388B3B895964 /* ShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 37A083098F843E8AF223886B /* ShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -23,6 +25,7 @@
 		384A537D59460C34162951DE /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2232CBA6A56F9DFE142335BF /* Theme.swift */; };
 		40F515E3FE190F65007139CA /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0503A3312574F4248568EACD /* Keychain.swift */; };
 		44BB1EC928BC05DEF0633060 /* E2EE.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */; };
+		46BE11148DE40BA2B0C8E075 /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FC2ECC7C7A8019B6C7482EF /* WidgetShared.swift */; };
 		4A157541F71EEB8CB62501A6 /* ZekktrisWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 8CD61D15591F11BF7866AFF1 /* ZekktrisWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		4D498E1525844A5D4C185BC1 /* CallManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D62C793B7AAB9778AA116F /* CallManager.swift */; };
 		4E98C4C4898973F36A45B4FC /* NotificationMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = F044CCA495FD5434BA02A43A /* NotificationMedia.swift */; };
@@ -52,6 +55,7 @@
 		945EBB0F93E4183EF692AF1E /* AppGroupConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 434FBD6DE9C340459E70525C /* AppGroupConfig.swift */; };
 		9C1E60E7802356A65D7C1CDD /* WidgetImageLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E56F3B9B18649AA5DCAF83CB /* WidgetImageLoader.swift */; };
 		9E1A75A8BAB2748E9A35535E /* SpaceGrotesk-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = DF250E920030B813A94072A4 /* SpaceGrotesk-Regular.ttf */; };
+		9ECF08B0968CA9FBA09E6362 /* ZekktrisIntents.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 6661A5CF9DA76B2731A6AAB5 /* ZekktrisIntents.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A514C1446C16D0AF24BB8D9B /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B649CA162B4B72D1D2BBD4CC /* ContentView.swift */; };
 		A8063E459DE41FBCAAC5EC8D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B00D99F1C7CCFC6FE3B52D73 /* Assets.xcassets */; };
 		A90F73EFD16C394262103F98 /* PokeVariant.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D00B64A7AC23ACDD826C35B /* PokeVariant.swift */; };
@@ -65,6 +69,7 @@
 		C11C9FD38A8F9B33DF12D3B2 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4B0548FCFD7075D00943D03 /* AppStore.swift */; };
 		C234B5240DBA7B0A01661E94 /* E2EE.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */; };
 		C5D817A008230AC223C44C4A /* BotViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C38FD52C3DBB5206CBB9098 /* BotViews.swift */; };
+		CC942197498968307D596A2A /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0503A3312574F4248568EACD /* Keychain.swift */; };
 		D0F37BFCBEE259ACED492D79 /* ZekktrisApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B171229A0C558CF65D219D70 /* ZekktrisApp.swift */; };
 		D332A340A90AB44568410F28 /* ThreadViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9FA9F6B39015D93E0C768A2 /* ThreadViews.swift */; };
 		D3334478A455BF1E2ADB4E82 /* ZekktrisWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CE1387DD790845EB4E42BE03 /* ZekktrisWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -76,9 +81,12 @@
 		E5E21274421C59B237724A61 /* E2EECallKeyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB43CE87C9AB5904A9B51CBD /* E2EECallKeyTests.swift */; };
 		E64B9F7A95C88E6C6B25CC72 /* VoiceMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32957B535EA27A17B00EEBCF /* VoiceMessage.swift */; };
 		EB8ECC29D87BB4388F1A8AB0 /* E2EE.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */; };
+		EEA12A32B69FC0AAA2C19229 /* AppGroupConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 434FBD6DE9C340459E70525C /* AppGroupConfig.swift */; };
 		F082A7FF9275D75777E1D74D /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FC2ECC7C7A8019B6C7482EF /* WidgetShared.swift */; };
 		F24D38116C5941C2D8004ADE /* PasskeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB8B74BA93612A97CCC5774D /* PasskeyManager.swift */; };
 		F3C4943EE5FC3B46FFE78387 /* QuickReply.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFE18E68345DE840AF9E6901 /* QuickReply.swift */; };
+		F4402FE8FFBA4C809D2DD0FD /* SendMessageIntentHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF547DB82BDDE0604BB84EB0 /* SendMessageIntentHandler.swift */; };
+		F816A18B6CB5F68B337E8717 /* IntentHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F175F018043C54FCDA4B7EC /* IntentHandler.swift */; };
 		FC5535B3D3B221AE63A95A60 /* ZekktrisWatchWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D19B4E695D14C90A678D638 /* ZekktrisWatchWidgetBundle.swift */; };
 /* End PBXBuildFile section */
 
@@ -89,6 +97,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = 9A8EFAE8194308946CC4AFA6;
 			remoteInfo = ShareExtension;
+		};
+		769DC65156EF6A616AADDDDB /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4230464D4664DE2E7495AA74 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 782D72730181F225A1792457;
+			remoteInfo = ZekktrisIntents;
 		};
 		777D3621B503C4A4DE961665 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -141,6 +156,7 @@
 				858ABCCC32EE73463A04909D /* NotificationService.appex in Embed Foundation Extensions */,
 				27638A6C8F63388B3B895964 /* ShareExtension.appex in Embed Foundation Extensions */,
 				D3334478A455BF1E2ADB4E82 /* ZekktrisWidgets.appex in Embed Foundation Extensions */,
+				9ECF08B0968CA9FBA09E6362 /* ZekktrisIntents.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -181,7 +197,9 @@
 		42797CA878D26DB332BEF804 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
 		434FBD6DE9C340459E70525C /* AppGroupConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppGroupConfig.swift; sourceTree = "<group>"; };
 		4FC2ECC7C7A8019B6C7482EF /* WidgetShared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetShared.swift; sourceTree = "<group>"; };
+		51B39BD5E80E2319B2140181 /* ZekktrisIntents.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ZekktrisIntents.entitlements; sourceTree = "<group>"; };
 		609F7D5BBAA10FCDC2739F91 /* WatchWidgetIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchWidgetIntents.swift; sourceTree = "<group>"; };
+		6661A5CF9DA76B2731A6AAB5 /* ZekktrisIntents.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ZekktrisIntents.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		682FD7D3EE885FC488962C33 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		6A7CB777C26F090990345AE1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = E2EE.swift; sourceTree = "<group>"; };
@@ -198,6 +216,7 @@
 		99031E00C093F83039CEEAED /* ZekktrisWatchWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ZekktrisWatchWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		9F04BA5F3CFE3113F86B1600 /* NotificationService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = NotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		9F0F4C460850141D6C535AB2 /* ZekktrisWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ZekktrisWidgets.entitlements; sourceTree = "<group>"; };
+		9F175F018043C54FCDA4B7EC /* IntentHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentHandler.swift; sourceTree = "<group>"; };
 		9FC6CCA0DA58A6D7980AB2C0 /* WidgetIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetIntents.swift; sourceTree = "<group>"; };
 		A663FAE653FFAB4BAAA80B5C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		A7B5BE3EA780224AC21D96B1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -212,8 +231,10 @@
 		B5F187A696EC8CAC9D837A4F /* Voice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Voice.swift; sourceTree = "<group>"; };
 		B649CA162B4B72D1D2BBD4CC /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		BC1F393C4A0BBFFFEDDCA4AA /* VoiceSounds.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceSounds.swift; sourceTree = "<group>"; };
+		BF547DB82BDDE0604BB84EB0 /* SendMessageIntentHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendMessageIntentHandler.swift; sourceTree = "<group>"; };
 		C374F4D26FF9A00B145E91BE /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C6F2371BB09C7603E340AE1B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		CBE3E96F8CE23FAF737BDDF0 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		CCD6E4D657E7A9B38D5F14DB /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		CD7CC7291325678F55762B95 /* JetBrainsMono-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "JetBrainsMono-SemiBold.ttf"; sourceTree = "<group>"; };
 		CE1387DD790845EB4E42BE03 /* ZekktrisWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ZekktrisWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -298,6 +319,7 @@
 				153D869B664631D0160444DE /* NotificationService */,
 				6EEADE56E23EA63321ACCCBF /* ShareExtension */,
 				429C77DDB5D4A1CEE2773387 /* Zekktris */,
+				42EC48C642B1E78B6118A1E5 /* ZekktrisIntents */,
 				20559DE324DFD23DBD140716 /* ZekktrisTests */,
 				D0B5CC8462D17645C6FE8B54 /* ZekktrisWatch */,
 				18D95C5469B7584D66895900 /* ZekktrisWatchWidgets */,
@@ -343,6 +365,17 @@
 			path = Zekktris;
 			sourceTree = "<group>";
 		};
+		42EC48C642B1E78B6118A1E5 /* ZekktrisIntents */ = {
+			isa = PBXGroup;
+			children = (
+				CBE3E96F8CE23FAF737BDDF0 /* Info.plist */,
+				9F175F018043C54FCDA4B7EC /* IntentHandler.swift */,
+				BF547DB82BDDE0604BB84EB0 /* SendMessageIntentHandler.swift */,
+				51B39BD5E80E2319B2140181 /* ZekktrisIntents.entitlements */,
+			);
+			path = ZekktrisIntents;
+			sourceTree = "<group>";
+		};
 		6EEADE56E23EA63321ACCCBF /* ShareExtension */ = {
 			isa = PBXGroup;
 			children = (
@@ -359,6 +392,7 @@
 				9F04BA5F3CFE3113F86B1600 /* NotificationService.appex */,
 				37A083098F843E8AF223886B /* ShareExtension.appex */,
 				F8BBAD9D14CEB87EDC845C3A /* Zekktris.app */,
+				6661A5CF9DA76B2731A6AAB5 /* ZekktrisIntents.appex */,
 				277229C270351E02BC92CD92 /* ZekktrisTests.xctest */,
 				8CD61D15591F11BF7866AFF1 /* ZekktrisWatch.app */,
 				99031E00C093F83039CEEAED /* ZekktrisWatchWidgets.appex */,
@@ -473,6 +507,7 @@
 				379C493C86D217BCF3401F15 /* PBXTargetDependency */,
 				49806BA2D038D2D546CAFCE7 /* PBXTargetDependency */,
 				55571124CFE61B905EE8B2C5 /* PBXTargetDependency */,
+				AD3348D2630A25B34F8C2FCD /* PBXTargetDependency */,
 			);
 			name = Zekktris;
 			packageProductDependencies = (
@@ -481,6 +516,23 @@
 			productName = Zekktris;
 			productReference = F8BBAD9D14CEB87EDC845C3A /* Zekktris.app */;
 			productType = "com.apple.product-type.application";
+		};
+		782D72730181F225A1792457 /* ZekktrisIntents */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B7462C3F2222766D55CD94D4 /* Build configuration list for PBXNativeTarget "ZekktrisIntents" */;
+			buildPhases = (
+				E0AFCD6B0E19239F8580EE57 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ZekktrisIntents;
+			packageProductDependencies = (
+			);
+			productName = ZekktrisIntents;
+			productReference = 6661A5CF9DA76B2731A6AAB5 /* ZekktrisIntents.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 		850076A771ABAE975BB63823 /* ZekktrisTests */ = {
 			isa = PBXNativeTarget;
@@ -558,6 +610,10 @@
 						DevelopmentTeam = 4QF34MB8R3;
 						ProvisioningStyle = Automatic;
 					};
+					782D72730181F225A1792457 = {
+						DevelopmentTeam = 4QF34MB8R3;
+						ProvisioningStyle = Automatic;
+					};
 					850076A771ABAE975BB63823 = {
 						DevelopmentTeam = 4QF34MB8R3;
 						ProvisioningStyle = Automatic;
@@ -591,6 +647,7 @@
 				2521858B9357B3605F1FC370 /* NotificationService */,
 				9A8EFAE8194308946CC4AFA6 /* ShareExtension */,
 				4F148025DEECAC5AAA31FEFD /* Zekktris */,
+				782D72730181F225A1792457 /* ZekktrisIntents */,
 				850076A771ABAE975BB63823 /* ZekktrisTests */,
 				312CAE62D3D4F580F37A218D /* ZekktrisWatch */,
 				C1960D6A2A12F2676FCA48CF /* ZekktrisWatchWidgets */,
@@ -720,6 +777,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E0AFCD6B0E19239F8580EE57 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EEA12A32B69FC0AAA2C19229 /* AppGroupConfig.swift in Sources */,
+				10EA7076B4CB653C04A45FE9 /* Config.swift in Sources */,
+				0FC78BDB61C2EAD86E677849 /* E2EE.swift in Sources */,
+				F816A18B6CB5F68B337E8717 /* IntentHandler.swift in Sources */,
+				CC942197498968307D596A2A /* Keychain.swift in Sources */,
+				F4402FE8FFBA4C809D2DD0FD /* SendMessageIntentHandler.swift in Sources */,
+				46BE11148DE40BA2B0C8E075 /* WidgetShared.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		FAFE147F3E92F7BC0EBC3453 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -750,6 +821,11 @@
 			isa = PBXTargetDependency;
 			target = 0EECE4851C69714B5E2FA4BB /* ZekktrisWidgets */;
 			targetProxy = B206DE8CA0C91C6780646F5B /* PBXContainerItemProxy */;
+		};
+		AD3348D2630A25B34F8C2FCD /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 782D72730181F225A1792457 /* ZekktrisIntents */;
+			targetProxy = 769DC65156EF6A616AADDDDB /* PBXContainerItemProxy */;
 		};
 		CE02F8589C7BE6028A639C61 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -854,6 +930,24 @@
 			};
 			name = Release;
 		};
+		71E2057536D904898FC04D58 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ZekktrisIntents/ZekktrisIntents.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				INFOPLIST_FILE = ZekktrisIntents/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zekktris.native.intents;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
 		A17FD84F511FC28E6F4FE045 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -951,6 +1045,24 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
+		};
+		B505A2B7338AE63A6BE4E737 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ZekktrisIntents/ZekktrisIntents.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				INFOPLIST_FILE = ZekktrisIntents/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zekktris.native.intents;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
 		};
 		DD774B6330F478EA0BD9CB65 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -1205,6 +1317,15 @@
 			buildConfigurations = (
 				A55BE5544AED5600A54C9CE4 /* Debug */,
 				430B159712443BBC1FEAA918 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B7462C3F2222766D55CD94D4 /* Build configuration list for PBXNativeTarget "ZekktrisIntents" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				71E2057536D904898FC04D58 /* Debug */,
+				B505A2B7338AE63A6BE4E737 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
