@@ -1976,13 +1976,13 @@ final class AppStore: ObservableObject {
     /// Cheap + throttled inside `ShareSuggestions`, so it's safe on every open
     /// and every send.
     ///
-    /// CURRENTLY A NO-OP: `ShareSuggestions.donate` hard-returns on
-    /// `donationsEnabled == false`. This body is kept intact (rather than
-    /// deleted) so the one thing that turns the feature back on is that flag,
-    /// and so the gaps below stay attached to the code they describe. Revocation
-    /// — `deleteConversation` / `deleteAll` at the call sites in `stop()`,
-    /// `blockUser`, `closeDM`, `CHANNEL_DELETE` and `loadFamily` — is NOT
-    /// disabled and must stay live.
+    /// LIVE: `donationsEnabled` is true, so this really does write to the
+    /// system index. (Both this comment and QuickReply's header said it was a
+    /// no-op long after the flag was turned back on — donated conversations are
+    /// what carry `contactIdentifier` to Siri, so the difference matters.)
+    /// Revocation — `deleteConversation` / `deleteAll` at the call sites in
+    /// `stop()`, `blockUser`, `closeDM`, `CHANNEL_DELETE` and `loadFamily` — is
+    /// unconditional and must stay live.
     func donateShareSuggestion(_ channel: Channel) {
         guard channel.isDM, shareSuggestionsAllowed else { return }
         // Bots aren't share targets, and a DM with nobody left in it would

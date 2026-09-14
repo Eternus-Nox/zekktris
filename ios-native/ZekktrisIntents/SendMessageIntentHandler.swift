@@ -356,7 +356,9 @@ enum SiriDirectory {
             nameComponents: nil,
             displayName: dm.name,
             image: nil,
-            contactIdentifier: nil,
+            // Same reason as the donation: this is what lets Siri show, and
+            // match, the person's real contact card.
+            contactIdentifier: dm.peerUserId.flatMap { ContactLinks.contactId(forUserId: $0) },
             customIdentifier: dm.id,
         )
     }

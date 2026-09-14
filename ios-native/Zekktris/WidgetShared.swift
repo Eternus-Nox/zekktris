@@ -66,3 +66,41 @@ enum WidgetBridge {
 
     static func token() -> String? { keychain.get(tokenKey) }
 }
+
+/// Which Contacts card a Zekktris account was linked to.
+///
+/// Siri ties a conversation to a person's CARD through
+/// `INPerson.contactIdentifier` — that is the documented way to tell it "this
+/// account is that contact". Without it, an instant-message entry on the card
+/// is just text: Siri hears "Sam Rivera", looks for a way to reach Sam
+/// Rivera, finds no phone number and says it has no address for him.
+///
+/// Lives in the App Group so the Siri extension can stamp the same identifier
+/// on the recipients it resolves. Written by ContactsLink (app side only —
+/// this file is compiled into extensions that must not link ContactsUI).
+enum ContactLinks {
+    private static let key = "contacts.userToCard"
+
+    private static var defaults: UserDefaults? {
+        UserDefaults(suiteName: AppGroupConfig.identifier)
+    }
+
+    private static var map: [String: String] {
+        (defaults?.dictionary(forKey: key) as? [String: String]) ?? [:]
+    }
+
+    /// The Contacts identifier for a Zekktris user id, if one was linked.
+    static func contactId(forUserId userId: String) -> String? { map[userId] }
+
+    static func set(contactId: String, forUserId userId: String) {
+        var next = map
+        next[userId] = contactId
+        defaults?.set(next, forKey: key)
+    }
+
+    static func clear(userId: String) {
+        var next = map
+        next.removeValue(forKey: userId)
+        defaults?.set(next, forKey: key)
+    }
+}

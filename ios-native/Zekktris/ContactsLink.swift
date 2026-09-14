@@ -51,7 +51,7 @@ enum ContactsLink {
     /// Add the Zekktris instant-message entry to a contact, replacing any
     /// earlier one for the same service so repeated linking can't stack up
     /// duplicate handles on one card.
-    static func link(username: String, toContactWithId contactId: String) -> Outcome {
+    static func link(username: String, userId: String, toContactWithId contactId: String) -> Outcome {
         let store = CNContactStore()
         // The formatted name is assembled from several fields, so it comes
         // from the formatter's own descriptor rather than a single key.
@@ -79,6 +79,11 @@ enum ContactsLink {
             let save = CNSaveRequest()
             save.update(mutable)
             try store.execute(save)
+            // The entry on the card is only half of it. Siri matches a card to a
+            // conversation through INPerson.contactIdentifier, so remember which
+            // card this account belongs to and stamp it on every donation and
+            // every recipient the Siri extension resolves.
+            ContactLinks.set(contactId: contactId, forUserId: userId)
             let name = CNContactFormatter.string(from: contact, style: .fullName) ?? "that contact"
             return .linked(contactName: name)
         } catch {

@@ -4786,8 +4786,20 @@ struct ProfileCardView: View {
                 onPick: { contactId in
                     showContactPicker = false
                     guard let username = user.username else { return }
-                    switch ContactsLink.link(username: username, toContactWithId: contactId) {
+                    switch ContactsLink.link(
+                        username: username, userId: user.id, toContactWithId: contactId,
+                    ) {
                     case .linked(let name):
+                        // Re-donate the conversation right away: the donation is
+                        // what carries the contact identifier to Siri, and
+                        // waiting for the next time this DM is opened would mean
+                        // the link appears not to work.
+                        if let dm = store.dms.first(where: { channel in
+                            channel.type == "dm"
+                                && (channel.recipients ?? []).contains { $0.id == user.id }
+                        }) {
+                            store.donateShareSuggestion(dm)
+                        }
                         contactLinkMessage =
                             "Added to \(name). Try \u{201C}Hey Siri, message \(name) on Zekktris\u{201D}."
                     case .permissionDenied:

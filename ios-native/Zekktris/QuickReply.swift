@@ -104,8 +104,10 @@ enum QuickReply {
 ///     name change and can never be confused with a phone number or an email.
 ///   • an `INImage` avatar so the person's face renders in the sheet.
 ///
-/// STATUS: **DONATION IS OFF** — see `donationsEnabled` below and read its
-/// comment before changing anything here. REVOCATION IS NOT OFF, deliberately.
+/// STATUS: **DONATION IS ON** (`donationsEnabled = true`). Read that flag's
+/// comment before changing anything here — it is the single switch, and the
+/// guards below are written on the assumption that it can be flipped off again.
+/// REVOCATION is unconditional either way, deliberately.
 ///
 /// PRIVACY. We donate the *conversation*, never its contents: `content` is
 /// always nil, so an E2EE DM would donate byte-for-byte what a plaintext one
@@ -362,7 +364,10 @@ enum ShareSuggestions {
                 nameComponents: nil,
                 displayName: recipient.name,
                 image: images[recipient.id],
-                contactIdentifier: nil,
+                // What ties this conversation to the person's Contacts card, so
+                // "message Sam Rivera on Zekktris" resolves. nil until the
+                // user links one (Profile → Add to Contacts).
+                contactIdentifier: ContactLinks.contactId(forUserId: recipient.id),
                 customIdentifier: recipient.id
             )
         }
