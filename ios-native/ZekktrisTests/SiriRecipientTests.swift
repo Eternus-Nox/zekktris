@@ -65,6 +65,18 @@ final class SiriRecipientTests: XCTestCase {
         )
     }
 
+    /// A contact card's "Zekktris" instant-message entry: iOS passes the
+    /// USERNAME as the handle and the card's real name as the display name.
+    func testAContactCardHandleFindsTheAccount() {
+        XCTAssertEqual(SiriDirectory.rank(heard: "alexjmorgan94", in: people).map(\.id), ["1"])
+    }
+
+    /// …and the real name on its own must not match somebody else. "Mom" is one
+    /// edit from "Tom", which is how a message goes to the wrong person.
+    func testAShortRealNameDoesNotFuzzyMatchAStranger() {
+        XCTAssertTrue(SiriDirectory.rank(heard: "Mom", in: people).isEmpty)
+    }
+
     func testTheUsernameIsMatchedEvenWhenTheDisplayNameIsNothingLike() {
         let alias = dm("7", "🌙 moonlight", username: "danielle")
         XCTAssertEqual(SiriDirectory.rank(heard: "Danielle", in: [alias]).map(\.id), ["7"])

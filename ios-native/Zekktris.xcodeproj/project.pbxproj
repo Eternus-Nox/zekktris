@@ -25,6 +25,7 @@
 		3512C4E47D6EE2F62135C154 /* LICENSE-JetBrainsMono-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = 7FEDAB3BA09017209BA445AF /* LICENSE-JetBrainsMono-OFL.txt */; };
 		384A537D59460C34162951DE /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2232CBA6A56F9DFE142335BF /* Theme.swift */; };
 		40F515E3FE190F65007139CA /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0503A3312574F4248568EACD /* Keychain.swift */; };
+		43B77E13B6DB8308F37E1EFF /* ContactsLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = D47A145B58B78674470C0838 /* ContactsLink.swift */; };
 		44BB1EC928BC05DEF0633060 /* E2EE.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */; };
 		46BE11148DE40BA2B0C8E075 /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FC2ECC7C7A8019B6C7482EF /* WidgetShared.swift */; };
 		4A157541F71EEB8CB62501A6 /* ZekktrisWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 8CD61D15591F11BF7866AFF1 /* ZekktrisWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -245,6 +246,7 @@
 		CD7CC7291325678F55762B95 /* JetBrainsMono-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "JetBrainsMono-SemiBold.ttf"; sourceTree = "<group>"; };
 		CE1387DD790845EB4E42BE03 /* ZekktrisWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ZekktrisWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		D29D733AAD46444723023905 /* Session.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Session.swift; sourceTree = "<group>"; };
+		D47A145B58B78674470C0838 /* ContactsLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactsLink.swift; sourceTree = "<group>"; };
 		D9F3789F4ADB83F7BDF66983 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		D9FA9F6B39015D93E0C768A2 /* ThreadViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadViews.swift; sourceTree = "<group>"; };
 		DAE4782BEFCECFF65F8EAD34 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
@@ -347,6 +349,7 @@
 				28D62C793B7AAB9778AA116F /* CallManager.swift */,
 				DAE4782BEFCECFF65F8EAD34 /* Components.swift */,
 				42797CA878D26DB332BEF804 /* Config.swift */,
+				D47A145B58B78674470C0838 /* ContactsLink.swift */,
 				6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */,
 				B2136069A842EF82A1167EBC /* Gateway.swift */,
 				928A96BF32CD0722F5B2AD6B /* Info.plist */,
@@ -753,6 +756,7 @@
 				4D498E1525844A5D4C185BC1 /* CallManager.swift in Sources */,
 				906E635F36708A5EBEBB8442 /* Components.swift in Sources */,
 				61FF74D009D65D2054199944 /* Config.swift in Sources */,
+				43B77E13B6DB8308F37E1EFF /* ContactsLink.swift in Sources */,
 				EB8ECC29D87BB4388F1A8AB0 /* E2EE.swift in Sources */,
 				927EF8923215A96F66A136F6 /* Gateway.swift in Sources */,
 				40F515E3FE190F65007139CA /* Keychain.swift in Sources */,

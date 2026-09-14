@@ -97,14 +97,13 @@ final class SendMessageIntentHandler: NSObject, INSendMessageIntentHandling {
         // here is the non-Sendable capture that builds locally and errors in a
         // stricter-concurrency build.
         let conversationId = intent.conversationIdentifier
-        let heard = intent.recipients?.first.map {
-            $0.displayName.isEmpty ? ($0.personHandle?.value ?? "") : $0.displayName
-        } ?? ""
+        let candidates = intent.recipients?.first
+            .map { SiriDirectory.spokenCandidates(for: $0) } ?? []
         Task {
             guard let target = await SiriDirectory.resolve(
-                conversationId: conversationId, heard: heard, token: token,
+                conversationId: conversationId, candidates: candidates, token: token,
             ) else {
-                siriLog.error("no conversation matched \(heard, privacy: .private)")
+                siriLog.error("nothing matched \(candidates.joined(separator: "/"), privacy: .private)")
                 completion(INSendMessageIntentResponse(code: .failure, userActivity: nil))
                 return
             }
@@ -159,7 +158,7 @@ enum SiriDirectory {
     /// open the app" for something it could have simply sent. So when the
     /// snapshot can't answer confidently, ask the server: the token is right
     /// here, and the channel list says which DMs exist and which are encrypted.
-    static func resolve(conversationId: String?, heard: String, token: String) async -> Target? {
+    static func resolve(conversationId: String?, candidates: [String], token: String) async -> Target? {
         let snapshot = WidgetBridge.recentDMs()
         if let conversationId {
             // A donated conversation. Trust it only when the snapshot also
@@ -172,14 +171,25 @@ enum SiriDirectory {
                 return Target(id: remote.id, isE2EE: remote.isE2EE)
             }
         }
-        if let hit = rank(heard: heard, in: snapshot).first, let e2ee = hit.isE2EE {
-            return Target(id: hit.id, isE2EE: e2ee)
+        for candidate in candidates {
+            // A donated handle names the peer outright.
+            if let id = userId(fromHandle: candidate),
+               let hit = snapshot.first(where: { $0.peerUserId == id }), let e2ee = hit.isE2EE {
+                return Target(id: hit.id, isE2EE: e2ee)
+            }
+            if let hit = rank(heard: candidate, in: snapshot).first, let e2ee = hit.isE2EE {
+                return Target(id: hit.id, isE2EE: e2ee)
+            }
         }
         // Nothing usable locally — the server knows.
         let remote = await SiriRemote.directMessages(token: token)
-        guard let hit = rank(heard: heard, in: remote.map(\.asWidgetDM)).first,
-              let match = remote.first(where: { $0.id == hit.id }) else { return nil }
-        return Target(id: match.id, isE2EE: match.isE2EE)
+        for candidate in candidates {
+            if let hit = rank(heard: candidate, in: remote.map(\.asWidgetDM)).first,
+               let match = remote.first(where: { $0.id == hit.id }) {
+                return Target(id: match.id, isE2EE: match.isE2EE)
+            }
+        }
+        return nil
     }
 
     /// The conversation Siri means, from the snapshot alone. Used by recipient
@@ -213,18 +223,33 @@ enum SiriDirectory {
     /// server channels cannot be addressed by voice at all.
     static func matches(for person: INPerson) -> [WidgetDM] {
         let all = WidgetBridge.recentDMs()
-        // A donated conversation carries our own handle, so this is exact.
-        if let handle = person.personHandle?.value, let id = userId(fromHandle: handle) {
-            let byId = all.filter { $0.peerUserId == id }
-            if !byId.isEmpty { return byId }
+        for candidate in spokenCandidates(for: person) {
+            // A donated conversation carries our own handle, so this is exact.
+            if let id = userId(fromHandle: candidate) {
+                let byId = all.filter { $0.peerUserId == id }
+                if !byId.isEmpty { return byId }
+            }
+            let hits = rank(heard: candidate, in: all)
+            if !hits.isEmpty { return hits }
         }
-        // `displayName` is non-optional on INPerson — it can be EMPTY (Siri
-        // heard a handle rather than a name), never nil, so the fallback has to
-        // test for empty rather than coalesce.
-        let heard = person.displayName.isEmpty
-            ? (person.personHandle?.value ?? "")
-            : person.displayName
-        return rank(heard: heard, in: all)
+        return []
+    }
+
+    /// Everything this INPerson could be matched by, most precise first.
+    ///
+    /// The HANDLE leads. When a contact card carries a "Zekktris" instant
+    /// message entry, iOS passes that username as the handle and the contact's
+    /// REAL name as the display name — and the real name ("Mom") matches no
+    /// conversation title, while the handle is exactly the username. Ordering
+    /// it first is what makes "message Mom on Zekktris" work.
+    ///
+    /// `displayName` is non-optional on INPerson: it can be EMPTY when Siri
+    /// heard a handle rather than a name, never nil.
+    static func spokenCandidates(for person: INPerson) -> [String] {
+        var out: [String] = []
+        if let handle = person.personHandle?.value, !handle.isEmpty { out.append(handle) }
+        if !person.displayName.isEmpty { out.append(person.displayName) }
+        return out
     }
 
     /// The ranking itself, with the conversation list passed in — pure, so the
@@ -278,7 +303,22 @@ enum SiriDirectory {
         let squashed = spoken.filter { $0.isLetter || $0.isNumber }
         var best = ratio(squashed, candidate)
         for token in tokens { best = max(best, ratio(squashed, token)) }
-        return best
+        // A short word is nearly every other short word: "Mom" is one edit from
+        // "Tom", which scores 0.67 and would have sent a message to the wrong
+        // person — Siri reads the name back, but nobody listens hard to a
+        // confirmation they expect. So the shorter the thing spoken, the closer
+        // an inexact match has to be before it counts at all.
+        return best >= fuzzyFloor(forLength: squashed.count) ? best : 0
+    }
+
+    /// How good an INEXACT match must be, by length of what was said. Exact,
+    /// prefix and whole-word hits are scored above this and never reach it.
+    private static func fuzzyFloor(forLength length: Int) -> Double {
+        switch length {
+        case ..<5: return 0.85   // effectively: no fuzz on very short names
+        case 5...7: return 0.7
+        default: return 0.6
+        }
     }
 
     /// Similarity as 1 - (edits / longest), so it is comparable across lengths.

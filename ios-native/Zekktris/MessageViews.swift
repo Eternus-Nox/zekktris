@@ -4460,6 +4460,8 @@ struct ProfileCardView: View {
     @State private var showNicknameEditor = false
     @State private var nicknameDraft = ""
     @State private var nicknameError: String?
+    @State private var showContactPicker = false
+    @State private var contactLinkMessage: String?
 
     private var isSelf: Bool { user.id == session.currentUser?.id }
     private var relType: String? { store.relationshipType(with: user.id) }
@@ -4691,6 +4693,7 @@ struct ProfileCardView: View {
     @ViewBuilder
     private var actions: some View {
         VStack(spacing: 10) {
+
             // Message + Call only when the viewer can reach this user (gated
             // like web — see canShowContact).
             if canShowContact {
@@ -4730,6 +4733,24 @@ struct ProfileCardView: View {
                     nicknameError = nil
                     showNicknameEditor = true
                 }
+
+                // Puts this account on a contact card as a "Zekktris" instant
+                // message entry, which is how Siri turns a REAL name into this
+                // conversation: "message Mom on Zekktris" works once Mom's card
+                // knows the handle. Without it you have to say the display name
+                // or username we know them by.
+                if user.username?.isEmpty == false {
+                    secondaryButton("Add to Contacts", icon: "person.crop.circle.badge.plus") {
+                        Task {
+                            guard await ContactsLink.requestAccess() else {
+                                contactLinkMessage =
+                                    "Zekktris needs access to Contacts to add this. Turn it on in Settings › Zekktris › Contacts."
+                                return
+                            }
+                            showContactPicker = true
+                        }
+                    }
+                }
             }
 
             Button { toggleBlock() } label: {
@@ -4757,6 +4778,38 @@ struct ProfileCardView: View {
                 }
                 .buttonStyle(.plain)
             }
+        }
+        // On the container, not on an EmptyView child: a sheet attached to
+        // EmptyView has nothing to present from.
+        .sheet(isPresented: $showContactPicker) {
+            ContactPickerSheet(
+                onPick: { contactId in
+                    showContactPicker = false
+                    guard let username = user.username else { return }
+                    switch ContactsLink.link(username: username, toContactWithId: contactId) {
+                    case .linked(let name):
+                        contactLinkMessage =
+                            "Added to \(name). Try \u{201C}Hey Siri, message \(name) on Zekktris\u{201D}."
+                    case .permissionDenied:
+                        contactLinkMessage = "Zekktris needs access to Contacts to add this."
+                    case .failed(let reason):
+                        contactLinkMessage = reason
+                    }
+                },
+                onCancel: { showContactPicker = false },
+            )
+        }
+        .alert(
+            "Contacts",
+            isPresented: Binding(
+                get: { contactLinkMessage != nil },
+                set: { if !$0 { contactLinkMessage = nil } },
+            ),
+            presenting: contactLinkMessage,
+        ) { _ in
+            Button("OK", role: .cancel) { contactLinkMessage = nil }
+        } message: { text in
+            Text(text)
         }
     }
 
