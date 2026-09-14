@@ -3140,6 +3140,19 @@ export function getConnectionState(): VoiceConnectionState {
 function publishConnectionState(state: VoiceConnectionState): void {
   if (state === currentConnectionState) return;
   currentConnectionState = state;
+  // Tell the Electron shell a call is up. It watchdogs the renderer and
+  // RELOADS it when it looks wedged, which destroys the Room and drops the
+  // call for the user and — mid screen-share — for every viewer at once.
+  // Encoding a high-resolution share is exactly what stalls the main thread
+  // long enough to look wedged, so the shell must not take that action while
+  // a call is running. No-op in a browser, where the bridge is absent.
+  try {
+    (
+      window as unknown as { zekktris?: { setCallActive?: (active: boolean) => void } }
+    ).zekktris?.setCallActive?.(state !== 'disconnected');
+  } catch {
+    // A shell without the bridge (older desktop build) — nothing to tell.
+  }
   for (const l of connectionStateListeners) l(state);
 }
 

@@ -25,6 +25,12 @@ contextBridge.exposeInMainWorld('zekktris', {
   ): void => {
     ipcRenderer.send('zk:set-app-icon', payload);
   },
+  /** Tell the shell whether a voice/video call is currently connected, so it
+      can hold off actions that would destroy the Room (see the unresponsive
+      watchdog in main.ts). */
+  setCallActive: (active: boolean): void => {
+    ipcRenderer.send('zk:call-active', active);
+  },
   /** Current idle state (true = system idle/locked). */
   getIdleState: (): Promise<boolean> => ipcRenderer.invoke('zk:get-idle-state'),
   /** Subscribe to idle-state changes (true = idle, false = active).

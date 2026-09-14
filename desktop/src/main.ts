@@ -103,6 +103,11 @@ app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
+/** True while the web app has a live voice/video call. Set from the renderer
+ *  (see preload `setCallActive`). A reload during a call destroys the LiveKit
+ *  Room — for the user, and for every viewer of their screen share — so the
+ *  recovery paths below stand down while it is set. */
+let callActive = false;
 
 // ── Single-instance lock ──────────────────────────────────────────────────
 // A second launch should focus the running window, not spawn a duplicate.
@@ -347,6 +352,12 @@ function createMainWindow(serverUrl: string, startHidden = false): void {
     if (unresponsiveTimer) return;
     unresponsiveTimer = setTimeout(() => {
       unresponsiveTimer = null;
+      // Never reload out from under a live call. A wedged renderer is
+      // annoying; dropping a call in progress — and everyone watching the
+      // screen share with it — is worse, and encoding a share is the most
+      // likely reason the main thread stalled in the first place. The user can
+      // still reload by hand from the tray.
+      if (callActive) return;
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.reload();
       }
@@ -717,6 +728,10 @@ ipcMain.on(
 
 // ── Custom title bar window controls ────────────────────────────────────────
 // The preload injects a frameless title bar whose buttons send these.
+ipcMain.on('zk:call-active', (_e, active: unknown) => {
+  callActive = active === true;
+});
+
 ipcMain.on('zk:win-minimize', () => {
   mainWindow?.minimize();
 });
