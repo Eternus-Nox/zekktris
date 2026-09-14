@@ -76,11 +76,20 @@ final class SendMessageIntentHandler: NSObject, INSendMessageIntentHandling {
             completion(INSendMessageIntentResponse(code: .failureRequiringAppLaunch, userActivity: nil))
             return
         }
+        // A MISSING flag is not "plaintext" — it means this conversation was
+        // published to the App Group by a build that predates the flag, so
+        // whether it is encrypted is simply unknown. Defaulting to false there
+        // would send plaintext into an encrypted DM the first time Siri is used
+        // after an update, which is the one outcome this whole path exists to
+        // prevent. Refuse; the app republishes the list on its next foreground.
+        guard let isE2EE = target.isE2EE else {
+            completion(INSendMessageIntentResponse(code: .failureRequiringAppLaunch, userActivity: nil))
+            return
+        }
         // Only value types cross into the task: capturing the intent (or self)
         // here is the non-Sendable capture that builds locally and errors in a
         // stricter-concurrency build.
         let channelId = target.id
-        let isE2EE = target.isE2EE ?? false
         Task {
             let sent = await SiriSendAPI.send(
                 channelId: channelId, text: text, isE2EE: isE2EE, token: token,

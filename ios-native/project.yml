@@ -433,3 +433,15 @@ schemes:
         ZekktrisWatch: all
     run:
       config: Debug
+  # Testing Siri WITHOUT speaking. Pick this scheme, then Edit Scheme → Run →
+  # Info → "Siri Intent Query" and type the phrase, e.g.
+  #   Send a message to Sam on Zekktris
+  # Run: Xcode launches Siri with that phrase and attaches the debugger to the
+  # extension, so breakpoints and print() in SendMessageIntentHandler work. The
+  # scheme has to exist for the target to be selectable at all.
+  ZekktrisIntents:
+    build:
+      targets:
+        ZekktrisIntents: all
+    run:
+      config: Debug
