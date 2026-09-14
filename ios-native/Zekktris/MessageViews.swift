@@ -4462,8 +4462,10 @@ struct ProfileCardView: View {
     @State private var nicknameError: String?
     @State private var showContactPicker = false
     @State private var contactLinkMessage: String?
-    /// The card the user picked, held until the picker has finished dismissing.
+    /// The card iOS saved to, held until the sheet has finished dismissing.
     @State private var pendingContactId: String?
+    /// Whether that sheet ended in a save rather than a cancel.
+    @State private var savedToContacts = false
     /// The Contacts card this account is linked to, if any. Drives whether the
     /// button offers to add the link or take it away.
     @State private var linkedContactId: String?
@@ -4699,31 +4701,31 @@ struct ProfileCardView: View {
         }
     }
 
-    /// Runs once the contact picker has finished dismissing.
-    private func linkPickedContact() {
-        guard let contactId = pendingContactId else { return }
+    /// Runs once the system Add-to-Contacts sheet has finished dismissing.
+    /// Nothing is written here — iOS already did it — this only records WHICH
+    /// card it landed on, which is what Siri matches against.
+    private func confirmContactLink() {
+        let contactId = pendingContactId
+        let saved = savedToContacts
         pendingContactId = nil
-        guard let username = user.username, !username.isEmpty else {
-            contactLinkMessage = "This account has no username to add."
+        savedToContacts = false
+        guard saved else { return }
+        guard let contactId else {
+            // Saved, but iOS didn't tell us which card. The entry is on the
+            // card and Siri can still resolve it by handle; only the
+            // contact-identifier hint is missing.
+            contactLinkMessage =
+                "Added to Contacts. If Siri doesn't find them by name yet, open this conversation once."
             return
         }
-        switch ContactsLink.link(username: username, userId: user.id, toContactWithId: contactId) {
-        case .unlinked:
-            break
-        case .linked(let name):
-            linkedContactId = contactId
-            // Re-donate right away: the donation is what carries the contact
-            // identifier to Siri, and waiting for the next time this DM is
-            // opened would make the link look like it hadn't worked.
-            redonateDM()
-            contactLinkMessage =
-                "Added \u{201C}\(username)\u{201D} to \(name). Try \u{201C}Hey Siri, message \(name) on Zekktris\u{201D}."
-        case .permissionDenied:
-            contactLinkMessage =
-                "Zekktris needs access to Contacts to add this. Settings › Zekktris › Contacts."
-        case .failed(let reason):
-            contactLinkMessage = reason
-        }
+        ContactsLink.remember(userId: user.id, contactId: contactId)
+        linkedContactId = contactId
+        // Re-donate right away: the donation is what carries the contact
+        // identifier to Siri, and waiting for the next time this DM is opened
+        // would make the link look like it hadn't worked.
+        redonateDM()
+        contactLinkMessage =
+            "Linked. Try \u{201C}Hey Siri, message \(user.name) on Zekktris\u{201D} — or whatever their card is named."
     }
 
     /// Take the entry back off the card and stop tying this account to it.
@@ -4741,8 +4743,6 @@ struct ProfileCardView: View {
         switch outcome {
         case .unlinked(let name):
             contactLinkMessage = "Removed from \(name)."
-        case .linked:
-            break
         case .permissionDenied:
             contactLinkMessage = "Zekktris needs access to Contacts to change this."
         case .failed(let reason):
@@ -4803,18 +4803,20 @@ struct ProfileCardView: View {
                 // On the container, not on an EmptyView child: a sheet attached to
         // EmptyView has nothing to present from.
         //
-        // The write happens in onDismiss, NOT in the pick callback. Presenting
-        // an alert while the picker is still dismissing drops it on the floor,
-        // so the previous version could fail — or succeed — completely
-        // silently, which is precisely what "I added it and nothing happened"
-        // looks like.
-        .sheet(isPresented: $showContactPicker, onDismiss: linkPickedContact) {
-            ContactPickerSheet(
-                onPick: { contactId in
+        // iOS does the writing (see AddToContactsSheet) and hands back the
+        // saved card. The result is reported from onDismiss rather than from
+        // the callback: an alert raised while the sheet is still dismissing is
+        // dropped, which is how the previous version managed to fail — and
+        // succeed — completely silently.
+        .sheet(isPresented: $showContactPicker, onDismiss: confirmContactLink) {
+            AddToContactsSheet(
+                username: user.username ?? "",
+                suggestedName: user.name,
+                onDone: { contactId in
                     pendingContactId = contactId
+                    savedToContacts = contactId != nil
                     showContactPicker = false
                 },
-                onCancel: { showContactPicker = false },
             )
         }
         .alert(
@@ -4872,16 +4874,9 @@ struct ProfileCardView: View {
                             Label("Unlink Contact", systemImage: "person.crop.circle.badge.minus")
                         }
                     } else {
-                        Button {
-                            Task {
-                                guard await ContactsLink.requestAccess() else {
-                                    contactLinkMessage =
-                                        "Zekktris needs access to Contacts to add this. Settings › Zekktris › Contacts."
-                                    return
-                                }
-                                showContactPicker = true
-                            }
-                        } label: {
+                        // No permission check: the system sheet does the write
+                        // itself, so Contacts access is never requested here.
+                        Button { showContactPicker = true } label: {
                             Label("Link Contact", systemImage: "person.crop.circle.badge.plus")
                         }
                     }
