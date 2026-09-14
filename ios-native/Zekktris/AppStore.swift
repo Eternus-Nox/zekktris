@@ -1983,7 +1983,11 @@ final class AppStore: ObservableObject {
     /// Revocation — `deleteConversation` / `deleteAll` at the call sites in
     /// `stop()`, `blockUser`, `closeDM`, `CHANNEL_DELETE` and `loadFamily` — is
     /// unconditional and must stay live.
-    func donateShareSuggestion(_ channel: Channel) {
+    /// `force` bypasses the once-a-minute throttle. Linking or unlinking a
+    /// contact must take effect now — the donation is what carries (or drops)
+    /// the contact identifier, and a throttled no-op reads as the feature not
+    /// working.
+    func donateShareSuggestion(_ channel: Channel, force: Bool = false) {
         guard channel.isDM, shareSuggestionsAllowed else { return }
         // Bots aren't share targets, and a DM with nobody left in it would
         // donate a faceless row.
@@ -2019,7 +2023,8 @@ final class AppStore: ObservableObject {
                 title: dmDisplayTitle(channel),
                 isGroup: channel.type == "group_dm",
                 recipients: recipients
-            )
+            ),
+            force: force
         )
     }
 

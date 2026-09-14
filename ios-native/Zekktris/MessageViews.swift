@@ -4464,6 +4464,9 @@ struct ProfileCardView: View {
     @State private var contactLinkMessage: String?
     /// The card the user picked, held until the picker has finished dismissing.
     @State private var pendingContactId: String?
+    /// The Contacts card this account is linked to, if any. Drives whether the
+    /// button offers to add the link or take it away.
+    @State private var linkedContactId: String?
 
     private var isSelf: Bool { user.id == session.currentUser?.id }
     private var relType: String? { store.relationshipType(with: user.id) }
@@ -4587,6 +4590,10 @@ struct ProfileCardView: View {
         .background(Theme.bg1)
         .modifier(ProfileCardPresentation())
         .task(id: user.id) {
+            // Whether this account already sits on a Contacts card decides
+            // whether the button offers to add the link or remove it. Keyed on
+            // user.id so reusing the card for someone else re-reads it.
+            linkedContactId = ContactLinks.contactId(forUserId: user.id)
             // Refresh relationships so the friend button reflects the CURRENT
             // status — the in-memory list is only loaded on the DMs/friends
             // screen, so opening a guild member's card cold otherwise showed
@@ -4701,16 +4708,14 @@ struct ProfileCardView: View {
             return
         }
         switch ContactsLink.link(username: username, userId: user.id, toContactWithId: contactId) {
+        case .unlinked:
+            break
         case .linked(let name):
+            linkedContactId = contactId
             // Re-donate right away: the donation is what carries the contact
             // identifier to Siri, and waiting for the next time this DM is
             // opened would make the link look like it hadn't worked.
-            if let dm = store.dms.first(where: { channel in
-                channel.type == "dm"
-                    && (channel.recipients ?? []).contains { $0.id == user.id }
-            }) {
-                store.donateShareSuggestion(dm)
-            }
+            redonateDM()
             contactLinkMessage =
                 "Added \u{201C}\(username)\u{201D} to \(name). Try \u{201C}Hey Siri, message \(name) on Zekktris\u{201D}."
         case .permissionDenied:
@@ -4719,6 +4724,39 @@ struct ProfileCardView: View {
         case .failed(let reason):
             contactLinkMessage = reason
         }
+    }
+
+    /// Take the entry back off the card and stop tying this account to it.
+    private func unlinkContact() {
+        guard let contactId = linkedContactId,
+              let username = user.username, !username.isEmpty else { return }
+        let outcome = ContactsLink.unlink(
+            username: username, userId: user.id, fromContactWithId: contactId,
+        )
+        // Cleared regardless: unlink() forgets the mapping even when the card
+        // couldn't be edited, so the button must not keep offering to remove
+        // something that is already gone from our side.
+        linkedContactId = nil
+        redonateDM()
+        switch outcome {
+        case .unlinked(let name):
+            contactLinkMessage = "Removed from \(name)."
+        case .linked:
+            break
+        case .permissionDenied:
+            contactLinkMessage = "Zekktris needs access to Contacts to change this."
+        case .failed(let reason):
+            contactLinkMessage = reason
+        }
+    }
+
+    /// Re-donate this conversation so Siri picks up (or drops) the contact
+    /// identifier immediately rather than at the next open.
+    private func redonateDM() {
+        guard let dm = store.dms.first(where: { channel in
+            channel.type == "dm" && (channel.recipients ?? []).contains { $0.id == user.id }
+        }) else { return }
+        store.donateShareSuggestion(dm, force: true)
     }
 
     @ViewBuilder
@@ -4771,14 +4809,29 @@ struct ProfileCardView: View {
                 // knows the handle. Without it you have to say the display name
                 // or username we know them by.
                 if user.username?.isEmpty == false {
-                    secondaryButton("Add to Contacts", icon: "person.crop.circle.badge.plus") {
-                        Task {
-                            guard await ContactsLink.requestAccess() else {
-                                contactLinkMessage =
-                                    "Zekktris needs access to Contacts to add this. Turn it on in Settings › Zekktris › Contacts."
-                                return
+                    if linkedContactId != nil {
+                        secondaryButton(
+                            "Remove from Contacts", icon: "person.crop.circle.badge.minus"
+                        ) {
+                            Task {
+                                guard await ContactsLink.requestAccess() else {
+                                    contactLinkMessage =
+                                        "Zekktris needs access to Contacts to change this. Settings › Zekktris › Contacts."
+                                    return
+                                }
+                                unlinkContact()
                             }
-                            showContactPicker = true
+                        }
+                    } else {
+                        secondaryButton("Add to Contacts", icon: "person.crop.circle.badge.plus") {
+                            Task {
+                                guard await ContactsLink.requestAccess() else {
+                                    contactLinkMessage =
+                                        "Zekktris needs access to Contacts to add this. Turn it on in Settings › Zekktris › Contacts."
+                                    return
+                                }
+                                showContactPicker = true
+                            }
                         }
                     }
                 }

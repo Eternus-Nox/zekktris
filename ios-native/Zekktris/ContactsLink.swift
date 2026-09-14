@@ -32,8 +32,64 @@ enum ContactsLink {
 
     enum Outcome: Equatable {
         case linked(contactName: String)
+        case unlinked(contactName: String)
         case permissionDenied
         case failed(String)
+    }
+
+    /// Take the Zekktris entry back off a card and forget the link.
+    ///
+    /// The stored mapping is cleared even when the card can't be written —
+    /// including when it no longer exists. Leaving it behind would keep
+    /// stamping a contact identifier onto donations for a card that no longer
+    /// claims this account, which is worse than a stale entry in Contacts the
+    /// user can see and delete.
+    static func unlink(username: String, userId: String, fromContactWithId contactId: String) -> Outcome {
+        let store = CNContactStore()
+        let keys: [CNKeyDescriptor] = [
+            CNContactInstantMessageAddressesKey as CNKeyDescriptor,
+            CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
+        ]
+        defer { ContactLinks.clear(userId: userId) }
+        do {
+            let contact = try store.unifiedContact(withIdentifier: contactId, keysToFetch: keys)
+            let name = CNContactFormatter.string(from: contact, style: .fullName) ?? "that contact"
+            guard let unified = contact.mutableCopy() as? CNMutableContact else {
+                return .failed("Couldn't edit that contact.")
+            }
+            removeEntry(from: unified, username: username)
+            do {
+                let save = CNSaveRequest()
+                save.update(unified)
+                try store.execute(save)
+            } catch {
+                contactsLog.error(
+                    "unified unlink failed, trying the backing card: \(error.localizedDescription, privacy: .public)",
+                )
+                guard let backing = try backingContact(id: contactId, store: store, keys: keys) else {
+                    throw error
+                }
+                removeEntry(from: backing, username: username)
+                let retry = CNSaveRequest()
+                retry.update(backing)
+                try store.execute(retry)
+            }
+            return .unlinked(contactName: name)
+        } catch {
+            contactsLog.error("contact unlink failed: \(error.localizedDescription, privacy: .public)")
+            return .failed(
+                "Removed the link, but couldn't edit the card — delete the \"Zekktris\" instant message entry there by hand.",
+            )
+        }
+    }
+
+    /// Drop only OUR entry for this account. Another Zekktris handle on the
+    /// same card (a second account) is left alone.
+    private static func removeEntry(from contact: CNMutableContact, username: String) {
+        contact.instantMessageAddresses = contact.instantMessageAddresses.filter {
+            !($0.value.service.caseInsensitiveCompare(service) == .orderedSame
+                && $0.value.username == username)
+        }
     }
 
     /// Replace any earlier Zekktris entry on this card, then add this one, so
