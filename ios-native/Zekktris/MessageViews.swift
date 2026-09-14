@@ -4759,14 +4759,17 @@ struct ProfileCardView: View {
         store.donateShareSuggestion(dm, force: true)
     }
 
+    /// The card's own actions: what you came here to do stays on the card, and
+    /// the rest lives behind the gear. Message and Call are the reason a
+    /// profile gets opened; renaming, linking a contact, unfriending and
+    /// blocking are occasional and were crowding them out.
     @ViewBuilder
     private var actions: some View {
         VStack(spacing: 10) {
-
-            // Message + Call only when the viewer can reach this user (gated
-            // like web — see canShowContact).
-            if canShowContact {
-                HStack(spacing: 10) {
+            HStack(spacing: 10) {
+                // Message + Call only when the viewer can reach this user
+                // (gated like web — see canShowContact).
+                if canShowContact {
                     Button { message() } label: {
                         Label("Message", systemImage: "bubble.left.fill")
                             .font(.zkSans(15, weight: .semibold))
@@ -4786,84 +4789,18 @@ struct ProfileCardView: View {
                             .foregroundColor(.white)
                             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
+                } else {
+                    Spacer(minLength: 0)
                 }
+                if !isSelf { optionsMenu }
             }
 
-            friendButton
-
-            // Personal DM nickname — a label only you see, shown in direct
-            // messages. Available for any other (non-bot) user.
-            if !isSelf && user.isBot != true {
-                secondaryButton(
-                    store.dmNickname(user.id) != nil ? "Edit Nickname" : "Set Nickname",
-                    icon: "pencil"
-                ) {
-                    nicknameDraft = store.dmNickname(user.id) ?? ""
-                    nicknameError = nil
-                    showNicknameEditor = true
-                }
-
-                // Puts this account on a contact card as a "Zekktris" instant
-                // message entry, which is how Siri turns a REAL name into this
-                // conversation: "message Mom on Zekktris" works once Mom's card
-                // knows the handle. Without it you have to say the display name
-                // or username we know them by.
-                if user.username?.isEmpty == false {
-                    if linkedContactId != nil {
-                        secondaryButton(
-                            "Remove from Contacts", icon: "person.crop.circle.badge.minus"
-                        ) {
-                            Task {
-                                guard await ContactsLink.requestAccess() else {
-                                    contactLinkMessage =
-                                        "Zekktris needs access to Contacts to change this. Settings › Zekktris › Contacts."
-                                    return
-                                }
-                                unlinkContact()
-                            }
-                        }
-                    } else {
-                        secondaryButton("Add to Contacts", icon: "person.crop.circle.badge.plus") {
-                            Task {
-                                guard await ContactsLink.requestAccess() else {
-                                    contactLinkMessage =
-                                        "Zekktris needs access to Contacts to add this. Turn it on in Settings › Zekktris › Contacts."
-                                    return
-                                }
-                                showContactPicker = true
-                            }
-                        }
-                    }
-                }
-            }
-
-            Button { toggleBlock() } label: {
-                Label(relType == "blocked" ? "Unblock" : "Block",
-                      systemImage: relType == "blocked" ? "hand.raised.slash" : "nosign")
-                    .font(.zkSans(15, weight: .medium))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 11)
-                    .background(Theme.bg3)
-                    .foregroundColor(Theme.danger)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            }
-
-            // Report — only for a member of the CURRENT server (not DMs/friends).
-            // Opens a form to pick a reason + describe what happened.
-            if store.members[user.id] != nil && relType != "friend" {
-                Button { showReport = true } label: {
-                    Label("Report User", systemImage: "flag")
-                        .font(.zkSans(15, weight: .medium))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                        .background(Theme.bg3)
-                        .foregroundColor(Theme.danger)
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                }
-                .buttonStyle(.plain)
-            }
+            // Friend INVITATIONS stay on the card — accepting or sending one is
+            // a reason to open a profile. Removing a friend is not, so it sits
+            // in the menu with the other rarely-wanted actions.
+            if relType != "friend" { friendButton }
         }
-        // On the container, not on an EmptyView child: a sheet attached to
+                // On the container, not on an EmptyView child: a sheet attached to
         // EmptyView has nothing to present from.
         //
         // The write happens in onDismiss, NOT in the pick callback. Presenting
@@ -4893,6 +4830,90 @@ struct ProfileCardView: View {
             Text(text)
         }
     }
+    /// Everything that isn't Message or Call.
+    private var optionsMenu: some View {
+        Menu {
+            if relType == "friend" {
+                Button(role: .destructive) {
+                    Task { await store.removeFriend(user) }
+                } label: {
+                    Label("Remove Friend", systemImage: "person.badge.minus")
+                }
+            }
+
+            if user.isBot != true {
+                Button {
+                    nicknameDraft = store.dmNickname(user.id) ?? ""
+                    nicknameError = nil
+                    showNicknameEditor = true
+                } label: {
+                    Label(
+                        store.dmNickname(user.id) != nil ? "Edit Nickname" : "Set Nickname",
+                        systemImage: "pencil",
+                    )
+                }
+
+                // Puts this account on a contact card as a "Zekktris" instant
+                // message entry, which is how Siri turns a REAL name into this
+                // conversation: "message Sam Rivera on Zekktris" works once
+                // his card knows the handle.
+                if user.username?.isEmpty == false {
+                    if linkedContactId != nil {
+                        Button {
+                            Task {
+                                guard await ContactsLink.requestAccess() else {
+                                    contactLinkMessage =
+                                        "Zekktris needs access to Contacts to change this. Settings › Zekktris › Contacts."
+                                    return
+                                }
+                                unlinkContact()
+                            }
+                        } label: {
+                            Label("Unlink Contact", systemImage: "person.crop.circle.badge.minus")
+                        }
+                    } else {
+                        Button {
+                            Task {
+                                guard await ContactsLink.requestAccess() else {
+                                    contactLinkMessage =
+                                        "Zekktris needs access to Contacts to add this. Settings › Zekktris › Contacts."
+                                    return
+                                }
+                                showContactPicker = true
+                            }
+                        } label: {
+                            Label("Link Contact", systemImage: "person.crop.circle.badge.plus")
+                        }
+                    }
+                }
+            }
+
+            // Report — only for a member of the CURRENT server (not DMs/friends).
+            if store.members[user.id] != nil && relType != "friend" {
+                Button { showReport = true } label: {
+                    Label("Report User", systemImage: "flag")
+                }
+            }
+
+            Divider()
+
+            Button(role: .destructive) { toggleBlock() } label: {
+                Label(
+                    relType == "blocked" ? "Unblock" : "Block",
+                    systemImage: relType == "blocked" ? "hand.raised.slash" : "nosign",
+                )
+            }
+        } label: {
+            Image(systemName: "gearshape.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .frame(width: 48, height: 44)
+                .background(Theme.bg3)
+                .foregroundColor(Theme.ink1)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .accessibilityLabel("More options")
+    }
+
 
     @ViewBuilder
     private var friendButton: some View {
