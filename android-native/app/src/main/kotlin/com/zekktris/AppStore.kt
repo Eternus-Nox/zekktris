@@ -2199,16 +2199,32 @@ class AppStore(
             // MediaPrep does its own dispatching (image work on Default, the
             // video export on Main for Transformer's Looper), so nothing heavy
             // runs on this Main.immediate coroutine.
-            val media = com.zekktris.media.MediaPrep.prepareAll(
-                appContext,
-                files.map { com.zekktris.media.MediaPrep.Input(it.bytes, it.filename, it.mime) },
-            )
+            // OOM is caught rather than left to kill the process: a batch of
+            // large photos or a long video can exceed the heap while preparing
+            // or encrypting, and a crash loses the user's whole draft with no
+            // explanation. The composer restores the picks on a failed send.
+            val media = try {
+                com.zekktris.media.MediaPrep.prepareAll(
+                    appContext,
+                    files.map { com.zekktris.media.MediaPrep.Input(it.bytes, it.filename, it.mime) },
+                )
+            } catch (oom: OutOfMemoryError) {
+                _state.update { it.copy(failedSendIds = it.failedSendIds + optimistic.id) }
+                onDone(false, "Ran out of memory preparing these attachments. Try sending fewer at once.")
+                return@launch
+            }
             com.zekktris.media.MediaPrep.logOutcome(media)
 
             // Encrypt off the main thread — AES-GCM over multi-MB images plus
             // the thumbnail re-encode would jank the composer on Main.immediate.
             val prep: PreparedParts = if (e2eeKey != null) {
-                withContext(Dispatchers.Default) { encryptAll(media, e2eeKey) }
+                try {
+                    withContext(Dispatchers.Default) { encryptAll(media, e2eeKey) }
+                } catch (oom: OutOfMemoryError) {
+                    _state.update { it.copy(failedSendIds = it.failedSendIds + optimistic.id) }
+                    onDone(false, "Ran out of memory encrypting these attachments. Try sending fewer at once.")
+                    return@launch
+                }
             } else {
                 // Plain uploads carry no client metadata: the server measures
                 // the pixels and generates the thumbnail itself.

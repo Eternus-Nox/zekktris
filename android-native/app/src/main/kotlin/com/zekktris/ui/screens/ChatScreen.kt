@@ -2930,39 +2930,78 @@ private fun decodeChipPreview(bytes: ByteArray, maxDim: Int = 160): ImageBitmap?
  * the whole file into memory. Files over [MAX_ATTACH_BYTES] are rejected (null)
  * before any read, so a huge video can't OOM/ANR the app.
  *
+ * IMAGES ARE DOWNSCALED HERE rather than at send time, and that is a memory
+ * fix, not a speed one. A current phone photo is 8–25 MB, the composer accepts
+ * ten of them, and the send path then holds the original, the downscaled copy,
+ * the ciphertext and a retained plaintext copy of each at the same time — while
+ * the composer's retry closure keeps the originals alive across the whole
+ * upload. The originals were the dominant term: ten 20 MB photos is 200 MB of
+ * byte arrays before anything else runs, and the app requests no large heap, so
+ * the process is killed — which is what "crashes when uploading photos" is.
+ * Preparing on the way in means what the composer holds is the ~1920 px WebP
+ * that was going to be uploaded anyway, typically a few hundred KB.
+ *
+ * Preparing twice is harmless: MediaPrep keeps the re-encode only when it comes
+ * out smaller, so the second pass at send time falls through to the bytes it
+ * already produced.
+ *
+ * Videos still arrive whole — their export happens at send time.
+ *
  * [withPreview] decodes the composer thumbnail up front, for sources (camera
  * captures) whose file is deleted the moment this returns.
  */
-private fun loadPendingFile(
+private suspend fun loadPendingFile(
     ctx: android.content.Context,
     uri: android.net.Uri,
     withPreview: Boolean = false,
-): PendingFile? = runCatching {
-    var filename = "upload"
-    var size = -1L
-    ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
-        val nameIdx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-        val sizeIdx = c.getColumnIndex(OpenableColumns.SIZE)
-        if (c.moveToFirst()) {
-            if (nameIdx >= 0) filename = c.getString(nameIdx) ?: filename
-            if (sizeIdx >= 0 && !c.isNull(sizeIdx)) size = c.getLong(sizeIdx)
+): PendingFile? {
+    // runCatching also catches OutOfMemoryError, so a file that cannot be held
+    // in memory drops out as "too large" instead of taking the process with it.
+    val read = runCatching {
+        var filename = "upload"
+        var size = -1L
+        ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
+            val nameIdx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            val sizeIdx = c.getColumnIndex(OpenableColumns.SIZE)
+            if (c.moveToFirst()) {
+                if (nameIdx >= 0) filename = c.getString(nameIdx) ?: filename
+                if (sizeIdx >= 0 && !c.isNull(sizeIdx)) size = c.getLong(sizeIdx)
+            }
+        }
+        if (size > MAX_ATTACH_BYTES) return@runCatching null
+        val mime = ctx.contentResolver.getType(uri) ?: "application/octet-stream"
+        // Give a name-less URI an extension so the server (which types by
+        // extension) renders it correctly rather than as a generic download.
+        if (!filename.contains('.')) {
+            android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)?.let { filename = "$filename.$it" }
+        }
+        val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@runCatching null
+        // Size may be unknown (-1) from the provider — enforce the cap post-read too.
+        if (bytes.size > MAX_ATTACH_BYTES) return@runCatching null
+        Triple(filename, mime, bytes)
+    }.getOrNull() ?: return null
+
+    var filename = read.first
+    var mime = read.second
+    var bytes = read.third
+    if (mime.startsWith("image/")) {
+        val prepared = runCatching {
+            com.zekktris.media.MediaPrep.prepareAll(
+                ctx,
+                listOf(com.zekktris.media.MediaPrep.Input(bytes, filename, mime)),
+            ).firstOrNull()
+        }.getOrNull()
+        if (prepared != null) {
+            filename = prepared.filename
+            mime = prepared.mime
+            bytes = prepared.bytes
         }
     }
-    if (size > MAX_ATTACH_BYTES) return@runCatching null
-    val mime = ctx.contentResolver.getType(uri) ?: "application/octet-stream"
-    // Give a name-less URI an extension so the server (which types by extension)
-    // renders it correctly rather than as a generic octet-stream download.
-    if (!filename.contains('.')) {
-        android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)?.let { filename = "$filename.$it" }
-    }
-    val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@runCatching null
-    // Size may be unknown (-1) from the provider — enforce the cap post-read too.
-    if (bytes.size > MAX_ATTACH_BYTES) return@runCatching null
-    PendingFile(
+    return PendingFile(
         ApiClient.UploadFilePart(filename, mime, bytes), uri,
         preview = if (withPreview && mime.startsWith("image/")) decodeChipPreview(bytes) else null,
     )
-}.getOrNull()
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
