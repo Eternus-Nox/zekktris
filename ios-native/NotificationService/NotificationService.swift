@@ -290,6 +290,26 @@ enum CommunicationNotification {
             if restored.threadIdentifier.isEmpty {
                 restored.threadIdentifier = content.threadIdentifier
             }
+            // The app-icon badge is dropped by `updating(from:)` the same way,
+            // and losing it is silent: the server sends the recipient's unread
+            // count on every DM push (routes/messages.ts), so a DM that came
+            // through here left the home-screen badge untouched while server
+            // messages — which never take this path — still updated it. That is
+            // the "badge doesn't go up when someone DMs me" symptom.
+            //
+            // Restored only when it was actually lost, like the two above, so a
+            // future iOS that does carry it across keeps its own value.
+            if restored.badge == nil {
+                restored.badge = content.badge
+            }
+            // Same treatment for the sound and the routing payload: the reply
+            // action and the tap-to-open channel both read userInfo.
+            if restored.sound == nil {
+                restored.sound = content.sound
+            }
+            if restored.userInfo.isEmpty {
+                restored.userInfo = content.userInfo
+            }
             completion(restored)
         }
     }

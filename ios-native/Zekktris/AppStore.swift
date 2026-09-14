@@ -1159,7 +1159,15 @@ final class AppStore: ObservableObject {
         evaluateAutoPresence()
         // Re-sync the home-screen badge to true unread on every fg/bg flip (a
         // push may have set a stale number while we were away).
-        updateAppBadge()
+        //
+        // But NOT before the unread state exists. On a cold launch this runs
+        // with `dms` and `readStates` still empty, so the count is 0 and the
+        // badge a push correctly set gets wiped the moment the app is opened —
+        // even if the user reads nothing. loadReadStates() refreshes the badge
+        // when the real numbers arrive, so skipping here loses nothing.
+        if !dms.isEmpty || !readStates.isEmpty {
+            updateAppBadge()
+        }
     }
 
     private func startAutoPresence() {

@@ -997,9 +997,25 @@ struct MessageListView: View {
             // No animation: animating here reads as the view "scrolling down to"
             // the newest message on every open, which is what we don't want.
             proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            // And again after layout. A first open scrolls while the LazyVStack
+            // rows are still unmeasured, and scrolling to an anchor the layout
+            // has not sized yet lands at an offset PAST the real content: the
+            // screen shows nothing but background until a drag re-clamps it,
+            // which is the "a DM opens black until I swipe" bug. The repeat is
+            // a no-op whenever the first pass was already right, and it is the
+            // same two-phase shape the prepend-anchor restore above uses for
+            // exactly this reason.
+            DispatchQueue.main.async {
+                guard landing == .bottom else { return }
+                proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            }
         case .unread(let boundary):
             // Re-resolved against the CURRENT rows every time — see Landing.
             if let target = unreadLandingId(boundary) {
+                proxy.scrollTo(target, anchor: .top)
+            }
+            DispatchQueue.main.async {
+                guard case .unread(let b)? = landing, let target = unreadLandingId(b) else { return }
                 proxy.scrollTo(target, anchor: .top)
             }
         case nil:
@@ -5401,27 +5417,32 @@ private struct LightboxPage: View {
             }
 
         // Pan is a one-finger DragGesture, which DOES compete with the paging
-        // TabView. Attach it ONLY while zoomed in — at scale 1 there's nothing
-        // to pan, and leaving it attached made SwiftUI's gesture arbitration
-        // give the inner drag priority over the TabView, swallowing the
-        // left/right swipe-to-page entirely (an always-on `.simultaneousGesture`
-        // still claims the touch even when its handler early-returns). Removing
-        // it at rest lets the TabView own the horizontal drag, so swipe pages
-        // between images — matching the ‹ › buttons.
-        if scale > 1 {
-            base.simultaneousGesture(
-                DragGesture()
-                    .onChanged { value in
-                        offset = CGSize(
-                            width: lastOffset.width + value.translation.width,
-                            height: lastOffset.height + value.translation.height
-                        )
-                    }
-                    .onEnded { _ in lastOffset = offset }
-            )
-        } else {
-            base
-        }
+        // TabView, so it must not participate at rest: leaving it attached made
+        // SwiftUI's gesture arbitration give the inner drag priority over the
+        // TabView and swallow the left/right swipe-to-page entirely (an
+        // always-on `.simultaneousGesture` still claims the touch even when its
+        // handler early-returns).
+        //
+        // It is disabled with a gesture MASK rather than by branching the view.
+        // An `if scale > 1 { base.simultaneousGesture(…) } else { base }` builds
+        // two DIFFERENT view identities, so crossing the threshold — a stray
+        // second finger during a swipe, or a pinch settling back to 1 — tears
+        // the view down and rebuilds it MID-DRAG. The TabView's in-flight page
+        // drag is then cancelled with no end event, so it never snaps and the
+        // screen keeps two photos side by side: the "swipes halfway and shows
+        // half and half" bug. `including:` keeps one identity and just takes
+        // this gesture out of arbitration while at rest.
+        base.simultaneousGesture(
+            DragGesture()
+                .onChanged { value in
+                    offset = CGSize(
+                        width: lastOffset.width + value.translation.width,
+                        height: lastOffset.height + value.translation.height
+                    )
+                }
+                .onEnded { _ in lastOffset = offset },
+            including: scale > 1 ? .all : .subviews
+        )
     }
 }
 
