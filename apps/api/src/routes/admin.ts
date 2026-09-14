@@ -656,12 +656,24 @@ adminRouter.delete('/users/:id', validate('param', userIdParam), async (c) => {
     );
   }
 
-  // Purge any servers the user already soft-deleted. Child rows (channels,
-  // members, roles, …) cascade off guilds.id, so this clears the owner_id
-  // RESTRICT reference that would otherwise block the account delete.
-  await db
-    .delete(schema.guilds)
+  // The account's name is needed for the audit line below, and after the purge
+  // the row is a tombstone — read it while it still says something.
+  const [target] = await db
+    .select({ username: schema.users.username })
+    .from(schema.users)
+    .where(eq(schema.users.id, targetId))
+    .limit(1);
+  if (!target) throw errors.notFound('User');
+
+  // Servers this user deleted back when deletion was only a flag: still
+  // present, still holding an owner_id RESTRICT reference, content never
+  // removed. Purge them properly.
+  const { purgeAccount, purgeGuild } = await import('../services/purge');
+  const stale = await db
+    .select({ id: schema.guilds.id })
+    .from(schema.guilds)
     .where(and(eq(schema.guilds.ownerId, targetId), isNotNull(schema.guilds.deletedAt)));
+  for (const g of stale) await purgeGuild(g.id);
 
   // Boot them before the row disappears.
   await revokeAllUserSessions(targetId);
@@ -673,18 +685,18 @@ adminRouter.delete('/users/:id', validate('param', userIdParam), async (c) => {
     }
   }
 
-  const deleted = await db
-    .delete(schema.users)
-    .where(eq(schema.users.id, targetId))
-    .returning({ id: schema.users.id, username: schema.users.username });
+  // Same semantics as the self-serve path: server content and account data go,
+  // DM history stays under the old name, the row becomes a tombstone.
+  await purgeAccount(targetId);
 
-  if (deleted.length === 0) throw errors.notFound('User');
-  // The user row is gone, so user_id can't reference it — the who/what
-  // lives in the detail text instead.
+  // The tombstone still carries the id, so unlike before, the event can point
+  // at it — a moderator reading this later can follow it to the DM history
+  // that remains.
   await auditStaff(
     c,
     'staff_user_delete',
-    `Deleted account @${deleted[0]!.username} (${targetId})`,
+    `Deleted account @${target.username} (${targetId})`,
+    { userId: targetId },
   );
   return c.json({ deleted: true });
 });
@@ -1213,6 +1225,15 @@ adminRouter.delete('/guilds/:id', validate('param', guildIdParam), async (c) => 
   const { leftVoiceStateDTO } = await import('../lib/dto');
   const evicted = await evictAllVoiceInGuild(guildId);
 
+  // BEFORE the purge: the event references guilds.id, and purgeGuild snapshots
+  // the server's name onto it on the way past (see services/purge.ts).
+  await auditStaff(
+    c,
+    'staff_guild_delete',
+    `Deleted server "${nameRows[0]?.name ?? guildId}"`,
+    { guildId },
+  );
+
   const { deleteGuild } = await import('../services/guilds');
   await deleteGuild(guildId, adminId);
 
@@ -1233,12 +1254,6 @@ adminRouter.delete('/guilds/:id', validate('param', guildIdParam), async (c) => 
     memberIds: memberRows.map((r) => r.userId),
   });
 
-  await auditStaff(
-    c,
-    'staff_guild_delete',
-    `Deleted server "${nameRows[0]?.name ?? guildId}"`,
-    { guildId },
-  );
   return c.json({ ok: true });
 });
 

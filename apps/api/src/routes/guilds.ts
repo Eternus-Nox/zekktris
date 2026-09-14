@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { db, schema } from '../db';
 import { eq, and, inArray, isNull, sql } from 'drizzle-orm';
 import { errors, AppError } from '../errors';
+import { log } from '../log';
 import { requireAuth, requireUserId } from '../auth/middleware';
 import { validate } from '../lib/validate';
 import { RateLimiter } from '../lib/rateLimit';
@@ -640,6 +641,26 @@ guildsRouter.delete(
         channelId: vs.channelId,
         voiceState: leftVoiceStateDTO({ userId: vs.userId, guildId, channelId: vs.channelId }),
       });
+    }
+
+    // Recorded BEFORE the purge: security_events.guild_id references guilds.id,
+    // so this insert would fail once the row is gone — and purgeGuild stamps the
+    // server's name onto exactly these rows on its way past, so the record still
+    // reads properly afterwards. Deleting a server must not erase the fact that
+    // it existed.
+    try {
+      const { logEvent } = await import('../services/security');
+      await logEvent({
+        kind: 'guild_self_delete',
+        userId: null,
+        actorId: userId,
+        guildId,
+        channelId: null,
+        detail: `Server "${guild.name}" (${guildId}) deleted by its owner`,
+      });
+    } catch (err) {
+      // Never block the deletion on the audit write.
+      log.error('guild self-delete audit log failed', { err });
     }
 
     await guilds.deleteGuild(guildId, userId);

@@ -56,11 +56,14 @@ function del(token: string, body: unknown) {
   });
 }
 
+/** "Exists" means a LIVE account. Deletion leaves a TOMBSTONE row behind — id,
+ *  username and display name, nothing else — so the other person's DM history
+ *  keeps its author instead of going blank. See services/purge.ts. */
 async function exists(userId: bigint): Promise<boolean> {
   const rows = await db
     .select({ id: schema.users.id })
     .from(schema.users)
-    .where(eq(schema.users.id, userId))
+    .where(and(eq(schema.users.id, userId), isNull(schema.users.deletedAt)))
     .limit(1);
   return rows.length > 0;
 }

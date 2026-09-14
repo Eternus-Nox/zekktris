@@ -249,7 +249,13 @@ export type SecurityEventKind =
   | 'staff_guild_delete'
   | 'staff_user_delete'
   /** A user closed their OWN account via DELETE /users/@me. */
-  | 'user_self_delete';
+  | 'user_self_delete'
+  /**
+   * An owner deleted their OWN server. Recorded at the instance level because
+   * the server's own audit log is purged along with it, and a deleted server
+   * must still leave a trace that it existed — see services/purge.ts.
+   */
+  | 'guild_self_delete';
 
 export async function logEvent(input: {
   kind: SecurityEventKind;
@@ -294,6 +300,7 @@ export async function listEvents(opts: {
       kind: schema.securityEvents.kind,
       userId: schema.securityEvents.userId,
       guildId: schema.securityEvents.guildId,
+      guildName: schema.securityEvents.guildName,
       channelId: schema.securityEvents.channelId,
       detail: schema.securityEvents.detail,
       contentSnapshot: schema.securityEvents.contentSnapshot,
@@ -320,6 +327,9 @@ export async function listEvents(opts: {
     actorUsername: r.actorUsername,
     actorDisplayName: r.actorDisplayName,
     guildId: r.guildId?.toString() ?? null,
+    /** Set once the server has been purged — the id is gone, the name is what
+        is left of it. */
+    guildName: r.guildName,
     channelId: r.channelId?.toString() ?? null,
     detail: r.detail,
     contentSnapshot: r.contentSnapshot,

@@ -19,9 +19,14 @@ export const reports = pgTable(
   'reports',
   {
     id: bigint('id', { mode: 'bigint' }).primaryKey(),
-    guildId: bigint('guild_id', { mode: 'bigint' })
-      .notNull()
-      .references(() => guilds.id, { onDelete: 'cascade' }),
+    /** Null once the server has been purged — the report outlives it, because
+        deleting a server must not erase the record that it was reported. */
+    guildId: bigint('guild_id', { mode: 'bigint' }).references(() => guilds.id, {
+      onDelete: 'set null',
+    }),
+    /** The server's name, snapshotted at purge time so a report whose server
+        is gone still says where it happened. */
+    guildName: text('guild_name'),
     reporterId: bigint('reporter_id', { mode: 'bigint' }).references(() => users.id, {
       onDelete: 'set null',
     }),

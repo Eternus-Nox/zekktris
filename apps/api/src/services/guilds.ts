@@ -18,6 +18,7 @@ import { and, asc, eq, isNull } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { nextSnowflake } from '../snowflake';
 import { errors } from '../errors';
+import { log } from '../log';
 import { writeAudit } from './audit';
 import { DEFAULT_EVERYONE_PERMISSIONS } from '@zekktris/shared/permissions';
 import { EVERYONE_ROLE_NAME } from '@zekktris/shared/constants';
@@ -352,33 +353,31 @@ export async function updateGuild(
  * guild row is hard-deleted by the periodic purge (deferred to v1.x).
  */
 export async function deleteGuild(guildId: bigint, actorId: bigint): Promise<void> {
-  const [updated] = await db
-    .update(schema.guilds)
-    .set({ deletedAt: new Date() })
+  const [existing] = await db
+    .select({ id: schema.guilds.id })
+    .from(schema.guilds)
     .where(and(eq(schema.guilds.id, guildId), isNull(schema.guilds.deletedAt)))
-    .returning({ id: schema.guilds.id });
+    .limit(1);
 
-  if (!updated) throw errors.notFound('Guild');
+  if (!existing) throw errors.notFound('Guild');
 
-  // Soft-delete the guild's channels too. The attachment GC keys "in use" on
-  // channels.deletedAt (not guilds.deletedAt) — so without this, a deleted
-  // guild's channels stay deletedAt=null and the GC treats all their media as
-  // referenced forever, never reclaiming it. (There is no guild-restore path;
-  // a deleted guild is gone, so marking its channels deleted is correct.)
-  await db
-    .update(schema.channels)
-    .set({ deletedAt: new Date() })
-    .where(and(eq(schema.channels.guildId, guildId), isNull(schema.channels.deletedAt)));
-
-  // Note: we deliberately keep the guild_members rows so audit log queries
-  // that join through them still work. For this scope the guild is "gone"
-  // because every list/lookup honors deletedAt.
-  await writeAudit({
-    guildId,
-    actorId,
-    action: 'guild.delete',
-    targetType: 'guild',
-    targetId: guildId,
+  // Deleting a server removes it, rather than flagging it. Until this changed,
+  // `deleted_at` was all that happened: every message, member, role and
+  // attachment row stayed in the database forever and only the files were
+  // eventually reclaimed by the GC.
+  //
+  // The guild's OWN audit log dies with the guild (audit_log_entries.guild_id
+  // cascades), so there is nothing to write there. The instance-level record
+  // that survives a purge is written by the CALLER, before this runs — see
+  // routes/guilds.ts and routes/admin.ts, and the ordering note in
+  // services/purge.ts.
+  const { purgeGuild } = await import('./purge');
+  const purged = await purgeGuild(guildId);
+  log.info('guild purged', {
+    guildId: guildId.toString(),
+    actorId: actorId.toString(),
+    messages: purged.messages,
+    files: purged.files,
   });
 }
 

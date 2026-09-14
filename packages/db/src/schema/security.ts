@@ -30,9 +30,13 @@ export const securityEvents = pgTable(
     actorId: bigint('actor_id', { mode: 'bigint' }).references(() => users.id, {
       onDelete: 'set null',
     }),
+    /** Null once the server has been purged; the event survives it (same
+        reasoning as reports.guild_id). */
     guildId: bigint('guild_id', { mode: 'bigint' }).references(() => guilds.id, {
-      onDelete: 'cascade',
+      onDelete: 'set null',
     }),
+    /** The server's name, snapshotted at purge time. */
+    guildName: text('guild_name'),
     channelId: bigint('channel_id', { mode: 'bigint' }),
     /** Human-readable summary ("matched word: …", "23 msgs in 10s"). */
     detail: text('detail').notNull(),

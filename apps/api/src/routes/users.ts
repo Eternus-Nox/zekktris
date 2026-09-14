@@ -2808,11 +2808,15 @@ usersRouter.delete(
       );
     }
 
-    // Soft-deleted guilds still hold an owner_id RESTRICT reference — purge
-    // them so the account delete can proceed. Child rows cascade off guilds.id.
-    await db
-      .delete(schema.guilds)
+    // Servers this user deleted back when deletion was only a flag: the rows
+    // are still there, still holding an owner_id RESTRICT reference, and their
+    // content was never removed. Purge them properly on the way past.
+    const { purgeAccount, purgeGuild } = await import('../services/purge');
+    const stale = await db
+      .select({ id: schema.guilds.id })
+      .from(schema.guilds)
       .where(and(eq(schema.guilds.ownerId, userId), isNotNull(schema.guilds.deletedAt)));
+    for (const g of stale) await purgeGuild(g.id);
 
     // Step 4 — boot every session and live socket before the row disappears.
     await revokeAllUserSessions(userId);
@@ -2824,11 +2828,12 @@ usersRouter.delete(
       }
     }
 
-    const deleted = await db
-      .delete(schema.users)
-      .where(eq(schema.users.id, userId))
-      .returning({ id: schema.users.id });
-    if (deleted.length === 0) throw errors.notFound('User');
+    // Purge rather than erase. Their server messages, files, reactions and
+    // every piece of account data go; their DM conversations stay, still
+    // showing the old username, because a one-to-one conversation is also the
+    // other person's history. The row survives only as a tombstone — see
+    // services/purge.ts.
+    await purgeAccount(userId);
 
     // Audit trail. The user row is gone so user_id can't reference it — the
     // who lives in the detail text, matching the admin delete path.
