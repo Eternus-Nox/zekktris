@@ -132,7 +132,13 @@ enum SiriDirectory {
             let byId = all.filter { $0.peerUserId == id }
             if !byId.isEmpty { return byId }
         }
-        let spoken = normalize(person.displayName ?? person.personHandle?.value ?? "")
+        // `displayName` is non-optional on INPerson — it can be EMPTY (Siri
+        // heard a handle rather than a name), never nil, so the fallback has to
+        // test for empty rather than coalesce.
+        let heard = person.displayName.isEmpty
+            ? (person.personHandle?.value ?? "")
+            : person.displayName
+        let spoken = normalize(heard)
         guard !spoken.isEmpty else { return [] }
         let exact = all.filter { normalize($0.name) == spoken }
         if !exact.isEmpty { return exact }
