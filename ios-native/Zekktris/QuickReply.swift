@@ -359,16 +359,22 @@ enum ShareSuggestions {
         }
 
         let persons = conversation.recipients.map { recipient -> INPerson in
-            INPerson(
+            // When a Contacts card has been linked, donate under the name on
+            // that CARD. Siri matches a spoken name against the names on our
+            // donated conversations, so this — not the instant-message entry —
+            // is what makes "message Sam Rivera on Zekktris" resolve when
+            // Zekktris knows him as SRivera1337.
+            let linkedName = ContactLinks.contactName(forUserId: recipient.id)
+            return INPerson(
                 personHandle: INPersonHandle(value: handleValue(for: recipient.id), type: .unknown),
                 nameComponents: nil,
-                displayName: recipient.name,
+                displayName: linkedName ?? recipient.name,
                 image: images[recipient.id],
                 // What ties this conversation to the person's Contacts card, so
                 // "message Sam Rivera on Zekktris" resolves. nil until the
                 // user links one (Profile → Add to Contacts).
                 contactIdentifier: ContactLinks.contactId(forUserId: recipient.id),
-                customIdentifier: recipient.id
+                customIdentifier: recipient.id,
             )
         }
 

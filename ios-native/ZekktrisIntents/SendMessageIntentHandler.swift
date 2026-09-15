@@ -276,10 +276,12 @@ enum SiriDirectory {
     /// How far ahead the leader must be to skip the "which one?" question.
     static let clearWinnerMargin = 0.12
 
-    /// Best fit across everything we know this person by.
+    /// Best fit across everything we know this person by: the name on their
+    /// linked Contacts card first (that is what people say out loud), then the
+    /// display name Zekktris shows, then the @username.
     static func bestScore(spoken: String, dm: WidgetDM) -> Double {
         var best = 0.0
-        for candidate in [dm.name, dm.peerUsername].compactMap({ $0 }) {
+        for candidate in [dm.contactName, dm.name, dm.peerUsername].compactMap({ $0 }) {
             best = max(best, score(spoken: spoken, candidate: normalize(candidate)))
         }
         return best
@@ -456,11 +458,17 @@ enum SiriRemote {
         let isE2EE: Bool
         let displayName: String
         let username: String?
+        let peerUserId: String?
 
-        /// Reuse the same ranking the snapshot path uses.
+        /// Reuse the same ranking the snapshot path uses, including the linked
+        /// contact's name — which the App Group knows even for a conversation
+        /// this list was fetched fresh from the server.
         var asWidgetDM: WidgetDM {
-            WidgetDM(id: id, name: displayName, streak: 0, avatarURL: nil,
-                     isE2EE: isE2EE, peerUserId: nil, peerUsername: username)
+            WidgetDM(
+                id: id, name: displayName, streak: 0, avatarURL: nil,
+                isE2EE: isE2EE, peerUserId: peerUserId, peerUsername: username,
+                contactName: peerUserId.flatMap { ContactLinks.contactName(forUserId: $0) },
+            )
         }
     }
 
@@ -494,6 +502,7 @@ enum SiriRemote {
                 isE2EE: (channel["e2eeEnabled"] as? Bool) ?? false,
                 displayName: display,
                 username: peer?["username"] as? String,
+                peerUserId: peer?["id"] as? String,
             )
         }
     }

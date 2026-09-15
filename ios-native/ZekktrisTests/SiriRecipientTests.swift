@@ -8,9 +8,12 @@ import XCTest
 /// matching is that a near-miss must still ask rather than guess.
 final class SiriRecipientTests: XCTestCase {
 
-    private func dm(_ id: String, _ name: String, username: String? = nil) -> WidgetDM {
+    private func dm(
+        _ id: String, _ name: String, username: String? = nil, contact: String? = nil,
+    ) -> WidgetDM {
         WidgetDM(id: id, name: name, streak: 0, avatarURL: nil,
-                 isE2EE: false, peerUserId: "u-\(id)", peerUsername: username)
+                 isE2EE: false, peerUserId: "u-\(id)", peerUsername: username,
+                 contactName: contact)
     }
 
     private lazy var people: [WidgetDM] = [
@@ -75,6 +78,16 @@ final class SiriRecipientTests: XCTestCase {
     /// edit from "Tom", which is how a message goes to the wrong person.
     func testAShortRealNameDoesNotFuzzyMatchAStranger() {
         XCTAssertTrue(SiriDirectory.rank(heard: "Mom", in: people).isEmpty)
+    }
+
+    /// The whole point of linking a card: Zekktris knows him as SRivera1337,
+    /// the user says "Sam Rivera", and only the linked name bridges the two.
+    func testALinkedContactNameResolvesTheConversation() {
+        let linked = dm("9", "SRivera1337", username: "SRivera1337", contact: "Sam Rivera")
+        XCTAssertEqual(SiriDirectory.rank(heard: "Sam Rivera", in: [linked]).map(\.id), ["9"])
+        XCTAssertEqual(SiriDirectory.rank(heard: "Sam", in: [linked]).map(\.id), ["9"])
+        // …and the handle keeps working.
+        XCTAssertEqual(SiriDirectory.rank(heard: "SRivera1337", in: [linked]).map(\.id), ["9"])
     }
 
     func testTheUsernameIsMatchedEvenWhenTheDisplayNameIsNothingLike() {

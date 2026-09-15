@@ -4466,6 +4466,8 @@ struct ProfileCardView: View {
     @State private var pendingContactId: String?
     /// Whether that sheet ended in a save rather than a cancel.
     @State private var savedToContacts = false
+    /// What the saved card is called — the name Siri will hear.
+    @State private var pendingContactName: String?
     /// The Contacts card this account is linked to, if any. Drives whether the
     /// button offers to add the link or take it away.
     @State private var linkedContactId: String?
@@ -4706,26 +4708,21 @@ struct ProfileCardView: View {
     /// card it landed on, which is what Siri matches against.
     private func confirmContactLink() {
         let contactId = pendingContactId
+        let contactName = pendingContactName
         let saved = savedToContacts
         pendingContactId = nil
+        pendingContactName = nil
         savedToContacts = false
-        guard saved else { return }
-        guard let contactId else {
-            // Saved, but iOS didn't tell us which card. The entry is on the
-            // card and Siri can still resolve it by handle; only the
-            // contact-identifier hint is missing.
-            contactLinkMessage =
-                "Added to Contacts. If Siri doesn't find them by name yet, open this conversation once."
-            return
-        }
-        ContactsLink.remember(userId: user.id, contactId: contactId)
+        guard saved, let contactId else { return }
+        ContactsLink.remember(userId: user.id, contactId: contactId, contactName: contactName)
         linkedContactId = contactId
-        // Re-donate right away: the donation is what carries the contact
-        // identifier to Siri, and waiting for the next time this DM is opened
-        // would make the link look like it hadn't worked.
+        // Re-donate right away, under the CARD'S name: that donation is what
+        // Siri matches a spoken name against, and it is what makes this work
+        // whether or not Contacts kept the instant-message entry.
         redonateDM()
+        let spoken = contactName ?? user.name
         contactLinkMessage =
-            "Linked. Try \u{201C}Hey Siri, message \(user.name) on Zekktris\u{201D} — or whatever their card is named."
+            "Linked to \(spoken). Say \u{201C}Hey Siri, message \(spoken) on Zekktris\u{201D}."
     }
 
     /// Take the entry back off the card and stop tying this account to it.
@@ -4812,8 +4809,9 @@ struct ProfileCardView: View {
             AddToContactsSheet(
                 username: user.username ?? "",
                 suggestedName: user.name,
-                onDone: { contactId in
+                onDone: { contactId, contactName in
                     pendingContactId = contactId
+                    pendingContactName = contactName
                     savedToContacts = contactId != nil
                     showContactPicker = false
                 },

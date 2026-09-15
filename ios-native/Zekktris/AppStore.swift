@@ -1926,11 +1926,25 @@ final class AppStore: ObservableObject {
         let items = dms
             .filter { $0.type == "dm" }
             .prefix(30)
-            .map { WidgetDM(id: $0.id, name: $0.dmTitle, streak: $0.streak ?? 0,
-                            avatarURL: assetURL($0.dmAvatarUser?.avatarUrl)?.absoluteString,
-                            isE2EE: $0.isE2EE,
-                            peerUserId: $0.dmAvatarUser?.id,
-                            peerUsername: $0.dmAvatarUser?.username) }
+            .map { channel -> WidgetDM in
+                let peer = channel.dmAvatarUser
+                // The name on a linked Contacts card, when there is one: what
+                // the user actually says to Siri.
+                var linkedName: String?
+                if let peerId = peer?.id {
+                    linkedName = ContactLinks.contactName(forUserId: peerId)
+                }
+                return WidgetDM(
+                    id: channel.id,
+                    name: channel.dmTitle,
+                    streak: channel.streak ?? 0,
+                    avatarURL: assetURL(peer?.avatarUrl)?.absoluteString,
+                    isE2EE: channel.isE2EE,
+                    peerUserId: peer?.id,
+                    peerUsername: peer?.username,
+                    contactName: linkedName,
+                )
+            }
         WidgetBridge.publish(dms: Array(items), token: api.token)
         WidgetCenter.shared.reloadAllTimelines()
     }

@@ -41,8 +41,8 @@ enum ContactsLink {
     /// Remember which card an account was saved onto. Siri matches a card to a
     /// conversation through `INPerson.contactIdentifier`, so this is what the
     /// donation and the Siri extension stamp onto their recipients.
-    static func remember(userId: String, contactId: String) {
-        ContactLinks.set(contactId: contactId, forUserId: userId)
+    static func remember(userId: String, contactId: String, contactName: String?) {
+        ContactLinks.set(contactId: contactId, contactName: contactName, forUserId: userId)
     }
 
     /// Take the Zekktris entry back off a card and forget the link.
@@ -148,8 +148,8 @@ struct AddToContactsSheet: UIViewControllerRepresentable {
     let username: String
     /// A starting point for a NEW card only; adding to an existing one ignores it.
     let suggestedName: String
-    /// Identifier of the saved card, or nil if the user backed out.
-    var onDone: (String?) -> Void
+    /// The saved card's identifier and name, or nils if the user backed out.
+    var onDone: (String?, String?) -> Void
 
     func makeUIViewController(context: Context) -> UINavigationController {
         let draft = CNMutableContact()
@@ -181,14 +181,15 @@ struct AddToContactsSheet: UIViewControllerRepresentable {
         private let parent: AddToContactsSheet
         init(_ parent: AddToContactsSheet) { self.parent = parent }
 
-        @objc func cancel() { parent.onDone(nil) }
+        @objc func cancel() { parent.onDone(nil, nil) }
 
         /// `contact` is nil when they cancelled, and the saved card — new or
         /// existing — when they didn't.
         func contactViewController(
             _ viewController: CNContactViewController, didCompleteWith contact: CNContact?,
         ) {
-            parent.onDone(contact?.identifier)
+            let name = contact.flatMap { CNContactFormatter.string(from: $0, style: .fullName) }
+            parent.onDone(contact?.identifier, name)
         }
     }
 }

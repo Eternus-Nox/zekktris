@@ -20,6 +20,10 @@ struct WidgetDM: Codable, Identifiable, Hashable {
     /// The peer's @username. `name` is their DISPLAY name, and someone talking
     /// to Siri may say either — so both are matched against.
     var peerUsername: String?
+    /// The name on the Contacts card this account was linked to, when there is
+    /// one. This is what a person actually SAYS — "Sam Rivera" rather than
+    /// "SRivera1337" — so it is matched ahead of everything else.
+    var contactName: String?
 }
 
 /// Data shared between the Zekktris app and its WidgetKit extension. The widget
@@ -85,16 +89,36 @@ enum ContactLinks {
         UserDefaults(suiteName: AppGroupConfig.identifier)
     }
 
-    private static var map: [String: String] {
-        (defaults?.dictionary(forKey: key) as? [String: String]) ?? [:]
+    /// userId → ["id": contact identifier, "name": what the card is called].
+    /// Older builds stored a bare identifier string; those still read.
+    private static var map: [String: Any] {
+        (defaults?.dictionary(forKey: key)) ?? [:]
+    }
+
+    private static func entry(_ userId: String) -> [String: String]? {
+        switch map[userId] {
+        case let dict as [String: String]: return dict
+        case let id as String: return ["id": id]   // written before names were kept
+        default: return nil
+        }
     }
 
     /// The Contacts identifier for a Zekktris user id, if one was linked.
-    static func contactId(forUserId userId: String) -> String? { map[userId] }
+    static func contactId(forUserId userId: String) -> String? { entry(userId)?["id"] }
 
-    static func set(contactId: String, forUserId userId: String) {
+    /// What that card is CALLED — the whole point of linking. Siri matches a
+    /// spoken name against the names on our donated conversations, so this is
+    /// what makes "message Sam Rivera on Zekktris" resolve, with or without
+    /// an instant-message entry on the card.
+    static func contactName(forUserId userId: String) -> String? {
+        entry(userId)?["name"]?.isEmpty == false ? entry(userId)?["name"] : nil
+    }
+
+    static func set(contactId: String, contactName: String?, forUserId userId: String) {
         var next = map
-        next[userId] = contactId
+        var value = ["id": contactId]
+        if let contactName, !contactName.isEmpty { value["name"] = contactName }
+        next[userId] = value
         defaults?.set(next, forKey: key)
     }
 
