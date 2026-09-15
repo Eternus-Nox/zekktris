@@ -4462,12 +4462,6 @@ struct ProfileCardView: View {
     @State private var nicknameError: String?
     @State private var showContactPicker = false
     @State private var contactLinkMessage: String?
-    /// The card iOS saved to, held until the sheet has finished dismissing.
-    @State private var pendingContactId: String?
-    /// Whether that sheet ended in a save rather than a cancel.
-    @State private var savedToContacts = false
-    /// What the saved card is called — the name Siri will hear.
-    @State private var pendingContactName: String?
     /// The no-permission fallback: iOS writes the entry itself.
     @State private var showAddToContacts = false
     /// The Contacts card this account is linked to, if any. Drives whether the
@@ -4705,13 +4699,16 @@ struct ProfileCardView: View {
         }
     }
 
-    /// Runs once the contact PICKER has finished dismissing, and does the write
-    /// itself. Deferred past dismissal because an alert raised while a sheet is
-    /// still going away is dropped — which is how this managed to fail, and
-    /// succeed, in complete silence.
-    private func writePickedContact() {
-        guard let contactId = pendingContactId else { return }
-        pendingContactId = nil
+    /// Run `work` once a sheet has finished going away. A sheet's own
+    /// `onDismiss` can't be relied on here (see the sheets above), and an alert
+    /// raised mid-dismissal is dropped, so the one thing that has to be true is
+    /// that this lands after the animation.
+    private func afterSheetCloses(_ work: @escaping () -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
+    /// Write the entry onto the card the user picked.
+    private func writePickedContact(_ contactId: String) {
         guard let username = user.username, !username.isEmpty else { return }
         switch ContactsLink.link(username: username, userId: user.id, toContactWithId: contactId) {
         case .linked(let name):
@@ -4730,17 +4727,10 @@ struct ProfileCardView: View {
         }
     }
 
-    /// Runs once the system Add-to-Contacts sheet has finished dismissing.
-    /// Nothing is written here — iOS already did it — this only records WHICH
-    /// card it landed on, which is what Siri matches against.
-    private func confirmContactLink() {
-        let contactId = pendingContactId
-        let contactName = pendingContactName
-        let saved = savedToContacts
-        pendingContactId = nil
-        pendingContactName = nil
-        savedToContacts = false
-        guard saved, let contactId else { return }
+    /// After the system Add-to-Contacts sheet. Nothing is written here — iOS
+    /// already did it — this only records WHICH card it landed on, which is
+    /// what Siri matches against.
+    private func confirmContactLink(_ contactId: String, _ contactName: String?) {
         ContactsLink.remember(userId: user.id, contactId: contactId, contactName: contactName)
         linkedContactId = contactId
         // Re-donate right away, under the CARD'S name: that donation is what
@@ -4834,24 +4824,30 @@ struct ProfileCardView: View {
         // the callback: an alert raised while the sheet is still dismissing is
         // dropped, which is how the previous version managed to fail — and
         // succeed — completely silently.
-        .sheet(isPresented: $showContactPicker, onDismiss: writePickedContact) {
+        // NOT driven by `onDismiss`. Both of these host a UIKit controller
+        // that DISMISSES ITSELF on completion, so by the time the callback runs
+        // SwiftUI already considers the sheet closed — setting the binding to
+        // false is then a no-op and onDismiss never fires, which silently
+        // dropped every link made through the picker. The work is scheduled
+        // from the callback instead, one dismissal-length later so the alert it
+        // raises isn't swallowed by a sheet still going away.
+        .sheet(isPresented: $showContactPicker) {
             ContactPickerSheet(
                 onPick: { contactId in
-                    pendingContactId = contactId
                     showContactPicker = false
+                    afterSheetCloses { writePickedContact(contactId) }
                 },
                 onCancel: { showContactPicker = false },
             )
         }
-        .sheet(isPresented: $showAddToContacts, onDismiss: confirmContactLink) {
+        .sheet(isPresented: $showAddToContacts) {
             AddToContactsSheet(
                 username: user.username ?? "",
                 suggestedName: user.name,
                 onDone: { contactId, contactName in
-                    pendingContactId = contactId
-                    pendingContactName = contactName
-                    savedToContacts = contactId != nil
                     showAddToContacts = false
+                    guard let contactId else { return }
+                    afterSheetCloses { confirmContactLink(contactId, contactName) }
                 },
             )
         }
