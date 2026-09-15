@@ -33,9 +33,89 @@ enum ContactsLink {
     static let service = "Zekktris"
 
     enum Outcome: Equatable {
+        case linked(contactName: String)
         case unlinked(contactName: String)
         case permissionDenied
         case failed(String)
+    }
+
+    /// Write the entry onto a card ourselves.
+    ///
+    /// MEASURED, not assumed: a probe app on the simulator confirmed iOS keeps
+    /// a custom `service` ("Zekktris") through both a create-with-entry and an
+    /// add-to-existing save, and reads it straight back. So this path works —
+    /// the earlier failures were a denied permission and an alert that was
+    /// swallowed while the picker dismissed, not the framework refusing the
+    /// custom service.
+    ///
+    /// Requires authorization. When that isn't available the caller falls back
+    /// to AddToContactsSheet, which needs none.
+    static func link(username: String, userId: String, toContactWithId contactId: String) -> Outcome {
+        let store = CNContactStore()
+        let keys: [CNKeyDescriptor] = [
+            CNContactInstantMessageAddressesKey as CNKeyDescriptor,
+            CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
+        ]
+        do {
+            let contact = try store.unifiedContact(withIdentifier: contactId, keysToFetch: keys)
+            let name = CNContactFormatter.string(from: contact, style: .fullName) ?? "that contact"
+            guard let unified = contact.mutableCopy() as? CNMutableContact else {
+                return .failed("Couldn't edit that contact.")
+            }
+            addEntry(to: unified, username: username)
+            do {
+                let save = CNSaveRequest()
+                save.update(unified)
+                try store.execute(save)
+            } catch {
+                // The merged view of a person across several accounts is not
+                // always writable; the record behind it is.
+                contactsLog.error(
+                    "unified save failed, trying the backing card: \(error.localizedDescription, privacy: .public)",
+                )
+                guard let backing = try backingContact(id: contactId, store: store, keys: keys) else {
+                    throw error
+                }
+                addEntry(to: backing, username: username)
+                let retry = CNSaveRequest()
+                retry.update(backing)
+                try store.execute(retry)
+            }
+            // Read it back. A save can be accepted and still not produce the
+            // entry, and "saved" while Contacts shows nothing is the worst
+            // possible answer.
+            let after = try? store.unifiedContact(withIdentifier: contactId, keysToFetch: keys)
+            let present = after?.instantMessageAddresses.contains {
+                $0.value.service.caseInsensitiveCompare(service) == .orderedSame
+                    && $0.value.username == username
+            } ?? false
+            guard present else {
+                contactsLog.error("save succeeded but the entry is not on the card")
+                return .failed(
+                    "Contacts accepted the change but didn't keep it. Add it by hand: the card › Edit › instant message › service \"Zekktris\", username \(username).",
+                )
+            }
+            ContactLinks.set(contactId: contactId, contactName: name, forUserId: userId)
+            return .linked(contactName: name)
+        } catch {
+            contactsLog.error("contact write failed: \(error.localizedDescription, privacy: .public)")
+            return .failed(error.localizedDescription)
+        }
+    }
+
+    /// Replace any earlier Zekktris entry for this account, then add this one,
+    /// so re-linking can't stack duplicates on one card.
+    private static func addEntry(to contact: CNMutableContact, username: String) {
+        contact.instantMessageAddresses = contact.instantMessageAddresses.filter {
+            $0.value.service.caseInsensitiveCompare(service) != .orderedSame
+                || $0.value.username != username
+        }
+        contact.instantMessageAddresses.append(
+            CNLabeledValue(
+                label: CNLabelOther,
+                value: CNInstantMessageAddress(username: username, service: service),
+            ),
+        )
     }
 
     /// Remember which card an account was saved onto. Siri matches a card to a
@@ -135,6 +215,37 @@ enum ContactsLink {
             }
         default:
             return false
+        }
+    }
+}
+
+/// The system contact picker. Choosing a card needs no permission — the picker
+/// runs out of process — but WRITING to it does, which is why the caller only
+/// reaches this after `requestAccess()` succeeds.
+struct ContactPickerSheet: UIViewControllerRepresentable {
+    var onPick: (String) -> Void
+    var onCancel: () -> Void
+
+    func makeUIViewController(context: Context) -> CNContactPickerViewController {
+        let picker = CNContactPickerViewController()
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ picker: CNContactPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, CNContactPickerDelegate {
+        private let parent: ContactPickerSheet
+        init(_ parent: ContactPickerSheet) { self.parent = parent }
+
+        func contactPicker(_ picker: CNContactPickerViewController, didSelect contact: CNContact) {
+            parent.onPick(contact.identifier)
+        }
+
+        func contactPickerDidCancel(_ picker: CNContactPickerViewController) {
+            parent.onCancel()
         }
     }
 }

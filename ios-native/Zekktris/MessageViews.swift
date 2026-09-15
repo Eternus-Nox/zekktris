@@ -4468,6 +4468,8 @@ struct ProfileCardView: View {
     @State private var savedToContacts = false
     /// What the saved card is called — the name Siri will hear.
     @State private var pendingContactName: String?
+    /// The no-permission fallback: iOS writes the entry itself.
+    @State private var showAddToContacts = false
     /// The Contacts card this account is linked to, if any. Drives whether the
     /// button offers to add the link or take it away.
     @State private var linkedContactId: String?
@@ -4703,6 +4705,31 @@ struct ProfileCardView: View {
         }
     }
 
+    /// Runs once the contact PICKER has finished dismissing, and does the write
+    /// itself. Deferred past dismissal because an alert raised while a sheet is
+    /// still going away is dropped — which is how this managed to fail, and
+    /// succeed, in complete silence.
+    private func writePickedContact() {
+        guard let contactId = pendingContactId else { return }
+        pendingContactId = nil
+        guard let username = user.username, !username.isEmpty else { return }
+        switch ContactsLink.link(username: username, userId: user.id, toContactWithId: contactId) {
+        case .linked(let name):
+            linkedContactId = contactId
+            // Re-donate under the card's name: that donation is what Siri
+            // matches a spoken name against.
+            redonateDM()
+            contactLinkMessage =
+                "Linked to \(name). Say \u{201C}Hey Siri, message \(name) on Zekktris\u{201D}."
+        case .unlinked:
+            break
+        case .permissionDenied:
+            showAddToContacts = true
+        case .failed(let reason):
+            contactLinkMessage = reason
+        }
+    }
+
     /// Runs once the system Add-to-Contacts sheet has finished dismissing.
     /// Nothing is written here — iOS already did it — this only records WHICH
     /// card it landed on, which is what Siri matches against.
@@ -4740,6 +4767,8 @@ struct ProfileCardView: View {
         switch outcome {
         case .unlinked(let name):
             contactLinkMessage = "Removed from \(name)."
+        case .linked:
+            break   // unlink never reports this
         case .permissionDenied:
             contactLinkMessage = "Zekktris needs access to Contacts to change this."
         case .failed(let reason):
@@ -4805,7 +4834,16 @@ struct ProfileCardView: View {
         // the callback: an alert raised while the sheet is still dismissing is
         // dropped, which is how the previous version managed to fail — and
         // succeed — completely silently.
-        .sheet(isPresented: $showContactPicker, onDismiss: confirmContactLink) {
+        .sheet(isPresented: $showContactPicker, onDismiss: writePickedContact) {
+            ContactPickerSheet(
+                onPick: { contactId in
+                    pendingContactId = contactId
+                    showContactPicker = false
+                },
+                onCancel: { showContactPicker = false },
+            )
+        }
+        .sheet(isPresented: $showAddToContacts, onDismiss: confirmContactLink) {
             AddToContactsSheet(
                 username: user.username ?? "",
                 suggestedName: user.name,
@@ -4813,7 +4851,7 @@ struct ProfileCardView: View {
                     pendingContactId = contactId
                     pendingContactName = contactName
                     savedToContacts = contactId != nil
-                    showContactPicker = false
+                    showAddToContacts = false
                 },
             )
         }
@@ -4872,9 +4910,22 @@ struct ProfileCardView: View {
                             Label("Unlink Contact", systemImage: "person.crop.circle.badge.minus")
                         }
                     } else {
-                        // No permission check: the system sheet does the write
-                        // itself, so Contacts access is never requested here.
-                        Button { showContactPicker = true } label: {
+                        Button {
+                            Task {
+                                // Writing it ourselves is the path that works
+                                // (verified on a simulator probe: iOS keeps the
+                                // custom "Zekktris" service and reads it back),
+                                // and it is the only one that tells us WHICH
+                                // card was used. It needs permission, so when
+                                // that isn't granted fall back to the system
+                                // sheet, which needs none.
+                                if await ContactsLink.requestAccess() {
+                                    showContactPicker = true
+                                } else {
+                                    showAddToContacts = true
+                                }
+                            }
+                        } label: {
                             Label("Link Contact", systemImage: "person.crop.circle.badge.plus")
                         }
                     }
