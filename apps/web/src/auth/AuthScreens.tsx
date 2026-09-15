@@ -39,7 +39,7 @@ function AuthShell({
     // submit button. `.abyss` is position:fixed, so it stays put while the
     // card scrolls. The inner min-h-full wrapper centers the card when it fits
     // and lets it scroll (from the top, no clipping) when it doesn't.
-    <div className="h-screen overflow-y-auto bg-bg-1 relative">
+    <div className="zk-screen overflow-y-auto bg-bg-1 relative">
       {/* Same ambient abyss the Shell mounts — auth is the user's first
           impression of Zekktris, so it gets the full plasma + starfield. */}
       <div className="abyss" aria-hidden />

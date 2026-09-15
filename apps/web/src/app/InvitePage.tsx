@@ -299,7 +299,7 @@ function Frame({ children, inShell }: { children: React.ReactNode; inShell: bool
     // Own scroll container — the document can't scroll (html/body is locked),
     // so a tall invite would otherwise clip on short viewports. `.abyss` is
     // position:fixed; the min-h-full wrapper centers-if-fits, scrolls if not.
-    <div className="h-screen overflow-y-auto bg-bg-1 relative">
+    <div className="zk-screen overflow-y-auto bg-bg-1 relative">
       <div className="abyss" aria-hidden />
       <div className="relative z-10 min-h-full flex items-center justify-center px-4 py-8 safe-area-padded">
         <div className="w-full max-w-3xl grid md:grid-cols-2 glass glass-edge rounded-2xl overflow-hidden shadow-2xl">

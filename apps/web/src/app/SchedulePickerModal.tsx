@@ -148,7 +148,7 @@ export function SchedulePickerModal({
       onClick={onClose}
     >
       <div
-        className="bg-bg-2 border border-line rounded-lg max-w-md w-full p-4 sm:p-5 space-y-3 max-h-[calc(100vh-1.5rem)] overflow-y-auto my-auto"
+        className="bg-bg-2 border border-line rounded-lg max-w-md w-full p-4 sm:p-5 space-y-3 max-h-[calc(100svh-1.5rem)] overflow-y-auto my-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-center gap-2">

@@ -1046,6 +1046,37 @@ html.zk-vkb-open .zk-composer {
   box-sizing: border-box;
 }
 
+/* Full-screen page containers — sign-in, invite, device approval, legal.
+ *
+ * NEVER `h-screen` / `100vh` here. On Android `vh` is the viewport as if the
+ * browser toolbars were HIDDEN, so a 100vh container is taller than what the
+ * user can actually see: its last toolbar-height strip sits under the bottom
+ * bar, and because the document itself never scrolls (see `html, body` above,
+ * which is what keeps the mobile toolbar from retracting) there is no way to
+ * scroll down to it. That is exactly how the buttons at the bottom of these
+ * pages became untappable on some Android phones — the ones whose browser puts
+ * its bar at the bottom, or which reserve room for a gesture pill.
+ *
+ * `svh` is the always-visible height, so the container can never exceed the
+ * screen. The plain `vh` line above it is the fallback for engines without
+ * `svh`, and is overridden wherever it is supported.
+ *
+ * The bottom inset then keeps content clear of the gesture bar when the page
+ * is drawn edge-to-edge (viewport-fit=cover, set in index.html). */
+.zk-screen {
+  height: 100vh;
+  height: 100svh;
+  padding-bottom: var(--safe-bottom);
+  box-sizing: border-box;
+}
+
+.zk-min-screen {
+  min-height: 100vh;
+  min-height: 100svh;
+  padding-bottom: var(--safe-bottom);
+  box-sizing: border-box;
+}
+
 /* Global selection policy. By default NOTHING in the app is selectable
  * — server rails, avatars, usernames, buttons, list rows, etc. — so
  * users don't accidentally highlight UI chrome. Only message text

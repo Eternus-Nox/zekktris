@@ -30,7 +30,7 @@ function LegalLayout({
   children: React.ReactNode;
 }) {
   return (
-    <div className="h-screen overflow-y-auto bg-bg-1 text-ink-1 relative">
+    <div className="zk-screen overflow-y-auto bg-bg-1 text-ink-1 relative">
       <div className="abyss" aria-hidden />
       <div className="relative z-10 mx-auto w-full max-w-2xl px-5 py-10 safe-area-padded">
         <div className="flex items-center gap-2 mb-8">

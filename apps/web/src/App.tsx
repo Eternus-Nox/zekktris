@@ -55,7 +55,7 @@ export function App() {
     // else (MessageView, Shell chrome, modals, etc).
     <ErrorBoundary
       fallback={(err) => (
-        <div className="min-h-screen flex items-center justify-center bg-bg-1 text-ink-1 p-6">
+        <div className="zk-min-screen flex items-center justify-center bg-bg-1 text-ink-1 p-6">
           <div className="max-w-md w-full bg-bg-2 border border-line rounded-lg p-6">
             <h1 className="text-lg font-semibold text-red-300 mb-2">Something broke.</h1>
             <p className="text-sm text-ink-2 mb-4">

@@ -68,7 +68,7 @@ export function ConfirmEmailPage() {
   }, [token, rest, user, updateUser]);
 
   return (
-    <div className="min-h-screen bg-bg-1 text-ink-1 flex items-center justify-center p-4">
+    <div className="zk-min-screen bg-bg-1 text-ink-1 flex items-center justify-center p-4">
       <div className="max-w-md w-full bg-bg-2 border border-line rounded-lg p-6 space-y-3">
         <header className="flex items-center gap-2">
           <Shield size={18} className="text-accent" />

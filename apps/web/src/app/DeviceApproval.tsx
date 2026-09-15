@@ -453,7 +453,7 @@ export function ApproveDevicePage() {
   }
 
   return (
-    <div className="h-screen overflow-y-auto bg-bg-1 relative">
+    <div className="zk-screen overflow-y-auto bg-bg-1 relative">
       <div className="abyss" aria-hidden />
       <div className="relative z-10 min-h-full flex items-center justify-center px-4 py-8 safe-area-padded">
         <div className="w-full max-w-lg glass glass-edge rounded-2xl overflow-hidden shadow-2xl">
