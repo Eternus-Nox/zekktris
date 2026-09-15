@@ -94,6 +94,8 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 // Result of an attempted login: 2FA is not an error, it's a follow-up prompt.
 sealed class LoginResult {
@@ -412,6 +414,36 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
     private fun HttpStatusCode.isSuccess() = value in 200..299
 
     // ---- auth ---------------------------------------------------------------
+
+    /** Ask for a reset email. The server answers the same way whether or not
+     *  the address exists, so there is nothing to report but success. */
+    suspend fun forgotPassword(email: String) {
+        val body = buildJsonObject { put("email", JsonPrimitive(email.trim().lowercase())) }
+        send(HttpMethod.Post, "/auth/forgot-password", null) {
+            contentType(ContentType.Application.Json); setBody(body.toString())
+        }
+    }
+
+    /** Finish a reset with the emailed token. Throws on a bad/expired token. */
+    suspend fun resetPassword(token: String, newPassword: String) {
+        val body = buildJsonObject {
+            put("token", JsonPrimitive(token.trim()))
+            put("newPassword", JsonPrimitive(newPassword))
+        }
+        val resp = send(HttpMethod.Post, "/auth/reset-password", null) {
+            contentType(ContentType.Application.Json); setBody(body.toString())
+        }
+        if (!resp.status.isSuccess()) {
+            // The server's message is the useful part here — expired token,
+            // already used, password too short — so surface it rather than a
+            // status code.
+            val detail = runCatching {
+                Json.parseToJsonElement(resp.bodyAsText())
+                    .jsonObject["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content
+            }.getOrNull()
+            throw ApiException(resp.status.value, detail ?: "That reset code didn't work.")
+        }
+    }
 
     suspend fun login(email: String, password: String, code: String? = null): LoginResult {
         val resp = send(HttpMethod.Post, "/auth/login", null) {

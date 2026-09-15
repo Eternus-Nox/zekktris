@@ -2504,6 +2504,26 @@ class AppStore(
      * new order is applied locally first and a failure refetches the server's
      * version rather than trying to invert the change.
      */
+    /**
+     * Ask for a password-reset email. The server deliberately answers the same
+     * way whether or not the address exists, so this only ever reports that the
+     * request went out.
+     */
+    fun requestPasswordReset(email: String, onDone: (String?) -> Unit) {
+        scope.launch {
+            val error = runCatching { api.forgotPassword(email) }.exceptionOrNull()
+            onDone(error?.let { "Couldn't send the reset email. Check the address and try again." })
+        }
+    }
+
+    /** Finish a reset with the emailed code. Returns the server's reason on failure. */
+    fun resetPassword(token: String, newPassword: String, onDone: (String?) -> Unit) {
+        scope.launch {
+            val error = runCatching { api.resetPassword(token, newPassword) }.exceptionOrNull()
+            onDone(error?.message ?: if (error != null) "That reset code didn't work." else null)
+        }
+    }
+
     fun applyChannelOrder(
         guildId: String,
         entries: List<Triple<String, Int, String?>>,

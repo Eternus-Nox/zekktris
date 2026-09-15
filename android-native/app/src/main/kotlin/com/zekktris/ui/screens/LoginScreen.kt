@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -47,6 +48,7 @@ fun LoginScreen(
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
+    var showForgot by remember { mutableStateOf(false) }
     val needs2FA = state.pending2FAEmail != null
 
     AbyssBackground(contentAlignment = Alignment.Center) {
@@ -154,6 +156,15 @@ fun LoginScreen(
                 ) {
                     Text("Log in from another device", color = p.accent, fontWeight = FontWeight.SemiBold)
                 }
+                // The plain way back in, which this screen was missing entirely
+                // — iOS and web have had it since launch.
+                TextButton(
+                    onClick = { showForgot = true },
+                    enabled = !state.authBusy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Forgot your password?", color = ZkInk.ink3)
+                }
             }
 
             TextButton(
@@ -164,4 +175,118 @@ fun LoginScreen(
             }
         }
     }
+
+    if (showForgot) {
+        ForgotPasswordDialog(store, initialEmail = email, onDismiss = { showForgot = false })
+    }
+}
+
+/**
+ * Password reset, in the two stages the server's flow actually has: ask for the
+ * email, then redeem the code it contains. Mirrors iOS's ForgotPasswordView,
+ * including the deliberately uninformative confirmation — the server answers
+ * the same way whether or not the address exists, and the UI must not leak what
+ * the API is careful not to.
+ */
+@Composable
+private fun ForgotPasswordDialog(store: AppStore, initialEmail: String, onDismiss: () -> Unit) {
+    val p = ZkTheme.palette
+    var stage by remember { mutableStateOf(0) }   // 0 = request, 1 = redeem
+    var email by remember { mutableStateOf(initialEmail) }
+    var code by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var info by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        containerColor = p.bg2,
+        title = { Text("Reset password", color = ZkInk.ink1, fontWeight = FontWeight.SemiBold) },
+        text = {
+            Column {
+                if (stage == 0) {
+                    Text(
+                        "Enter your account email and we'll send a reset code.",
+                        color = ZkInk.ink3, fontSize = 13.sp,
+                    )
+                    OutlinedTextField(
+                        value = email,
+                        onValueChange = { email = it; error = null },
+                        label = { Text("Email") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        colors = zkFieldColors(),
+                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                    )
+                } else {
+                    Text(
+                        "Enter the code from your email and choose a new password.",
+                        color = ZkInk.ink3, fontSize = 13.sp,
+                    )
+                    OutlinedTextField(
+                        value = code,
+                        onValueChange = { code = it; error = null },
+                        label = { Text("Reset code") },
+                        singleLine = true,
+                        colors = zkFieldColors(),
+                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                    )
+                    OutlinedTextField(
+                        value = newPassword,
+                        onValueChange = { newPassword = it; error = null },
+                        label = { Text("New password") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        colors = zkFieldColors(),
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    )
+                }
+                error?.let {
+                    Text(it, color = ZkStatus.dangerSoft, fontSize = 13.sp, modifier = Modifier.padding(top = 10.dp))
+                }
+                info?.let {
+                    Text(it, color = p.accent, fontSize = 13.sp, modifier = Modifier.padding(top = 10.dp))
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !busy && if (stage == 0) email.isNotBlank()
+                          else code.isNotBlank() && newPassword.length >= 8,
+                onClick = {
+                    busy = true; error = null; info = null
+                    if (stage == 0) {
+                        store.requestPasswordReset(email) { err ->
+                            busy = false
+                            if (err != null) {
+                                error = err
+                            } else {
+                                info = "If an account exists for that email, a reset code is on its way."
+                                stage = 1
+                            }
+                        }
+                    } else {
+                        store.resetPassword(code, newPassword) { err ->
+                            busy = false
+                            if (err != null) error = err else onDismiss()
+                        }
+                    }
+                },
+            ) {
+                Text(
+                    if (busy) "…" else if (stage == 0) "Send code" else "Reset password",
+                    color = p.accent, fontWeight = FontWeight.SemiBold,
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(enabled = !busy, onClick = {
+                if (stage == 1) { stage = 0; error = null; info = null } else onDismiss()
+            }) {
+                Text(if (stage == 1) "Back" else "Cancel", color = ZkInk.ink3)
+            }
+        },
+    )
 }
