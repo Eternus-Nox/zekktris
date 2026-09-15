@@ -793,6 +793,20 @@ private fun DmRow(store: AppStore, state: AppState, dm: Channel) {
         )
         (dm.streak ?: 0).takeIf { it > 0 }?.let { Spacer(Modifier.width(6.dp)); StreakPill(it) }
         Spacer(Modifier.weight(1f))
+        // The poke someone left while you weren't looking. Ahead of the unread
+        // indicators because it is the more specific signal: the dot says
+        // something happened, this says what.
+        state.pokePills[dm.id]?.let { emoji ->
+            Text(
+                emoji,
+                fontSize = 13.sp,
+                modifier = Modifier
+                    .padding(end = 6.dp)
+                    .clip(CircleShape)
+                    .background(p.bg3)
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+            )
+        }
         val mentions = state.readStates[dm.id]?.mentionCount ?: 0
         when {
             mentions > 0 -> MentionCapsule(mentions)

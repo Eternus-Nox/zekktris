@@ -1593,6 +1593,20 @@ private struct DMRow: View {
                 StreakChip(days: streak)
             }
             Spacer(minLength: 0)
+            // The poke someone left while you weren't looking. Ahead of the
+            // unread indicators because it is the more specific signal: the dot
+            // says something happened, this says what.
+            if let poke = store.pokePills[dm.id] {
+                Text(poke)
+                    .font(.system(size: 13))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Theme.bg3)
+                    .clipShape(Capsule())
+                    .overlay(Capsule().strokeBorder(Theme.line, lineWidth: 1))
+                    .transition(.scale.combined(with: .opacity))
+                    .accessibilityLabel("Poked you")
+            }
             if mentions > 0 {
                 Text("\(min(mentions, 99))")
                     .font(.zkSans(11, weight: .bold))

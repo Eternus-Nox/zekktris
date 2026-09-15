@@ -312,6 +312,16 @@ final class AppStore: ObservableObject {
     /// The watch gets the big-emoji flash; the phone shows this small banner.
     @Published var pokeBanner: PokeBanner?
 
+    /// The last poke received in each DM, as its emoji, waiting to be seen.
+    ///
+    /// The banner above lasts five seconds, which means a poke sent while the
+    /// phone was in a pocket left no trace at all. This is the trace: the DM
+    /// row shows the emoji until that conversation is opened.
+    ///
+    /// Deliberately not persisted — a nudge, not a ledger. Surviving a relaunch
+    /// would make it a second unread system to clear.
+    @Published var pokePills: [String: String] = [:]
+
     /// An achievement just unlocked — drives the transient top celebration
     /// banner (foreground only). Set by the ACHIEVEMENT_UNLOCK gateway event.
     @Published var achievementBanner: AchievementBanner?
@@ -1605,7 +1615,15 @@ final class AppStore: ObservableObject {
 
     /// Called by MessageListView.onAppear to load the channel it shows.
     /// Guarded by id so a re-appear (keyboard etc.) doesn't reload.
+    /// Opening a conversation answers its poke. Separate from the read path:
+    /// a poke creates no message, so a DM with nothing unread is never marked
+    /// read and the pill would stay on the row for good.
+    private func clearPokePill(_ channelId: String) {
+        if pokePills[channelId] != nil { pokePills[channelId] = nil }
+    }
+
     func openChannel(_ channel: Channel) {
+        clearPokePill(channel.id)
         guard selectedChannel?.id != channel.id else {
             // The view remounted for the channel that's ALREADY selected — e.g.
             // tapping a push notification INTO the open channel, re-tapping the
@@ -5499,6 +5517,9 @@ final class AppStore: ObservableObject {
                 let channelId = (d["channel_id"] as? String) ?? ""
                 let pokeType = (d["poke_type"] as? String) ?? "poke"
                 WatchSync.shared.sendPoke(emoji: emoji, name: name)
+                // Outlives the banner: this is what the poke leaves behind for
+                // someone who wasn't looking at the screen.
+                if !channelId.isEmpty { pokePills[channelId] = emoji }
                 showPokeBanner(channelId: channelId, emoji: emoji, name: name, pokeType: pokeType)
                 Haptics.poke()
             }

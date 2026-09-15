@@ -149,6 +149,15 @@ data class AppState(
     // channelId → (userId → typing-expiry epoch-millis); pruned on write + read.
     val typingByChannel: Map<String, Map<String, Long>> = emptyMap(),
     val pokeBanner: PokeBanner? = null,
+    /**
+     * The last poke received in each DM, as its emoji, waiting to be seen.
+     *
+     * The banner lasts five seconds, so a poke sent while the phone was in a
+     * pocket left no trace at all. This is the trace: the DM row shows the
+     * emoji until that conversation is opened. Not persisted — a nudge, not a
+     * ledger.
+     */
+    val pokePills: Map<String, String> = emptyMap(),
     val achievementBanner: AchievementBanner? = null,
     val relationships: List<Relationship> = emptyList(),
     val profileUser: com.zekktris.data.model.PublicUser? = null,
@@ -1835,6 +1844,12 @@ class AppStore(
         api.userAchievements(userId)
 
     fun selectChannel(channelId: String, jumpToMessageId: String? = null) {
+        // Opening a conversation answers its poke. Separate from the read path:
+        // a poke creates no message, so a DM with nothing unread is never acked
+        // and the pill would stay on the row for good.
+        if (_state.value.pokePills.containsKey(channelId)) {
+            _state.update { it.copy(pokePills = it.pokePills - channelId) }
+        }
         // Freeze the pre-ack read pointer as the unread boundary for the red
         // "New messages" divider (iOS unreadBoundaryId) — ack() below moves it.
         val preAckPointer = _state.value.readStates[channelId]?.lastMessageId
@@ -3937,7 +3952,15 @@ class AppStore(
                     channelId = obj["channel_id"]?.jsonPrimitive?.contentOrNull ?: "",
                     pokeType = obj["poke_type"]?.jsonPrimitive?.contentOrNull ?: "poke",
                 )
-                _state.update { it.copy(pokeBanner = banner) }
+                // The pill outlives the banner: it is what the poke leaves
+                // behind for someone who wasn't looking at the screen.
+                _state.update {
+                    it.copy(
+                        pokeBanner = banner,
+                        pokePills = if (banner.channelId.isEmpty()) it.pokePills
+                                    else it.pokePills + (banner.channelId to banner.emoji),
+                    )
+                }
                 // Auto-dismiss after 5s; a newer poke mid-display owns dismissal.
                 scope.launch {
                     delay(5_000)
