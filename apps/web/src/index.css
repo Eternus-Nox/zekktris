@@ -1185,6 +1185,14 @@ body.is-resizing *::after {
   animation-duration: 0.01ms !important;
 }
 
+/* The poke pill's arrival on a DM row. Small and quick — it marks a nudge,
+ * and anything slower would read as the row itself changing. */
+@keyframes zk-poke-pop {
+  0% { transform: scale(0.6); opacity: 0; }
+  70% { transform: scale(1.08); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
 /* Message-flash: brief background highlight applied to a message
  * row when the user navigates to it via a message link or jumps to
  * it from search results. Both Tailwind's accent and a soft fade

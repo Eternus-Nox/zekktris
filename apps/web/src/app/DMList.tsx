@@ -372,6 +372,7 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
   // flag / mention count changes, instead of re-rendering every visible DM row
   // whenever the whole readStateByChannel map's reference flips (any message
   // anywhere).
+  const poke = useAppStateSelector((v) => v.state.pokePills[channel.id]);
   const unread = useAppStateSelector(
     (v) => !active && isChannelUnread(channel, v.state.readStateByChannel),
   );
@@ -500,6 +501,18 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
             DMRow renders muted conversations identically to unmuted ones
             (mute only changes what notifies, not how the row looks). */}
         <span className="flex-1" />
+        {/* The poke someone left while you weren't looking. Sits before the
+            unread indicators because it is the more specific signal: an unread
+            dot says "something happened", this says what. Clears on open. */}
+        {poke && (
+          <span
+            aria-label={`poked you ${poke}`}
+            title="Poked you"
+            className="text-[0.8rem] leading-none rounded-full bg-bg-3 border border-line px-1.5 py-1 shrink-0 animate-[zk-poke-pop_220ms_ease-out]"
+          >
+            {poke}
+          </span>
+        )}
         {mentions > 0 ? (
           <span className="text-[0.65rem] font-bold bg-red-500 text-white rounded-full min-w-[1.1rem] h-[1.1rem] px-1 flex items-center justify-center">
             {mentions > 99 ? '99+' : mentions}

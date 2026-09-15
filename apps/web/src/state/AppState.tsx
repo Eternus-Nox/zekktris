@@ -221,6 +221,19 @@ interface State {
   loadedNotificationOverrides: boolean;
 
   /**
+   * The last poke received in each DM, as its emoji, waiting to be seen.
+   *
+   * A poke used to exist only as a toast, and a toast is gone in fifteen
+   * seconds whether or not anyone was looking — so a poke sent while you were
+   * away left no trace at all. This is the trace: the DM row shows the emoji
+   * until you open that conversation.
+   *
+   * Deliberately not persisted. It is a nudge, not a ledger: surviving a reload
+   * would make it a second unread system to clear.
+   */
+  pokePills: Record<string, string>;
+
+  /**
    * Relationships (friends, requests, blocks). Hydrated on connect so
    * MessageItem / ProfileCard / etc can read state.relationships
    * synchronously instead of fetching per-render. ProfileCard still
@@ -285,6 +298,7 @@ const initialState: State = {
   channelPinUpdateAt: {},
   notificationOverrides: {},
   loadedNotificationOverrides: false,
+  pokePills: {},
   relationships: [],
   loadedRelationships: false,
   dmNicknames: {},
@@ -402,6 +416,8 @@ type Action =
   | { type: 'DMS_SET'; channels: Channel[] }
   | { type: 'DM_UPSERT'; channel: Channel }
   | { type: 'DM_STREAK_SET'; channelId: string; streak: number }
+  | { type: 'POKE_PILL_SET'; channelId: string; emoji: string }
+  | { type: 'POKE_PILL_CLEAR'; channelId: string }
   | { type: 'READ_STATES_SET'; readStates: ReadState[] }
   | { type: 'READ_STATES_MERGE'; readStates: ReadState[] }
   | { type: 'READ_STATE_UPSERT'; readState: ReadState }
@@ -1568,6 +1584,19 @@ function reducer(state: State, action: Action): State {
       return { ...state, dmChannels: next };
     }
 
+    case 'POKE_PILL_SET':
+      return {
+        ...state,
+        pokePills: { ...state.pokePills, [action.channelId]: action.emoji },
+      };
+
+    case 'POKE_PILL_CLEAR': {
+      if (!state.pokePills[action.channelId]) return state;   // no churn
+      const next = { ...state.pokePills };
+      delete next[action.channelId];
+      return { ...state, pokePills: next };
+    }
+
     case 'READ_STATES_SET': {
       const map: Record<string, ReadState> = {};
       for (const rs of action.readStates) map[rs.channelId] = rs;
@@ -1990,6 +2019,12 @@ interface AppStateValue {
   loadReadStates: () => Promise<void>;
   /** Acknowledge a message — fires REST and updates state optimistically. */
   ackChannel: (channelId: string, messageId: string) => Promise<void>;
+  /**
+   * Drop the poke pill on a DM row. Called when the conversation is opened,
+   * which `ackChannel` cannot cover: a poke creates no message, so a DM with
+   * nothing unread is never acked and the pill would sit there for good.
+   */
+  clearPokePill: (channelId: string) => void;
   /**
    * Send a message with optimistic insertion. The bubble appears
    * immediately as a `pending` placeholder; on REST success it's
@@ -2768,6 +2803,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       // guard so it fires on every read, even if the marker id is somehow
       // an optimistic placeholder.
       clearChannelNotifications(channelId);
+      // A poke is answered by looking at the conversation, same as a
+      // notification.
+      dispatch({ type: 'POKE_PILL_CLEAR', channelId });
       // Defensive: reject any non-snowflake id outright. Optimistic
       // local-prefixed ids would crash the bigint comparison in the
       // READ_STATE_UPSERT reducer, AND would 400 on the server's ack
@@ -3621,6 +3659,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
             },
           });
         }
+        // Leave a mark on the DM row. The toast below is for someone looking
+        // at the screen right now; this is what the poke leaves behind for
+        // someone who wasn't, and it clears when they open the conversation.
+        dispatch({ type: 'POKE_PILL_SET', channelId: d.channel_id, emoji: d.emoji });
         // 15s, not the 4s default: a poke is a deliberate nudge from another
         // person and its toast carries the poke-back button, so it has to
         // survive a glance away from the screen. 4s was short enough that the
@@ -4094,9 +4136,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     };
   }, [user?.id]);
 
+  const clearPokePill = useCallback((channelId: string) => {
+    dispatch({ type: 'POKE_PILL_CLEAR', channelId });
+  }, []);
+
   const value = useMemo<AppStateValue>(
     () => ({
       state,
+      clearPokePill,
       refreshGuilds,
       loadChannels,
       restForGuild,
@@ -4147,6 +4194,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       loadDMs,
       loadReadStates,
       ackChannel,
+      clearPokePill,
       sendMessageOptimistic,
       retrySendMessage,
       discardFailedMessage,

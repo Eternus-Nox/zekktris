@@ -93,6 +93,7 @@ export function MessageView({
   const reconcileChannel = useAppStateSelector((v) => v.reconcileChannel);
   const refreshChannelLatest = useAppStateSelector((v) => v.refreshChannelLatest);
   const ackChannel = useAppStateSelector((v) => v.ackChannel);
+  const clearPokePill = useAppStateSelector((v) => v.clearPokePill);
   const sendMessageOptimistic = useAppStateSelector((v) => v.sendMessageOptimistic);
   const messages = useAppStateSelector((v) => v.state.messagesByChannel[channel.id]);
   const loaded = useAppStateSelector((v) => v.state.loadedChannels.has(channel.id));
@@ -102,6 +103,13 @@ export function MessageView({
   const guildsById = useAppStateSelector((v) => v.state.guildsById);
   const rolesByGuild = useAppStateSelector((v) => v.state.rolesByGuild);
   const supervision = useAppStateSelector((v) => v.state.supervision);
+  // Opening the conversation answers the poke. Not folded into the ack: a poke
+  // creates no message, so a DM with nothing unread never acks and the pill
+  // would stay on the row for good.
+  useEffect(() => {
+    clearPokePill(channel.id);
+  }, [channel.id, clearPokePill]);
+
   const nav = useNavigate();
   const { user, rest } = useAuth();
   const toasts = useToasts();
