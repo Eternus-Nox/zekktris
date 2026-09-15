@@ -124,7 +124,7 @@ private enum class SettingsTab(val label: String) {
 }
 
 /** Full-screen security sub-pages (all in-app; no web hand-off). */
-private enum class SecurityPage { Password, Username, Email, TwoFactor, Sessions, Passkeys, DeviceLogin }
+private enum class SecurityPage { Password, Username, Email, TwoFactor, Sessions, Passkeys, DeviceLogin, DateOfBirth }
 
 private const val WEB_SETTINGS = "https://zekktris.com/settings"
 
@@ -145,6 +145,7 @@ fun SettingsScreen(store: AppStore, state: AppState) {
             SecurityPage.Sessions -> SessionsScreen(store) { securityPage = null }
             SecurityPage.Passkeys -> PasskeysScreen(store) { securityPage = null }
             SecurityPage.DeviceLogin -> ApproveDeviceLoginScreen(store) { securityPage = null }
+            SecurityPage.DateOfBirth -> DateOfBirthScreen(store, state) { securityPage = null }
         }
         return
     }
@@ -773,6 +774,14 @@ private fun SecuritySection(state: AppState, onOpen: (SecurityPage) -> Unit) {
         SectionLabel("ACCOUNT", Modifier.padding(start = 16.dp, top = 4.dp, bottom = 2.dp))
         AccountValueRow("Username", me?.username?.let { "@$it" } ?: "—", leading = Icons.Filled.Person) { onOpen(SecurityPage.Username) }
         AccountValueRow("Email", me?.email ?: "—", leading = Icons.Filled.Email) { onOpen(SecurityPage.Email) }
+        // Only for an account that can still change it. The server locks the
+        // date the moment it is set, so offering the row to everyone else would
+        // be a button whose only outcome is an error.
+        if (me?.canChangeDob == true) {
+            AccountValueRow(
+                "Date of birth", me.dateOfBirth ?: "Not set", leading = Icons.Filled.Person,
+            ) { onOpen(SecurityPage.DateOfBirth) }
+        }
         UserIdRow(me?.id ?: "—")
         InAppRow("Change password", leading = Icons.Filled.Lock) { onOpen(SecurityPage.Password) }
         InAppRow("Active sessions", leading = Icons.Filled.Devices) { onOpen(SecurityPage.Sessions) }

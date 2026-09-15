@@ -53,6 +53,8 @@ import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -521,6 +523,20 @@ private fun ChannelListPane(store: AppStore, state: AppState, guildId: String, g
         }
     }
 
+    // The rules gate. A member who hasn't accepted sits in 'pending' and the
+    // server refuses their messages outright (PENDING_ACKNOWLEDGMENT), so
+    // without this the app is simply unusable in a server that has rules —
+    // which is what it was on Android until now.
+    if (store.isPendingOnboarding(guildId)) {
+        val guild = state.guilds.firstOrNull { it.id == guildId }
+        OnboardingGate(
+            store = store,
+            guildId = guildId,
+            guildName = guild?.name ?: guildName,
+            rules = guild?.rulesContent,
+        )
+    }
+
     if (showMembers) MembersSheet(store, state, guildId, onDismiss = { showMembers = false })
     if (showInvite) InviteSheet(store, state, guildId, onDismiss = { showInvite = false })
     if (showReorderChannels) {
@@ -960,5 +976,80 @@ private fun PresenceDot(
         contentAlignment = Alignment.Center,
     ) {
         Box(Modifier.size(size * 0.7f).clip(CircleShape).background(color))
+    }
+}
+
+/**
+ * Full-cover rules acceptance. Mirrors iOS's OnboardingView: the server's own
+ * copy of the rules, and one button that turns 'pending' into 'active'.
+ *
+ * Deliberately covers the pane rather than sitting inside it — the member can
+ * read the channel list behind, but nothing they could do there would work
+ * until they accept.
+ */
+@Composable
+private fun OnboardingGate(
+    store: AppStore,
+    guildId: String,
+    guildName: String,
+    rules: String?,
+) {
+    val p = ZkTheme.palette
+    var busy by remember(guildId) { mutableStateOf(false) }
+    var error by remember(guildId) { mutableStateOf<String?>(null) }
+    val text = rules?.takeIf { it.isNotBlank() }
+        ?: "Be respectful, follow the community guidelines, and have fun."
+
+    Box(Modifier.fillMaxSize().background(p.bg0.copy(alpha = 0.98f))) {
+        Column(
+            Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Spacer(Modifier.height(44.dp))
+            Text(
+                "Welcome to $guildName",
+                color = ZkInk.ink1, fontFamily = ZkSans,
+                fontWeight = FontWeight.Bold, fontSize = 20.sp,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                "Please review the rules to continue",
+                color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 13.sp,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+            Column(
+                Modifier
+                    .padding(top = 16.dp)
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(p.bg2)
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+            ) {
+                Text(text, color = ZkInk.ink2, fontFamily = ZkSans, fontSize = 14.sp)
+            }
+            error?.let {
+                Text(
+                    it, color = ZkStatus.dangerSoft, fontFamily = ZkSans, fontSize = 13.sp,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+            }
+            Button(
+                onClick = {
+                    busy = true; error = null
+                    store.acknowledgeOnboarding(guildId) { err ->
+                        busy = false
+                        if (err != null) error = "Couldn't accept the rules. Try again."
+                    }
+                },
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp).height(48.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = p.accent, contentColor = p.bg0),
+            ) {
+                Text(if (busy) "…" else "I Agree", fontWeight = FontWeight.SemiBold, fontFamily = ZkSans)
+            }
+            Spacer(Modifier.height(20.dp))
+        }
     }
 }

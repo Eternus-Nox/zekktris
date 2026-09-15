@@ -94,6 +94,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -1507,6 +1508,21 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
         authorized(HttpMethod.Patch, "/guilds/$guildId/channels/positions") {
             contentType(ContentType.Application.Json); setBody(body.toString())
         }
+    }
+
+    // ---- profile + preferences ---------------------------------------------
+
+    /** Change the account's date of birth (age-gated; server validates 13+). */
+    suspend fun updateDateOfBirth(dateOfBirth: String): SelfUser =
+        authorized(HttpMethod.Patch, "/users/@me/date-of-birth") {
+            contentType(ContentType.Application.Json)
+            setBody(buildJsonObject { put("dateOfBirth", JsonPrimitive(dateOfBirth)) }.toString())
+        }.decodeOrThrow<UserWrap>().user
+
+    /** Accept a server's rules. Until this lands the member stays 'pending'
+     *  and the server refuses their messages with PENDING_ACKNOWLEDGMENT. */
+    suspend fun acknowledgeOnboarding(guildId: String) {
+        authorized(HttpMethod.Post, "/guilds/$guildId/onboarding/acknowledge") {}
     }
 
     /** Purge ALL messages in a text channel (MANAGE_MESSAGES). */

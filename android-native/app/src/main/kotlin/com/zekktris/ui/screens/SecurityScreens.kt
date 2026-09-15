@@ -571,3 +571,49 @@ fun PasskeysScreen(store: AppStore, onBack: () -> Unit) {
 // this one approves. The /auth/quick-login/* routes still exist server-side but
 // are marked @deprecated; see the delete checklist at
 // apps/api/src/routes/auth.ts (search "quick-login").
+
+/**
+ * Set the account's date of birth — once.
+ *
+ * Only reachable while `canChangeDob` is true: the server locks the date the
+ * moment it is set and refuses any later attempt, so this screen exists for the
+ * accounts that still have the choice (legacy accounts with no date, and ones
+ * an admin has reset). Typed rather than picked, matching the signup field, and
+ * the 13+ rule is the server's to enforce — the client just reports what it
+ * says rather than pretending to know the policy.
+ */
+@Composable
+fun DateOfBirthScreen(store: AppStore, state: AppState, onBack: () -> Unit) {
+    var value by remember { mutableStateOf(state.me?.dateOfBirth ?: "") }
+    var busy by remember { mutableStateOf(false) }
+    var msg by remember { mutableStateOf<String?>(null) }
+    var isError by remember { mutableStateOf(false) }
+    val valid = Regex("""\d{4}-\d{2}-\d{2}""").matches(value.trim())
+
+    ScreenScaffold("Date of Birth", onBack = onBack) {
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            SectionLabel("DATE OF BIRTH")
+            SecureField(value, { value = it.trim() }, "YYYY-MM-DD", masked = false)
+            Text(
+                "This can only be set once. It decides which protections apply to your account, so it is locked afterwards — an admin can reset it if you get it wrong.",
+                color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 12.sp,
+            )
+            StatusText(msg, isError)
+            PrimaryButton(
+                if (busy) "Saving…" else "Save",
+                enabled = !busy && valid,
+            ) {
+                busy = true; msg = null
+                store.updateDateOfBirth(value.trim()) { err ->
+                    busy = false
+                    isError = err != null
+                    msg = err ?: "Saved."
+                    if (err == null) onBack()
+                }
+            }
+        }
+    }
+}

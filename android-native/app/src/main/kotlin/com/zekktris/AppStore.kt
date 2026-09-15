@@ -2524,6 +2524,60 @@ class AppStore(
      * way whether or not the address exists, so this only ever reports that the
      * request went out.
      */
+    /**
+     * Accept the selected server's rules.
+     *
+     * Without this the app is unusable in any server that has rules: the member
+     * sits in 'pending' and the server rejects every message with
+     * PENDING_ACKNOWLEDGMENT — a state Android had no way out of, because it
+     * never showed the prompt.
+     */
+    fun acknowledgeOnboarding(guildId: String, onDone: (String?) -> Unit = {}) {
+        val me = _state.value.me?.id
+        scope.launch {
+            val error = runCatching { api.acknowledgeOnboarding(guildId) }.exceptionOrNull()
+            if (error == null && me != null) {
+                // Flip our own member row locally so the gate closes without a
+                // refetch; the server has already made it authoritative.
+                _state.update { st ->
+                    val members = st.membersByGuild[guildId] ?: return@update st
+                    st.copy(
+                        membersByGuild = st.membersByGuild + (
+                            guildId to members.map {
+                                if (it.userId == me) it.copy(membershipState = "active") else it
+                            }
+                        ),
+                    )
+                }
+            }
+            onDone(error?.message)
+        }
+    }
+
+    /**
+     * Set the account's date of birth. Only possible while `canChangeDob` is
+     * true: the server locks it the moment it is set, and answers a later
+     * attempt with FORBIDDEN — so the UI only offers this to an account that
+     * can still act on it.
+     */
+    fun updateDateOfBirth(dateOfBirth: String, onDone: (String?) -> Unit) {
+        scope.launch {
+            val result = runCatching { api.updateDateOfBirth(dateOfBirth) }
+            result.getOrNull()?.let { user -> _state.update { it.copy(me = user) } }
+            onDone(result.exceptionOrNull()?.let {
+                (it as? com.zekktris.data.ApiException)?.message
+                    ?: "Couldn't update your date of birth."
+            })
+        }
+    }
+
+    /** True while our membership in [guildId] is still pending rules acceptance. */
+    fun isPendingOnboarding(guildId: String): Boolean {
+        val me = _state.value.me?.id ?: return false
+        val mine = _state.value.membersByGuild[guildId]?.firstOrNull { it.userId == me }
+        return mine?.membershipState == "pending"
+    }
+
     fun requestPasswordReset(email: String, onDone: (String?) -> Unit) {
         scope.launch {
             val error = runCatching { api.forgotPassword(email) }.exceptionOrNull()
