@@ -20,7 +20,7 @@ android {
         // Bumped when a build is published to /desktop/updates. Sideloaded
         // APKs don't auto-update, but Android refuses to install an older code
         // over a newer one, and it is the only way to tell two builds apart.
-        versionCode = 2
+        versionCode = 3
         versionName = "5.0"
     }
 
