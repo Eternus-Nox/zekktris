@@ -292,6 +292,10 @@ targets:
       # watch app.
       - target: ZekktrisWatchWidgets
         embed: true
+      # Siri on the wrist ("send a message to Sam on Zekktris") — watchOS
+      # needs its own Intents extension; it won't use the iPhone's.
+      - target: ZekktrisWatchIntents
+        embed: true
     info:
       path: ZekktrisWatch/Info.plist
       properties:
@@ -314,6 +318,10 @@ targets:
         # so the watch widget/complication can poke + open DMs on its own.
         com.apple.security.application-groups:
           - group.com.zekktris.native
+        # SiriKit for the wrist. Needs SiriKit enabled on the
+        # com.zekktris.native.watchkitapp App ID in the Developer portal, or
+        # signing fails — same failure mode as the iPhone app's entitlement.
+        com.apple.developer.siri: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.watchkitapp
@@ -356,6 +364,47 @@ targets:
         TARGETED_DEVICE_FAMILY: "4"
         CODE_SIGN_STYLE: Automatic
 
+  # watchOS SiriKit Messaging extension. Reads what the watch app publishes to
+  # the watch App Group (DM list with encryption flags and names, token, base
+  # URL, per-DM keys in the app-group keychain) and sends through the watch's
+  # own WatchPokeAPI, which already refuses plaintext into an encrypted DM.
+  # Matching is the shared SiriMatching the iPhone extension uses.
+  ZekktrisWatchIntents:
+    type: app-extension
+    platform: watchOS
+    deploymentTarget: "10.0"
+    sources:
+      - path: ZekktrisWatchIntents
+      - path: Zekktris/SiriMatching.swift
+      - path: ZekktrisWatch/WatchWidgetBridge.swift
+      - path: ZekktrisWatch/WatchPokeAPI.swift
+      - path: Zekktris/Keychain.swift
+      - path: Zekktris/AppGroupConfig.swift
+    info:
+      path: ZekktrisWatchIntents/Info.plist
+      properties:
+        CFBundleDisplayName: Zekktris
+        CFBundleShortVersionString: "5.0"
+        CFBundleVersion: "5"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.intents-service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).IntentHandler
+          NSExtensionAttributes:
+            # Must be a subset of the iPhone extension's IntentsSupported.
+            IntentsSupported:
+              - INSendMessageIntent
+    entitlements:
+      path: ZekktrisWatchIntents/ZekktrisWatchIntents.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.zekktris.native
+        com.apple.developer.siri: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.watchkitapp.intents
+        TARGETED_DEVICE_FAMILY: "4"
+        CODE_SIGN_STYLE: Automatic
+
   # Host-less logic-test target. Compiles E2EE.swift directly (no app host,
   # no LiveKit) so the crypto / call-key interop contract can be tested fast.
   # Run with:  xcodegen generate && xcodebuild test -scheme Zekktris \
@@ -372,6 +421,7 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: ZekktrisIntents
+      - path: Zekktris/SiriMatching.swift
       - path: Zekktris/WidgetShared.swift
       - path: Zekktris/AppGroupConfig.swift
       - path: Zekktris/Keychain.swift
@@ -414,6 +464,7 @@ targets:
       # the extension, which a unit-test bundle can't do) so the ranking that
       # decides WHO a voice message goes to is covered.
       - path: ZekktrisIntents/SendMessageIntentHandler.swift
+      - path: Zekktris/SiriMatching.swift
       - path: Zekktris/WidgetShared.swift
       - path: Zekktris/AppGroupConfig.swift
       - path: Zekktris/Keychain.swift

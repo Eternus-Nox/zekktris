@@ -255,97 +255,11 @@ enum SiriDirectory {
     /// The ranking itself, with the conversation list passed in — pure, so the
     /// tests can exercise it without an App Group.
     static func rank(heard: String, in all: [WidgetDM]) -> [WidgetDM] {
-        let spoken = normalize(heard)
-        guard !spoken.isEmpty else { return [] }
-
-        let ranked = all
-            .map { (dm: $0, score: bestScore(spoken: spoken, dm: $0)) }
-            .filter { $0.score >= minScore }
-            .sorted { $0.score > $1.score }
-        guard let best = ranked.first else { return [] }
-        // One candidate, or one clearly ahead of the rest: send to it.
-        if ranked.count == 1 || best.score - ranked[1].score >= clearWinnerMargin {
-            return [best.dm]
+        let candidates = all.map {
+            SiriCandidate(id: $0.id, names: [$0.contactName, $0.name, $0.peerUsername].compactMap { $0 })
         }
-        // Too close to call — let Siri ask which one.
-        return ranked.prefix(3).map { $0.dm }
-    }
-
-    /// Below this, a name is a different name rather than a mangled one.
-    static let minScore = 0.55
-    /// How far ahead the leader must be to skip the "which one?" question.
-    static let clearWinnerMargin = 0.12
-
-    /// Best fit across everything we know this person by: the name on their
-    /// linked Contacts card first (that is what people say out loud), then the
-    /// display name Zekktris shows, then the @username.
-    static func bestScore(spoken: String, dm: WidgetDM) -> Double {
-        var best = 0.0
-        for candidate in [dm.contactName, dm.name, dm.peerUsername].compactMap({ $0 }) {
-            best = max(best, score(spoken: spoken, candidate: normalize(candidate)))
-        }
-        return best
-    }
-
-    /// 0...1, ordered so that the confident kinds of match always outrank a
-    /// merely similar-looking one.
-    static func score(spoken: String, candidate: String) -> Double {
-        guard !spoken.isEmpty, !candidate.isEmpty else { return 0 }
-        if spoken == candidate { return 1 }
-        if candidate.hasPrefix(spoken) { return 0.95 }
-        let tokens = candidate
-            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-            .map(String.init)
-        if tokens.contains(spoken) { return 0.93 }
-        if tokens.contains(where: { $0.hasPrefix(spoken) }) { return 0.9 }
-        if candidate.contains(spoken) { return 0.8 }
-        // Fall back to how much editing it would take. Spaces are dropped
-        // first: Siri writes "alex morgan" where the username is
-        // "alexjmorgan94", and the space is not a real difference.
-        let squashed = spoken.filter { $0.isLetter || $0.isNumber }
-        var best = ratio(squashed, candidate)
-        for token in tokens { best = max(best, ratio(squashed, token)) }
-        // A short word is nearly every other short word: "Mom" is one edit from
-        // "Tom", which scores 0.67 and would have sent a message to the wrong
-        // person — Siri reads the name back, but nobody listens hard to a
-        // confirmation they expect. So the shorter the thing spoken, the closer
-        // an inexact match has to be before it counts at all.
-        return best >= fuzzyFloor(forLength: squashed.count) ? best : 0
-    }
-
-    /// How good an INEXACT match must be, by length of what was said. Exact,
-    /// prefix and whole-word hits are scored above this and never reach it.
-    private static func fuzzyFloor(forLength length: Int) -> Double {
-        switch length {
-        case ..<5: return 0.85   // effectively: no fuzz on very short names
-        case 5...7: return 0.7
-        default: return 0.6
-        }
-    }
-
-    /// Similarity as 1 - (edits / longest), so it is comparable across lengths.
-    private static func ratio(_ a: String, _ b: String) -> Double {
-        guard !a.isEmpty, !b.isEmpty else { return 0 }
-        let distance = Double(levenshtein(Array(a), Array(b)))
-        return max(0, 1 - distance / Double(max(a.count, b.count)))
-    }
-
-    /// Plain edit distance, one row at a time — the strings here are names, so
-    /// the quadratic cost is nothing and it avoids a dependency.
-    private static func levenshtein(_ a: [Character], _ b: [Character]) -> Int {
-        if a.isEmpty { return b.count }
-        if b.isEmpty { return a.count }
-        var previous = Array(0...b.count)
-        var current = [Int](repeating: 0, count: b.count + 1)
-        for i in 1...a.count {
-            current[0] = i
-            for j in 1...b.count {
-                let substitution = previous[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1)
-                current[j] = min(previous[j] + 1, current[j - 1] + 1, substitution)
-            }
-            swap(&previous, &current)
-        }
-        return previous[b.count]
+        let byId = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return SiriMatching.rank(heard: heard, in: candidates).compactMap { byId[$0.id] }
     }
 
     static func person(for dm: WidgetDM) -> INPerson {
@@ -365,11 +279,6 @@ enum SiriDirectory {
         )
     }
 
-    /// Case- and accent-insensitive, so "José" matches "jose".
-    private static func normalize(_ s: String) -> String {
-        s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 }
 
 // MARK: - Sending

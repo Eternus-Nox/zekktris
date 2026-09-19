@@ -20,6 +20,11 @@ struct PokeTarget: Identifiable, Codable, Hashable {
     /// have the key to relay.
     var e2eeKeyBase64: String? = nil
 
+    /// The peer's @username and the name on their linked Contacts card —
+    /// what Siri matches a spoken name against. Nil from an older phone build.
+    var username: String? = nil
+    var contactName: String? = nil
+
     /// Decoded 32-byte key, or nil if absent/bad.
     var e2eeKey: Data? {
         guard let b64 = e2eeKeyBase64, let d = Data(base64Encoded: b64), d.count == 32 else { return nil }
@@ -92,8 +97,22 @@ final class WatchSyncStore: NSObject, ObservableObject {
     /// then reload its timelines. The token lands in the app-group keychain
     /// (encrypted) — the price of one-tap-from-the-face.
     private func publishToWidget() {
-        let dms = targets.map { WatchWidgetDM(id: $0.id, name: $0.name, streak: $0.streak) }
+        let dms = targets.map {
+            WatchWidgetDM(
+                id: $0.id, name: $0.name, streak: $0.streak,
+                e2ee: $0.e2ee, username: $0.username, contactName: $0.contactName,
+            )
+        }
         WatchWidgetBridge.publish(dms: dms, baseURL: apiBaseURL, token: token)
+        // The Siri extension is its own process and can't read this app's
+        // memory, so the per-DM keys it needs to encrypt go to the app-group
+        // keychain — the same arrangement the phone uses for its notification
+        // extension. Keys for DMs no longer in the list are removed.
+        WatchWidgetBridge.publishKeys(
+            Dictionary(uniqueKeysWithValues: targets.compactMap { t in
+                t.e2eeKeyBase64.map { (t.id, $0) }
+            })
+        )
         WidgetCenter.shared.reloadAllTimelines()
     }
 

@@ -61,10 +61,10 @@ final class SiriRecipientTests: XCTestCase {
     }
 
     func testExactBeatsPrefixBeatsSimilar() {
-        XCTAssertEqual(SiriDirectory.score(spoken: "alex", candidate: "alex"), 1.0)
+        XCTAssertEqual(SiriMatching.score(spoken: "alex", candidate: "alex"), 1.0)
         XCTAssertGreaterThan(
-            SiriDirectory.score(spoken: "alex", candidate: "alexjmorgan94"),
-            SiriDirectory.score(spoken: "alex", candidate: "alix"),
+            SiriMatching.score(spoken: "alex", candidate: "alexjmorgan94"),
+            SiriMatching.score(spoken: "alex", candidate: "alix"),
         )
     }
 

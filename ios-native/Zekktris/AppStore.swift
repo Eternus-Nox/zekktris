@@ -1952,7 +1952,13 @@ final class AppStore: ObservableObject {
                 // refuse a plaintext send rather than leak. The streak lets the
                 // wrist show what level you're at.
                 let keyB64 = dm.isE2EE ? e2eeKey(for: dm)?.base64EncodedString() : nil
-                return (id: dm.id, name: dm.dmTitle, streak: dm.streak ?? 0, e2ee: dm.isE2EE, e2eeKeyBase64: keyB64)
+                // The names the watch's Siri extension matches against — the
+                // same three the phone uses.
+                let peer = dm.dmAvatarUser
+                var linkedName: String?
+                if let peerId = peer?.id { linkedName = ContactLinks.contactName(forUserId: peerId) }
+                return (id: dm.id, name: dm.dmTitle, streak: dm.streak ?? 0, e2ee: dm.isE2EE,
+                        e2eeKeyBase64: keyB64, username: peer?.username, contactName: linkedName)
             }
     }
 

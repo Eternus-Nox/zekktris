@@ -14,10 +14,18 @@ private struct WatchPokeTarget: Codable {
     /// for) so the watch can encrypt/decrypt on its own. Held in memory on the
     /// watch like the auth token (relayed via applicationContext).
     var e2eeKeyBase64: String?
+    /// The peer's @username and the name on their linked Contacts card, so Siri
+    /// on the WATCH can match a spoken name exactly the way the phone does.
+    /// Optional, so an older watch build simply ignores them.
+    var username: String?
+    var contactName: String?
 }
 
-/// One (id, name, streak, e2ee, key) DM target as the phone hands it to the sync.
-typealias WatchTargetTuple = (id: String, name: String, streak: Int, e2ee: Bool, e2eeKeyBase64: String?)
+/// One DM target as the phone hands it to the sync.
+typealias WatchTargetTuple = (
+    id: String, name: String, streak: Int, e2ee: Bool, e2eeKeyBase64: String?,
+    username: String?, contactName: String?
+)
 
 /// Pushes the auth token + API base URL + recent DM targets to the paired
 /// Apple Watch over WatchConnectivity, so the "Zekktris" watch app can message
@@ -64,7 +72,13 @@ final class WatchSync: NSObject {
             "apiBaseURL": Config.apiBaseURL,
         ]
         if let data = try? JSONEncoder().encode(
-            targets.map { WatchPokeTarget(id: $0.id, name: $0.name, streak: $0.streak, e2ee: $0.e2ee, e2eeKeyBase64: $0.e2eeKeyBase64) }
+            targets.map {
+                WatchPokeTarget(
+                    id: $0.id, name: $0.name, streak: $0.streak, e2ee: $0.e2ee,
+                    e2eeKeyBase64: $0.e2eeKeyBase64,
+                    username: $0.username, contactName: $0.contactName,
+                )
+            }
         ) {
             ctx["targets"] = data
         }
