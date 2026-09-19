@@ -4483,6 +4483,17 @@ struct ProfileCardView: View {
     }
 
     var body: some View {
+        // ONE scroll area for the whole card. The banner and the avatar/name row
+        // used to sit above the ScrollView, fixed — a 250pt banner plus the
+        // header came to ~320pt, and at the sheet's 75% detent on a smaller
+        // iPhone (~500pt on an SE) that left a ~180pt sliver for the bio, the
+        // achievements and the Message/Call buttons. Every extra row of
+        // achievements pushed those buttons further out of reach, which is the
+        // "cut off on some devices, worse with lots of achievements" report.
+        // Scrolling the whole card means nothing can end up out of reach, and
+        // the avatar's overhang onto the banner is still within one content
+        // view, so it isn't clipped.
+        ScrollView {
         VStack(spacing: 0) {
             // Custom status floats IN the banner (bottom-left, to the right of
             // the avatar) so it never pushes the display name down; its tail
@@ -4507,7 +4518,13 @@ struct ProfileCardView: View {
                         )
                     }
                 }
-                .frame(height: bannerHeight)
+                // 250pt is the shared banner height across the app, and it is
+                // right on a large phone — but on a short screen it was over a
+                // third of the sheet. Scale with the visible height, capped at
+                // the shared value so big screens look exactly as before.
+                .containerRelativeFrame(.vertical) { length, _ in
+                    min(bannerHeight, max(140, length * 0.3))
+                }
                 .frame(maxWidth: .infinity)
                 .clipped()
 
@@ -4525,23 +4542,24 @@ struct ProfileCardView: View {
                     .padding(.top, -38)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 5) {
-                        NameTag(user)
-                        StaffName(fetched ?? user,
-                                  text: user.displayName ?? user.username ?? "Unknown",
-                                  color: store.memberColor(user.id) ?? Theme.ink1,
-                                  font: .zkSans(21, weight: .bold))
-                        if user.isBot == true {
-                            Text("BOT")
-                                .font(.zkSans(10, weight: .bold))
-                                .padding(.horizontal, 5).padding(.vertical, 1)
-                                .background(Theme.accent.opacity(0.2))
-                                .foregroundColor(Theme.accent)
-                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                    // Name, clan tag and badges on one line when they fit, and
+                    // the badges on a line of their own when they don't. The
+                    // pills can't shrink, so a long name beside a clan tag and a
+                    // tier badge used to push the whole card wider than a small
+                    // phone — clipping everything, not just the name.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 5) {
+                            NameTag(user)
+                            profileName
+                            profileBadges
                         }
-                        // Supporter tier title — ships on the full-profile
-                        // fetch (nil when opted out or not a member).
-                        TierBadge(tier: fetched?.subscriptionTier ?? user.subscriptionTier)
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 5) {
+                                NameTag(user)
+                                profileName
+                            }
+                            HStack(spacing: 5) { profileBadges }
+                        }
                     }
                     if let uname = user.username {
                         Text("@\(uname)")
@@ -4555,7 +4573,6 @@ struct ProfileCardView: View {
             }
             .padding(.horizontal, 18)
 
-            ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 // Bio first…
                 if let bio = profileBio, !bio.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -4585,7 +4602,7 @@ struct ProfileCardView: View {
                 Spacer(minLength: 0)
             }
             .padding(18)
-            }
+        }
         }
         .background(Theme.bg1)
         .modifier(ProfileCardPresentation())
@@ -4697,6 +4714,28 @@ struct ProfileCardView: View {
             .overlay(shape.stroke(Theme.line, lineWidth: 1))
             .shadow(color: .black.opacity(0.28), radius: 5, x: 0, y: 2)
         }
+    }
+
+    private var profileName: some View {
+        StaffName(fetched ?? user,
+                  text: user.displayName ?? user.username ?? "Unknown",
+                  color: store.memberColor(user.id) ?? Theme.ink1,
+                  font: .zkSans(21, weight: .bold))
+    }
+
+    @ViewBuilder
+    private var profileBadges: some View {
+        if user.isBot == true {
+            Text("BOT")
+                .font(.zkSans(10, weight: .bold))
+                .padding(.horizontal, 5).padding(.vertical, 1)
+                .background(Theme.accent.opacity(0.2))
+                .foregroundColor(Theme.accent)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
+        // Supporter tier title — ships on the full-profile fetch (nil when
+        // opted out or not a member).
+        TierBadge(tier: fetched?.subscriptionTier ?? user.subscriptionTier)
     }
 
     /// Run `work` once a sheet has finished going away. A sheet's own
