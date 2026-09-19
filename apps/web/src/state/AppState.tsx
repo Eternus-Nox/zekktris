@@ -416,6 +416,7 @@ type Action =
   | { type: 'DMS_SET'; channels: Channel[] }
   | { type: 'DM_UPSERT'; channel: Channel }
   | { type: 'DM_STREAK_SET'; channelId: string; streak: number }
+  | { type: 'VOICE_STATES_MERGE_GUILD'; guildId: string; voiceStates: VoiceState[] }
   | { type: 'POKE_PILL_SET'; channelId: string; emoji: string }
   | { type: 'POKE_PILL_CLEAR'; channelId: string }
   | { type: 'READ_STATES_SET'; readStates: ReadState[] }
@@ -1685,6 +1686,23 @@ function reducer(state: State, action: Action): State {
       }
       return { ...state, voiceStatesByUser: next };
     }
+    case 'VOICE_STATES_MERGE_GUILD': {
+      // Authoritative snapshot for every voice channel in one server that the
+      // user can see. Anyone we have filed under this guild who is NOT in the
+      // snapshot has left while an event went missing; anyone in it who we
+      // didn't have is exactly the "invisible until someone joined" case.
+      // Other guilds and DM calls are untouched.
+      const next = { ...state.voiceStatesByUser };
+      const present = new Set(action.voiceStates.map((v) => v.userId));
+      for (const [userId, v] of Object.entries(next)) {
+        if (v.guildId === action.guildId && !present.has(userId)) delete next[userId];
+      }
+      for (const v of action.voiceStates) {
+        if (v.channelId !== null) next[v.userId] = v;
+      }
+      return { ...state, voiceStatesByUser: next };
+    }
+
     case 'VOICE_STATES_MERGE_CHANNEL': {
       // Authoritative snapshot for one channel — used after the
       // joiner's REST joinVoice returns to ensure their local map
@@ -2025,6 +2043,13 @@ interface AppStateValue {
    * nothing unread is never acked and the pill would sit there for good.
    */
   clearPokePill: (channelId: string) => void;
+  /**
+   * Re-read who is in voice across a whole server and replace our copy of it.
+   * The sidebar calls this for the server it is showing, so a dropped
+   * VOICE_STATE_UPDATE heals within seconds instead of lasting until somebody
+   * joins the channel.
+   */
+  reconcileGuildVoice: (guildId: string) => Promise<void>;
   /**
    * Send a message with optimistic insertion. The bubble appears
    * immediately as a `pending` placeholder; on REST success it's
@@ -4140,10 +4165,24 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'POKE_PILL_CLEAR', channelId });
   }, []);
 
+  const reconcileGuildVoice = useCallback(
+    async (guildId: string) => {
+      if (!token) return;
+      try {
+        const { voiceStates } = await rest.listGuildVoiceStates(guildId);
+        dispatch({ type: 'VOICE_STATES_MERGE_GUILD', guildId, voiceStates });
+      } catch {
+        // Best-effort: a failed heal leaves the event-driven roster as it was.
+      }
+    },
+    [rest, token],
+  );
+
   const value = useMemo<AppStateValue>(
     () => ({
       state,
       clearPokePill,
+      reconcileGuildVoice,
       refreshGuilds,
       loadChannels,
       restForGuild,
@@ -4195,6 +4234,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       loadReadStates,
       ackChannel,
       clearPokePill,
+      reconcileGuildVoice,
       sendMessageOptimistic,
       retrySendMessage,
       discardFailedMessage,

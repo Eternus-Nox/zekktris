@@ -597,6 +597,34 @@ export function Shell() {
     : (params.guildId ?? guildIds[0]);
   const activeGuildChannels = activeGuildId ? channelsByGuild[activeGuildId] : undefined;
 
+  // Keep the voice roster in the sidebar honest. It is otherwise built from
+  // VOICE_STATE_UPDATE events alone, and one dropped event left people
+  // invisible to everyone outside the call until somebody joined — at which
+  // point the join's snapshot made them all appear at once. Re-read the
+  // server's roster when the sidebar changes servers, whenever the window
+  // regains focus or the network comes back, and every 15s while visible.
+  //
+  // Placed ABOVE every early return in this component: a hook below one runs
+  // on some renders and not others, which is React #310.
+  const reconcileGuildVoice = useAppStateSelector((v) => v.reconcileGuildVoice);
+  useEffect(() => {
+    if (!activeGuildId) return;
+    const heal = (): void => {
+      if (document.visibilityState === 'visible') void reconcileGuildVoice(activeGuildId);
+    };
+    heal();
+    const id = window.setInterval(heal, 15_000);
+    window.addEventListener('focus', heal);
+    window.addEventListener('online', heal);
+    document.addEventListener('visibilitychange', heal);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener('focus', heal);
+      window.removeEventListener('online', heal);
+      document.removeEventListener('visibilitychange', heal);
+    };
+  }, [activeGuildId, reconcileGuildVoice]);
+
   // Auto-select first text channel if guild is set but channel isn't.
   // Only fires on desktop — on mobile we want the user to land on the
   // channel list view and pick a channel explicitly. Auto-bouncing

@@ -551,6 +551,13 @@ final class APIClient {
         return wrap.channels
     }
 
+    /// Everyone in voice across a whole server that this user can see — the
+    /// sidebar's heal for a missed VOICE_STATE_UPDATE.
+    func guildVoiceStates(guildId: String) async throws -> [VoiceState] {
+        let wrap: VoiceStatesWrap = try await send("GET", "/guilds/\(guildId)/voice/states")
+        return wrap.voiceStates
+    }
+
     /// Fetch a single channel by id (carries its `guildId`). Used to resolve a
     /// notification/deep-link target that isn't in memory yet — e.g. a guild
     /// text channel tapped from a cold launch before its guild is selected.

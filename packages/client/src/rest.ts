@@ -2228,6 +2228,12 @@ export class RestClient {
     return this.request('GET', `/channels/${channelId}/voice/states`);
   }
 
+  /** Everyone in voice across a whole server — the sidebar's heal, so a missed
+   *  VOICE_STATE_UPDATE can't leave people invisible until someone joins. */
+  listGuildVoiceStates(guildId: string): Promise<{ voiceStates: VoiceState[] }> {
+    return this.request('GET', `/guilds/${guildId}/voice/states`);
+  }
+
   /** Update self-mute / self-deaf flags on the user's current voice state. */
   updateVoiceState(
     channelId: string,

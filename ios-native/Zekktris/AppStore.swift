@@ -1223,13 +1223,45 @@ final class AppStore: ObservableObject {
         // missing message. Same for `autoPresenceTimer`.
         let poll = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self, self.appActive, self.selectedChannel != nil else { return }
+                guard let self, self.appActive else { return }
+                // Voice roster heal for the server on screen. Rides this timer
+                // rather than its own (every fifth tick, ~15s) so there is one
+                // clock to reason about, and only while the app is active.
+                if let gid = self.selectedGuild?.id,
+                   Date().timeIntervalSince(self.lastGuildVoiceHeal) >= 15 {
+                    self.lastGuildVoiceHeal = Date()
+                    await self.reconcileGuildVoice(gid)
+                }
+                guard self.selectedChannel != nil else { return }
                 await self.reconcileOpenChannel()
             }
         }
         RunLoop.main.add(poll, forMode: .common)
         openChannelPollTimer = poll
     }
+
+    /// Re-read who is in voice across a whole server and replace our copy.
+    ///
+    /// The voice lists under channel rows were built from VOICE_STATE_UPDATE
+    /// frames alone (plus READY), so one dropped frame left people invisible to
+    /// everyone outside the call until somebody joined — the join's snapshot
+    /// then made them all appear at once. This is the heal, keyed to the server
+    /// the sidebar is showing. Other servers and DM calls are left alone.
+    func reconcileGuildVoice(_ guildId: String) async {
+        guard let states = try? await api.guildVoiceStates(guildId: guildId) else { return }
+        // A server switch may have landed while the request was in flight;
+        // applying a roster for a guild nobody is looking at is harmless, but
+        // don't let it fight the current one either.
+        var next = voiceStatesByUser
+        let present = Set(states.map(\.userId))
+        for (userId, vs) in next where vs.guildId == guildId && !present.contains(userId) {
+            next[userId] = nil
+        }
+        for vs in states where vs.channelId != nil { next[vs.userId] = vs }
+        if next != voiceStatesByUser { voiceStatesByUser = next }
+    }
+
+    private var lastGuildVoiceHeal = Date.distantPast
 
     private func stopOpenChannelPolling() {
         openChannelPollTimer?.invalidate()
@@ -1457,6 +1489,11 @@ final class AppStore: ObservableObject {
     // MARK: Selection
 
     func selectGuild(_ guild: Guild) {
+        // Heal the voice roster for this server straight away rather than on
+        // the next poll tick — opening a server is exactly when the user looks
+        // at who is in its voice channels.
+        lastGuildVoiceHeal = Date()
+        Task { await reconcileGuildVoice(guild.id) }
         railPage = nil
         railContent = .normal
         inDMs = false

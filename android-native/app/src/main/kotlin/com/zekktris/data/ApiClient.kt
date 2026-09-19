@@ -571,6 +571,12 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
     suspend fun listChannels(guildId: String): List<Channel> =
         authorized(HttpMethod.Get, "/guilds/$guildId/channels").decodeOrThrow<ChannelsWrap>().channels
 
+    /** Everyone in voice across a whole server that this user can see — the
+     *  sidebar's heal for a missed VOICE_STATE_UPDATE. */
+    suspend fun listGuildVoiceStates(guildId: String): List<com.zekktris.data.model.VoiceState> =
+        authorized(HttpMethod.Get, "/guilds/$guildId/voice/states")
+            .decodeOrThrow<com.zekktris.data.model.VoiceStatesWrap>().voiceStates
+
     /** Roles for a guild (drives member-name colors + hoisted member sections). */
     suspend fun listRoles(guildId: String): List<com.zekktris.data.model.Role> =
         authorized(HttpMethod.Get, "/guilds/$guildId/roles").decodeOrThrow<com.zekktris.data.model.RolesWrap>().roles

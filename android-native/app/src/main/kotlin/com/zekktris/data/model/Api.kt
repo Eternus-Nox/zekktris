@@ -156,6 +156,8 @@ data class VoiceState(
     val selfDeaf: Boolean? = null,
 )
 
+@Serializable data class VoiceStatesWrap(val voiceStates: List<VoiceState> = emptyList())
+
 // POST /channels/:id/voice/join — token + wsUrl null ⇒ SFU not configured
 // (presence-only, no audio). The room name is baked into the JWT server-side.
 @Serializable

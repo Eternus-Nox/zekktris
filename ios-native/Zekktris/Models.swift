@@ -876,6 +876,7 @@ struct AdminStorage: Codable {
 struct AdminStorageWrap: Codable { let storage: AdminStorage }
 struct StorageGcResult: Codable { let scanned: Int; let deleted: Int }
 struct ChannelsWrap: Codable { let channels: [Channel] }
+struct VoiceStatesWrap: Codable { let voiceStates: [VoiceState] }
 struct ChannelWrap: Codable { let channel: Channel }
 struct MessagesWrap: Codable { let messages: [Message] }
 /// Shared-media gallery page. The server adds messageId/authorId/createdAt to

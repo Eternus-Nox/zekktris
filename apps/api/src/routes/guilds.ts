@@ -54,7 +54,7 @@ import * as permissions from '../services/permissions';
 import * as readStates from '../services/readStates';
 import * as voice from '../services/voice';
 import { writeAudit } from '../services/audit';
-import { leftVoiceStateDTO } from '../lib/dto';
+import { leftVoiceStateDTO, toVoiceState } from '../lib/dto';
 import * as dispatch from '../gateway/dispatch';
 import {
   Permissions,
@@ -594,6 +594,41 @@ guildsRouter.patch(
     };
     const updated = await guilds.updateGuild(guildId, patch, userId);
     return c.json({ guild: toGuild(updated) });
+  },
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /guilds/:guildId/voice/states — everyone in voice in this server, now.
+//
+// The per-channel GET /channels/:id/voice/states already exists to heal a
+// missed VOICE_STATE_UPDATE, but clients only ever called it for the channel
+// they were IN. Every other voice channel in the sidebar was built from events
+// alone, so a single dropped frame — a reconnect gap, or a connection whose
+// cached viewable-channel set was computed before that channel existed — left
+// people invisible to everyone outside the call until someone joined, at which
+// point the join's snapshot made them "magically" appear.
+//
+// This is the whole-server version of that heal: one read for the sidebar the
+// user is looking at, instead of one per voice channel.
+//
+// VISIBILITY: exactly the READY snapshot's rule — voice presence only in
+// channels the caller can VIEW_CHANNEL, computed by the same resolver, so a
+// private channel's occupants never leak through here either.
+// ─────────────────────────────────────────────────────────────────────────────
+guildsRouter.get(
+  '/:guildId/voice/states',
+  validate('param', z.object({ guildId: snowflakeSchema })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const guildId = BigInt(c.req.valid('param').guildId);
+    await permissions.ensureMember(guildId, userId);
+    const viewable = await permissions.listViewableGuildChannelIdsByGuild([guildId], userId);
+    const channelIds = [...(viewable.get(guildId) ?? [])];
+    const rows = await voice.listVoiceStatesForReady({
+      viewableChannelIds: channelIds,
+      dmChannelIds: [],
+    });
+    return c.json({ voiceStates: rows.map(toVoiceState) });
   },
 );
 

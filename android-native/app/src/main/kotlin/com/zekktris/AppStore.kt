@@ -325,6 +325,9 @@ class AppStore(
         appForeground = true
         if (_state.value.phase != Phase.Ready) return
         gateway.forceReconnect()
+        // A resume replays events but can't recover one that was never
+        // buffered, so heal the on-screen server's voice roster directly.
+        _state.value.selectedGuildId?.let { reconcileGuildVoice(it) }
         scope.launch {
             val presenceBefore = _state.value.presence
             val dms = runCatching { api.listDMs() }.getOrNull()
@@ -1086,7 +1089,32 @@ class AppStore(
 
     // ---- navigation ---------------------------------------------------------
 
+    /**
+     * Re-read who is in voice across a whole server and replace our copy.
+     *
+     * The voice lists under channel rows were built from VOICE_STATE_UPDATE
+     * frames alone, so one dropped frame left people invisible to everyone
+     * outside the call until somebody joined — whose snapshot then made them
+     * all appear at once. Other servers and DM calls are left alone.
+     */
+    fun reconcileGuildVoice(guildId: String) {
+        scope.launch {
+            val states = runCatching { api.listGuildVoiceStates(guildId) }.getOrNull() ?: return@launch
+            val present = states.map { it.userId }.toSet()
+            _state.update { st ->
+                val next = st.voiceStates
+                    .filterNot { (userId, vs) -> vs.guildId == guildId && userId !in present }
+                    .toMutableMap()
+                for (vs in states) if (vs.channelId != null) next[vs.userId] = vs
+                if (next == st.voiceStates) st else st.copy(voiceStates = next)
+            }
+        }
+    }
+
     fun selectGuild(guildId: String?) {
+        // Heal the voice roster for the server being opened: that is exactly
+        // when the user looks at who is in its voice channels.
+        guildId?.let { reconcileGuildVoice(it) }
         val switching = guildId != _state.value.selectedGuildId
         // Switching context always drops back to the list (never jumps into chat).
         // Only wipe the custom emoji when moving to a DIFFERENT guild — re-selecting
