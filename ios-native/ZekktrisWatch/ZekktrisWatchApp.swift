@@ -1,3 +1,4 @@
+import Intents
 import SwiftUI
 
 /// The "Zekktris" watchOS companion — a standalone app for quickly messaging or
@@ -13,6 +14,18 @@ struct ZekktrisWatchApp: App {
             ContentView()
                 .environmentObject(sync)
                 .onOpenURL { sync.handleURL($0) }
+                .task { requestSiriAuthorizationIfNeeded() }
         }
+    }
+
+    /// Siri authorisation is PER DEVICE: granting it on the iPhone does not
+    /// authorise the watch, and until the watch itself is authorised Siri on
+    /// the wrist answers "you don't have an app for that" — it never reaches
+    /// ZekktrisWatchIntents. Asking here is the only way to get the prompt on
+    /// the watch; requires NSSiriUsageDescription in the watch app's Info.plist
+    /// (without it this call traps).
+    private func requestSiriAuthorizationIfNeeded() {
+        guard INPreferences.siriAuthorizationStatus() == .notDetermined else { return }
+        INPreferences.requestSiriAuthorization { _ in }
     }
 }

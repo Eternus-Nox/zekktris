@@ -31,6 +31,8 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>5</string>
+	<key>NSSiriUsageDescription</key>
+	<string>Zekktris lets you send messages with Siri. Siri is told who you talk to and what you dictate, so it can send the message for you.</string>
 	<key>WKApplication</key>
 	<true/>
 	<key>WKCompanionAppBundleIdentifier</key>
