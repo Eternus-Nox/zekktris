@@ -500,6 +500,10 @@ struct MessageListView: View {
     /// True once `onScrollGeometryChange` has driven the gate at least once, at
     /// which point the preference-based fallback stops writing it.
     @State private var usesScrollGeometry = false
+    /// How many times THIS open has been rescued from an offset past the end of
+    /// the content (see BlankViewportRescue). Bounded so a landing that cannot
+    /// converge re-pins a few times instead of looping against the layout.
+    @State private var blankRescues = 0
 
     /// Reports the message list's laid-out content height, so a late growth
     /// (image load / embed render / E2EE decrypt) can re-pin us to the bottom
@@ -730,6 +734,28 @@ struct MessageListView: View {
                         usesScrollGeometry = true
                         if near != isNearBottom { isNearBottom = near }
                     })
+                    // LAST LINE OF DEFENCE against "the DM opens black".
+                    //
+                    // applyLanding scrolls, then scrolls again on the next
+                    // runloop turn, because the first pass runs against rows
+                    // the LazyVStack has not measured and can land at an offset
+                    // PAST the real content — an empty viewport. One extra pass
+                    // fixes it only if the layout has settled by then, and on a
+                    // smaller screen (more rows in flight, slower device) it
+                    // often has not: the offset stays beyond the end and the
+                    // chat sits on blank background until a drag re-clamps it.
+                    //
+                    // Rather than guess at a longer delay, watch the geometry
+                    // and correct the state that IS the bug: scrolled so far
+                    // past the content that nothing can be on screen. Gated on
+                    // the scroll being idle so it cannot fight a rubber-band,
+                    // and on a full viewport of overshoot so ordinary bounce
+                    // never reaches it.
+                    .modifier(BlankViewportRescue {
+                        guard blankRescues < 3, store.pendingScrollAnchorId == nil else { return }
+                        blankRescues += 1
+                        applyLanding(proxy)
+                    })
                     .onPreferenceChange(ContentHeightKey.self) { _ in
                         // Late-sizing content (webhook embeds, photos/attachments
                         // loading, E2EE text decrypting) grows the rows AFTER the
@@ -850,6 +876,7 @@ struct MessageListView: View {
                         // `.id(routeKey)` — so this fires once per channel open.)
                         landedChannelId = nil
                         landing = nil
+                        blankRescues = 0
                         // A fresh open lands at, or a screenful above, the bottom,
                         // so seed the gate open; the geometry pass closes it as soon
                         // as the user scrolls up into history.
@@ -6972,6 +6999,49 @@ private struct PokePopover: View {
 /// Split out as a ViewModifier purely so the availability check can wrap a
 /// single modifier: `onScrollGeometryChange` is iOS 18+, and on iOS 17 this is
 /// a no-op, leaving the `SentinelOffsetKey` preference path to drive the gate.
+/// Fires when the scroll is parked past the end of its own content by a full
+/// viewport or more — the state behind "the DM opened black". See the call
+/// site for why the two-phase `scrollTo` in applyLanding isn't enough on its
+/// own.
+///
+/// Two gates keep this off the user's back:
+///
+///  • IDLE ONLY. A rubber-band drag is an overshoot by definition, so acting
+///    during one would yank the list out from under the finger. The phase
+///    tracker means this only ever runs once everything has come to rest —
+///    at which point a genuine bounce has already snapped back to zero.
+///  • A FULL VIEWPORT of overshoot. Bounce is a fraction of the screen and
+///    settles; being a whole screen past the end at rest is not something the
+///    scroll view does on its own. It is the bad landing, and nothing else.
+private struct BlankViewportRescue: ViewModifier {
+    let onBlank: () -> Void
+    @State private var idle = true
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content
+                .onScrollPhaseChange { _, phase in idle = phase == .idle }
+                .onScrollGeometryChange(for: CGFloat.self) { geo in
+                    // Same measure as the near-bottom gate, negated: how far
+                    // the viewport's bottom edge sits BELOW the content's, as a
+                    // FRACTION of the viewport. A fraction, not points, so the
+                    // "a whole screen of nothing" test means the same thing on
+                    // an SE and on a Max — and so the reading is comparable
+                    // whatever the composer's inset happens to be.
+                    guard geo.containerSize.height > 0, geo.contentSize.height > 0 else { return 0 }
+                    let overshoot = (geo.contentOffset.y + geo.containerSize.height)
+                        - (geo.contentSize.height + geo.contentInsets.bottom)
+                    return overshoot / geo.containerSize.height
+                } action: { _, blankFraction in
+                    guard idle, blankFraction >= 1 else { return }
+                    onBlank()
+                }
+        } else {
+            content
+        }
+    }
+}
+
 private struct NearBottomGeometry: ViewModifier {
     let slop: CGFloat
     let onChange: (Bool) -> Void
