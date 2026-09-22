@@ -711,6 +711,12 @@ struct MessageListView: View {
                     .onPreferenceChange(SentinelOffsetKey.self) { y in
                         sentinelOffset = y
                         recomputeNearBottom()
+                        // Blank-viewport detection, measured rather than
+                        // inferred: this IS the bottom edge of all content in
+                        // the viewport's own space, so <= 0 means every row is
+                        // above the top of the screen and there is nothing to
+                        // see. See rescueBlankViewport.
+                        if y <= 0 { rescueBlankViewport(proxy) }
                     }
                     // PRIMARY driver of the near-bottom gate on iOS 18+.
                     //
@@ -751,11 +757,7 @@ struct MessageListView: View {
                     // the scroll being idle so it cannot fight a rubber-band,
                     // and on a full viewport of overshoot so ordinary bounce
                     // never reaches it.
-                    .modifier(BlankViewportRescue {
-                        guard blankRescues < 3, store.pendingScrollAnchorId == nil else { return }
-                        blankRescues += 1
-                        applyLanding(proxy)
-                    })
+                    .modifier(BlankViewportRescue { rescueBlankViewport(proxy) })
                     .onPreferenceChange(ContentHeightKey.self) { _ in
                         // Late-sizing content (webhook embeds, photos/attachments
                         // loading, E2EE text decrypting) grows the rows AFTER the
@@ -1073,6 +1075,38 @@ struct MessageListView: View {
     /// Guarded on `viewportHeight > 0` so the first frame (before the viewport
     /// has been measured) can't briefly declare "not near bottom" and flash the
     /// button on open.
+    /// Put the chat back on screen after the open landed past the end of its
+    /// own content — the "DM opens black until I swipe" bug.
+    ///
+    /// Two detectors feed this, on purpose. `onScrollGeometryChange` only
+    /// delivers its action when the value CHANGES, so when the bad offset is
+    /// already in place at the first reading it fires nothing at all — which is
+    /// why the geometry-only version of this fix did not help. The sentinel
+    /// preference is republished by layout as the rows measure, so it catches
+    /// exactly that case.
+    ///
+    /// The correction scrolls to the last MESSAGE row rather than the 1pt
+    /// bottom sentinel. Re-running the same `scrollTo(bottomAnchor)` that
+    /// mislanded can simply mis-land again; a real row has a measured height by
+    /// the time this runs, so anchoring on it lands where the content actually
+    /// is. The sentinel pass afterwards then trims to the true bottom.
+    private func rescueBlankViewport(_ proxy: ScrollViewProxy) {
+        guard blankRescues < 5, store.pendingScrollAnchorId == nil else { return }
+        guard !store.messages.isEmpty else { return }
+        blankRescues += 1
+        switch landing {
+        case .unread:
+            // The divider is the chosen position; re-applying re-resolves it
+            // against the current rows.
+            applyLanding(proxy)
+        case .bottom, nil:
+            if let lastId = store.messages.last?.id {
+                proxy.scrollTo(lastId, anchor: .bottom)
+            }
+            DispatchQueue.main.async { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
+        }
+    }
+
     private func recomputeNearBottom() {
         // Stand down once the scroll-geometry driver has reported: two writers
         // disagreeing is how the gate and the button drifted apart before.
