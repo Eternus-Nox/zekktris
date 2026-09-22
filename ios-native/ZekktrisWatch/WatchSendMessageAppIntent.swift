@@ -45,7 +45,7 @@ struct WatchSendMessageAppIntent: AppIntent {
             // synced them, so this is "open Zekktris on your phone", not an error.
             return .result(dialog: "Open Zekktris on your iPhone first, then try again.")
         }
-        guard let dm = WatchWidgetBridge.dms().first(where: { $0.id == recipient.id }) else {
+        guard let dm = WatchWidgetBridge.dms().first(where: { $0.id == recipient.channelId }) else {
             return .result(dialog: "I couldn't find that conversation.")
         }
         // An encrypted DM without a key must fail, never fall back to plaintext.
@@ -68,9 +68,28 @@ struct WatchSendMessageAppIntent: AppIntent {
 
 /// A DM the watch can send to. Backed by the same App Group list the poke
 /// complication reads, so Siri offers exactly the people the watch knows about.
+///
+/// CONTACT LINKING. The phone relays the name on the linked Contacts card with
+/// each DM, and that name is what this presents when there is one — because a
+/// name spoken INSIDE a phrase ("message Sam Rivera on Zekktris") is matched
+/// against an index built from these titles, not by asking the app. An account
+/// name Siri has never been told about cannot be recognised there, which is the
+/// whole reason contact linking exists on the phone.
+///
+/// A linked DM is published TWICE (see suggestedEntities): once under the card
+/// name, once under the Zekktris name, so either one is understood. The alias
+/// carries a suffixed id and `channelId` strips it back off.
 struct WatchSiriPeer: AppEntity, Identifiable {
-    let id: String              // DM channel id
+    /// Entity id: the DM channel id, or "<channel id>|zk" for the alias.
+    let id: String
+    /// What Siri says and matches — the linked card name, or the display name.
     let name: String
+
+    static let aliasSuffix = "|zk"
+    /// The DM this refers to, whichever of the two names was spoken.
+    var channelId: String {
+        id.hasSuffix(Self.aliasSuffix) ? String(id.dropLast(Self.aliasSuffix.count)) : id
+    }
 
     static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Person")
     var displayRepresentation: DisplayRepresentation { DisplayRepresentation(title: "\(name)") }
@@ -84,9 +103,7 @@ struct WatchSiriPeer: AppEntity, Identifiable {
 /// name, username; a length-aware fuzzy floor so "Mom" can't land on "Tom").
 struct WatchSiriPeerQuery: EntityStringQuery {
     func entities(for identifiers: [String]) async throws -> [WatchSiriPeer] {
-        WatchWidgetBridge.dms()
-            .filter { identifiers.contains($0.id) }
-            .map { WatchSiriPeer(id: $0.id, name: $0.name) }
+        Self.all().filter { identifiers.contains($0.id) }
     }
 
     func entities(matching string: String) async throws -> [WatchSiriPeer] {
@@ -95,14 +112,27 @@ struct WatchSiriPeerQuery: EntityStringQuery {
             SiriCandidate(id: $0.id, names: [$0.contactName, $0.name, $0.username].compactMap { $0 })
         }
         let ranked = SiriMatching.rank(heard: string, in: candidates)
-        let byId = Dictionary(uniqueKeysWithValues: dms.map { ($0.id, $0) })
-        return ranked.compactMap { hit in
-            byId[hit.id].map { WatchSiriPeer(id: $0.id, name: $0.name) }
-        }
+        let byChannel = Dictionary(grouping: Self.all(), by: \.channelId)
+        // The card-named entry first, which is the one `all()` puts first.
+        return ranked.compactMap { byChannel[$0.id]?.first }
     }
 
-    func suggestedEntities() async throws -> [WatchSiriPeer] {
-        WatchWidgetBridge.dms().map { WatchSiriPeer(id: $0.id, name: $0.name) }
+    func suggestedEntities() async throws -> [WatchSiriPeer] { Self.all() }
+
+    /// One entry per DM, plus a second under the Zekktris name for a DM whose
+    /// card name differs — so both "message Sam Rivera on Zekktris" and
+    /// "message SRivera1337 on Zekktris" are understood.
+    static func all() -> [WatchSiriPeer] {
+        WatchWidgetBridge.dms().flatMap { dm -> [WatchSiriPeer] in
+            guard let card = dm.contactName, !card.isEmpty,
+                  card.caseInsensitiveCompare(dm.name) != .orderedSame else {
+                return [WatchSiriPeer(id: dm.id, name: dm.name)]
+            }
+            return [
+                WatchSiriPeer(id: dm.id, name: card),
+                WatchSiriPeer(id: dm.id + WatchSiriPeer.aliasSuffix, name: dm.name),
+            ]
+        }
     }
 }
 

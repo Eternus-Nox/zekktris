@@ -4873,6 +4873,11 @@ struct ProfileCardView: View {
             channel.type == "dm" && (channel.recipients ?? []).contains { $0.id == user.id }
         }) else { return }
         store.donateShareSuggestion(dm, force: true)
+        // The watch matches spoken names against the linked CARD name too, and
+        // it only learns names from this push. Without it, linking a contact
+        // takes effect on the phone immediately and on the wrist not until the
+        // DM list happens to change.
+        store.syncWatch()
     }
 
     /// The card's own actions: what you came here to do stays on the card, and
