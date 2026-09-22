@@ -287,6 +287,9 @@ targets:
       # Shared with the watch widget: app-group keychain (token) + the group id.
       - path: Zekktris/Keychain.swift
       - path: Zekktris/AppGroupConfig.swift
+      # Loose recipient matching for the spoken-shortcut send (App Intents),
+      # the same ranking the iPhone's Siri extension uses.
+      - path: Zekktris/SiriMatching.swift
     dependencies:
       # Bundles + embeds the watchOS widget/complication extension into the
       # watch app.

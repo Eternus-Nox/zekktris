@@ -32,6 +32,7 @@
 		43B77E13B6DB8308F37E1EFF /* ContactsLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = D47A145B58B78674470C0838 /* ContactsLink.swift */; };
 		44BB1EC928BC05DEF0633060 /* E2EE.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */; };
 		46BE11148DE40BA2B0C8E075 /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FC2ECC7C7A8019B6C7482EF /* WidgetShared.swift */; };
+		49F43CDA34F66C52ADD90F8B /* WatchSendMessageAppIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC86F9F6460D1F59E3668AE6 /* WatchSendMessageAppIntent.swift */; };
 		4A157541F71EEB8CB62501A6 /* ZekktrisWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 8CD61D15591F11BF7866AFF1 /* ZekktrisWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		4D498E1525844A5D4C185BC1 /* CallManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D62C793B7AAB9778AA116F /* CallManager.swift */; };
 		4E98C4C4898973F36A45B4FC /* NotificationMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = F044CCA495FD5434BA02A43A /* NotificationMedia.swift */; };
@@ -102,6 +103,7 @@
 		EEA12A32B69FC0AAA2C19229 /* AppGroupConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 434FBD6DE9C340459E70525C /* AppGroupConfig.swift */; };
 		F082A7FF9275D75777E1D74D /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FC2ECC7C7A8019B6C7482EF /* WidgetShared.swift */; };
 		F24D38116C5941C2D8004ADE /* PasskeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB8B74BA93612A97CCC5774D /* PasskeyManager.swift */; };
+		F3B70C335DA9D1A8BFD5CF2B /* SiriMatching.swift in Sources */ = {isa = PBXBuildFile; fileRef = F95659B3908C06735E72CF67 /* SiriMatching.swift */; };
 		F3C4943EE5FC3B46FFE78387 /* QuickReply.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFE18E68345DE840AF9E6901 /* QuickReply.swift */; };
 		F3EBD149CC0B0179BD3F768F /* SiriRecipientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C401E906C22A9E53C7908A8E /* SiriRecipientTests.swift */; };
 		F4402FE8FFBA4C809D2DD0FD /* SendMessageIntentHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF547DB82BDDE0604BB84EB0 /* SendMessageIntentHandler.swift */; };
@@ -251,6 +253,7 @@
 		A663FAE653FFAB4BAAA80B5C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		A7B5BE3EA780224AC21D96B1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		ABAE826182443C3B6DBED3E3 /* SpaceGrotesk-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SpaceGrotesk-SemiBold.ttf"; sourceTree = "<group>"; };
+		AC86F9F6460D1F59E3668AE6 /* WatchSendMessageAppIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchSendMessageAppIntent.swift; sourceTree = "<group>"; };
 		AFE18E68345DE840AF9E6901 /* QuickReply.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickReply.swift; sourceTree = "<group>"; };
 		B00D99F1C7CCFC6FE3B52D73 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B0EE40EF9EADCC209250FFCE /* WidgetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetViews.swift; sourceTree = "<group>"; };
@@ -479,6 +482,7 @@
 				F73381ACD912C04D2E50CF06 /* Info.plist */,
 				8D00B64A7AC23ACDD826C35B /* PokeVariant.swift */,
 				233EF9A75E0571B25B186F9F /* WatchPokeAPI.swift */,
+				AC86F9F6460D1F59E3668AE6 /* WatchSendMessageAppIntent.swift */,
 				8884A77FFC709AF748B2E291 /* WatchSyncStore.swift */,
 				DB1DABCBB91052FA798E7BFE /* WatchWidgetBridge.swift */,
 				0FA8F7066C8638882AAE23AC /* ZekktrisWatch.entitlements */,
@@ -872,7 +876,9 @@
 				A514C1446C16D0AF24BB8D9B /* ContentView.swift in Sources */,
 				D63503865DDA963277F6CD34 /* Keychain.swift in Sources */,
 				A90F73EFD16C394262103F98 /* PokeVariant.swift in Sources */,
+				F3B70C335DA9D1A8BFD5CF2B /* SiriMatching.swift in Sources */,
 				B26BC052C9E385A53EC2292A /* WatchPokeAPI.swift in Sources */,
+				49F43CDA34F66C52ADD90F8B /* WatchSendMessageAppIntent.swift in Sources */,
 				B732344CDFFAFFFE8A324419 /* WatchSyncStore.swift in Sources */,
 				3445E237D9A0C54F32D81D30 /* WatchWidgetBridge.swift in Sources */,
 				04F310F95E72468127D62847 /* ZekktrisWatchApp.swift in Sources */,
