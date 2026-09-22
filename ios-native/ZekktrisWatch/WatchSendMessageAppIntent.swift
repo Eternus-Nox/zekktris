@@ -117,10 +117,20 @@ struct ZekktrisWatchShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: WatchSendMessageAppIntent(),
             phrases: [
+                // The wrist's versions of the iPhone's example phrases. The
+                // NAME can be spoken inline because the recipient is an
+                // AppEntity and its values are indexed (see
+                // updateAppShortcutParameters in WatchSyncStore); what cannot
+                // be inlined is the message body — App Shortcuts allow one
+                // parameter per phrase and only for enumerable types — so Siri
+                // asks "what do you want to say?" after it has the person.
+                "Send a \(.applicationName) message to \(\.$recipient)",
+                "Send a message to \(\.$recipient) on \(.applicationName)",
+                "Message \(\.$recipient) on \(.applicationName)",
+                "Tell \(\.$recipient) something on \(.applicationName)",
+                // And without a name, for "send a message" then being asked who.
                 "Send a message with \(.applicationName)",
                 "Send a \(.applicationName) message",
-                "Message someone on \(.applicationName)",
-                "Tell someone on \(.applicationName)",
             ],
             shortTitle: "Send a Message",
             systemImageName: "bubble.left.and.bubble.right.fill",

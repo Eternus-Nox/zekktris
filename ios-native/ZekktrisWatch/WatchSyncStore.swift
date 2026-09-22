@@ -114,6 +114,12 @@ final class WatchSyncStore: NSObject, ObservableObject {
             })
         )
         WidgetCenter.shared.reloadAllTimelines()
+        // Siri matches a spoken name in a shortcut phrase ("message Sam on
+        // Zekktris") against an INDEX of the entity values, not by asking the
+        // app at recognition time. The index is only refreshed when told, so
+        // without this a newly-added DM is unknown to Siri until something else
+        // happens to rebuild it — the name is heard and dropped.
+        ZekktrisWatchShortcuts.updateAppShortcutParameters()
     }
 
     /// Handle a `zekktris://friend/<id>` (or `/dm/<id>`) deep link from a
