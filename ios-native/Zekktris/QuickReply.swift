@@ -19,8 +19,34 @@ enum QuickReply {
     /// send plaintext into an encrypted channel — we surface a local
     /// notification asking the user to open the app instead.
     static func send(channelId: String, text: String, isE2EE: Bool) async {
+        // The notification reply field has no success/failure channel of its
+        // own, so a failure becomes a local notification. Siri, which calls
+        // `deliver` directly, speaks the reason instead.
+        switch await deliver(channelId: channelId, text: text, isE2EE: isE2EE) {
+        case .sent, .empty:
+            break
+        case .needsApp(let why), .failed(let why):
+            await notify(channelId: channelId, why)
+        }
+    }
+
+    /// Why a reply did not go out, in words a caller can show or speak.
+    enum Outcome: Equatable {
+        case sent
+        /// Nothing to send.
+        case empty
+        /// Only the app can proceed — signed out here, or the conversation is
+        /// locked on this device. Never a reason to fall back to plaintext.
+        case needsApp(String)
+        case failed(String)
+    }
+
+    /// The send itself. Shared by the notification reply and by Siri, so both
+    /// refuse a locked encrypted conversation the same way rather than each
+    /// re-deriving that rule.
+    static func deliver(channelId: String, text: String, isE2EE: Bool) async -> Outcome {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return .empty }
 
         let api = APIClient.shared
         if api.token == nil {
@@ -31,19 +57,16 @@ enum QuickReply {
             api.token = KeychainStore().get("accessToken")
         }
         guard api.token?.isEmpty == false else {
-            await notify(channelId: channelId, "Open Zekktris to reply.")
-            return
+            return .needsApp("Open Zekktris to reply.")
         }
 
         var wire = trimmed
         if isE2EE {
             guard let key = e2eeKey(forChannel: channelId) else {
-                await notify(channelId: channelId, "Unlock this conversation in Zekktris to reply.")
-                return
+                return .needsApp("Unlock this conversation in Zekktris to reply.")
             }
             guard let enc = E2EE.encrypt(trimmed, key: key) else {
-                await notify(channelId: channelId, "Couldn't encrypt your reply.")
-                return
+                return .failed("Couldn't encrypt your reply.")
             }
             wire = enc
         }
@@ -51,8 +74,9 @@ enum QuickReply {
         do {
             _ = try await api.sendMessage(
                 channelId: channelId, content: wire, nonce: UUID().uuidString)
+            return .sent
         } catch {
-            await notify(channelId: channelId, "Couldn't send your reply — tap to open Zekktris.")
+            return .failed("Couldn't send your reply — tap to open Zekktris.")
         }
     }
 

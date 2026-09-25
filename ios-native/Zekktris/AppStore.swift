@@ -2008,6 +2008,12 @@ final class AppStore: ObservableObject {
             }
         WidgetBridge.publish(dms: Array(items), token: api.token)
         WidgetCenter.shared.reloadAllTimelines()
+        // A name spoken inside an App Shortcut phrase is matched against an
+        // index Siri holds, not by asking the app, and that index is only
+        // rebuilt when told. Without this a new DM — or a newly linked contact
+        // name — is heard and dropped. (The SiriKit path uses donations
+        // instead; this is the App Intents equivalent.)
+        ZekktrisShortcuts.updateAppShortcutParameters()
     }
 
     // MARK: Share Suggestions (system share sheet)
