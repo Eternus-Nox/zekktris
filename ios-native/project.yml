@@ -14,7 +14,7 @@ settings:
     # MARKETING_VERSION so a future `xcodegen generate` doesn't regress the
     # shipping version. Bump all three together on release.
     MARKETING_VERSION: "5.0"
-    CURRENT_PROJECT_VERSION: "5"
+    CURRENT_PROJECT_VERSION: "6"
     # Apple Developer Team — set here (not only in Xcode) so `xcodegen generate`
     # doesn't drop code signing and break the archive. Applies to all targets.
     DEVELOPMENT_TEAM: "4QF34MB8R3"
@@ -72,7 +72,7 @@ targets:
       properties:
         CFBundleDisplayName: Zekktris
         CFBundleShortVersionString: "5.0"
-        CFBundleVersion: "5"
+        CFBundleVersion: "6"
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -178,7 +178,7 @@ targets:
         CFBundleDisplayName: Zekktris
         # MUST match the app's version/build or App Store upload is rejected.
         CFBundleShortVersionString: "5.0"
-        CFBundleVersion: "5"
+        CFBundleVersion: "6"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
@@ -221,7 +221,7 @@ targets:
         # (ITMS). Bump alongside the app's CFBundleShortVersionString / the
         # MARKETING_VERSION + CURRENT_PROJECT_VERSION base settings.
         CFBundleShortVersionString: "5.0"
-        CFBundleVersion: "5"
+        CFBundleVersion: "6"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
@@ -259,7 +259,7 @@ targets:
       properties:
         CFBundleDisplayName: Zekktris
         CFBundleShortVersionString: "5.0"
-        CFBundleVersion: "5"
+        CFBundleVersion: "6"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     entitlements:
@@ -304,7 +304,7 @@ targets:
       properties:
         CFBundleDisplayName: Zekktris
         CFBundleShortVersionString: "5.0"
-        CFBundleVersion: "5"
+        CFBundleVersion: "6"
         WKApplication: true
         # Ties this watch app to the iOS app so it installs alongside it.
         WKCompanionAppBundleIdentifier: com.zekktris.native
@@ -359,7 +359,7 @@ targets:
       properties:
         CFBundleDisplayName: Zekktris
         CFBundleShortVersionString: "5.0"
-        CFBundleVersion: "5"
+        CFBundleVersion: "6"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     entitlements:
@@ -394,7 +394,7 @@ targets:
       properties:
         CFBundleDisplayName: Zekktris
         CFBundleShortVersionString: "5.0"
-        CFBundleVersion: "5"
+        CFBundleVersion: "6"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.intents-service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).IntentHandler
@@ -442,7 +442,7 @@ targets:
         CFBundleDisplayName: Zekktris
         # MUST match the app's version/build or App Store upload is rejected.
         CFBundleShortVersionString: "5.0"
-        CFBundleVersion: "5"
+        CFBundleVersion: "6"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.intents-service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).IntentHandler
