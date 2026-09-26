@@ -86,9 +86,13 @@ struct WatchSiriPeer: AppEntity, Identifiable {
     let name: String
 
     static let aliasSuffix = "|zk"
-    /// The DM this refers to, whichever of the two names was spoken.
+    static let firstNameSuffix = "|fn"
+    /// The DM this refers to, whichever of the names was spoken.
     var channelId: String {
-        id.hasSuffix(Self.aliasSuffix) ? String(id.dropLast(Self.aliasSuffix.count)) : id
+        for suffix in [Self.aliasSuffix, Self.firstNameSuffix] where id.hasSuffix(suffix) {
+            return String(id.dropLast(suffix.count))
+        }
+        return id
     }
 
     static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Person")
@@ -123,7 +127,8 @@ struct WatchSiriPeerQuery: EntityStringQuery {
     /// card name differs — so both "message Sam Rivera on Zekktris" and
     /// "message SRivera1337 on Zekktris" are understood.
     static func all() -> [WatchSiriPeer] {
-        WatchWidgetBridge.dms().flatMap { dm -> [WatchSiriPeer] in
+        let dms = WatchWidgetBridge.dms()
+        var peers = dms.flatMap { dm -> [WatchSiriPeer] in
             guard let card = dm.contactName, !card.isEmpty,
                   card.caseInsensitiveCompare(dm.name) != .orderedSame else {
                 return [WatchSiriPeer(id: dm.id, name: dm.name)]
@@ -133,6 +138,27 @@ struct WatchSiriPeerQuery: EntityStringQuery {
                 WatchSiriPeer(id: dm.id + WatchSiriPeer.aliasSuffix, name: dm.name),
             ]
         }
+        // FIRST NAMES, because Siri on Apple Watch matches a phrase EXACTLY.
+        // The iPhone forgives "message Sam" for a published "Sam
+        // Rivera"; the watch does not, and an unmatched phrase falls through to
+        // "You'll need an app for me to help with that". So a linked card's
+        // first name is published too (or the display name's, when it is a
+        // real two-word name) — but only when no other DM shares it, because an
+        // ambiguous first name would send to whichever one Siri picked.
+        let firstNames = dms.compactMap { dm -> (String, String)? in
+            let full = (dm.contactName?.isEmpty == false ? dm.contactName : nil) ?? dm.name
+            guard let first = full.split(separator: " ").first.map(String.init),
+                  first.count >= 2,
+                  first.caseInsensitiveCompare(full) != .orderedSame else { return nil }
+            return (first, dm.id)
+        }
+        let counts = Dictionary(grouping: firstNames, by: { $0.0.lowercased() }).mapValues(\.count)
+        let taken = Set(peers.map { $0.name.lowercased() })
+        for (first, channelId) in firstNames
+        where counts[first.lowercased()] == 1 && !taken.contains(first.lowercased()) {
+            peers.append(WatchSiriPeer(id: channelId + WatchSiriPeer.firstNameSuffix, name: first))
+        }
+        return peers
     }
 }
 

@@ -18,6 +18,8 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>5.0</string>
+	<key>CFBundleSpokenName</key>
+	<string>Zeck triss</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -31,6 +33,27 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>6</string>
+	<key>INAlternativeAppNames</key>
+	<array>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Zektris</string>
+			<key>INAlternativeAppNamePronunciationHint</key>
+			<string>zeck triss</string>
+		</dict>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Zeck Tris</string>
+			<key>INAlternativeAppNamePronunciationHint</key>
+			<string>zeck triss</string>
+		</dict>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Zecktris</string>
+			<key>INAlternativeAppNamePronunciationHint</key>
+			<string>zeck triss</string>
+		</dict>
+	</array>
 	<key>NSSiriUsageDescription</key>
 	<string>Zekktris lets you send messages with Siri. Siri is told who you talk to and what you dictate, so it can send the message for you.</string>
 	<key>WKApplication</key>

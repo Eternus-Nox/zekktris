@@ -103,6 +103,23 @@ targets:
         NSFaceIDUsageDescription: "Zekktris uses Face ID to unlock the app and keep your conversations private."
         NSContactsUsageDescription: "Zekktris adds a contact's Zekktris handle to their card, so you can message them by their real name — including with Siri. It only writes to cards you pick."
         NSSiriUsageDescription: "Zekktris lets you send messages with Siri. Siri is told who you talk to and what you dictate, so it can send the message for you."
+        # HOW SIRI HEARS THE APP NAME. "Zekktris" is an invented word, and
+        # speech recognition almost never spells it with the double k. On the
+        # iPhone that is forgiven — Siri matches App Shortcut phrases flexibly.
+        # On Apple Watch it is NOT: phrases must match EXACTLY, so a
+        # transcription of "Zektris" fails the "\(.applicationName)" token and
+        # Siri answers "You'll need an app for me to help with that".
+        # CFBundleSpokenName is the pronunciation (also used by VoiceOver);
+        # INAlternativeAppNames (max 3) are extra spellings the
+        # `.applicationName` token accepts. Do not repeat the display name.
+        CFBundleSpokenName: "Zeck triss"
+        INAlternativeAppNames:
+          - INAlternativeAppName: Zektris
+            INAlternativeAppNamePronunciationHint: zeck triss
+          - INAlternativeAppName: Zeck Tris
+            INAlternativeAppNamePronunciationHint: zeck triss
+          - INAlternativeAppName: Zecktris
+            INAlternativeAppNamePronunciationHint: zeck triss
 
         UIBackgroundModes:
           - audio
@@ -314,6 +331,23 @@ targets:
         # traps, and without the grant Siri answers "you don't have an app for
         # that" instead of reaching ZekktrisWatchIntents.
         NSSiriUsageDescription: "Zekktris lets you send messages with Siri. Siri is told who you talk to and what you dictate, so it can send the message for you."
+        # HOW SIRI HEARS THE APP NAME. "Zekktris" is an invented word, and
+        # speech recognition almost never spells it with the double k. On the
+        # iPhone that is forgiven — Siri matches App Shortcut phrases flexibly.
+        # On Apple Watch it is NOT: phrases must match EXACTLY, so a
+        # transcription of "Zektris" fails the "\(.applicationName)" token and
+        # Siri answers "You'll need an app for me to help with that".
+        # CFBundleSpokenName is the pronunciation (also used by VoiceOver);
+        # INAlternativeAppNames (max 3) are extra spellings the
+        # `.applicationName` token accepts. Do not repeat the display name.
+        CFBundleSpokenName: "Zeck triss"
+        INAlternativeAppNames:
+          - INAlternativeAppName: Zektris
+            INAlternativeAppNamePronunciationHint: zeck triss
+          - INAlternativeAppName: Zeck Tris
+            INAlternativeAppNamePronunciationHint: zeck triss
+          - INAlternativeAppName: Zecktris
+            INAlternativeAppNamePronunciationHint: zeck triss
         # Deep-link scheme so the watch Open-DM complication can open the watch
         # app at a friend (zekktris://friend/<id>) — handled in ZekktrisWatchApp.
         CFBundleURLTypes:
