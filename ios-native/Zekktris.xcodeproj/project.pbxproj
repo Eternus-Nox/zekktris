@@ -26,16 +26,19 @@
 		3445E237D9A0C54F32D81D30 /* WatchWidgetBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB1DABCBB91052FA798E7BFE /* WatchWidgetBridge.swift */; };
 		3512C4E47D6EE2F62135C154 /* LICENSE-JetBrainsMono-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = 7FEDAB3BA09017209BA445AF /* LICENSE-JetBrainsMono-OFL.txt */; };
 		384A537D59460C34162951DE /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2232CBA6A56F9DFE142335BF /* Theme.swift */; };
+		3D375D89C2D2EA9038BD8BFC /* WatchSendMessageAppIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4A4B7A3CAC7D2604AFAA0EE /* WatchSendMessageAppIntent.swift */; };
 		3EEA0E4C4651B14A20C4AD48 /* IntentHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 948F2C5334D21E3761CC6BC4 /* IntentHandler.swift */; };
 		3F707AE86EF22A50780080F5 /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0503A3312574F4248568EACD /* Keychain.swift */; };
+		3F9C74F98CB98BF24E16921D /* ZekktrisWatchAppIntents.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = 4CDB833D21765549FFC75B16 /* ZekktrisWatchAppIntents.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		40F515E3FE190F65007139CA /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0503A3312574F4248568EACD /* Keychain.swift */; };
 		43B77E13B6DB8308F37E1EFF /* ContactsLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = D47A145B58B78674470C0838 /* ContactsLink.swift */; };
 		44BB1EC928BC05DEF0633060 /* E2EE.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */; };
+		45CBA0EA8048F14DBAF07740 /* AppGroupConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 434FBD6DE9C340459E70525C /* AppGroupConfig.swift */; };
 		46BE11148DE40BA2B0C8E075 /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FC2ECC7C7A8019B6C7482EF /* WidgetShared.swift */; };
-		49F43CDA34F66C52ADD90F8B /* WatchSendMessageAppIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC86F9F6460D1F59E3668AE6 /* WatchSendMessageAppIntent.swift */; };
 		4A157541F71EEB8CB62501A6 /* ZekktrisWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 8CD61D15591F11BF7866AFF1 /* ZekktrisWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		4D498E1525844A5D4C185BC1 /* CallManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D62C793B7AAB9778AA116F /* CallManager.swift */; };
 		4E98C4C4898973F36A45B4FC /* NotificationMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = F044CCA495FD5434BA02A43A /* NotificationMedia.swift */; };
+		52C7268DCE951A927EA1438C /* SiriMatching.swift in Sources */ = {isa = PBXBuildFile; fileRef = F95659B3908C06735E72CF67 /* SiriMatching.swift */; };
 		530883EAFD5497B28B9B9AA0 /* WatchPokeAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 233EF9A75E0571B25B186F9F /* WatchPokeAPI.swift */; };
 		55F6CBB55B4D73852E4C6094 /* Session.swift in Sources */ = {isa = PBXBuildFile; fileRef = D29D733AAD46444723023905 /* Session.swift */; };
 		583583622BA465A94561DE6B /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 83FB276D06CBDD1F5974ABD0 /* LiveKit */; };
@@ -72,8 +75,10 @@
 		A8063E459DE41FBCAAC5EC8D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B00D99F1C7CCFC6FE3B52D73 /* Assets.xcassets */; };
 		A90F73EFD16C394262103F98 /* PokeVariant.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D00B64A7AC23ACDD826C35B /* PokeVariant.swift */; };
 		ABCEA9F732358EDF3CB28667 /* SendMessageIntentHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF547DB82BDDE0604BB84EB0 /* SendMessageIntentHandler.swift */; };
+		AC5DD2CA02E1E5818E809D8B /* WatchWidgetBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB1DABCBB91052FA798E7BFE /* WatchWidgetBridge.swift */; };
 		ADE28B0A40BB7A253482C5D0 /* AppGroupConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 434FBD6DE9C340459E70525C /* AppGroupConfig.swift */; };
 		AF2C74E0B31E81C6B6F9546F /* SharedKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F69951F17F4C7BBEDE00D3C /* SharedKeychain.swift */; };
+		B2139FAC05F3E1635D368E64 /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0503A3312574F4248568EACD /* Keychain.swift */; };
 		B26BC052C9E385A53EC2292A /* WatchPokeAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 233EF9A75E0571B25B186F9F /* WatchPokeAPI.swift */; };
 		B29E4E9752B76243C01B8643 /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FC2ECC7C7A8019B6C7482EF /* WidgetShared.swift */; };
 		B564E41886BEAA13D091CBCC /* JetBrainsMono-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = CD7CC7291325678F55762B95 /* JetBrainsMono-SemiBold.ttf */; };
@@ -81,11 +86,13 @@
 		BBD9EE37F74230292A31026A /* WatchWidgetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 715C83CE44FC0812FC56D391 /* WatchWidgetViews.swift */; };
 		BC4FC81F63EC0455F9867E7C /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCD6E4D657E7A9B38D5F14DB /* ShareViewController.swift */; };
 		BCB44DF8959CFB3129DB636A /* SiriMatching.swift in Sources */ = {isa = PBXBuildFile; fileRef = F95659B3908C06735E72CF67 /* SiriMatching.swift */; };
+		BD2551CE3ADEB90798C56DFF /* WatchPokeAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 233EF9A75E0571B25B186F9F /* WatchPokeAPI.swift */; };
 		C0985C16FCB2E569EB51D256 /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0503A3312574F4248568EACD /* Keychain.swift */; };
 		C11C9FD38A8F9B33DF12D3B2 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4B0548FCFD7075D00943D03 /* AppStore.swift */; };
 		C234B5240DBA7B0A01661E94 /* E2EE.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */; };
 		C3976E6FD63A600530C3F66D /* SiriMatching.swift in Sources */ = {isa = PBXBuildFile; fileRef = F95659B3908C06735E72CF67 /* SiriMatching.swift */; };
 		C5D817A008230AC223C44C4A /* BotViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C38FD52C3DBB5206CBB9098 /* BotViews.swift */; };
+		C66B0BD7A401E333F0979B08 /* ZekktrisWatchAppIntentsExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7911F9BC258B5D6B59F8EDDD /* ZekktrisWatchAppIntentsExtension.swift */; };
 		C6A4BE6E0A33510E3630CCE0 /* SiriMatching.swift in Sources */ = {isa = PBXBuildFile; fileRef = F95659B3908C06735E72CF67 /* SiriMatching.swift */; };
 		CC942197498968307D596A2A /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0503A3312574F4248568EACD /* Keychain.swift */; };
 		D0F37BFCBEE259ACED492D79 /* ZekktrisApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B171229A0C558CF65D219D70 /* ZekktrisApp.swift */; };
@@ -104,7 +111,6 @@
 		EEA12A32B69FC0AAA2C19229 /* AppGroupConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 434FBD6DE9C340459E70525C /* AppGroupConfig.swift */; };
 		F082A7FF9275D75777E1D74D /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FC2ECC7C7A8019B6C7482EF /* WidgetShared.swift */; };
 		F24D38116C5941C2D8004ADE /* PasskeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB8B74BA93612A97CCC5774D /* PasskeyManager.swift */; };
-		F3B70C335DA9D1A8BFD5CF2B /* SiriMatching.swift in Sources */ = {isa = PBXBuildFile; fileRef = F95659B3908C06735E72CF67 /* SiriMatching.swift */; };
 		F3C4943EE5FC3B46FFE78387 /* QuickReply.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFE18E68345DE840AF9E6901 /* QuickReply.swift */; };
 		F3EBD149CC0B0179BD3F768F /* SiriRecipientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C401E906C22A9E53C7908A8E /* SiriRecipientTests.swift */; };
 		F4402FE8FFBA4C809D2DD0FD /* SendMessageIntentHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF547DB82BDDE0604BB84EB0 /* SendMessageIntentHandler.swift */; };
@@ -155,6 +161,13 @@
 			remoteGlobalIDString = 7084313A80C2E8382E5541AB;
 			remoteInfo = ZekktrisWatchIntents;
 		};
+		E0F4DD069EC4FCC4A4A2EA2F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4230464D4664DE2E7495AA74 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 139DEF68BC17326DA186B08C;
+			remoteInfo = ZekktrisWatchAppIntents;
+		};
 		FFDDC7522AD9B3826C70BBB8 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 4230464D4664DE2E7495AA74 /* Project object */;
@@ -174,6 +187,17 @@
 				4A157541F71EEB8CB62501A6 /* ZekktrisWatch.app in Embed Watch Content */,
 			);
 			name = "Embed Watch Content";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		33A0772DED038870C8C4B540 /* Embed ExtensionKit Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(EXTENSIONS_FOLDER_PATH)";
+			dstSubfolderSpec = 16;
+			files = (
+				3F9C74F98CB98BF24E16921D /* ZekktrisWatchAppIntents.appex in Embed ExtensionKit Extensions */,
+			);
+			name = "Embed ExtensionKit Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		62398F0725E36E95168B2E4B /* Embed Foundation Extensions */ = {
@@ -227,6 +251,7 @@
 		37A083098F843E8AF223886B /* ShareExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		42797CA878D26DB332BEF804 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
 		434FBD6DE9C340459E70525C /* AppGroupConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppGroupConfig.swift; sourceTree = "<group>"; };
+		4CDB833D21765549FFC75B16 /* ZekktrisWatchAppIntents.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = ZekktrisWatchAppIntents.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		4FC2ECC7C7A8019B6C7482EF /* WidgetShared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetShared.swift; sourceTree = "<group>"; };
 		51B39BD5E80E2319B2140181 /* ZekktrisIntents.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ZekktrisIntents.entitlements; sourceTree = "<group>"; };
 		609F7D5BBAA10FCDC2739F91 /* WatchWidgetIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchWidgetIntents.swift; sourceTree = "<group>"; };
@@ -235,6 +260,7 @@
 		6A7CB777C26F090990345AE1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		6B7050D0DC1B41D6A1BCE289 /* E2EE.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = E2EE.swift; sourceTree = "<group>"; };
 		715C83CE44FC0812FC56D391 /* WatchWidgetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchWidgetViews.swift; sourceTree = "<group>"; };
+		7911F9BC258B5D6B59F8EDDD /* ZekktrisWatchAppIntentsExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZekktrisWatchAppIntentsExtension.swift; sourceTree = "<group>"; };
 		7D19B4E695D14C90A678D638 /* ZekktrisWatchWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZekktrisWatchWidgetBundle.swift; sourceTree = "<group>"; };
 		7F69951F17F4C7BBEDE00D3C /* SharedKeychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedKeychain.swift; sourceTree = "<group>"; };
 		7FEDAB3BA09017209BA445AF /* LICENSE-JetBrainsMono-OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "LICENSE-JetBrainsMono-OFL.txt"; sourceTree = "<group>"; };
@@ -255,8 +281,8 @@
 		A7B5BE3EA780224AC21D96B1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		A8163DC224B917BB85006D44 /* SendMessageAppIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendMessageAppIntent.swift; sourceTree = "<group>"; };
 		ABAE826182443C3B6DBED3E3 /* SpaceGrotesk-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SpaceGrotesk-SemiBold.ttf"; sourceTree = "<group>"; };
-		AC86F9F6460D1F59E3668AE6 /* WatchSendMessageAppIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchSendMessageAppIntent.swift; sourceTree = "<group>"; };
 		AFE18E68345DE840AF9E6901 /* QuickReply.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickReply.swift; sourceTree = "<group>"; };
+		AFED22885A10A418DFBA519C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		B00D99F1C7CCFC6FE3B52D73 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B0EE40EF9EADCC209250FFCE /* WidgetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetViews.swift; sourceTree = "<group>"; };
 		B171229A0C558CF65D219D70 /* ZekktrisApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZekktrisApp.swift; sourceTree = "<group>"; };
@@ -269,6 +295,7 @@
 		BF547DB82BDDE0604BB84EB0 /* SendMessageIntentHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendMessageIntentHandler.swift; sourceTree = "<group>"; };
 		C374F4D26FF9A00B145E91BE /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C401E906C22A9E53C7908A8E /* SiriRecipientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SiriRecipientTests.swift; sourceTree = "<group>"; };
+		C5E87B49AAA6A0A8608F489C /* ZekktrisWatchAppIntents.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ZekktrisWatchAppIntents.entitlements; sourceTree = "<group>"; };
 		C6F2371BB09C7603E340AE1B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		CBE3E96F8CE23FAF737BDDF0 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		CCD6E4D657E7A9B38D5F14DB /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
@@ -277,6 +304,7 @@
 		CE1387DD790845EB4E42BE03 /* ZekktrisWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ZekktrisWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		D29D733AAD46444723023905 /* Session.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Session.swift; sourceTree = "<group>"; };
 		D47A145B58B78674470C0838 /* ContactsLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactsLink.swift; sourceTree = "<group>"; };
+		D4A4B7A3CAC7D2604AFAA0EE /* WatchSendMessageAppIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchSendMessageAppIntent.swift; sourceTree = "<group>"; };
 		D6F425F9CDFDAE520EC34905 /* ZekktrisWatchIntents.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ZekktrisWatchIntents.entitlements; sourceTree = "<group>"; };
 		D9F3789F4ADB83F7BDF66983 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		D9FA9F6B39015D93E0C768A2 /* ThreadViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadViews.swift; sourceTree = "<group>"; };
@@ -365,6 +393,7 @@
 				42EC48C642B1E78B6118A1E5 /* ZekktrisIntents */,
 				20559DE324DFD23DBD140716 /* ZekktrisTests */,
 				D0B5CC8462D17645C6FE8B54 /* ZekktrisWatch */,
+				F8F43C76AB73C03774FC3AFC /* ZekktrisWatchAppIntents */,
 				83881C852AAE9B62568094D4 /* ZekktrisWatchIntents */,
 				18D95C5469B7584D66895900 /* ZekktrisWatchWidgets */,
 				04D58FF7D159DA7DFE4BE1AF /* ZekktrisWidgets */,
@@ -454,6 +483,7 @@
 				6661A5CF9DA76B2731A6AAB5 /* ZekktrisIntents.appex */,
 				277229C270351E02BC92CD92 /* ZekktrisTests.xctest */,
 				8CD61D15591F11BF7866AFF1 /* ZekktrisWatch.app */,
+				4CDB833D21765549FFC75B16 /* ZekktrisWatchAppIntents.appex */,
 				CD46A1C913D57FEF5EF82DBC /* ZekktrisWatchIntents.appex */,
 				99031E00C093F83039CEEAED /* ZekktrisWatchWidgets.appex */,
 				CE1387DD790845EB4E42BE03 /* ZekktrisWidgets.appex */,
@@ -485,7 +515,6 @@
 				F73381ACD912C04D2E50CF06 /* Info.plist */,
 				8D00B64A7AC23ACDD826C35B /* PokeVariant.swift */,
 				233EF9A75E0571B25B186F9F /* WatchPokeAPI.swift */,
-				AC86F9F6460D1F59E3668AE6 /* WatchSendMessageAppIntent.swift */,
 				8884A77FFC709AF748B2E291 /* WatchSyncStore.swift */,
 				DB1DABCBB91052FA798E7BFE /* WatchWidgetBridge.swift */,
 				0FA8F7066C8638882AAE23AC /* ZekktrisWatch.entitlements */,
@@ -493,6 +522,17 @@
 				FAD3BA3800A7BBB4DD4F29F5 /* AppIntentVocabulary.plist */,
 			);
 			path = ZekktrisWatch;
+			sourceTree = "<group>";
+		};
+		F8F43C76AB73C03774FC3AFC /* ZekktrisWatchAppIntents */ = {
+			isa = PBXGroup;
+			children = (
+				AFED22885A10A418DFBA519C /* Info.plist */,
+				D4A4B7A3CAC7D2604AFAA0EE /* WatchSendMessageAppIntent.swift */,
+				C5E87B49AAA6A0A8608F489C /* ZekktrisWatchAppIntents.entitlements */,
+				7911F9BC258B5D6B59F8EDDD /* ZekktrisWatchAppIntentsExtension.swift */,
+			);
+			path = ZekktrisWatchAppIntents;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -514,6 +554,23 @@
 			productName = ZekktrisWidgets;
 			productReference = CE1387DD790845EB4E42BE03 /* ZekktrisWidgets.appex */;
 			productType = "com.apple.product-type.app-extension";
+		};
+		139DEF68BC17326DA186B08C /* ZekktrisWatchAppIntents */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7EB85C8DE51188AA5FC90C2F /* Build configuration list for PBXNativeTarget "ZekktrisWatchAppIntents" */;
+			buildPhases = (
+				F59CBA95190AE7C186DBBD52 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ZekktrisWatchAppIntents;
+			packageProductDependencies = (
+			);
+			productName = ZekktrisWatchAppIntents;
+			productReference = 4CDB833D21765549FFC75B16 /* ZekktrisWatchAppIntents.appex */;
+			productType = "com.apple.product-type.extensionkit-extension";
 		};
 		2521858B9357B3605F1FC370 /* NotificationService */ = {
 			isa = PBXNativeTarget;
@@ -539,12 +596,14 @@
 				D5B65C144F1FC2F8FDDC6F3E /* Sources */,
 				CB36054612143B0FF8C4BDB0 /* Resources */,
 				E0ECD8EC716045CBFEFF8F23 /* Embed Foundation Extensions */,
+				33A0772DED038870C8C4B540 /* Embed ExtensionKit Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				CE02F8589C7BE6028A639C61 /* PBXTargetDependency */,
 				95DF433386894E4CE0141D02 /* PBXTargetDependency */,
+				51198734A0E7AF8B2BFAF081 /* PBXTargetDependency */,
 			);
 			name = ZekktrisWatch;
 			packageProductDependencies = (
@@ -678,6 +737,10 @@
 						DevelopmentTeam = 4QF34MB8R3;
 						ProvisioningStyle = Automatic;
 					};
+					139DEF68BC17326DA186B08C = {
+						DevelopmentTeam = 4QF34MB8R3;
+						ProvisioningStyle = Automatic;
+					};
 					2521858B9357B3605F1FC370 = {
 						DevelopmentTeam = 4QF34MB8R3;
 						ProvisioningStyle = Automatic;
@@ -734,6 +797,7 @@
 				782D72730181F225A1792457 /* ZekktrisIntents */,
 				850076A771ABAE975BB63823 /* ZekktrisTests */,
 				312CAE62D3D4F580F37A218D /* ZekktrisWatch */,
+				139DEF68BC17326DA186B08C /* ZekktrisWatchAppIntents */,
 				7084313A80C2E8382E5541AB /* ZekktrisWatchIntents */,
 				C1960D6A2A12F2676FCA48CF /* ZekktrisWatchWidgets */,
 				0EECE4851C69714B5E2FA4BB /* ZekktrisWidgets */,
@@ -880,9 +944,7 @@
 				A514C1446C16D0AF24BB8D9B /* ContentView.swift in Sources */,
 				D63503865DDA963277F6CD34 /* Keychain.swift in Sources */,
 				A90F73EFD16C394262103F98 /* PokeVariant.swift in Sources */,
-				F3B70C335DA9D1A8BFD5CF2B /* SiriMatching.swift in Sources */,
 				B26BC052C9E385A53EC2292A /* WatchPokeAPI.swift in Sources */,
-				49F43CDA34F66C52ADD90F8B /* WatchSendMessageAppIntent.swift in Sources */,
 				B732344CDFFAFFFE8A324419 /* WatchSyncStore.swift in Sources */,
 				3445E237D9A0C54F32D81D30 /* WatchWidgetBridge.swift in Sources */,
 				04F310F95E72468127D62847 /* ZekktrisWatchApp.swift in Sources */,
@@ -901,6 +963,20 @@
 				F4402FE8FFBA4C809D2DD0FD /* SendMessageIntentHandler.swift in Sources */,
 				BCB44DF8959CFB3129DB636A /* SiriMatching.swift in Sources */,
 				46BE11148DE40BA2B0C8E075 /* WidgetShared.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F59CBA95190AE7C186DBBD52 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				45CBA0EA8048F14DBAF07740 /* AppGroupConfig.swift in Sources */,
+				B2139FAC05F3E1635D368E64 /* Keychain.swift in Sources */,
+				52C7268DCE951A927EA1438C /* SiriMatching.swift in Sources */,
+				BD2551CE3ADEB90798C56DFF /* WatchPokeAPI.swift in Sources */,
+				3D375D89C2D2EA9038BD8BFC /* WatchSendMessageAppIntent.swift in Sources */,
+				AC5DD2CA02E1E5818E809D8B /* WatchWidgetBridge.swift in Sources */,
+				C66B0BD7A401E333F0979B08 /* ZekktrisWatchAppIntentsExtension.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -929,6 +1005,11 @@
 			isa = PBXTargetDependency;
 			target = 312CAE62D3D4F580F37A218D /* ZekktrisWatch */;
 			targetProxy = FFDDC7522AD9B3826C70BBB8 /* PBXContainerItemProxy */;
+		};
+		51198734A0E7AF8B2BFAF081 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 139DEF68BC17326DA186B08C /* ZekktrisWatchAppIntents */;
+			targetProxy = E0F4DD069EC4FCC4A4A2EA2F /* PBXContainerItemProxy */;
 		};
 		55571124CFE61B905EE8B2C5 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -1030,6 +1111,20 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
+		};
+		6756EC5A2C94E9D777CB59C8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ZekktrisWatchAppIntents/ZekktrisWatchAppIntents.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				INFOPLIST_FILE = ZekktrisWatchAppIntents/Info.plist;
+				PRODUCT_BUNDLE_IDENTIFIER = com.zekktris.native.watchkitapp.appintents;
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Debug;
 		};
 		684045F320CDCE520B139680 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -1308,6 +1403,20 @@
 			};
 			name = Debug;
 		};
+		E6BE5F4C0FAA146ECB918884 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ZekktrisWatchAppIntents/ZekktrisWatchAppIntents.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				INFOPLIST_FILE = ZekktrisWatchAppIntents/Info.plist;
+				PRODUCT_BUNDLE_IDENTIFIER = com.zekktris.native.watchkitapp.appintents;
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Release;
+		};
 		EFCC08030406F043C0F54987 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1474,6 +1583,15 @@
 			buildConfigurations = (
 				A1C001EC4387A790C962A910 /* Debug */,
 				FA64227D3A72EF4622B60952 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		7EB85C8DE51188AA5FC90C2F /* Build configuration list for PBXNativeTarget "ZekktrisWatchAppIntents" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6756EC5A2C94E9D777CB59C8 /* Debug */,
+				E6BE5F4C0FAA146ECB918884 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

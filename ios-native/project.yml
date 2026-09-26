@@ -304,17 +304,21 @@ targets:
       # Shared with the watch widget: app-group keychain (token) + the group id.
       - path: Zekktris/Keychain.swift
       - path: Zekktris/AppGroupConfig.swift
-      # Loose recipient matching for the spoken-shortcut send (App Intents),
-      # the same ranking the iPhone's Siri extension uses.
-      - path: Zekktris/SiriMatching.swift
     dependencies:
       # Bundles + embeds the watchOS widget/complication extension into the
       # watch app.
       - target: ZekktrisWatchWidgets
         embed: true
-      # Siri on the wrist ("send a message to Sam on Zekktris") — watchOS
-      # needs its own Intents extension; it won't use the iPhone's.
+      # SiriKit Messaging extension for the wrist. Kept, but on current
+      # watchOS Siri does not route to it — the App Intents extension below
+      # is what actually handles "message Sam on Zekktris" on the watch.
       - target: ZekktrisWatchIntents
+        embed: true
+      # Siri on the wrist, the path that works: an App Intents EXTENSION.
+      # watchOS will not launch the watch app in the background to perform an
+      # App Intent for Siri, so the send has to run in an extension process
+      # (see ZekktrisWatchAppIntentsExtension.swift).
+      - target: ZekktrisWatchAppIntents
         embed: true
     info:
       path: ZekktrisWatch/Info.plist
@@ -494,6 +498,42 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.intents
         TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+
+  # watchOS App Intents extension — runs the Siri send ("message Sam on
+  # Zekktris") WITHOUT launching the watch app, which Siri on watchOS will not
+  # do for an intent that lives in the app itself. Owns the App Shortcuts
+  # phrases too. ExtensionKit-based (EXAppExtensionAttributes), like Xcode's
+  # own watchOS "App Intents Extension" template. Shares the App Group with
+  # the watch app for the DM list, token and per-DM E2EE keys.
+  ZekktrisWatchAppIntents:
+    type: extensionkit-extension
+    platform: watchOS
+    deploymentTarget: "10.0"
+    sources:
+      - path: ZekktrisWatchAppIntents
+      - path: Zekktris/SiriMatching.swift
+      - path: ZekktrisWatch/WatchWidgetBridge.swift
+      - path: ZekktrisWatch/WatchPokeAPI.swift
+      - path: Zekktris/Keychain.swift
+      - path: Zekktris/AppGroupConfig.swift
+    info:
+      path: ZekktrisWatchAppIntents/Info.plist
+      properties:
+        CFBundleDisplayName: Zekktris
+        CFBundleShortVersionString: "5.0"
+        CFBundleVersion: "6"
+        EXAppExtensionAttributes:
+          EXExtensionPointIdentifier: com.apple.appintents-extension
+    entitlements:
+      path: ZekktrisWatchAppIntents/ZekktrisWatchAppIntents.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.zekktris.native
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.watchkitapp.appintents
+        TARGETED_DEVICE_FAMILY: "4"
         CODE_SIGN_STYLE: Automatic
 
   ZekktrisTests:

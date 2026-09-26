@@ -13,6 +13,10 @@ import AppIntents
 /// opening the app — so it is the one path proven to work here.
 ///
 /// The SiriKit extension is kept for the iPhone, where it still works today.
+///
+/// Lives in the ZekktrisWatchAppIntents EXTENSION, not the watch app: from the
+/// app, Siri could match and fill this intent but never run it (see
+/// ZekktrisWatchAppIntentsExtension).
 struct WatchSendMessageAppIntent: AppIntent {
     static var title: LocalizedStringResource = "Send a Message"
     static var description = IntentDescription("Send a Zekktris direct message.")
@@ -62,6 +66,13 @@ struct WatchSendMessageAppIntent: AppIntent {
             baseURL: base, token: token, channelId: dm.id,
             content: text, e2ee: encrypted, e2eeKey: key,
         )
+        // Names spoken INSIDE a phrase are matched against an index Siri holds,
+        // refreshed only when told. The provider lives in this extension, so
+        // the watch app can't ask for that — refresh here instead, so anyone
+        // added since the last refresh is sayable by name next time. (A phrase
+        // without a name never depends on it: Siri asks who, and the answer
+        // goes through entities(matching:) below.)
+        ZekktrisWatchShortcuts.updateAppShortcutParameters()
         return .result(dialog: ok ? "Sent to \(recipient.name)." : "That didn't send.")
     }
 }
@@ -162,8 +173,9 @@ struct WatchSiriPeerQuery: EntityStringQuery {
     }
 }
 
-/// The spoken phrases. App Shortcuts are registered from the APP target (not an
-/// extension), which is why this lives here and not beside the widgets.
+/// The spoken phrases. Declared in the App Intents extension, beside the intent
+/// they invoke — an App Intents extension may own its App Shortcuts, and there
+/// must be only one provider per app, so the watch app itself declares none.
 ///
 /// Every phrase has to contain `\(.applicationName)` — that is the framework's
 /// rule, and it is also what makes "with Zekktris" the thing that routes a
