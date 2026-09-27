@@ -18,12 +18,11 @@ struct ZekktrisWatchApp: App {
         }
     }
 
-    /// Siri authorisation is PER DEVICE: granting it on the iPhone does not
-    /// authorise the watch, and until the watch itself is authorised Siri on
-    /// the wrist answers "you don't have an app for that" — it never reaches
-    /// ZekktrisWatchIntents. Asking here is the only way to get the prompt on
-    /// the watch; requires NSSiriUsageDescription in the watch app's Info.plist
-    /// (without it this call traps).
+    /// Siri authorisation is per device and a SiriKit concept. The watch's
+    /// Siri send now runs through App Intents (ZekktrisWatchAppIntents), which
+    /// does not need it; this stays because it is harmless and the watch's
+    /// signing already carries the Siri entitlement. Requires
+    /// NSSiriUsageDescription in the watch app's Info.plist (traps without it).
     private func requestSiriAuthorizationIfNeeded() {
         guard INPreferences.siriAuthorizationStatus() == .notDetermined else { return }
         INPreferences.requestSiriAuthorization { _ in }

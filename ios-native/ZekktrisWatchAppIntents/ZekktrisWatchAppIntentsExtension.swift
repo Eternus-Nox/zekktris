@@ -14,7 +14,7 @@ import ExtensionFoundation
 /// Everything Siri needs is here — the intent, the person entity and its
 /// query, and the App Shortcuts phrases — because the system reads them from
 /// the extension's own metadata. It shares the App Group with the watch app
-/// (DM list, token, per-DM E2EE keys), exactly as ZekktrisWatchIntents and the
-/// widget extension do.
+/// (DM list, token, per-DM E2EE keys), exactly as the
+/// widget extension does.
 @main
 struct ZekktrisWatchAppIntentsExtension: AppIntentsExtension {}
