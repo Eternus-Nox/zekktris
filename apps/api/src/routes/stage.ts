@@ -109,11 +109,15 @@ stageRouter.post(
     // Mint LiveKit token with publish gated on speaker status, and
     // sources gated on parental controls (audio-only children must not
     // get camera/screen-share grants just because they were promoted).
+    // An instance-muted account never gets a publishing grant, even if it
+    // is (still) a speaker — the stage equivalent of joinVoice's clamp.
+    const { getInstanceMute } = await import('../services/instanceMutes');
+    const muted = (await getInstanceMute(userId)) !== null;
     const token = await voice.mintLivekitToken(
       userId,
       channelId,
       channel.guildId!,
-      participant.isSpeaker,
+      participant.isSpeaker && !muted,
       publishSources,
     );
 

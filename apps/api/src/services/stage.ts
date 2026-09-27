@@ -151,7 +151,9 @@ export async function joinStage(args: {
   // that would otherwise require a second moderator to promote them.
   const occupants = await listParticipants(args.channelId);
   const isFirstJoiner = occupants.length === 0;
-  const startAsSpeaker = isFirstJoiner && isMod;
+  // A muted host doesn't get the first-joiner speaker bootstrap either.
+  const { getInstanceMute } = await import('./instanceMutes');
+  const startAsSpeaker = isFirstJoiner && isMod && (await getInstanceMute(args.userId)) === null;
 
   const [row] = await db
     .insert(schema.stageParticipants)
@@ -204,6 +206,14 @@ export async function setSpeaker(args: {
   }
   const target = await getParticipant(args.channelId, args.targetUserId);
   if (!target) throw errors.notFound('Stage participant');
+  // An instance-muted account can't be made a speaker: the promotion would
+  // hand it a publishing grant at the SFU below. (Demoting is always fine.)
+  if (args.isSpeaker) {
+    const { getInstanceMute } = await import('./instanceMutes');
+    if (await getInstanceMute(args.targetUserId)) {
+      throw errors.badRequest("That account is muted by staff and can't speak.");
+    }
+  }
 
   const [row] = await db
     .update(schema.stageParticipants)

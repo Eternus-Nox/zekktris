@@ -184,6 +184,13 @@ export const users = pgTable(
         auth checks also treat `bannedUntil <= now` as not-banned so an expired
         timed ban never lags the sweep. */
     bannedUntil: timestamp('banned_until', { withTimezone: true }),
+    /** Instance-wide MUTE (staff action). Set = muted: the account can sign in
+        and read but can't send, edit, react, vote, poke or publish audio in
+        voice. Same shape as the ban — mutedUntil null while mutedAt is set =
+        permanent. No sweeper: services/instanceMutes treats a passed
+        mutedUntil as not-muted at read time. Migration 0125. */
+    mutedAt: timestamp('muted_at', { withTimezone: true }),
+    mutedUntil: timestamp('muted_until', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     /** Soft delete; set when the user deletes their account. */

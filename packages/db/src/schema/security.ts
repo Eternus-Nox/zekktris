@@ -161,3 +161,28 @@ export const webauthnCredentials = pgTable(
     byUser: index('webauthn_credentials_user_idx').on(t.userId),
   }),
 );
+
+/**
+ * Staff notes on an account (Admin → Account Info). Free text, visible to
+ * instance staff only — never to the account itself. authorId is SET NULL so
+ * a note survives its author losing staff; userId cascades, but accounts are
+ * tombstoned (deleted_at) rather than hard-deleted, so notes outlive account
+ * deletion in practice. Migration 0125.
+ */
+export const staffNotes = pgTable(
+  'staff_notes',
+  {
+    id: bigint('id', { mode: 'bigint' }).primaryKey(),
+    userId: bigint('user_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    authorId: bigint('author_id', { mode: 'bigint' }).references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    body: text('body').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    byUserCreated: index('staff_notes_user_created_idx').on(t.userId, t.createdAt),
+  }),
+);

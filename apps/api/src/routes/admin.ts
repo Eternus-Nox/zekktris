@@ -28,7 +28,11 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { and, desc, eq, gt, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
-import { db, schema } from '../db';
+import { alias } from 'drizzle-orm/pg-core';
+import { db, isUniqueViolation, schema } from '../db';
+import { nextSnowflake } from '../snowflake';
+import { emailSchema, usernameSchema } from '../lib/validation';
+import { dateOfBirthSchema } from '../lib/age';
 import { errors } from '../errors';
 import { validate } from '../lib/validate';
 import { requireAuth, requireStaff, requireUserId, staffIsAdmin } from '../auth/middleware';
@@ -61,7 +65,13 @@ export const adminRouter = new Hono();
 // (gifting/removing memberships, the monetization config) is admin-only.
 const MODERATOR_ALLOWED: { method: string; pattern: RegExp }[] = [
   { method: 'GET', pattern: /^\/users$/ },
-  { method: 'POST', pattern: /^\/users\/[0-9]+\/(ban|unban|logout|reset-dob-lock)$/ },
+  { method: 'POST', pattern: /^\/users\/[0-9]+\/(ban|unban|logout|reset-dob-lock|mute|unmute)$/ },
+  // Staff notes (Account Info). Moderators got mute + notes and nothing else
+  // from that page (user decision 2026-09-27) — NOT the account info payload
+  // (GET /users/:id) or contacts, which stay admin-only by being absent here.
+  { method: 'GET', pattern: /^\/users\/[0-9]+\/notes$/ },
+  { method: 'POST', pattern: /^\/users\/[0-9]+\/notes$/ },
+  { method: 'DELETE', pattern: /^\/users\/[0-9]+\/notes\/[0-9]+$/ },
   { method: 'GET', pattern: /^\/guilds$/ },
   { method: 'GET', pattern: /^\/guilds\/[0-9]+\/peek$/ },
   { method: 'GET', pattern: /^\/channels\/[0-9]+\/peek\/messages$/ },
@@ -413,14 +423,20 @@ adminRouter.get('/users', validate('query', listUsersQuery), async (c) => {
   const conds = [isNull(schema.users.deletedAt)];
   if (q.before) conds.push(sql`${schema.users.id} < ${BigInt(q.before)}`);
   if (q.bannedOnly) conds.push(isNotNull(schema.users.bannedAt));
+  // Moderators don't get account info (email, DOB) — user decision
+  // 2026-09-27. That also means no matching BY email: a hit would reveal
+  // which account an address belongs to.
+  const isAdmin = staffIsAdmin(c);
   if (q.q && q.q.trim().length > 0) {
     const pattern = `%${q.q.trim()}%`;
     conds.push(
-      or(
-        ilike(schema.users.username, pattern),
-        ilike(schema.users.displayName, pattern),
-        ilike(schema.users.email, pattern),
-      )!,
+      isAdmin
+        ? or(
+            ilike(schema.users.username, pattern),
+            ilike(schema.users.displayName, pattern),
+            ilike(schema.users.email, pattern),
+          )!
+        : or(ilike(schema.users.username, pattern), ilike(schema.users.displayName, pattern))!,
     );
   }
 
@@ -436,6 +452,8 @@ adminRouter.get('/users', validate('query', listUsersQuery), async (c) => {
       dateOfBirth: schema.users.dateOfBirth,
       bannedAt: schema.users.bannedAt,
       bannedUntil: schema.users.bannedUntil,
+      mutedAt: schema.users.mutedAt,
+      mutedUntil: schema.users.mutedUntil,
       createdAt: schema.users.createdAt,
     })
     .from(schema.users)
@@ -487,13 +505,15 @@ adminRouter.get('/users', validate('query', listUsersQuery), async (c) => {
       id: r.id.toString(),
       username: r.username,
       displayName: r.displayName,
-      email: r.email,
+      email: isAdmin ? r.email : null,
       avatarUrl: r.avatarUrl,
       isAdmin: r.isAdmin,
       isModerator: r.isModerator,
-      dateOfBirth: r.dateOfBirth ?? null,
+      dateOfBirth: isAdmin ? (r.dateOfBirth ?? null) : null,
       bannedAt: r.bannedAt?.toISOString() ?? null,
       bannedUntil: r.bannedUntil?.toISOString() ?? null,
+      mutedAt: r.mutedAt?.toISOString() ?? null,
+      mutedUntil: r.mutedUntil?.toISOString() ?? null,
       createdAt: r.createdAt.toISOString(),
       lastSeenAt: seenMap.get(r.id.toString()) ?? null,
       subscriptionTier: subMap.get(r.id.toString())?.tier ?? null,
@@ -754,6 +774,445 @@ adminRouter.post('/users/:id/reset-dob-lock', validate('param', userIdParam), as
   await auditStaff(c, 'staff_dob_reset', 'Unlocked date of birth for one change', {
     userId: targetId,
   });
+  return c.json({ ok: true });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Account Info (Admin → Users → an account)
+// ───────────────────────────────────────────────────────────────────────────
+//
+// One page per account, replacing the Users tab's row of inline buttons.
+//
+// WHO GETS WHAT (user-decided 2026-09-27):
+//   admins      everything below
+//   moderators  mute / unmute and notes ONLY — plus the ban, sign-out and DOB
+//               unlock they already had. They do NOT get the info payload
+//               (email, DOB, sessions…) or contacts. Enforced by
+//               MODERATOR_ALLOWED: the info, contacts and edit endpoints
+//               simply aren't on it, so they're admin-only by construction.
+//
+// AUDIT PRIVACY: moderators can read the staff audit log, so entries for an
+// email or DOB change record THAT it changed, never the value. Usernames are
+// public, so a rename logs old → new.
+
+/** Resolve a live (not deleted) account or 404. */
+async function loadTargetUser(targetId: bigint) {
+  const [u] = await db
+    .select()
+    .from(schema.users)
+    .where(and(eq(schema.users.id, targetId), isNull(schema.users.deletedAt)))
+    .limit(1);
+  if (!u) throw errors.notFound('User');
+  return u;
+}
+
+/** Fan a profile change (rename) out to everyone who can see the account. */
+async function broadcastUserUpdate(user: typeof schema.users.$inferSelect) {
+  const { userUpdate } = await import('../gateway/dispatch');
+  const { listDmPeers } = await import('../services/dms');
+  const memberRows = await db
+    .select({ guildId: schema.guildMembers.guildId })
+    .from(schema.guildMembers)
+    .where(eq(schema.guildMembers.userId, user.id));
+  userUpdate({
+    userId: user.id,
+    user: {
+      id: user.id.toString(),
+      username: user.username,
+      displayName: user.displayName,
+      avatarUrl: user.avatarUrl,
+      bio: user.bio,
+      customStatus: user.customStatus,
+      status:
+        user.status === 'invisible'
+          ? 'offline'
+          : (user.status as 'online' | 'idle' | 'dnd' | 'offline'),
+    },
+    guildIds: memberRows.map((r) => r.guildId),
+    userIds: await listDmPeers(user.id),
+  });
+}
+
+// GET /admin/users/:id — the full account record (ADMIN ONLY).
+adminRouter.get('/users/:id', validate('param', userIdParam), async (c) => {
+  const targetId = BigInt(c.req.valid('param').id);
+  const u = await loadTargetUser(targetId);
+  const { isCurrentlyBanned } = await import('../services/instanceBans');
+  const { isCurrentlyMuted } = await import('../services/instanceMutes');
+  const { isMinorDob } = await import('../lib/age');
+
+  const [[lastSeen], [sessionCount], [guildCount], [friendCount], [sub]] = await Promise.all([
+    db
+      .select({ last: sql<string | null>`MAX(${schema.sessions.lastUsedAt})` })
+      .from(schema.sessions)
+      .where(eq(schema.sessions.userId, targetId)),
+    db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(schema.sessions)
+      .where(and(eq(schema.sessions.userId, targetId), isNull(schema.sessions.revokedAt))),
+    db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(schema.guildMembers)
+      .where(eq(schema.guildMembers.userId, targetId)),
+    db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(schema.relationships)
+      .where(and(eq(schema.relationships.userId, targetId), eq(schema.relationships.type, 'friend'))),
+    db
+      .select()
+      .from(schema.subscriptions)
+      .where(eq(schema.subscriptions.userId, targetId))
+      .limit(1),
+  ]);
+  const subActive = sub && (!sub.expiresAt || sub.expiresAt.getTime() > Date.now());
+
+  return c.json({
+    account: {
+      id: u.id.toString(),
+      username: u.username,
+      displayName: u.displayName,
+      email: u.email,
+      emailVerified: u.emailVerified,
+      avatarUrl: u.avatarUrl,
+      bannerUrl: u.bannerUrl,
+      bio: u.bio,
+      dateOfBirth: u.dateOfBirth ?? null,
+      dobLocked: u.dobLocked,
+      isMinor: isMinorDob(u.dateOfBirth),
+      isAdmin: u.isAdmin,
+      isModerator: u.isModerator,
+      isBot: u.isBot,
+      twoFactorEnabled: u.totpEnabled,
+      createdAt: u.createdAt.toISOString(),
+      usernameChangedAt: u.usernameChangedAt?.toISOString() ?? null,
+      lastSeenAt: lastSeen?.last ? new Date(lastSeen.last).toISOString() : null,
+      banned: isCurrentlyBanned(u),
+      bannedAt: u.bannedAt?.toISOString() ?? null,
+      bannedUntil: u.bannedUntil?.toISOString() ?? null,
+      muted: isCurrentlyMuted(u),
+      mutedAt: u.mutedAt?.toISOString() ?? null,
+      mutedUntil: u.mutedUntil?.toISOString() ?? null,
+      subscriptionTier: subActive ? sub.tier : null,
+      subscriptionExpiresAt: subActive ? (sub.expiresAt?.toISOString() ?? null) : null,
+      activeSessions: sessionCount?.n ?? 0,
+      guildCount: guildCount?.n ?? 0,
+      friendCount: friendCount?.n ?? 0,
+    },
+  });
+});
+
+// GET /admin/users/:id/contacts — friends, requests, blocks, DM partners
+// (ADMIN ONLY). Names only; never message content. Audited, like peek: it's a
+// look into someone's social graph, and that should leave a trace.
+adminRouter.get('/users/:id/contacts', validate('param', userIdParam), async (c) => {
+  const targetId = BigInt(c.req.valid('param').id);
+  await loadTargetUser(targetId);
+
+  const person = {
+    id: schema.users.id,
+    username: schema.users.username,
+    displayName: schema.users.displayName,
+    avatarUrl: schema.users.avatarUrl,
+  };
+  const rels = await db
+    .select({ ...person, type: schema.relationships.type, since: schema.relationships.createdAt })
+    .from(schema.relationships)
+    .innerJoin(schema.users, eq(schema.users.id, schema.relationships.targetId))
+    .where(eq(schema.relationships.userId, targetId))
+    .orderBy(desc(schema.relationships.createdAt));
+
+  // 1:1 DM partners: the OTHER recipient of every 'dm' channel this account is in.
+  const peerRecipients = alias(schema.dmRecipients, 'peer_recipients');
+  const dmPartners = await db
+    .selectDistinct({ ...person, since: schema.dmRecipients.joinedAt })
+    .from(schema.dmRecipients)
+    .innerJoin(schema.channels, eq(schema.channels.id, schema.dmRecipients.channelId))
+    .innerJoin(
+      peerRecipients,
+      and(
+        eq(peerRecipients.channelId, schema.dmRecipients.channelId),
+        sql`${peerRecipients.userId} <> ${targetId}`,
+      ),
+    )
+    .innerJoin(schema.users, eq(schema.users.id, peerRecipients.userId))
+    .where(and(eq(schema.dmRecipients.userId, targetId), eq(schema.channels.type, 'dm')));
+
+  const toPerson = (r: {
+    id: bigint;
+    username: string;
+    displayName: string;
+    avatarUrl: string | null;
+    since: Date;
+  }) => ({
+    id: r.id.toString(),
+    username: r.username,
+    displayName: r.displayName,
+    avatarUrl: r.avatarUrl,
+    since: r.since.toISOString(),
+  });
+  const ofType = (t: string) => rels.filter((r) => r.type === t).map(toPerson);
+
+  await auditStaff(c, 'staff_view_contacts', 'Viewed contacts', { userId: targetId });
+  return c.json({
+    friends: ofType('friend'),
+    incomingRequests: ofType('incoming_request'),
+    outgoingRequests: ofType('outgoing_request'),
+    blocked: ofType('blocked'),
+    dmPartners: dmPartners
+      .sort((a, b) => b.since.getTime() - a.since.getTime())
+      .map(toPerson),
+  });
+});
+
+// PATCH /admin/users/:id/username (ADMIN ONLY). Same format rules as a self
+// rename, but no password and no cooldown — and it does NOT stamp
+// usernameChangedAt, so a staff fix doesn't use up the account's own 90-day
+// allowance.
+adminRouter.patch(
+  '/users/:id/username',
+  validate('param', userIdParam),
+  validate('json', z.object({ username: usernameSchema })),
+  async (c) => {
+    const targetId = BigInt(c.req.valid('param').id);
+    const { username } = c.req.valid('json');
+    const u = await loadTargetUser(targetId);
+    if (u.username === username) throw errors.badRequest('That is already their username.');
+    let updated: typeof schema.users.$inferSelect | undefined;
+    try {
+      [updated] = await db
+        .update(schema.users)
+        .set({ username, updatedAt: new Date() })
+        .where(eq(schema.users.id, targetId))
+        .returning();
+    } catch (e) {
+      if (isUniqueViolation(e)) throw errors.badRequest('That username is taken.');
+      throw e;
+    }
+    if (!updated) throw errors.notFound('User');
+    await broadcastUserUpdate(updated);
+    await auditStaff(c, 'staff_username_change', `Changed username @${u.username} → @${username}`, {
+      userId: targetId,
+    });
+    return c.json({ ok: true, username });
+  },
+);
+
+// PATCH /admin/users/:id/email (ADMIN ONLY). Set directly and marked verified
+// — staff act on the owner's request, usually because the old address is lost,
+// so a verification round-trip to the old address would defeat the point. The
+// OLD address always gets a notice: an unrequested change is what a takeover
+// looks like, and it's the one party who'd know.
+adminRouter.patch(
+  '/users/:id/email',
+  validate('param', userIdParam),
+  validate('json', z.object({ email: emailSchema })),
+  async (c) => {
+    const targetId = BigInt(c.req.valid('param').id);
+    const { email } = c.req.valid('json');
+    const u = await loadTargetUser(targetId);
+    if (u.email === email) throw errors.badRequest('That is already their email.');
+    try {
+      await db
+        .update(schema.users)
+        .set({ email, emailVerified: true, updatedAt: new Date() })
+        .where(eq(schema.users.id, targetId));
+    } catch (e) {
+      if (isUniqueViolation(e)) throw errors.badRequest('That email is already in use.');
+      throw e;
+    }
+    const { isEmailConfigured, sendEmailChangedByStaffNotice } = await import('../services/email');
+    let oldAddressNotified = false;
+    if (isEmailConfigured()) {
+      try {
+        await sendEmailChangedByStaffNotice({ to: u.email, newEmail: email });
+        oldAddressNotified = true;
+      } catch (err) {
+        console.error('[admin] email-changed notice failed:', err);
+      }
+    }
+    // No addresses in the audit row — moderators can read the log.
+    await auditStaff(c, 'staff_email_change', 'Changed email address', { userId: targetId });
+    return c.json({ ok: true, oldAddressNotified });
+  },
+);
+
+// PATCH /admin/users/:id/date-of-birth (ADMIN ONLY). Same 13+ validator as the
+// self change; re-locks the DOB. Moving an account across 18 (or into 13–17)
+// changes its supervision, so every connected device is told immediately.
+adminRouter.patch(
+  '/users/:id/date-of-birth',
+  validate('param', userIdParam),
+  validate('json', z.object({ dateOfBirth: dateOfBirthSchema })),
+  async (c) => {
+    const targetId = BigInt(c.req.valid('param').id);
+    const { dateOfBirth } = c.req.valid('json');
+    await loadTargetUser(targetId);
+    await db
+      .update(schema.users)
+      .set({ dateOfBirth, dobLocked: true, updatedAt: new Date() })
+      .where(eq(schema.users.id, targetId));
+    const supervision = await import('../services/supervision');
+    await supervision.notifySupervisionChanged(targetId);
+    // No value in the audit row — moderators can read the log.
+    await auditStaff(c, 'staff_dob_set', 'Set date of birth', { userId: targetId });
+    return c.json({ ok: true });
+  },
+);
+
+// POST /admin/users/:id/password-reset (ADMIN ONLY). Emails the owner the
+// standard reset link and signs them out everywhere. Staff never see the link
+// or choose the password (user decision 2026-09-27).
+adminRouter.post('/users/:id/password-reset', validate('param', userIdParam), async (c) => {
+  const targetId = BigInt(c.req.valid('param').id);
+  const u = await loadTargetUser(targetId);
+  const { isEmailConfigured } = await import('../services/email');
+  if (!isEmailConfigured()) {
+    throw errors.serviceUnavailable(
+      'Email is not configured on this server, so a reset link cannot be sent.',
+    );
+  }
+  const { issuePasswordReset } = await import('../services/passwordReset');
+  await issuePasswordReset({ id: u.id, email: u.email });
+  await revokeAllUserSessions(targetId);
+  dispatch.forceDisconnectUser(targetId);
+  await auditStaff(c, 'staff_password_reset', 'Sent password reset and signed out', {
+    userId: targetId,
+  });
+  return c.json({ ok: true });
+});
+
+// POST /admin/users/:id/mute + /unmute (ADMINS AND MODERATORS). Can still sign
+// in and read; can't post, react, vote, poke or talk. Muting drops them out of
+// any call so their next voice token is the listen-only one.
+const muteBody = z.object({ duration: z.enum(['1h', '1d', '1w', 'perm']) });
+
+adminRouter.post(
+  '/users/:id/mute',
+  validate('param', userIdParam),
+  validate('json', muteBody),
+  async (c) => {
+    const selfId = requireUserId(c);
+    const targetId = BigInt(c.req.valid('param').id);
+    if (targetId === selfId) throw errors.badRequest('You cannot mute yourself');
+    await assertModCanTouch(c, targetId);
+    await loadTargetUser(targetId);
+    const { muteExpiryFor } = await import('../services/instanceMutes');
+    const { duration } = c.req.valid('json');
+    const mutedUntil = muteExpiryFor(duration);
+    await db
+      .update(schema.users)
+      .set({ mutedAt: new Date(), mutedUntil, updatedAt: new Date() })
+      .where(eq(schema.users.id, targetId));
+
+    const priorVoice = await voice.evictFromAllVoice(targetId);
+    if (priorVoice) {
+      dispatch.voiceStateUpdate({
+        guildId: priorVoice.guildId,
+        channelId: priorVoice.channelId,
+        voiceState: leftVoiceStateDTO({
+          userId: targetId,
+          guildId: priorVoice.guildId,
+          channelId: priorVoice.channelId,
+        }),
+      });
+    }
+    const label = { '1h': '1 hour', '1d': '1 day', '1w': '1 week', perm: 'permanently' }[duration];
+    await auditStaff(c, 'staff_mute', `Muted ${label}`, { userId: targetId });
+    return c.json({ ok: true, mutedUntil: mutedUntil?.toISOString() ?? null });
+  },
+);
+
+adminRouter.post('/users/:id/unmute', validate('param', userIdParam), async (c) => {
+  const targetId = BigInt(c.req.valid('param').id);
+  await assertModCanTouch(c, targetId);
+  await db
+    .update(schema.users)
+    .set({ mutedAt: null, mutedUntil: null, updatedAt: new Date() })
+    .where(and(eq(schema.users.id, targetId), isNull(schema.users.deletedAt)));
+  await auditStaff(c, 'staff_unmute', 'Unmuted account', { userId: targetId });
+  return c.json({ ok: true });
+});
+
+// Staff notes (ADMINS AND MODERATORS). A moderator can't read or write notes on
+// a staff account (same rule as ban), and may delete only their own notes.
+const noteIdParam = z.object({
+  id: z.string().regex(/^[0-9]+$/),
+  noteId: z.string().regex(/^[0-9]+$/),
+});
+const noteBody = z.object({ body: z.string().trim().min(1).max(2000) });
+
+adminRouter.get('/users/:id/notes', validate('param', userIdParam), async (c) => {
+  const targetId = BigInt(c.req.valid('param').id);
+  await assertModCanTouch(c, targetId);
+  const authors = alias(schema.users, 'note_authors');
+  const rows = await db
+    .select({
+      id: schema.staffNotes.id,
+      body: schema.staffNotes.body,
+      createdAt: schema.staffNotes.createdAt,
+      authorId: authors.id,
+      authorUsername: authors.username,
+      authorDisplayName: authors.displayName,
+    })
+    .from(schema.staffNotes)
+    .leftJoin(authors, eq(authors.id, schema.staffNotes.authorId))
+    .where(eq(schema.staffNotes.userId, targetId))
+    .orderBy(desc(schema.staffNotes.createdAt))
+    .limit(200);
+  return c.json({
+    notes: rows.map((r) => ({
+      id: r.id.toString(),
+      body: r.body,
+      createdAt: r.createdAt.toISOString(),
+      author: r.authorId
+        ? {
+            id: r.authorId.toString(),
+            username: r.authorUsername!,
+            displayName: r.authorDisplayName!,
+          }
+        : null,
+    })),
+  });
+});
+
+adminRouter.post(
+  '/users/:id/notes',
+  validate('param', userIdParam),
+  validate('json', noteBody),
+  async (c) => {
+    const authorId = requireUserId(c);
+    const targetId = BigInt(c.req.valid('param').id);
+    await assertModCanTouch(c, targetId);
+    await loadTargetUser(targetId);
+    const id = nextSnowflake();
+    const { body } = c.req.valid('json');
+    const [row] = await db
+      .insert(schema.staffNotes)
+      .values({ id, userId: targetId, authorId, body })
+      .returning();
+    // The note's text stays out of the audit row — the notes list is the
+    // record; the log only says one was added.
+    await auditStaff(c, 'staff_note', 'Added a staff note', { userId: targetId });
+    return c.json({ ok: true, note: { id: id.toString(), body, createdAt: row!.createdAt.toISOString() } });
+  },
+);
+
+adminRouter.delete('/users/:id/notes/:noteId', validate('param', noteIdParam), async (c) => {
+  const selfId = requireUserId(c);
+  const targetId = BigInt(c.req.valid('param').id);
+  const noteId = BigInt(c.req.valid('param').noteId);
+  await assertModCanTouch(c, targetId);
+  const [note] = await db
+    .select({ authorId: schema.staffNotes.authorId })
+    .from(schema.staffNotes)
+    .where(and(eq(schema.staffNotes.id, noteId), eq(schema.staffNotes.userId, targetId)))
+    .limit(1);
+  if (!note) throw errors.notFound('Note');
+  if (!staffIsAdmin(c) && note.authorId !== selfId) {
+    throw errors.forbidden('Moderators can only delete their own notes');
+  }
+  await db.delete(schema.staffNotes).where(eq(schema.staffNotes.id, noteId));
+  await auditStaff(c, 'staff_note', 'Deleted a staff note', { userId: targetId });
   return c.json({ ok: true });
 });
 

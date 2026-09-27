@@ -312,6 +312,16 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
     }
   }
 
+  // Instance mute (staff action, Admin → Account Info): the account may still
+  // JOIN and listen — a mute isn't a ban — but may not transmit anything. Applies
+  // to DM calls too, so it sits outside the guild-only block above. Muting also
+  // evicts the account from any call it is already in (admin route), so the
+  // next token it gets comes through here.
+  const { getInstanceMute } = await import('./instanceMutes');
+  if (await getInstanceMute(userId)) {
+    canPublish = false;
+  }
+
   // Parental controls: a supervised child can be barred from voice
   // entirely, or limited to audio-only (no camera / no screen share).
   // We only constrain the SFU token's publishable sources when something

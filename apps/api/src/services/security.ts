@@ -248,6 +248,15 @@ export type SecurityEventKind =
   | 'staff_observe'
   | 'staff_guild_delete'
   | 'staff_user_delete'
+  // Admin → Account Info (migration 0125 era)
+  | 'staff_mute'
+  | 'staff_unmute'
+  | 'staff_note'
+  | 'staff_username_change'
+  | 'staff_email_change'
+  | 'staff_dob_set'
+  | 'staff_password_reset'
+  | 'staff_view_contacts'
   /** A user closed their OWN account via DELETE /users/@me. */
   | 'user_self_delete'
   /**

@@ -238,6 +238,37 @@ export async function sendEmailChangeVerification(args: {
   await sendEmail({ to, subject, text, html });
 }
 
+/**
+ * Sent to the OLD address when instance staff change an account's email
+ * (Admin → Account Info). Staff act on the account holder's request — usually
+ * because they lost the old address — but a change the owner didn't ask for is
+ * exactly what an account takeover looks like, so the address being replaced
+ * always hears about it. No link to click: there is nothing to confirm, only
+ * something to report.
+ */
+export async function sendEmailChangedByStaffNotice(args: {
+  to: string;
+  newEmail: string;
+}): Promise<void> {
+  const { to, newEmail } = args;
+  const subject = 'Your Zekktris email address was changed';
+  const text = [
+    'The email address on your Zekktris account was changed by the Zekktris team.',
+    '',
+    `New address: ${newEmail}`,
+    '',
+    "If you asked for this, there's nothing else to do. If you didn't, reply to this email or contact support straight away — this address will no longer receive password resets for the account.",
+  ].join('\n');
+  const html = `
+    <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; color: #1a1a1a; line-height: 1.5;">
+      <p>The email address on your Zekktris account was changed by the Zekktris team.</p>
+      <p><strong>New address:</strong> ${escapeHtml(newEmail)}</p>
+      <p style="font-size: 14px; color: #666;">If you asked for this, there&rsquo;s nothing else to do. If you didn&rsquo;t, reply to this email or contact support straight away &mdash; this address will no longer receive password resets for the account.</p>
+    </div>
+  `;
+  await sendEmail({ to, subject, text, html });
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')

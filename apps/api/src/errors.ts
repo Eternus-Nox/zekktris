@@ -23,6 +23,7 @@ export type ErrorCode =
   | 'FORBIDDEN'
   | 'MISSING_PERMISSIONS'
   | 'TIMED_OUT'
+  | 'INSTANCE_MUTED'
   // 403 — member is still in onboarding 'pending' state and hasn't
   // acknowledged the guild's rules. Distinct from MISSING_PERMISSIONS
   // because the resolution is "go read the rules and click accept,"
@@ -66,6 +67,7 @@ const STATUS_FOR: Record<ErrorCode, number> = {
   FORBIDDEN: 403,
   MISSING_PERMISSIONS: 403,
   TIMED_OUT: 403,
+  INSTANCE_MUTED: 403,
   PENDING_ACKNOWLEDGMENT: 403,
   AUTOMOD_BLOCKED: 400,
   NOT_FOUND: 404,
@@ -136,6 +138,20 @@ export const errors = {
       'TIMED_OUT',
       'You have been timed out in this server',
       { until: until.toISOString() },
+    ),
+  /**
+   * The caller is muted INSTANCE-WIDE by staff (Admin → Account Info), as
+   * opposed to timed out in one server. `until` is null for a permanent mute.
+   * The message is written to be shown as-is — every client already surfaces
+   * a failed send's message, so no client needs to learn this code first.
+   */
+  instanceMuted: (until: Date | null) =>
+    new AppError(
+      'INSTANCE_MUTED',
+      until
+        ? `You're muted until ${until.toUTCString()} and can't post or talk.`
+        : "You're muted and can't post or talk.",
+      { until: until ? until.toISOString() : null },
     ),
   /**
    * The member is still in onboarding 'pending' state. The client

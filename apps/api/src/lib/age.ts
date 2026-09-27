@@ -1,3 +1,4 @@
+import { z } from 'zod';
 /**
  * Age helpers — shared by the signup age-gate (auth) and the minor-supervision
  * lifecycle (supervision). Age is always derived from the stored
@@ -52,3 +53,22 @@ export function adultCutoffDob(on: Date = new Date()): string {
   const d = String(on.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
 }
+
+/**
+ * A date of birth as an account may hold it: a real YYYY-MM-DD calendar date,
+ * 1900 or later, and at least MIN_SIGNUP_AGE today. Shared by the self-service
+ * change (PATCH /users/@me/date-of-birth) and the staff edit (Admin → Account
+ * Info) so a staff member can't set an age the signup gate would refuse — an
+ * under-13 account is a ban/delete decision, not a DOB edit.
+ */
+export const dateOfBirthSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Enter your date of birth.')
+  .refine((s) => {
+    const d = new Date(`${s}T00:00:00Z`);
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+  }, 'Enter a valid date of birth.')
+  .refine((s) => Number(s.slice(0, 4)) >= 1900, 'Enter a valid date of birth.')
+  .refine((s) => ageOnDate(s, new Date()) >= MIN_SIGNUP_AGE, {
+    message: `You must be at least ${MIN_SIGNUP_AGE} years old to use Zekktris.`,
+  });

@@ -1124,7 +1124,7 @@ authRouter.post('/disconnect-beacon', async (c) => {
 
 const forgotByIp = new RateLimiter(3, 60 * 60_000, 'forgot-ip');
 const forgotByEmail = new RateLimiter(3, 60 * 60_000, 'forgot-email');
-const PASSWORD_RESET_EXPIRY_MS = 60 * 60_000;
+// (Token lifetime: services/passwordReset PASSWORD_RESET_EXPIRY_MS.)
 
 const forgotPasswordSchema = z.object({ email: emailSchema });
 
@@ -1151,7 +1151,7 @@ authRouter.post(
     if (!(await forgotByIp.consume(ip)).ok) return genericOk();
     if (!(await forgotByEmail.consume(email)).ok) return genericOk();
 
-    const { isEmailConfigured, sendPasswordResetEmail } = await import('../services/email');
+    const { isEmailConfigured } = await import('../services/email');
     if (!isEmailConfigured()) {
       // Operator hasn't configured SMTP. Surface this AS A 503
       // rather than the generic "ok" — leaking config absence is
@@ -1196,34 +1196,10 @@ authRouter.post(
           return;
         }
 
-        // Generate token. randomBytes is the cryptographically-
-        // secure source; URL-safe base64 keeps the token usable
-        // as a query string parameter without further encoding.
-        const { randomBytes, createHash } = await import('node:crypto');
-        const plaintext = randomBytes(32)
-          .toString('base64')
-          .replace(/\+/g, '-')
-          .replace(/\//g, '_')
-          .replace(/=+$/, '');
-        const tokenHash = createHash('sha256').update(plaintext).digest('hex');
-
-        const expiresAt = new Date(Date.now() + PASSWORD_RESET_EXPIRY_MS);
-        await db.insert(schema.passwordResets).values({
-          id: nextSnowflake(),
-          userId: user.id,
-          tokenHash,
-          expiresAt,
-        });
-
-        // Reset URL points at the web app's /reset-password route.
-        // The token goes in the query string; the page reads it
-        // client-side and submits it to /auth/reset-password.
-        const resetUrl = `${env.PUBLIC_URL}/reset-password?token=${encodeURIComponent(plaintext)}`;
-        await sendPasswordResetEmail({
-          to: user.email,
-          resetUrl,
-          expiresInMinutes: Math.floor(PASSWORD_RESET_EXPIRY_MS / 60_000),
-        });
+        // Token + email — the same helper the staff "Send password
+        // reset" action uses, so both paths stay identical.
+        const { issuePasswordReset } = await import('../services/passwordReset');
+        await issuePasswordReset(user);
       } catch (err) {
         // SMTP / DB failures: log internally. The user already got
         // the generic ok, so we can't surface anything. If email

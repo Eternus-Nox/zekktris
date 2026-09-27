@@ -29,6 +29,7 @@ import * as messages from '../services/messages';
 import * as polls from '../services/polls';
 import * as embeds from '../services/embeds';
 import * as supervision from '../services/supervision';
+import { assertNotInstanceMuted } from '../services/instanceMutes';
 import * as stickers from '../services/stickers';
 import * as reactions from '../services/reactions';
 import * as reactionRolesSvc from '../services/reactionRoles';
@@ -307,6 +308,8 @@ messagesRouter.post(
   validate('json', pokeSchema),
   async (c) => {
     const userId = requireUserId(c);
+    // Instance mute (staff action): no poke while muted. See services/instanceMutes.
+    await assertNotInstanceMuted(userId);
     const channelId = BigInt(c.req.valid('param').channelId);
     const { pokeType } = c.req.valid('json');
 
@@ -569,6 +572,8 @@ messagesRouter.post(
   validate('param', z.object({ channelId: snowflakeSchema })),
   async (c) => {
     const userId = requireUserId(c);
+    // Instance mute (staff action): no send while muted. See services/instanceMutes.
+    await assertNotInstanceMuted(userId);
     const channelId = BigInt(c.req.valid('param').channelId);
     const ctx = await loadChannelContext(channelId, userId);
 
@@ -2001,6 +2006,8 @@ messagesRouter.patch(
   validate('json', editMessageSchema),
   async (c) => {
     const userId = requireUserId(c);
+    // Instance mute (staff action): no edit while muted. See services/instanceMutes.
+    await assertNotInstanceMuted(userId);
     const { channelId: cid, messageId: mid } = c.req.valid('param');
     const channelId = BigInt(cid);
     const messageId = BigInt(mid);
@@ -2290,6 +2297,8 @@ messagesRouter.put(
   ),
   async (c) => {
     const userId = requireUserId(c);
+    // Instance mute (staff action): no react while muted. See services/instanceMutes.
+    await assertNotInstanceMuted(userId);
     const { channelId: cid, messageId: mid, emoji } = c.req.valid('param');
     const channelId = BigInt(cid);
     const messageId = BigInt(mid);
@@ -2871,6 +2880,8 @@ messagesRouter.post(
   validate('json', createThreadSchema),
   async (c) => {
     const callerId = requireUserId(c);
+    // Instance mute (staff action): no thread while muted. See services/instanceMutes.
+    await assertNotInstanceMuted(callerId);
     const { channelId: cid, messageId: mid } = c.req.valid('param');
     const channelId = BigInt(cid);
     const messageId = BigInt(mid);
@@ -2962,6 +2973,8 @@ messagesRouter.post(
   validate('json', createForumPostSchema),
   async (c) => {
     const callerId = requireUserId(c);
+    // Instance mute (staff action): no forum post while muted. See services/instanceMutes.
+    await assertNotInstanceMuted(callerId);
     const channelId = BigInt(c.req.valid('param').channelId);
     const ctx = await loadChannelContext(channelId, callerId);
     if (ctx.isDM || ctx.channelPerms === null || !ctx.channel.guildId) {
@@ -3157,6 +3170,8 @@ messagesRouter.post(
   ),
   async (c) => {
     const userId = requireUserId(c);
+    // Instance mute (staff action): no poll vote while muted. See services/instanceMutes.
+    await assertNotInstanceMuted(userId);
     const params = c.req.valid('param');
     // Voting is participation — enforce the same onboarding/timeout/supervision
     // gates as send + react (polls.vote() only checks SEND_MESSAGES, which a
@@ -3244,6 +3259,8 @@ messagesRouter.post(
   validate('json', scheduleMessageBody),
   async (c) => {
     const userId = requireUserId(c);
+    // Instance mute (staff action): no scheduled message while muted. See services/instanceMutes.
+    await assertNotInstanceMuted(userId);
     const channelId = BigInt(c.req.valid('param').channelId);
     const body = c.req.valid('json');
 
