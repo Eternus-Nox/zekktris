@@ -504,6 +504,10 @@ struct MessageListView: View {
     /// the content (see BlankViewportRescue). Bounded so a landing that cannot
     /// converge re-pins a few times instead of looping against the layout.
     @State private var blankRescues = 0
+    /// Counts rows that have actually been DRAWN since the current landing.
+    /// A class box on purpose: bumping it from every row's onAppear must not
+    /// re-render the list, which an @State Int would.
+    @State private var renderProbe = RenderProbe()
 
     /// Reports the message list's laid-out content height, so a late growth
     /// (image load / embed render / E2EE decrypt) can re-pin us to the bottom
@@ -633,6 +637,7 @@ struct MessageListView: View {
                                     .id(message.id)
                                     .padding(.top, header ? 10 : 0)
                                     .onAppear {
+                                        renderProbe.rowsDrawn += 1
                                         // Prefetch the next older page BEFORE the user reaches
                                         // the very top, so scrollback feels instant. Fires when
                                         // a row within ~10 of the oldest loaded message appears;
@@ -1015,7 +1020,35 @@ struct MessageListView: View {
         } else {
             landing = .bottom
         }
+        renderProbe.rowsDrawn = 0
         applyLanding(proxy)
+        scheduleRenderWatchdog(proxy)
+    }
+
+    /// The "DM opens black until I swipe" case the two geometry detectors can't
+    /// see. Both of them watch the scroll POSITION, and on real phones neither
+    /// ever fired — so the position is fine. What is not fine is that the
+    /// LazyVStack never draws the rows sitting in the viewport: the offset is
+    /// valid, nothing is materialised, and it stays that way until a scroll
+    /// event makes the lazy stack re-evaluate what is visible. That is exactly
+    /// what the user's swipe does.
+    ///
+    /// So check the thing itself. If messages exist but not one row has
+    /// appeared since the landing, scroll to the last real message row: a
+    /// `scrollTo` a specific row forces SwiftUI to lay out and draw it, which is
+    /// the programmatic version of the swipe. A false positive (rows were
+    /// already drawn before the counter reset, landing moved nothing) costs a
+    /// scroll to where the list already is.
+    private func scheduleRenderWatchdog(_ proxy: ScrollViewProxy) {
+        let openedChannel = channel.id
+        for delay in [0.35, 0.9] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard landedChannelId == openedChannel,
+                      !store.messages.isEmpty,
+                      renderProbe.rowsDrawn == 0 else { return }
+                rescueBlankViewport(proxy)
+            }
+        }
     }
 
     /// Re-apply this open's chosen landing. No-op before a landing has been
@@ -5494,13 +5527,23 @@ struct PinPanelView: View {
 /// double-tap to toggle zoom, tap ✕ to close. Mirrors the web ImageLightbox.
 struct ImageLightboxView: View {
     let item: LightboxImage
-    @EnvironmentObject private var store: AppStore
+    /// A plain reference, deliberately NOT `@EnvironmentObject`.
+    ///
+    /// This is the "swipe stops halfway between two photos" bug. Observing
+    /// AppStore re-rendered this view — and so the paging TabView — on EVERY
+    /// store publish: the 3s open-channel poll, presence, typing, the voice
+    /// heal. A re-render that lands while a page swipe is in flight leaves the
+    /// pager frozen between two pages, which is why it happened at random. The
+    /// viewer only ever CALLS the store (decrypt, save); it never needs to
+    /// react to it. Same pattern as EncryptedThumb.
+    let store: AppStore
     @Environment(\.dismiss) private var dismiss
     @State private var index: Int
     @State private var savedFlash = false
 
-    init(item: LightboxImage) {
+    init(item: LightboxImage, store: AppStore) {
         self.item = item
+        self.store = store
         _index = State(initialValue: item.startIndex)
     }
 
@@ -5513,7 +5556,7 @@ struct ImageLightboxView: View {
             // across swipes.
             TabView(selection: $index) {
                 ForEach(Array(item.items.enumerated()), id: \.offset) { i, it in
-                    LightboxPage(item: it).tag(i)
+                    LightboxPage(item: it, store: store).tag(i)
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
@@ -5623,7 +5666,9 @@ struct ImageLightboxView: View {
 /// One zoom/pannable page in the lightbox.
 private struct LightboxPage: View {
     let item: LightboxItem
-    @EnvironmentObject private var store: AppStore
+    /// Not observed, for the same reason as ImageLightboxView.store: each page
+    /// re-rendering on every store publish is part of what froze a swipe.
+    let store: AppStore
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
     @State private var offset: CGSize = .zero
@@ -6788,7 +6833,7 @@ struct MediaGalleryView: View {
         // DM-settings sheet) so a tapped photo pops OVER it. The app-root
         // store.lightbox cover sits behind the sheet and wouldn't appear until
         // the sheet was closed.
-        .fullScreenCover(item: $lightbox) { ImageLightboxView(item: $0).environmentObject(store) }
+        .fullScreenCover(item: $lightbox) { ImageLightboxView(item: $0, store: store) }
     }
 
     private func loadMore() async {
@@ -7038,6 +7083,12 @@ private struct PokePopover: View {
 /// Split out as a ViewModifier purely so the availability check can wrap a
 /// single modifier: `onScrollGeometryChange` is iOS 18+, and on iOS 17 this is
 /// a no-op, leaving the `SentinelOffsetKey` preference path to drive the gate.
+/// See MessageListView.renderProbe — a reference type so that counting drawn
+/// rows never triggers a re-render of the list it is counting.
+final class RenderProbe {
+    var rowsDrawn = 0
+}
+
 /// Fires when the scroll is parked past the end of its own content by a full
 /// viewport or more — the state behind "the DM opened black". See the call
 /// site for why the two-phase `scrollTo` in applyLanding isn't enough on its

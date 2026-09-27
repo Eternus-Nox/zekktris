@@ -78,8 +78,10 @@ struct MainView: View {
                 .environmentObject(store.voice)
             }
             .fullScreenCover(item: $store.lightbox) { img in
-                ImageLightboxView(item: img)
-                    .environmentObject(store)
+                // The store is handed over as a plain reference, not injected
+                // as an environment object: the viewer must not re-render on
+                // every store change (see ImageLightboxView.store).
+                ImageLightboxView(item: img, store: store)
             }
             .fullScreenCover(item: compactRailPageBinding) { page in
                 railPageHost(page)
