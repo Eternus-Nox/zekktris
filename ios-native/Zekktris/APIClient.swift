@@ -1974,6 +1974,60 @@ extension APIClient {
     /// e.g. the server refuses when the user still owns active guilds.
     func adminDeleteUser(userId: String) async throws { try await sendVoid("DELETE", "/admin/users/\(userId)") }
 
+    // ── Admin → Account Info ──────────────────────────────────────────────────
+    // Admin-only unless noted; moderators get mute/unmute + notes (server-enforced).
+    /// [ADMIN] The full account record.
+    func adminGetAccount(userId: String) async throws -> AdminAccount {
+        let w: AdminAccountWrap = try await send("GET", "/admin/users/\(userId)")
+        return w.account
+    }
+    /// [ADMIN] Friends, requests, blocks and 1:1 DM partners. Audited server-side.
+    func adminGetAccountContacts(userId: String) async throws -> AdminAccountContacts {
+        try await send("GET", "/admin/users/\(userId)/contacts")
+    }
+    /// [ADMIN] Rename (doesn't use up the owner's own 90-day allowance).
+    func adminSetUsername(userId: String, username: String) async throws {
+        let data = try JSONSerialization.data(withJSONObject: ["username": username])
+        try await sendVoid("PATCH", "/admin/users/\(userId)/username", bodyData: data)
+    }
+    /// [ADMIN] Change email — marked verified; the old address is notified.
+    func adminSetEmail(userId: String, email: String) async throws {
+        let data = try JSONSerialization.data(withJSONObject: ["email": email])
+        try await sendVoid("PATCH", "/admin/users/\(userId)/email", bodyData: data)
+    }
+    /// [ADMIN] Set date of birth (YYYY-MM-DD, 13+). Re-locks it.
+    func adminSetDateOfBirth(userId: String, dateOfBirth: String) async throws {
+        let data = try JSONSerialization.data(withJSONObject: ["dateOfBirth": dateOfBirth])
+        try await sendVoid("PATCH", "/admin/users/\(userId)/date-of-birth", bodyData: data)
+    }
+    /// [ADMIN] Email the owner a reset link and sign them out everywhere.
+    func adminSendPasswordReset(userId: String) async throws {
+        try await sendVoid("POST", "/admin/users/\(userId)/password-reset")
+    }
+    /// [ADMIN + MOD] Mute ("1h"|"1d"|"1w"|"perm"): can read, can't post or talk.
+    func adminMuteUser(userId: String, duration: String) async throws {
+        let data = try JSONSerialization.data(withJSONObject: ["duration": duration])
+        try await sendVoid("POST", "/admin/users/\(userId)/mute", bodyData: data)
+    }
+    /// [ADMIN + MOD] Lift a mute.
+    func adminUnmuteUser(userId: String) async throws {
+        try await sendVoid("POST", "/admin/users/\(userId)/unmute")
+    }
+    /// [ADMIN + MOD] Staff notes, newest first.
+    func adminListNotes(userId: String) async throws -> [StaffNote] {
+        let w: StaffNotesWrap = try await send("GET", "/admin/users/\(userId)/notes")
+        return w.notes
+    }
+    /// [ADMIN + MOD] Add a note (1–2000 chars).
+    func adminAddNote(userId: String, body: String) async throws {
+        let data = try JSONSerialization.data(withJSONObject: ["body": body])
+        try await sendVoid("POST", "/admin/users/\(userId)/notes", bodyData: data)
+    }
+    /// [ADMIN + MOD] Delete a note — moderators only their own.
+    func adminDeleteNote(userId: String, noteId: String) async throws {
+        try await sendVoid("DELETE", "/admin/users/\(userId)/notes/\(noteId)")
+    }
+
     func adminListGuilds(q: String?) async throws -> [AdminGuild] {
         var path = "/admin/guilds?limit=100"
         if let q = q, !q.isEmpty {

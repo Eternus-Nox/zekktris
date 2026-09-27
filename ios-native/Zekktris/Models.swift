@@ -808,9 +808,18 @@ struct AdminUser: Codable, Identifiable {
     var subscriptionExpiresAt: String?
     var createdAt: String?
     var lastSeenAt: String?
+    /// Instance mute (staff action). Set = muted; mutedUntil nil = permanent.
+    var mutedAt: String?
+    var mutedUntil: String?
     var name: String { displayName ?? username }
     var isBanned: Bool { bannedAt != nil }
     var isStaff: Bool { isAdmin || isModerator }
+    /// A timed mute that has run out is not a mute (the server agrees).
+    var isMuted: Bool {
+        guard mutedAt != nil else { return false }
+        guard let until = mutedUntil, let d = AdminDates.parse(until) else { return true }
+        return d > Date()
+    }
 
     // Defensive decode: a single null username/isAdmin shouldn't blank the
     // whole admin user list.
@@ -830,9 +839,79 @@ struct AdminUser: Codable, Identifiable {
         subscriptionExpiresAt = try? c.decode(String.self, forKey: .subscriptionExpiresAt)
         createdAt = try? c.decode(String.self, forKey: .createdAt)
         lastSeenAt = try? c.decode(String.self, forKey: .lastSeenAt)
+        mutedAt = try? c.decode(String.self, forKey: .mutedAt)
+        mutedUntil = try? c.decode(String.self, forKey: .mutedUntil)
     }
 }
 struct AdminUsersWrap: Codable { let users: [AdminUser] }
+
+/// ISO-8601 with or without fractional seconds (the server's toISOString()
+/// always has them; be lenient anyway).
+enum AdminDates {
+    private static let frac: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let plain = ISO8601DateFormatter()
+    static func parse(_ s: String) -> Date? { frac.date(from: s) ?? plain.date(from: s) }
+}
+
+// MARK: Admin → Account Info
+
+/// GET /admin/users/:id — the admin-only account record.
+struct AdminAccount: Codable {
+    let id: String
+    var username: String
+    var displayName: String?
+    var email: String
+    var emailVerified: Bool
+    var avatarUrl: String?
+    var dateOfBirth: String?
+    var dobLocked: Bool
+    var isMinor: Bool
+    var isAdmin: Bool
+    var isModerator: Bool
+    var twoFactorEnabled: Bool
+    var createdAt: String
+    var lastSeenAt: String?
+    var banned: Bool
+    var bannedUntil: String?
+    var muted: Bool
+    var mutedUntil: String?
+    var subscriptionTier: String?
+    var subscriptionExpiresAt: String?
+    var activeSessions: Int
+    var guildCount: Int
+    var friendCount: Int
+}
+struct AdminAccountWrap: Codable { let account: AdminAccount }
+
+struct AdminContactPerson: Codable, Identifiable {
+    let id: String
+    let username: String
+    let displayName: String?
+    let avatarUrl: String?
+    let since: String
+    var name: String { (displayName?.isEmpty == false ? displayName : nil) ?? username }
+}
+struct AdminAccountContacts: Codable {
+    let friends: [AdminContactPerson]
+    let incomingRequests: [AdminContactPerson]
+    let outgoingRequests: [AdminContactPerson]
+    let blocked: [AdminContactPerson]
+    let dmPartners: [AdminContactPerson]
+}
+
+struct StaffNote: Codable, Identifiable {
+    struct Author: Codable { let id: String; let username: String; let displayName: String? }
+    let id: String
+    let body: String
+    let createdAt: String
+    /// Nil when the author's account is gone.
+    let author: Author?
+}
+struct StaffNotesWrap: Codable { let notes: [StaffNote] }
 
 /// One active auth session for the current user.
 /// Mirrors the `toSession` DTO from apps/api (GET /users/@me/sessions).

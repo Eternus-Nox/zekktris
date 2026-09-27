@@ -4422,7 +4422,9 @@ final class AppStore: ObservableObject {
             errorText = "Couldn't load users: \((error as? APIError)?.message ?? error.localizedDescription)"
         }
     }
-    private func patchAdminUser(_ id: String, _ mutate: (inout AdminUser) -> Void) {
+    /// Patch one row of the admin user list in place. Internal (not private) so
+    /// the Account Info page can keep the list in step with what it just did.
+    func patchAdminUser(_ id: String, _ mutate: (inout AdminUser) -> Void) {
         if let i = adminUsers.firstIndex(where: { $0.id == id }) { mutate(&adminUsers[i]) }
     }
     /// Ban for a duration ("1m"|"3m"|"6m"|"perm"). Covers text + voice.

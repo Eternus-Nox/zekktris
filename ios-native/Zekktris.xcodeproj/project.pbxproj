@@ -50,6 +50,7 @@
 		7CB5E4F1F42689F7C8B06632 /* WidgetIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FC6CCA0DA58A6D7980AB2C0 /* WidgetIntents.swift */; };
 		7E61F4760F02EEED05DAE94C /* AppGroupConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 434FBD6DE9C340459E70525C /* AppGroupConfig.swift */; };
 		7F9D6188AAB68B34EACE5861 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42797CA878D26DB332BEF804 /* Config.swift */; };
+		7FFE9C1022362E63D1008651 /* AdminAccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDB00B7B04C2A44DA18AA67B /* AdminAccountView.swift */; };
 		8441C5402E701E7FD9C315A9 /* JetBrainsMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 06D6D8F74FFD0D41F2A07C57 /* JetBrainsMono-Regular.ttf */; };
 		858ABCCC32EE73463A04909D /* NotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 9F04BA5F3CFE3113F86B1600 /* NotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		8CA4C9BE5E60A7819733AEAC /* WatchWidgetBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB1DABCBB91052FA798E7BFE /* WatchWidgetBridge.swift */; };
@@ -301,6 +302,7 @@
 		F7CF64E610D3120A721D2BCB /* ShareExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ShareExtension.entitlements; sourceTree = "<group>"; };
 		F8BBAD9D14CEB87EDC845C3A /* Zekktris.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Zekktris.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F95659B3908C06735E72CF67 /* SiriMatching.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SiriMatching.swift; sourceTree = "<group>"; };
+		FDB00B7B04C2A44DA18AA67B /* AdminAccountView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdminAccountView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -380,6 +382,7 @@
 		429C77DDB5D4A1CEE2773387 /* Zekktris */ = {
 			isa = PBXGroup;
 			children = (
+				FDB00B7B04C2A44DA18AA67B /* AdminAccountView.swift */,
 				D9F3789F4ADB83F7BDF66983 /* APIClient.swift */,
 				434FBD6DE9C340459E70525C /* AppGroupConfig.swift */,
 				B4B0548FCFD7075D00943D03 /* AppStore.swift */,
@@ -830,6 +833,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E4AB58F4FB01793924E57D89 /* APIClient.swift in Sources */,
+				7FFE9C1022362E63D1008651 /* AdminAccountView.swift in Sources */,
 				DFCE95102F87E5BA0DFF397C /* AppGroupConfig.swift in Sources */,
 				C11C9FD38A8F9B33DF12D3B2 /* AppStore.swift in Sources */,
 				8FB40EE668DAB651B1A36DC6 /* AuthViews.swift in Sources */,

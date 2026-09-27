@@ -4869,69 +4869,6 @@ private struct DiscoverRow: View {
 /// Counts, identity and friend status only — never message content. Most of
 /// these conversations are E2EE, so the server could not surface content even if
 /// this view asked for it. The read is audit-logged server-side (staff_dm_peers).
-private struct AdminDmPeersView: View {
-    @EnvironmentObject private var store: AppStore
-    @Environment(\.dismiss) private var dismiss
-    let user: AdminUser
-    @State private var peers: [AdminDmPeer] = []
-    @State private var capped = false
-    @State private var loading = true
-    @State private var error: String?
-
-    var body: some View {
-        NavigationStack {
-            Group {
-                if loading {
-                    ProgressView().tint(Theme.accent).frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let error {
-                    Text(error).font(.zkSans(13)).foregroundColor(Theme.ink3).padding()
-                } else if peers.isEmpty {
-                    Text("No direct-message conversations.")
-                        .font(.zkSans(13)).foregroundColor(Theme.ink3).padding()
-                } else {
-                    List {
-                        ForEach(peers) { p in
-                            HStack(spacing: 10) {
-                                Image(systemName: p.isFriend ? "person.fill.checkmark" : "person.fill.xmark")
-                                    .font(.system(size: 13))
-                                    .foregroundColor(p.isFriend ? Theme.online : Theme.ink4)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(p.user.displayName ?? p.user.username ?? "Unknown").font(.zkSans(14)).foregroundColor(Theme.ink1)
-                                    Text("@" + (p.user.username ?? "")).font(.zkSans(11)).foregroundColor(Theme.ink4)
-                                }
-                                Spacer(minLength: 8)
-                                Text("\(p.messageCount)")
-                                    .font(.zkMono(12)).foregroundColor(Theme.ink3)
-                            }
-                            .listRowBackground(Theme.bg2)
-                        }
-                        if capped {
-                            Text("Showing the most recent conversations only.")
-                                .font(.zkSans(11)).foregroundColor(Theme.ink4)
-                                .listRowBackground(Theme.bg2)
-                        }
-                    }
-                    .scrollContentBackground(.hidden)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Theme.bg1)
-            .navigationTitle("Contacts — \(user.username)")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
-        }
-        .task {
-            do {
-                let w = try await store.api.adminUserDmPeers(userId: user.id)
-                peers = w.peers; capped = w.capped
-            } catch {
-                self.error = "Couldn't load contacts."
-            }
-            loading = false
-        }
-    }
-}
-
 struct AdminView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var session: Session
@@ -4943,10 +4880,9 @@ struct AdminView: View {
     @State private var showStorageItems = false
     @State private var deletingGuild: AdminGuild?
     @State private var observingGuild: AdminGuild?
-    @State private var deleteCandidate: AdminUser?
-    /// Subject of the ADMIN-ONLY "Contacts" sheet (who they DM, friend status,
-    /// message counts). nil = closed.
-    @State private var dmPeersFor: AdminUser?
+    /// The account whose Account Info page is open (AdminAccountView). Every
+    /// action on an account lives there; this list is only for finding one.
+    @State private var accountFor: AdminUser?
     // Operational metrics + voice diagnostic (Overview tab).
     @State private var metrics: InstanceMetrics?
     @State private var voiceDiag: LivekitDiagnostic?
@@ -5022,7 +4958,7 @@ struct AdminView: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { PageBackButton() } }
             .sheet(isPresented: $showStorageItems) { StorageItemsView() }
             .sheet(item: $observingGuild) { g in AdminObserveView(guild: g) }
-            .sheet(item: $dmPeersFor) { u in AdminDmPeersView(user: u) }
+            .sheet(item: $accountFor) { u in AdminAccountView(userId: u.id) }
             .task { await store.loadAdminStats() }
         }
     }
@@ -5376,132 +5312,35 @@ struct AdminView: View {
             }
         }
         .task { if store.adminUsers.isEmpty { await store.loadAdminUsers(q: "", bannedOnly: false) } }
-        .confirmationDialog(
-            "Delete account?",
-            isPresented: Binding(
-                get: { deleteCandidate != nil },
-                set: { if !$0 { deleteCandidate = nil } }
-            ),
-            titleVisibility: .visible,
-            presenting: deleteCandidate
-        ) { u in
-            Button("Delete @\(u.username)", role: .destructive) {
-                Task { await store.adminDeleteUser(u) }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: { u in
-            Text("Permanently deletes @\(u.username)'s account and data. This can't be undone.")
-        }
     }
 
     private func userRow(_ u: AdminUser) -> some View {
-        HStack(spacing: 10) {
-            Avatar(url: u.avatarUrl, name: u.name, size: 36, ringColor: Theme.bg1)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
-                    Text(u.name).font(.zkSans(15, weight: .medium)).foregroundColor(Theme.ink1).lineLimit(1)
-                    if u.isAdmin { badge("ADMINISTRATOR", Theme.accent) }
-                    // sky-400 — matches the web panel's moderator badge.
-                    if u.isModerator { badge("MODERATOR", Color(hex: 0x38BDF8)) }
-                    if u.isBanned { badge(u.bannedUntil != nil ? "BANNED · TIMED" : "BANNED", Theme.danger) }
-                    if let tier = u.subscriptionTier, let m = TierBadge.meta(tier) {
-                        badge(m.label.uppercased(), m.color)
+        Button { accountFor = u } label: {
+            HStack(spacing: 10) {
+                Avatar(url: u.avatarUrl, name: u.name, size: 36, ringColor: Theme.bg1)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 6) {
+                        Text(u.name).font(.zkSans(15, weight: .medium)).foregroundColor(Theme.ink1).lineLimit(1)
+                        if u.isAdmin { badge("ADMINISTRATOR", Theme.accent) }
+                        // sky-400 — matches the web panel's moderator badge.
+                        if u.isModerator { badge("MODERATOR", Color(hex: 0x38BDF8)) }
+                        if u.isBanned { badge(u.bannedUntil != nil ? "BANNED · TIMED" : "BANNED", Theme.danger) }
+                        if u.isMuted { badge("MUTED", Color(hex: 0xF59E0B)) }
+                        if let tier = u.subscriptionTier, let m = TierBadge.meta(tier) {
+                            badge(m.label.uppercased(), m.color)
+                        }
                     }
+                    // Moderators get no email (server sends null) — just the handle.
+                    Text(u.email.map { "@\(u.username) · \($0)" } ?? "@\(u.username)")
+                        .font(.zkSans(12)).foregroundColor(Theme.ink3).lineLimit(1)
                 }
-                Text("@\(u.username)").font(.zkSans(12)).foregroundColor(Theme.ink3).lineLimit(1)
+                Spacer()
+                Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundColor(Theme.ink3)
             }
-            Spacer()
-            Menu {
-                // Moderators can't ban/unban/sign-out other staff, delete
-                // accounts, or hand out roles (all server-enforced too).
-                if selfIsAdmin || !u.isStaff {
-                    if u.isBanned {
-                        Button { Task { await store.adminUnban(u) } } label: { Label("Unban", systemImage: "checkmark.circle") }
-                    } else {
-                        // Ban with a duration (covers text + voice).
-                        Menu {
-                            Button { Task { await store.adminBan(u, duration: "1m") } } label: { Text("1 month") }
-                            Button { Task { await store.adminBan(u, duration: "3m") } } label: { Text("3 months") }
-                            Button { Task { await store.adminBan(u, duration: "6m") } } label: { Text("6 months") }
-                            Button(role: .destructive) { Task { await store.adminBan(u, duration: "perm") } } label: { Text("Permanent") }
-                        } label: {
-                            Label("Ban", systemImage: "nosign")
-                        }
-                    }
-                    // ADMIN ONLY, deliberately not offered to moderators: seeing
-                    // who someone privately messages is well outside a
-                    // moderator's chartered scope. The server enforces this too —
-                    // the admin router's moderator allowlist is fail-safe and
-                    // this route is absent from it — so a mod who reached the
-                    // endpoint anyway would get a 403.
-                    if session.currentUser?.isAdmin == true {
-                        Button { dmPeersFor = u } label: {
-                            Label("Contacts", systemImage: "person.2")
-                        }
-                    }
-                    Button { Task { await store.adminLogout(u) } } label: {
-                        Label("Force Logout", systemImage: "rectangle.portrait.and.arrow.right")
-                    }
-                }
-                // DOB reset — allowed on non-staff (or by an admin on anyone).
-                // Membership gift/reset is ADMIN-ONLY: monetization is out of
-                // moderator scope, and the server rejects gifts/resets from
-                // moderators via the admin-router allowlist.
-                if selfIsAdmin || !u.isStaff {
-                    if selfIsAdmin {
-                        Menu {
-                            ForEach([("scout", "Scout"), ("guardian", "Guardian"), ("legend", "Legend")], id: \.0) { tier in
-                                Menu {
-                                    Button { Task { await store.adminGift(u, tier: tier.0, duration: "1m") } } label: { Text("1 month") }
-                                    Button { Task { await store.adminGift(u, tier: tier.0, duration: "3m") } } label: { Text("3 months") }
-                                    Button { Task { await store.adminGift(u, tier: tier.0, duration: "6m") } } label: { Text("6 months") }
-                                    Button { Task { await store.adminGift(u, tier: tier.0, duration: "forever") } } label: { Text("Forever") }
-                                } label: {
-                                    Text(tier.1)
-                                }
-                            }
-                            if u.subscriptionTier != nil {
-                                Button(role: .destructive) { Task { await store.adminRemoveMembership(u) } } label: {
-                                    Label("Reset membership", systemImage: "xmark.circle")
-                                }
-                            }
-                        } label: {
-                            Label("Membership", systemImage: "star")
-                        }
-                    }
-                    Button { Task { await store.adminResetDob(u) } } label: {
-                        Label("Reset DOB", systemImage: "calendar.badge.clock")
-                    }
-                }
-                if selfIsAdmin {
-                    Menu {
-                        if !u.isAdmin {
-                            Button { Task { await store.adminSetRole(u, role: "administrator") } } label: {
-                                Label("Administrator", systemImage: "shield.fill")
-                            }
-                        }
-                        if !u.isModerator {
-                            Button { Task { await store.adminSetRole(u, role: "moderator") } } label: {
-                                Label("Moderator", systemImage: "shield.lefthalf.filled")
-                            }
-                        }
-                        if u.isStaff {
-                            Button(role: .destructive) { Task { await store.adminSetRole(u, role: "none") } } label: {
-                                Label("Remove Role", systemImage: "shield.slash")
-                            }
-                        }
-                    } label: {
-                        Label("Role", systemImage: "shield")
-                    }
-                    Button(role: .destructive) { deleteCandidate = u } label: {
-                        Label("Delete Account", systemImage: "trash")
-                    }
-                }
-            } label: {
-                Image(systemName: "ellipsis").font(.system(size: 16)).foregroundColor(Theme.ink3).frame(width: 32, height: 32)
-            }
+            .padding(.horizontal, 16).padding(.vertical, 9)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 16).padding(.vertical, 9)
+        .buttonStyle(.plain)
     }
 
     private func badge(_ t: String, _ c: Color) -> some View {
