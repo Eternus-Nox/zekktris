@@ -49,11 +49,11 @@ import {
   type StorageListing,
   type StorageCategory,
   type AdminUser,
-  type AdminDmPeersResponse,
 } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { AdminSecurityTab } from './AdminSecurityTab';
 import { AdminVoiceLiveTab } from './AdminVoiceLiveTab';
+import { AdminAccountPage } from './AdminAccountPage';
 import { AdminTabHeader, StatCard, fmtUptime } from './AdminUI';
 import { useToasts } from '../state/Toasts';
 import type { HostBackupStatus } from '@zekktris/client';
@@ -61,7 +61,7 @@ import { AvatarImage } from '../lib/AvatarImage';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { TierBadge } from '../lib/TierBadge';
 import { ExpiredBadge, ExpiredMediaCard, EXPIRED_TITLE } from '../lib/mediaRetention';
-import { Hash, Lock, Search as SearchIcon, Shield, Volume2, X as CloseIcon, Users, UserPlus, UserMinus, Archive, BarChart, ChevronLeft, Eye, Trash, Calendar, Bookmark, LogOut, Plus, RefreshCw, Ban, CheckCircle } from '../lib/icons';
+import { Hash, Lock, Search as SearchIcon, Shield, Volume2, X as CloseIcon, Users, Archive, BarChart, ChevronLeft, ChevronRight, Eye, Trash } from '../lib/icons';
 
 type Tab =
   | 'overview'
@@ -538,50 +538,12 @@ function UsersTab() {
   const { rest, user: self } = useAuth();
   const toasts = useToasts();
   const [users, setUsers] = useState<AdminUser[] | null>(null);
-  // DM correspondents, lazily fetched per user and cached. ADMIN ONLY — the
-  // button that populates this is gated on selfIsAdmin, and the endpoint is
-  // admin-only server-side too (the moderator allowlist is fail-safe and this
-  // route is deliberately not on it). Never carries message content.
-  const [dmPeers, setDmPeers] = useState<Record<string, AdminDmPeersResponse | 'loading' | undefined>>({});
-  async function toggleDmPeers(u: AdminUser) {
-    if (dmPeers[u.id]) {
-      setDmPeers((m) => ({ ...m, [u.id]: undefined }));
-      return;
-    }
-    setDmPeers((m) => ({ ...m, [u.id]: 'loading' }));
-    try {
-      const r = await rest.adminUserDmPeers(u.id);
-      setDmPeers((m) => ({ ...m, [u.id]: r }));
-    } catch {
-      setDmPeers((m) => ({ ...m, [u.id]: undefined }));
-    }
-  }
   const [q, setQ] = useState('');
   const [bannedOnly, setBannedOnly] = useState(false);
-  const [pending, setPending] = useState<string | null>(null); // userId currently mutating
-  // Inline row panels (membership / role / DOB): at most one open at a time,
-  // keyed by userId. Opening one closes the others.
-  const [giftFor, setGiftFor] = useState<string | null>(null);
-  const [roleFor, setRoleFor] = useState<string | null>(null);
-  const [dobFor, setDobFor] = useState<string | null>(null);
-  const [banFor, setBanFor] = useState<string | null>(null);
-  const [giftTier, setGiftTier] = useState<'scout' | 'guardian' | 'legend'>('scout');
-  // Default duration must be one the caller can actually pick — moderators
-  // don't get the 6m/forever options.
-  const [giftDuration, setGiftDuration] = useState<'1m' | '3m' | '6m' | 'forever'>(
-    self?.isAdmin ? 'forever' : '3m',
-  );
-  // Moderators get the restricted view: no role/delete, gifting capped at 3
-  // months, no membership reset. The API enforces all of this server-side;
-  // the UI just doesn't show what a moderator can't do.
+  // The account whose page is open. Everything you can DO to an account lives
+  // on that page (AdminAccountPage); this list is only for finding one.
+  const [openId, setOpenId] = useState<string | null>(null);
   const selfIsAdmin = self?.isAdmin === true;
-
-  function openPanel(which: 'gift' | 'role' | 'dob' | 'ban', userId: string) {
-    setGiftFor(which === 'gift' ? (giftFor === userId ? null : userId) : null);
-    setRoleFor(which === 'role' ? (roleFor === userId ? null : userId) : null);
-    setDobFor(which === 'dob' ? (dobFor === userId ? null : userId) : null);
-    setBanFor(which === 'ban' ? (banFor === userId ? null : userId) : null);
-  }
 
   // Debounce the search input — 250ms is long enough that quick typists
   // don't fire one request per keystroke, short enough that the user
@@ -607,182 +569,32 @@ function UsersTab() {
     };
   }, [rest, trimmed, bannedOnly, toasts]);
 
-  async function unbanUser(u: AdminUser) {
-    setPending(u.id);
-    try {
-      await rest.adminUnbanUser(u.id);
-      toasts.push(`Unbanned ${u.username}`, 'success');
-      setUsers((prev) =>
-        prev?.map((x) => (x.id === u.id ? { ...x, bannedAt: null, bannedUntil: null } : x)) ?? null,
-      );
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Action failed', 'error');
-    } finally {
-      setPending(null);
-    }
+  const open = openId ? (users?.find((u) => u.id === openId) ?? null) : null;
+  if (open) {
+    return (
+      <AdminAccountPage
+        user={open}
+        onBack={() => setOpenId(null)}
+        onChanged={(patch) =>
+          setUsers((prev) => prev?.map((x) => (x.id === open.id ? { ...x, ...patch } : x)) ?? null)
+        }
+        onDeleted={() => {
+          setUsers((prev) => prev?.filter((x) => x.id !== open.id) ?? null);
+          setOpenId(null);
+        }}
+      />
+    );
   }
 
-  const BAN_DURATIONS: { value: '1m' | '3m' | '6m' | 'perm'; label: string }[] = [
-    { value: '1m', label: '1 month' },
-    { value: '3m', label: '3 months' },
-    { value: '6m', label: '6 months' },
-    { value: 'perm', label: 'Permanent' },
-  ];
-
-  async function banUser(u: AdminUser, duration: '1m' | '3m' | '6m' | 'perm') {
-    setPending(u.id);
-    try {
-      await rest.adminBanUser(u.id, duration);
-      const months = duration === '1m' ? 1 : duration === '3m' ? 3 : duration === '6m' ? 6 : 0;
-      const until =
-        months > 0 ? new Date(Date.now() + months * 30 * 86_400_000).toISOString() : null;
-      toasts.push(
-        duration === 'perm'
-          ? `Banned ${u.username} permanently`
-          : `Banned ${u.username} for ${BAN_DURATIONS.find((d) => d.value === duration)?.label}`,
-        'success',
-      );
-      setUsers((prev) =>
-        prev?.map((x) =>
-          x.id === u.id ? { ...x, bannedAt: new Date().toISOString(), bannedUntil: until } : x,
-        ) ?? null,
-      );
-      setBanFor(null);
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Action failed', 'error');
-    } finally {
-      setPending(null);
-    }
-  }
-
-  async function setRole(u: AdminUser, role: 'administrator' | 'moderator' | 'none') {
-    setPending(u.id);
-    try {
-      await rest.adminSetUserRole(u.id, role);
-      toasts.push(
-        role === 'none'
-          ? `${u.username} no longer has an instance role`
-          : `${u.username} is now ${role === 'administrator' ? 'an administrator' : 'a moderator'}`,
-        'success',
-      );
-      setUsers((prev) =>
-        prev?.map((x) =>
-          x.id === u.id
-            ? { ...x, isAdmin: role === 'administrator', isModerator: role === 'moderator' }
-            : x,
-        ) ?? null,
-      );
-      setRoleFor(null);
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Action failed', 'error');
-    } finally {
-      setPending(null);
-    }
-  }
-
-  /**
-   * Force-logout: revoke all sessions for this user and close their
-   * live WebSockets. Distinct from ban — the account is still active,
-   * the user just has to sign back in. Useful for phish recovery
-   * ("this user clicked a phishing link, sign them out everywhere")
-   * or stale-device cleanup ("they replaced their phone, the old one
-   * still has an active session").
-   */
-  async function forceLogout(u: AdminUser) {
-    setPending(u.id);
-    try {
-      await rest.adminLogoutUser(u.id);
-      toasts.push(`Signed out ${u.username} from all devices`, 'success');
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Sign-out failed', 'error');
-    } finally {
-      setPending(null);
-    }
-  }
-
-  async function resetDob(u: AdminUser) {
-    setPending(u.id);
-    try {
-      await rest.adminResetDobLock(u.id);
-      toasts.push(`${u.username} can change their date of birth once more`, 'success');
-      setDobFor(null);
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Reset failed', 'error');
-    } finally {
-      setPending(null);
-    }
-  }
-
-  async function giftMembership(u: AdminUser) {
-    setPending(u.id);
-    try {
-      const r = await rest.adminGiftSubscription(u.id, giftTier, giftDuration);
-      toasts.push(
-        `Gifted ${u.username} ${giftTier} ${giftDuration === 'forever' ? 'forever' : `for ${giftDuration.replace('m', ' month(s)')}`}`,
-        'success',
-      );
-      setUsers((prev) =>
-        prev?.map((x) =>
-          x.id === u.id
-            ? {
-                ...x,
-                subscriptionTier: r.subscription.tier as AdminUser['subscriptionTier'],
-                subscriptionExpiresAt: r.subscription.expiresAt,
-              }
-            : x,
-        ) ?? null,
-      );
-      setGiftFor(null);
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Gift failed', 'error');
-    } finally {
-      setPending(null);
-    }
-  }
-
-  async function resetMembership(u: AdminUser) {
-    setPending(u.id);
-    try {
-      await rest.adminRemoveSubscription(u.id);
-      toasts.push(`Removed ${u.username}'s membership`, 'success');
-      setUsers((prev) =>
-        prev?.map((x) =>
-          x.id === u.id ? { ...x, subscriptionTier: null, subscriptionExpiresAt: null } : x,
-        ) ?? null,
-      );
-      setGiftFor(null);
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Remove failed', 'error');
-    } finally {
-      setPending(null);
-    }
-  }
-
-  async function removeUser(u: AdminUser) {
-    if (
-      !window.confirm(
-        `Permanently delete @${u.username}? This removes their account and data and cannot be undone.`,
-      )
-    )
-      return;
-    setPending(u.id);
-    try {
-      await rest.adminDeleteUser(u.id);
-      toasts.push(`Deleted ${u.username}`, 'success');
-      setUsers((prev) => prev?.filter((x) => x.id !== u.id) ?? null);
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Delete failed', 'error');
-    } finally {
-      setPending(null);
-    }
-  }
+  const isActive = (at?: string | null, until?: string | null) =>
+    !!at && (!until || new Date(until).getTime() > Date.now());
 
   return (
     <div className="space-y-3 max-w-5xl">
       <AdminTabHeader
         icon={Users}
         title="Users"
-        subtitle="Search accounts, review bans, and manage sessions."
+        subtitle="Find an account, then open it to see its details and take action."
       />
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[200px]">
@@ -791,7 +603,11 @@ function UsersTab() {
             type="text"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search by username, display name, or email"
+            placeholder={
+              selfIsAdmin
+                ? 'Search by username, display name, or email'
+                : 'Search by username or display name'
+            }
             className="w-full bg-bg-2 border border-line rounded-md pl-8 pr-3 py-1.5 text-sm text-ink-1 placeholder:text-ink-3 focus:outline-none focus:border-accent"
           />
         </div>
@@ -813,329 +629,61 @@ function UsersTab() {
       ) : (
         <ul className="space-y-1">
           {users.map((u) => {
-            const isSelf = self?.id === u.id;
             const tone = avatarColor(u.id);
             const initials = avatarInitials(u.displayName ?? u.username);
             return (
-              <li
-                key={u.id}
-                className="flex flex-wrap items-center gap-x-3 gap-y-2.5 px-3 py-3.5 rounded-md bg-bg-2 border border-line"
-              >
-                <div className={`relative w-10 h-10 rounded-full flex items-center justify-center text-xs font-bold shrink-0 overflow-hidden ${tone}`}>
-                  <span className="zk-avatar-initials">{initials}</span>
-                  <AvatarImage src={u.avatarUrl} />
-                </div>
-                <div className="min-w-0 grow basis-48">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-sm font-medium text-ink-1 truncate max-w-full">
-                      {u.displayName ?? u.username}
-                    </span>
-                    {u.isAdmin && (
-                      <span className="relative top-px text-[0.6rem] uppercase font-bold tracking-wider bg-accent/20 text-accent px-1 py-0.5 rounded">
-                        administrator
-                      </span>
-                    )}
-                    {u.isModerator && (
-                      <span className="relative top-px text-[0.6rem] uppercase font-bold tracking-wider bg-sky-500/20 text-sky-400 px-1 py-0.5 rounded">
-                        moderator
-                      </span>
-                    )}
-                    {u.bannedAt && (
-                      <span className="text-[0.6rem] uppercase font-bold tracking-wider bg-red-500/20 text-red-400 px-1 py-0.5 rounded">
-                        {u.bannedUntil
-                          ? `banned · until ${new Date(u.bannedUntil).toLocaleDateString()}`
-                          : 'banned'}
-                      </span>
-                    )}
-                    <TierBadge tier={u.subscriptionTier} />
-                    {u.subscriptionTier && (
-                      <span className="text-[0.6rem] text-ink-3">
-                        {u.subscriptionExpiresAt
-                          ? `until ${new Date(u.subscriptionExpiresAt).toLocaleDateString()}`
-                          : 'forever'}
-                      </span>
-                    )}
+              <li key={u.id}>
+                <button
+                  onClick={() => setOpenId(u.id)}
+                  className="w-full text-left flex items-center gap-3 px-3 py-3 rounded-md bg-bg-2 border border-line hover:border-accent/50 hover:bg-bg-3 transition-colors"
+                >
+                  <div className={`relative w-10 h-10 rounded-full flex items-center justify-center text-xs font-bold shrink-0 overflow-hidden ${tone}`}>
+                    <span className="zk-avatar-initials">{initials}</span>
+                    <AvatarImage src={u.avatarUrl} />
                   </div>
-                  <div className="text-xs text-ink-3 truncate">
-                    @{u.username} · {u.email}
-                  </div>
-                  <div
-                    className="text-xs text-ink-3 mt-0.5"
-                    title={u.lastSeenAt ? new Date(u.lastSeenAt).toLocaleString() : 'No recorded activity'}
-                  >
-                    {u.lastSeenAt ? `Last online ${relativeTime(u.lastSeenAt)}` : 'Never online'}
-                  </div>
-                </div>
-                {!isSelf && (
-                  <div className="flex flex-wrap items-center justify-end gap-1.5 min-w-0 ml-auto">
-                    {/* Button order (operator spec): Role · DOB · Membership ·
-                        Sign out · Ban · Delete. Role, Membership (gifting) +
-                        Delete are admin-only; moderators also can't ban/
-                        sign-out other staff. */}
-                    {selfIsAdmin && (
-                      <button
-                        onClick={() => openPanel('role', u.id)}
-                        disabled={pending === u.id}
-                        className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
-                        title="Set this user's instance role"
-                      >
-                        <Shield size={13} className="shrink-0" /><span className="hidden sm:inline">Role</span>
-                      </button>
-                    )}
-                    <button
-                      onClick={() => openPanel('dob', u.id)}
-                      disabled={pending === u.id}
-                      className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
-                      title="View this user's date of birth"
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-sm font-medium text-ink-1 truncate max-w-full">
+                        {u.displayName ?? u.username}
+                      </span>
+                      {self?.id === u.id && <span className="text-xs text-ink-3 italic">you</span>}
+                      {u.isAdmin && (
+                        <span className="relative top-px text-[0.6rem] uppercase font-bold tracking-wider bg-accent/20 text-accent px-1 py-0.5 rounded">
+                          administrator
+                        </span>
+                      )}
+                      {u.isModerator && (
+                        <span className="relative top-px text-[0.6rem] uppercase font-bold tracking-wider bg-sky-500/20 text-sky-400 px-1 py-0.5 rounded">
+                          moderator
+                        </span>
+                      )}
+                      {u.bannedAt && (
+                        <span className="text-[0.6rem] uppercase font-bold tracking-wider bg-red-500/20 text-red-400 px-1 py-0.5 rounded">
+                          {u.bannedUntil
+                            ? `banned · until ${new Date(u.bannedUntil).toLocaleDateString()}`
+                            : 'banned'}
+                        </span>
+                      )}
+                      {isActive(u.mutedAt, u.mutedUntil) && (
+                        <span className="text-[0.6rem] uppercase font-bold tracking-wider bg-amber-500/20 text-amber-400 px-1 py-0.5 rounded">
+                          muted
+                        </span>
+                      )}
+                      <TierBadge tier={u.subscriptionTier} />
+                    </div>
+                    <div className="text-xs text-ink-3 truncate">
+                      @{u.username}
+                      {u.email ? ` · ${u.email}` : ''}
+                    </div>
+                    <div
+                      className="text-xs text-ink-3 mt-0.5"
+                      title={u.lastSeenAt ? new Date(u.lastSeenAt).toLocaleString() : 'No recorded activity'}
                     >
-                      <Calendar size={13} className="shrink-0" /><span className="hidden sm:inline">DOB</span>
-                    </button>
-                    {selfIsAdmin && (
-                      <button
-                        onClick={() => openPanel('gift', u.id)}
-                        disabled={pending === u.id}
-                        className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
-                        title="Gift or reset this user's supporter membership"
-                      >
-                        <Bookmark size={13} className="shrink-0" /><span className="hidden sm:inline">Membership</span>
-                      </button>
-                    )}
-                    {/* Sign-out button — only shown when the user isn't
-                        already banned, since banning revokes sessions
-                        implicitly and a redundant "sign out a banned
-                        user" button is just noise. Moderators can't act
-                        on staff accounts (server rejects it too). */}
-                    {selfIsAdmin && (
-                      <button
-                        onClick={() => toggleDmPeers(u)}
-                        className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 transition-colors inline-flex items-center gap-1.5"
-                        title="Who this user exchanges direct messages with. Counts and friend status only — never message content."
-                      >
-                        <Users size={13} className="shrink-0" /><span className="hidden sm:inline">{dmPeers[u.id] ? 'Hide contacts' : 'Contacts'}</span>
-                      </button>
-                    )}
-                    {!u.bannedAt && (selfIsAdmin || (!u.isAdmin && !u.isModerator)) && (
-                      <button
-                        onClick={() => forceLogout(u)}
-                        disabled={pending === u.id}
-                        className="text-xs px-2.5 py-1.5 rounded bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
-                        title="Force sign-out from all devices (account stays active)"
-                      >
-                        <LogOut size={13} className="shrink-0" /><span className="hidden sm:inline">Sign out</span>
-                      </button>
-                    )}
-                    {(selfIsAdmin || (!u.isAdmin && !u.isModerator)) && (
-                      <button
-                        onClick={() => (u.bannedAt ? unbanUser(u) : openPanel('ban', u.id))}
-                        disabled={pending === u.id}
-                        className={`text-xs px-2.5 py-1.5 rounded disabled:opacity-50 transition-colors ${
-                          u.bannedAt
-                            ? 'bg-bg-3 hover:bg-bg-1 text-ink-2 hover:text-ink-1'
-                            : 'bg-red-500/10 hover:bg-red-500/20 text-red-400'
-                        } inline-flex items-center gap-1.5`}
-                        title={u.bannedAt ? 'Unban' : 'Ban (choose duration)'}
-                      >
-                        {u.bannedAt ? <CheckCircle size={13} className="shrink-0" /> : <Ban size={13} className="shrink-0" />}
-                        <span className="hidden sm:inline">{u.bannedAt ? 'Unban' : 'Ban'}</span>
-                      </button>
-                    )}
-                    {selfIsAdmin && (
-                      <button
-                        onClick={() => removeUser(u)}
-                        disabled={pending === u.id}
-                        className="text-xs px-2.5 py-1.5 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 disabled:opacity-50 transition-colors"
-                        title="Permanently delete this account"
-                      >
-                        <Trash size={13} className="shrink-0" /><span className="hidden sm:inline">Delete</span>
-                      </button>
-                    )}
+                      {u.lastSeenAt ? `Last online ${relativeTime(u.lastSeenAt)}` : 'Never online'}
+                    </div>
                   </div>
-                )}
-                {isSelf && (
-                  <span className="text-xs text-ink-3 italic shrink-0 ml-auto">you</span>
-                )}
-                {/* Inline membership panel — gift a tier for a duration, or
-                    reset (remove + clear paid cosmetics). basis-full drops it
-                    onto its own row inside the flex-wrap li. Admin-only: the
-                    Membership button above is gated on selfIsAdmin and the
-                    server rejects gifts/resets from moderators. */}
-                {giftFor === u.id && (
-                  <div className="basis-full flex flex-wrap items-center gap-1.5 pt-2 border-t border-line mt-1">
-                    <select
-                      value={giftTier}
-                      onChange={(e) => setGiftTier(e.target.value as typeof giftTier)}
-                      className="text-xs bg-bg-3 border border-line rounded px-1.5 py-1 text-ink-1"
-                      aria-label="Membership tier"
-                    >
-                      <option value="scout">Scout ($2)</option>
-                      <option value="guardian">Guardian ($5)</option>
-                      <option value="legend">Legend ($10)</option>
-                    </select>
-                    <select
-                      value={giftDuration}
-                      onChange={(e) => setGiftDuration(e.target.value as typeof giftDuration)}
-                      className="text-xs bg-bg-3 border border-line rounded px-1.5 py-1 text-ink-1"
-                      aria-label="Membership duration"
-                    >
-                      <option value="1m">1 month</option>
-                      <option value="3m">3 months</option>
-                      {selfIsAdmin && <option value="6m">6 months</option>}
-                      {selfIsAdmin && <option value="forever">Forever</option>}
-                    </select>
-                    <button
-                      onClick={() => void giftMembership(u)}
-                      disabled={pending === u.id}
-                      className="text-xs px-2.5 py-1 rounded border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40"
-                    >
-                      <Plus size={13} className="shrink-0" /><span className="hidden sm:inline">Gift</span>
-                    </button>
-                    {selfIsAdmin && u.subscriptionTier && (
-                      <button
-                        onClick={() => void resetMembership(u)}
-                        disabled={pending === u.id}
-                        className="text-xs px-2.5 py-1 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-40"
-                        title="Remove the membership and clear their paid cosmetics"
-                      >
-                        <RefreshCw size={13} className="shrink-0" /><span className="hidden sm:inline">Reset membership</span>
-                      </button>
-                    )}
-                  </div>
-                )}
-                {/* Inline role panel — pick the instance role. Admin-only
-                    (the Role button is hidden for moderators). */}
-                {roleFor === u.id && (
-                  <div className="basis-full flex flex-wrap items-center gap-1.5 pt-2 border-t border-line mt-1">
-                    <span className="text-xs text-ink-3">
-                      Role:{' '}
-                      <span className="text-ink-1 font-medium">
-                        {u.isAdmin ? 'Administrator' : u.isModerator ? 'Moderator' : 'None'}
-                      </span>
-                    </span>
-                    {!u.isAdmin && (
-                      <button
-                        onClick={() => void setRole(u, 'administrator')}
-                        disabled={pending === u.id}
-                        className="text-xs px-2.5 py-1 rounded border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40"
-                        title="Full access to every admin tab and action"
-                      >
-                        Administrator
-                      </button>
-                    )}
-                    {!u.isModerator && (
-                      <button
-                        onClick={() => void setRole(u, 'moderator')}
-                        disabled={pending === u.id}
-                        className="text-xs px-2.5 py-1 rounded border border-sky-500/40 bg-sky-500/15 text-ink-1 hover:bg-sky-500/25 disabled:opacity-40"
-                        title="Security log, ban/unban, sign-out, membership gifts up to 3 months, DOB reset, and observing servers"
-                      >
-                        Moderator
-                      </button>
-                    )}
-                    {(u.isAdmin || u.isModerator) && (
-                      <button
-                        onClick={() => void setRole(u, 'none')}
-                        disabled={pending === u.id}
-                        className="text-xs px-2.5 py-1 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-40"
-                        title="Remove their instance role"
-                      >
-                        Remove role
-                      </button>
-                    )}
-                  </div>
-                )}
-                {/* Inline DOB panel — show the date of birth on record plus
-                    the reset button (reopens their one-time self-change). */}
-                {dobFor === u.id && (
-                  <div className="basis-full flex flex-wrap items-center gap-1.5 pt-2 border-t border-line mt-1">
-                    <span className="text-xs text-ink-3">
-                      Date of birth:{' '}
-                      <span className="text-ink-1 font-medium">
-                        {u.dateOfBirth
-                          ? new Date(`${u.dateOfBirth}T00:00:00`).toLocaleDateString(undefined, {
-                              year: 'numeric',
-                              month: 'long',
-                              day: 'numeric',
-                            })
-                          : 'Not on record'}
-                      </span>
-                    </span>
-                    <button
-                      onClick={() => void resetDob(u)}
-                      disabled={pending === u.id}
-                      className="text-xs px-2.5 py-1 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-40"
-                      title="Let this user change their date of birth once more"
-                    >
-                      Reset
-                    </button>
-                  </div>
-                )}
-                {/* Inline ban panel — pick a duration (covers text + voice).
-                    Only shown when starting a NEW ban (unban is a direct
-                    button). Timed bans auto-lift; permanent stays until unban. */}
-                {banFor === u.id && (
-                  <div className="basis-full flex flex-wrap items-center gap-1.5 pt-2 border-t border-line mt-1">
-                    <span className="text-xs text-ink-3 mr-1">Ban for:</span>
-                    {BAN_DURATIONS.map((d) => (
-                      <button
-                        key={d.value}
-                        onClick={() => void banUser(u, d.value)}
-                        disabled={pending === u.id}
-                        className={`text-xs px-2.5 py-1 rounded border disabled:opacity-40 ${
-                          d.value === 'perm'
-                            ? 'border-red-500/40 bg-red-500/15 text-red-300 hover:bg-red-500/25'
-                            : 'border-red-500/30 text-red-300 hover:bg-red-500/10'
-                        }`}
-                      >
-                        {d.label}
-                      </button>
-                    ))}
-                    <span className="basis-full text-[0.65rem] text-ink-3">
-                      Bans revoke sessions and evict from all voice — the account
-                      can’t use text or voice until it’s lifted.
-                    </span>
-                  </div>
-                )}
-                {/* DM correspondents. Admin-only, lazily loaded. Shows who the
-                    user talks to privately, whether they are friends, and how
-                    many messages — never a word of content. */}
-                {dmPeers[u.id] === 'loading' && (
-                  <div className="w-full text-xs text-ink-3 px-1 pb-1">Loading DM contacts…</div>
-                )}
-                {dmPeers[u.id] && dmPeers[u.id] !== 'loading' && (
-                  <div className="w-full mt-1 rounded-md border border-line bg-bg-1 p-2">
-                    {(dmPeers[u.id] as AdminDmPeersResponse).peers.length === 0 ? (
-                      <div className="text-xs text-ink-3">No direct-message conversations.</div>
-                    ) : (
-                      <ul className="flex flex-col gap-1">
-                        {(dmPeers[u.id] as AdminDmPeersResponse).peers.map((pr) => (
-                          <li key={pr.channelId} className="flex items-center gap-2 text-xs">
-                            {pr.isFriend ? (
-                              <span title="Friends" className="text-emerald-500 shrink-0">
-                                <UserPlus size={13} />
-                              </span>
-                            ) : (
-                              <span title="Not friends" className="text-ink-4 shrink-0">
-                                <UserMinus size={13} />
-                              </span>
-                            )}
-                            <span className="text-ink-1 truncate">
-                              {pr.user.displayName ?? pr.user.username}
-                            </span>
-                            <span className="text-ink-4 truncate">@{pr.user.username}</span>
-                            <span className="ml-auto text-ink-3 tabular-nums shrink-0">
-                              {pr.messageCount.toLocaleString()} msg
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    {(dmPeers[u.id] as AdminDmPeersResponse).capped && (
-                      <div className="text-[11px] text-ink-4 mt-1.5">
-                        Showing the most recent conversations only.
-                      </div>
-                    )}
-                  </div>
-                )}
+                  <ChevronRight size={16} className="text-ink-3 shrink-0" />
+                </button>
               </li>
             );
           })}

@@ -3054,6 +3054,71 @@ export class RestClient {
     return this.request('POST', `/admin/users/${userId}/reset-dob-lock`);
   }
 
+  // Account Info (Admin → Users → an account) ------------------------------
+  // Admin-only unless noted. Moderators get mute/unmute and notes (the server
+  // enforces this; the UI just doesn't offer the rest).
+
+  /** [ADMIN] The full account record: email, DOB, sessions, counts, state. */
+  adminGetAccount(userId: string): Promise<{ account: AdminAccount }> {
+    return this.request('GET', `/admin/users/${userId}`);
+  }
+
+  /** [ADMIN] Friends, requests, blocks and 1:1 DM partners. Audited. */
+  adminGetAccountContacts(userId: string): Promise<AdminAccountContacts> {
+    return this.request('GET', `/admin/users/${userId}/contacts`);
+  }
+
+  /** [ADMIN] Rename. Doesn't use up the owner's own 90-day allowance. */
+  adminSetUsername(userId: string, username: string): Promise<{ ok: boolean; username: string }> {
+    return this.request('PATCH', `/admin/users/${userId}/username`, { username });
+  }
+
+  /** [ADMIN] Change email (marked verified; the old address is notified). */
+  adminSetEmail(userId: string, email: string): Promise<{ ok: boolean; oldAddressNotified: boolean }> {
+    return this.request('PATCH', `/admin/users/${userId}/email`, { email });
+  }
+
+  /** [ADMIN] Set date of birth (YYYY-MM-DD, 13+). Re-locks it. */
+  adminSetDateOfBirth(userId: string, dateOfBirth: string): Promise<{ ok: boolean }> {
+    return this.request('PATCH', `/admin/users/${userId}/date-of-birth`, { dateOfBirth });
+  }
+
+  /** [ADMIN] Email the owner a reset link and sign them out everywhere. */
+  adminSendPasswordReset(userId: string): Promise<{ ok: boolean }> {
+    return this.request('POST', `/admin/users/${userId}/password-reset`);
+  }
+
+  /** [ADMIN + MOD] Mute: can read, can't post, react or talk. */
+  adminMuteUser(
+    userId: string,
+    duration: AdminMuteDuration,
+  ): Promise<{ ok: boolean; mutedUntil: string | null }> {
+    return this.request('POST', `/admin/users/${userId}/mute`, { duration });
+  }
+
+  /** [ADMIN + MOD] Lift a mute. */
+  adminUnmuteUser(userId: string): Promise<{ ok: boolean }> {
+    return this.request('POST', `/admin/users/${userId}/unmute`);
+  }
+
+  /** [ADMIN + MOD] Staff notes on an account, newest first. */
+  adminListNotes(userId: string): Promise<{ notes: StaffNote[] }> {
+    return this.request('GET', `/admin/users/${userId}/notes`);
+  }
+
+  /** [ADMIN + MOD] Add a staff note (1–2000 chars). */
+  adminAddNote(
+    userId: string,
+    body: string,
+  ): Promise<{ ok: boolean; note: { id: string; body: string; createdAt: string } }> {
+    return this.request('POST', `/admin/users/${userId}/notes`, { body });
+  }
+
+  /** [ADMIN + MOD] Delete a note — moderators only their own. */
+  adminDeleteNote(userId: string, noteId: string): Promise<{ ok: boolean }> {
+    return this.request('DELETE', `/admin/users/${userId}/notes/${noteId}`);
+  }
+
   /**
    * [ADMIN ONLY] Who this user exchanges 1:1 DMs with, whether they are friends,
    * and how many messages each conversation holds.
@@ -3776,7 +3841,8 @@ export interface AdminUser {
   id: string;
   username: string;
   displayName: string | null;
-  email: string;
+  /** Null for moderators — they don't get account info. */
+  email: string | null;
   avatarUrl: string | null;
   isAdmin: boolean;
   /** Instance moderator (restricted staff role). */
@@ -3787,6 +3853,9 @@ export interface AdminUser {
   /** For a TIMED ban: when it auto-lifts (ISO). Null = permanent (when
       bannedAt is set) or not banned. */
   bannedUntil: string | null;
+  /** Instance mute (staff action). Set = muted; mutedUntil null = permanent. */
+  mutedAt?: string | null;
+  mutedUntil?: string | null;
   createdAt: string;
   /** Approx last-active time (max session activity); null if never. */
   lastSeenAt: string | null;
@@ -3795,6 +3864,66 @@ export interface AdminUser {
   subscriptionTier?: 'scout' | 'guardian' | 'legend' | null;
   /** Membership expiry (ISO); null = unlimited/forever. */
   subscriptionExpiresAt?: string | null;
+}
+
+export type AdminMuteDuration = '1h' | '1d' | '1w' | 'perm';
+
+/** GET /admin/users/:id — the admin-only account record. */
+export interface AdminAccount {
+  id: string;
+  username: string;
+  displayName: string;
+  email: string;
+  emailVerified: boolean;
+  avatarUrl: string | null;
+  bannerUrl: string | null;
+  bio: string | null;
+  dateOfBirth: string | null;
+  dobLocked: boolean;
+  isMinor: boolean;
+  isAdmin: boolean;
+  isModerator: boolean;
+  isBot: boolean;
+  twoFactorEnabled: boolean;
+  createdAt: string;
+  usernameChangedAt: string | null;
+  lastSeenAt: string | null;
+  banned: boolean;
+  bannedAt: string | null;
+  bannedUntil: string | null;
+  muted: boolean;
+  mutedAt: string | null;
+  mutedUntil: string | null;
+  subscriptionTier: 'scout' | 'guardian' | 'legend' | null;
+  subscriptionExpiresAt: string | null;
+  activeSessions: number;
+  guildCount: number;
+  friendCount: number;
+}
+
+export interface AdminContactPerson {
+  id: string;
+  username: string;
+  displayName: string;
+  avatarUrl: string | null;
+  /** When the relationship / conversation began. */
+  since: string;
+}
+
+export interface AdminAccountContacts {
+  friends: AdminContactPerson[];
+  incomingRequests: AdminContactPerson[];
+  outgoingRequests: AdminContactPerson[];
+  blocked: AdminContactPerson[];
+  dmPartners: AdminContactPerson[];
+}
+
+export interface StaffNote {
+  id: string;
+  body: string;
+  createdAt: string;
+  /** Null when the author's account is gone. */
+  author: { id: string; username: string; displayName: string } | null;
 }
 
 export interface AdminGuild {
