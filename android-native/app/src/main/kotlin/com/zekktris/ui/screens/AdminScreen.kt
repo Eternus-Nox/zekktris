@@ -25,13 +25,11 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.PersonOff
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
@@ -60,9 +58,6 @@ import com.zekktris.AppStore
 import com.zekktris.data.model.AdminGuild
 import com.zekktris.data.model.AdminStorage
 import androidx.activity.compose.BackHandler
-import androidx.compose.material.icons.filled.PersonRemove
-import androidx.compose.material.icons.filled.PersonAdd
-import com.zekktris.data.model.AdminDmPeer
 import com.zekktris.data.model.AdminUser
 import com.zekktris.data.model.Channel
 import com.zekktris.data.model.PeekGuildResult
@@ -96,6 +91,13 @@ fun AdminScreen(store: AppStore, state: AppState) {
     val isAdmin = state.me?.isAdmin == true
     var tab by remember { mutableIntStateOf(if (isAdmin) 0 else 1) }
     LaunchedEffect(Unit) { store.loadAdminOverview() }
+    // The account whose Account Info page is open. It takes the whole screen
+    // (its own back chevron returns here, to the same tab).
+    var openAccountId by remember { mutableStateOf<String?>(null) }
+    openAccountId?.let { id ->
+        AdminAccountScreen(store, state, id) { openAccountId = null }
+        return
+    }
 
     // (index, label), gated: Overview/Storage/Monetization are admin-only.
     val tabs = buildList {
@@ -116,7 +118,7 @@ fun AdminScreen(store: AppStore, state: AppState) {
             }
             when (tab) {
                 0 -> OverviewTab(state)
-                1 -> UsersTab(store, state, isAdmin)
+                1 -> UsersTab(store, state) { openAccountId = it }
                 2 -> ServersTab(store, state, isAdmin)
                 3 -> StorageTab(store, state)
                 4 -> AdminSecurityTab(store, isAdmin)
@@ -291,7 +293,7 @@ private fun StatCard(label: String, value: String, detail: String? = null) {
 // ── Users ────────────────────────────────────────────────────────────────────
 
 @Composable
-private fun UsersTab(store: AppStore, state: AppState, isAdmin: Boolean) {
+private fun UsersTab(store: AppStore, state: AppState, onOpen: (String) -> Unit) {
     val p = ZkTheme.palette
     var q by remember { mutableStateOf("") }
     var bannedOnly by remember { mutableStateOf(false) }
@@ -300,7 +302,8 @@ private fun UsersTab(store: AppStore, state: AppState, isAdmin: Boolean) {
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            SearchField(q, { q = it }, "Search users", Modifier.weight(1f)) { reload() }
+            // Moderators can't search by email (the server ignores it for them).
+            SearchField(q, { q = it }, if (state.me?.isAdmin == true) "Search name or email" else "Search users", Modifier.weight(1f)) { reload() }
             Spacer(Modifier.width(8.dp))
             Icon(
                 Icons.Filled.PersonOff, "Banned only",
@@ -315,7 +318,7 @@ private fun UsersTab(store: AppStore, state: AppState, isAdmin: Boolean) {
         } else {
             LazyColumn(Modifier.weight(1f)) {
                 items(state.adminUsers, key = { it.id }) { u ->
-                    UserRow(store, u, isAdmin, reload)
+                    UserRow(u, isSelf = state.me?.id == u.id) { onOpen(u.id) }
                     RowDivider()
                 }
             }
@@ -328,107 +331,32 @@ private fun RowDivider() {
     Box(Modifier.fillMaxWidth().padding(start = 16.dp).height(1.dp).background(ZkTheme.palette.line))
 }
 
+/** One account in the list. Tapping opens its Account Info page — every action
+ *  on an account lives there; this list is only for finding one. */
 @Composable
-private fun UserRow(store: AppStore, u: AdminUser, isAdmin: Boolean, reload: () -> Unit) {
-    var menu by remember { mutableStateOf(false) }
-    // Two-step gift flow inside the same dropdown: pick a tier, then a duration.
-    var giftMode by remember { mutableStateOf(false) }
-    var giftTier by remember { mutableStateOf<String?>(null) }
-    // Subject of the ADMIN-ONLY "Contacts" screen. null = closed.
-    var dmPeersFor by remember { mutableStateOf<AdminUser?>(null) }
-    // Destructive confirm before delete (iOS confirmationDialog parity).
-    var confirmDelete by remember { mutableStateOf(false) }
-    fun closeMenu() { menu = false; giftMode = false; giftTier = null }
-    // Full-screen overlay, presented over the row's own content so it takes the
-    // whole page rather than sitting in a draggable sheet.
-    dmPeersFor?.let { subject ->
-        AdminDmPeersScreen(store, subject) { dmPeersFor = null }
-        return
-    }
-    if (confirmDelete) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            title = { Text("Delete account?", color = ZkInk.ink1, fontFamily = ZkSans) },
-            text = { Text("Permanently deletes @${u.username}'s account and data. This can't be undone.", color = ZkInk.ink3, fontFamily = ZkSans) },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = { confirmDelete = false; store.adminDeleteUser(u.id, reload) }) {
-                    Text("Delete", color = ZkStatus.danger, fontFamily = ZkSans)
-                }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { confirmDelete = false }) { Text("Cancel", color = ZkInk.ink2, fontFamily = ZkSans) }
-            },
-            containerColor = ZkTheme.palette.bg2,
-        )
-    }
-    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun UserRow(u: AdminUser, isSelf: Boolean, onOpen: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(horizontal = 16.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Avatar(url = u.avatarUrl, name = u.name, size = 36.dp)
         Column(Modifier.weight(1f).padding(start = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(u.name, color = ZkInk.ink1, fontFamily = ZkSans, fontWeight = FontWeight.Medium, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(u.name, color = ZkInk.ink1, fontFamily = ZkSans, fontWeight = FontWeight.Medium, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                if (isSelf) Text(" you", color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 12.sp)
                 if (u.isAdmin) Badge("ADMINISTRATOR", ZkTheme.palette.accent)
                 else if (u.isModerator) Badge("MODERATOR", MOD_SKY)
                 if (u.isBanned) Badge(if (u.bannedUntil != null) "BANNED · TIMED" else "BANNED", ZkStatus.danger)
+                if (u.isMuted) Badge("MUTED", Color(0xFFF59E0B))
                 u.subscriptionTier?.let { tier -> Badge(tier.uppercase(), tierColor(tier)) }
             }
-            Text("@${u.username}", color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 12.sp)
+            // Moderators get no email (the server sends null) — just the handle.
+            Text(
+                u.email?.let { "@${u.username} · $it" } ?: "@${u.username}",
+                color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
         }
-        Box {
-            Icon(Icons.Filled.MoreVert, "Actions", tint = ZkInk.ink3, modifier = Modifier.clip(CircleShape).clickable { menu = true }.padding(6.dp).size(20.dp))
-            DropdownMenu(expanded = menu, onDismissRequest = { closeMenu() }) {
-                val tier = giftTier
-                when {
-                    // Step 2: durations for the chosen tier.
-                    tier != null -> {
-                        listOf("1m" to "1 month", "3m" to "3 months", "6m" to "6 months", "forever" to "Forever").forEach { (d, label) ->
-                            DropdownMenuItem(text = { Text(label, fontFamily = ZkSans) }, onClick = { closeMenu(); store.adminGiftSubscription(u.id, tier, d, reload) })
-                        }
-                        DropdownMenuItem(text = { Text("‹ Back", color = ZkInk.ink3, fontFamily = ZkSans) }, onClick = { giftTier = null })
-                    }
-                    // Step 1: tiers.
-                    giftMode -> {
-                        listOf("scout" to "Scout", "guardian" to "Guardian", "legend" to "Legend").forEach { (t, label) ->
-                            DropdownMenuItem(text = { Text(label, fontFamily = ZkSans) }, onClick = { giftTier = t })
-                        }
-                        DropdownMenuItem(text = { Text("‹ Back", color = ZkInk.ink3, fontFamily = ZkSans) }, onClick = { giftMode = false })
-                    }
-                    else -> {
-                        // iOS gating (MainView.swift:5223-5297): Ban/Unban/Force
-                        // Logout/Reset DOB show when `isAdmin || !u.isStaff` —
-                        // moderators get them on non-staff, ADMINS also on staff.
-                        // The Ban group only appears when not already banned.
-                        val canModerateTarget = isAdmin || !u.isStaff
-                        if (canModerateTarget && !u.isBanned) {
-                            listOf("1m" to "Ban 1 month", "3m" to "Ban 3 months", "6m" to "Ban 6 months", "perm" to "Ban permanently").forEach { (d, label) ->
-                                DropdownMenuItem(text = { Text(label, fontFamily = ZkSans) }, onClick = { closeMenu(); store.adminBan(u.id, d, reload) })
-                            }
-                        }
-                        if (canModerateTarget && u.isBanned) DropdownMenuItem(text = { Text("Unban", fontFamily = ZkSans) }, onClick = { closeMenu(); store.adminUnban(u.id, reload) })
-                        if (canModerateTarget) {
-                            DropdownMenuItem(text = { Text("Force logout", fontFamily = ZkSans) }, onClick = { closeMenu(); store.adminLogoutUser(u.id, reload) })
-                            DropdownMenuItem(text = { Text("Reset DOB", fontFamily = ZkSans) }, onClick = { closeMenu(); store.adminResetDobLock(u.id, reload) })
-                        }
-                        if (isAdmin) {
-                            // ADMIN ONLY, deliberately not offered to moderators:
-                            // seeing who someone privately messages is well outside
-                            // a moderator's chartered scope. The server enforces it
-                            // too — the admin router's moderator allowlist is
-                            // fail-safe and this route is absent from it.
-                            DropdownMenuItem(
-                                text = { Text("Contacts", fontFamily = ZkSans) },
-                                onClick = { closeMenu(); dmPeersFor = u },
-                            )
-                            if (!u.isAdmin) DropdownMenuItem(text = { Text("Make administrator", fontFamily = ZkSans) }, onClick = { closeMenu(); store.adminSetRole(u.id, "administrator", reload) })
-                            if (!u.isModerator) DropdownMenuItem(text = { Text("Make moderator", fontFamily = ZkSans) }, onClick = { closeMenu(); store.adminSetRole(u.id, "moderator", reload) })
-                            if (u.isStaff) DropdownMenuItem(text = { Text("Remove role", fontFamily = ZkSans) }, onClick = { closeMenu(); store.adminSetRole(u.id, "none", reload) })
-                            DropdownMenuItem(text = { Text("Gift membership", fontFamily = ZkSans) }, onClick = { giftMode = true })
-                            if (u.subscriptionTier != null) DropdownMenuItem(text = { Text("Reset membership", color = ZkStatus.dangerSoft, fontFamily = ZkSans) }, onClick = { closeMenu(); store.adminRemoveSubscription(u.id, reload) })
-                            DropdownMenuItem(text = { Text("Delete account", color = ZkStatus.danger, fontFamily = ZkSans) }, onClick = { closeMenu(); confirmDelete = true })
-                        }
-                    }
-                }
-            }
-        }
+        Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = ZkInk.ink3, modifier = Modifier.size(20.dp))
     }
 }
 
@@ -737,65 +665,6 @@ private fun Badge(label: String, color: Color) {
         modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(3.dp)).background(color.copy(alpha = 0.2f)).padding(horizontal = 4.dp, vertical = 1.dp),
     )
 }
-
-/**
- * ADMIN-ONLY roster of who a user exchanges 1:1 DMs with.
- *
- * Counts, identity and friend status only — never message content. Most of these
- * conversations are E2EE, so the server could not surface content even if this
- * asked. The read is audit-logged server-side (staff_dm_peers).
- *
- * Full screen with a back chevron, matching the member roster rather than a
- * draggable sheet.
- */
-@Composable
-private fun AdminDmPeersScreen(store: AppStore, user: AdminUser, onBack: () -> Unit) {
-    var peers by remember(user.id) { mutableStateOf<List<AdminDmPeer>?>(null) }
-    var capped by remember(user.id) { mutableStateOf(false) }
-    var failed by remember(user.id) { mutableStateOf(false) }
-    LaunchedEffect(user.id) {
-        runCatching { store.adminUserDmPeers(user.id) }
-            .onSuccess { peers = it.peers; capped = it.capped }
-            .onFailure { failed = true }
-    }
-    BackHandler(onBack = onBack)
-    ScreenScaffold(title = "Contacts — ${user.username}", onBack = onBack) {
-        val list = peers
-        when {
-            failed -> Text("Couldn't load contacts.", color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
-            list == null -> Text("Loading…", color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
-            list.isEmpty() -> Text("No direct-message conversations.", color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
-            else -> LazyColumn(Modifier.fillMaxSize()) {
-                items(list, key = { it.channelId }) { pr ->
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            if (pr.isFriend) Icons.Filled.PersonAdd else Icons.Filled.PersonRemove,
-                            contentDescription = if (pr.isFriend) "Friends" else "Not friends",
-                            tint = if (pr.isFriend) ZkStatus.online else ZkInk.ink4,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Column(Modifier.padding(start = 10.dp).weight(1f)) {
-                            Text(pr.user.bestName, color = ZkInk.ink1, fontFamily = ZkSans, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text("@${pr.user.username ?: ""}", color = ZkInk.ink4, fontFamily = ZkSans, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                        Text("${pr.messageCount}", color = ZkInk.ink3, fontFamily = ZkMono, fontSize = 12.sp)
-                    }
-                }
-                if (capped) item {
-                    Text(
-                        "Showing the most recent conversations only.",
-                        color = ZkInk.ink4, fontFamily = ZkSans, fontSize = 11.sp,
-                        modifier = Modifier.padding(16.dp),
-                    )
-                }
-            }
-        }
-    }
-}
-
 
 @Composable
 private fun SearchField(value: String, onChange: (String) -> Unit, placeholder: String, modifier: Modifier = Modifier, onSubmit: () -> Unit) {

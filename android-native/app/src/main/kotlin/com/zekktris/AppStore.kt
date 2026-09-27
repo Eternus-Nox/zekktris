@@ -1371,6 +1371,23 @@ class AppStore(
      */
     suspend fun adminUserDmPeers(userId: String) = api.adminUserDmPeers(userId)
 
+    /**
+     * Admin → Account Info. One passthrough rather than a wrapper per endpoint:
+     * the page runs each call itself so it can report the SERVER's message
+     * inline ("That username is taken.") instead of the fire-and-forget
+     * pattern above, which swallows failures. `api` stays private.
+     */
+    suspend fun <T> adminCall(block: suspend com.zekktris.data.ApiClient.() -> T): T = api.block()
+
+    /** Keep the Users list in step with what the Account Info page just did. */
+    fun patchAdminUser(userId: String, transform: (com.zekktris.data.model.AdminUser) -> com.zekktris.data.model.AdminUser) {
+        _state.update { st -> st.copy(adminUsers = st.adminUsers.map { if (it.id == userId) transform(it) else it }) }
+    }
+
+    fun removeAdminUser(userId: String) {
+        _state.update { st -> st.copy(adminUsers = st.adminUsers.filterNot { it.id == userId }) }
+    }
+
     fun adminUnban(userId: String, reload: () -> Unit) {
         scope.launch { runCatching { api.adminUnbanUser(userId) }; reload() }
     }

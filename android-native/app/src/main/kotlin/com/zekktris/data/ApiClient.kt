@@ -1,7 +1,12 @@
 package com.zekktris.data
 
 import com.zekktris.data.model.AckWrap
+import com.zekktris.data.model.AdminAccount
+import com.zekktris.data.model.AdminAccountContacts
+import com.zekktris.data.model.AdminAccountWrap
 import com.zekktris.data.model.AdminDmPeersWrap
+import com.zekktris.data.model.StaffNote
+import com.zekktris.data.model.StaffNotesWrap
 import com.zekktris.data.model.AuthResponse
 import com.zekktris.data.model.Channel
 import com.zekktris.data.model.ChannelWrap
@@ -1950,40 +1955,121 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
     suspend fun adminBanUser(userId: String, duration: String) {
         authorized(HttpMethod.Post, "/admin/users/$userId/ban") {
             contentType(ContentType.Application.Json); setBody(BanBody(duration))
-        }
+        }.requireOk()
     }
 
     suspend fun adminUnbanUser(userId: String) {
-        authorized(HttpMethod.Post, "/admin/users/$userId/unban") {}
+        authorized(HttpMethod.Post, "/admin/users/$userId/unban") {}.requireOk()
     }
 
     suspend fun adminSetRole(userId: String, role: String) {
         authorized(HttpMethod.Post, "/admin/users/$userId/role") {
             contentType(ContentType.Application.Json); setBody(RoleBody(role))
-        }
+        }.requireOk()
     }
 
     suspend fun adminDeleteUser(userId: String) {
-        authorized(HttpMethod.Delete, "/admin/users/$userId") {}
+        authorized(HttpMethod.Delete, "/admin/users/$userId") {}.requireOk()
     }
 
     suspend fun adminLogoutUser(userId: String) {
-        authorized(HttpMethod.Post, "/admin/users/$userId/logout") {}
+        authorized(HttpMethod.Post, "/admin/users/$userId/logout") {}.requireOk()
     }
 
     suspend fun adminResetDobLock(userId: String) {
-        authorized(HttpMethod.Post, "/admin/users/$userId/reset-dob-lock") {}
+        authorized(HttpMethod.Post, "/admin/users/$userId/reset-dob-lock") {}.requireOk()
     }
 
     suspend fun adminGiftSubscription(userId: String, tier: String, duration: String) {
         authorized(HttpMethod.Post, "/admin/users/$userId/subscription") {
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject { put("tier", JsonPrimitive(tier)); put("duration", JsonPrimitive(duration)) }.toString())
-        }
+        }.requireOk()
     }
 
     suspend fun adminRemoveSubscription(userId: String) {
-        authorized(HttpMethod.Delete, "/admin/users/$userId/subscription") {}
+        authorized(HttpMethod.Delete, "/admin/users/$userId/subscription") {}.requireOk()
+    }
+
+    // ── Admin → Account Info ─────────────────────────────────────────────────
+    // Admin-only unless noted; moderators get mute/unmute + notes (server-enforced).
+
+    /** [ADMIN] The full account record. */
+    suspend fun adminAccount(userId: String): AdminAccount =
+        authorized(HttpMethod.Get, "/admin/users/$userId").requireOk().body<AdminAccountWrap>().account
+
+    /** [ADMIN] Friends, requests, blocks and 1:1 DM partners. Audited server-side. */
+    suspend fun adminAccountContacts(userId: String): AdminAccountContacts =
+        authorized(HttpMethod.Get, "/admin/users/$userId/contacts").requireOk().body()
+
+    /** [ADMIN] Rename — doesn't use up the owner's own 90-day allowance. */
+    suspend fun adminSetUsername(userId: String, username: String) {
+        adminPatch("/admin/users/$userId/username", "username", username)
+    }
+
+    /** [ADMIN] Change email — marked verified; the old address is notified. */
+    suspend fun adminSetEmail(userId: String, email: String) {
+        adminPatch("/admin/users/$userId/email", "email", email)
+    }
+
+    /** [ADMIN] Set date of birth (YYYY-MM-DD, 13+). Re-locks it. */
+    suspend fun adminSetDateOfBirth(userId: String, dateOfBirth: String) {
+        adminPatch("/admin/users/$userId/date-of-birth", "dateOfBirth", dateOfBirth)
+    }
+
+    /** [ADMIN] Email the owner a reset link and sign them out everywhere. */
+    suspend fun adminSendPasswordReset(userId: String) {
+        authorized(HttpMethod.Post, "/admin/users/$userId/password-reset") {}.requireOk()
+    }
+
+    /** [ADMIN + MOD] Mute ("1h"|"1d"|"1w"|"perm"): can read, can't post or talk. */
+    suspend fun adminMuteUser(userId: String, duration: String) {
+        authorized(HttpMethod.Post, "/admin/users/$userId/mute") {
+            contentType(ContentType.Application.Json); setBody(BanBody(duration))
+        }.requireOk()
+    }
+
+    /** [ADMIN + MOD] Lift a mute. */
+    suspend fun adminUnmuteUser(userId: String) {
+        authorized(HttpMethod.Post, "/admin/users/$userId/unmute") {}.requireOk()
+    }
+
+    /** [ADMIN + MOD] Staff notes, newest first. */
+    suspend fun adminNotes(userId: String): List<StaffNote> =
+        authorized(HttpMethod.Get, "/admin/users/$userId/notes").requireOk().body<StaffNotesWrap>().notes
+
+    /** [ADMIN + MOD] Add a note (1–2000 chars). */
+    suspend fun adminAddNote(userId: String, body: String) {
+        authorized(HttpMethod.Post, "/admin/users/$userId/notes") {
+            contentType(ContentType.Application.Json)
+            setBody(buildJsonObject { put("body", JsonPrimitive(body)) }.toString())
+        }.requireOk()
+    }
+
+    /** [ADMIN + MOD] Delete a note — moderators only their own. */
+    suspend fun adminDeleteNote(userId: String, noteId: String) {
+        authorized(HttpMethod.Delete, "/admin/users/$userId/notes/$noteId") {}.requireOk()
+    }
+
+    private suspend fun adminPatch(path: String, key: String, value: String) {
+        authorized(HttpMethod.Patch, path) {
+            contentType(ContentType.Application.Json)
+            setBody(buildJsonObject { put(key, JsonPrimitive(value)) }.toString())
+        }.requireOk()
+    }
+
+    /**
+     * Throw on a non-2xx, carrying the SERVER's message ("That username is
+     * taken.", "Moderators cannot act on staff accounts") rather than a status
+     * code — for the admin screens, that message is the whole point.
+     */
+    private suspend fun HttpResponse.requireOk(): HttpResponse {
+        if (status.isSuccess()) return this
+        val detail = runCatching {
+            Json.parseToJsonElement(bodyAsText())
+                .jsonObject["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content
+        }.getOrNull()
+        throw ApiException(status.value, detail ?: "Request failed (HTTP ${status.value}).")
     }
 
     suspend fun adminDeleteGuild(guildId: String) {

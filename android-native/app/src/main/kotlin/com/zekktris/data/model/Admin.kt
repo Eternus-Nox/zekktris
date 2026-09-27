@@ -47,12 +47,84 @@ data class AdminUser(
     val bannedAt: String? = null,
     val bannedUntil: String? = null,
     val subscriptionTier: String? = null,
+    /** Instance mute (staff action). Set = muted; mutedUntil null = permanent. */
+    val mutedAt: String? = null,
+    val mutedUntil: String? = null,
 ) {
     val name: String get() = displayName ?: username
     val isBanned: Boolean get() = bannedAt != null
     val isStaff: Boolean get() = isAdmin || isModerator
+    /** A timed mute that has run out is not a mute (the server agrees). */
+    val isMuted: Boolean get() {
+        if (mutedAt == null) return false
+        val until = mutedUntil ?: return true
+        val t = runCatching { java.time.Instant.parse(until) }.getOrNull() ?: return true
+        return t.isAfter(java.time.Instant.now())
+    }
 }
 @Serializable data class AdminUsersWrap(val users: List<AdminUser> = emptyList())
+
+// ── Admin → Account Info ─────────────────────────────────────────────────────
+
+/** GET /admin/users/:id — the admin-only account record. */
+@Serializable
+data class AdminAccount(
+    val id: String,
+    val username: String = "",
+    val displayName: String? = null,
+    val email: String = "",
+    val emailVerified: Boolean = false,
+    val avatarUrl: String? = null,
+    val dateOfBirth: String? = null,
+    val dobLocked: Boolean = true,
+    val isMinor: Boolean = false,
+    val isAdmin: Boolean = false,
+    val isModerator: Boolean = false,
+    val twoFactorEnabled: Boolean = false,
+    val createdAt: String = "",
+    val lastSeenAt: String? = null,
+    val banned: Boolean = false,
+    val bannedUntil: String? = null,
+    val muted: Boolean = false,
+    val mutedUntil: String? = null,
+    val subscriptionTier: String? = null,
+    val subscriptionExpiresAt: String? = null,
+    val activeSessions: Int = 0,
+    val guildCount: Int = 0,
+    val friendCount: Int = 0,
+)
+@Serializable data class AdminAccountWrap(val account: AdminAccount)
+
+@Serializable
+data class AdminContactPerson(
+    val id: String,
+    val username: String = "",
+    val displayName: String? = null,
+    val avatarUrl: String? = null,
+    val since: String = "",
+) {
+    val name: String get() = displayName?.takeIf { it.isNotBlank() } ?: username
+}
+
+@Serializable
+data class AdminAccountContacts(
+    val friends: List<AdminContactPerson> = emptyList(),
+    val incomingRequests: List<AdminContactPerson> = emptyList(),
+    val outgoingRequests: List<AdminContactPerson> = emptyList(),
+    val blocked: List<AdminContactPerson> = emptyList(),
+    val dmPartners: List<AdminContactPerson> = emptyList(),
+)
+
+@Serializable data class StaffNoteAuthor(val id: String, val username: String = "", val displayName: String? = null)
+@Serializable
+data class StaffNote(
+    val id: String,
+    val body: String = "",
+    val createdAt: String = "",
+    /** Null when the author's account is gone. */
+    val author: StaffNoteAuthor? = null,
+)
+@Serializable data class StaffNotesWrap(val notes: List<StaffNote> = emptyList())
 
 @Serializable
 data class AdminGuild(
