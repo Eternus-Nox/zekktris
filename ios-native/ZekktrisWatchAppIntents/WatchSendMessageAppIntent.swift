@@ -2,12 +2,10 @@ import AppIntents
 
 /// Sending a DM from the wrist by voice, as an APP INTENT.
 ///
-/// WHY NOT SIRIKIT. The SiriKit route (`INSendMessageIntent`, an Intents
-/// extension) is what the iPhone uses and it works there. On the watch the
-/// same setup got "You'll need an app for me to help with that" — Siri never
-/// reached the extension — and worse, while it was installed it CLAIMED the
-/// "Message Sam on Zekktris" sentence shape, so only phrasings SiriKit didn't
-/// recognise reached this intent. The watch now has no SiriKit extension. Apple deprecated SiriKit
+/// WHY THIS EXISTS ALONGSIDE ZekktrisWatchIntents. The SiriKit route
+/// (`INSendMessageIntent`, an Intents extension) is what the iPhone uses and it
+/// works there. On the watch the same setup gets "You'll need an app for me to
+/// help with that" — Siri never reaches the extension. Apple deprecated SiriKit
 /// at WWDC 2026 and the new Siri routes through App Intents only, so rather
 /// than keep chasing the old path on a platform that has already moved, the
 /// watch gets an App Intent with a spoken shortcut phrase. That is the same

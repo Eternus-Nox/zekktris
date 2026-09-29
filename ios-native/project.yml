@@ -309,16 +309,12 @@ targets:
       # watch app.
       - target: ZekktrisWatchWidgets
         embed: true
-      # Siri on the wrist: an App Intents EXTENSION.
-      #
-      # There is deliberately NO SiriKit (Intents) extension on the watch any
-      # more, and no AppIntentVocabulary.plist. Siri on the watch never reached
-      # the SiriKit one — but its presence, and a vocabulary teaching Siri that
-      # "Message Sam on Zekktris" is an INSendMessageIntent, CLAIMED that
-      # sentence shape for the dead path. Only phrasings SiriKit didn't claim
-      # ("send a Zekktris message to Sam") reached the App Intent. With SiriKit
-      # gone from the watch, every phrase goes to the path that works. The
-      # iPhone keeps its SiriKit extension, which does work there.
+      # SiriKit Messaging extension for the wrist. Kept, but on current
+      # watchOS Siri does not route to it — the App Intents extension below
+      # is what actually handles "message Sam on Zekktris" on the watch.
+      - target: ZekktrisWatchIntents
+        embed: true
+      # Siri on the wrist, the path that works: an App Intents EXTENSION.
       # watchOS will not launch the watch app in the background to perform an
       # App Intent for Siri, so the send has to run in an extension process
       # (see ZekktrisWatchAppIntentsExtension.swift).
@@ -333,11 +329,11 @@ targets:
         WKApplication: true
         # Ties this watch app to the iOS app so it installs alongside it.
         WKCompanionAppBundleIdentifier: com.zekktris.native
-        # Required because the watch app asks for Siri authorisation on launch
-        # (ZekktrisWatchApp) — that call traps without it. The authorisation is
-        # a SiriKit concept; the App Intents path the watch now uses does not
-        # need it, but the request is harmless and was left in place rather
-        # than churn a signing setup that works.
+        # REQUIRED for the wrist's own Siri prompt. Siri authorisation is per
+        # device — the iPhone's grant does not carry over — and the watch app
+        # asks for it on launch (ZekktrisWatchApp). Without this key that call
+        # traps, and without the grant Siri answers "you don't have an app for
+        # that" instead of reaching ZekktrisWatchIntents.
         NSSiriUsageDescription: "Zekktris lets you send messages with Siri. Siri is told who you talk to and what you dictate, so it can send the message for you."
         # HOW SIRI HEARS THE APP NAME. "Zekktris" is an invented word, and
         # speech recognition almost never spells it with the double k. On the
@@ -412,6 +408,47 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.watchkitapp.widgets
+        TARGETED_DEVICE_FAMILY: "4"
+        CODE_SIGN_STYLE: Automatic
+
+  # watchOS SiriKit Messaging extension. Reads what the watch app publishes to
+  # the watch App Group (DM list with encryption flags and names, token, base
+  # URL, per-DM keys in the app-group keychain) and sends through the watch's
+  # own WatchPokeAPI, which already refuses plaintext into an encrypted DM.
+  # Matching is the shared SiriMatching the iPhone extension uses.
+  ZekktrisWatchIntents:
+    type: app-extension
+    platform: watchOS
+    deploymentTarget: "10.0"
+    sources:
+      - path: ZekktrisWatchIntents
+      - path: Zekktris/SiriMatching.swift
+      - path: ZekktrisWatch/WatchWidgetBridge.swift
+      - path: ZekktrisWatch/WatchPokeAPI.swift
+      - path: Zekktris/Keychain.swift
+      - path: Zekktris/AppGroupConfig.swift
+    info:
+      path: ZekktrisWatchIntents/Info.plist
+      properties:
+        CFBundleDisplayName: Zekktris
+        CFBundleShortVersionString: "5.0"
+        CFBundleVersion: "6"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.intents-service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).IntentHandler
+          NSExtensionAttributes:
+            # Must be a subset of the iPhone extension's IntentsSupported.
+            IntentsSupported:
+              - INSendMessageIntent
+    entitlements:
+      path: ZekktrisWatchIntents/ZekktrisWatchIntents.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.zekktris.native
+        com.apple.developer.siri: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.watchkitapp.intents
         TARGETED_DEVICE_FAMILY: "4"
         CODE_SIGN_STYLE: Automatic
 

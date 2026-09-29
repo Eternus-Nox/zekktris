@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Example phrases for the Siri intents this app supports.
+
+	  REQUIRED, not documentation: App Store Connect rejects an upload that
+	  declares Siri support without them — "TMS-90626: Invalid Siri Support - No
+	  example phrase was provided for INSendMessageIntent in the 'en' language".
+	  They are also what the Siri Suggestions and Shortcuts screens show people
+	  who have never used the feature.
+
+	  This is the WATCH app's copy. Its Siri extension (ZekktrisWatchIntents)
+	  declares Siri support separately from the iPhone's, and the upload check
+	  that rejected the iPhone build without phrases applies to it as well.
+
+	  Every phrase must name the app, because that is how Siri decides to route
+	  a message to Zekktris rather than to Messages. None of them say "Hey Siri"
+	  — the phrase is what follows the wake word.
+	-->
+	<key>IntentPhrases</key>
+	<array>
+		<dict>
+			<key>IntentName</key>
+			<string>INSendMessageIntent</string>
+			<key>IntentExamples</key>
+			<array>
+				<string>Send a message with Zekktris</string>
+				<string>Send a Zekktris message to Sam</string>
+				<string>Message Sam on Zekktris</string>
+				<string>Tell Sam I'm running late with Zekktris</string>
+				<string>Send a message to Sam on Zekktris saying I'm on my way</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
