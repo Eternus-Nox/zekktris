@@ -513,9 +513,8 @@ struct MessageListView: View {
     @AppStorage("zk.chatDiagnostics") private var chatDiagnostics = false
     /// Bumped by the overlay's "Rebuild" button: recreates the whole scroll view.
     @State private var listNonce = 0
-    /// Toggled by the overlay's "Relayout" button: a half-point padding change
-    /// that forces a layout pass without moving anything.
-    @State private var diagPad: CGFloat = 0
+    /// Remedy ladder step 1 (see runBlankListRemedies): 1pt for one pass, else 0.
+    @State private var viewportNudge: CGFloat = 0
 
     /// Reports the message list's laid-out content height, so a late growth
     /// (image load / embed render / E2EE decrypt) can re-pin us to the bottom
@@ -683,7 +682,6 @@ struct MessageListView: View {
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
-                        .padding(.top, diagPad)
                         .background(GeometryReader { gp in
                             Color.clear
                                 .preference(key: ContentHeightKey.self, value: gp.size.height)
@@ -713,6 +711,11 @@ struct MessageListView: View {
                     // rather than at offset 0 (the oldest of the loaded 50),
                     // which is the floor under every landing below.
                     .defaultScrollAnchor(.bottom)
+                    // Remedy ladder step 1: shrink the scroll view's OWN frame by
+                    // a point for one pass, so SwiftUI re-lays it out against a
+                    // new viewport (see runBlankListRemedies). 0 at rest.
+                    .padding(.bottom, viewportNudge)
+                    .background(ScrollViewNudger(probe: renderProbe))
                     // Named space the bottom sentinel measures itself against,
                     // plus the viewport height to compare it to. Both feed the
                     // near-bottom gate below.
@@ -721,10 +724,12 @@ struct MessageListView: View {
                         Color.clear.preference(key: ViewportHeightKey.self, value: vp.size.height)
                     })
                     .onPreferenceChange(ViewportHeightKey.self) { h in
+                        renderProbe.viewportCalls += 1
                         viewportHeight = h
                         recomputeNearBottom()
                     }
                     .onPreferenceChange(SentinelOffsetKey.self) { y in
+                        renderProbe.sentinelCalls += 1
                         sentinelOffset = y
                         recomputeNearBottom()
                         // Blank-viewport detection, measured rather than
@@ -776,6 +781,7 @@ struct MessageListView: View {
                     .modifier(BlankViewportRescue { rescueBlankViewport(proxy) })
                     .modifier(DiagnosticsGeometry(probe: renderProbe))
                     .onPreferenceChange(ContentHeightKey.self) { h in
+                        renderProbe.contentCalls += 1
                         renderProbe.contentHeight = h
                         // Late-sizing content (webhook embeds, photos/attachments
                         // loading, E2EE text decrypting) grows the rows AFTER the
@@ -968,18 +974,30 @@ struct MessageListView: View {
                         if chatDiagnostics {
                             ChatDiagnosticsHUD(
                                 snapshot: { diagnosticsSnapshot() },
-                                lastRow: {
-                                    renderProbe.lastRescue = "manual: last row"
-                                    if let id = store.messages.last?.id { proxy.scrollTo(id, anchor: .bottom) }
-                                },
-                                relayout: {
-                                    renderProbe.lastRescue = "manual: relayout"
-                                    diagPad = diagPad == 0 ? 0.5 : 0
-                                },
-                                rebuild: {
-                                    renderProbe.lastRescue = "manual: rebuild"
-                                    listNonce += 1
-                                }
+                                probes: [
+                                    ("Viewport", {
+                                        renderProbe.lastRescue = "manual: viewport"
+                                        viewportNudge = 1
+                                        DispatchQueue.main.async { viewportNudge = 0 }
+                                    }),
+                                    ("Animated", {
+                                        renderProbe.lastRescue = "manual: animated"
+                                        let ids = store.messages.suffix(2).map(\.id)
+                                        if let first = ids.first, let last = ids.last {
+                                            withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(first, anchor: .bottom) }
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                                withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last, anchor: .bottom) }
+                                            }
+                                        }
+                                    }),
+                                    ("UIKit", {
+                                        renderProbe.lastRescue = "manual: uikit " + (renderProbe.nudgeUIKit?() ?? "no hook")
+                                    }),
+                                    ("Rebuild", {
+                                        renderProbe.lastRescue = "manual: rebuild"
+                                        listNonce += 1
+                                    }),
+                                ]
                             )
                         }
                     }
@@ -1076,12 +1094,67 @@ struct MessageListView: View {
     /// scroll to where the list already is.
     private func scheduleRenderWatchdog(_ proxy: ScrollViewProxy) {
         let openedChannel = channel.id
-        for delay in [0.35, 0.9] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                guard landedChannelId == openedChannel,
-                      !store.messages.isEmpty,
-                      renderProbe.rowsDrawn == 0 else { return }
-                rescueBlankViewport(proxy)
+        renderProbe.remedyLog = []
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            guard landedChannelId == openedChannel, !store.messages.isEmpty,
+                  renderProbe.rowsDrawn == 0 else { return }
+            runBlankListRemedies(proxy, step: 0, channelId: openedChannel)
+        }
+    }
+
+    /// The blank-list remedy ladder.
+    ///
+    /// Device readout (2026-09-30), taken while a DM was black: rows drawn 0,
+    /// yet the scroll view itself was healthy — 754pt tall, ~9,400pt of
+    /// content, scrolled to the bottom — and every measurement the list takes
+    /// of itself read zero or never arrived. A non-animated scrollTo, a padding
+    /// change INSIDE the content, and rebuilding the scroll view all left it
+    /// black; only a finger-scroll brought the rows back. So SwiftUI's lazy
+    /// layout is holding a stale, empty visible region, and the question is
+    /// what makes it recompute.
+    ///
+    /// Rather than bet on one answer, try the candidates in order — each is
+    /// a different way of forcing that recompute — and stop at the first that
+    /// actually gets rows drawn. Each step is logged with the rows drawn after
+    /// it, so the diagnostics overlay names the one that worked (or shows that
+    /// none did):
+    ///   0  resize the scroll view's own frame by 1pt for one pass
+    ///   1  an ANIMATED scroll (continuous offset changes, like a fling)
+    ///   2  a UIKit-level contentOffset nudge on the backing UIScrollView
+    private func runBlankListRemedies(_ proxy: ScrollViewProxy, step: Int, channelId: String) {
+        guard landedChannelId == channelId, !store.messages.isEmpty else { return }
+        let before = renderProbe.rowsDrawn
+        guard before == 0 else {
+            renderProbe.remedyLog.append("ok drawn:\(before)")
+            return
+        }
+        let name: String
+        switch step {
+        case 0:
+            name = "viewport"
+            viewportNudge = 1
+            DispatchQueue.main.async { viewportNudge = 0 }
+        case 1:
+            name = "animated"
+            let ids = store.messages.suffix(2).map(\.id)
+            if let first = ids.first, let last = ids.last {
+                withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(first, anchor: .bottom) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last, anchor: .bottom) }
+                }
+            }
+        case 2:
+            name = "uikit:" + (renderProbe.nudgeUIKit?() ?? "no hook")
+        default:
+            renderProbe.remedyLog.append("all failed")
+            renderProbe.lastRescue = "remedies: " + renderProbe.remedyLog.joined(separator: " → ")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            renderProbe.remedyLog.append("\(name)→\(renderProbe.rowsDrawn)")
+            renderProbe.lastRescue = "remedies: " + renderProbe.remedyLog.joined(separator: " → ")
+            if renderProbe.rowsDrawn == 0 {
+                runBlankListRemedies(proxy, step: step + 1, channelId: channelId)
             }
         }
     }
@@ -1162,6 +1235,7 @@ struct MessageListView: View {
         landed:\(landedChannelId == channel.id) landing:\(landingText) initScroll:\(didInitialScroll)
         drawn:\(p.rowsDrawn) live:\(p.liveRows)
         content:\(Int(p.contentHeight)) vp:\(Int(viewportHeight)) sentinel:\(sentinel)
+        calls vp:\(p.viewportCalls) content:\(p.contentCalls) sentinel:\(p.sentinelCalls)
         geo off:\(Int(p.geoOffset)) content:\(Int(p.geoContent)) h:\(Int(p.geoContainer))
         near:\(isNearBottom) rescues:\(blankRescues) last:\(p.lastRescue)
         t+\(String(format: "%.1f", Date().timeIntervalSince(p.openedAt)))s nonce:\(listNonce)
@@ -7160,21 +7234,30 @@ final class RenderProbe {
     /// What the rescue paths last did, for the overlay.
     var lastRescue = "none"
     var openedAt = Date()
+    /// How many times each measurement callback actually FIRED. The first
+    /// device readout had viewport 0 / content 0 / sentinel ∞ — these tell a
+    /// callback that never runs apart from one that runs and reports zero.
+    var viewportCalls = 0
+    var contentCalls = 0
+    var sentinelCalls = 0
+    /// The blank-list remedy ladder's log: each step and the rows drawn after it.
+    var remedyLog: [String] = []
+    /// Set by ScrollViewNudger once it is in a window: nudges the backing
+    /// UIScrollView's contentOffset by a point and back — at the UIKit level,
+    /// the same thing a finger does.
+    var nudgeUIKit: (() -> String)?
 }
 
 /// Staff-only diagnostics overlay for the "DM opens black" bug. Shows the
-/// list's live state (refreshed twice a second) and three probes, each a
-/// different theory of the bug — whichever one brings the messages back names
-/// the mechanism:
-///   Last row  — scrollTo the newest message (materialisation / position)
-///   Relayout  — a half-point padding change (a missed layout pass)
-///   Rebuild   — recreate the scroll view (SwiftUI stuck on a dead render)
+/// list's live state (refreshed twice a second) and probes, each a different
+/// way of forcing the lazy list to recompute what's visible — whichever one
+/// brings the messages back names the mechanism. Round 1 (Last row / Relayout
+/// / Rebuild) all failed on device; round 2 is Viewport / Animated / UIKit /
+/// Rebuild, and the same three run automatically (runBlankListRemedies).
 /// "Copy" puts the text on the clipboard so it can be pasted into a report.
 private struct ChatDiagnosticsHUD: View {
     let snapshot: () -> String
-    let lastRow: () -> Void
-    let relayout: () -> Void
-    let rebuild: () -> Void
+    let probes: [(String, () -> Void)]
     @State private var copied = false
 
     var body: some View {
@@ -7186,9 +7269,9 @@ private struct ChatDiagnosticsHUD: View {
                     .foregroundColor(.green)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 6) {
-                    probe("Last row", lastRow)
-                    probe("Relayout", relayout)
-                    probe("Rebuild", rebuild)
+                    ForEach(Array(probes.enumerated()), id: \.offset) { _, p in
+                        probe(p.0, p.1)
+                    }
                     probe(copied ? "Copied" : "Copy") {
                         UIPasteboard.general.string = text
                         copied = true
@@ -7213,6 +7296,69 @@ private struct ChatDiagnosticsHUD: View {
                 .clipShape(RoundedRectangle(cornerRadius: 5))
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Finds the UIScrollView backing the chat's SwiftUI ScrollView and exposes a
+/// one-point contentOffset nudge through the render probe. Remedy ladder step 2
+/// and the "UIKit" probe: a finger-scroll is the one thing known to bring a
+/// blank list back, and at the UIKit level a finger-scroll is contentOffset
+/// changing on this view — so this is the closest code can get to one.
+///
+/// It sits in the ScrollView's background (a sibling of its content, since the
+/// content may be exactly what never rendered), so it searches outward: up the
+/// superview chain, and at each level for a UIScrollView covering this view's
+/// centre. Returns a short status string for the diagnostics log.
+private struct ScrollViewNudger: UIViewRepresentable {
+    let probe: RenderProbe
+
+    func makeUIView(context: Context) -> FinderView {
+        let v = FinderView()
+        v.isUserInteractionEnabled = false
+        v.backgroundColor = .clear
+        v.probe = probe
+        return v
+    }
+
+    func updateUIView(_ v: FinderView, context: Context) { v.probe = probe }
+
+    final class FinderView: UIView {
+        weak var probe: RenderProbe? {
+            didSet { probe?.nudgeUIKit = { [weak self] in self?.nudge() ?? "gone" } }
+        }
+
+        func nudge() -> String {
+            guard let sv = findScrollView() else { return "no scrollview" }
+            let o = sv.contentOffset
+            sv.setContentOffset(CGPoint(x: o.x, y: max(0, o.y - 1)), animated: false)
+            sv.setContentOffset(o, animated: false)
+            sv.setNeedsLayout()
+            sv.layoutIfNeeded()
+            return "ok"
+        }
+
+        private func findScrollView() -> UIScrollView? {
+            guard let window else { return nil }
+            let centre = convert(CGPoint(x: bounds.midX, y: bounds.midY), to: window)
+            var ancestor: UIView? = superview
+            for _ in 0..<8 {
+                guard let a = ancestor else { break }
+                if let hit = search(a, centre: centre, in: window) { return hit }
+                ancestor = a.superview
+            }
+            return nil
+        }
+
+        private func search(_ v: UIView, centre: CGPoint, in window: UIWindow) -> UIScrollView? {
+            if let sv = v as? UIScrollView, !(sv is UITextView),
+               sv.convert(sv.bounds, to: window).contains(centre) {
+                return sv
+            }
+            for sub in v.subviews {
+                if let hit = search(sub, centre: centre, in: window) { return hit }
+            }
+            return nil
+        }
     }
 }
 
