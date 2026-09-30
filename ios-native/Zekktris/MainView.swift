@@ -4895,6 +4895,8 @@ struct AdminView: View {
     @State private var monetSaving = false
     @State private var monetError: String?
     @State private var monetSaved = false
+    /// Chat diagnostics overlay switch — same key MessageListView reads.
+    @AppStorage("zk.chatDiagnostics") private var chatDiagnostics = false
 
     /// Moderators get the restricted panel: Users / Servers / Security only,
     /// with the reduced action set inside each. The API enforces the same
@@ -4988,6 +4990,9 @@ struct AdminView: View {
 
                     // Voice / LiveKit diagnostic (run on demand).
                     voiceDiagnosticSection
+
+                    // Chat diagnostics overlay — for chasing "a DM opens black".
+                    chatDiagnosticsToggle
 
                     // Recent activity feed (newest signups + servers).
                     activitySection
@@ -5180,6 +5185,26 @@ struct AdminView: View {
     }
 
     @ViewBuilder
+    /// Device-local switch for the chat diagnostics overlay (ChatDiagnosticsHUD
+    /// in MessageViews). Shows live list state + three redraw probes on top of
+    /// every chat, so the black-DM bug can be measured on a real phone.
+    private var chatDiagnosticsToggle: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: $chatDiagnostics) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Chat diagnostics").font(.zkSans(15, weight: .semibold)).foregroundColor(Theme.ink1)
+                    Text("Shows a live readout over every chat, this device only. If a DM opens black, tap Copy and send it — then try Last row, Relayout, Rebuild in that order and note which one brings the messages back.")
+                        .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .tint(Theme.accent)
+        }
+        .padding(16)
+        .background(Theme.bg2)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
     private var voiceDiagnosticSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {

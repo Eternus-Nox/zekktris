@@ -508,6 +508,14 @@ struct MessageListView: View {
     /// A class box on purpose: bumping it from every row's onAppear must not
     /// re-render the list, which an @State Int would.
     @State private var renderProbe = RenderProbe()
+    /// Staff-only diagnostics overlay (Admin → Overview → "Chat diagnostics").
+    /// A device-local switch, off by default; see ChatDiagnosticsHUD.
+    @AppStorage("zk.chatDiagnostics") private var chatDiagnostics = false
+    /// Bumped by the overlay's "Rebuild" button: recreates the whole scroll view.
+    @State private var listNonce = 0
+    /// Toggled by the overlay's "Relayout" button: a half-point padding change
+    /// that forces a layout pass without moving anything.
+    @State private var diagPad: CGFloat = 0
 
     /// Reports the message list's laid-out content height, so a late growth
     /// (image load / embed render / E2EE decrypt) can re-pin us to the bottom
@@ -636,8 +644,10 @@ struct MessageListView: View {
                                     .equatable()
                                     .id(message.id)
                                     .padding(.top, header ? 10 : 0)
+                                    .onDisappear { renderProbe.liveRows -= 1 }
                                     .onAppear {
                                         renderProbe.rowsDrawn += 1
+                                        renderProbe.liveRows += 1
                                         // Prefetch the next older page BEFORE the user reaches
                                         // the very top, so scrollback feels instant. Fires when
                                         // a row within ~10 of the oldest loaded message appears;
@@ -673,6 +683,7 @@ struct MessageListView: View {
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
+                        .padding(.top, diagPad)
                         .background(GeometryReader { gp in
                             Color.clear
                                 .preference(key: ContentHeightKey.self, value: gp.size.height)
@@ -763,7 +774,9 @@ struct MessageListView: View {
                     // and on a full viewport of overshoot so ordinary bounce
                     // never reaches it.
                     .modifier(BlankViewportRescue { rescueBlankViewport(proxy) })
-                    .onPreferenceChange(ContentHeightKey.self) { _ in
+                    .modifier(DiagnosticsGeometry(probe: renderProbe))
+                    .onPreferenceChange(ContentHeightKey.self) { h in
+                        renderProbe.contentHeight = h
                         // Late-sizing content (webhook embeds, photos/attachments
                         // loading, E2EE text decrypting) grows the rows AFTER the
                         // landing, pushing the chosen row off screen. While the
@@ -884,6 +897,8 @@ struct MessageListView: View {
                         landedChannelId = nil
                         landing = nil
                         blankRescues = 0
+                        renderProbe.openedAt = Date()
+                        renderProbe.lastRescue = "none"
                         // A fresh open lands at, or a screenful above, the bottom,
                         // so seed the gate open; the geometry pass closes it as soon
                         // as the user scrolls up into history.
@@ -949,6 +964,26 @@ struct MessageListView: View {
                             jumpToLatestButton(proxy)
                         }
                     }
+                    .overlay(alignment: .topLeading) {
+                        if chatDiagnostics {
+                            ChatDiagnosticsHUD(
+                                snapshot: { diagnosticsSnapshot() },
+                                lastRow: {
+                                    renderProbe.lastRescue = "manual: last row"
+                                    if let id = store.messages.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+                                },
+                                relayout: {
+                                    renderProbe.lastRescue = "manual: relayout"
+                                    diagPad = diagPad == 0 ? 0.5 : 0
+                                },
+                                rebuild: {
+                                    renderProbe.lastRescue = "manual: rebuild"
+                                    listNonce += 1
+                                }
+                            )
+                        }
+                    }
+                    .id(listNonce)
                 }
                 .background(Theme.bg1.opacity(0.9))
             }
@@ -1108,6 +1143,31 @@ struct MessageListView: View {
     /// Guarded on `viewportHeight > 0` so the first frame (before the viewport
     /// has been measured) can't briefly declare "not near bottom" and flash the
     /// button on open.
+    /// One text block describing the list's state right now, for the staff-only
+    /// diagnostics overlay. Everything the three "DM opens black" theories
+    /// disagree about is here: are rows drawn, where is the scroll, how big is
+    /// the content, did a rescue run.
+    private func diagnosticsSnapshot() -> String {
+        let p = renderProbe
+        let landingText: String
+        switch landing {
+        case .bottom: landingText = "bottom"
+        case .unread: landingText = "unread"
+        case nil: landingText = "nil"
+        }
+        let sentinel = sentinelOffset == .greatestFiniteMagnitude ? "∞" : "\(Int(sentinelOffset))"
+        return """
+        ch …\(channel.id.suffix(4)) \(channel.isDM ? "dm" : "guild") e2ee:\(channel.isE2EE) locked:\(isLocked)
+        msgs:\(store.messages.count) loading:\(store.loadingMessages) pending:\(store.pendingScrollAnchorId != nil)
+        landed:\(landedChannelId == channel.id) landing:\(landingText) initScroll:\(didInitialScroll)
+        drawn:\(p.rowsDrawn) live:\(p.liveRows)
+        content:\(Int(p.contentHeight)) vp:\(Int(viewportHeight)) sentinel:\(sentinel)
+        geo off:\(Int(p.geoOffset)) content:\(Int(p.geoContent)) h:\(Int(p.geoContainer))
+        near:\(isNearBottom) rescues:\(blankRescues) last:\(p.lastRescue)
+        t+\(String(format: "%.1f", Date().timeIntervalSince(p.openedAt)))s nonce:\(listNonce)
+        """
+    }
+
     /// Put the chat back on screen after the open landed past the end of its
     /// own content — the "DM opens black until I swipe" bug.
     ///
@@ -1127,6 +1187,7 @@ struct MessageListView: View {
         guard blankRescues < 5, store.pendingScrollAnchorId == nil else { return }
         guard !store.messages.isEmpty else { return }
         blankRescues += 1
+        renderProbe.lastRescue = "rescue#\(blankRescues) @\(String(format: "%.1f", Date().timeIntervalSince(renderProbe.openedAt)))s"
         switch landing {
         case .unread:
             // The divider is the chosen position; re-applying re-resolves it
@@ -7087,6 +7148,89 @@ private struct PokePopover: View {
 /// rows never triggers a re-render of the list it is counting.
 final class RenderProbe {
     var rowsDrawn = 0
+    // ── Chat diagnostics (staff-only overlay; see ChatDiagnosticsHUD) ──
+    /// Rows currently materialised: +1 on appear, −1 on disappear.
+    var liveRows = 0
+    /// Last ContentHeightKey reading — the laid-out height of all rows.
+    var contentHeight: CGFloat = 0
+    /// Last scroll geometry (iOS 18+): offset, content height, container height.
+    var geoOffset: CGFloat = 0
+    var geoContent: CGFloat = 0
+    var geoContainer: CGFloat = 0
+    /// What the rescue paths last did, for the overlay.
+    var lastRescue = "none"
+    var openedAt = Date()
+}
+
+/// Staff-only diagnostics overlay for the "DM opens black" bug. Shows the
+/// list's live state (refreshed twice a second) and three probes, each a
+/// different theory of the bug — whichever one brings the messages back names
+/// the mechanism:
+///   Last row  — scrollTo the newest message (materialisation / position)
+///   Relayout  — a half-point padding change (a missed layout pass)
+///   Rebuild   — recreate the scroll view (SwiftUI stuck on a dead render)
+/// "Copy" puts the text on the clipboard so it can be pasted into a report.
+private struct ChatDiagnosticsHUD: View {
+    let snapshot: () -> String
+    let lastRow: () -> Void
+    let relayout: () -> Void
+    let rebuild: () -> Void
+    @State private var copied = false
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+            let text = snapshot()
+            VStack(alignment: .leading, spacing: 6) {
+                Text(text)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.green)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    probe("Last row", lastRow)
+                    probe("Relayout", relayout)
+                    probe("Rebuild", rebuild)
+                    probe(copied ? "Copied" : "Copy") {
+                        UIPasteboard.general.string = text
+                        copied = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                    }
+                }
+            }
+            .padding(8)
+            .background(Color.black.opacity(0.82))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(8)
+        }
+    }
+
+    private func probe(_ title: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.black)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(Color.green)
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Records scroll geometry into the render probe for the diagnostics overlay.
+/// Writes to a reference type, so it never re-renders the list it observes.
+private struct DiagnosticsGeometry: ViewModifier {
+    let probe: RenderProbe
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onScrollGeometryChange(for: [CGFloat].self) { geo in
+                [geo.contentOffset.y, geo.contentSize.height, geo.containerSize.height]
+            } action: { _, v in
+                probe.geoOffset = v[0]; probe.geoContent = v[1]; probe.geoContainer = v[2]
+            }
+        } else {
+            content
+        }
+    }
 }
 
 /// Fires when the scroll is parked past the end of its own content by a full
