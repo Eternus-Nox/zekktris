@@ -62,10 +62,32 @@ function AuthShell({
           </div>
           {heading && <h1 className="text-2xl font-bold text-center mb-6">{heading}</h1>}
           {children}
+          <DesktopServerRow />
         </div>
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * "Server: zekktris.com · Change" — desktop app only. The web app is always
+ * served by its own server, but the desktop shell can load any Zekktris
+ * server; this opens the shell's picker (choosing happens in the shell's own
+ * window, never in this page). Mirrors the iOS / Android sign-in screens.
+ */
+function DesktopServerRow() {
+  const bridge = (window as unknown as { zekktris?: { openServerPicker?: () => void } }).zekktris;
+  if (!bridge?.openServerPicker) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => bridge.openServerPicker?.()}
+      className="mt-6 w-full text-center text-xs text-ink-3 hover:text-ink-2 transition-colors"
+    >
+      Server: <span className="text-ink-2">{window.location.host}</span>{' '}
+      <span className="text-accent">· Change</span>
+    </button>
   );
 }
 

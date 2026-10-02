@@ -2,8 +2,8 @@
  * Persistent config for the desktop shell.
  *
  * Stored as plain JSON in Electron's per-user data directory
- * (app.getPath('userData')). Currently just window geometry — the
- * server URL is fixed (zekktris.com), so there's nothing to configure.
+ * (app.getPath('userData')): window geometry, shell toggles, and which
+ * Zekktris server to load (zekktris.com unless the user picked their own).
  */
 
 import { app } from 'electron';
@@ -27,7 +27,13 @@ interface DesktopConfig {
   /** Persisted UI zoom level (Electron zoom level, not a percentage;
       0 = 100%, each step ≈ 20%). */
   zoomLevel?: number;
+  /** Origin of the Zekktris server to load ("https://host[:port]").
+      Absent = the hosted zekktris.com. */
+  serverUrl?: string;
 }
+
+/** The hosted server every install starts on. */
+export const DEFAULT_SERVER_URL = 'https://zekktris.com';
 
 const DEFAULT_BOUNDS: WindowBounds = { width: 1280, height: 800 };
 
@@ -92,5 +98,18 @@ export function getZoomLevel(): number {
 
 export function setZoomLevel(v: number): void {
   loadConfig().zoomLevel = v;
+  persist();
+}
+
+/** The Zekktris server origin to load. */
+export function getServerUrl(): string {
+  return loadConfig().serverUrl ?? DEFAULT_SERVER_URL;
+}
+
+/** Switch servers (null = back to zekktris.com). */
+export function setServerUrl(origin: string | null): void {
+  const cfg = loadConfig();
+  if (origin && origin !== DEFAULT_SERVER_URL) cfg.serverUrl = origin;
+  else delete cfg.serverUrl;
   persist();
 }

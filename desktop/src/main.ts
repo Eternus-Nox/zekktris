@@ -39,13 +39,29 @@ import {
   setOpenAtLogin,
   getZoomLevel,
   setZoomLevel,
+  getServerUrl,
+  setServerUrl,
+  DEFAULT_SERVER_URL,
 } from './config';
+import { normalizeServerUrl, probeServer } from './server';
 
 const PROTOCOL = 'zekktris';
 
-// Fixed instance the desktop app connects to. The app is a dedicated
-// client for zekktris.com — no server-picker, no setup screen.
-const SERVER_URL = 'https://zekktris.com';
+// Which Zekktris server to load: zekktris.com unless the user picked their
+// own (tray → "Change server…", or the link on the web sign-in page).
+// Switching relaunches the app so the window, session and the switch below
+// all start clean for the new server.
+
+// A server on the home network may be plain http. Chromium blocks the mic,
+// camera and screen share on insecure origins, so mark that one origin as
+// secure — only ever a local-network origin (normalizeServerUrl refuses
+// http:// for anything else), and only the one the user chose.
+{
+  const saved = getServerUrl();
+  if (saved.startsWith('http://')) {
+    app.commandLine.appendSwitch('unsafely-treat-insecure-origin-as-secure', saved);
+  }
+}
 
 // ── Auto-launch (start on login) ────────────────────────────────────────────
 // Apply the persisted openAtLogin setting to the OS login items. We
@@ -147,7 +163,7 @@ function handleDeepLink(url: string): void {
   try {
     const u = new URL(url);
     const route = `${u.hostname}${u.pathname}`; // e.g. "channel/123"
-    void mainWindow.loadURL(`${SERVER_URL}/${route}`);
+    void mainWindow.loadURL(`${getServerUrl()}/${route}`);
   } catch {
     /* ignore malformed deep links */
   }
@@ -411,7 +427,7 @@ function focusMainWindow(): void {
     if (!mainWindow.isVisible()) mainWindow.show();
     mainWindow.focus();
   } else {
-    createMainWindow(SERVER_URL);
+    createMainWindow(getServerUrl());
   }
 }
 
@@ -436,6 +452,10 @@ function createTray(): void {
     {
       label: 'Check for updates…',
       click: () => checkForUpdates(true),
+    },
+    {
+      label: `Change server… (${new URL(getServerUrl()).host})`,
+      click: () => showServerPicker(),
     },
     { type: 'separator' },
     {
@@ -467,6 +487,83 @@ function createTray(): void {
   tray.setContextMenu(menu);
   tray.on('click', () => focusMainWindow());
 }
+
+// ── Server picker ─────────────────────────────────────────────────────────────
+// A small shell-owned window for choosing which Zekktris server to load.
+// Switching is only possible from THIS window (a file:// page the shell
+// controls) — never from the remote app — so a compromised or malicious
+// server page can't quietly move someone onto a lookalike server.
+
+let serverWindow: BrowserWindow | null = null;
+
+function showServerPicker(): void {
+  if (serverWindow) {
+    serverWindow.focus();
+    return;
+  }
+  serverWindow = new BrowserWindow({
+    width: 460,
+    height: 400,
+    parent: mainWindow ?? undefined,
+    modal: !!mainWindow,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    backgroundColor: '#0a0f1c',
+    title: 'Server',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  void serverWindow.loadFile(join(__dirname, 'static', 'server.html'));
+  serverWindow.on('closed', () => {
+    serverWindow = null;
+  });
+}
+
+/** Only the shell's own server window may switch servers. */
+function fromServerWindow(e: Electron.IpcMainInvokeEvent): boolean {
+  return !!serverWindow && e.sender === serverWindow.webContents;
+}
+
+function switchServer(origin: string | null): void {
+  setServerUrl(origin);
+  isQuitting = true;
+  app.relaunch();
+  app.exit(0);
+}
+
+// Any page (including the remote app's sign-in screen) may ask to OPEN the
+// picker; choosing still happens in the shell's window.
+ipcMain.on('zk:open-server-picker', () => showServerPicker());
+
+ipcMain.handle('zk:server-current', () => {
+  const url = getServerUrl();
+  return { url, host: new URL(url).host, isDefault: url === DEFAULT_SERVER_URL };
+});
+
+ipcMain.handle('zk:server-connect', async (e, address: unknown) => {
+  if (!fromServerWindow(e) || typeof address !== 'string') return 'Not allowed.';
+  const n = normalizeServerUrl(address);
+  if (!n.ok) return n.error;
+  const failure = await probeServer(n.origin);
+  if (failure) return failure;
+  switchServer(n.origin);
+  return null;
+});
+
+ipcMain.handle('zk:server-reset', (e) => {
+  if (!fromServerWindow(e)) return 'Not allowed.';
+  switchServer(null);
+  return null;
+});
+
+ipcMain.on('zk:server-close', (e) => {
+  if (serverWindow && e.sender === serverWindow.webContents) serverWindow.close();
+});
 
 // ── Screen-share source picker ────────────────────────────────────────────────
 // Shows a small window listing capturable screens + windows with live
@@ -849,9 +946,9 @@ app.whenReady().then(() => {
   startIdleWatch();
   // Keep the OS login item in sync with the saved setting, then load.
   applyLoginItem(getOpenAtLogin());
-  // Fixed instance — always load zekktris.com. No setup screen. If the
-  // app was launched at login, start hidden in the tray.
-  createMainWindow(SERVER_URL, launchedAtLogin());
+  // Load the chosen server (zekktris.com by default). If the app was
+  // launched at login, start hidden in the tray.
+  createMainWindow(getServerUrl(), launchedAtLogin());
 
   // Background update check shortly after launch, then every 6 hours.
   setTimeout(() => checkForUpdates(false), 8000);

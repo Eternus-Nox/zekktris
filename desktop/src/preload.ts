@@ -40,7 +40,31 @@ contextBridge.exposeInMainWorld('zekktris', {
     ipcRenderer.on('zk:idle-state', listener);
     return () => ipcRenderer.removeListener('zk:idle-state', listener);
   },
+  /** Which Zekktris server the app is loading ({ url, host, isDefault }). */
+  getServer: (): Promise<{ url: string; host: string; isDefault: boolean }> =>
+    ipcRenderer.invoke('zk:server-current'),
+  /** Open the shell's server picker. Picking happens in that window. */
+  openServerPicker: (): void => {
+    ipcRenderer.send('zk:open-server-picker');
+  },
 });
+
+// The server picker itself (static/server.html, a file:// page the shell owns)
+// gets the calls that actually switch servers. Remote pages never see these,
+// and main.ts also checks the sender.
+if (window.location.protocol === 'file:') {
+  contextBridge.exposeInMainWorld('zekktrisServer', {
+    current: (): Promise<{ url: string; host: string; isDefault: boolean }> =>
+      ipcRenderer.invoke('zk:server-current'),
+    /** Resolves to null on success (the app relaunches), else a message. */
+    connect: (address: string): Promise<string | null> =>
+      ipcRenderer.invoke('zk:server-connect', address),
+    reset: (): Promise<string | null> => ipcRenderer.invoke('zk:server-reset'),
+    close: (): void => {
+      ipcRenderer.send('zk:server-close');
+    },
+  });
+}
 
 // ── Custom title bar (shell-owned, injected into the page) ───────────────────
 // The window is frameless (frame:false), so we draw our own 32px title

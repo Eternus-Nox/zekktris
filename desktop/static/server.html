@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+    <title>Server</title>
+    <style>
+      :root {
+        --navy: #0a0f1c; --panel: #131a2a; --line: #1e2a44;
+        --ink-1: #e6ecf7; --ink-2: #b5becf; --ink-3: #7f8db0; --cyan: #3dd7ec; --red: #f87171;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; background: var(--navy); color: var(--ink-1);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+      .wrap { padding: 22px; display: flex; flex-direction: column; gap: 14px; }
+      h1 { font-size: 17px; margin: 0; }
+      p { margin: 0; font-size: 13px; line-height: 1.5; color: var(--ink-2); }
+      .now { color: var(--ink-3); font-size: 12px; }
+      .now b { color: var(--ink-1); font-weight: 600; }
+      label { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; color: var(--ink-3); }
+      input { width: 100%; margin-top: 6px; padding: 10px 12px; font-size: 14px; color: var(--ink-1);
+        background: var(--panel); border: 1px solid var(--line); border-radius: 9px; outline: none; }
+      input:focus { border-color: var(--cyan); }
+      .error { color: var(--red); font-size: 13px; min-height: 1em; }
+      .row { display: flex; gap: 8px; justify-content: flex-end; }
+      button { padding: 9px 16px; font-size: 13px; font-weight: 600; border-radius: 9px; cursor: pointer;
+        border: 1px solid var(--line); background: var(--panel); color: var(--ink-1); }
+      button.primary { background: var(--cyan); border-color: var(--cyan); color: #04111a; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .link { background: none; border: none; padding: 0; color: var(--cyan); font-weight: 500; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Server</h1>
+      <p>
+        Zekktris runs on zekktris.com, and anyone can run their own server. Enter the address you
+        were given — a web address like chat.example.com, or an IP address.
+      </p>
+      <div class="now">Now using <b id="current">…</b></div>
+      <div>
+        <label for="address">SERVER ADDRESS</label>
+        <input id="address" type="text" autocomplete="off" spellcheck="false" autofocus />
+      </div>
+      <div class="error" id="error"></div>
+      <div class="row">
+        <button id="reset" class="link" hidden>Go back to zekktris.com</button>
+        <span style="flex: 1"></span>
+        <button id="cancel">Cancel</button>
+        <button id="connect" class="primary" disabled>Connect</button>
+      </div>
+      <p class="now">Zekktris restarts to switch servers. You'll sign in on the new server.</p>
+    </div>
+    <script>
+      const api = window.zekktrisServer;
+      const $ = (id) => document.getElementById(id);
+      const input = $('address');
+      const connectBtn = $('connect');
+      const errorEl = $('error');
+
+      api.current().then((s) => {
+        $('current').textContent = s.host;
+        $('reset').hidden = s.isDefault;
+      });
+
+      input.addEventListener('input', () => {
+        connectBtn.disabled = !input.value.trim();
+        errorEl.textContent = '';
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !connectBtn.disabled) connect();
+        if (e.key === 'Escape') api.close();
+      });
+      connectBtn.addEventListener('click', connect);
+      $('cancel').addEventListener('click', () => api.close());
+      $('reset').addEventListener('click', () => api.reset());
+
+      async function connect() {
+        connectBtn.disabled = true;
+        connectBtn.textContent = 'Checking…';
+        errorEl.textContent = '';
+        const failure = await api.connect(input.value);
+        // On success the app relaunches; we only get here on failure.
+        if (failure) {
+          errorEl.textContent = failure;
+          connectBtn.disabled = false;
+          connectBtn.textContent = 'Connect';
+        }
+      }
+    </script>
+  </body>
+</html>
