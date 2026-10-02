@@ -65,7 +65,7 @@ class PersistentCookieStorage(
                             path = s.path,
                             expires = s.expiresMs?.let { GMTDate(it) },
                         )
-                        delegate.addCookie(Url("https://${s.domain}${s.path}"), cookie)
+                        delegate.addCookie(Url("${scheme()}://${s.domain}${s.path}"), cookie)
                     }
                 }
             }
@@ -87,7 +87,7 @@ class PersistentCookieStorage(
     private suspend fun persist() {
         // get() filters out expired/deleted cookies, so a logout (Max-Age=0)
         // cookie is naturally dropped from what we write to disk.
-        val cookies = delegate.get(Url(REFRESH_URL))
+        val cookies = delegate.get(Url(Config.API_BASE_URL + "/auth/refresh"))
         val stored = cookies.map { c ->
             // zekktris_refresh is set via Max-Age (no Expires), so derive expiry
             // from maxAge when Expires is absent — else it persists as a
@@ -98,7 +98,7 @@ class PersistentCookieStorage(
             Stored(
                 name = c.name,
                 value = c.value,
-                domain = (c.domain ?: HOST).trimStart('.').lowercase(),
+                domain = (c.domain ?: Config.host).trimStart('.').lowercase(),
                 path = c.path ?: "/",
                 expiresMs = expiresMs,
             )
@@ -111,9 +111,10 @@ class PersistentCookieStorage(
 
     override fun close() = delegate.close()
 
+    /** The current server's scheme — a home-network server may be plain http. */
+    private fun scheme() = if (Config.serverOrigin.startsWith("http://")) "http" else "https"
+
     companion object {
-        private const val HOST = "zekktris.com"
-        private const val REFRESH_URL = "https://zekktris.com/api/v1/auth/refresh"
         private val KEY = stringPreferencesKey("cookie_jar")
     }
 }

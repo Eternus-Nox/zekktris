@@ -138,12 +138,16 @@ fun LoginScreen(
 
             if (!needs2FA) {
                 val ctx = androidx.compose.ui.platform.LocalContext.current
-                TextButton(
-                    onClick = { store.loginWithPasskey(ctx) },
-                    enabled = !state.authBusy,
-                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                ) {
-                    Text("Sign in with a passkey", color = p.accent, fontWeight = FontWeight.SemiBold)
+                // Passkeys are tied to zekktris.com (Digital Asset Links), so
+                // they only work there.
+                if (com.zekktris.data.Config.isDefaultServer) {
+                    TextButton(
+                        onClick = { store.loginWithPasskey(ctx) },
+                        enabled = !state.authBusy,
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                    ) {
+                        Text("Sign in with a passkey", color = p.accent, fontWeight = FontWeight.SemiBold)
+                    }
                 }
                 // Device-approval login: this device shows a code, a phone the
                 // user is already signed in on approves it. The way in for

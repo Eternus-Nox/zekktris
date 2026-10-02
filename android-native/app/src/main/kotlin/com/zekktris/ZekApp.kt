@@ -52,6 +52,8 @@ class ZekApp : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
+        // Which server to talk to — must be loaded before anything builds a URL.
+        com.zekktris.data.Config.init(this)
         val cookies = PersistentCookieStorage(zekDataStore)
         api = ApiClient(cookies)
         gateway = Gateway(api, appScope)

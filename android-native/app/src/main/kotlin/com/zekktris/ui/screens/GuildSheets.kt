@@ -257,7 +257,7 @@ fun InviteSheet(store: AppStore, state: AppState, guildId: String, onDismiss: ()
                 )
             } else {
                 // Result: code + copy actions.
-                val link = "https://zekktris.com/invite/$code"
+                val link = "${com.zekktris.data.Config.CDN_BASE_URL}/invite/$code"
                 Text("INVITE CODE", color = ZkInk.ink3, fontFamily = ZkSans, fontWeight = FontWeight.SemiBold, fontSize = 10.sp)
                 Text(code, color = ZkInk.ink1, fontFamily = ZkSans, fontWeight = FontWeight.Bold, fontSize = 22.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {

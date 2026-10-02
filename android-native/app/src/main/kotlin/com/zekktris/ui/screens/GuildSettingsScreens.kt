@@ -549,7 +549,7 @@ fun ManageInvitesScreen(store: AppStore, state: AppState, guildId: String, onBac
                         Icon(
                             Icons.Filled.ContentCopy, "Copy link", tint = ZkInk.ink3,
                             modifier = Modifier.clip(CircleShape)
-                                .clickable { clipboard.setText(androidx.compose.ui.text.AnnotatedString("https://zekktris.com/invite/${inv.code}")) }
+                                .clickable { clipboard.setText(androidx.compose.ui.text.AnnotatedString("${com.zekktris.data.Config.CDN_BASE_URL}/invite/${inv.code}")) }
                                 .padding(6.dp).size(16.dp),
                         )
                         Spacer(Modifier.width(6.dp))

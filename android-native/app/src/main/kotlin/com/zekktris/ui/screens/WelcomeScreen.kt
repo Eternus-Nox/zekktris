@@ -80,6 +80,8 @@ fun WelcomeScreen(
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = ZkInk.ink1),
                 ) { Text("Create Account", fontWeight = FontWeight.Medium) }
             }
+
+            ServerRow(Modifier.padding(top = 20.dp))
         }
     }
 }

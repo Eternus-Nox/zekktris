@@ -231,7 +231,13 @@ data class SecurityEvent(
 // ── Monetization config ──────────────────────────────────────────────────────
 
 @Serializable
-data class QualityTiers(val p1080: String = "none", val k2: String = "guardian", val k4: String = "legend")
+data class QualityTiers(
+    val p1080: String = "none",
+    val k2: String = "guardian",
+    val k4: String = "legend",
+    /** Screen share only: 60fps. Null on the camera matrix and older servers. */
+    val fps60: String? = null,
+)
 
 @Serializable
 data class UploadCapsMb(
@@ -291,8 +297,11 @@ data class AdminActivity(
 
 @Serializable
 data class MonetizationConfig(
-    val stream: QualityTiers = QualityTiers(),
+    // Defaults match the server's: everyone 720p30; Scout 1080p + 60fps;
+    // Guardian 2K; Legend 4K. The camera keeps 1080p open to everyone.
+    val stream: QualityTiers = QualityTiers(p1080 = "scout", fps60 = "scout"),
     val camera: QualityTiers = QualityTiers(),
+    /** Always "none" now — cosmetics are free. Kept for decoding. */
     val appearance: String = "none",
     val uploadCapsMb: UploadCapsMb = UploadCapsMb(),
 )

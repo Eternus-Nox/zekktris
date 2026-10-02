@@ -201,7 +201,7 @@ fun AdminAccountScreen(store: AppStore, state: AppState, userId: String, onBack:
                         InfoRow("Two-factor", if (a.twoFactorEnabled) "On" else "Off")
                         InfoRow("Signed-in devices", "${a.activeSessions}")
                         InfoRow("Servers / friends", "${a.guildCount} / ${a.friendCount}")
-                        InfoRow("Membership", a.subscriptionTier?.let { t ->
+                        InfoRow("Perk tier", a.subscriptionTier?.let { t ->
                             "$t · " + (a.subscriptionExpiresAt?.let { "until ${fmtDate(it)}" } ?: "forever")
                         } ?: "None")
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
@@ -248,7 +248,7 @@ fun AdminAccountScreen(store: AppStore, state: AppState, userId: String, onBack:
                         }
                         if (selfIsAdmin) {
                             ActionChip("Role") { dialog = AccountDialog.Role }
-                            ActionChip("Membership") { giftTier = null; dialog = AccountDialog.Gift }
+                            ActionChip("Perk tier") { giftTier = null; dialog = AccountDialog.Gift }
                             ActionChip("Delete account", danger = true) { dialog = AccountDialog.Delete }
                         }
                     }
@@ -488,17 +488,17 @@ fun AdminAccountScreen(store: AppStore, state: AppState, userId: String, onBack:
             val tier = giftTier
             if (tier == null) {
                 ChoiceDialog(
-                    title = "Membership",
+                    title = "Perk tier",
                     note = null,
                     choices = buildList {
-                        add("scout" to "Gift Scout"); add("guardian" to "Gift Guardian"); add("legend" to "Gift Legend")
-                        if (user.subscriptionTier != null) add("reset" to "Reset membership")
+                        add("scout" to "Give Scout"); add("guardian" to "Give Guardian"); add("legend" to "Give Legend")
+                        if (user.subscriptionTier != null) add("reset" to "Remove tier")
                     },
                     onDismiss = close,
                 ) { choice ->
                     if (choice == "reset") {
                         close()
-                        run("Membership removed") {
+                        run("Perk tier removed") {
                             store.adminCall { adminRemoveSubscription(userId) }
                             store.patchAdminUser(userId) { it.copy(subscriptionTier = null) }
                         }
@@ -508,13 +508,13 @@ fun AdminAccountScreen(store: AppStore, state: AppState, userId: String, onBack:
                 }
             } else {
                 ChoiceDialog(
-                    title = "Gift ${tier.replaceFirstChar { it.uppercase() }} for…",
+                    title = "Give ${tier.replaceFirstChar { it.uppercase() }} for…",
                     note = null,
                     choices = listOf("1m" to "1 month", "3m" to "3 months", "6m" to "6 months", "forever" to "Forever"),
                     onDismiss = close,
                 ) { d ->
                     close()
-                    run("Gifted $tier") {
+                    run("Gave the $tier tier") {
                         store.adminCall { adminGiftSubscription(userId, tier, d) }
                         store.patchAdminUser(userId) { it.copy(subscriptionTier = tier) }
                     }

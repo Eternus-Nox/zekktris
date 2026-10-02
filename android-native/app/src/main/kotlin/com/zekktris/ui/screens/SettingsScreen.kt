@@ -73,6 +73,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material.icons.filled.CheckCircle
 import com.zekktris.ui.components.ScreenScaffold
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -118,15 +119,17 @@ import java.time.LocalDate
 import java.time.ZoneId
 
 // Four tabs, matching iOS SettingsView: Notifications + Privacy fold into
-// Profile, Appearance folds into Membership.
+// Profile; themes, frames, tags and the perk-tier list live under Appearance.
 private enum class SettingsTab(val label: String) {
-    Profile("Profile"), Security("Security"), VoiceVideo("Voice & Video"), Membership("Membership")
+    Profile("Profile"), Security("Security"), VoiceVideo("Voice & Video"), Membership("Appearance")
 }
 
 /** Full-screen security sub-pages (all in-app; no web hand-off). */
 private enum class SecurityPage { Password, Username, Email, TwoFactor, Sessions, Passkeys, DeviceLogin, DateOfBirth }
 
-private const val WEB_SETTINGS = "https://zekktris.com/settings"
+/** Web Settings on the signed-in server — where someone still paying for a
+ *  subscription from before Zekktris went free can stop the billing. */
+private val webSettingsUrl get() = com.zekktris.data.Config.CDN_BASE_URL + "/settings"
 
 @Composable
 fun SettingsScreen(store: AppStore, state: AppState) {
@@ -235,8 +238,8 @@ fun SettingsScreen(store: AppStore, state: AppState) {
                     NavRow("Bots", "Create bot accounts and API tokens", leading = Icons.Filled.Memory) { showBots = true }
                     Spacer(Modifier.height(16.dp))
                     SectionLabel("LEGAL", Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
-                    LinkRow("Terms of Service", "https://zekktris.com/terms", leading = Icons.Filled.Description)
-                    LinkRow("Privacy Policy", "https://zekktris.com/privacy", leading = Icons.Filled.PrivacyTip)
+                    LinkRow("Terms of Service", com.zekktris.data.Config.CDN_BASE_URL + "/terms", leading = Icons.Filled.Description)
+                    LinkRow("Privacy Policy", com.zekktris.data.Config.CDN_BASE_URL + "/privacy", leading = Icons.Filled.PrivacyTip)
                     Spacer(Modifier.height(16.dp))
                     LogoutRow(store)
                     Text(
@@ -252,22 +255,20 @@ fun SettingsScreen(store: AppStore, state: AppState) {
                     Spacer(Modifier.height(24.dp).navigationBarsPadding())
                 }
                 SettingsTab.Membership -> {
-                    // iOS order (MainView.swift:2014-2039): shimmer (staff) →
-                    // Appearance editors for MEMBERS ONLY (non-members get the
-                    // single pitch card instead — no locked stubs) → Manage →
-                    // WHAT MEMBERSHIP UNLOCKS → DISPLAY (hide-clan-tags) LAST.
-                    val subscribed = state.me?.subscriptionTier != null
+                    // iOS order: shimmer (staff) → Appearance editors (free for
+                    // everyone) → PERK TIERS → old-subscription link (only for
+                    // someone still paying) → DISPLAY (hide-clan-tags) LAST.
                     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                        state.me?.subscriptionTier?.let { TierPill(it); Spacer(Modifier.height(16.dp)) }
-                        StaffShimmerBlock(store, state)
-                        if (subscribed) {
-                            ThemeBlock(state)
-                            AvatarDecorationBlock(store, state)
-                            NameTagBlock(store, state)
+                        if (state.me?.subscriptionTitled == true) {
+                            state.me.subscriptionTier?.let { TierPill(it); Spacer(Modifier.height(16.dp)) }
                         }
+                        StaffShimmerBlock(store, state)
+                        ThemeBlock()
+                        AvatarDecorationBlock(store, state)
+                        NameTagBlock(store, state)
                     }
                     Spacer(Modifier.height(16.dp))
-                    MembershipSection(state)
+                    PerkTiersSection(store, state)
                     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) { DisplayBlock() }
                     Spacer(Modifier.height(24.dp).navigationBarsPadding())
                 }
@@ -503,9 +504,8 @@ private fun FieldCaption(text: String) {
 }
 
 /**
- * Supporter/staff cosmetic editors — grouped under the Membership tab (the
- * perks membership unlocks). Split into ordered blocks so the Membership tab
- * can lay them out to match iOS: STAFF NAME SHIMMER → APPEARANCE (themes) →
+ * Staff + cosmetic editors — grouped under the Appearance tab, free for
+ * everyone. Split into ordered blocks so the tab can lay them out to match iOS: STAFF NAME SHIMMER → APPEARANCE (themes) →
  * AVATAR DECORATION → NAME TAG → DISPLAY. NOTE: Android uses a fixed 7-swatch
  * preset palette instead of iOS's free color wheel — an intentional platform
  * simplification.
@@ -574,14 +574,11 @@ private fun StaffShimmerBlock(store: AppStore, state: AppState) {
 private fun AvatarDecorationBlock(store: AppStore, state: AppState) {
     val p = ZkTheme.palette
     val me = state.me ?: return
-    val subscribed = me.subscriptionTier != null
     Column(Modifier.fillMaxWidth()) {
         Spacer(Modifier.height(20.dp))
         SectionLabel("AVATAR DECORATION")
         Spacer(Modifier.height(6.dp))
-        if (!subscribed) {
-            Text("A supporter perk — a colored ring or glow around your avatar.", color = ZkInk.ink4, fontFamily = ZkSans, fontSize = 12.sp)
-        } else {
+        run {
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 val current = me.avatarDecoration.takeIf { !it.isNullOrEmpty() } ?: "none"
                 DECORATIONS.forEach { id ->
@@ -602,14 +599,11 @@ private fun AvatarDecorationBlock(store: AppStore, state: AppState) {
 private fun NameTagBlock(store: AppStore, state: AppState) {
     val p = ZkTheme.palette
     val me = state.me ?: return
-    val subscribed = me.subscriptionTier != null
     Column(Modifier.fillMaxWidth()) {
         Spacer(Modifier.height(20.dp))
         SectionLabel("NAME TAG")
         Spacer(Modifier.height(6.dp))
-        if (!subscribed) {
-            Text("A supporter perk — a short pill shown in front of your name.", color = ZkInk.ink4, fontFamily = ZkSans, fontSize = 12.sp)
-        } else {
+        run {
             var tagLabel by remember(me.tagLabel) { mutableStateOf(me.tagLabel ?: "") }
             var tagColor by remember(me.tagColor) { mutableStateOf(me.tagColor ?: TAG_COLORS.first()) }
             FieldCaption("LABEL")
@@ -975,33 +969,15 @@ private fun FeaturesSection() {
     }
 }
 
-/** APPEARANCE (themes) block — first cosmetic under Membership, matching iOS. */
+/** APPEARANCE (themes) block — first cosmetic under Appearance, matching iOS. */
 @Composable
-private fun ThemeBlock(state: AppState) {
-    val p = ZkTheme.palette
-    val ctx = LocalContext.current
+private fun ThemeBlock() {
     val controller = LocalThemeController.current
-    val subscribed = state.me?.subscriptionTier != null
     Column(Modifier.fillMaxWidth()) {
         Spacer(Modifier.height(20.dp))
         SectionLabel("APPEARANCE")
         Spacer(Modifier.height(8.dp))
-        if (!subscribed) {
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(p.bg2).padding(14.dp)) {
-                Text("Color themes are a supporter perk", color = ZkInk.ink1, fontFamily = ZkSans, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                Text(
-                    "Unlock 12 color themes (plus avatar frames and name tags) by becoming a supporter. Everything stays purely cosmetic.",
-                    color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp),
-                )
-                Spacer(Modifier.height(10.dp))
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(p.accent)
-                        .clickable { runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(WEB_SETTINGS))) } }
-                        .padding(vertical = 11.dp),
-                    horizontalArrangement = Arrangement.Center,
-                ) { Text("See membership", color = Color.White, fontFamily = ZkSans, fontWeight = FontWeight.SemiBold, fontSize = 14.sp) }
-            }
-        } else {
+        run {
             // Two horizontally-scrolling rows of compact ~84x78 cards
             // (iOS MainView.swift:2639-2646), not a tall vertical grid.
             androidx.compose.foundation.lazy.grid.LazyHorizontalGrid(
@@ -1017,7 +993,7 @@ private fun ThemeBlock(state: AppState) {
             }
             Spacer(Modifier.height(8.dp))
             Text(
-                "Themes apply on this device and are a cosmetic supporter perk — they never change what you can do.",
+                "Themes apply on this device.",
                 color = ZkInk.ink4, fontFamily = ZkSans, fontSize = 12.sp,
             )
         }
@@ -1099,11 +1075,11 @@ private fun PrivacySection(store: AppStore, state: AppState) {
             "Let others see your achievements on your profile. Off keeps them private to you.",
             me?.achievementsPublic != false,
         ) { store.setAchievementsPublic(it) }
-        // Only TITLED memberships get the toggle — founder/grandfathered tiers
-        // have no title to hide (iOS gates on subscriptionTitled).
+        // Only TITLED tiers get the toggle — founder/grandfathered rows have no
+        // title to hide (iOS gates on subscriptionTitled).
         if (me?.subscriptionTitled == true) {
             SwitchRow(
-                "Show my supporter tier",
+                "Show my perk tier",
                 "Displays your tier title on your profile. Off hides the title — your perks keep working.",
                 me.showSubscriptionTier != false,
             ) { store.setShowSubscriptionTier(it) }
@@ -1222,7 +1198,7 @@ private fun VoiceVideoSection(store: AppStore, state: AppState) {
             }
         }
         Text(
-            "Some qualities may require a membership tier set by this server. 2K and 4K are heavy on battery. Changes apply the next time you turn your camera on.",
+            "Some qualities need a perk tier from this server's admins. 2K and 4K are heavy on battery. Changes apply the next time you turn your camera on.",
             color = ZkInk.ink4,
             fontSize = 12.sp,
             modifier = Modifier.padding(top = 4.dp),
@@ -1322,123 +1298,67 @@ private fun tierRank(id: String?) = when (id) {
     else -> 0
 }
 
+/** What each perk tier adds — highlights the user's current tier. Lines come
+ *  from this server's perk settings (AppStore.perkLines). Mirrors iOS
+ *  perkTiersSection. */
 @Composable
-private fun MembershipSection(state: AppState) {
+private fun PerkTiersSection(store: AppStore, state: AppState) {
     val p = ZkTheme.palette
     val ctx = LocalContext.current
     val tier = state.me?.subscriptionTier
-    fun openMembership() {
-        runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(WEB_SETTINGS))) }
-    }
+    // Load the server's perk settings so the lines are this server's.
+    var loaded by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { store.getMonetization(); loaded = true }
     Column(Modifier.padding(horizontal = 16.dp)) {
-        if (tier == null) {
-            // ── Non-members: the full pitch card (mirrors iOS copy exactly). ──
-            Text("MEMBERSHIP — A SUPPORTER PERK", color = ZkInk.ink3, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-            Spacer(Modifier.height(8.dp))
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(p.bg2).padding(12.dp)) {
-                Text(
-                    "Being a supporter helps Zekktris stay alive and strong. Membership unlocks COSMETIC customization — themes, avatar frames, and name tags — and wears your tier on your profile, plus higher streaming quality (2K on Guardian, 4K on Legend) for your camera and for screen share on web/desktop. It never changes what you can say or do.",
-                    color = ZkInk.ink2, fontSize = 13.sp,
-                )
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(
-                        Triple("scout", "Scout" to "$2/mo", "Cosmetics"),
-                        Triple("guardian", "Guardian" to "$5/mo", "2K streams"),
-                        Triple("legend", "Legend" to "$10/mo", "4K streams"),
-                    ).forEach { (id, namePrice, blurb) ->
-                        val color = tierColor(id)
-                        Column(
-                            Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(color.copy(alpha = 0.08f))
-                                .border(1.dp, color.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
-                                .padding(vertical = 10.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            Text(namePrice.first, color = color, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                            Text(namePrice.second, color = ZkInk.ink2, fontSize = 12.sp)
-                            Text(blurb, color = ZkInk.ink3, fontSize = 10.sp)
-                        }
-                    }
-                }
-                Spacer(Modifier.height(10.dp))
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(p.accent)
-                        .clickable { openMembership() }
-                        .padding(vertical = 11.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("Subscribe on zekktris.com", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                    Spacer(Modifier.width(6.dp))
-                    Icon(Icons.Filled.OpenInNew, null, tint = Color.White, modifier = Modifier.size(15.dp))
-                }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Payments are handled on the website and sync here automatically. Memberships are non-refundable; cancel any time and you keep it until the end of the paid term. A supervising parent's membership also covers their children.",
-                    color = ZkInk.ink3, fontSize = 11.sp,
-                )
+        Text("PERK TIERS", color = ZkInk.ink3, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Zekktris is free — nothing is for sale. Perk tiers add streaming quality on top, and this server's admins hand them out. A supervising parent's tier also covers their children.",
+            color = ZkInk.ink3, fontSize = 12.sp,
+        )
+        Spacer(Modifier.height(8.dp))
+        key(loaded) {
+            EntitlementCard(
+                null, "Everyone",
+                listOf("Every feature, plus all themes, avatar frames & name tags") + store.perkLines(0),
+                current = tier == null,
+            )
+            listOf("scout" to "Scout", "guardian" to "Guardian", "legend" to "Legend").forEach { (id, name) ->
+                EntitlementCard(id, name, store.perkLines(tierRank(id)) + "Tier title on your profile", current = tier == id)
             }
-        } else if (state.me?.subscriptionInherited != true) {
-            // ── Members: compact "Manage membership" row instead of the pitch.
-            //    Family-inherited members have nothing to manage (iOS
-            //    MainView.swift:2030-2032). ──
+        }
+        state.me?.subscriptionExpiresAt?.let {
+            Text(
+                "Your tier runs until ${it.take(10)}.",
+                color = ZkInk.ink3, fontSize = 12.sp,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
+        // Someone still paying for a subscription from before Zekktris went
+        // free: send them to web Settings to stop it. They keep the tier.
+        if (state.me?.subscriptionSource == "stripe" && state.me.subscriptionInherited != true) {
+            Spacer(Modifier.height(10.dp))
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(p.bg2)
-                    .clickable { openMembership() }.padding(horizontal = 14.dp, vertical = 12.dp),
+                    .clickable { runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(webSettingsUrl))) } }
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(Icons.Filled.CreditCard, null, tint = p.accent, modifier = Modifier.size(20.dp))
                 Column(Modifier.padding(start = 12.dp).weight(1f)) {
-                    Text("Manage membership", color = ZkInk.ink1, fontFamily = ZkSans, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-                    Text("Change tier or cancel on zekktris.com", color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 12.sp)
+                    Text("Stop your old subscription", color = ZkInk.ink1, fontFamily = ZkSans, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                    Text("Zekktris is free now. You keep your tier — stop the billing in web Settings.", color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 12.sp)
                 }
                 Icon(Icons.Filled.OpenInNew, null, tint = ZkInk.ink3, modifier = Modifier.size(18.dp))
             }
-        } else {
-            Text(
-                "Your membership is shared from a family member's plan.",
-                color = ZkInk.ink3, fontSize = 12.sp,
-            )
-        }
-
-        Spacer(Modifier.height(18.dp))
-        Text("WHAT MEMBERSHIP UNLOCKS", color = ZkInk.ink3, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-        Spacer(Modifier.height(8.dp))
-        EntitlementCard(
-            "scout", "Scout", "$2/mo",
-            listOf("Themes, avatar frames & name tags", "Supporter tier on your profile", "Streaming up to 1080p60"),
-            current = tier == "scout",
-        )
-        EntitlementCard(
-            "guardian", "Guardian", "$5/mo",
-            listOf("Everything in Scout", "2K camera & screen-share streaming", "Covers your supervised children"),
-            current = tier == "guardian",
-        )
-        EntitlementCard(
-            "legend", "Legend", "$10/mo",
-            listOf("Everything in Guardian", "4K camera & screen-share streaming"),
-            current = tier == "legend",
-        )
-        state.me?.subscriptionExpiresAt?.let {
-            Text(
-                "Your membership runs until ${it.take(10)}.",
-                color = ZkInk.ink3, fontSize = 12.sp,
-                modifier = Modifier.padding(top = 6.dp),
-            )
         }
     }
 }
 
 @Composable
-private fun EntitlementCard(id: String, name: String, price: String, perks: List<String>, current: Boolean) {
+private fun EntitlementCard(id: String?, name: String, perks: List<String>, current: Boolean) {
     val p = ZkTheme.palette
-    val color = tierColor(id)
+    val color = id?.let { tierColor(it) } ?: ZkInk.ink2
     // Current tier gets a tier-tinted fill + tier-colored border, radius 12 (iOS).
     val shape = RoundedCornerShape(if (current) 12.dp else 10.dp)
     Column(
@@ -1451,8 +1371,7 @@ private fun EntitlementCard(id: String, name: String, price: String, perks: List
             .padding(12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(name, color = color, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-            Text(price, color = ZkInk.ink3, fontSize = 12.sp, modifier = Modifier.padding(start = 8.dp).weight(1f))
+            Text(name, color = color, fontWeight = FontWeight.Bold, fontSize = 15.sp, modifier = Modifier.weight(1f))
             if (current) {
                 Text(
                     "YOUR TIER",
@@ -1513,7 +1432,7 @@ private fun WebRow(label: String) {
     val ctx = LocalContext.current
     Row(
         Modifier.fillMaxWidth().clickable {
-            runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(WEB_SETTINGS))) }
+            runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(webSettingsUrl))) }
         }.padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

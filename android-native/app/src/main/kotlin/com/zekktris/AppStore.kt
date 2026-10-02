@@ -1161,7 +1161,7 @@ class AppStore(
 
     // ---- discovery / invites / create server --------------------------------
 
-    /** Normalize a pasted invite ("https://zekktris.com/invite/abc" → "abc"). */
+    /** Normalize a pasted invite ("https://<server>/invite/abc" → "abc"). */
     private fun cleanInviteCode(raw: String): String {
         val t = raw.trim()
         return t.substringAfterLast("/").ifBlank { t }
@@ -1783,9 +1783,9 @@ class AppStore(
         else -> 0
     }
 
-    /** Minimum membership tier required to publish the camera at [q] per the
-     *  admin-configured matrix — or the built-in defaults (1080p free, 2K
-     *  Guardian, 4K Legend) when no config is loaded. Null = free. 720p and
+    /** Minimum perk tier required to publish the camera at [q] per the
+     *  admin-configured matrix — or the built-in defaults (1080p for everyone,
+     *  2K Guardian, 4K Legend) when no config is loaded. Null = free. 720p and
      *  below are ALWAYS free (never configurable). Mirrors the Settings
      *  picker's own gate (SettingsScreen VoiceVideoTab) so the two can't drift. */
     private fun requiredCameraTier(q: String): String? {
@@ -1799,16 +1799,29 @@ class AppStore(
         return required.takeIf { it != "none" }
     }
 
-    /** True when the signed-in user's membership meets the configured minimum
-     *  for camera quality [q]. Wired into VoiceManager's publish-time clamp. */
+    /** True when the signed-in user's tier meets the configured minimum for
+     *  camera quality [q]. Wired into VoiceManager's publish-time clamp. */
     private fun cameraQualityAllowed(q: String): Boolean {
         val required = requiredCameraTier(q) ?: return true
         // A profile we haven't loaded yet is UNKNOWN, not "free": failing closed
-        // on it would downgrade a paying user whose /users/@me is merely slow
+        // on it would downgrade a tier holder whose /users/@me is merely slow
         // (or who joined a call from a push-woken process). Only a KNOWN
-        // membership can fail the check.
+        // tier can fail the check.
         val me = _state.value.me ?: return true
         return tierRank(me.subscriptionTier) >= tierRank(required)
+    }
+
+    /** What a session at [rank] gets, for the Settings perk list. Screen share
+     *  runs on web and desktop only; defaults match the server's. */
+    fun perkLines(rank: Int): List<String> {
+        val s = monetizationConfig?.stream ?: com.zekktris.data.model.MonetizationConfig().stream
+        val screen = listOf("4K" to s.k4, "2K" to s.k2, "1080p" to s.p1080)
+            .firstOrNull { rank >= tierRank(it.second) }?.first ?: "720p"
+        val fps = if (rank >= tierRank(s.fps60 ?: "scout")) 60 else 30
+        val cam = monetizationConfig?.camera
+        val camera = listOf("4K" to (cam?.k4 ?: "legend"), "2K" to (cam?.k2 ?: "guardian"), "1080p" to (cam?.p1080 ?: "none"))
+            .firstOrNull { rank >= tierRank(it.second) }?.first ?: "720p"
+        return listOf("Screen share up to $screen at $fps fps on web & desktop", "Camera up to $camera")
     }
 
     // ---- profile edit -------------------------------------------------------

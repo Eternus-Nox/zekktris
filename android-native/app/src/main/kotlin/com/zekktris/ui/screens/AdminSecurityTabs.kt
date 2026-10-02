@@ -514,7 +514,7 @@ private fun PresetPill(word: String, added: Boolean, onAdd: () -> Unit) {
     }
 }
 
-// ── Monetization tab ─────────────────────────────────────────────────────────
+// ── Perks tab (what each perk tier unlocks) ──────────────────────────────────
 
 private val TIER_OPTIONS = listOf("none" to "Everyone", "scout" to "Scout", "guardian" to "Guardian", "legend" to "Legend")
 
@@ -536,21 +536,20 @@ fun AdminMonetizationTab(store: AppStore) {
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text(
-            "Minimum membership tier for each feature. \"Everyone\" removes the gate.",
+            "Everything is free, cosmetics included. Pick which perk tier unlocks each quality — give people tiers from their Account Info page. \"Everyone\" = no tier needed.",
             color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 11.sp,
         )
         SectionLabel("SCREEN SHARE — MIN TIER")
         TierPickerRow("1080p", c.stream.p1080) { config = c.copy(stream = c.stream.copy(p1080 = it)); saveState = null }
         TierPickerRow("2K", c.stream.k2) { config = c.copy(stream = c.stream.copy(k2 = it)); saveState = null }
         TierPickerRow("4K", c.stream.k4) { config = c.copy(stream = c.stream.copy(k4 = it)); saveState = null }
+        TierPickerRow("60 fps", c.stream.fps60 ?: "scout") { config = c.copy(stream = c.stream.copy(fps60 = it)); saveState = null }
         SectionLabel("CAMERA — MIN TIER")
         TierPickerRow("1080p", c.camera.p1080) { config = c.copy(camera = c.camera.copy(p1080 = it)); saveState = null }
         TierPickerRow("2K", c.camera.k2) { config = c.copy(camera = c.camera.copy(k2 = it)); saveState = null }
         TierPickerRow("4K", c.camera.k4) { config = c.copy(camera = c.camera.copy(k4 = it)); saveState = null }
-        SectionLabel("APPEARANCE / COSMETICS")
-        TierPickerRow("Min tier", c.appearance) { config = c.copy(appearance = it); saveState = null }
         SectionLabel("UPLOAD CAPS — MB (BLANK = SERVER DEFAULT)")
-        CapRow("Free", c.uploadCapsMb.free) { config = c.copy(uploadCapsMb = c.uploadCapsMb.copy(free = it)); saveState = null }
+        CapRow("No tier", c.uploadCapsMb.free) { config = c.copy(uploadCapsMb = c.uploadCapsMb.copy(free = it)); saveState = null }
         CapRow("Scout", c.uploadCapsMb.scout) { config = c.copy(uploadCapsMb = c.uploadCapsMb.copy(scout = it)); saveState = null }
         CapRow("Guardian", c.uploadCapsMb.guardian) { config = c.copy(uploadCapsMb = c.uploadCapsMb.copy(guardian = it)); saveState = null }
         CapRow("Legend", c.uploadCapsMb.legend) { config = c.copy(uploadCapsMb = c.uploadCapsMb.copy(legend = it)); saveState = null }

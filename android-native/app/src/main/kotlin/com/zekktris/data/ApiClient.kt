@@ -2167,11 +2167,11 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
             put("config", buildJsonObject {
                 put("stream", buildJsonObject {
                     put("p1080", JsonPrimitive(c.stream.p1080)); put("k2", JsonPrimitive(c.stream.k2)); put("k4", JsonPrimitive(c.stream.k4))
+                    c.stream.fps60?.let { put("fps60", JsonPrimitive(it)) }
                 })
                 put("camera", buildJsonObject {
                     put("p1080", JsonPrimitive(c.camera.p1080)); put("k2", JsonPrimitive(c.camera.k2)); put("k4", JsonPrimitive(c.camera.k4))
                 })
-                put("appearance", JsonPrimitive(c.appearance))
                 put("uploadCapsMb", buildJsonObject {
                     put("free", cap(c.uploadCapsMb.free)); put("scout", cap(c.uploadCapsMb.scout))
                     put("guardian", cap(c.uploadCapsMb.guardian)); put("legend", cap(c.uploadCapsMb.legend))
