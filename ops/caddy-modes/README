@@ -1,0 +1,12 @@
+Per-install TLS mode for ops/Caddyfile, picked by TLS_MODE in .env and
+imported as /etc/caddy/modes/<TLS_MODE>.global and <TLS_MODE>.site.
+
+  none  default. A domain in SITE_ADDRESS gets an ordinary Let's Encrypt
+        certificate automatically; ":5550" serves plain http (LAN, or behind
+        a tunnel / edge proxy that terminates TLS).
+  ip    the server is reached by a bare public IP (WAN IP + port forwarding).
+        Let's Encrypt issues IP certificates only on its 6-day "shortlived"
+        profile (Caddy renews every ~2 days). Behind NAT the connection
+        arrives on a LAN/container address and browsers send no SNI for an
+        IP, so default_sni tells Caddy which certificate to present.
+        Needs Caddy 2.11.4+ and inbound TCP 80 or 443 for validation.

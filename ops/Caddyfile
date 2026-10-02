@@ -10,6 +10,10 @@
 # serves the static bundle from /srv/web with a try_files fallback to
 # index.html so client-side routes resolve on hard refresh.
 {
+	# Per-install TLS mode (TLS_MODE in .env: none | ip). See
+	# ops/caddy-modes/README. "none" changes nothing.
+	import /etc/caddy/modes/{$TLS_MODE:none}.global
+
 	# ACME registration is anonymous by default — no email required.
 	# If you want Let's Encrypt to send certificate-renewal warnings,
 	# uncomment the line below and put your address. We don't template
@@ -19,9 +23,10 @@
 	# email you@example.com
 
 	# TLS behavior is driven by the site address scheme:
-	#   https://...       → auto-provision via Let's Encrypt
+	#   https://domain    → auto-provision via Let's Encrypt
+	#   https://<IP>      → Let's Encrypt IP certificate (needs TLS_MODE=ip)
 	#   http://hostname   → plain HTTP only
-	#   localhost / IP    → plain HTTP only (no cert possible)
+	#   :5550             → plain HTTP on any host (LAN / behind a tunnel)
 
 	# Enable HTTP/3 (QUIC) alongside h1/h2. Only takes effect on the
 	# HTTPS deployment path (h3 is TLS-only and browsers won't negotiate
@@ -122,12 +127,16 @@
 # listens on 443, and redirects 80->443. Requirements: a DNS A/AAAA record for
 # the domain pointing at this host, and ports 80+443 open to the internet.
 #
+# No domain? Use the public IP itself: SITE_ADDRESS=https://<IP>, TLS_MODE=ip,
+# PUBLIC_IP=<IP>, same ports. ./install.sh sets all of this up.
+#
 # If you already have an edge proxy (Cloudflare Tunnel, nginx, Traefik, ...)
 # terminating TLS, leave SITE_ADDRESS at the default `:5550` and point that
 # proxy at this host:5550 instead.
 #
 # Custom LAN port with no domain? Set SITE_ADDRESS=:8080 (match HTTP_PORT).
 {$SITE_ADDRESS::5550} {
+	import /etc/caddy/modes/{$TLS_MODE:none}.site
 	encode zstd gzip
 
 	# Security headers — modest defaults that don't break anything. CSP

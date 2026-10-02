@@ -1,0 +1,7 @@
+# Bare-IP install: Let's Encrypt only issues IP certificates on its 6-day
+# "shortlived" profile. Caddy renews them automatically.
+tls {
+	issuer acme {
+		profile shortlived
+	}
+}

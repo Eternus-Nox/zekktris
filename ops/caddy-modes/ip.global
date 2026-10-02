@@ -1,0 +1,2 @@
+# Bare-IP install: present the IP certificate to clients that send no SNI.
+default_sni {$PUBLIC_IP}

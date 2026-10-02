@@ -2,11 +2,12 @@
 
 This describes the system **as built**. Zekktris is a cross-platform
 communications app for communities — text chat, voice/video, and shared spaces
-— delivered as a single hosted service with native iOS, web, Electron desktop
-and Android clients. The core feature set is free; optional supporter
-memberships add cosmetic perks and higher streaming quality. (The clients are
-wired to the production host; the `docker compose` deploy is the operator's own
-runbook, not a self-host bundle.)
+— with native iOS, web, Electron desktop and Android clients. It runs as the
+hosted zekktris.com or as anyone's own server (`./install.sh`); the native
+clients pick the server at sign-in (iOS/Android `Config`, desktop
+`src/server.ts`), checked via the public `GET /api/v1/instance/info`. Everything
+is free; Scout / Guardian / Legend are admin-given perk tiers that raise
+streaming quality (`services/monetization.ts`).
 
 > **Naming:** "Zekktris" is the working name; it only appears in branding
 > strings, `package.json`, and a few URLs.

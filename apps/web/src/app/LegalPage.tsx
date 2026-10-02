@@ -18,6 +18,13 @@ const LAST_UPDATED = 'October 2, 2026';
 const CONTACT_EMAIL = 'support@zekktris.com';
 const PRIVACY_EMAIL = 'privacy@zekktris.com';
 
+/** The hosted service vs. a server someone runs themselves. The same web
+ *  bundle ships with every install, so the page says which one it is. */
+function isSelfHosted(): boolean {
+  const host = window.location.hostname;
+  return host !== 'zekktris.com' && host !== 'www.zekktris.com';
+}
+
 function LegalLayout({
   title,
   otherLabel,
@@ -43,6 +50,14 @@ function LegalLayout({
         </div>
         <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
         <p className="text-sm text-ink-3 mt-1 mb-8">Last updated: {LAST_UPDATED}</p>
+        {isSelfHosted() && (
+          <p className="mb-8 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-ink-2">
+            This Zekktris server ({window.location.host}) is run independently by its own
+            administrators, not by the Zekktris team. These are the default Zekktris terms; the
+            people running this server are responsible for it and for your data on it. Contact
+            them with questions.
+          </p>
+        )}
         <div className="legal-prose space-y-5 text-[0.95rem] leading-relaxed text-ink-2">
           {children}
         </div>

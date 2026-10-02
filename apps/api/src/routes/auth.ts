@@ -255,6 +255,10 @@ authRouter.post('/register', validate('json', registerSchema), async (c) => {
         .where(eq(schema.users.id, user.id))
         .returning();
       if (u) verifiedUser = u;
+      // First account on a fresh self-hosted server, registered with
+      // BOOTSTRAP_ADMIN_EMAIL → admin now, not after a restart.
+      const { promoteIfBootstrapAdmin } = await import('../bootstrap-admin');
+      if (await promoteIfBootstrapAdmin(user.id)) verifiedUser = { ...verifiedUser, isAdmin: true };
     }
 
     const { session, refreshToken } = await createSession({
@@ -1492,6 +1496,10 @@ authRouter.post(
       .update(schema.users)
       .set({ emailVerified: true })
       .where(eq(schema.users.id, claimed[0]!.userId));
+
+    // A verified BOOTSTRAP_ADMIN_EMAIL on a server with no admin yet.
+    const { promoteIfBootstrapAdmin } = await import('../bootstrap-admin');
+    await promoteIfBootstrapAdmin(claimed[0]!.userId);
 
     return c.json({ ok: true });
   },

@@ -110,3 +110,49 @@ export async function runBootstrapAdmin(): Promise<void> {
     });
   }
 }
+
+/**
+ * Signup-time counterpart of the boot task: whoever registers with
+ * BOOTSTRAP_ADMIN_EMAIL becomes admin straight away, instead of after the next
+ * restart — so a fresh self-hosted server is "install, register, you're the
+ * admin". Same first-admin-only rule: once any admin exists this does nothing.
+ *
+ * Called only once the address is VERIFIED — right at signup when the server
+ * has no email set up (accounts are auto-verified then), otherwise from
+ * /verify-email — so nobody gets admin by registering an address they don't
+ * own on a server that can check. Never throws; returns whether it promoted.
+ */
+export async function promoteIfBootstrapAdmin(userId: bigint): Promise<boolean> {
+  if (!env.BOOTSTRAP_ADMIN_EMAIL) return false;
+  try {
+    const [user] = await db
+      .select({ email: schema.users.email, emailVerified: schema.users.emailVerified })
+      .from(schema.users)
+      .where(and(eq(schema.users.id, userId), isNull(schema.users.deletedAt)))
+      .limit(1);
+    if (!user?.emailVerified) return false;
+    if (user.email.toLowerCase() !== env.BOOTSTRAP_ADMIN_EMAIL.toLowerCase()) return false;
+
+    // Atomic first-admin check: the UPDATE only lands while no admin exists.
+    const promoted = await db
+      .update(schema.users)
+      .set({ isAdmin: true, updatedAt: new Date() })
+      .where(
+        and(
+          eq(schema.users.id, userId),
+          sql`NOT EXISTS (SELECT 1 FROM users WHERE is_admin = true AND deleted_at IS NULL)`,
+        ),
+      )
+      .returning({ id: schema.users.id });
+    if (promoted.length > 0) {
+      log.info('bootstrap admin: promoted the new account to instance admin at signup', {
+        userId: userId.toString(),
+      });
+      return true;
+    }
+    return false;
+  } catch (err) {
+    log.error('bootstrap admin: signup promotion failed', { err });
+    return false;
+  }
+}

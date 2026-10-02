@@ -59,6 +59,11 @@ services:
       # automatic HTTPS. See ops/Caddyfile for the full explanation.
       SITE_ADDRESS: ${SITE_ADDRESS:-:5550}
       HTTP_PORT: ${HTTP_PORT:-5550}
+      # TLS mode: "none" (default — domains get certificates automatically,
+      # ":5550" stays plain http) or "ip" for a server reached by its bare
+      # public IP (Let's Encrypt IP certificate). See ops/caddy-modes/README.
+      TLS_MODE: ${TLS_MODE:-none}
+      PUBLIC_IP: ${PUBLIC_IP:-}
       # PUBLIC_URL is informational here — the API uses it for outgoing URLs
       # (email links, invite links, CDN URLs). It does NOT control what Caddy
       # listens on; that's SITE_ADDRESS above.
@@ -123,13 +128,9 @@ services:
       DB_PREPARED: ${DB_PREPARED:-false}
       REDIS_URL: redis://cache:6379
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:5550}
-      # Stripe billing (supporter memberships). Both must be set for paid
-      # Checkout to turn on — the API gates billing on STRIPE_SECRET_KEY &&
-      # STRIPE_WEBHOOK_SECRET (billingEnabled()), and /billing/status returns
-      # enabled:false without them, which leaves the web tier cards inert
-      # (informational, not clickable Subscribe buttons). Values live in .env;
-      # empty default keeps a self-host without Stripe working (billing off).
-      # PUBLIC_URL (above) builds the Checkout success/cancel + portal return URLs.
+      # LEGACY Stripe billing. Payments were removed (2026-10-02); these only
+      # keep subscriptions bought before then in sync until an admin ends them
+      # (Admin → Perks). Leave empty on any new or self-hosted server.
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env (>=32 chars)}
@@ -205,10 +206,10 @@ services:
       TRUST_PROXY: "true"   # we're behind Caddy; X-Forwarded-* are trusted
       # LiveKit (voice/video). The stack ships a self-hosted LiveKit SFU
       # (the `livekit` service below) that runs by default, so voice works
-      # out of the box. setup.sh generates a unique key/secret on first run;
+      # out of the box. install.sh generates a unique key/secret on first run;
       # the dev defaults here only exist so a bare `docker compose up` still
       # has working voice on a LAN — DO NOT ship them to production untouched
-      # (run setup.sh, or set your own LIVEKIT_API_KEY/SECRET in .env).
+      # (run ./install.sh, or set your own LIVEKIT_API_KEY/SECRET in .env).
       #
       # To use LiveKit Cloud instead of the bundled SFU, set LIVEKIT_WS_URL
       # to your wss://…livekit.cloud URL (plus the cloud key/secret) and the
@@ -220,9 +221,9 @@ services:
       # let ANYONE mint a valid token for ANY room — joining any voice
       # channel, stage or DM call, as any identity, without ever
       # authenticating to Zekktris. .env.example ships these blank, so the
-      # default applied to every deploy that didn't run setup.sh.
+      # default applied to every deploy that didn't run the installer.
       # Unset now means voice degrades to presence-only (joinVoice returns a
-      # null token), which is the correct failure mode. Run setup.sh or set
+      # null token), which is the correct failure mode. Run ./install.sh or set
       # your own values to enable voice.
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
@@ -460,7 +461,7 @@ services:
     environment:
       # API key/secret — colon-separated KEY: SECRET form per LiveKit spec.
       # MUST match the api's LIVEKIT_API_KEY/SECRET (same defaults below so a
-      # bare `docker compose up` agrees out of the box). setup.sh generates
+      # bare `docker compose up` agrees out of the box). install.sh generates
       # secure random values on first run.
       # Must match the api's key/secret. No fallback default — see the note
       # on the api service: the old `devkey`/`devsecret-…` defaults are

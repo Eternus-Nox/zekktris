@@ -1,14 +1,15 @@
 # Zekktris
 
 A cross-platform communications app for communities — text chat, voice & video,
-and shared spaces — with native iOS, web, Electron desktop and Android clients
-backed by a single hosted service. The core feature set is free; optional
-supporter memberships (Scout / Guardian / Legend) unlock cosmetic perks and
-higher streaming quality.
+and shared spaces — with native iOS, web, Electron desktop and Android clients.
+Use the hosted server at zekktris.com, or run your own: `./install.sh` sets one
+up on any Linux machine, reachable by a domain, just your public IP, or only
+your home network. The apps connect to any server from their sign-in screen
+("Server · Change").
 
-> This repo is the private source for the hosted Zekktris service — the clients
-> are wired to the production host, so it isn't a drop-in self-host bundle. The
-> `docker compose` sections below are the operator's own deploy runbook.
+Everything is free, cosmetics included. Scout / Guardian / Legend are perk
+tiers a server's admins hand out for higher streaming quality (by default:
+everyone 720p30, Scout 1080p + 60fps, Guardian 2K, Legend 4K).
 
 > **Status:** active development, but well past "skeleton" — Zekktris is a
 > working v1.x platform with voice/video calls, end-to-end-encrypted DMs,
@@ -199,24 +200,33 @@ The repo ships a 5-service `docker-compose.yml`:
 Only `proxy` exposes ports to the host. The `livekit` service uses host
 networking so WebRTC media can reach it directly.
 
-### Quick start (any Linux box with Docker)
+### Quick start (any Linux box)
 
 ```bash
 git clone <repo-url> zekktris
 cd zekktris
-./scripts/setup.sh
+./install.sh
 ```
 
-The setup script generates a `.env` with strong random secrets (including
-LiveKit dev keys), ensures the appdata directory exists, builds and brings up
-the stack, then waits for the API's startup checks to pass and prints the URL.
-You'll see the checks tick green in `docker compose logs -f api` (environment,
-snowflake, password hashing, JWT, DB connection, **migrations**, schema, upload
-dir, Redis, LiveKit config, gateway, …) before the HTTP port binds.
+The installer checks Docker (and offers to install it), finds this machine's
+LAN address and the network's public IP, tells you if your ISP uses
+carrier-grade NAT, asks the router to forward ports over UPnP when it can, opens
+ufw/firewalld, writes `.env` with fresh secrets, starts the stack, and waits for
+HTTPS. Three ways to be reached:
 
-Browse to `${PUBLIC_URL}`, register the first account, then set
-`ALLOW_REGISTRATION=invite-only` (or `closed`) in `.env` and
-`docker compose up -d` to apply. To drive it manually:
+| | How | HTTPS |
+|---|---|---|
+| `./install.sh --ip` | your public IP + port forwarding — no domain needed | Let's Encrypt **IP certificate** (6-day, auto-renewed) |
+| `./install.sh --domain chat.example.com` | a DNS A record pointing here | Let's Encrypt |
+| `./install.sh --lan` | home network only | none (apps work; browser calls need HTTPS) |
+
+Router ports for `--ip` / `--domain`: TCP 80, 443, 7881 and UDP 443, 7882.
+Register with the admin email you gave the installer and that account is the
+admin straight away. Re-run `./install.sh` any time (it never replaces your
+secrets); `--reconfigure` changes how the server is reached.
+
+Then set `ALLOW_REGISTRATION=invite-only` (or `closed`) in `.env` and
+`docker compose up -d` if you want a private server. To drive it manually:
 
 ```bash
 ./scripts/generate-secrets.sh    # write .env with fresh secrets
@@ -234,9 +244,14 @@ ACME HTTP-01 challenge requires it) and 443:
 
 ```
 PUBLIC_URL=https://chat.example.com
+SITE_ADDRESS=https://chat.example.com
 HTTP_PORT=80
 HTTPS_PORT=443
+COOKIE_SECURE=true
 ```
+
+No domain: use the public IP with `TLS_MODE=ip` (see `ops/caddy-modes/README`)
+— `./install.sh --ip` writes all of it.
 
 The 5550/5551 defaults are deliberately non-standard so a fresh stack doesn't
 fight other services for ports. If you front this with an existing reverse
@@ -260,7 +275,7 @@ Use the **Docker Compose Manager** plugin from Community Apps:
 ```bash
 mkdir -p /mnt/user/appdata/zekktris && cd /mnt/user/appdata/zekktris
 git clone <repo-url> .
-./scripts/setup.sh
+./install.sh
 ```
 
 `APPDATA_PATH` already defaults to `/mnt/user/appdata/zekktris`, so a stock box
@@ -276,8 +291,12 @@ that exists — `./data` inside the repo is a sensible choice.
   up before updating**. Caddy's cert directory re-provisions itself on restore.
 - **Logs**: `docker compose logs -f api` (structured JSON at `LOG_LEVEL=info`);
   `docker compose logs -f proxy` for Caddy access logs.
-- **Updates**: `git pull && docker compose build && docker compose up -d`. The
-  api applies any new migrations before serving traffic — no separate step.
+- **Updates**: `./scripts/update.sh` — backs up, pulls, rebuilds, and rolls
+  back if the new build fails its health check. The api applies new migrations
+  before serving traffic.
+- **Phone push notifications**: the official iOS/Android apps receive push only
+  from servers holding the app's APNs/FCM keys; on other servers everything else
+  works and browsers use web push.
 - **Multi-node**: supported when `REDIS_URL` is set (it is, by default, pointing
   at the `cache` service): the gateway event bus and session-revocation
   blacklist fan out through Redis so multiple API replicas stay consistent.

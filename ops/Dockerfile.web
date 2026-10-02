@@ -40,7 +40,9 @@ COPY packages/tsconfig ./packages/tsconfig
 RUN pnpm --filter @zekktris/web build
 
 # ─── Stage 2: Caddy serving SPA + reverse-proxying to API ──────────────────
-FROM caddy:2-alpine AS runtime
+# Pinned: 2.11.4 is the first Caddy that obtains Let's Encrypt IP
+# certificates (the bare-IP install mode). Bump deliberately.
+FROM caddy:2.11.4-alpine AS runtime
 
 # SPA static bundle. Caddy's file_server serves these directly; index.html
 # is the SPA fallback for any non-prefix path so client-side routing
@@ -57,6 +59,7 @@ COPY marketing /srv/site
 # Caddyfile defines all the routing. PUBLIC_URL is templated in via the
 # env var passed by docker compose — Caddy reads it at startup.
 COPY ops/Caddyfile /etc/caddy/Caddyfile
+COPY ops/caddy-modes /etc/caddy/modes
 
 # Caddy auto-creates these. We declare them so compose can mount volumes
 # without surprising the container.
