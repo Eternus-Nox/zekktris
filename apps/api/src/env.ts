@@ -74,10 +74,9 @@ export const envSchema = z.object({
    */
   METRICS_TOKEN: emptyAsUndefined(z.string().min(16).optional()),
 
-  // ── Stripe billing (supporter memberships) ──────────────────────────────
-  // Both unset → billing endpoints report disabled and memberships stay
-  // admin-gift only. Secret key = sk_test_… / sk_live_…; webhook secret =
-  // whsec_… from the dashboard endpoint for /api/v1/billing/webhook.
+  // ── Stripe billing — LEGACY (payments removed 2026-10-02) ──────────────
+  // Only needed while subscriptions bought before then are still live (see
+  // services/billing). Leave both unset on any new or self-hosted server.
   STRIPE_SECRET_KEY: emptyAsUndefined(z.string().startsWith('sk_').optional()),
   STRIPE_WEBHOOK_SECRET: emptyAsUndefined(z.string().startsWith('whsec_').optional()),
 

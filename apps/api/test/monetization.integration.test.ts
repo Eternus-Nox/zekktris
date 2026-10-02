@@ -107,9 +107,9 @@ describe.runIf(dbReady)('admin-configurable monetization', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { config: monetization.MonetizationConfig };
     expect(body.config).toEqual({
-      stream: { p1080: 'none', k2: 'guardian', k4: 'legend' },
+      stream: { p1080: 'scout', k2: 'guardian', k4: 'legend', fps60: 'scout' },
       camera: { p1080: 'none', k2: 'guardian', k4: 'legend' },
-      appearance: 'scout',
+      appearance: 'none',
       uploadCapsMb: { free: null, scout: null, guardian: null, legend: null },
     });
     expect(body.config).toEqual(monetization.DEFAULTS);
@@ -126,16 +126,15 @@ describe.runIf(dbReady)('admin-configurable monetization', () => {
 
     const put = await req('PUT', '/api/v1/admin/monetization', adminToken, {
       config: {
-        stream: { k2: 'legend' },
+        stream: { k2: 'legend', fps60: 'none' },
         camera: { p1080: 'scout' },
-        appearance: 'none',
         uploadCapsMb: { free: 25 },
       },
     });
     expect(put.status).toBe(200);
     const putBody = (await put.json()) as { config: monetization.MonetizationConfig };
     // Patched leaves changed; everything else stays at defaults.
-    expect(putBody.config.stream).toEqual({ p1080: 'none', k2: 'legend', k4: 'legend' });
+    expect(putBody.config.stream).toEqual({ p1080: 'scout', k2: 'legend', k4: 'legend', fps60: 'none' });
     expect(putBody.config.camera).toEqual({ p1080: 'scout', k2: 'guardian', k4: 'legend' });
     expect(putBody.config.appearance).toBe('none');
     expect(putBody.config.uploadCapsMb).toEqual({ free: 25, scout: null, guardian: null, legend: null });
@@ -156,6 +155,7 @@ describe.runIf(dbReady)('admin-configurable monetization', () => {
     expect(ev).toBeDefined();
     expect(ev!.actorId).toBe(admin.toString());
     expect(ev!.detail).toContain('monetize.stream.k2');
+    expect(ev!.detail).toContain('monetize.stream.fps60');
     expect(ev!.detail).toContain('upload.cap_mb.free');
 
     // Bad enum value → 400, nothing written.
@@ -163,13 +163,21 @@ describe.runIf(dbReady)('admin-configurable monetization', () => {
       config: { stream: { k2: 'platinum' } },
     });
     expect(bad.status).toBe(400);
+
+    // Cosmetics can't be gated any more. Older apps still send the key on
+    // save, so it's accepted and ignored.
+    const gated = await req('PUT', '/api/v1/admin/monetization', adminToken, {
+      config: { appearance: 'legend' },
+    });
+    expect(gated.status).toBe(200);
+    expect(((await gated.json()) as { config: { appearance: string } }).config.appearance).toBe('none');
   });
 
   it('PUT /admin/monetization is admin-only: moderator and normal user get 403', async () => {
     const mod = await createUser();
     await makeModerator(mod);
     const nobody = await createUser();
-    const patch = { config: { appearance: 'legend' } };
+    const patch = { config: { stream: { k4: 'none' } } };
 
     const modRes = await req('PUT', '/api/v1/admin/monetization', await tokenFor(mod), patch);
     expect(modRes.status).toBe(403);
@@ -177,31 +185,14 @@ describe.runIf(dbReady)('admin-configurable monetization', () => {
     expect(userRes.status).toBe(403);
   });
 
-  it("appearance gate: 'none' lets a free user set a cosmetic; 'legend' blocks a scout member", async () => {
-    // Free instance → a bare (never-subscribed) user can set a clan tag.
-    await monetization.saveConfig({ appearance: 'none' });
+  it('cosmetics are free: a user with no tier can set a frame and a clan tag', async () => {
     const freeUser = await createUser();
-    const okRes = await req('PATCH', '/users/@me', await tokenFor(freeUser), { tagLabel: 'ZK' });
-    expect(okRes.status).toBe(200);
-
-    // Legend-gated → a scout member is below the bar and keeps today's
-    // machine-readable error shape; a legend member clears it.
-    await monetization.saveConfig({ appearance: 'legend' });
-    const scout = await memberUser('scout');
-    const blocked = await req('PATCH', '/users/@me', await tokenFor(scout), { tagLabel: 'ZK' });
-    expect(blocked.status).toBe(403);
-    const err = (await blocked.json()) as {
-      error: { code: string; message: string; details?: { membershipRequired?: boolean } };
-    };
-    expect(err.error.details?.membershipRequired).toBe(true);
-    expect(err.error.message).toContain('Legend');
-
-    const legend = await memberUser('legend');
-    const allowed = await req('PATCH', '/users/@me', await tokenFor(legend), { tagLabel: 'ZK' });
-    expect(allowed.status).toBe(200);
-
-    // Restore the default so later tests/files see stock behavior.
-    await monetization.saveConfig({ appearance: 'scout' });
+    const res = await req('PATCH', '/users/@me', await tokenFor(freeUser), {
+      tagLabel: 'ZK',
+      tagColor: '#ff4d4d',
+      avatarDecoration: 'gold',
+    });
+    expect(res.status).toBe(200);
   });
 
   it('upload cap honors a configured per-tier cap, with env as the hard ceiling', async () => {

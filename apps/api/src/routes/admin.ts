@@ -61,8 +61,8 @@ export const adminRouter = new Hono();
 //
 // Moderator scope (per operator spec): security log (read), ban/unban,
 // force sign-out, membership VIEW (in the user list), DOB reset, and observing
-// servers (peek) — but NOT deleting them. Anything monetization-related
-// (gifting/removing memberships, the monetization config) is admin-only.
+// servers (peek) — but NOT deleting them. Anything perk-related (giving or
+// removing tiers, the perk config, legacy paid subscriptions) is admin-only.
 const MODERATOR_ALLOWED: { method: string; pattern: RegExp }[] = [
   { method: 'GET', pattern: /^\/users$/ },
   { method: 'POST', pattern: /^\/users\/[0-9]+\/(ban|unban|logout|reset-dob-lock|mute|unmute)$/ },
@@ -482,7 +482,7 @@ adminRouter.get('/users', validate('query', listUsersQuery), async (c) => {
     }
   }
 
-  // Supporter memberships for the page (own rows only — inherited/family
+  // Perk tiers for the page (own rows only — inherited/family
   // pass-down is a read-time entitlement, not an admin-managed row).
   const subMap = new Map<string, { tier: string; expiresAt: string | null }>();
   if (ids.length > 0) {
@@ -1217,12 +1217,12 @@ adminRouter.delete('/users/:id/notes/:noteId', validate('param', noteIdParam), a
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// Supporter memberships — admin gift / reset
+// Perk tiers — admin give / remove
 // ───────────────────────────────────────────────────────────────────────────
-// Gift: grant (or re-grant — overwrite) a tier for 1/3/6 months or forever.
-// Reset: remove the membership and clear the paid cosmetics (avatar frame +
-// clan tag) — the hard lock. A supervising parent's membership still passes
-// down to their children regardless of the child's own row.
+// Give: grant (or re-grant — overwrite) a tier for 1/3/6 months or forever.
+// Remove: drop the tier. Cosmetics are free, so nothing else is cleared. A
+// supervising parent's tier still passes down to their children regardless
+// of the child's own row.
 const giftSubscriptionBody = z.object({
   tier: z.enum(['scout', 'guardian', 'legend']),
   duration: z.enum(['1m', '3m', '6m', 'forever']),
@@ -1242,7 +1242,7 @@ adminRouter.post(
     await assertModCanTouch(c, targetId);
     const subs = await import('../services/subscriptions');
     const row = await subs.giftSubscription(selfId, targetId, tier, duration);
-    await auditStaff(c, 'staff_gift', `Gifted ${tier} membership (${duration})`, {
+    await auditStaff(c, 'staff_gift', `Gave ${tier} perk tier (${duration})`, {
       userId: targetId,
     });
     return c.json({
@@ -1256,20 +1256,44 @@ adminRouter.delete('/users/:id/subscription', validate('param', userIdParam), as
   const targetId = BigInt(c.req.valid('param').id);
   const subs = await import('../services/subscriptions');
   await subs.removeSubscription(targetId);
-  await auditStaff(c, 'staff_membership_reset', 'Reset membership (removed tier)', {
+  await auditStaff(c, 'staff_membership_reset', 'Removed perk tier', {
     userId: targetId,
   });
   return c.json({ ok: true });
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// PUT /admin/monetization — which tier unlocks each paid surface
+// Paid subscriptions left over from before payments were removed
+// ───────────────────────────────────────────────────────────────────────────
+// GET reports how many Stripe-billed tiers are still live; POST turns every
+// one into a forever tier at the same level and cancels the Stripe billing so
+// nobody is charged again. Admin only (not on the moderator allowlist).
+adminRouter.get('/paid-subscriptions', async (c) => {
+  const subs = await import('../services/subscriptions');
+  return c.json({ active: await subs.countPaidSubscriptions() });
+});
+
+adminRouter.post('/paid-subscriptions/retire', async (c) => {
+  const subs = await import('../services/subscriptions');
+  const r = await subs.retirePaidSubscriptions(requireUserId(c));
+  await auditStaff(
+    c,
+    'staff_monetization',
+    `Ended ${r.converted} paid subscription(s); kept their tiers forever` +
+      (r.cancelFailures ? ` (${r.cancelFailures} Stripe cancel(s) failed — cancel those in the Stripe dashboard)` : ''),
+  );
+  return c.json(r);
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// PUT /admin/monetization — what each perk tier unlocks
 // ───────────────────────────────────────────────────────────────────────────
 // ADMIN ONLY: deliberately NOT on the moderator allowlist (fail-safe default)
-// — repricing the instance's paywalls is an operator decision, and a
-// moderator must not be able to zero out the caps/gates. Accepts a full or
-// partial config; only the provided leaves are written. The read side for
-// clients is GET /api/v1/instance/monetization (any authed user).
+// — retuning the instance's perks is an operator decision, and a moderator
+// must not be able to change the caps/gates. Accepts a full or partial
+// config; only the provided leaves are written. The read side for clients is
+// GET /api/v1/instance/monetization (any authed user). The route keeps its
+// old name so older apps keep reading it; there are no payments behind it.
 const monetizeTier = z.enum(['none', 'scout', 'guardian', 'legend']);
 const qualityMatrixBody = z
   .object({
@@ -1278,11 +1302,14 @@ const qualityMatrixBody = z
     k4: monetizeTier.optional(),
   })
   .strict();
+const streamMatrixBody = qualityMatrixBody.extend({ fps60: monetizeTier.optional() }).strict();
 const putMonetizationBody = z.object({
   config: z
     .object({
-      stream: qualityMatrixBody.optional(),
+      stream: streamMatrixBody.optional(),
       camera: qualityMatrixBody.optional(),
+      // Accepted and IGNORED: cosmetics are always free, but older iOS and
+      // Android builds still send the whole config back on save.
       appearance: monetizeTier.optional(),
       // Integer MB caps; null clears the override back to the env default.
       // The env MAX_UPLOAD_SIZE_MB remains the hard ceiling regardless.
@@ -1300,13 +1327,13 @@ const putMonetizationBody = z.object({
 });
 
 adminRouter.put('/monetization', validate('json', putMonetizationBody), async (c) => {
-  const { config: patch } = c.req.valid('json');
+  const { appearance: _ignored, ...patch } = c.req.valid('json').config;
   const monetization = await import('../services/monetization');
   const changedKeys = await monetization.saveConfig(patch);
   await auditStaff(
     c,
     'staff_monetization',
-    `Updated monetization settings (${changedKeys.length ? changedKeys.join(', ') : 'no changes'})`,
+    `Updated perk settings (${changedKeys.length ? changedKeys.join(', ') : 'no changes'})`,
   );
   const config = await monetization.getConfig();
   return c.json({ config });

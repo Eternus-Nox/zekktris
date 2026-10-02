@@ -90,10 +90,10 @@ export interface SelfUserDTO {
   staffColor: string | null;
   /** Optional soft glow layered on the shimmer (self DTO so the toggle pre-fills). */
   staffGlow: boolean;
-  /** Whether the supporter tier title shows on the profile popup. */
+  /** Whether the perk tier title shows on the profile popup. */
   showSubscriptionTier: boolean;
-  /** Effective supporter tier (own or inherited from a supervising parent);
-      null/absent = no membership → Appearance perks locked. Populated only by
+  /** Effective perk tier (own or inherited from a supervising parent);
+      null/absent = no tier → base perks. Populated only by
       routes that fetch it (GET/PATCH /@me) — optional so hot paths skip it. */
   subscriptionTier?: 'scout' | 'guardian' | 'legend' | null;
   /** Membership expiry (ISO), null = unlimited. Only set alongside tier. */

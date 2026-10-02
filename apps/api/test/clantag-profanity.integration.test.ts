@@ -31,13 +31,9 @@ function patchMe(token: string, body: unknown) {
   });
 }
 
-/** Clan tags are a paid cosmetic (membership hard-lock) — a bare account gets
- *  403 membershipRequired before validation runs. Grant a forever membership
- *  so these tests exercise the profanity bar, not the paywall. */
+/** Clan tags are free, so a bare account exercises the profanity bar. */
 async function memberUser(): Promise<bigint> {
-  const uid = await createUser();
-  await db.insert(schema.subscriptions).values({ userId: uid, tier: 'scout', source: 'gift' });
-  return uid;
+  return createUser();
 }
 
 // The name tag renders right next to the username everywhere, so it must clear

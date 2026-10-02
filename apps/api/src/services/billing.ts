@@ -1,23 +1,17 @@
 /**
- * Stripe billing for supporter memberships
- * ----------------------------------------
- * The payment rail on top of services/subscriptions (which owns the
- * entitlement rows). Feature-flagged on STRIPE_SECRET_KEY — unset means
- * billing reports disabled and memberships stay admin-gift only.
- *
- * Design:
- *   - Prices are AUTO-PROVISIONED by lookup_key (zekktris_scout /
- *     zekktris_guardian / zekktris_legend, $2/$5/$10 monthly) on first use —
- *     no dashboard product setup needed. Existing prices are reused.
- *   - Checkout Sessions carry userId + tier in metadata; the webhook
- *     (checkout.session.completed) activates the row. Renewals
- *     (invoice.paid) push expiresAt forward; deletion hard-locks. The row's
- *     expiresAt = period end + 24h grace, so the hourly expiry sweep is the
- *     fail-safe if a webhook is ever missed.
- *   - Memberships are NON-REFUNDABLE (stated on the pitch AND on the
- *     Checkout submit button).
- *   - Cancel/manage happens in the Stripe Billing Portal (customer keeps
- *     access until the paid period ends — the row expires on schedule).
+ * Stripe billing — LEGACY, wind-down only
+ * ---------------------------------------
+ * Payments were removed on 2026-10-02: every account gets the whole app, and
+ * perk tiers are given out by admins. Nobody can start a new subscription
+ * (there is no checkout any more). What remains keeps the subscriptions
+ * bought before then honest until an admin retires them
+ * (subscriptions.retirePaidSubscriptions):
+ *   - the webhook keeps renewals / cancellations in sync with the rows,
+ *   - a subscriber can still cancel or open the Stripe portal,
+ *   - admin give/remove and the expiry sweep cancel at Stripe so nobody is
+ *     charged for a tier that's gone.
+ * Feature-flagged on STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET; a server
+ * without them (every self-hosted install) never touches Stripe.
  */
 
 import Stripe from 'stripe';
@@ -38,98 +32,19 @@ function stripe(): Stripe {
   return _stripe;
 }
 
-/** lookup_key ↔ tier. Amounts in cents; monthly recurring. */
-const TIER_PRICES: Record<Tier, { lookupKey: string; label: string; amount: number }> = {
-  scout: { lookupKey: 'zekktris_scout', label: 'Zekktris Scout', amount: 200 },
-  guardian: { lookupKey: 'zekktris_guardian', label: 'Zekktris Guardian', amount: 500 },
-  legend: { lookupKey: 'zekktris_legend', label: 'Zekktris Legend', amount: 1000 },
+/** lookup_key ↔ tier, for renewals of subscriptions bought before payments
+ *  were removed. */
+const TIER_LOOKUP_KEYS: Record<Tier, string> = {
+  scout: 'zekktris_scout',
+  guardian: 'zekktris_guardian',
+  legend: 'zekktris_legend',
 };
 
 export function tierForLookupKey(lookupKey: string | null | undefined): Tier | null {
-  for (const [tier, meta] of Object.entries(TIER_PRICES)) {
-    if (meta.lookupKey === lookupKey) return tier as Tier;
+  for (const [tier, key] of Object.entries(TIER_LOOKUP_KEYS)) {
+    if (key === lookupKey) return tier as Tier;
   }
   return null;
-}
-
-/** Resolved price ids per tier, cached for the process lifetime. */
-const priceCache = new Map<Tier, string>();
-
-async function priceIdForTier(tier: Tier): Promise<string> {
-  const cached = priceCache.get(tier);
-  if (cached) return cached;
-  const meta = TIER_PRICES[tier];
-  // Reuse an existing price with our lookup_key…
-  const existing = await stripe().prices.list({ lookup_keys: [meta.lookupKey], limit: 1 });
-  let priceId = existing.data[0]?.id;
-  // …or provision the product + price on first use.
-  if (!priceId) {
-    const product = await stripe().products.create({
-      name: meta.label,
-      description: `${meta.label} supporter membership — helps Zekktris stay alive and strong. Non-refundable.`,
-    });
-    const price = await stripe().prices.create({
-      product: product.id,
-      unit_amount: meta.amount,
-      currency: 'usd',
-      recurring: { interval: 'month' },
-      lookup_key: meta.lookupKey,
-    });
-    priceId = price.id;
-    log.info('stripe price provisioned', { tier, priceId });
-  }
-  priceCache.set(tier, priceId);
-  return priceId;
-}
-
-/** Start a Checkout Session for the tier; returns the redirect URL. */
-export async function createCheckoutSession(input: {
-  userId: bigint;
-  email: string;
-  tier: Tier;
-}): Promise<string> {
-  const own = await subscriptions.getOwnSubscription(input.userId);
-  if (own?.source === 'stripe') {
-    throw errors.badRequest(
-      'You already have an active subscription — use “Manage subscription” to change or cancel it.',
-    );
-  }
-  // Block subscribing OVER an active gift/founder membership. A completed
-  // checkout overwrites the single per-user row (source→stripe, expiresAt→
-  // period-end), which would silently destroy a forever gift or a
-  // grandfathered founder grant — the holder gains nothing by paying and
-  // could end up with nothing if they later cancel. They already have full
-  // perks; there's simply no action to take.
-  if (own && own.source !== 'stripe') {
-    throw errors.badRequest(
-      'You already have a membership (a gift or founder grant) with full perks — no need to subscribe. It stays active on its own.',
-    );
-  }
-  const priceId = await priceIdForTier(input.tier);
-  const session = await stripe().checkout.sessions.create({
-    mode: 'subscription',
-    line_items: [{ price: priceId, quantity: 1 }],
-    success_url: `${env.PUBLIC_URL}/settings?billing=success`,
-    cancel_url: `${env.PUBLIC_URL}/settings?billing=canceled`,
-    client_reference_id: input.userId.toString(),
-    // Reuse the Stripe customer when they've paid before (keeps their portal
-    // history in one place); otherwise Checkout creates one from the email.
-    ...(own?.stripeCustomerId
-      ? { customer: own.stripeCustomerId }
-      : { customer_email: input.email }),
-    metadata: { userId: input.userId.toString(), tier: input.tier },
-    subscription_data: {
-      metadata: { userId: input.userId.toString(), tier: input.tier },
-    },
-    custom_text: {
-      submit: {
-        message:
-          'Being a supporter helps Zekktris stay alive and strong. Memberships are non-refundable.',
-      },
-    },
-  });
-  if (!session.url) throw errors.internal('Stripe did not return a checkout URL');
-  return session.url;
 }
 
 /** Billing-portal session (manage/cancel). Requires a paid membership. */
@@ -145,6 +60,11 @@ export async function createPortalSession(userId: bigint): Promise<string> {
   return session.url;
 }
 
+/** Whether this server can cancel anything at Stripe. */
+export function canCancelAtStripe(): boolean {
+  return !!env.STRIPE_SECRET_KEY;
+}
+
 /** Remote cancel (admin reset path). Immediate, best-effort at the caller. */
 export async function cancelStripeSubscription(stripeSubscriptionId: string): Promise<void> {
   if (!env.STRIPE_SECRET_KEY) return; // nothing to cancel against
@@ -153,9 +73,8 @@ export async function cancelStripeSubscription(stripeSubscriptionId: string): Pr
 
 /**
  * User-initiated in-app cancel: schedule the subscription to end at the current
- * period's end (they keep access + cosmetics until then). Non-refundable, so we
- * don't cancel immediately. Returns the effective end (period end + grace) for
- * a "you're a member until <date>" message. Reversible via reactivate below.
+ * period's end (they keep the tier until then). Returns the effective end
+ * (period end + grace) for a "your tier runs until <date>" message.
  */
 export async function cancelOwnSubscriptionAtPeriodEnd(
   userId: bigint,
@@ -170,17 +89,6 @@ export async function cancelOwnSubscriptionAtPeriodEnd(
   // customer.subscription.updated fires and keeps the row's expiry current; the
   // actual hard-lock happens on subscription.deleted at period end.
   return { endsAt: periodEndOf(sub) };
-}
-
-/** Undo a scheduled cancel — resume auto-renew. */
-export async function reactivateOwnSubscription(userId: bigint): Promise<void> {
-  const own = await subscriptions.getOwnSubscription(userId);
-  if (own?.source !== 'stripe' || !own.stripeSubscriptionId) {
-    throw errors.badRequest('You have no paid subscription to resume.');
-  }
-  await stripe().subscriptions.update(own.stripeSubscriptionId, {
-    cancel_at_period_end: false,
-  });
 }
 
 /** Period end resolution across API versions (item-level fallback). */

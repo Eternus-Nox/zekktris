@@ -155,9 +155,9 @@ export function createApp() {
   // Parental controls — linking + supervision summary. Defines its own
   // /family/* paths so it mounts at the v1 root.
   v1.route('/', familyRouter);
-  // Stripe billing for supporter memberships (checkout/portal/webhook). The
-  // webhook (/api/v1/billing/webhook) is unauthenticated by design —
-  // authenticity comes from Stripe's signature over the raw body.
+  // Legacy Stripe wind-down (portal/cancel/webhook; no checkout). The webhook
+  // (/api/v1/billing/webhook) is unauthenticated by design — authenticity
+  // comes from Stripe's signature over the raw body.
   v1.route('/billing', billingRouter);
   app.route('/api/v1', v1);
 

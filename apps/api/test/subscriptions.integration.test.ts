@@ -3,12 +3,14 @@ import { and, eq } from 'drizzle-orm';
 import { db, schema } from '../src/db';
 import {
   activateStripeSubscription,
+  countPaidSubscriptions,
   endStripeSubscription,
   getEffectiveSubscription,
   giftSubscription,
   hasMembership,
   removeSubscription,
   renewStripeSubscription,
+  retirePaidSubscriptions,
   sweepExpiredSubscriptions,
 } from '../src/services/subscriptions';
 import { createUser, cleanupAll } from './seed';
@@ -41,7 +43,7 @@ async function userCosmetics(userId: bigint) {
   return row!;
 }
 
-describe.runIf(dbReady)('supporter memberships (integration)', () => {
+describe.runIf(dbReady)('perk tiers (integration)', () => {
   afterAll(async () => {
     await cleanupAll();
     await closeDb();
@@ -114,7 +116,7 @@ describe.runIf(dbReady)('supporter memberships (integration)', () => {
     expect(regifted!.tier).toBe('guardian');
   });
 
-  it('admin reset removes the membership AND clears paid cosmetics', async () => {
+  it('removing a tier keeps the cosmetics — they are free', async () => {
     const admin = await createUser();
     const user = await createUser();
     await giftSubscription(admin, user, 'legend', 'forever');
@@ -126,11 +128,11 @@ describe.runIf(dbReady)('supporter memberships (integration)', () => {
     await removeSubscription(user);
     expect(await hasMembership(user)).toBe(false);
     const cosmetics = await userCosmetics(user);
-    expect(cosmetics.avatarDecoration).toBeNull();
-    expect(cosmetics.tagLabel).toBeNull();
+    expect(cosmetics.avatarDecoration).toBe('gold');
+    expect(cosmetics.tagLabel).toBe('ZKT');
   });
 
-  it('stripe lifecycle: activate → titled member; renew extends; delete hard-locks', async () => {
+  it('legacy stripe lifecycle: activate → titled; renew extends; delete ends the tier', async () => {
     const user = await createUser();
     const periodEnd = new Date(Date.now() + 30 * 86_400_000);
     await activateStripeSubscription({
@@ -165,12 +167,7 @@ describe.runIf(dbReady)('supporter memberships (integration)', () => {
     expect(await renewStripeSubscription('sub_test1', nextEnd, undefined, false)).toBe(true);
     expect((await getEffectiveSubscription(user))!.cancelAtPeriodEnd).toBe(false);
 
-    // Gifting over an active paid subscription is refused (would keep
-    // charging them while the row says gift).
-    const admin = await createUser();
-    await expect(giftSubscription(admin, user, 'scout', 'forever')).rejects.toThrow();
-
-    // Stripe-side deletion hard-locks: row gone + cosmetics cleared.
+    // Stripe-side deletion ends the tier; the cosmetics stay (they're free).
     await db
       .update(schema.users)
       .set({ avatarDecoration: 'ocean', tagLabel: 'PAID' })
@@ -178,10 +175,67 @@ describe.runIf(dbReady)('supporter memberships (integration)', () => {
     expect(await endStripeSubscription('sub_test1')).toBe(true);
     expect(await hasMembership(user)).toBe(false);
     const cosmetics = await userCosmetics(user);
-    expect(cosmetics.avatarDecoration).toBeNull();
-    expect(cosmetics.tagLabel).toBeNull();
+    expect(cosmetics.avatarDecoration).toBe('ocean');
+    expect(cosmetics.tagLabel).toBe('PAID');
     // Unknown subscription id → no-op.
     expect(await endStripeSubscription('sub_missing')).toBe(false);
+  });
+
+  it('giving a tier over a live paid row replaces it, and a late Stripe delete cannot touch it', async () => {
+    const user = await createUser();
+    await activateStripeSubscription({
+      userId: user,
+      tier: 'scout',
+      stripeCustomerId: 'cus_over',
+      stripeSubscriptionId: 'sub_over',
+      currentPeriodEnd: new Date(Date.now() + 30 * 86_400_000),
+    });
+    const admin = await createUser();
+    await giftSubscription(admin, user, 'legend', 'forever');
+    expect(await getEffectiveSubscription(user)).toMatchObject({ tier: 'legend', source: 'gift', expiresAt: null });
+    expect(await endStripeSubscription('sub_over')).toBe(false);
+    expect((await getEffectiveSubscription(user))!.tier).toBe('legend');
+  });
+
+  it('retiring paid subscriptions keeps each tier forever and drops the Stripe link', async () => {
+    const admin = await createUser();
+    const paid = await createUser();
+    await activateStripeSubscription({
+      userId: paid,
+      tier: 'guardian',
+      stripeCustomerId: 'cus_retire',
+      stripeSubscriptionId: 'sub_retire',
+      currentPeriodEnd: new Date(Date.now() + 30 * 86_400_000),
+    });
+    const gifted = await createUser();
+    await giftSubscription(admin, gifted, 'scout', '1m');
+
+    expect(await countPaidSubscriptions()).toBeGreaterThanOrEqual(1);
+    const r = await retirePaidSubscriptions(admin);
+    expect(r.converted).toBeGreaterThanOrEqual(1);
+    // No Stripe key in tests, so the remote cancel is reported, not faked.
+    expect(r.cancelFailures).toBe(r.converted);
+
+    expect(await getEffectiveSubscription(paid)).toEqual({
+      tier: 'guardian',
+      expiresAt: null,
+      inherited: false,
+      titled: true,
+      source: 'gift',
+      cancelAtPeriodEnd: false,
+    });
+    const [row] = await db
+      .select()
+      .from(schema.subscriptions)
+      .where(eq(schema.subscriptions.userId, paid))
+      .limit(1);
+    expect(row!.stripeSubscriptionId).toBeNull();
+    expect(row!.giftedBy).toBe(admin);
+    // A late webhook for the old subscription can't end the converted row.
+    expect(await endStripeSubscription('sub_retire')).toBe(false);
+    // Gifts that were never paid are untouched.
+    expect((await getEffectiveSubscription(gifted))!.expiresAt).not.toBeNull();
+    expect(await countPaidSubscriptions()).toBe(0);
   });
 
   it('activating a DIFFERENT stripe sub for the same user reports the superseded id', async () => {
@@ -220,7 +274,7 @@ describe.runIf(dbReady)('supporter memberships (integration)', () => {
     expect(again.supersededSubscriptionId).toBeNull();
   });
 
-  it('expired rows grant nothing and the sweep hard-locks them', async () => {
+  it('expired rows grant nothing and the sweep deletes them (cosmetics stay)', async () => {
     const admin = await createUser();
     const user = await createUser();
     await giftSubscription(admin, user, 'guardian', '1m');
@@ -244,7 +298,7 @@ describe.runIf(dbReady)('supporter memberships (integration)', () => {
       .limit(1);
     expect(row).toBeUndefined();
     const cosmetics = await userCosmetics(user);
-    expect(cosmetics.avatarDecoration).toBeNull();
-    expect(cosmetics.tagLabel).toBeNull();
+    expect(cosmetics.avatarDecoration).toBe('rose');
+    expect(cosmetics.tagLabel).toBe('PAID');
   });
 });

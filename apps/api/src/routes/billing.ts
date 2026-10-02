@@ -1,65 +1,30 @@
 /**
- * Billing routes — Stripe checkout / portal / webhook for supporter
- * memberships. Mounted at /api/v1/billing.
+ * Billing routes — LEGACY Stripe wind-down. Mounted at /api/v1/billing.
  *
- *   GET  /status    — { enabled } so clients show/hide the Subscribe buttons
- *   POST /checkout  — { tier } → { url } (Stripe Checkout redirect)
- *   POST /portal    — { url } (Stripe Billing Portal: manage/cancel)
+ * Payments were removed on 2026-10-02 (see services/billing). Nothing here
+ * can start a subscription; these routes only serve subscriptions bought
+ * before then:
+ *   GET  /status    — always { enabled: false }: older apps hide Subscribe
+ *   POST /portal    — { url } (Stripe Billing Portal: cancel / card details)
+ *   POST /cancel    — end the paid subscription at the period's end
  *   POST /webhook   — Stripe events (signature-verified raw body; NO auth)
- *
- * The webhook is the entitlement writer: checkout.session.completed activates
- * the membership row, invoice.paid/subscription.updated extend it, and
- * subscription.deleted hard-locks it. See services/billing for the design
- * notes (24h grace + hourly sweep = fail-safe).
  */
 
 import { Hono } from 'hono';
-import { z } from 'zod';
 import { requireAuth, requireUserId } from '../auth/middleware';
-import { validate } from '../lib/validate';
-import { RateLimiter } from '../lib/rateLimit';
-import { db, schema } from '../db';
-import { eq } from 'drizzle-orm';
 import { errors } from '../errors';
 import { log } from '../log';
 import * as billing from '../services/billing';
 
 export const billingRouter = new Hono();
 
-// Checkout-session creation hits Stripe; keep a light per-user lid on it.
-const checkoutByUser = new RateLimiter(5, 60_000, 'billing-checkout-user');
-
 billingRouter.get('/status', requireAuth, (c) => {
-  return c.json({ enabled: billing.billingEnabled() });
+  return c.json({ enabled: false });
 });
-
-billingRouter.post(
-  '/checkout',
-  requireAuth,
-  validate('json', z.object({ tier: z.enum(['scout', 'guardian', 'legend']) })),
-  async (c) => {
-    if (!billing.billingEnabled()) {
-      throw errors.badRequest('Payments are not configured on this server yet.');
-    }
-    const userId = requireUserId(c);
-    const r = await checkoutByUser.consume(userId.toString());
-    if (!r.ok) throw errors.rateLimited(Math.ceil(r.retryAfterMs / 1000));
-    const { tier } = c.req.valid('json');
-    const [user] = await db
-      .select({ email: schema.users.email, isBot: schema.users.isBot })
-      .from(schema.users)
-      .where(eq(schema.users.id, userId))
-      .limit(1);
-    if (!user) throw errors.notFound('User');
-    if (user.isBot) throw errors.badRequest('Bots cannot subscribe');
-    const url = await billing.createCheckoutSession({ userId, email: user.email, tier });
-    return c.json({ url });
-  },
-);
 
 billingRouter.post('/portal', requireAuth, async (c) => {
   if (!billing.billingEnabled()) {
-    throw errors.badRequest('Payments are not configured on this server yet.');
+    throw errors.badRequest('This server doesn’t take payments.');
   }
   const userId = requireUserId(c);
   const url = await billing.createPortalSession(userId);
@@ -67,22 +32,13 @@ billingRouter.post('/portal', requireAuth, async (c) => {
 });
 
 // In-app cancel: schedule the paid subscription to end at the period's end
-// (non-refundable, so they keep access until then). Reversible via /reactivate.
+// (they keep the tier until then).
 billingRouter.post('/cancel', requireAuth, async (c) => {
   if (!billing.billingEnabled()) {
-    throw errors.badRequest('Payments are not configured on this server yet.');
+    throw errors.badRequest('This server doesn’t take payments.');
   }
   const { endsAt } = await billing.cancelOwnSubscriptionAtPeriodEnd(requireUserId(c));
   return c.json({ ok: true, endsAt: endsAt?.toISOString() ?? null });
-});
-
-// Undo a scheduled cancel — resume auto-renew.
-billingRouter.post('/reactivate', requireAuth, async (c) => {
-  if (!billing.billingEnabled()) {
-    throw errors.badRequest('Payments are not configured on this server yet.');
-  }
-  await billing.reactivateOwnSubscription(requireUserId(c));
-  return c.json({ ok: true });
 });
 
 // ── Stripe webhook ──────────────────────────────────────────────────────────

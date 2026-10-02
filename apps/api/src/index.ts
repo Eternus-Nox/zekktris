@@ -300,15 +300,14 @@ async function main(): Promise<void> {
     log.info('supervision age sweep disabled (PARENT_LINK_AGE_CHECK_ENABLED=false)');
   }
 
-  // Expire lapsed supporter memberships (timed gifts): delete the row + clear
-  // the paid cosmetics — the same hard lock as an admin reset. Hygiene only;
-  // the entitlement reads already treat an expired row as no membership, so
-  // cadence isn't correctness-critical. Hourly, leading run 6 min after boot.
+  // Expire lapsed perk tiers (timed gifts): delete the row. Hygiene only; the
+  // entitlement reads already treat an expired row as no tier, so cadence
+  // isn't correctness-critical. Hourly, leading run 6 min after boot.
   const runSubscriptionSweep = () => {
     void import('./services/subscriptions')
       .then((s) => s.sweepExpiredSubscriptions())
       .then((expired) => {
-        if (expired > 0) log.info('supporter memberships expired', { expired });
+        if (expired > 0) log.info('perk tiers expired', { expired });
       })
       .catch((err) => log.error('subscription expiry sweep failed', { err }));
     // Piggy-back the auto-unban sweep on the same hourly tick: lift timed

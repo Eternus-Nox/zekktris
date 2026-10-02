@@ -1,23 +1,26 @@
 /**
- * Supporter memberships — Scout ($2) / Guardian ($5) / Legend ($10)
- * -----------------------------------------------------------------
- * The entitlement chokepoint for the membership system. An ACTIVE membership
- * (row with expiresAt NULL = forever, or in the future) unlocks the
- * Appearance perks (themes, avatar frames, clan tags) and shows the tier
- * title on the profile popup (unless the user opted out via
+ * Perk tiers — Scout / Guardian / Legend
+ * --------------------------------------
+ * The entitlement chokepoint for perk tiers. There are no payments: everyone
+ * gets the whole app (cosmetics included), and a tier is a label an admin
+ * hands out that unlocks extra perks — higher streaming quality and upload
+ * caps, configured in services/monetization. A tier also shows its title on
+ * the profile popup (unless the user opted out via
  * users.show_subscription_tier).
  *
- * Grant paths: admin gift (1/3/6 months or forever) — the only path until a
- * card-payment rail is wired ('stripe' source reserved). Memberships are
- * NON-REFUNDABLE by policy; the purchase/pitch copy states it.
+ * Grant path: admin give (1/3/6 months or forever). Rows with source 'stripe'
+ * are subscriptions bought before payments were removed (2026-10-02); the
+ * webhook still keeps them in sync until an admin retires them
+ * (retirePaidSubscriptions), which turns each into a forever tier and stops
+ * the billing.
  *
- * Family pass-down: a supervising parent's membership covers their supervised
+ * Family pass-down: a supervising parent's tier covers their supervised
  * children AT READ TIME (getEffectiveSubscription) — no child rows are
- * written, so the child's entitlement tracks link/membership changes live and
+ * written, so the child's entitlement tracks link/tier changes live and
  * ends automatically when the link ends (18th birthday auto-release included).
  */
 
-import { and, eq, gt, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors } from '../errors';
 
@@ -69,7 +72,7 @@ export async function getOwnSubscription(userId: bigint) {
 /**
  * THE entitlement read: the user's own active membership, or the best one
  * inherited from a supervising parent (highest tier wins when multiple
- * guardians are subscribed). Null = no membership → Appearance hard-locked.
+ * guardians hold tiers). Null = no tier → base perks only.
  */
 export async function getEffectiveSubscription(
   userId: bigint,
@@ -113,7 +116,7 @@ export async function getEffectiveSubscription(
   return best;
 }
 
-/** Entitlement gate used by the Appearance write paths. */
+/** Whether the user holds any tier (own or inherited). */
 export async function hasMembership(userId: bigint): Promise<boolean> {
   return (await getEffectiveSubscription(userId)) !== null;
 }
@@ -137,21 +140,9 @@ export async function giftSubscription(
   if (!target) throw errors.notFound('User');
   if (target.isBot) throw errors.badRequest('Bots cannot hold memberships');
 
-  // Never silently clobber an active PAID subscription — the user would keep
-  // getting charged while their row says 'gift'. Reset it first (which also
-  // cancels it at Stripe), then gift.
-  const existing = await getOwnSubscription(userId);
-  if (existing?.source === 'stripe') {
-    throw errors.badRequest(
-      'This user has an active paid subscription. Reset their membership first (that cancels the Stripe subscription), then gift.',
-    );
-  }
-
-  // A stripe row can be present but INACTIVE here (expiresAt lapsed, hourly
-  // sweep not yet run). getOwnSubscription's active-only filter hides it, so
-  // re-read unfiltered and cancel any lingering live Stripe sub before we
-  // overwrite the row as a gift — otherwise it keeps billing as an orphan
-  // that removeSubscription can never cancel (source would read 'gift').
+  // A row left over from paid billing may still be live at Stripe. Cancel it
+  // before overwriting the row as a gift, or it keeps charging as an orphan
+  // that nothing local points at any more. Best-effort: the gift still lands.
   const [physical] = await db
     .select({ source: schema.subscriptions.source, stripeSubscriptionId: schema.subscriptions.stripeSubscriptionId })
     .from(schema.subscriptions)
@@ -199,11 +190,10 @@ export async function giftSubscription(
 }
 
 /**
- * Admin reset: remove the user's membership AND hard-lock their paid
- * cosmetics (avatar frame + clan tag cleared; the client falls back to the
- * default theme when the entitlement is gone). Idempotent. A paid (Stripe)
- * membership is also canceled remotely — best-effort — so the user doesn't
- * keep getting charged for an entitlement we just removed.
+ * Admin remove: drop the user's tier. Idempotent. Cosmetics are free, so the
+ * user keeps their frame, tag and theme. A leftover paid (Stripe) row is also
+ * canceled remotely — best-effort — so nobody is charged for a tier we just
+ * removed.
  */
 export async function removeSubscription(userId: bigint): Promise<void> {
   const [row] = await db
@@ -214,7 +204,70 @@ export async function removeSubscription(userId: bigint): Promise<void> {
     const billing = await import('./billing');
     await billing.cancelStripeSubscription(row.stripeSubscriptionId).catch(() => undefined);
   }
-  await clearPaidCosmetics(userId);
+}
+
+/** How many leftover paid (Stripe) tiers are still live. */
+export async function countPaidSubscriptions(): Promise<number> {
+  const [row] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(schema.subscriptions)
+    .where(and(eq(schema.subscriptions.source, 'stripe'), activeWhere()));
+  return row?.n ?? 0;
+}
+
+/**
+ * End paid billing for good: every live Stripe row becomes a forever tier at
+ * the same level (source 'gift', given by `adminId`), then its Stripe
+ * subscription is canceled so it never charges again. The row is converted
+ * FIRST — a late subscription.deleted webhook is scoped to source 'stripe',
+ * so it can no longer touch the row. Cancel failures are counted, not thrown:
+ * the admin is told to finish those in the Stripe dashboard.
+ */
+export async function retirePaidSubscriptions(
+  adminId: bigint,
+): Promise<{ converted: number; cancelFailures: number }> {
+  const live = await db
+    .select({
+      userId: schema.subscriptions.userId,
+      stripeSubscriptionId: schema.subscriptions.stripeSubscriptionId,
+    })
+    .from(schema.subscriptions)
+    .where(and(eq(schema.subscriptions.source, 'stripe'), activeWhere()));
+  if (live.length === 0) return { converted: 0, cancelFailures: 0 };
+
+  const converted = await db
+    .update(schema.subscriptions)
+    .set({
+      source: 'gift',
+      giftedBy: adminId,
+      expiresAt: null,
+      stripeCustomerId: null,
+      stripeSubscriptionId: null,
+      cancelAtPeriodEnd: false,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      inArray(schema.subscriptions.userId, live.map((r) => r.userId)),
+      eq(schema.subscriptions.source, 'stripe'),
+    ))
+    .returning({ userId: schema.subscriptions.userId });
+
+  const billing = await import('./billing');
+  let cancelFailures = 0;
+  for (const row of live) {
+    if (!row.stripeSubscriptionId) continue;
+    // Without a Stripe key nothing can be canceled from here.
+    if (!billing.canCancelAtStripe()) {
+      cancelFailures++;
+      continue;
+    }
+    try {
+      await billing.cancelStripeSubscription(row.stripeSubscriptionId);
+    } catch {
+      cancelFailures++;
+    }
+  }
+  return { converted: converted.length, cancelFailures };
 }
 
 // ── Stripe row lifecycle (called by the billing webhook) ───────────────────
@@ -306,36 +359,26 @@ export async function renewStripeSubscription(
   return updated.length > 0;
 }
 
-/** Stripe-side cancellation/deletion → hard-lock now (row + cosmetics). */
+/** Stripe-side cancellation/deletion → the tier ends now. */
 export async function endStripeSubscription(stripeSubscriptionId: string): Promise<boolean> {
   const [row] = await db
     .delete(schema.subscriptions)
     // Scope to Stripe-sourced rows: a late/stale subscription.deleted for a
     // superseded id must never clobber an admin gift or founder grant (which
-    // could carry a stale stripeSubscriptionId) and wipe the user's cosmetics.
+    // could carry a stale stripeSubscriptionId).
     .where(and(
       eq(schema.subscriptions.stripeSubscriptionId, stripeSubscriptionId),
       eq(schema.subscriptions.source, 'stripe'),
     ))
     .returning({ userId: schema.subscriptions.userId });
-  if (!row) return false;
-  await clearPaidCosmetics(row.userId);
-  return true;
-}
-
-/** Strip the Appearance cosmetics a membership was paying for. */
-async function clearPaidCosmetics(userId: bigint): Promise<void> {
-  await db
-    .update(schema.users)
-    .set({ avatarDecoration: null, tagLabel: null, tagColor: null, updatedAt: new Date() })
-    .where(eq(schema.users.id, userId));
+  return !!row;
 }
 
 /**
- * Daily hygiene sweep: timed gifts that lapsed get their rows deleted and
- * their cosmetics cleared (same hard lock as an admin reset). Users whose
+ * Daily hygiene sweep: timed tiers that lapsed get their rows deleted.
+ * Cosmetics are free, so nothing else changes for the user. Users whose
  * entitlement is INHERITED are untouched here — inheritance is read-time.
- * Returns the number of memberships expired for logging.
+ * Returns the number of tiers expired for logging.
  */
 export async function sweepExpiredSubscriptions(): Promise<number> {
   // Atomic, self-guarding delete: re-check the expiry predicate in the DELETE
@@ -343,8 +386,7 @@ export async function sweepExpiredSubscriptions(): Promise<number> {
   // expiresAt pushed into the future by a concurrent renewal webhook) no longer
   // matches the WHERE and is preserved — the row-level lock serializes the
   // renewal UPDATE and this DELETE. Legitimately-expired stripe rows are still
-  // canceled at Stripe + have their cosmetics cleared (never keep billing a
-  // hard-locked user).
+  // canceled at Stripe (never keep billing someone whose tier ended).
   const now = new Date();
   const deleted = await db
     .delete(schema.subscriptions)
@@ -359,7 +401,6 @@ export async function sweepExpiredSubscriptions(): Promise<number> {
       const billing = await import('./billing');
       await billing.cancelStripeSubscription(row.stripeSubscriptionId).catch(() => undefined);
     }
-    await clearPaidCosmetics(row.userId);
   }
   return deleted.length;
 }

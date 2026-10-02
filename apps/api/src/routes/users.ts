@@ -196,7 +196,7 @@ const patchMeSchema = z
     notifyAchievements: z.boolean().optional(),
     /** Account-level toggle for reaction notifications. */
     notifyReactions: z.boolean().optional(),
-    /** Whether the supporter tier title shows on the profile popup. */
+    /** Whether the perk tier title shows on the profile popup. */
     showSubscriptionTier: z.boolean().optional(),
     /** DM read-receipts opt-out. When false, the server skips
         delivered_at/viewed_at stamping for messages this user
@@ -246,54 +246,8 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   const userId = requireUserId(c);
   const body = c.req.valid('json');
 
-  // Membership hard lock: SETTING an Appearance cosmetic (avatar frame, clan
-  // tag) requires an active supporter membership (own or inherited from a
-  // supervising parent). CLEARING is always allowed so a lapsed member can
-  // tidy up. Themes are client-local and gated in the UI only.
-  const wantsCosmetic =
-    (body.avatarDecoration !== undefined &&
-      !!body.avatarDecoration &&
-      body.avatarDecoration !== 'none') ||
-    (body.tagLabel !== undefined && (body.tagLabel?.trim() ?? '') !== '') ||
-    (body.tagColor !== undefined && body.tagColor !== null);
-  // Cache the effective membership for this request. The cosmetic gate below
-  // and the toSelfUser response both need it; the PATCH between them only
-  // writes users.* (never subscriptions or supervision links), so one read is
-  // safe to reuse. undefined = not computed yet (keeps non-cosmetic PATCHes at
-  // exactly one read, at the response builder).
-  let effectiveSub: import('../services/subscriptions').EffectiveSubscription | null | undefined;
-  if (wantsCosmetic) {
-    // Admin-configurable gate (instance_settings via the monetization
-    // service). 'none' = Appearance is free on this instance; otherwise the
-    // user's effective tier (own or inherited, founder rows = scout) must
-    // meet the configured minimum. Default 'scout' preserves the original
-    // any-membership behavior.
-    const monetization = await import('../services/monetization');
-    // Fail-open ON PURPOSE: a settings read hiccup must degrade to the
-    // shipped default gate ('scout' = any membership, i.e. today's
-    // behavior), never 500 a cosmetic PATCH /@me.
-    let required = monetization.DEFAULTS.appearance;
-    try {
-      required = (await monetization.getConfig()).appearance;
-    } catch (err) {
-      console.error(
-        '[users] appearance gate config lookup failed; falling back to default:',
-        err,
-      );
-    }
-    if (required !== 'none') {
-      const subs = await import('../services/subscriptions');
-      effectiveSub = await subs.getEffectiveSubscription(userId);
-      if (!monetization.isAllowed(monetization.tierRank(effectiveSub?.tier ?? null), required)) {
-        const tierName = required.charAt(0).toUpperCase() + required.slice(1);
-        throw new AppError(
-          'FORBIDDEN',
-          `Appearance options are a supporter perk (${tierName} or higher). Supporting helps Zekktris stay alive and strong!`,
-          { membershipRequired: true },
-        );
-      }
-    }
-  }
+  // Cosmetics (avatar frame, clan tag, themes) are free for everyone — no
+  // tier check here.
 
   const update: Record<string, unknown> = { updatedAt: new Date() };
   if (body.displayName !== undefined) {
@@ -537,12 +491,7 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   // lose the tier fields when it replaces itself with this response.
   {
     const subs = await import('../services/subscriptions');
-    // Reuse the value computed by the cosmetic gate above when it ran; only
-    // read here on the (common) non-cosmetic path where it stayed undefined.
-    const membership =
-      effectiveSub !== undefined
-        ? effectiveSub
-        : await subs.getEffectiveSubscription(userId);
+    const membership = await subs.getEffectiveSubscription(userId);
     return c.json({ user: toSelfUser(user, membership) });
   }
 });
@@ -1275,10 +1224,10 @@ usersRouter.get(
     // so it never offers contact the server would reject.
     const { canReachByDmOrCall } = await import('../services/relationships');
     const canMessage = await canReachByDmOrCall(viewerId, targetId);
-    // Supporter tier title for the profile popup. Hidden when the user opted
+    // Perk tier title for the profile popup. Hidden when the user opted
     // out (show_subscription_tier=false) and for UNTITLED (founder) rows —
-    // grandfathered members carry the perks but no title until they choose a
-    // tier. Inherited (family pass-down) titles show like owned ones.
+    // grandfathered accounts carry the perks but no title until an admin gives
+    // them a tier. Inherited (family pass-down) titles show like owned ones.
     const subs = await import('../services/subscriptions');
     const showTier = user.showSubscriptionTier || targetId === viewerId;
     const membership = showTier ? await subs.getEffectiveSubscription(targetId) : null;

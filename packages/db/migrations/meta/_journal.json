@@ -876,6 +876,13 @@
       "when": 1784686730000,
       "tag": "0125_instance_mute_staff_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 125,
+      "version": "7",
+      "when": 1784773130000,
+      "tag": "0126_free_perks",
+      "breakpoints": true
     }
   ]
 }
