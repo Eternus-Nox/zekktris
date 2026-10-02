@@ -11,6 +11,7 @@
 
 import { useState, useRef, useEffect, useCallback, useMemo, type FormEvent, type KeyboardEventHandler, type Ref, type RefObject } from 'react';
 import { ZekktrisMark } from '../lib/ZekktrisMark';
+import { passkeysAvailable } from '../lib/passkeyAvailable';
 import { Eye, EyeOff, Key, QrCode } from '../lib/icons';
 import { qrEncode, qrToSvg } from '../lib/qr';
 import { localDeviceLabel } from '../lib/deviceInfo';
@@ -353,8 +354,7 @@ function setStoredLastEmail(email: string): void {
 export function LoginPage() {
   const { login, loginWithPasskey, token, hydrating } = useAuth();
   const [passkeyPending, setPasskeyPending] = useState(false);
-  const passkeySupported =
-    typeof window !== 'undefined' && typeof window.PublicKeyCredential !== 'undefined';
+  const passkeySupported = passkeysAvailable();
   const nav = useNavigate();
   // Initialize from storage so a returning user sees their address
   // already filled in — they only need to type the password. lazy

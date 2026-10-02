@@ -16,6 +16,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import { ApiError, type PasskeyInfo, type SessionInfo } from '@zekktris/client';
+import { passkeysAvailable } from '../lib/passkeyAvailable';
 import { UserTag, StaffName } from '../lib/UserTag';
 import { useAuth } from '../auth/AuthContext';
 import { useAppState } from '../state/AppState';
@@ -1164,7 +1165,7 @@ export function SettingsView() {
                 approving a sign-in on a new device. Note the direction — this
                 device APPROVES others; it never hands out a code that is
                 itself a credential. */}
-            <PasskeysSection />
+            {passkeysAvailable() && <PasskeysSection />}
             <TwoFactorSection />
             <DeviceApprovalSection />
 
