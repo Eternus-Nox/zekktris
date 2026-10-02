@@ -74,6 +74,13 @@ export const envSchema = z.object({
    */
   METRICS_TOKEN: emptyAsUndefined(z.string().min(16).optional()),
 
+  // Where this server's source code lives. Zekktris is AGPL-3.0: if you run a
+  // MODIFIED version for other people, point this at your changed source
+  // (the web app links to it). Unset = the upstream repository.
+  SOURCE_CODE_URL: emptyAsUndefined(
+    z.string().url().optional(),
+  ).transform((v) => v ?? 'https://github.com/Eternus-Nox/zekktris'),
+
   // ── Stripe billing — LEGACY (payments removed 2026-10-02) ──────────────
   // Only needed while subscriptions bought before then are still live (see
   // services/billing). Leave both unset on any new or self-hosted server.

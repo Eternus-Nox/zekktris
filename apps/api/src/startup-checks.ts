@@ -365,13 +365,12 @@ const apnsCheck: Check = {
  *
  * Two values have been published in this repo's history and are hard-blocked:
  * the old docker-compose fallback, and the LiveKit Cloud pair an earlier
- * setup.sh committed (the same pair scripts/setup.sh already migrates away
- * from). Voice being unconfigured is NOT a failure — it degrades to
+ * setup.sh committed (install.sh migrates away from it). That pair is blocked
+ * by its key id — the secret itself is deliberately not repeated here. Voice being unconfigured is NOT a failure — it degrades to
  * presence-only, which is the safe default.
  */
 const PUBLISHED_LIVEKIT_SECRETS = new Set([
   'devsecret-do-not-use-in-production-32chars',
-  'REDACTED-LEAKED-LIVEKIT-SECRET',
 ]);
 const PUBLISHED_LIVEKIT_KEYS = new Set(['devkey', 'APIAMD7Sj5psuK4']);
 

@@ -192,6 +192,9 @@ services:
       # as a Bearer token. Not proxied by Caddy — internal-network only unless
       # you add a route. Admins always get JSON metrics at /api/v1/admin/metrics.
       METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # AGPL-3.0: running a MODIFIED Zekktris for others? Link your source here
+      # (shown on the web app's Terms/Privacy pages). Empty = upstream repo.
+      SOURCE_CODE_URL: ${SOURCE_CODE_URL:-}
       # First-install bootstrap: if no user has is_admin yet AND a user
       # exists with this email, promote them on boot. Idempotent once any
       # admin exists, so it is safe to leave set. Without this line the

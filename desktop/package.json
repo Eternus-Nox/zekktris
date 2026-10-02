@@ -4,7 +4,7 @@
   "description": "Zekktris desktop app — the communications app for communities.",
   "homepage": "https://zekktris.com",
   "author": "Zekktris <support@zekktris.com>",
-  "license": "UNLICENSED",
+  "license": "AGPL-3.0-only",
   "private": true,
   "main": "dist/main.js",
   "scripts": {

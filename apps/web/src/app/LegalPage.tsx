@@ -13,6 +13,7 @@
  */
 import { Link } from 'react-router-dom';
 import { ZekktrisMark } from '../lib/ZekktrisMark';
+import { useSourceCodeUrl } from '../lib/sourceCode';
 
 const LAST_UPDATED = 'October 2, 2026';
 const CONTACT_EMAIL = 'support@zekktris.com';
@@ -36,6 +37,7 @@ function LegalLayout({
   otherTo: string;
   children: React.ReactNode;
 }) {
+  const sourceUrl = useSourceCodeUrl();
   return (
     <div className="zk-screen overflow-y-auto bg-bg-1 text-ink-1 relative">
       <div className="abyss" aria-hidden />
@@ -61,10 +63,17 @@ function LegalLayout({
         <div className="legal-prose space-y-5 text-[0.95rem] leading-relaxed text-ink-2">
           {children}
         </div>
-        <div className="mt-12 pt-6 border-t text-sm" style={{ borderColor: 'var(--zk-line-soft)' }}>
+        <div className="mt-12 pt-6 border-t text-sm flex flex-wrap items-center gap-x-4 gap-y-2" style={{ borderColor: 'var(--zk-line-soft)' }}>
           <Link to={otherTo} className="text-accent hover:underline">
             {otherLabel}
           </Link>
+          <span className="flex-1" />
+          <span className="text-ink-3">
+            Zekktris is free software (AGPL-3.0) ·{' '}
+            <a href={sourceUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+              Source code
+            </a>
+          </span>
         </div>
       </div>
     </div>

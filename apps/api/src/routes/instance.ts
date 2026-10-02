@@ -31,6 +31,8 @@ instanceRouter.get('/info', (c) => {
     // WebAuthn needs a domain name for its relying-party id; a server reached
     // by bare IP can't offer passkeys.
     passkeys: isIP(host) === 0,
+    // AGPL-3.0 §13: where users of this server can get its source.
+    sourceCode: env.SOURCE_CODE_URL,
   });
 });
 

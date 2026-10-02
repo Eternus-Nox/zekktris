@@ -306,6 +306,12 @@ that exists — `./data` inside the repo is a sensible choice.
 
 ## License
 
-Proprietary — © Zekktris. All rights reserved. No public license is granted;
-see [LICENSE](./LICENSE). Making this repository publicly readable does not
-grant any right to use, copy, modify, or redistribute the software.
+Zekktris is free software: you can redistribute it and/or modify it under the
+terms of the **GNU Affero General Public License, version 3** — see
+[LICENSE](./LICENSE).
+
+In short: anyone may run, self-host, study, modify and share it. If you run a
+**modified** version for other people over a network, you must offer them your
+modified source (set `SOURCE_CODE_URL` in `.env` — the web app links to it).
+
+Copyright © 2026 Eternus Nox.
