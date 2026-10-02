@@ -302,6 +302,9 @@ final class Session: ObservableObject {
         // refresh cookie — leaving the just-signed-in user broken. We now
         // revoke with the captured OLD token and never touch the new one.
         let oldToken = api.token
+        // …and the server it belongs to, so a server switch made while these
+        // calls are in flight can't send the old token somewhere else.
+        let oldBase = Config.apiBaseURL
         api.token = nil
         Task { [api] in
             guard let oldToken else { return }
@@ -309,18 +312,18 @@ final class Session: ObservableObject {
             // OLD token (bearerOverride also disables refresh-retry so a 401
             // can't resurrect + re-persist a dead session). Best-effort.
             if let t = PushManager.shared.apnsTokenHex {
-                await api.unregisterDeviceToken(token: t, bearer: oldToken)
+                await api.unregisterDeviceToken(token: t, bearer: oldToken, base: oldBase)
             }
             if let t = VoipPushHandler.shared.voipTokenHex {
-                await api.unregisterDeviceToken(token: t, bearer: oldToken)
+                await api.unregisterDeviceToken(token: t, bearer: oldToken, base: oldBase)
             }
-            await api.logout(bearer: oldToken)
+            await api.logout(bearer: oldToken, base: oldBase)
             // The server clears the refresh cookie on logout; mirror it
             // locally in case the request didn't land — but ONLY if we're
             // still signed out. A re-login during these in-flight calls set
             // api.token non-nil via persist(); deleting cookies then would
             // wipe the fresh refresh cookie and break the new session.
-            if api.token == nil, let url = URL(string: Config.apiBaseURL) {
+            if api.token == nil, let url = URL(string: oldBase) {
                 for cookie in HTTPCookieStorage.shared.cookies(for: url) ?? [] {
                     HTTPCookieStorage.shared.deleteCookie(cookie)
                 }
@@ -367,8 +370,8 @@ final class Session: ObservableObject {
         catch { authError = message(for: error) }
     }
 
-    /// Profile privacy: show/hide the supporter tier title on the profile
-    /// popup (the membership's perks keep working either way).
+    /// Profile privacy: show/hide the perk tier title on the profile popup
+    /// (the tier's perks keep working either way).
     func setShowSubscriptionTier(_ value: Bool) async {
         do { currentUser = try await api.updateProfile(["showSubscriptionTier": value]) }
         catch { authError = message(for: error) }

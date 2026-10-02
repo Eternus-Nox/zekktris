@@ -1973,13 +1973,10 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
 
-    /// Where membership is purchased/managed. Payments happen on the website —
-    /// the iOS app links out to it and the membership syncs back automatically
-    /// on the next refresh. Perks = cosmetics (account-wide) + premium 2K/4K
-    /// streaming: screen share on web/desktop AND the camera here in-app (the
-    /// one membership-gated capability inside this app; see the App Store
-    /// posture note on the subscribe button below).
-    private static let membershipURL = URL(string: "https://zekktris.com/settings")!
+    /// Web Settings on the signed-in server — where someone still paying for a
+    /// subscription from before Zekktris went free can stop the billing. The
+    /// app itself never sells anything.
+    private var webSettingsURL: URL? { URL(string: Config.assetOrigin + "/settings") }
 
     @State private var displayName = ""
     @State private var bio = ""
@@ -2028,7 +2025,7 @@ struct SettingsView: View {
     // Local mirror for the achievement-notification toggle (same snap-back
     // rationale as achievementsPublicOn).
     @State private var notifyAchievementsOn = true
-    // Local mirror for the supporter-tier visibility toggle (same snap-back
+    // Local mirror for the perk-tier visibility toggle (same snap-back
     // rationale as achievementsPublicOn above).
     @State private var showTierOn = true
     @State private var bioProbe: Biometrics.Probe?
@@ -2055,13 +2052,13 @@ struct SettingsView: View {
     /// Top-level grouping for the Settings screen so the ~12 sections aren't
     /// one long scroll. The profile header stays pinned above the tabs.
     // Mirrors the web Settings tabs (SettingsView.tsx), same labels + order:
-    // Profile, Security, Voice & Video, Membership. (Web's "User Profile" is
+    // Profile, Security, Voice & Video, Appearance. (Web's "User Profile" is
     // just "Profile" here to save chip width; web's Bots tab has no iOS analog.)
     private enum SettingsTab: String, CaseIterable, Identifiable {
         case profile = "Profile"
         case security = "Security"
         case voiceVideo = "Voice & Video"
-        case membership = "Membership"
+        case membership = "Appearance"
         var id: String { rawValue }
     }
     @State private var settingsTab: SettingsTab = .profile
@@ -2076,7 +2073,7 @@ struct SettingsView: View {
                     profileHeader
 
                     // Scrollable chip bar (was a 4-segment segmented Picker):
-                    // "Membership" + "Voice & Video" don't fit four segments on a
+                    // "Appearance" + "Voice & Video" don't fit four segments on a
                     // phone. Mirrors the Admin instance tab bar.
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
@@ -2100,29 +2097,21 @@ struct SettingsView: View {
                         achievementsSection
                     case .membership:
                         // Staff name shimmer — an instance-STAFF perk (not
-                        // membership-gated), shown at the top for admins/mods.
+                        // tier-gated), shown at the top for admins/mods.
                         if session.currentUser?.isAdmin == true || session.currentUser?.isModerator == true {
                             staffShimmerEditor
                             Divider().background(Theme.line).padding(.vertical, 6)
                         }
-                        // Appearance is a SUPPORTER PERK: members (own or
-                        // family pass-down) get the editors; everyone else
-                        // sees the membership pitch. The server hard-locks the
-                        // cosmetic writes too.
-                        if session.currentUser?.subscriptionTier != nil {
-                            appearanceSection
-                            // Own (non-inherited) members get a link to manage
-                            // or cancel on the website; inherited (family
-                            // pass-down) members have nothing to manage here.
-                            if session.currentUser?.subscriptionInherited != true {
-                                manageMembershipSection
-                            }
-                        } else {
-                            membershipPitchSection
+                        // Appearance is free for everyone.
+                        appearanceSection
+                        perkTiersSection
+                        // Only someone still paying for a subscription from
+                        // before Zekktris went free sees this.
+                        if session.currentUser?.subscriptionSource == "stripe",
+                           session.currentUser?.subscriptionInherited != true {
+                            legacyBillingSection
                         }
-                        entitlementsSection
-                        // Hide clan tags is a per-device VIEWER preference, not
-                        // a perk — available to EVERYONE, member or not.
+                        // Hide clan tags is a per-device VIEWER preference.
                         hideClanTagsSection
                     case .security:
                         // Web's Security tab: account (username/email) + password
@@ -2670,67 +2659,19 @@ struct SettingsView: View {
         }
     }
 
-    /// Shown where Appearance would be, for non-members. Copy requirements
-    /// (user-specified): supporting keeps Zekktris alive and strong;
-    /// memberships are non-refundable. Admin-gifted until card payments land.
-    private var membershipPitchSection: some View {
+    /// Someone still paying for a subscription bought before Zekktris went
+    /// free: point them at web Settings to stop the billing. They keep the
+    /// tier either way.
+    private var legacyBillingSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("MEMBERSHIP — A SUPPORTER PERK")
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Being a supporter helps Zekktris stay alive and strong. Membership unlocks COSMETIC customization — themes, avatar frames, and name tags — and wears your tier on your profile, plus higher streaming quality (2K on Guardian, 4K on Legend) for your camera and for screen share on web/desktop. It never changes what you can say or do.")
-                    .font(.zkSans(13)).foregroundColor(Theme.ink2)
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 8) {
-                    ForEach([("scout", "Scout", "$2/mo", "Cosmetics"), ("guardian", "Guardian", "$5/mo", "2K streams"), ("legend", "Legend", "$10/mo", "4K streams")], id: \.0) { tier in
-                        let color = TierBadge.meta(tier.0)?.color ?? Theme.accent
-                        VStack(spacing: 2) {
-                            Text(tier.1).font(.zkSans(14, weight: .bold)).foregroundColor(color)
-                            Text(tier.2).font(.zkSans(12)).foregroundColor(Theme.ink2)
-                            Text(tier.3).font(.zkSans(10)).foregroundColor(Theme.ink3)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(color.opacity(0.08))
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(color.opacity(0.45), lineWidth: 1))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
-                }
-                // Payments happen on the WEBSITE, opened in the browser; the
-                // membership syncs back to this app automatically. NOTE (App
-                // Store posture): since 2026-07-04 the membership DOES gate an
-                // in-app capability — 2K/4K camera quality (user decision,
-                // parity with web). Combined with this external purchase link
-                // that raises 3.1.1 review risk; if App Review objects, the
-                // mitigation is hiding this subscribe link (entitlements that
-                // sync from elsewhere remain allowed under 3.1.3(b)).
-                Button { openURL(Self.membershipURL) } label: {
-                    HStack(spacing: 6) {
-                        Text("Subscribe on zekktris.com").font(.zkSans(14, weight: .semibold))
-                        Image(systemName: "arrow.up.right.square").font(.system(size: 13, weight: .semibold))
-                    }
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity).padding(.vertical, 11)
-                    .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 10))
-                }
-                Text("Payments are handled on the website and sync here automatically. Memberships are non-refundable; cancel any time and you keep it until the end of the paid term. A supervising parent's membership also covers their children.")
-                    .font(.zkSans(11)).foregroundColor(Theme.ink3)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(12)
-            .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        }
-    }
-
-    /// Shown to CURRENT members: a link to manage/cancel their membership on
-    /// the website (payments + cancellation live there, not in the iOS app).
-    private var manageMembershipSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button { openURL(Self.membershipURL) } label: {
+            Button { if let url = webSettingsURL { openURL(url) } } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "creditcard").font(.system(size: 14)).foregroundColor(Theme.accent)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("Manage membership").font(.zkSans(15)).foregroundColor(Theme.ink1)
-                        Text("Change tier or cancel on zekktris.com").font(.zkSans(11)).foregroundColor(Theme.ink3)
+                        Text("Stop your old subscription").font(.zkSans(15)).foregroundColor(Theme.ink1)
+                        Text("Zekktris is free now. You keep your tier — stop the billing in web Settings.")
+                            .font(.zkSans(11)).foregroundColor(Theme.ink3)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer()
                     Image(systemName: "arrow.up.right.square").font(.system(size: 13)).foregroundColor(Theme.ink3)
@@ -2870,7 +2811,7 @@ struct SettingsView: View {
 
     /// Viewer-side declutter — hide everyone's name-tag pills on this device.
     /// A per-device preference (@AppStorage), available to ALL users regardless
-    /// of membership (it's not a supporter perk). NameTag reads the same key.
+    /// of tier. NameTag reads the same key.
     private var hideClanTagsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("DISPLAY")
@@ -2888,33 +2829,34 @@ struct SettingsView: View {
         }
     }
 
-    /// What each tier unlocks — highlights the user's current tier. Shown to
-    /// everyone so non-members can see what's on offer and members can see the
-    /// content their tier includes.
-    private var entitlementsSection: some View {
+    /// What each perk tier adds — highlights the user's current tier. Lines
+    /// come from this server's perk settings (AppStore.perkLines), so they
+    /// stay true when an admin retunes them. Mirrors web's PerkTiers.
+    private var perkTiersSection: some View {
         let tier = session.currentUser?.subscriptionTier
         return VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("WHAT MEMBERSHIP UNLOCKS")
+            sectionTitle("PERK TIERS")
+            Text("Zekktris is free — nothing is for sale. Perk tiers add streaming quality on top, and this server's admins hand them out. A supervising parent's tier also covers their children.")
+                .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                .fixedSize(horizontal: false, vertical: true)
             VStack(spacing: 8) {
-                entitlementRow("scout", "Scout", "$2/mo",
-                    ["Themes, avatar frames & name tags", "Supporter tier on your profile", "Streaming up to 1080p60"],
-                    current: tier == "scout")
-                entitlementRow("guardian", "Guardian", "$5/mo",
-                    ["Everything in Scout", "2K camera & screen-share streaming", "Covers your supervised children"],
-                    current: tier == "guardian")
-                entitlementRow("legend", "Legend", "$10/mo",
-                    ["Everything in Guardian", "4K camera & screen-share streaming"],
-                    current: tier == "legend")
+                entitlementRow(nil, "Everyone",
+                    ["Every feature, plus all themes, avatar frames & name tags"] + store.perkLines(forRank: 0),
+                    current: tier == nil)
+                ForEach([("scout", "Scout"), ("guardian", "Guardian"), ("legend", "Legend")], id: \.0) { t in
+                    entitlementRow(t.0, t.1,
+                        store.perkLines(forRank: AppStore.tierRank(t.0)) + ["Tier title on your profile"],
+                        current: tier == t.0)
+                }
             }
         }
     }
 
-    private func entitlementRow(_ id: String, _ name: String, _ price: String, _ perks: [String], current: Bool) -> some View {
-        let color = TierBadge.meta(id)?.color ?? Theme.accent
+    private func entitlementRow(_ id: String?, _ name: String, _ perks: [String], current: Bool) -> some View {
+        let color = id.flatMap { TierBadge.meta($0)?.color } ?? Theme.ink2
         return VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Text(name).font(.zkSans(15, weight: .bold)).foregroundColor(color)
-                Text(price).font(.zkSans(12)).foregroundColor(Theme.ink3)
                 Spacer()
                 if current {
                     Text("YOUR TIER").font(.zkSans(9, weight: .bold)).tracking(0.5)
@@ -3255,7 +3197,7 @@ struct SettingsView: View {
                 }
                 Text((CameraQuality(rawValue: cameraQuality) ?? .high).detail)
                     .font(.zkSans(12)).foregroundColor(Theme.ink3)
-                Text("Some qualities may require a membership tier set by this server. 2K and 4K are heavy on battery. Changes apply the next time you turn your camera on.")
+                Text("Some qualities need a perk tier from this server's admins. 2K and 4K are heavy on battery. Changes apply the next time you turn your camera on.")
                     .font(.zkSans(11)).foregroundColor(Theme.ink4)
             }
             .padding(12)
@@ -3308,8 +3250,8 @@ struct SettingsView: View {
             .padding(.horizontal, 12).padding(.vertical, 10)
             .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
 
-            // Supporter-tier visibility — TITLED members only (founder/
-            // grandfathered memberships have no title, so nothing to hide).
+            // Perk-tier visibility — TITLED tiers only (founder/grandfathered
+            // rows have no title, so nothing to hide).
             // Same optimistic local-mirror pattern as above.
             if session.currentUser?.subscriptionTitled == true {
                 Toggle(isOn: Binding(
@@ -3323,7 +3265,7 @@ struct SettingsView: View {
                     }
                 )) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Show my supporter tier")
+                        Text("Show my perk tier")
                             .font(.zkSans(15)).foregroundColor(Theme.ink1)
                         Text("Displays your tier title on your profile popup. Off hides the title — your perks keep working.")
                             .font(.zkSans(11)).foregroundColor(Theme.ink4)
@@ -3384,17 +3326,36 @@ struct SettingsView: View {
                 .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
             }
 
-            Button { showPasskeys = true } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "person.badge.key.fill").font(.system(size: 14)).foregroundColor(Theme.ink3).frame(width: 20)
-                    Text("Passkeys").font(.system(size: 15)).foregroundColor(Theme.ink1)
-                    Spacer()
-                    Image(systemName: "chevron.right").font(.system(size: 12)).foregroundColor(Theme.ink4)
+            // Passkeys are bound to zekktris.com (associated domains), so
+            // they're only offered there.
+            if Config.isDefaultServer {
+                Button { showPasskeys = true } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "person.badge.key.fill").font(.system(size: 14)).foregroundColor(Theme.ink3).frame(width: 20)
+                        Text("Passkeys").font(.system(size: 15)).foregroundColor(Theme.ink1)
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.system(size: 12)).foregroundColor(Theme.ink4)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 12)
+                    .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
                 }
-                .padding(.horizontal, 12).padding(.vertical, 12)
-                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+
+            // Which server this account lives on. Switching means signing
+            // out first — the picker is on the sign-in screen.
+            HStack(spacing: 10) {
+                Image(systemName: "server.rack").font(.system(size: 14)).foregroundColor(Theme.ink3).frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Server").font(.system(size: 15)).foregroundColor(Theme.ink1)
+                    Text("To use a different server, log out and pick it on the sign-in screen.")
+                        .font(.zkSans(11)).foregroundColor(Theme.ink4)
+                }
+                Spacer()
+                Text(Config.serverDisplayName).font(.zkSans(13)).foregroundColor(Theme.ink3).lineLimit(1)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 12)
+            .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
 
             Button { showTwoFactor = true } label: {
                 HStack(spacing: 10) {
@@ -4922,7 +4883,7 @@ struct AdminView: View {
             VStack(spacing: 0) {
                 // Compact scrollable tab chips (was a full-width segmented
                 // Picker): the words sit closer together, and a long label like
-                // "Monetization" fits without truncating.
+                // "Security Log" fits without truncating.
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         if selfIsAdmin { adminTabChip("Overview", 0) }
@@ -4930,7 +4891,7 @@ struct AdminView: View {
                         adminTabChip("Servers", 2)
                         if selfIsAdmin { adminTabChip("Storage", 3) }
                         adminTabChip("Security", 4)
-                        if selfIsAdmin { adminTabChip("Monetization", 5) }
+                        if selfIsAdmin { adminTabChip("Perks", 5) }
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
@@ -5052,12 +5013,12 @@ struct AdminView: View {
         return "\(s / 86400)d"
     }
 
-    // ── Monetization tab (admin-only): per-instance feature gates ────────────
+    // ── Perks tab (admin-only): what each perk tier unlocks ──────────────────
     private var monetization: some View {
         ScrollView {
             if let m = Binding($monet) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Minimum supporter tier required for each feature. \"Everyone\" = no tier gate.")
+                    Text("Everything is free, cosmetics included. Pick which perk tier unlocks each quality — give people tiers from their Account Info page. \"Everyone\" = no tier needed.")
                         .font(.zkSans(11)).foregroundColor(Theme.ink3)
                         .frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 2)
 
@@ -5065,17 +5026,18 @@ struct AdminView: View {
                     tierRow("1080p", m.stream.p1080)
                     tierRow("2K", m.stream.k2)
                     tierRow("4K", m.stream.k4)
+                    tierRow("60 fps", Binding(
+                        get: { m.wrappedValue.stream.fps60 ?? "scout" },
+                        set: { m.wrappedValue.stream.fps60 = $0 }
+                    ))
 
                     adminSubheader("CAMERA — MIN TIER")
                     tierRow("1080p", m.camera.p1080)
                     tierRow("2K", m.camera.k2)
                     tierRow("4K", m.camera.k4)
 
-                    adminSubheader("APPEARANCE / COSMETICS")
-                    tierRow("Min tier", m.appearance)
-
                     adminSubheader("UPLOAD CAPS — MB (BLANK = SERVER DEFAULT)")
-                    capRow("Free", m.uploadCapsMb.free)
+                    capRow("No tier", m.uploadCapsMb.free)
                     capRow("Scout", m.uploadCapsMb.scout)
                     capRow("Guardian", m.uploadCapsMb.guardian)
                     capRow("Legend", m.uploadCapsMb.legend)
@@ -6844,10 +6806,10 @@ struct CreateInviteSheet: View {
                                 }
                             }
                             .padding(14).background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
-                            Button { UIPasteboard.general.string = "https://zekktris.com/invite/\(code)" } label: {
+                            Button { UIPasteboard.general.string = "\(Config.assetOrigin)/invite/\(code)" } label: {
                                 Text("Copy invite link").font(.zkSans(14, weight: .medium)).foregroundColor(Theme.accent)
                             }
-                            if let qr = qrCodeImage("https://zekktris.com/invite/\(code)") {
+                            if let qr = qrCodeImage("\(Config.assetOrigin)/invite/\(code)") {
                                 Image(uiImage: qr)
                                     .interpolation(.none)
                                     .resizable()
@@ -7007,7 +6969,7 @@ struct ManageInvitesView: View {
                     .foregroundColor(expired ? Theme.ink3 : Theme.ink1)
                     .strikethrough(expired, color: Theme.ink4)
                 Spacer()
-                Button { UIPasteboard.general.string = "https://zekktris.com/invite/\(inv.code)" } label: {
+                Button { UIPasteboard.general.string = "\(Config.assetOrigin)/invite/\(inv.code)" } label: {
                     Image(systemName: "doc.on.doc").font(.system(size: 15)).foregroundColor(Theme.accent)
                 }
                 .buttonStyle(.plain)
@@ -8978,7 +8940,7 @@ struct QuickLoginSheet: View {
                         .font(.zkSans(13)).foregroundColor(Theme.ink3)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    if let code, let img = qrCodeImage("https://zekktris.com/login/device?c=\(code)") {
+                    if let code, let img = qrCodeImage("\(Config.assetOrigin)/login/device?c=\(code)") {
                         Image(uiImage: img)
                             .interpolation(.none).resizable()
                             .frame(width: 220, height: 220)

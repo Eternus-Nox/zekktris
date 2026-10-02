@@ -4962,7 +4962,7 @@ struct ProfileCardView: View {
                 .foregroundColor(Theme.accent)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
         }
-        // Supporter tier title — ships on the full-profile fetch (nil when
+        // Perk tier title — ships on the full-profile fetch (nil when
         // opted out or not a member).
         TierBadge(tier: fetched?.subscriptionTier ?? user.subscriptionTier)
     }

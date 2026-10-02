@@ -312,9 +312,11 @@ final class APIClient {
     /// teardown so it revokes the OLD session with the OLD token even after a
     /// fast re-login has replaced `self.token` — and so it never refreshes a
     /// dead session back into a live one (which would re-persist a token the
-    /// logout just deleted).
-    private func sendNoDecode(_ method: String, _ path: String, authorized: Bool = true, isRetry: Bool = false, bearerOverride: String? = nil) async -> Bool {
-        guard let url = URL(string: Config.apiBaseURL + path) else { return false }
+    /// logout just deleted). `baseOverride` pins the SERVER the same way: the
+    /// old token must only ever go back to the server that issued it, even if
+    /// the user picks a different server while the teardown is in flight.
+    private func sendNoDecode(_ method: String, _ path: String, authorized: Bool = true, isRetry: Bool = false, bearerOverride: String? = nil, baseOverride: String? = nil) async -> Bool {
+        guard let url = URL(string: (baseOverride ?? Config.apiBaseURL) + path) else { return false }
         var req = URLRequest(url: url)
         req.httpMethod = method
         req.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -524,8 +526,8 @@ final class APIClient {
         return try await send("POST", "/auth/register", bodyData: body, authorized: false)
     }
 
-    func logout(bearer: String? = nil) async {
-        await sendNoDecode("POST", "/auth/logout", bearerOverride: bearer)
+    func logout(bearer: String? = nil, base: String? = nil) async {
+        await sendNoDecode("POST", "/auth/logout", bearerOverride: bearer, baseOverride: base)
     }
 
     /// Single public profile. Includes `canMessage` (whether the viewer may
@@ -1290,9 +1292,9 @@ final class APIClient {
     }
 
     /// Unregister an APNs device token (e.g. on logout). Best-effort.
-    func unregisterDeviceToken(token: String, bearer: String? = nil) async {
+    func unregisterDeviceToken(token: String, bearer: String? = nil, base: String? = nil) async {
         let encoded = token.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? token
-        await sendNoDecode("DELETE", "/users/@me/device-tokens/\(encoded)", bearerOverride: bearer)
+        await sendNoDecode("DELETE", "/users/@me/device-tokens/\(encoded)", bearerOverride: bearer, baseOverride: base)
     }
 
     // ── Profile ───────────────────────────────────────────────────────────
@@ -1884,25 +1886,26 @@ extension APIClient {
         return wrap.config
     }
 
-    // ── Monetization (instance-wide, any authed user) ────────────────────────
-    /// Admin-configured monetization gates: camera/stream quality tier
-    /// minimums, Appearance gate, upload caps. 404s on older servers — callers
-    /// treat any failure as "use built-in defaults".
+    // ── Perks (instance-wide, any authed user) ───────────────────────────────
+    /// Admin-configured perk gates: camera/stream quality tier minimums and
+    /// upload caps. 404s on older servers — callers treat any failure as
+    /// "use built-in defaults".
     func monetization() async throws -> MonetizationConfig {
         let wrap: MonetizationConfigWrap = try await send("GET", "/instance/monetization")
         return wrap.config
     }
 
-    /// Admin write side of monetization gates (PUT /admin/monetization). Sends
-    /// the whole config (explicit null for a cleared upload cap = "use the env
+    /// Admin write side of perk gates (PUT /admin/monetization). Sends the
+    /// whole config (explicit null for a cleared upload cap = "use the env
     /// default"), matching the web admin panel; server does a partial write.
     func adminUpdateMonetization(_ c: MonetizationConfig) async throws -> MonetizationConfig {
         func cap(_ v: Int?) -> Any { v ?? NSNull() }
+        var stream: [String: Any] = ["p1080": c.stream.p1080, "k2": c.stream.k2, "k4": c.stream.k4]
+        if let fps60 = c.stream.fps60 { stream["fps60"] = fps60 }
         let body = try JSONSerialization.data(withJSONObject: [
             "config": [
-                "stream": ["p1080": c.stream.p1080, "k2": c.stream.k2, "k4": c.stream.k4],
+                "stream": stream,
                 "camera": ["p1080": c.camera.p1080, "k2": c.camera.k2, "k4": c.camera.k4],
-                "appearance": c.appearance,
                 "uploadCapsMb": [
                     "free": cap(c.uploadCapsMb.free),
                     "scout": cap(c.uploadCapsMb.scout),
@@ -1961,12 +1964,12 @@ extension APIClient {
     func adminResetDobLock(userId: String) async throws {
         try await sendVoid("POST", "/admin/users/\(userId)/reset-dob-lock")
     }
-    /// Gift (or re-gift, overwriting) a supporter membership.
+    /// Give (or re-give, overwriting) a perk tier.
     func adminGiftSubscription(userId: String, tier: String, duration: String) async throws {
         let data = try JSONSerialization.data(withJSONObject: ["tier": tier, "duration": duration])
         try await sendVoid("POST", "/admin/users/\(userId)/subscription", bodyData: data)
     }
-    /// Reset (remove) a user's membership + clear their paid cosmetics.
+    /// Remove a user's perk tier. Cosmetics are free, so nothing else changes.
     func adminRemoveSubscription(userId: String) async throws {
         try await sendVoid("DELETE", "/admin/users/\(userId)/subscription")
     }

@@ -3,11 +3,12 @@ import UIKit
 import SafariServices
 import AVFoundation
 
-/// The canonical hosted legal-doc URLs. Single source of truth is the web app
-/// (zekktris.com/terms, /privacy) so the text never drifts between platforms.
+/// The legal-doc URLs on the signed-in server. Single source of truth is the
+/// web app (/terms, /privacy) so the text never drifts between platforms — and
+/// a self-hosted server serves its own.
 enum LegalURL {
-    static let terms = URL(string: "https://zekktris.com/terms")!
-    static let privacy = URL(string: "https://zekktris.com/privacy")!
+    static var terms: URL { URL(string: Config.assetOrigin + "/terms")! }
+    static var privacy: URL { URL(string: Config.assetOrigin + "/privacy")! }
 }
 
 /// In-app browser sheet (SFSafariViewController) — opens the hosted legal
@@ -140,6 +141,8 @@ private struct PrimaryButton: View {
 struct LoginView: View {
     @EnvironmentObject private var session: Session
     let switchToRegister: () -> Void
+    /// Bumped when the server changes so the screen re-reads Config.
+    @State private var serverRevision = 0
 
     @State private var email = ""
     @State private var password = ""
@@ -222,21 +225,26 @@ struct LoginView: View {
                         Text("OR").font(.zkSans(12)).foregroundColor(Theme.ink3)
                         Rectangle().fill(Theme.line).frame(height: 1)
                     }
-                    Button {
-                        passkeyBusy = true
-                        Task { _ = await session.loginWithPasskey(); passkeyBusy = false }
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "person.badge.key.fill").font(.system(size: 15))
-                            Text(passkeyBusy ? "Waiting for passkey…" : "Sign in with a passkey")
-                                .font(.zkSans(15, weight: .semibold))
+                    // Passkeys are bound to zekktris.com by the app's
+                    // associated-domains entitlement, so they can't work
+                    // against a self-hosted server.
+                    if Config.isDefaultServer {
+                        Button {
+                            passkeyBusy = true
+                            Task { _ = await session.loginWithPasskey(); passkeyBusy = false }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "person.badge.key.fill").font(.system(size: 15))
+                                Text(passkeyBusy ? "Waiting for passkey…" : "Sign in with a passkey")
+                                    .font(.zkSans(15, weight: .semibold))
+                            }
+                            .foregroundColor(Theme.ink1)
+                            .frame(maxWidth: .infinity).padding(.vertical, 12)
+                            .background(Theme.bg3)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
-                        .foregroundColor(Theme.ink1)
-                        .frame(maxWidth: .infinity).padding(.vertical, 12)
-                        .background(Theme.bg3)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .disabled(passkeyBusy || session.busy)
                     }
-                    .disabled(passkeyBusy || session.busy)
 
                     // Device-approval login: this device shows a code, the
                     // user's already-signed-in phone approves it.
@@ -271,8 +279,14 @@ struct LoginView: View {
                     .padding(.top, 4)
                 }
 
+                if !session.needs2FA {
+                    ServerRow { serverRevision += 1; session.authError = nil }
+                        .padding(.top, 6)
+                }
+
                 Spacer(minLength: 0)
             }
+            .id(serverRevision)
             .padding(.horizontal, 24)
             .frame(maxWidth: 440)
             .frame(maxWidth: .infinity)
@@ -289,6 +303,162 @@ struct LoginView: View {
         focus = nil
         let twoFactor = session.needs2FA ? code.trimmingCharacters(in: .whitespaces) : nil
         Task { await session.login(email: email, password: password, code: twoFactor) }
+    }
+}
+
+/// "Server: zekktris.com · Change" — shown under the sign-in form. Zekktris
+/// runs on zekktris.com, and anyone can host their own server; this is where
+/// someone points the app at one. Only reachable while signed out, because a
+/// session token belongs to the server that issued it.
+struct ServerRow: View {
+    let onChanged: () -> Void
+    @State private var showPicker = false
+
+    var body: some View {
+        Button { showPicker = true } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "server.rack").font(.system(size: 12))
+                Text("Server: ").foregroundColor(Theme.ink3)
+                    + Text(Config.serverDisplayName).foregroundColor(Theme.ink2)
+                Text("· Change").foregroundColor(Theme.accent)
+            }
+            .font(.zkSans(13))
+            .foregroundColor(Theme.ink3)
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.plain)
+        .sheet(isPresented: $showPicker) {
+            ServerPickerSheet(onChanged: onChanged)
+        }
+    }
+}
+
+/// Pick the server to sign in to: zekktris.com, or the address of a
+/// self-hosted one (a web address or a bare IP). The address is checked
+/// against GET /api/v1/instance/info before it's saved, so a typo can't leave
+/// the app pointed at nothing.
+struct ServerPickerSheet: View {
+    let onChanged: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var address = ""
+    @State private var checking = false
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Zekktris runs on zekktris.com, and anyone can run their own server. Enter the address you were given — a web address like chat.example.com, or an IP address.")
+                        .font(.zkSans(14))
+                        .foregroundColor(Theme.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    AuthField(
+                        title: "Server address", text: $address,
+                        keyboard: .URL, textContentType: .URL,
+                        submitLabel: .go, onSubmit: connect
+                    )
+
+                    if let error {
+                        Text(error)
+                            .font(.zkSans(13))
+                            .foregroundColor(Theme.danger)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    PrimaryButton(
+                        title: "Connect", busy: checking,
+                        enabled: !address.trimmingCharacters(in: .whitespaces).isEmpty,
+                        action: connect
+                    )
+
+                    if !Config.isDefaultServer {
+                        Button {
+                            Config.setServerOrigin(nil)
+                            onChanged()
+                            dismiss()
+                        } label: {
+                            Text("Go back to zekktris.com")
+                                .font(.zkSans(14, weight: .semibold))
+                                .foregroundColor(Theme.ink1)
+                                .frame(maxWidth: .infinity).padding(.vertical, 12)
+                                .background(Theme.bg3)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    Text("Now using \(Config.serverDisplayName). Notifications on your lock screen only work on servers set up for this app; everything else works on any server.")
+                        .font(.zkSans(12))
+                        .foregroundColor(Theme.ink3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(24)
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Server")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.foregroundColor(Theme.ink2)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func connect() {
+        guard !checking else { return }
+        error = nil
+        guard let origin = Config.normalizeOrigin(address) else {
+            error = "That doesn't look like a server address."
+            return
+        }
+        checking = true
+        Task {
+            defer { checking = false }
+            do {
+                try await ServerProbe.check(origin)
+                Config.setServerOrigin(origin)
+                onChanged()
+                dismiss()
+            } catch let e as ServerProbe.Failure {
+                error = e.message
+            } catch {
+                self.error = "Couldn't reach that server."
+            }
+        }
+    }
+}
+
+/// One GET to {origin}/api/v1/instance/info: proves the address answers and
+/// that it's a Zekktris server.
+enum ServerProbe {
+    struct Failure: Error { let message: String }
+    private struct Info: Decodable { let software: String }
+
+    static func check(_ origin: String) async throws {
+        guard let url = URL(string: origin + "/api/v1/instance/info") else {
+            throw Failure(message: "That doesn't look like a server address.")
+        }
+        var req = URLRequest(url: url, timeoutInterval: 10)
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        let data: Data
+        let resp: URLResponse
+        do {
+            (data, resp) = try await URLSession.shared.data(for: req)
+        } catch let e as URLError where e.code == .appTransportSecurityRequiresSecureConnection {
+            throw Failure(message: "That server isn't using HTTPS. Only servers on your home network can use plain http://.")
+        } catch let e as URLError where [.serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot, .secureConnectionFailed].contains(e.code) {
+            throw Failure(message: "That server's HTTPS certificate isn't valid. Its owner needs to finish setting up HTTPS.")
+        } catch {
+            throw Failure(message: "Couldn't reach that server. Check the address, and that the server is running.")
+        }
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200,
+              let info = try? JSONDecoder().decode(Info.self, from: data),
+              info.software == "zekktris" else {
+            throw Failure(message: "Something answered at that address, but it isn't a Zekktris server (or it's too old — its owner should update it).")
+        }
     }
 }
 
@@ -380,6 +550,8 @@ struct ForgotPasswordView: View {
 struct RegisterView: View {
     @EnvironmentObject private var session: Session
     let switchToLogin: () -> Void
+    /// Bumped when the server changes so the screen re-reads Config.
+    @State private var serverRevision = 0
 
     @State private var email = ""
     @State private var username = ""
@@ -523,8 +695,12 @@ struct RegisterView: View {
                 .font(.zkSans(14))
                 .padding(.top, 4)
 
+                ServerRow { serverRevision += 1; session.authError = nil }
+                    .padding(.top, 6)
+
                 Spacer(minLength: 0)
             }
+            .id(serverRevision)
             .padding(.horizontal, 24)
             .frame(maxWidth: 440)
             .frame(maxWidth: .infinity)

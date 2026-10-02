@@ -56,12 +56,19 @@
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Zekktris uses your camera for video calls, to set your avatar, and to scan the sign-in code shown on another device.</string>
 	<key>NSContactsUsageDescription</key>
 	<string>Zekktris adds a contact's Zekktris handle to their card, so you can message them by their real name — including with Siri. It only writes to cards you pick.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Zekktris uses Face ID to unlock the app and keep your conversations private.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Zekktris connects to a Zekktris server on your local network when you choose one at sign-in.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Zekktris uses your microphone for voice channels, calls, and voice messages.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

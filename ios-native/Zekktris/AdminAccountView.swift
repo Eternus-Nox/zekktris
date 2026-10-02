@@ -212,7 +212,7 @@ struct AdminAccountView: View {
                 infoRow("Two-factor", a.twoFactorEnabled ? "On" : "Off")
                 infoRow("Signed-in devices", "\(a.activeSessions)")
                 infoRow("Servers / friends", "\(a.guildCount) / \(a.friendCount)")
-                infoRow("Membership", a.subscriptionTier.map { tier in
+                infoRow("Perk tier", a.subscriptionTier.map { tier in
                     "\(tier) · " + (a.subscriptionExpiresAt.flatMap(AdminDates.parse).map { "until \(shortDate($0))" } ?? "forever")
                 } ?? "None")
                 HStack(spacing: 8) {
@@ -260,11 +260,11 @@ struct AdminAccountView: View {
                         }
                         if u.subscriptionTier != nil {
                             Button(role: .destructive) { Task { await removeMembership(u) } } label: {
-                                Label("Reset membership", systemImage: "xmark.circle")
+                                Label("Remove tier", systemImage: "xmark.circle")
                             }
                         }
                     } label: {
-                        buttonLabel("Membership", "star", danger: false)
+                        buttonLabel("Perk tier", "star", danger: false)
                     }
                     actionButton("Delete account", "trash", danger: true) { confirmDelete = true }
                 }
@@ -591,14 +591,14 @@ struct AdminAccountView: View {
     }
 
     private func gift(_ u: AdminUser, _ tier: String, _ duration: String) async {
-        await run("Gifted \(tier)") {
+        await run("Gave the \(tier) tier") {
             try await store.api.adminGiftSubscription(userId: u.id, tier: tier, duration: duration)
             store.patchAdminUser(u.id) { $0.subscriptionTier = tier }
         }
     }
 
     private func removeMembership(_ u: AdminUser) async {
-        await run("Membership removed") {
+        await run("Perk tier removed") {
             try await store.api.adminRemoveSubscription(userId: u.id)
             store.patchAdminUser(u.id) { $0.subscriptionTier = nil }
         }

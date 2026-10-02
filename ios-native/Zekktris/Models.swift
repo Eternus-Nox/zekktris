@@ -33,7 +33,7 @@ struct PublicUser: Codable, Identifiable, Hashable {
     /// (clients fall back to the accent when nil).
     var tagLabel: String?
     var tagColor: String?
-    /// Supporter tier title ("scout" | "guardian" | "legend"). Only populated
+    /// Perk tier title ("scout" | "guardian" | "legend"). Only populated
     /// by the single-profile fetch; nil when no membership or opted out.
     var subscriptionTier: String?
     /// Instance staff role. Present (true) only for administrators/moderators —
@@ -142,12 +142,15 @@ struct SelfUser: Codable, Identifiable, Hashable {
     /// back-compat with sessions hydrated before the columns existed.
     var dateOfBirth: String?
     var canChangeDob: Bool?
-    /// Effective supporter membership ("scout" | "guardian" | "legend"; own or
-    /// inherited from a supervising parent). nil = none → Appearance locked.
+    /// Effective perk tier ("scout" | "guardian" | "legend"; own or inherited
+    /// from a supervising parent). nil = none → base perks.
     /// showSubscriptionTier drives the profile-title opt-out toggle.
     var subscriptionTier: String?
     var subscriptionExpiresAt: String?
     var subscriptionInherited: Bool?
+    /// "gift" | "founder" | "stripe". "stripe" = a subscription bought before
+    /// Zekktris went free; Settings points at web Settings to stop it.
+    var subscriptionSource: String?
     /// False for founder (grandfathered) memberships — perks without a title.
     var subscriptionTitled: Bool?
     var showSubscriptionTier: Bool?
@@ -803,7 +806,7 @@ struct AdminUser: Codable, Identifiable {
     /// For a timed ban: when it auto-lifts (ISO). Nil = permanent (when banned)
     /// or not banned.
     var bannedUntil: String?
-    /// Active supporter membership (own row); nil = none.
+    /// Active perk tier (own row); nil = none.
     var subscriptionTier: String?
     var subscriptionExpiresAt: String?
     var createdAt: String?
@@ -1718,16 +1721,20 @@ enum CameraQuality: String, CaseIterable, Identifiable {
     }
 }
 
-/// Admin-configurable monetization gates (GET /instance/monetization).
-/// Each matrix value is the MINIMUM membership tier required
-/// ("none"/"scout"/"guardian"/"legend"; "none" = free). 720p and below are
-/// always free and never appear here. `uploadCapsMb` values are nil when the
-/// server falls back to its env default for that tier.
+/// Admin-configurable perk gates (GET /instance/monetization — the route
+/// keeps its old name; there are no payments). Each matrix value is the
+/// MINIMUM perk tier required ("none"/"scout"/"guardian"/"legend"; "none" =
+/// everyone). 720p and below are always open and never appear here.
+/// `uploadCapsMb` values are nil when the server falls back to its env
+/// default for that tier.
 struct MonetizationConfig: Codable, Hashable {
     struct QualityTiers: Codable, Hashable {
         var p1080: String
         var k2: String
         var k4: String
+        /// Screen share only: 60fps. nil on the camera matrix and on older
+        /// servers.
+        var fps60: String?
     }
     struct UploadCapsMb: Codable, Hashable {
         var free: Int?
@@ -1737,7 +1744,9 @@ struct MonetizationConfig: Codable, Hashable {
     }
     var stream: QualityTiers
     var camera: QualityTiers
-    var appearance: String
+    /// Always "none" now — cosmetics are free. Optional so a server that
+    /// drops the key still decodes.
+    var appearance: String?
     var uploadCapsMb: UploadCapsMb
 }
 struct MonetizationConfigWrap: Codable { let config: MonetizationConfig }

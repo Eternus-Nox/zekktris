@@ -251,7 +251,7 @@ struct NameTag: View {
     }
 }
 
-/// Supporter tier title badge — Scout / Guardian / Legend. Mirrors the web
+/// Perk tier title badge — Scout / Guardian / Legend. Mirrors the web
 /// TierBadge pill (uppercase, tier-tinted). Renders nothing for nil/unknown.
 struct TierBadge: View {
     let tier: String?

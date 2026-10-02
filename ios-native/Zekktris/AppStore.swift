@@ -878,13 +878,11 @@ final class AppStore: ObservableObject {
     /// The signed-in user, used to author optimistic message placeholders.
     @Published var currentUser: SelfUser?
 
-    // MARK: Monetization gates (admin-configurable)
+    // MARK: Perk gates (admin-configurable)
 
-    /// Admin-configured monetization matrix, fetched fire-and-forget on
-    /// start() and every foreground reconnect. nil (old server / fetch
-    /// failed / not yet loaded) → the built-in defaults below, which are
-    /// exactly today's hardcoded behavior, so nothing changes against a
-    /// server that doesn't have the endpoint.
+    /// Admin-configured perk matrix, fetched fire-and-forget on start() and
+    /// every foreground reconnect. nil (old server / fetch failed / not yet
+    /// loaded) → the built-in defaults below, which match the server's.
     @Published var monetizationConfig: MonetizationConfig?
 
     /// Tier ladder: none=0 scout=1 guardian=2 legend=3 (unknown → 0).
@@ -897,9 +895,9 @@ final class AppStore: ObservableObject {
         }
     }
 
-    /// Minimum membership tier required to publish the camera at `q`, per
-    /// the admin-configured matrix — or the built-in defaults (1080p free,
-    /// 2K Guardian, 4K Legend) when no config is loaded. nil = free.
+    /// Minimum perk tier required to publish the camera at `q`, per the
+    /// admin-configured matrix — or the built-in defaults (1080p for
+    /// everyone, 2K Guardian, 4K Legend) when no config is loaded. nil = free.
     /// 720p and below are ALWAYS free (never configurable).
     func requiredCameraTier(for q: CameraQuality) -> String? {
         let required: String
@@ -912,14 +910,32 @@ final class AppStore: ObservableObject {
         return required == "none" ? nil : required
     }
 
-    /// True when the signed-in user's membership meets the configured
-    /// minimum for camera quality `q`.
+    /// True when the signed-in user's tier meets the configured minimum for
+    /// camera quality `q`.
     func cameraQualityAllowed(_ q: CameraQuality) -> Bool {
-        guard let required = requiredCameraTier(for: q) else { return true }
-        return Self.tierRank(currentUser?.subscriptionTier) >= Self.tierRank(required)
+        cameraQualityAllowed(q, rank: Self.tierRank(currentUser?.subscriptionTier))
     }
 
-    /// Refresh the monetization matrix. Failures are swallowed and keep the
+    func cameraQualityAllowed(_ q: CameraQuality, rank: Int) -> Bool {
+        guard let required = requiredCameraTier(for: q) else { return true }
+        return rank >= Self.tierRank(required)
+    }
+
+    /// What a session at `rank` gets, for the Settings perk list. Screen
+    /// share runs on web and desktop only; its defaults match the server's
+    /// (everyone 720p30, Scout 1080p + 60fps, Guardian 2K, Legend 4K).
+    func perkLines(forRank rank: Int) -> [String] {
+        let s = monetizationConfig?.stream
+        let screenGates: [(String, String)] = [
+            ("4K", s?.k4 ?? "legend"), ("2K", s?.k2 ?? "guardian"), ("1080p", s?.p1080 ?? "scout"),
+        ]
+        let screen = screenGates.first { rank >= Self.tierRank($0.1) }?.0 ?? "720p"
+        let fps = rank >= Self.tierRank(s?.fps60 ?? "scout") ? 60 : 30
+        let camera = [CameraQuality.k4, .k2, .high].first { cameraQualityAllowed($0, rank: rank) }?.shortLabel ?? "720p"
+        return ["Screen share up to \(screen) at \(fps) fps on web & desktop", "Camera up to \(camera)"]
+    }
+
+    /// Refresh the perk matrix. Failures are swallowed and keep the
     /// last good config (or nil → defaults), so an old server or a flaky
     /// network never changes entitlement behavior mid-session.
     func loadMonetizationConfig() async {
@@ -1421,6 +1437,12 @@ final class AppStore: ObservableObject {
         // without this the share sheet of a signed-out phone keeps listing the
         // previous account's contacts by name and face, in every other app.
         ShareSuggestions.deleteAll()
+        // The widget and the watch each hold a COPY of the token. Drop both,
+        // or a signed-out phone keeps poking from the Home Screen — and after
+        // a server switch they'd send the old server's token to the new one.
+        WidgetBridge.publish(dms: [], token: nil)
+        WidgetCenter.shared.reloadAllTimelines()
+        WatchSync.shared.sync(token: nil, targets: [])
         currentUserId = nil
         currentUser = nil
         didInitialReady = false
@@ -4338,9 +4360,12 @@ final class AppStore: ObservableObject {
     /// Strip a pasted invite URL down to the bare code. Shared by preview + join
     /// so both resolve the same code.
     private func cleanInviteCode(_ code: String) -> String {
-        code.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "https://zekktris.com/invite/", with: "")
-            .replacingOccurrences(of: "zekktris.com/invite/", with: "")
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Any server's invite link: keep whatever follows "/invite/".
+        if let r = trimmed.range(of: "/invite/") {
+            return String(trimmed[r.upperBound...]).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        }
+        return trimmed
     }
 
     /// Public preview of an invite (GET /invites/:code) so the user sees the
@@ -4472,14 +4497,14 @@ final class AppStore: ObservableObject {
         do { try await api.adminResetDobLock(userId: u.id) }
         catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
-    /// Gift a membership ("scout"|"guardian"|"legend" × "1m"|"3m"|"6m"|"forever").
+    /// Give a perk tier ("scout"|"guardian"|"legend" × "1m"|"3m"|"6m"|"forever").
     func adminGift(_ u: AdminUser, tier: String, duration: String) async {
         do {
             try await api.adminGiftSubscription(userId: u.id, tier: tier, duration: duration)
             patchAdminUser(u.id) { $0.subscriptionTier = tier }
         } catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
-    /// Reset (remove) a user's membership + clear paid cosmetics.
+    /// Remove a user's perk tier (cosmetics are free, so nothing else changes).
     func adminRemoveMembership(_ u: AdminUser) async {
         do {
             try await api.adminRemoveSubscription(userId: u.id)
