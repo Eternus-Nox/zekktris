@@ -25,9 +25,9 @@ export interface PublicUser {
       populated by the single-profile fetch (GET /users/:id); undefined on
       list-derived users. The profile card uses it to gate Message + Call. */
   canMessage?: boolean;
-  /** Supporter tier title (Scout/Guardian/Legend). Only populated by the
-      single-profile fetch; null when the user has no membership or opted out
-      of showing it. */
+  /** Perk tier title (Scout/Guardian/Legend). Only populated by the
+      single-profile fetch; null when the user has no tier or opted out of
+      showing it. */
   subscriptionTier?: 'scout' | 'guardian' | 'legend' | null;
   /** Optional on PublicUser because most surfaces (member lists,
       message authors) don't carry banners — they're fetched on
@@ -185,10 +185,10 @@ export interface SelfUser extends PublicUser {
       one-time "confirm your date of birth" prompt. Locked (false) at signup and
       after the one self-change; an admin can reopen it. */
   canChangeDob?: boolean;
-  /** Whether the supporter tier title shows on the profile popup. */
+  /** Whether the perk tier title shows on the profile popup. */
   showSubscriptionTier?: boolean;
-  /** Effective supporter membership (own or inherited from a supervising
-      parent). Null/undefined = none → Appearance perks locked. */
+  /** Effective perk tier (own or inherited from a supervising parent).
+      Null/undefined = none → base perks. */
   subscriptionTier?: 'scout' | 'guardian' | 'legend' | null;
   /** Membership expiry (ISO); null = unlimited/forever. */
   subscriptionExpiresAt?: string | null;
@@ -197,11 +197,11 @@ export interface SelfUser extends PublicUser {
   /** Whether the tier TITLE applies. False for founder (grandfathered)
       memberships — perks without a title until a tier is chosen. */
   subscriptionTitled?: boolean;
-  /** 'gift' | 'founder' | 'stripe'. "Manage subscription" (Stripe portal)
-      shows only for own stripe memberships. */
+  /** 'gift' | 'founder' | 'stripe'. 'stripe' = a subscription bought before
+      payments were removed; Settings offers a way to cancel it. */
   subscriptionSource?: string | null;
-  /** Own stripe membership scheduled to end at subscriptionExpiresAt (the user
-      cancelled). Settings shows "Cancels on <date> · Resume" when true. */
+  /** Own leftover paid subscription scheduled to end at subscriptionExpiresAt
+      (the user cancelled). */
   subscriptionCancelAtPeriodEnd?: boolean;
   createdAt: string;
 }
@@ -1163,9 +1163,9 @@ export interface SecurityEvent {
   createdAt: string;
 }
 
-// ── Instance monetization (Admin → Monetization) ────────────────────────────
+// ── Instance perks (Admin → Perks; API route still says "monetization") ────
 
-/** MINIMUM membership tier a gated feature requires; 'none' = free. */
+/** MINIMUM perk tier a feature requires; 'none' = free for everyone. */
 export type MonetizationTier = 'none' | 'scout' | 'guardian' | 'legend';
 
 /** Per-resolution tier requirements for one video surface (screen share or
@@ -1176,16 +1176,21 @@ export interface MonetizationMatrix {
   k4: MonetizationTier;
 }
 
-/** Admin-configurable feature gating. Fetched by every client at login
+/** Screen share adds a frame-rate rung: 60fps at any resolution. */
+export interface StreamMatrix extends MonetizationMatrix {
+  fps60: MonetizationTier;
+}
+
+/** What each perk tier unlocks. Fetched by every client at login
     (GET /instance/monetization); written by admins (PUT /admin/monetization). */
 export interface MonetizationConfig {
-  /** Screen-share resolution gates. Defaults: p1080 free, 2K Guardian, 4K Legend. */
-  stream: MonetizationMatrix;
-  /** Webcam resolution gates. Same defaults as `stream`. */
+  /** Screen-share gates. Defaults: 1080p + 60fps Scout, 2K Guardian, 4K Legend;
+      everyone streams 720p30. */
+  stream: StreamMatrix;
+  /** Webcam resolution gates. Defaults: 1080p free, 2K Guardian, 4K Legend. */
   camera: MonetizationMatrix;
-  /** Tier required for Appearance cosmetics (themes/frames/tags).
-      Default 'scout' = any membership (founder grants are 'scout'). */
-  appearance: MonetizationTier;
+  /** Always 'none' — cosmetics are free. Kept for older apps. */
+  appearance: 'none';
   /** Per-tier upload caps in MB; null = the server's env default
       (MAX_UPLOAD_SIZE_MB). The env cap stays the hard ceiling either way. */
   uploadCapsMb: {
@@ -1198,8 +1203,7 @@ export interface MonetizationConfig {
 
 /** PUT /admin/monetization accepts a full config or any subset of it. */
 export interface MonetizationConfigPatch {
-  stream?: Partial<MonetizationMatrix>;
+  stream?: Partial<StreamMatrix>;
   camera?: Partial<MonetizationMatrix>;
-  appearance?: MonetizationTier;
   uploadCapsMb?: Partial<MonetizationConfig['uploadCapsMb']>;
 }

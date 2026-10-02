@@ -838,7 +838,7 @@ export function ProfileCard({
                     Bot
                   </span>
                 )}
-                {/* Supporter tier title — ships on the full-profile fetch only
+                {/* Perk tier title — ships on the full-profile fetch only
                     (and only when the user hasn't opted out of showing it). */}
                 <TierBadge tier={fullProfile?.subscriptionTier ?? user.subscriptionTier} />
               </div>

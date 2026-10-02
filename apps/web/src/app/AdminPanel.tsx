@@ -126,7 +126,7 @@ export function AdminPanel() {
         { id: 'guilds', label: 'Servers' },
         { id: 'storage', label: 'Storage' },
         { id: 'security', label: 'Security' },
-        { id: 'monetization', label: 'Monetization' },
+        { id: 'monetization', label: 'Perks' },
         { id: 'backup', label: 'Backup & Maintenance' },
       ];
   const effectiveTab: Tab = tabs.some((t) => t.id === tab) ? tab : tabs[0]!.id;
@@ -2200,23 +2200,25 @@ function BackupAdminTab() {
   );
 }
 
-// ── Monetization tab (admin-only feature gating) ─────────────────────────────
+// ── Perks tab (admin-only) ───────────────────────────────────────────────────
 //
-// Which membership tier (if any) each premium surface requires, plus per-tier
-// upload caps. Stored in instance_settings; every client fetches the config at
-// login (GET /instance/monetization) and gates locally. ADMIN-only: the tab is
-// absent from the moderator tab list above, and the API's admin-router
-// allowlist rejects moderators on the PUT anyway.
+// What each perk tier unlocks: streaming quality per resolution, 60fps screen
+// share, and per-tier upload caps. There are no payments — admins give tiers
+// out from a user's Account Info page. Stored in instance_settings; every
+// client fetches the config at login (GET /instance/monetization — the route
+// keeps its old name) and gates locally. ADMIN-only: the tab is absent from
+// the moderator tab list above, and the API's admin-router allowlist rejects
+// moderators on the PUT anyway.
 
 const MONETIZE_TIER_OPTIONS: Array<{ value: MonetizationTier; label: string }> = [
-  { value: 'none', label: 'None (free for everyone)' },
-  { value: 'scout', label: 'Scout ($2)' },
-  { value: 'guardian', label: 'Guardian ($5)' },
-  { value: 'legend', label: 'Legend ($10)' },
+  { value: 'none', label: 'Everyone' },
+  { value: 'scout', label: 'Scout and up' },
+  { value: 'guardian', label: 'Guardian and up' },
+  { value: 'legend', label: 'Legend only' },
 ];
 
 const UPLOAD_CAP_TIERS: Array<{ key: keyof MonetizationConfig['uploadCapsMb']; label: string }> = [
-  { key: 'free', label: 'Free' },
+  { key: 'free', label: 'No tier' },
   { key: 'scout', label: 'Scout' },
   { key: 'guardian', label: 'Guardian' },
   { key: 'legend', label: 'Legend' },
@@ -2251,6 +2253,73 @@ function MonetizeTierRow({
   );
 }
 
+/**
+ * Subscriptions bought before payments were removed. Shows only while some are
+ * still billing; one button turns each into a forever tier at the same level
+ * and cancels its Stripe billing so nobody is charged again.
+ */
+function LegacyPaidSubscriptions() {
+  const { rest } = useAuth();
+  const toasts = useToasts();
+  const [active, setActive] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    rest
+      .adminPaidSubscriptions()
+      .then((r) => !cancelled && setActive(r.active))
+      .catch(() => !cancelled && setActive(0));
+    return () => {
+      cancelled = true;
+    };
+  }, [rest]);
+
+  if (!active) return null;
+
+  async function retire() {
+    if (
+      !window.confirm(
+        `End billing for ${active} paid subscription${active === 1 ? '' : 's'}? Each person keeps their tier forever and is never charged again. This can't be undone.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await rest.adminRetirePaidSubscriptions();
+      setActive(0);
+      toasts.push(
+        r.cancelFailures
+          ? `Converted ${r.converted}. ${r.cancelFailures} couldn't be canceled at Stripe — cancel those in the Stripe dashboard.`
+          : `Converted ${r.converted} to forever tiers. Billing stopped.`,
+        r.cancelFailures ? 'error' : 'success',
+      );
+    } catch (e) {
+      toasts.push(e instanceof ApiError ? e.message : 'Could not end billing', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="border border-amber-500/40 bg-amber-500/5 rounded-md p-4 space-y-2">
+      <h3 className="text-sm font-semibold text-ink-1">Paid subscriptions still billing</h3>
+      <p className="text-xs text-ink-3 leading-relaxed">
+        {active} {active === 1 ? 'person is' : 'people are'} still being charged for a tier bought
+        before Zekktris went free. End their billing and they keep that tier forever.
+      </p>
+      <button
+        onClick={() => void retire()}
+        disabled={busy}
+        className="px-3 py-1.5 rounded-md text-sm font-medium bg-bg-2 text-ink-1 border border-amber-500/50 hover:border-amber-400 transition-colors disabled:opacity-50"
+      >
+        {busy ? 'Ending billing…' : 'End all billing, keep tiers'}
+      </button>
+    </section>
+  );
+}
+
 function MonetizationTab() {
   const { rest } = useAuth();
   const toasts = useToasts();
@@ -2268,7 +2337,7 @@ function MonetizationTab() {
       })
       .catch((e) => {
         if (cancelled) return;
-        setError(e instanceof ApiError ? e.message : 'Failed to load monetization settings');
+        setError(e instanceof ApiError ? e.message : 'Failed to load perk settings');
       });
     return () => {
       cancelled = true;
@@ -2281,6 +2350,10 @@ function MonetizationTab() {
     v: MonetizationTier,
   ) {
     setConfig((c) => (c ? { ...c, [surface]: { ...c[surface], [row]: v } } : c));
+  }
+
+  function setFps60(v: MonetizationTier) {
+    setConfig((c) => (c ? { ...c, stream: { ...c.stream, fps60: v } } : c));
   }
 
   function setCap(tier: keyof MonetizationConfig['uploadCapsMb'], raw: string) {
@@ -2299,9 +2372,14 @@ function MonetizationTab() {
     if (!config || saving) return;
     setSaving(true);
     try {
-      const r = await rest.adminUpdateMonetization(config);
+      // `appearance` is read-only (cosmetics are always free); send the rest.
+      const r = await rest.adminUpdateMonetization({
+        stream: config.stream,
+        camera: config.camera,
+        uploadCapsMb: config.uploadCapsMb,
+      });
       setConfig(r.config);
-      toasts.push('Monetization settings saved', 'success');
+      toasts.push('Perk settings saved', 'success');
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Save failed', 'error');
     } finally {
@@ -2316,14 +2394,16 @@ function MonetizationTab() {
     <div className="space-y-6 max-w-3xl">
       <AdminTabHeader
         icon={Lock}
-        title="Monetization"
-        subtitle="Choose which membership tier each premium feature requires on this instance. Clients pick the changes up at their next sign-in or refresh."
+        title="Perks"
+        subtitle="Everything is free, cosmetics included. Scout, Guardian and Legend are tiers you give people from their Account Info page; choose here what each tier adds. Apps pick up changes at their next sign-in or refresh."
       />
+
+      <LegacyPaidSubscriptions />
 
       <section className="border border-line rounded-md p-4 space-y-3">
         <h3 className="text-sm font-semibold text-ink-1">Screen streaming</h3>
         <p className="text-xs text-ink-3 leading-relaxed">
-          Minimum membership tier to share the screen at each resolution. 720p is always free.
+          Who can share their screen at each quality. 720p at 30 fps is always open to everyone.
         </p>
         <MonetizeTierRow
           label="1080p"
@@ -2340,13 +2420,14 @@ function MonetizationTab() {
           value={config.stream.k4}
           onChange={(v) => setMatrix('stream', 'k4', v)}
         />
+        <MonetizeTierRow label="60 fps" value={config.stream.fps60} onChange={setFps60} />
       </section>
 
       <section className="border border-line rounded-md p-4 space-y-3">
         <h3 className="text-sm font-semibold text-ink-1">Webcam</h3>
         <p className="text-xs text-ink-3 leading-relaxed">
-          Minimum membership tier to publish the camera at each resolution. 720p and below are
-          always free.
+          Who can turn their camera on at each resolution. 720p and below are always open to
+          everyone.
         </p>
         <MonetizeTierRow
           label="1080p"
@@ -2362,19 +2443,6 @@ function MonetizationTab() {
           label="4K (2160p)"
           value={config.camera.k4}
           onChange={(v) => setMatrix('camera', 'k4', v)}
-        />
-      </section>
-
-      <section className="border border-line rounded-md p-4 space-y-3">
-        <h3 className="text-sm font-semibold text-ink-1">Appearance (themes, frames, tags)</h3>
-        <p className="text-xs text-ink-3 leading-relaxed">
-          Minimum membership tier to use paid cosmetics. The default, Scout, means any membership
-          (founder grants count as Scout); None opens Appearance to everyone.
-        </p>
-        <MonetizeTierRow
-          label="Appearance"
-          value={config.appearance}
-          onChange={(v) => setConfig((c) => (c ? { ...c, appearance: v } : c))}
         />
       </section>
 

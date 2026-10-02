@@ -294,14 +294,14 @@ export function AdminAccountPage({
         subscriptionExpiresAt: r.subscription.expiresAt,
       });
       setPanel(null);
-      toasts.push(`Gifted ${giftTier}`, 'success');
+      toasts.push(`Gave the ${giftTier} tier`, 'success');
       await refresh();
     });
   const removeMembership = () =>
     run('gift', async () => {
       await rest.adminRemoveSubscription(user.id);
       onChanged({ subscriptionTier: null, subscriptionExpiresAt: null });
-      toasts.push('Membership removed', 'success');
+      toasts.push('Perk tier removed', 'success');
       await refresh();
     });
 
@@ -454,7 +454,7 @@ export function AdminAccountPage({
               <Row label="Servers / friends">
                 {account.guildCount} / {account.friendCount}
               </Row>
-              <Row label="Membership">
+              <Row label="Perk tier">
                 {account.subscriptionTier
                   ? `${account.subscriptionTier} · ${account.subscriptionExpiresAt ? `until ${fmtDate(account.subscriptionExpiresAt)}` : 'forever'}`
                   : 'None'}
@@ -510,7 +510,7 @@ export function AdminAccountPage({
                   <Shield size={13} /> Role
                 </button>
                 <button onClick={() => setPanel(panel === 'gift' ? null : 'gift')} className={btn}>
-                  <Bookmark size={13} /> Membership
+                  <Bookmark size={13} /> Perk tier
                 </button>
                 <button onClick={deleteAccount} disabled={busy === 'delete'} className={dangerBtn}>
                   <Trash size={13} /> Delete account
@@ -569,23 +569,23 @@ export function AdminAccountPage({
           )}
           {panel === 'gift' && (
             <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-line">
-              <select value={giftTier} onChange={(e) => setGiftTier(e.target.value as typeof giftTier)} className="text-xs bg-bg-3 border border-line rounded px-1.5 py-1 text-ink-1" aria-label="Membership tier">
+              <select value={giftTier} onChange={(e) => setGiftTier(e.target.value as typeof giftTier)} className="text-xs bg-bg-3 border border-line rounded px-1.5 py-1 text-ink-1" aria-label="Perk tier">
                 <option value="scout">Scout ($2)</option>
                 <option value="guardian">Guardian ($5)</option>
                 <option value="legend">Legend ($10)</option>
               </select>
-              <select value={giftDuration} onChange={(e) => setGiftDuration(e.target.value as typeof giftDuration)} className="text-xs bg-bg-3 border border-line rounded px-1.5 py-1 text-ink-1" aria-label="Membership duration">
+              <select value={giftDuration} onChange={(e) => setGiftDuration(e.target.value as typeof giftDuration)} className="text-xs bg-bg-3 border border-line rounded px-1.5 py-1 text-ink-1" aria-label="Perk tier duration">
                 <option value="1m">1 month</option>
                 <option value="3m">3 months</option>
                 <option value="6m">6 months</option>
                 <option value="forever">Forever</option>
               </select>
               <button onClick={() => void gift()} disabled={busy === 'gift'} className="text-xs px-2.5 py-1 rounded border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-40 inline-flex items-center gap-1">
-                <Plus size={13} /> Gift
+                <Plus size={13} /> Give
               </button>
               {user.subscriptionTier && (
                 <button onClick={() => void removeMembership()} disabled={busy === 'gift'} className="text-xs px-2.5 py-1 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-40 inline-flex items-center gap-1">
-                  <RefreshCw size={13} /> Reset membership
+                  <RefreshCw size={13} /> Remove tier
                 </button>
               )}
             </div>

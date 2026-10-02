@@ -14,7 +14,7 @@
 import { Link } from 'react-router-dom';
 import { ZekktrisMark } from '../lib/ZekktrisMark';
 
-const LAST_UPDATED = 'July 3, 2026';
+const LAST_UPDATED = 'October 2, 2026';
 const CONTACT_EMAIL = 'support@zekktris.com';
 const PRIVACY_EMAIL = 'privacy@zekktris.com';
 
@@ -89,62 +89,38 @@ export function TermsPage() {
         unauthorized use. You are responsible for all activity under your account. Accounts are for
         individuals; do not share your account or impersonate others. If you create bot or automated
         accounts, you remain responsible for everything they do, they must follow these Terms and
-        our rate limits, and they cannot hold a paid membership.
+        our rate limits, and they cannot hold a perk tier.
       </p>
 
-      <H>3. Payments and memberships</H>
+      <H>3. Free service and perk tiers</H>
       <p>
-        Every core feature of Zekktris is free. Memberships are an entirely optional way to support
-        the Service. A membership unlocks <strong>cosmetic personalization</strong> — such as
-        themes, avatar frames, and a name tag (also called a clan tag) — shows your supporter tier
-        on your profile, and unlocks <strong>premium streaming quality</strong>: 2K video (screen
-        share and camera) on the Guardian tier and 4K on the Legend tier. Screen sharing and camera
-        video are free for everyone at up to 1080p (screen share at up to 60fps); a membership only
-        raises the maximum video quality. Beyond those cosmetic options and the higher maximum
-        video quality, a membership never changes what you can say, who you can talk to, or which
-        communities you can join, and gives no moderation or social advantage. If you never buy
-        one, nothing is taken away from the free experience.
+        Zekktris is free. Every feature — including cosmetic personalization such as themes, avatar
+        frames, and a name tag (also called a clan tag) — is available to every account, and
+        nothing is sold. We do not charge for the Service or take payment details.
       </p>
       <p>
-        Memberships are offered in tiers — currently Scout, Guardian, and Legend — at the monthly
-        prices shown in the app at the time of purchase, in U.S. dollars and exclusive of any
-        applicable taxes. A membership is a <strong>recurring monthly subscription that
-        automatically renews</strong> each month at the then-current price, using your saved payment
-        method, until you cancel. By subscribing you authorize these recurring charges.
+        The administrators of a Zekktris server may give accounts a <strong>perk tier</strong> —
+        currently Scout, Guardian, or Legend. A tier raises limits such as the maximum screen-share
+        and camera quality (by default: everyone can share at 720p and 30fps; Scout adds 1080p and
+        60fps, Guardian adds 2K, and Legend adds 4K) and may raise upload limits, and it can show a
+        title on your profile. A tier never changes what you can say, who you can talk to, or which
+        communities you can join, and gives no moderation or social advantage. Tiers are granted at
+        the administrators&rsquo; discretion, are non-transferable, may be time-limited, and may be
+        changed or removed at any time.
       </p>
       <p>
-        Payments are processed on our website by our third-party payment processor,{' '}
+        A supervising parent&rsquo;s or guardian&rsquo;s tier also extends to the accounts of the
+        minors they supervise; that shared benefit ends automatically when the supervision link
+        ends (including when the minor turns 18).
+      </p>
+      <p>
+        If you bought a membership before Zekktris became free, you keep your tier. You can stop
+        any remaining billing from Settings, and no further charges are taken once it is stopped.
+        Payments already made were processed by{' '}
         <a href="https://stripe.com/privacy" className="text-accent hover:underline">
           Stripe
-        </a>
-        , and are subject to Stripe&rsquo;s terms. We never receive or store your full card number
-        or other payment-instrument details — Stripe handles those. Purchases are made through the
-        website rather than through an app store.
-      </p>
-      <p>
-        You can cancel at any time from Settings or the payment processor&rsquo;s billing portal.
-        When you cancel, your membership stays active and you keep your membership perks (cosmetics
-        and premium video quality) through the end of the period you have already paid for;
-        cancellation stops future renewals but is not a refund of the current period. If a payment
-        fails or lapses, your membership ends after a short grace period, your cosmetics revert to
-        the free defaults, and your maximum video quality returns to the free 1080p.
-      </p>
-      <p>
-        Except where a refund is required by law — including any statutory cancellation or
-        cooling-off rights you may have as a consumer in your jurisdiction — memberships and
-        membership payments, including partial months, are <strong>non-refundable</strong>. We may
-        change the tiers, perks, or prices from time to time; we will apply price changes only to
-        future renewals and will take reasonable steps to notify you in advance.
-      </p>
-      <p>
-        We may offer complimentary or gifted memberships (including free memberships granted to
-        early or existing accounts). These are promotional, are not a purchase by the recipient, are
-        non-transferable, and may be modified or withdrawn at our discretion. A supervising
-        parent&rsquo;s or guardian&rsquo;s membership also extends the membership perks to the
-        accounts of the minors they supervise; that shared benefit ends automatically when the
-        supervision link ends (including when the minor turns 18). If a supervised minor makes a purchase, the
-        supervising adult is responsible for authorizing it and for the resulting charges; you must
-        not make purchases without the account holder having the legal capacity to do so.
+        </a>{' '}
+        and are not refundable except where a refund is required by law.
       </p>
 
       <H>4. Acceptable use</H>
@@ -264,11 +240,10 @@ export function PrivacyPage() {
           biometrics or private keys).
         </li>
         <li>
-          <strong>Billing &amp; subscription</strong> data, if you buy a membership: your membership
-          tier and status, subscription and expiry dates, and the customer and subscription
-          identifiers our payment processor assigns you. We do <strong>not</strong> collect or store
-          your card number or other payment-card details — those go directly to our payment
-          processor (see &ldquo;How we share information&rdquo;).
+          <strong>Perk tier</strong> data, if you have one: your tier, who granted it, and when it
+          expires. If you bought a membership before Zekktris became free, we also keep the customer
+          and subscription identifiers our former payment processor assigned you. We have never
+          collected or stored your card number — that went directly to the processor.
         </li>
         <li>
           <strong>Notification tokens</strong>, if you turn on push notifications: the device or
@@ -291,7 +266,7 @@ export function PrivacyPage() {
       <p>
         We use your information to provide and maintain the Service (delivering messages, running
         voice, syncing your account across devices, and sending push notifications you have opted
-        into); to process membership payments and manage subscriptions; to secure it and prevent
+        into); to manage perk tiers; to secure it and prevent
         abuse; to enforce our Terms; to operate age-gating and parental supervision; and to
         communicate with you about your account (for example, verification and password-reset
         emails).
@@ -336,8 +311,7 @@ export function PrivacyPage() {
           <a href="https://stripe.com/privacy" className="text-accent hover:underline">
             Stripe
           </a>{' '}
-          for membership payments (which receives your email and the information needed to process
-          the payment, and to which your card details go directly); an email provider for
+          only for memberships bought before Zekktris became free; an email provider for
           verification, reset, and guardian-invitation messages (a guardian invitation sends the
           address you supply, along with the minor&rsquo;s display name, to the email provider);
           real-time voice/video infrastructure ([LiveKit]) that carries your audio/video streams and
@@ -372,7 +346,7 @@ export function PrivacyPage() {
       <H>8. Your rights and choices</H>
       <p>
         You can view and update your profile, change or delete your content, add security like
-        passkeys and two-factor authentication, manage or cancel a membership, and delete your
+        passkeys and two-factor authentication, stop billing for an old membership, and delete your
         account at any time from Settings. Depending on where you live, you may have additional
         rights to access, correct, or delete your personal information; contact us to exercise them.
       </p>

@@ -82,9 +82,12 @@ import {
   highestAllowedScreenQuality,
   getMonetizationVersion,
   isCameraQualityAllowed,
+  isScreenFps60Allowed,
   isScreenQualityAllowed,
+  MONETIZE_TIER_RANK,
   monetizeTierRank,
   requiredTierForCameraQuality,
+  requiredTierForScreenFps60,
   requiredTierForScreenQuality,
   subscribeMonetization,
   VoiceError,
@@ -205,8 +208,8 @@ function DeleteAccountSection() {
       ) : (
         <div className="rounded-lg border border-red-400/40 bg-red-500/5 p-3 space-y-3">
           <p className="text-sm text-ink-2">
-            This permanently deletes your account, your profile and your
-            memberships, and removes your name from messages you&rsquo;ve sent.
+            This permanently deletes your account and your profile, and
+            removes your name from messages you&rsquo;ve sent.
             It cannot be undone.
           </p>
           <p className="text-xs text-ink-3">
@@ -274,52 +277,6 @@ export function SettingsView() {
   const { replaceUser, state } = useAppState();
   const toasts = useToasts();
 
-  // Returning from Stripe Checkout (?billing=success|canceled): toast + strip
-  // the param. On success the membership row lands via the webhook a moment
-  // AFTER this redirect, so the page that brought us back hydrated the user
-  // with NO membership yet — Appearance would stay locked until a manual
-  // reload. Poll getMe() until the tier appears (or a timeout), then
-  // updateUser so Appearance unlocks on its own. Also jump to the Membership
-  // tab so the user lands on their freshly-unlocked options.
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const billing = params.get('billing');
-    let stopped = false;
-    if (billing === 'success') {
-      toasts.push(
-        'Welcome aboard — thank you for supporting Zekktris! Unlocking your Appearance options…',
-        'success',
-      );
-      setActiveTab('membership');
-      // Poll until the webhook-written membership shows up, then unlock.
-      void (async () => {
-        for (let tries = 0; !stopped && tries < 12; tries++) {
-          try {
-            const r = await rest.getMe();
-            if (r.user.subscriptionTier) {
-              updateUser(r.user);
-              return;
-            }
-          } catch {
-            // transient — keep polling
-          }
-          await new Promise((res) => setTimeout(res, 1500));
-        }
-      })();
-    } else if (billing === 'canceled') {
-      toasts.push('Checkout canceled — no charge was made.', 'error');
-    }
-    if (billing) {
-      params.delete('billing');
-      const qs = params.toString();
-      window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : ''));
-    }
-    return () => {
-      stopped = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const [displayName, setDisplayName] = useState(user?.displayName ?? '');
   const [bio, setBio] = useState(user?.bio ?? '');
   const [status, setStatus] = useState<Status>(
@@ -358,8 +315,8 @@ export function SettingsView() {
    *                    rather than giving it a standalone tab)
    *    - voice       → voice + video device settings, audio processing,
    *                    video quality
-   *    - membership  → tiers/pitch/manage plus the appearance cosmetics they
-   *                    unlock (themes, avatar decoration, name tag)
+   *    - membership  → "Appearance": themes, avatar decoration, name tag
+   *                    (free for everyone) plus the perk-tier list
    *  Defaults to 'profile' so users land on the surface they're
    *  already used to. Transient state — not persisted; each visit
    *  starts on Profile. */
@@ -680,7 +637,7 @@ export function SettingsView() {
               { id: 'profile', label: 'Profile' },
               { id: 'security', label: 'Security' },
               { id: 'voice', label: 'Voice & Video' },
-              { id: 'membership', label: 'Membership' },
+              { id: 'membership', label: 'Appearance' },
             ] as const
           ).map((t) => {
             const active = activeTab === t.id;
@@ -1053,21 +1010,15 @@ export function SettingsView() {
 
         {activeTab === 'membership' && (
           <>
-        {/* Staff name shimmer — an instance-STAFF perk (not membership-gated),
-            shown first, above the membership sections (matches iOS). Renders
-            nothing for non-staff. */}
+        {/* Staff name shimmer — an instance-STAFF perk (not tier-gated),
+            shown first (matches iOS). Renders nothing for non-staff. */}
         <StaffShimmerSection />
-        {/* Appearance — a SUPPORTER PERK. Members (own membership or one
-            inherited from a supervising parent) get the full section; everyone
-            else sees the membership pitch. The server hard-locks the cosmetic
-            writes too, so this isn't just cosmetic gating. */}
-        {!user?.subscriptionTier && <MembershipPitch />}
-        {!!user?.subscriptionTier && (
+        {/* Appearance — free for everyone (themes, avatar frames, name tags). */}
         <section className="rounded-xl border border-line bg-bg-2 p-3">
           <div className="flex items-baseline justify-between gap-2">
             <h2 className="text-xs uppercase tracking-wider text-ink-3">Appearance</h2>
-            {/* Founder (grandfathered) members have the perks but no title. */}
-            {user.subscriptionTitled ? (
+            {/* Founder (grandfathered) rows carry perks but no title. */}
+            {user?.subscriptionTier && user.subscriptionTitled ? (
               <TierBadge tier={user.subscriptionTier} />
             ) : (
               <span className="text-[0.65rem] text-ink-3 shrink-0">Theme · OLED = true black</span>
@@ -1191,17 +1142,13 @@ export function SettingsView() {
             </div>
             <TagSettings />
           </div>
-          <ManageMembership />
         </section>
-        )}
-        {/* The full tier breakdown — shown to EVERYONE, member or not (mirrors
-            the iOS entitlementsSection), with a "Your tier" badge on the active
-            one so members can still see what their membership covers. Renders
-            second-to-last, after the appearance/pitch section (matches iOS). */}
-        <WhatMembershipUnlocks />
-        {/* Hide clan tags is a per-device VIEWER preference, not a supporter
-            perk — anyone can declutter names regardless of membership. Render
-            it in its own block so members AND non-members both get it. */}
+        {/* What each perk tier adds, with a "Your tier" badge on the active one
+            (mirrors the iOS perk list). */}
+        <PerkTiers />
+        <LegacyPaidSubscription />
+        {/* Hide clan tags is a per-device VIEWER preference — anyone can
+            declutter names. */}
         <section className="rounded-xl border border-line bg-bg-2 p-3">
           <h2 className="text-xs uppercase tracking-wider text-ink-3">Display</h2>
           <div className="mt-2">
@@ -2023,42 +1970,54 @@ function TagSettings() {
   );
 }
 
+/** One row of the perk list: what a session at `rank` gets on this instance,
+ *  read from the admin-configured streaming gates in lib/voice. */
+function perksAtRank(rank: number): string[] {
+  const screen = SCREEN_QUALITY_PRESETS[highestAllowedScreenQuality(rank)].label;
+  const fps = isScreenFps60Allowed(rank) ? 60 : 30;
+  const camera =
+    CAMERA_QUALITY_PRESETS[highestAllowedCameraQuality(rank)]?.label ??
+    CAMERA_QUALITY_PRESETS.p720!.label;
+  return [`Screen share up to ${screen} at ${fps} fps`, `Camera up to ${camera}`];
+}
+
 /**
- * The membership pitch shown where Appearance would be, for non-members.
- * Copy requirements (user-specified): supporting keeps Zekktris alive and
- * strong; memberships are non-refundable. When Stripe is configured
- * (GET /billing/status), the tier cards are live Subscribe buttons that
- * redirect to Checkout; otherwise they're informational and admins gift.
+ * PerkTiers — what each tier adds, shown to everyone in the Appearance tab.
+ * There are no payments: the whole app (cosmetics included) is free, and an
+ * admin gives out Scout / Guardian / Legend for extra streaming quality. The
+ * lines are computed from this instance's perk settings, so they stay true
+ * when an admin retunes them.
  */
-/**
- * WhatMembershipUnlocks — the per-tier perk breakdown, shown to EVERYONE in the
- * Membership tab (members included). Web previously only showed the subscribe
- * pitch to non-members, so members saw nothing recapping what their tier covers;
- * iOS's `entitlementsSection` always shows this, so this brings web to parity.
- * Copy mirrors the iOS rows exactly.
- */
-function WhatMembershipUnlocks() {
+function PerkTiers() {
   const { user } = useAuth();
+  useSyncExternalStore(subscribeMonetization, getMonetizationVersion, getMonetizationVersion);
   const tier = user?.subscriptionTier ?? null;
-  const rows = [
+  const rows: Array<{ id: string; label: string; color: string; perks: string[] }> = [
     {
-      id: 'scout',
-      perks: ['Themes, avatar frames & name tags', 'Supporter tier on your profile', 'Streaming up to 1080p60'],
+      id: 'everyone',
+      label: 'Everyone',
+      color: '#b5becf', // ink-2
+      perks: ['Every feature, plus all themes, avatar frames & name tags', ...perksAtRank(0)],
     },
-    {
-      id: 'guardian',
-      perks: ['Everything in Scout', '2K camera & screen-share streaming', 'Covers your supervised children'],
-    },
-    { id: 'legend', perks: ['Everything in Guardian', '4K camera & screen-share streaming'] },
-  ] as const;
+    ...(['scout', 'guardian', 'legend'] as const).map((id) => ({
+      id,
+      label: TIER_META[id]!.label,
+      color: TIER_META[id]!.color,
+      perks: [...perksAtRank(MONETIZE_TIER_RANK[id]), 'Tier title on your profile'],
+    })),
+  ];
 
   return (
     <section className="space-y-2">
-      <div className="text-xs uppercase tracking-wider text-ink-3">What membership unlocks</div>
+      <div className="text-xs uppercase tracking-wider text-ink-3">Perk tiers</div>
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Zekktris is free — nothing is for sale. Perk tiers add streaming quality on top, and this
+        server&rsquo;s admins hand them out. A supervising parent&rsquo;s tier also covers their
+        children.
+      </p>
       <div className="space-y-2">
         {rows.map((r) => {
-          const meta = TIER_META[r.id]!;
-          const current = tier === r.id;
+          const current = r.id === 'everyone' ? !tier : tier === r.id;
           return (
             <div
               key={r.id}
@@ -2066,23 +2025,22 @@ function WhatMembershipUnlocks() {
               style={
                 current
                   ? {
-                      borderColor: `color-mix(in srgb, ${meta.color} 50%, transparent)`,
-                      backgroundColor: `color-mix(in srgb, ${meta.color} 8%, transparent)`,
+                      borderColor: `color-mix(in srgb, ${r.color} 50%, transparent)`,
+                      backgroundColor: `color-mix(in srgb, ${r.color} 8%, transparent)`,
                     }
                   : undefined
               }
             >
               <div className="flex items-center gap-2">
-                <span className="text-sm font-bold" style={{ color: meta.color }}>
-                  {meta.label}
+                <span className="text-sm font-bold" style={{ color: r.color }}>
+                  {r.label}
                 </span>
-                <span className="text-xs text-ink-3">{meta.price}</span>
                 {current && (
                   <span
                     className="ml-auto text-[0.6rem] font-bold tracking-wide px-1.5 py-0.5 rounded-full"
                     style={{
-                      color: meta.color,
-                      backgroundColor: `color-mix(in srgb, ${meta.color} 20%, transparent)`,
+                      color: r.color,
+                      backgroundColor: `color-mix(in srgb, ${r.color} 20%, transparent)`,
                     }}
                   >
                     YOUR TIER
@@ -2092,7 +2050,7 @@ function WhatMembershipUnlocks() {
               <ul className="mt-1.5 space-y-1">
                 {r.perks.map((p) => (
                   <li key={p} className="flex items-start gap-1.5 text-xs text-ink-2">
-                    <span className="mt-px font-bold shrink-0" style={{ color: meta.color }}>
+                    <span className="mt-px font-bold shrink-0" style={{ color: r.color }}>
                       ✓
                     </span>
                     <span>{p}</span>
@@ -2107,139 +2065,28 @@ function WhatMembershipUnlocks() {
   );
 }
 
-function MembershipPitch() {
-  const { rest } = useAuth();
-  const toasts = useToasts();
-  const [billingEnabled, setBillingEnabled] = useState(false);
-  const [busyTier, setBusyTier] = useState<string | null>(null);
-  useEffect(() => {
-    let off = false;
-    rest
-      .billingStatus()
-      .then((r) => !off && setBillingEnabled(r.enabled))
-      .catch(() => undefined);
-    return () => {
-      off = true;
-    };
-  }, [rest]);
-
-  const subscribe = (tier: 'scout' | 'guardian' | 'legend') => {
-    if (busyTier) return;
-    setBusyTier(tier);
-    rest
-      .createCheckout(tier)
-      .then((r) => {
-        window.location.href = r.url; // off to Stripe Checkout
-      })
-      .catch((e) => {
-        toasts.push(e instanceof ApiError ? e.message : 'Could not start checkout', 'error');
-        setBusyTier(null);
-      });
-  };
-
-  return (
-    <section className="rounded-xl border border-line bg-bg-2 p-4">
-      <div className="flex items-baseline justify-between gap-2">
-        <h2 className="text-sm font-semibold text-ink-1">Appearance — a supporter perk</h2>
-        <span className="text-[0.65rem] text-ink-3 shrink-0">🔒 Members only</span>
-      </div>
-      <p className="text-xs text-ink-2 leading-relaxed mt-2">
-        Being a supporter helps Zekktris stay alive and strong. Membership unlocks
-        <span className="text-ink-1 font-medium"> cosmetic customization</span> —
-        themes, avatar frames, and name tags — plus
-        <span className="text-ink-1 font-medium"> premium streaming quality</span>: 2K screen
-        share &amp; camera on Guardian, 4K on Legend (everyone streams free up to 1080p60).
-        It never changes what you can say or do. Payments are handled here on the website.
-      </p>
-      <div className="mt-3 grid grid-cols-3 gap-2">
-        {(['scout', 'guardian', 'legend'] as const).map((t) => {
-          const meta = TIER_META[t]!;
-          // The one functional perk each tier adds beyond cosmetics.
-          const perk = t === 'guardian' ? '2K streaming' : t === 'legend' ? '4K streaming' : 'Cosmetics';
-          return (
-            <button
-              key={t}
-              type="button"
-              disabled={!billingEnabled || busyTier !== null}
-              onClick={() => subscribe(t)}
-              className={`rounded-lg border p-2.5 text-center transition-transform ${
-                billingEnabled ? 'hover:scale-[1.03] cursor-pointer' : 'cursor-default'
-              } disabled:opacity-90`}
-              style={{
-                borderColor: `color-mix(in srgb, ${meta.color} 45%, transparent)`,
-                backgroundColor: `color-mix(in srgb, ${meta.color} 8%, transparent)`,
-              }}
-            >
-              <div className="text-sm font-bold" style={{ color: meta.color }}>
-                {meta.label}
-              </div>
-              <div className="text-xs text-ink-2 mt-0.5">{meta.price}</div>
-              <div className="text-[0.62rem] text-ink-3 mt-0.5">{perk}</div>
-              {billingEnabled && (
-                <div className="text-[0.65rem] font-semibold mt-1.5" style={{ color: meta.color }}>
-                  {busyTier === t ? 'Opening…' : 'Subscribe'}
-                </div>
-              )}
-            </button>
-          );
-        })}
-      </div>
-      <p className="text-[0.68rem] text-ink-3 leading-relaxed mt-3">
-        {billingEnabled
-          ? 'Cancel anytime — you keep access until the end of the paid period. Memberships are non-refundable. A supervising parent’s membership also covers their children.'
-          : 'Memberships are non-refundable. Card payments are coming soon — until then, an admin can gift memberships. A supervising parent’s membership also covers their children.'}
-      </p>
-    </section>
-  );
-}
-
 /**
- * Manage / cancel a PAID subscription (own stripe membership only;
- * gifts/founders/inherited have nothing to manage). Offers an explicit in-app
- * Cancel (schedules end-of-period) + Resume, plus the Stripe portal for card
- * changes. Reflects a scheduled cancellation across reloads via the persisted
- * subscriptionCancelAtPeriodEnd flag.
+ * A subscription bought before payments were removed (own stripe row only).
+ * The tier stays; this lets the subscriber stop the billing — cancel at the
+ * period's end, or open the Stripe portal. Renders nothing for everyone else.
+ * Admins can also convert every one of these into a forever tier at once
+ * (Admin → Perks).
  */
-function ManageMembership() {
+function LegacyPaidSubscription() {
   const { user, rest, updateUser } = useAuth();
   const toasts = useToasts();
   const [portalBusy, setPortalBusy] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
-  const tierLabel = TIER_META[user?.subscriptionTier ?? '']?.label ?? 'supporter';
-  const endsOn = user?.subscriptionExpiresAt
+  if (user?.subscriptionSource !== 'stripe' || user.subscriptionInherited) return null;
+
+  const tierLabel = TIER_META[user.subscriptionTier ?? '']?.label ?? 'perk';
+  const endsOn = user.subscriptionExpiresAt
     ? new Date(user.subscriptionExpiresAt).toLocaleDateString(undefined, {
         year: 'numeric',
         month: 'long',
         day: 'numeric',
       })
     : null;
-
-  // Gift / founder / family-inherited memberships have no Stripe subscription
-  // to self-manage. Explain WHY instead of rendering nothing — users reported
-  // "no Cancel option" because this component silently returned null for them.
-  if (user?.subscriptionSource !== 'stripe' || user.subscriptionInherited) {
-    const note = user?.subscriptionInherited
-      ? `Your ${tierLabel} membership comes from a family plan — the plan owner manages it, so there's nothing to cancel here.`
-      : endsOn
-        ? `Your ${tierLabel} membership was gifted and runs until ${endsOn}. There's no recurring payment to manage — it simply ends then.`
-        : `You have a founder ${tierLabel} membership — thank you! It doesn't expire, and there's no payment to manage or cancel.`;
-    return (
-      <div className="mt-4 pt-3 border-t border-line">
-        <p className="text-xs text-ink-3">{note}</p>
-      </div>
-    );
-  }
-
-  // Pull the fresh membership state (cancel flag + expiry) after a mutation.
-  const syncUser = async () => {
-    try {
-      const r = await rest.getMe();
-      updateUser(r.user);
-    } catch {
-      // A failed refresh just leaves the optimistic toast; next getMe reconciles.
-    }
-  };
-
   const scheduledCancel = user.subscriptionCancelAtPeriodEnd === true;
 
   const openPortal = () => {
@@ -2256,14 +2103,18 @@ function ManageMembership() {
   };
 
   const cancel = async () => {
-    if (!window.confirm(
-      `Cancel your ${tierLabel} membership? You'll keep your perks until the end of the paid period, then Appearance re-locks. Memberships are non-refundable.`,
-    )) return;
+    if (!window.confirm(`Stop paying for your ${tierLabel} tier? You keep it until the end of this billing period.`)) {
+      return;
+    }
     setCancelBusy(true);
     try {
       await rest.cancelSubscription();
-      await syncUser();
-      toasts.push('Your membership will end at the close of this period.', 'success');
+      try {
+        updateUser((await rest.getMe()).user);
+      } catch {
+        // The next getMe reconciles.
+      }
+      toasts.push('Billing stopped — no more charges.', 'success');
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Could not cancel', 'error');
     } finally {
@@ -2271,61 +2122,40 @@ function ManageMembership() {
     }
   };
 
-  const resume = async () => {
-    setCancelBusy(true);
-    try {
-      await rest.reactivateSubscription();
-      await syncUser();
-      toasts.push('Welcome back — your membership will keep renewing.', 'success');
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Could not resume', 'error');
-    } finally {
-      setCancelBusy(false);
-    }
-  };
-
   return (
-    <div className="mt-4 pt-3 border-t border-line space-y-2.5">
-      <p className="text-xs text-ink-3">
+    <section className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 space-y-2.5">
+      <h2 className="text-xs uppercase tracking-wider text-ink-3">Your old subscription</h2>
+      <p className="text-xs text-ink-2 leading-relaxed">
         {scheduledCancel
-          ? `Your ${tierLabel} membership is set to end${endsOn ? ` on ${endsOn}` : ' at the end of the period'}. Thank you for supporting Zekktris — you can resume any time before then.`
-          : `Your ${tierLabel} membership renews monthly. Thank you for helping keep Zekktris alive and strong! Memberships are non-refundable.`}
+          ? `Zekktris is free now. Your ${tierLabel} subscription won't renew${endsOn ? ` — it ends on ${endsOn}` : ''}. There's nothing else to do.`
+          : `Zekktris is free now, but your ${tierLabel} subscription from before still renews each month. Stop the billing here — you won't lose anything you use today.`}
       </p>
       <div className="flex flex-wrap items-center gap-2">
+        {!scheduledCancel && (
+          <button
+            type="button"
+            disabled={cancelBusy}
+            onClick={() => void cancel()}
+            className="text-sm px-3 py-1.5 rounded-md border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-50 transition-colors"
+          >
+            {cancelBusy ? 'Stopping…' : 'Stop billing'}
+          </button>
+        )}
         <button
           type="button"
           disabled={portalBusy}
           onClick={openPortal}
           className="text-sm px-3 py-1.5 rounded-md border border-line bg-bg-3 text-ink-1 hover:bg-bg-1 disabled:opacity-50 transition-colors"
         >
-          {portalBusy ? 'Opening…' : 'Manage payment'}
+          {portalBusy ? 'Opening…' : 'Billing history'}
         </button>
-        {scheduledCancel ? (
-          <button
-            type="button"
-            disabled={cancelBusy}
-            onClick={() => void resume()}
-            className="text-sm px-3 py-1.5 rounded-md border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-50 transition-colors"
-          >
-            {cancelBusy ? 'Resuming…' : 'Resume membership'}
-          </button>
-        ) : (
-          <button
-            type="button"
-            disabled={cancelBusy}
-            onClick={() => void cancel()}
-            className="text-sm px-3 py-1.5 rounded-md border border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-50 transition-colors"
-          >
-            {cancelBusy ? 'Cancelling…' : 'Cancel subscription'}
-          </button>
-        )}
       </div>
-    </div>
+    </section>
   );
 }
 
 /**
- * Profile privacy: whether the supporter tier title shows on the profile
+ * Profile privacy: whether the perk tier title shows on the profile
  * popup. Only rendered for TITLED members — founder (grandfathered)
  * memberships have no title, so there's nothing to show or hide. Renders its
  * own bordered wrapper so non-titled users don't get an empty headed block.
@@ -2337,12 +2167,12 @@ function ShowTierToggle() {
   const shown = user.showSubscriptionTier !== false;
   return (
     <div className="pt-3 border-t border-line">
-      <div className="text-sm text-ink-2 font-medium mb-1">Supporter tier</div>
+      <div className="text-sm text-ink-2 font-medium mb-1">Perk tier</div>
     <div className="flex items-center justify-between gap-3 px-3 py-2.5 bg-bg-2 border border-line rounded-lg">
       <div className="min-w-0">
-        <p className="text-sm text-ink-1">Show my supporter tier</p>
+        <p className="text-sm text-ink-1">Show my perk tier</p>
         <p className="text-xs text-ink-3 leading-relaxed mt-0.5">
-          Displays your {TIER_META[user.subscriptionTier]?.label ?? 'supporter'} title on
+          Displays your {TIER_META[user.subscriptionTier]?.label ?? 'perk'} title on
           your profile popup. Turning this off hides the title — your perks keep working.
         </p>
       </div>
@@ -2350,7 +2180,7 @@ function ShowTierToggle() {
         type="button"
         role="switch"
         aria-checked={shown}
-        aria-label="Show my supporter tier"
+        aria-label="Show my perk tier"
         disabled={busy}
         onClick={() => {
           setBusy(true);
@@ -4003,12 +3833,12 @@ function VideoQualitySettings() {
     setSavedScreenFps60(on);
   }
 
-  // Premium streaming gate: which resolutions need which membership tier is
-  // ADMIN-CONFIGURABLE per instance (defaults: 2K = Guardian, 4K = Legend;
-  // 720p, incl. the 60fps toggle, is never gated — and 1080p can now carry a
-  // lock too). Computed from the LIVE user tier so a gift or checkout
-  // landing unlocks the pills without a reload; the publish-time clamps in
-  // voice.ts are the enforcement, this is the honest UI for it.
+  // Perk-tier streaming gate: which qualities need which tier is
+  // ADMIN-CONFIGURABLE per instance (defaults: everyone 720p30; Scout 1080p
+  // and 60fps; Guardian 2K; Legend 4K). Computed from the LIVE user tier so
+  // an admin giving a tier unlocks the pills without a reload; the
+  // publish-time clamps in voice.ts are the enforcement, this is the honest
+  // UI for it.
   // Subscribe to the config store so the pills re-render when the instance
   // config fetch lands after mount (module state is invisible to React).
   useSyncExternalStore(subscribeMonetization, getMonetizationVersion, getMonetizationVersion);
@@ -4026,7 +3856,7 @@ function VideoQualitySettings() {
     value: CameraQuality;
     label: string;
     description: string;
-    /** Membership tier this option needs, when the user doesn't have it. */
+    /** Perk tier this option needs, when the user doesn't have it. */
     lockedBehind?: 'scout' | 'guardian' | 'legend';
   }> = [
     {
@@ -4064,11 +3894,11 @@ function VideoQualitySettings() {
     },
   ];
 
-  // Camera counterpart of the lapsed-membership note below.
+  // Camera counterpart of the locked-saved-setting note below.
   const savedCameraLocked = cameraOptions.find((o) => o.value === cameraQ)?.lockedBehind;
 
-  // What a locked saved setting ACTUALLY falls back to: the highest tier the
-  // membership covers on that surface (a Guardian with saved 4K publishes at
+  // What a locked saved setting ACTUALLY falls back to: the highest quality
+  // the tier covers on that surface (a Guardian with saved 4K publishes at
   // 2K, not 1080p) — must match the clamps in voice.ts, which substitute the
   // best allowed tier, not the free floor. Per-surface because the admin can
   // gate the camera and screen matrices differently.
@@ -4081,7 +3911,7 @@ function VideoQualitySettings() {
     value: ScreenQuality;
     label: string;
     description: string;
-    /** Membership tier this option needs, when the user doesn't have it. */
+    /** Perk tier this option needs, when the user doesn't have it. */
     lockedBehind?: 'scout' | 'guardian' | 'legend';
   }> = [
     {
@@ -4109,10 +3939,14 @@ function VideoQualitySettings() {
     },
   ];
 
-  // A saved premium tier the membership no longer covers (lapsed / different
-  // account): streams clamp to 1080p until the tier is back. Tell the user
-  // instead of silently downgrading.
+  // A saved quality the tier no longer covers (tier ended / different
+  // account): streams clamp until the tier is back. Tell the user instead of
+  // silently downgrading.
   const savedScreenLocked = screenOptions.find((o) => o.value === screenQ)?.lockedBehind;
+
+  const fps60Required = requiredTierForScreenFps60();
+  const fps60LockMeta =
+    fps60Required && !isScreenFps60Allowed(userRank) ? TIER_META[fps60Required] : null;
 
   return (
     <div className="space-y-3 pt-1">
@@ -4128,7 +3962,7 @@ function VideoQualitySettings() {
                 onClick={() => {
                   if (opt.lockedBehind && lockMeta) {
                     toasts.push(
-                      `${opt.label} camera is a ${lockMeta.label} perk (${lockMeta.price}) — see the Membership tab.`,
+                      `${opt.label} camera is a ${lockMeta.label} perk — this server's admins give out tiers.`,
                       'error',
                     );
                     return;
@@ -4163,8 +3997,8 @@ function VideoQualitySettings() {
         {savedCameraLocked && (
           <p className="text-[0.7rem] text-amber-400/90 leading-relaxed mt-1.5">
             Your saved {CAMERA_QUALITY_PRESETS[cameraQ]?.label ?? cameraQ} camera setting needs a{' '}
-            {TIER_META[savedCameraLocked]?.label} membership — the camera currently publishes at up
-            to {cameraClampLabel}. It re-activates automatically if you re-join that tier.
+            {TIER_META[savedCameraLocked]?.label} tier — the camera currently publishes at up
+            to {cameraClampLabel}. It comes back on its own if you get that tier again.
           </p>
         )}
       </div>
@@ -4181,7 +4015,7 @@ function VideoQualitySettings() {
                 onClick={() => {
                   if (opt.lockedBehind && lockMeta) {
                     toasts.push(
-                      `${opt.label} streaming is a ${lockMeta.label} perk (${lockMeta.price}) — see the Membership tab.`,
+                      `${opt.label} streaming is a ${lockMeta.label} perk — this server's admins give out tiers.`,
                       'error',
                     );
                     return;
@@ -4216,21 +4050,39 @@ function VideoQualitySettings() {
         {savedScreenLocked && (
           <p className="text-[0.7rem] text-amber-400/90 leading-relaxed mt-1.5">
             Your saved {SCREEN_QUALITY_PRESETS[screenQ].label} setting needs a{' '}
-            {TIER_META[savedScreenLocked]?.label} membership — shares currently run at up to{' '}
-            {screenClampLabel}. It re-activates automatically if you re-join that tier.
+            {TIER_META[savedScreenLocked]?.label} tier — shares currently run at up to{' '}
+            {screenClampLabel}. It comes back on its own if you get that tier again.
           </p>
         )}
-        <label className="flex items-start gap-2 mt-2 text-xs text-ink-2 cursor-pointer">
+        <label
+          className={`flex items-start gap-2 mt-2 text-xs text-ink-2 ${fps60LockMeta ? 'opacity-75' : 'cursor-pointer'}`}
+        >
           <input
             type="checkbox"
-            checked={screenFps60}
+            checked={screenFps60 && !fps60LockMeta}
+            disabled={!!fps60LockMeta}
             onChange={(e) => toggleFps60(e.target.checked)}
             className="mt-0.5 accent-accent"
           />
           <span>
-            Smooth motion (60 fps)
+            <span className="flex items-center gap-1.5">
+              Smooth motion (60 fps)
+              {fps60LockMeta && (
+                <span
+                  className="inline-flex items-center gap-0.5 px-1.5 rounded text-[0.55rem] font-bold uppercase tracking-wider leading-[1.05rem]"
+                  style={{
+                    color: fps60LockMeta.color,
+                    backgroundColor: `color-mix(in srgb, ${fps60LockMeta.color} 18%, transparent)`,
+                  }}
+                >
+                  🔒 {fps60LockMeta.label}
+                </span>
+              )}
+            </span>
             <span className="text-ink-3 block">
-              Applies up to 2K. Doubles bandwidth.
+              {fps60LockMeta
+                ? `60 fps is a ${fps60LockMeta.label} perk — shares run at 30 fps.`
+                : '2× the bandwidth. 4K at 60 fps needs a fast computer and uplink.'}
             </span>
           </span>
         </label>

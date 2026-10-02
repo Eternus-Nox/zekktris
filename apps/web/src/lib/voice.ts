@@ -345,8 +345,9 @@ const STORAGE_SCREEN_FPS60 = 'zekktris.video.screen_fps60';
 // most webcams over residential uplinks. Screen defaults to 1080p at
 // 30fps — desktop content benefits more from resolution than motion
 // fluidity for typical use (chat, code, presentations); the separate
-// "smooth motion" toggle bumps eligible tiers to 60fps for gaming /
-// video playback shares.
+// "smooth motion" toggle bumps the share to 60fps for gaming / video
+// playback. Both are perk-gated (see the entitlement section below): an
+// account with no tier streams at 720p30.
 
 export type CameraQuality = 'auto' | 'low' | 'p720' | 'p1080' | 'k2' | 'k4';
 export type ScreenQuality = 'p720' | 'p1080' | 'k2' | 'k4';
@@ -440,8 +441,8 @@ export const SCREEN_QUALITY_PRESETS: Record<
     width: number;
     height: number;
     /** Base frame rate. The independent "smooth motion" toggle
-        (getSavedScreenFps60) bumps eligible tiers to 60fps — see
-        getEffectiveScreenShareParams for the fold-in. */
+        (getSavedScreenFps60) bumps it to 60fps when the perk tier allows —
+        see getEffectiveScreenShareParams for the fold-in. */
     frameRate: number;
     /** Encoder maxBitrate in bits/sec. Screen content needs MORE
         bitrate than camera at the same resolution because of sharp
@@ -520,9 +521,9 @@ export function setSavedCameraQuality(q: CameraQuality): void {
 export function getSavedScreenQuality(): ScreenQuality {
   try {
     const v = localStorage.getItem(STORAGE_SCREEN_QUALITY);
-    // Nothing stored → 1080p, same behavior the pre-4K default
-    // ('standard') gave users who never touched the setting.
-    if (v === null) return 'p1080';
+    // Nothing stored → 1080p when the perk tier allows it, else 720p, so an
+    // account with no tier doesn't see a locked default it never chose.
+    if (v === null) return isScreenQualityAllowed('p1080') ? 'p1080' : 'p720';
     if (v in SCREEN_QUALITY_PRESETS) return v as ScreenQuality;
     // Legacy tier names from before the 4K-capable scheme ('k2' maps
     // to itself via the `in` check above). 'high_motion' baked 60fps
@@ -574,29 +575,28 @@ export function setSavedScreenFps60(on: boolean): void {
   }
 }
 
-// ── Premium streaming entitlement (screen share AND camera) ────────────────
+// ── Perk-tier streaming entitlement (screen share AND camera) ──────────────
 //
-// WHICH resolutions need WHICH membership tier is admin-configurable
-// (instance_settings, read via GET /instance/monetization). The defaults
-// below mirror the server's defaults — and the previously hardcoded
-// behavior — so until a config fetch succeeds (offline, older server) the
-// gate acts exactly as before: 2K = Guardian, 4K = Legend, 720p/1080p
-// (including the screen 60fps toggle) free. 720p is NEVER gated.
+// WHICH qualities need WHICH perk tier is admin-configurable (instance_settings,
+// read via GET /instance/monetization). There are no payments — Scout /
+// Guardian / Legend are labels an admin gives out. The defaults below mirror
+// the server's, so until a config fetch succeeds (offline, older server) the
+// gate acts the same: everyone streams 720p30; Scout adds 1080p and 60fps,
+// Guardian 2K, Legend 4K. 720p30 is NEVER gated.
 //
 // AuthContext PUSHES both halves of the decision here: setUserTier() on
-// every user change (login, getMe refresh, billing webhook landing, admin
-// gift, sign-out) and setMonetization() once the instance config loads.
-// The effective-params getters CLAMP a disallowed saved choice down to the
-// highest tier the membership covers on that surface — so a saved 'k4'
-// from a lapsed membership (or a hand-edited localStorage) publishes at
-// the entitled ceiling instead. The saved preference itself is left
-// untouched: when the tier comes back, the old choice simply works again.
+// every user change (login, getMe refresh, admin give/remove, sign-out) and
+// setMonetization() once the instance config loads. The effective-params
+// getters CLAMP a disallowed saved choice down to the highest quality the
+// tier covers on that surface — so a saved 'k4' from a tier that ended (or a
+// hand-edited localStorage) publishes at the ceiling instead. The saved
+// preference itself is left untouched: when the tier comes back, the old
+// choice simply works again.
 //
 // Enforcement is client-side (like the rest of the quality pipeline — the
-// SFU has no per-publisher resolution caps to lean on), which is the same
-// posture Discord takes for stream quality.
+// SFU has no per-publisher resolution caps to lean on).
 
-/** MINIMUM membership tier a gated resolution requires; 'none' = free. */
+/** MINIMUM perk tier a gated quality requires; 'none' = free. */
 export type MonetizeTier = 'none' | 'scout' | 'guardian' | 'legend';
 
 export const MONETIZE_TIER_RANK: Record<MonetizeTier, number> = {
@@ -616,17 +616,17 @@ export function monetizeTierRank(tier: string | null | undefined): number {
   return 0;
 }
 
-/** The stream/camera halves of the instance monetization config. Only
-    the three gateable rungs appear — 720p (and camera auto/low) never do. */
+/** The stream/camera halves of the instance perk config. Only the
+    gateable rungs appear — 720p30 (and camera auto/low) never do. */
 interface StreamingGates {
-  stream: { p1080: MonetizeTier; k2: MonetizeTier; k4: MonetizeTier };
+  stream: { p1080: MonetizeTier; k2: MonetizeTier; k4: MonetizeTier; fps60: MonetizeTier };
   camera: { p1080: MonetizeTier; k2: MonetizeTier; k4: MonetizeTier };
 }
 
 /** Duplicates the server's defaults so behavior without a successful
-    config fetch is exactly the old hardcoded gate. */
+    config fetch matches the server. */
 const DEFAULT_STREAMING_GATES: StreamingGates = {
-  stream: { p1080: 'none', k2: 'guardian', k4: 'legend' },
+  stream: { p1080: 'scout', k2: 'guardian', k4: 'legend', fps60: 'scout' },
   camera: { p1080: 'none', k2: 'guardian', k4: 'legend' },
 };
 
@@ -654,12 +654,12 @@ function normalizeMonetizeTier(v: unknown, dflt: MonetizeTier): MonetizeTier {
   return v === 'none' || v === 'scout' || v === 'guardian' || v === 'legend' ? v : dflt;
 }
 
-/** Push the instance monetization config (AuthContext owns calling this
-    after GET /instance/monetization succeeds). Accepts the full config
-    object — only the stream/camera matrices matter here. Unknown values
-    fall back to the defaults rather than throwing. */
+/** Push the instance perk config (AuthContext owns calling this after
+    GET /instance/monetization succeeds). Accepts the full config object —
+    only the stream/camera matrices matter here. Unknown values fall back to
+    the defaults rather than throwing. */
 export function setMonetization(config: {
-  stream: { p1080: string; k2: string; k4: string };
+  stream: { p1080: string; k2: string; k4: string; fps60?: string };
   camera: { p1080: string; k2: string; k4: string };
 }): void {
   const d = DEFAULT_STREAMING_GATES;
@@ -668,6 +668,7 @@ export function setMonetization(config: {
       p1080: normalizeMonetizeTier(config.stream?.p1080, d.stream.p1080),
       k2: normalizeMonetizeTier(config.stream?.k2, d.stream.k2),
       k4: normalizeMonetizeTier(config.stream?.k4, d.stream.k4),
+      fps60: normalizeMonetizeTier(config.stream?.fps60, d.stream.fps60),
     },
     camera: {
       p1080: normalizeMonetizeTier(config.camera?.p1080, d.camera.p1080),
@@ -679,14 +680,14 @@ export function setMonetization(config: {
   for (const cb of monetizationListeners) cb();
 }
 
-/** Push the signed-in user's subscription tier (AuthContext effect owns
-    calling this). Signed-out / unknown → rank 0 (free) — fail closed. */
+/** Push the signed-in user's perk tier (AuthContext effect owns calling
+    this). Signed-out / unknown → rank 0 (base perks) — fail closed. */
 export function setUserTier(tier: string | null | undefined): void {
   userTierRank = monetizeTierRank(tier);
 }
 
-/** The membership tier required to use screen quality `q`, or null if
-    it's free (720p always is). For the Settings UI's lock pills. */
+/** The perk tier required to use screen quality `q`, or null if it's free
+    (720p always is). For the Settings UI's lock pills. */
 export function requiredTierForScreenQuality(
   q: ScreenQuality,
 ): Exclude<MonetizeTier, 'none'> | null {
@@ -713,6 +714,19 @@ export function isScreenQualityAllowed(
   tierRank: number = userTierRank,
 ): boolean {
   const req = requiredTierForScreenQuality(q);
+  return req === null || tierRank >= MONETIZE_TIER_RANK[req];
+}
+
+/** The perk tier required for 60fps screen share, or null if it's free. */
+export function requiredTierForScreenFps60(): Exclude<MonetizeTier, 'none'> | null {
+  const t = streamingGates.stream.fps60;
+  return t === 'none' ? null : t;
+}
+
+/** Whether a session at `tierRank` (default: the CURRENT session) may share
+    its screen at 60fps. */
+export function isScreenFps60Allowed(tierRank: number = userTierRank): boolean {
+  const req = requiredTierForScreenFps60();
   return req === null || tierRank >= MONETIZE_TIER_RANK[req];
 }
 
@@ -748,26 +762,24 @@ export function highestAllowedCameraQuality(
 
 /** Effective screen-share capture/encoder parameters: the saved quality
     tier with the "smooth motion" toggle folded in. 60fps costs bitrate
-    headroom — inter frames arrive twice as fast — so eligible tiers get
-    a 1.5× budget bump. 4K stays pinned at 30fps regardless of the
-    toggle: 4K60 VP8 in a browser is not realistic (software encode
-    can't keep up; the result is dropped frames AND mushy text — worse
-    on both axes than 4K30). */
+    headroom — inter frames arrive twice as fast — so it gets a 1.5× budget
+    bump. 4K60 is allowed (a Legend perk) but heavy: a machine without a
+    hardware encoder drops frames, so the Settings copy says so. */
 function getEffectiveScreenShareParams(): {
   width: number;
   height: number;
   frameRate: number;
   maxBitrate: number;
 } {
-  // Entitlement clamp: a saved premium tier without the membership to
-  // back it (lapsed, signed-out relogin as another account, hand-edited
-  // storage) publishes at the highest tier the membership covers. The
-  // saved PREFERENCE is intentionally not rewritten — restore the tier
-  // and the old choice works again.
+  // Entitlement clamp: a saved quality without the perk tier to back it
+  // (tier ended, signed-out relogin as another account, hand-edited
+  // storage) publishes at the highest quality the tier covers. The saved
+  // PREFERENCE is intentionally not rewritten — restore the tier and the
+  // old choice works again.
   const saved = getSavedScreenQuality();
   const q = isScreenQualityAllowed(saved) ? saved : highestAllowedScreenQuality();
   const preset = SCREEN_QUALITY_PRESETS[q];
-  const smooth = getSavedScreenFps60() && q !== 'k4';
+  const smooth = getSavedScreenFps60() && isScreenFps60Allowed();
   return {
     width: preset.width,
     height: preset.height,

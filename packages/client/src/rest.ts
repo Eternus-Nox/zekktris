@@ -3131,34 +3131,31 @@ export class RestClient {
     return this.request('GET', `/admin/users/${userId}/dm-peers`);
   }
 
-  // Billing (Stripe supporter memberships) --------------------------------
+  // Legacy paid subscriptions (payments were removed 2026-10-02) -----------
 
-  /** Whether card payments are configured on this server. */
-  billingStatus(): Promise<{ enabled: boolean }> {
-    return this.request('GET', '/billing/status');
-  }
-
-  /** Start a Stripe Checkout for a tier; redirect the browser to `url`. */
-  createCheckout(tier: 'scout' | 'guardian' | 'legend'): Promise<{ url: string }> {
-    return this.request('POST', '/billing/checkout', { tier });
-  }
-
-  /** Stripe Billing Portal (manage/cancel); redirect the browser to `url`. */
+  /** Stripe Billing Portal for a subscription bought before payments were
+      removed (cancel / card details); redirect the browser to `url`. */
   createBillingPortal(): Promise<{ url: string }> {
     return this.request('POST', '/billing/portal');
   }
 
-  /** Cancel own paid subscription at period end (keeps access until then). */
+  /** Cancel own leftover paid subscription at period end. */
   cancelSubscription(): Promise<{ ok: boolean; endsAt: string | null }> {
     return this.request('POST', '/billing/cancel');
   }
 
-  /** Undo a scheduled cancel — resume auto-renew. */
-  reactivateSubscription(): Promise<{ ok: boolean }> {
-    return this.request('POST', '/billing/reactivate');
+  /** ADMIN: how many leftover paid subscriptions are still billing. */
+  adminPaidSubscriptions(): Promise<{ active: number }> {
+    return this.request('GET', '/admin/paid-subscriptions');
   }
 
-  /** Gift (or re-gift — overwrites) a supporter membership. */
+  /** ADMIN: turn every leftover paid subscription into a forever tier and
+      cancel its Stripe billing. */
+  adminRetirePaidSubscriptions(): Promise<{ converted: number; cancelFailures: number }> {
+    return this.request('POST', '/admin/paid-subscriptions/retire');
+  }
+
+  /** Give (or re-give — overwrites) a perk tier. */
   adminGiftSubscription(
     userId: string,
     tier: 'scout' | 'guardian' | 'legend',
@@ -3167,21 +3164,20 @@ export class RestClient {
     return this.request('POST', `/admin/users/${userId}/subscription`, { tier, duration });
   }
 
-  /** Reset: remove a user's membership (their paid cosmetics are cleared). */
+  /** Remove a user's perk tier. Cosmetics are free, so nothing else changes. */
   adminRemoveSubscription(userId: string): Promise<{ ok: boolean }> {
     return this.request('DELETE', `/admin/users/${userId}/subscription`);
   }
 
-  // Monetization (admin-configurable feature gating) -----------------------
+  // Perks (admin-configurable; the route keeps its old "monetization" name) -
 
-  /** The instance's monetization config — which membership tier (if any)
-      each premium surface requires. Any signed-in user may read it; clients
-      fetch it at login and gate locally. */
+  /** What each perk tier unlocks on this instance. Any signed-in user may
+      read it; clients fetch it at login and gate locally. */
   getMonetization(): Promise<{ config: MonetizationConfig }> {
     return this.request('GET', '/instance/monetization');
   }
 
-  /** ADMIN: update monetization settings (full config or any subset).
+  /** ADMIN: update perk settings (full config or any subset).
       Responds with the post-update effective config. */
   adminUpdateMonetization(
     config: MonetizationConfigPatch,

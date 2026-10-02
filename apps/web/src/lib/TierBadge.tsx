@@ -1,14 +1,14 @@
 /**
- * Supporter-tier metadata + badge pill.
+ * Perk-tier metadata + badge pill.
  *
- * One source of truth for tier labels/colors/prices so the profile card, the
- * Settings pitch, and the admin panel all render the same trio:
- * Scout ($2) / Guardian ($5) / Legend ($10).
+ * One source of truth for tier labels/colors so the profile card, the
+ * Settings perk list, and the admin panel all render the same trio:
+ * Scout / Guardian / Legend. Tiers are free — an admin gives them out.
  */
-export const TIER_META: Record<string, { label: string; color: string; price: string }> = {
-  scout: { label: 'Scout', color: '#3d9bff', price: '$2/mo' },
-  guardian: { label: 'Guardian', color: '#9d7bff', price: '$5/mo' },
-  legend: { label: 'Legend', color: '#f4c95b', price: '$10/mo' },
+export const TIER_META: Record<string, { label: string; color: string }> = {
+  scout: { label: 'Scout', color: '#3d9bff' },
+  guardian: { label: 'Guardian', color: '#9d7bff' },
+  legend: { label: 'Legend', color: '#f4c95b' },
 };
 
 /** Small uppercase pill (mirrors the BOT/WEBHOOK badge shape). */
@@ -29,7 +29,7 @@ export function TierBadge({
         color: meta.color,
         backgroundColor: `color-mix(in srgb, ${meta.color} 18%, transparent)`,
       }}
-      title={`${meta.label} supporter`}
+      title={`${meta.label} tier`}
     >
       {meta.label}
     </span>
