@@ -519,9 +519,9 @@ final class APIClient {
         try await sendVoid("POST", "/auth/reset-password", bodyData: body, authorized: false)
     }
 
-    func register(email: String, username: String, displayName: String, password: String, dateOfBirth: String) async throws -> AuthSession {
+    func register(email: String, username: String, displayName: String, password: String, dateOfBirth: String, code: String? = nil) async throws -> AuthSession {
         let body = try JSONEncoder().encode(
-            RegisterBody(email: email, username: username, displayName: displayName, password: password, dateOfBirth: dateOfBirth)
+            RegisterBody(email: email, username: username, displayName: displayName, password: password, dateOfBirth: dateOfBirth, code: code)
         )
         return try await send("POST", "/auth/register", bodyData: body, authorized: false)
     }

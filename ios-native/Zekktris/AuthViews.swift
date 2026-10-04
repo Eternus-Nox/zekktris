@@ -418,8 +418,8 @@ struct ServerPickerSheet: View {
         Task {
             defer { checking = false }
             do {
-                try await ServerProbe.check(origin)
-                Config.setServerOrigin(origin)
+                let found = try await ServerProbe.find(typed: address, origin: origin)
+                Config.setServerOrigin(found)
                 onChanged()
                 dismiss()
             } catch let e as ServerProbe.Failure {
@@ -436,6 +436,42 @@ struct ServerPickerSheet: View {
 enum ServerProbe {
     struct Failure: Error { let message: String }
     private struct Info: Decodable { let software: String }
+
+    /// Someone typing "192.168.1.20" or "203.0.113.5" shouldn't need to know
+    /// the scheme or port. When they typed neither, try HTTPS first, then —
+    /// for a home-network address only — plain http on 80 and on 5550 (the
+    /// installer's --lan port). An explicit scheme or port is used as typed.
+    /// Returns the first origin that answers as a Zekktris server.
+    static func find(typed: String, origin: String) async throws -> String {
+        let text = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let comps = URLComponents(string: origin), let host = comps.host else {
+            throw Failure(message: "That doesn't look like a server address.")
+        }
+        let explicit = text.contains("://") || comps.port != nil
+        var candidates = [origin]
+        if !explicit && isLocal(host) {
+            let h = host.contains(":") ? "[\(host)]" : host
+            candidates += ["http://\(h)", "http://\(h):5550"]
+        }
+        var firstError: Error?
+        for candidate in candidates {
+            do { try await check(candidate); return candidate } catch { firstError = firstError ?? error }
+        }
+        if isLocal(host) {
+            throw Failure(message: "Couldn't reach a Zekktris server at that address. If iPhone asked to find devices on your local network, allow it and tap Connect again.")
+        }
+        throw firstError ?? Failure(message: "Couldn't reach that server.")
+    }
+
+    /// Private/link-local IPv4, loopback, *.local — never resolves DNS.
+    static func isLocal(_ host: String) -> Bool {
+        let h = host.lowercased()
+        if h == "localhost" || h.hasSuffix(".local") || h == "::1" || h.hasPrefix("fd") || h.hasPrefix("fe80") { return true }
+        let p = h.split(separator: ".").compactMap { Int($0) }
+        guard p.count == 4 else { return false }
+        return p[0] == 10 || p[0] == 127 || (p[0] == 172 && (16...31).contains(p[1]))
+            || (p[0] == 192 && p[1] == 168) || (p[0] == 169 && p[1] == 254)
+    }
 
     static func check(_ origin: String) async throws {
         guard let url = URL(string: origin + "/api/v1/instance/info") else {
@@ -556,6 +592,7 @@ struct RegisterView: View {
     @State private var email = ""
     @State private var username = ""
     @State private var displayName = ""
+    @State private var inviteCode = ""
     @State private var password = ""
     @State private var repeatPassword = ""
     // Date of birth. `dobChosen` gates submit so the user must actively pick
@@ -613,6 +650,10 @@ struct RegisterView: View {
                         onSubmit: { focus = .password }
                     )
                     .focused($focus, equals: .displayName)
+
+                    // Self-hosted servers can be invite-only; zekktris.com and
+                    // open servers ignore the code.
+                    AuthField(title: "Invite code (if you were given one)", text: $inviteCode)
 
                     VStack(alignment: .leading, spacing: 8) {
                         AuthField(
@@ -718,7 +759,8 @@ struct RegisterView: View {
         Task {
             await session.register(
                 email: email, username: username, displayName: displayName, password: password,
-                dateOfBirth: dobString
+                dateOfBirth: dobString,
+                code: inviteCode.trimmingCharacters(in: .whitespaces).isEmpty ? nil : inviteCode.trimmingCharacters(in: .whitespaces)
             )
         }
     }

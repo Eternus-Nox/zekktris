@@ -153,12 +153,13 @@ final class Session: ObservableObject {
         }
     }
 
-    func register(email: String, username: String, displayName: String, password: String, dateOfBirth: String) async {
+    func register(email: String, username: String, displayName: String, password: String, dateOfBirth: String, code: String? = nil) async {
         busy = true; authError = nil
         defer { busy = false }
         do {
             let session = try await api.register(
-                email: email, username: username, displayName: displayName, password: password, dateOfBirth: dateOfBirth
+                email: email, username: username, displayName: displayName, password: password, dateOfBirth: dateOfBirth,
+                code: code
             )
             persist(session)
         } catch {

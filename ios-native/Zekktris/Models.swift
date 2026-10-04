@@ -1038,6 +1038,8 @@ struct RegisterBody: Codable {
     let password: String
     /// YYYY-MM-DD. Required by the server (age-gates under-13).
     let dateOfBirth: String
+    /// Invite code — only invite-only servers need it. nil is omitted.
+    var code: String? = nil
 }
 
 // ── WebAuthn passkeys ────────────────────────────────────────────────────
