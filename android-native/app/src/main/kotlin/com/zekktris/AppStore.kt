@@ -801,10 +801,10 @@ class AppStore(
         e.message ?: "Couldn't remove passkey."
     }
 
-    fun register(email: String, username: String, displayName: String, password: String, dateOfBirth: String) {
+    fun register(email: String, username: String, displayName: String, password: String, dateOfBirth: String, code: String? = null) {
         scope.launch {
             _state.update { it.copy(authBusy = true, authError = null) }
-            val r = runCatching { api.register(email, username, displayName, password, dateOfBirth) }
+            val r = runCatching { api.register(email, username, displayName, password, dateOfBirth, code) }
                 .getOrElse { LoginResult.Failure("Can't reach Zekktris. Check your connection.") }
             when (r) {
                 is LoginResult.Success -> enterReady(r.user)

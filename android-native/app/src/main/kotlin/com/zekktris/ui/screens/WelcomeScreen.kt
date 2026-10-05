@@ -13,6 +13,10 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
@@ -25,13 +29,17 @@ import com.zekktris.ui.components.AbyssBackground
 import com.zekktris.ui.theme.ZkInk
 import com.zekktris.ui.theme.ZkTheme
 
-/** Entry screen: the abyss visual language + the two auth entry points. */
+/** Entry screen: the abyss visual language, which server, and the two auth
+ *  entry points. "Create Account" hides on a server that's closed to sign-ups. */
 @Composable
 fun WelcomeScreen(
     onLogIn: () -> Unit = {},
     onCreateAccount: () -> Unit = {},
 ) {
     val p = ZkTheme.palette
+    var serverRevision by remember { mutableStateOf(0) }
+    val info = rememberServerInfo(serverRevision)
+    val signupClosed = info?.registration == "closed"
     AbyssBackground(contentAlignment = Alignment.Center) {
         Column(
             modifier = Modifier
@@ -56,9 +64,12 @@ fun WelcomeScreen(
                 modifier = Modifier.padding(top = 8.dp),
             )
 
+            // Which server — zekktris.com, or a self-hosted one by address/IP.
+            ServerRow(Modifier.padding(top = 28.dp)) { serverRevision++ }
+
             Column(
                 modifier = Modifier
-                    .padding(top = 48.dp)
+                    .padding(top = 28.dp)
                     .width(280.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
@@ -72,16 +83,22 @@ fun WelcomeScreen(
                     ),
                 ) { Text("Log In", fontWeight = FontWeight.SemiBold) }
 
-                OutlinedButton(
-                    onClick = onCreateAccount,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, SolidColor(p.line)),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = ZkInk.ink1),
-                ) { Text("Create Account", fontWeight = FontWeight.Medium) }
+                if (signupClosed) {
+                    Text(
+                        "This server isn't taking new sign-ups. Ask its admins for an account.",
+                        color = ZkInk.ink3, fontSize = 13.sp, textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    OutlinedButton(
+                        onClick = onCreateAccount,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, SolidColor(p.line)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = ZkInk.ink1),
+                    ) { Text("Create Account", fontWeight = FontWeight.Medium) }
+                }
             }
-
-            ServerRow(Modifier.padding(top = 20.dp))
         }
     }
 }

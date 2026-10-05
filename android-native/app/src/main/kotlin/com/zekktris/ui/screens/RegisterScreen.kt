@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zekktris.AppState
 import com.zekktris.AppStore
+import com.zekktris.data.Config
 import com.zekktris.ui.components.AbyssBackground
 import com.zekktris.ui.components.zkFieldColors
 import com.zekktris.ui.theme.ZkInk
@@ -44,6 +45,11 @@ fun RegisterScreen(store: AppStore, state: AppState, onBack: () -> Unit) {
     var displayName by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var dob by remember { mutableStateOf("") }
+    var inviteCode by remember { mutableStateOf("") }
+    // The server's sign-up rules: an invite-only server needs a code. While
+    // they're unknown (loading / older server) the field shows, optional.
+    val info = rememberServerInfo(Config.serverOrigin)
+    val showInvite = info == null || info.registration == "invite-only"
 
     AbyssBackground(contentAlignment = Alignment.Center) {
         Column(
@@ -58,7 +64,7 @@ fun RegisterScreen(store: AppStore, state: AppState, onBack: () -> Unit) {
         ) {
             Text("Create your account", color = ZkInk.ink1, fontWeight = FontWeight.Bold, fontSize = 26.sp)
             Text(
-                "You must be at least 13 years old.",
+                "On ${Config.serverDisplayName} · you must be at least 13 years old.",
                 color = ZkInk.ink3,
                 fontSize = 14.sp,
                 modifier = Modifier.padding(top = 6.dp, bottom = 20.dp),
@@ -99,6 +105,15 @@ fun RegisterScreen(store: AppStore, state: AppState, onBack: () -> Unit) {
                 colors = zkFieldColors(), modifier = fieldMod,
             )
 
+            if (showInvite) {
+                OutlinedTextField(
+                    value = inviteCode, onValueChange = { inviteCode = it; store.clearAuthError() },
+                    label = { Text(if (info?.registration == "invite-only") "Invite code" else "Invite code (if you were given one)") },
+                    singleLine = true,
+                    colors = zkFieldColors(), modifier = fieldMod,
+                )
+            }
+
             state.authError?.let {
                 Text(
                     text = it, color = ZkStatus.dangerSoft, fontSize = 13.sp,
@@ -107,7 +122,7 @@ fun RegisterScreen(store: AppStore, state: AppState, onBack: () -> Unit) {
             }
 
             Button(
-                onClick = { store.register(email, username, displayName, password, dob.trim()) },
+                onClick = { store.register(email, username, displayName, password, dob.trim(), inviteCode.trim().ifEmpty { null }) },
                 enabled = !state.authBusy,
                 modifier = Modifier.fillMaxWidth().padding(top = 20.dp).height(50.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = p.accent, contentColor = p.bg0),

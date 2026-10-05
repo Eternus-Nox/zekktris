@@ -69,7 +69,7 @@ fun LoginScreen(
                 fontSize = 26.sp,
             )
             Text(
-                text = if (needs2FA) "Enter your authenticator code." else "Log in to your Zekktris account.",
+                text = if (needs2FA) "Enter your authenticator code." else "Log in on ${com.zekktris.data.Config.serverDisplayName}.",
                 color = ZkInk.ink3,
                 fontSize = 14.sp,
                 modifier = Modifier.padding(top = 6.dp, bottom = 24.dp),
