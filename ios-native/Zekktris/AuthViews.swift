@@ -478,6 +478,8 @@ enum ServerProbe {
     /// installer's --lan port). An explicit scheme or port is used as typed.
     /// Returns the first origin that answers as a Zekktris server.
     static func find(typed: String, origin: String) async throws -> String {
+        // The built-in server is always fine — no need to probe it.
+        if origin == Config.defaultOrigin || origin == "https://www.zekktris.com" { return Config.defaultOrigin }
         let text = typed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let comps = URLComponents(string: origin), let host = comps.host else {
             throw Failure(message: "That doesn't look like a server address.")
@@ -525,11 +527,27 @@ enum ServerProbe {
         } catch {
             throw Failure(message: "Couldn't reach that server. Check the address, and that the server is running.")
         }
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200,
-              let info = try? JSONDecoder().decode(Info.self, from: data),
-              info.software == "zekktris" else {
-            throw Failure(message: "Something answered at that address, but it isn't a Zekktris server (or it's too old — its owner should update it).")
+        if let http = resp as? HTTPURLResponse, http.statusCode == 200,
+           let info = try? JSONDecoder().decode(Info.self, from: data),
+           info.software == "zekktris" {
+            return
         }
+        // A Zekktris server that predates /instance/info (zekktris.com until
+        // it's redeployed, or a self-hosted one not updated yet) still answers
+        // its health check with this exact shape.
+        if await looksLikeOlderZekktris(origin) { return }
+        throw Failure(message: "Something answered at that address, but it isn't a Zekktris server.")
+    }
+
+    /// GET {origin}/health → {"status":"ok","uptimeSeconds":…}.
+    private static func looksLikeOlderZekktris(_ origin: String) async -> Bool {
+        struct Health: Decodable { let status: String; let uptimeSeconds: Double }
+        guard let url = URL(string: origin + "/health") else { return false }
+        let req = URLRequest(url: url, timeoutInterval: 10)
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let h = try? JSONDecoder().decode(Health.self, from: data) else { return false }
+        return h.status == "ok"
     }
 }
 

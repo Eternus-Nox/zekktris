@@ -187,6 +187,8 @@ fun rememberServerInfo(key: Any? = null): ServerInfo? {
  * first origin that answers as a Zekktris server, or a message.
  */
 private suspend fun findServer(typed: String, origin: String): Pair<String?, String?> {
+    // The built-in server is always fine — no need to probe it.
+    if (origin == Config.DEFAULT_ORIGIN || origin == "https://www.zekktris.com") return Config.DEFAULT_ORIGIN to null
     val uri = runCatching { java.net.URI(origin) }.getOrNull()
         ?: return null to "That doesn't look like a server address."
     val host = uri.host ?: return null to "That doesn't look like a server address."
@@ -209,6 +211,23 @@ private suspend fun findServer(typed: String, origin: String): Pair<String?, Str
     return null to (firstError ?: "Couldn't reach that server.")
 }
 
+/** GET {origin}/health → {"status":"ok","uptimeSeconds":…} — the shape every
+ *  Zekktris server answers, including ones older than /instance/info. */
+private fun looksLikeOlderZekktris(origin: String): Boolean {
+    val conn = runCatching { URL("$origin/health").openConnection() as HttpURLConnection }.getOrNull() ?: return false
+    return try {
+        conn.connectTimeout = 10_000
+        conn.readTimeout = 10_000
+        if (conn.responseCode != 200) return false
+        val json = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+        json.optString("status") == "ok" && json.has("uptimeSeconds")
+    } catch (_: Exception) {
+        false
+    } finally {
+        conn.disconnect()
+    }
+}
+
 /** One GET to {origin}/api/v1/instance/info → (info, null) for a Zekktris
  *  server, otherwise (null, a message to show). */
 private suspend fun probe(origin: String): Pair<ServerInfo?, String?> = withContext(Dispatchers.IO) {
@@ -226,8 +245,12 @@ private suspend fun probe(origin: String): Pair<ServerInfo?, String?> = withCont
                 registration = json.optString("registration", "open"),
                 passkeys = json.optBoolean("passkeys", true),
             ) to null
+        } else if (looksLikeOlderZekktris(origin)) {
+            // Predates /instance/info (zekktris.com until it's redeployed, or a
+            // self-hosted server not updated yet). Its sign-up rules are unknown.
+            ServerInfo(registration = "unknown", passkeys = true) to null
         } else {
-            null to "Something answered at that address, but it isn't a Zekktris server (or it's too old — its owner should update it)."
+            null to "Something answered at that address, but it isn't a Zekktris server."
         }
     } catch (_: SSLException) {
         null to "That server's HTTPS certificate isn't valid. Its owner needs to finish setting up HTTPS."

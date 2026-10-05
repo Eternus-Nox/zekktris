@@ -69,7 +69,14 @@ export async function probeServer(origin: string): Promise<string | null> {
     });
     const body = (await res.json().catch(() => null)) as { software?: string } | null;
     if (res.ok && body?.software === 'zekktris') return null;
-    return "Something answered at that address, but it isn't a Zekktris server (or it's too old — its owner should update it).";
+    // A Zekktris server older than /instance/info (zekktris.com until it's
+    // redeployed, or a self-hosted one not updated yet) still answers its
+    // health check with this shape.
+    const health = await fetch(`${origin}/health`, { signal: ctrl.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null) as { status?: string; uptimeSeconds?: number } | null;
+    if (health?.status === 'ok' && typeof health.uptimeSeconds === 'number') return null;
+    return "Something answered at that address, but it isn't a Zekktris server.";
   } catch (err) {
     const msg = String((err as { cause?: { code?: string } })?.cause?.code ?? err);
     if (/WRONG_VERSION_NUMBER|EPROTO/i.test(msg)) {
@@ -96,6 +103,10 @@ export async function findServer(
 ): Promise<{ ok: true; origin: string } | { ok: false; error: string }> {
   const n = normalizeServerUrl(input);
   if (!n.ok) return n;
+  // The built-in server is always fine — no need to probe it.
+  if (n.origin === 'https://zekktris.com' || n.origin === 'https://www.zekktris.com') {
+    return { ok: true, origin: 'https://zekktris.com' };
+  }
   const u = new URL(n.origin);
   const explicit = input.includes('://') || u.port !== '';
   const candidates = [n.origin];

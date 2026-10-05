@@ -49,7 +49,7 @@ fun RegisterScreen(store: AppStore, state: AppState, onBack: () -> Unit) {
     // The server's sign-up rules: an invite-only server needs a code. While
     // they're unknown (loading / older server) the field shows, optional.
     val info = rememberServerInfo(Config.serverOrigin)
-    val showInvite = info == null || info.registration == "invite-only"
+    val showInvite = info == null || info.registration !in setOf("open", "closed")
 
     AbyssBackground(contentAlignment = Alignment.Center) {
         Column(
