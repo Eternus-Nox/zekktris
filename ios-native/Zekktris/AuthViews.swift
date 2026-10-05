@@ -143,6 +143,9 @@ struct LoginView: View {
     let switchToRegister: () -> Void
     /// Bumped when the server changes so the screen re-reads Config.
     @State private var serverRevision = 0
+    /// The server's sign-up rules + passkey support. nil while loading or
+    /// unreachable — everything shows, as before.
+    @State private var serverInfo: ServerProbe.ServerInfo?
 
     @State private var email = ""
     @State private var password = ""
@@ -164,6 +167,12 @@ struct LoginView: View {
             VStack(spacing: 18) {
                 AuthHeader(subtitle: "Welcome back")
                     .padding(.top, 40)
+
+                // Which server — zekktris.com, or a self-hosted one by its
+                // address or just an IP.
+                if !session.needs2FA {
+                    ServerRow { serverRevision += 1; session.authError = nil }
+                }
 
                 VStack(spacing: 14) {
                     AuthField(
@@ -228,7 +237,7 @@ struct LoginView: View {
                     // Passkeys are bound to zekktris.com by the app's
                     // associated-domains entitlement, so they can't work
                     // against a self-hosted server.
-                    if Config.isDefaultServer {
+                    if Config.isDefaultServer && serverInfo?.passkeys != false {
                         Button {
                             passkeyBusy = true
                             Task { _ = await session.loginWithPasskey(); passkeyBusy = false }
@@ -269,6 +278,12 @@ struct LoginView: View {
                     }
                     .font(.zkSans(13))
                     .foregroundColor(Theme.ink3)
+                } else if serverInfo?.registration == "closed" {
+                    Text("This server isn't taking new sign-ups. Ask its admins for an account.")
+                        .font(.zkSans(13))
+                        .foregroundColor(Theme.ink3)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 4)
                 } else {
                     Button(action: switchToRegister) {
                         Text("Need an account? ")
@@ -277,11 +292,6 @@ struct LoginView: View {
                     }
                     .font(.zkSans(14))
                     .padding(.top, 4)
-                }
-
-                if !session.needs2FA {
-                    ServerRow { serverRevision += 1; session.authError = nil }
-                        .padding(.top, 6)
                 }
 
                 Spacer(minLength: 0)
@@ -296,6 +306,7 @@ struct LoginView: View {
         }
         .sheet(isPresented: $showForgot) { ForgotPasswordView() }
         .sheet(isPresented: $showDeviceLogin) { DeviceLoginRequestSheet() }
+        .task(id: serverRevision) { serverInfo = await ServerProbe.info(Config.serverOrigin) }
     }
 
     private func submit() {
@@ -319,11 +330,13 @@ struct ServerRow: View {
             HStack(spacing: 6) {
                 Image(systemName: "server.rack").font(.system(size: 12))
                 Text("Server: ").foregroundColor(Theme.ink3)
-                    + Text(Config.serverDisplayName).foregroundColor(Theme.ink2)
-                Text("· Change").foregroundColor(Theme.accent)
+                    + Text(Config.serverDisplayName).foregroundColor(Theme.ink1)
+                Text("· Change").foregroundColor(Theme.accent).fontWeight(.semibold)
             }
             .font(.zkSans(13))
             .foregroundColor(Theme.ink3)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .overlay(Capsule().stroke(Theme.line, lineWidth: 1))
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.plain)
@@ -436,6 +449,28 @@ struct ServerPickerSheet: View {
 enum ServerProbe {
     struct Failure: Error { let message: String }
     private struct Info: Decodable { let software: String }
+
+    /// What a server tells the sign-in screens about itself.
+    struct ServerInfo: Decodable {
+        let software: String
+        /// "open" | "invite-only" | "closed"
+        let registration: String?
+        /// False when reached by a bare IP (WebAuthn needs a domain).
+        let passkeys: Bool?
+    }
+
+    /// GET /api/v1/instance/info for the sign-in screens. nil on any failure
+    /// (older server, offline) — callers then show everything, as before.
+    static func info(_ origin: String) async -> ServerInfo? {
+        guard let url = URL(string: origin + "/api/v1/instance/info") else { return nil }
+        var req = URLRequest(url: url, timeoutInterval: 10)
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let info = try? JSONDecoder().decode(ServerInfo.self, from: data),
+              info.software == "zekktris" else { return nil }
+        return info
+    }
 
     /// Someone typing "192.168.1.20" or "203.0.113.5" shouldn't need to know
     /// the scheme or port. When they typed neither, try HTTPS first, then —
@@ -588,6 +623,11 @@ struct RegisterView: View {
     let switchToLogin: () -> Void
     /// Bumped when the server changes so the screen re-reads Config.
     @State private var serverRevision = 0
+    /// The server's sign-up rules. nil while loading / unreachable.
+    @State private var serverInfo: ServerProbe.ServerInfo?
+    private var signupClosed: Bool { serverInfo?.registration == "closed" }
+    /// Invite-only needs a code; unknown rules show the field as optional.
+    private var showInvite: Bool { serverInfo == nil || serverInfo?.registration == "invite-only" }
 
     @State private var email = ""
     @State private var username = ""
@@ -610,8 +650,9 @@ struct RegisterView: View {
     private var strength: Int { passwordStrength(password) }
     private var mismatch: Bool { !repeatPassword.isEmpty && repeatPassword != password }
     private var canSubmit: Bool {
-        !email.isEmpty && !username.isEmpty && !displayName.isEmpty
+        !signupClosed && !email.isEmpty && !username.isEmpty && !displayName.isEmpty
             && password.count >= 8 && password == repeatPassword && dobChosen && agreeToTerms
+            && (serverInfo?.registration != "invite-only" || !inviteCode.trimmingCharacters(in: .whitespaces).isEmpty)
     }
 
     /// Compose the picked date into the server's YYYY-MM-DD shape (local
@@ -628,6 +669,19 @@ struct RegisterView: View {
             VStack(spacing: 18) {
                 AuthHeader(subtitle: "Create your account")
                     .padding(.top, 36)
+
+                ServerRow { serverRevision += 1; session.authError = nil }
+
+                if signupClosed {
+                    Text("This server isn't taking new sign-ups. Ask its admins for an account, then sign in.")
+                        .font(.zkSans(14))
+                        .foregroundColor(Theme.ink2)
+                        .multilineTextAlignment(.center)
+                        .padding(14)
+                        .frame(maxWidth: .infinity)
+                        .background(Theme.bg2)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
 
                 VStack(spacing: 14) {
                     AuthField(
@@ -651,9 +705,13 @@ struct RegisterView: View {
                     )
                     .focused($focus, equals: .displayName)
 
-                    // Self-hosted servers can be invite-only; zekktris.com and
-                    // open servers ignore the code.
-                    AuthField(title: "Invite code (if you were given one)", text: $inviteCode)
+                    // Self-hosted servers can be invite-only.
+                    if showInvite {
+                        AuthField(
+                            title: serverInfo?.registration == "invite-only" ? "Invite code" : "Invite code (if you were given one)",
+                            text: $inviteCode
+                        )
+                    }
 
                     VStack(alignment: .leading, spacing: 8) {
                         AuthField(
@@ -736,9 +794,6 @@ struct RegisterView: View {
                 .font(.zkSans(14))
                 .padding(.top, 4)
 
-                ServerRow { serverRevision += 1; session.authError = nil }
-                    .padding(.top, 6)
-
                 Spacer(minLength: 0)
             }
             .id(serverRevision)
@@ -751,6 +806,7 @@ struct RegisterView: View {
         }
         .sheet(isPresented: $showTerms) { SafariView(url: LegalURL.terms) }
         .sheet(isPresented: $showPrivacy) { SafariView(url: LegalURL.privacy) }
+        .task(id: serverRevision) { serverInfo = await ServerProbe.info(Config.serverOrigin) }
     }
 
     private func submit() {
