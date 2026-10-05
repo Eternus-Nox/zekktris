@@ -43,7 +43,7 @@ import {
   setServerUrl,
   DEFAULT_SERVER_URL,
 } from './config';
-import { normalizeServerUrl, probeServer } from './server';
+import { findServer } from './server';
 
 const PROTOCOL = 'zekktris';
 
@@ -547,11 +547,9 @@ ipcMain.handle('zk:server-current', () => {
 
 ipcMain.handle('zk:server-connect', async (e, address: unknown) => {
   if (!fromServerWindow(e) || typeof address !== 'string') return 'Not allowed.';
-  const n = normalizeServerUrl(address);
-  if (!n.ok) return n.error;
-  const failure = await probeServer(n.origin);
-  if (failure) return failure;
-  switchServer(n.origin);
+  const found = await findServer(address);
+  if (!found.ok) return found.error;
+  switchServer(found.origin);
   return null;
 });
 

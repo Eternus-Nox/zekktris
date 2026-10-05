@@ -72,6 +72,9 @@ export async function probeServer(origin: string): Promise<string | null> {
     return "Something answered at that address, but it isn't a Zekktris server (or it's too old — its owner should update it).";
   } catch (err) {
     const msg = String((err as { cause?: { code?: string } })?.cause?.code ?? err);
+    if (/WRONG_VERSION_NUMBER|EPROTO/i.test(msg)) {
+      return "That address doesn't use HTTPS. If the server is on your home network, type it with http:// in front.";
+    }
     if (/CERT|SSL|TLS/i.test(msg)) {
       return "That server's HTTPS certificate isn't valid. Its owner needs to finish setting up HTTPS.";
     }
@@ -79,4 +82,31 @@ export async function probeServer(origin: string): Promise<string | null> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Someone typing "192.168.1.20" or "203.0.113.5" shouldn't need to know the
+ * scheme or port. When they typed neither, try HTTPS first, then — for a
+ * home-network address only — plain http on 80 and on 5550 (the installer's
+ * --lan port). An explicit scheme or port is used as typed. Resolves to the
+ * first origin that answers as a Zekktris server, or a message.
+ */
+export async function findServer(
+  input: string,
+): Promise<{ ok: true; origin: string } | { ok: false; error: string }> {
+  const n = normalizeServerUrl(input);
+  if (!n.ok) return n;
+  const u = new URL(n.origin);
+  const explicit = input.includes('://') || u.port !== '';
+  const candidates = [n.origin];
+  if (!explicit && isLocalHost(u.hostname)) {
+    candidates.push(`http://${u.host}`, `http://${u.host}:5550`);
+  }
+  let firstError: string | null = null;
+  for (const origin of candidates) {
+    const failure = await probeServer(origin);
+    if (!failure) return { ok: true, origin };
+    firstError ??= failure;
+  }
+  return { ok: false, error: firstError ?? "Couldn't reach that server." };
 }
