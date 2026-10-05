@@ -181,9 +181,9 @@ fun rememberServerInfo(key: Any? = null): ServerInfo? {
 
 /**
  * Someone typing "192.168.1.20" or "203.0.113.5" shouldn't need to know the
- * scheme or port. When they typed neither, try HTTPS first, then — for a
- * home-network address only — plain http on 80 and on 5550 (the installer's
- * --lan port). An explicit scheme or port is used as typed. Returns the
+ * scheme or port. Without a typed scheme, try HTTPS first, then — for a
+ * home-network address only — plain http (on the typed port, or on 80 and
+ * 5550, the installer's --lan port). A typed scheme is used as is. Returns the
  * first origin that answers as a Zekktris server, or a message.
  */
 private suspend fun findServer(typed: String, origin: String): Pair<String?, String?> {
@@ -192,14 +192,19 @@ private suspend fun findServer(typed: String, origin: String): Pair<String?, Str
     val uri = runCatching { java.net.URI(origin) }.getOrNull()
         ?: return null to "That doesn't look like a server address."
     val host = uri.host ?: return null to "That doesn't look like a server address."
-    val explicit = typed.contains("://") || uri.port != -1
+    // Only a typed scheme is final. A home-network address typed with a port
+    // but no scheme ("192.168.1.20:5550") still falls back to http.
     val local = Config.isLocalHost(host)
     val candidates = buildList {
         add(origin)
-        if (!explicit && local) {
+        if (!typed.contains("://") && local) {
             val h = if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
-            add("http://$h")
-            add("http://$h:5550")
+            if (uri.port != -1) {
+                add("http://$h:${uri.port}")
+            } else {
+                add("http://$h")
+                add("http://$h:5550")
+            }
         }
     }
     var firstError: String? = null

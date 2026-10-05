@@ -473,9 +473,9 @@ enum ServerProbe {
     }
 
     /// Someone typing "192.168.1.20" or "203.0.113.5" shouldn't need to know
-    /// the scheme or port. When they typed neither, try HTTPS first, then —
-    /// for a home-network address only — plain http on 80 and on 5550 (the
-    /// installer's --lan port). An explicit scheme or port is used as typed.
+    /// the scheme or port. Without a typed scheme, try HTTPS first, then — for
+    /// a home-network address only — plain http (on the typed port, or on 80
+    /// and 5550, the installer's --lan port). A typed scheme is used as is.
     /// Returns the first origin that answers as a Zekktris server.
     static func find(typed: String, origin: String) async throws -> String {
         // The built-in server is always fine — no need to probe it.
@@ -484,11 +484,16 @@ enum ServerProbe {
         guard let comps = URLComponents(string: origin), let host = comps.host else {
             throw Failure(message: "That doesn't look like a server address.")
         }
-        let explicit = text.contains("://") || comps.port != nil
+        // Only a typed scheme is final. A home-network address typed with a
+        // port but no scheme ("192.168.1.20:5550") still falls back to http.
         var candidates = [origin]
-        if !explicit && isLocal(host) {
+        if !text.contains("://") && isLocal(host) {
             let h = host.contains(":") ? "[\(host)]" : host
-            candidates += ["http://\(h)", "http://\(h):5550"]
+            if let port = comps.port {
+                candidates.append("http://\(h):\(port)")
+            } else {
+                candidates += ["http://\(h)", "http://\(h):5550"]
+            }
         }
         var firstError: Error?
         for candidate in candidates {

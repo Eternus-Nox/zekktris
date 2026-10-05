@@ -93,9 +93,9 @@ export async function probeServer(origin: string): Promise<string | null> {
 
 /**
  * Someone typing "192.168.1.20" or "203.0.113.5" shouldn't need to know the
- * scheme or port. When they typed neither, try HTTPS first, then — for a
- * home-network address only — plain http on 80 and on 5550 (the installer's
- * --lan port). An explicit scheme or port is used as typed. Resolves to the
+ * scheme or port. Without a typed scheme, try HTTPS first, then — for a
+ * home-network address only — plain http (on the typed port, or on 80 and
+ * 5550, the installer's --lan port). A typed scheme is used as is. Resolves to the
  * first origin that answers as a Zekktris server, or a message.
  */
 export async function findServer(
@@ -108,10 +108,12 @@ export async function findServer(
     return { ok: true, origin: 'https://zekktris.com' };
   }
   const u = new URL(n.origin);
-  const explicit = input.includes('://') || u.port !== '';
+  // Only a typed scheme is final. A home-network address typed with a port
+  // but no scheme ("192.168.1.20:5550") still falls back to http.
   const candidates = [n.origin];
-  if (!explicit && isLocalHost(u.hostname)) {
-    candidates.push(`http://${u.host}`, `http://${u.host}:5550`);
+  if (!input.includes('://') && isLocalHost(u.hostname)) {
+    if (u.port) candidates.push(`http://${u.host}`);
+    else candidates.push(`http://${u.host}`, `http://${u.host}:5550`);
   }
   let firstError: string | null = null;
   for (const origin of candidates) {
