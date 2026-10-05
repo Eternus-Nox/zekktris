@@ -1168,25 +1168,6 @@ struct InstanceMetrics: Codable {
 }
 struct MetricsWrap: Codable { let metrics: InstanceMetrics }
 
-/// One step of the LiveKit/voice diagnostic. `status` ∈ pass | fail | warn | skip.
-struct LivekitCheck: Codable, Identifiable {
-    let id: String
-    let label: String
-    let status: String
-    let detail: String
-}
-
-/// Result of GET /admin/voice-diagnostic. No secrets — only config URLs and
-/// classified guidance.
-struct LivekitDiagnostic: Codable {
-    let configured: Bool
-    let ok: Bool
-    let wsUrl: String?
-    let checks: [LivekitCheck]
-    let generatedAt: String
-}
-struct DiagnosticWrap: Codable { let diagnostic: LivekitDiagnostic }
-
 // MARK: Family / parental controls
 
 struct FamilyUser: Codable, Identifiable {

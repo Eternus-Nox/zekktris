@@ -1455,14 +1455,6 @@ extension APIClient {
         return wrap.metrics
     }
 
-    /// End-to-end LiveKit/voice diagnostic (keys, browser URL, token mint, SFU
-    /// reachability + auth). Instance-admin gated; hits the network, so run on
-    /// demand. No secrets are returned.
-    func adminVoiceDiagnostic() async throws -> LivekitDiagnostic {
-        let wrap: DiagnosticWrap = try await send("GET", "/admin/voice-diagnostic")
-        return wrap.diagnostic
-    }
-
     // MARK: Family / parental controls
 
     func familyMe() async throws -> FamilySummary {

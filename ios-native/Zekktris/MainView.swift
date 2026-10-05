@@ -4844,11 +4844,8 @@ struct AdminView: View {
     /// The account whose Account Info page is open (AdminAccountView). Every
     /// action on an account lives there; this list is only for finding one.
     @State private var accountFor: AdminUser?
-    // Operational metrics + voice diagnostic (Overview tab).
+    // Operational metrics (Overview tab).
     @State private var metrics: InstanceMetrics?
-    @State private var voiceDiag: LivekitDiagnostic?
-    @State private var voiceTesting = false
-    @State private var voiceError: String?
     // Overview recent-activity feed.
     @State private var activity: AdminActivity?
     // Monetization tab: local editable copy + save state.
@@ -4948,9 +4945,6 @@ struct AdminView: View {
                         statRow("Database", m.db.ok ? "Healthy" : "Down", detail: "\(m.db.latencyMs)ms")
                         statRow("Redis", redisLabel(m.redis), detail: m.redis.configured ? "bus + blacklist" : "in-memory")
                     }
-
-                    // Voice / LiveKit diagnostic (run on demand).
-                    voiceDiagnosticSection
 
                     // Chat diagnostics overlay — for chasing "a DM opens black".
                     chatDiagnosticsToggle
@@ -5167,93 +5161,8 @@ struct AdminView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    private var voiceDiagnosticSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                adminSubheader("VOICE / LIVEKIT")
-                Spacer()
-                Button {
-                    Task { await runVoiceDiagnostic() }
-                } label: {
-                    Text(voiceTesting ? "Testing…" : (voiceDiag != nil ? "Re-run" : "Test voice"))
-                        .font(.zkSans(12, weight: .semibold)).foregroundColor(Theme.accent)
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(Theme.accent.opacity(0.12)).clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .disabled(voiceTesting)
-            }
-            if let e = voiceError {
-                Text(e).font(.zkSans(12)).foregroundColor(Theme.dangerSoft)
-            }
-            if let d = voiceDiag {
-                HStack(spacing: 8) {
-                    Text(diagLabel(d))
-                        .font(.zkSans(11, weight: .bold)).foregroundColor(diagTint(d))
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(diagTint(d).opacity(0.15)).clipShape(Capsule())
-                    if let ws = d.wsUrl {
-                        Text(ws).font(.zkMono(10)).foregroundColor(Theme.ink4).lineLimit(1)
-                    }
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(d.checks) { c in checkRow(c) }
-                }
-            } else if !voiceTesting {
-                Text("Tests LiveKit end-to-end: keys, the client URL, token minting, and whether the server can reach the SFU. The #1 self-host failure is the API not reaching LiveKit, or media (UDP 7882) not open to clients.")
-                    .font(.zkSans(11)).foregroundColor(Theme.ink4)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(Theme.bg2)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    private func checkRow(_ c: LivekitCheck) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: checkIcon(c.status))
-                .font(.system(size: 12)).foregroundColor(checkColor(c.status)).frame(width: 16)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(c.label).font(.zkSans(12, weight: .semibold)).foregroundColor(Theme.ink1)
-                Text(c.detail).font(.zkSans(11)).foregroundColor(Theme.ink3)
-            }
-            Spacer(minLength: 0)
-        }
-    }
-    private func checkIcon(_ s: String) -> String {
-        switch s {
-        case "pass": return "checkmark.circle.fill"
-        case "fail": return "xmark.circle.fill"
-        case "warn": return "exclamationmark.triangle.fill"
-        default: return "circle"
-        }
-    }
-    private func checkColor(_ s: String) -> Color {
-        switch s {
-        case "pass": return Theme.success
-        case "fail": return Theme.danger
-        case "warn": return Theme.plasmaAmber
-        default: return Theme.ink3
-        }
-    }
-    private func diagTint(_ d: LivekitDiagnostic) -> Color {
-        d.ok ? Theme.success : (d.configured ? Theme.danger : Theme.plasmaAmber)
-    }
-    private func diagLabel(_ d: LivekitDiagnostic) -> String {
-        d.ok ? "Voice OK" : (d.configured ? "Problem found" : "Not configured")
-    }
-
     private func loadMetrics() async {
         metrics = try? await APIClient.shared.adminMetrics()
-    }
-    private func runVoiceDiagnostic() async {
-        guard !voiceTesting else { return }
-        voiceTesting = true
-        voiceError = nil
-        do { voiceDiag = try await APIClient.shared.adminVoiceDiagnostic() }
-        catch { voiceError = (error as? APIError)?.message ?? error.localizedDescription }
-        voiceTesting = false
     }
 
     private var users: some View {
