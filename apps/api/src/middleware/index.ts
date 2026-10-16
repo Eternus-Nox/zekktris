@@ -43,6 +43,17 @@ export const requestId: MiddlewareHandler = async (c, next) => {
 
 // ── accessLog ──────────────────────────────────────────────────────────────
 
+/**
+ * Strip credentials that live in the URL path before it is logged. The public
+ * webhook execute route (/api/webhooks/:webhookId/:token, Discord-compatible
+ * shape) carries its secret as a path segment, so logging the raw path would
+ * write a usable credential on every webhook call. The id is kept so a log
+ * line still identifies the webhook.
+ */
+export function redactPathForLog(path: string): string {
+  return path.replace(/^(\/api\/webhooks\/[^/]+\/)[^/]+/i, '$1[redacted]');
+}
+
 export const accessLog: MiddlewareHandler = async (c, next) => {
   const start = performance.now();
   await next();
@@ -51,7 +62,7 @@ export const accessLog: MiddlewareHandler = async (c, next) => {
   const fields = {
     requestId: c.get('requestId'),
     method: c.req.method,
-    path: c.req.path,
+    path: redactPathForLog(c.req.path),
     status,
     durationMs: ms,
     userId: c.get('userId')?.toString(),
