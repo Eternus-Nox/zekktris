@@ -830,70 +830,7 @@ struct MessageListView: View {
                             maybeLoadOlder()
                             return
                         }
-                        // An older page this view asked for has landed ABOVE a
-                        // reader who is at the bottom — a short conversation whose
-                        // top was already within reach. `.defaultScrollAnchor
-                        // (.bottom)` has kept their place; scrolling the old top
-                        // row up to the top of the screen would yank them off the
-                        // newest messages for history they never scrolled to.
-                        let isOwnPrepend = anchor == scrollClock.prependFromId
-                        if isOwnPrepend { scrollClock.prependFromId = nil }
-                        if isOwnPrepend && isNearBottom {
-                            renderProbe.log("older page arrived; kept the bottom")
-                            DispatchQueue.main.async { store.pendingScrollAnchorId = nil }
-                            return
-                        }
-                        // After an older page prepends, jump back to the message
-                        // that was previously at the top so the view doesn't lurch.
-                        // Anchored jumps (deep links, prepend restores) land
-                        // mid-history — close the near-bottom gate so an incoming
-                        // message can't yank the user off the anchor. If the
-                        // anchor is in fact near the bottom, the geometry pass
-                        // reopens the gate on the next frame.
-                        isNearBottom = false
-                        // The anchor now owns the position: retire this open's
-                        // landing so the settle window can't drag the user back
-                        // off the message they jumped to once the anchor clears.
-                        landing = nil
-                        landedChannelId = channel.id
-                        // A jump target older than the eager part — an "around"
-                        // window loaded in FRONT of the rows already here (a
-                        // mention, a notification into older history) — would
-                        // sit in the lazy stack, where a programmatic scroll can
-                        // land on rows that were never built: the black-chat
-                        // failure the eager part exists to avoid. Pull the eager
-                        // part back to take it in, with some context above, and
-                        // scroll only once that render has happened.
-                        var targetMadeEager = false
-                        if !isOwnPrepend, !forceLazyList,
-                           let target = store.messages.firstIndex(where: { $0.id == anchor }),
-                           target < lazySplitIndex(in: store.messages) {
-                            pinEagerAnchor(at: target - Self.unreadLandingMaxRowsBack)
-                            targetMadeEager = true
-                        }
-                        renderProbe.log("scrollTo …\(anchor.suffix(4)) top (\(isOwnPrepend ? "prepend restore" : "jump"))"
-                                        + (targetMadeEager ? " after making it eager" : ""))
-                        let restore = { withAnimation(.none) { proxy.scrollTo(anchor, anchor: .top) } }
-                        // Two-phase restore: once synchronously (limits the
-                        // visible flash), then again on the next runloop turn
-                        // AFTER the freshly-inserted rows have actually laid
-                        // out — scrolling only in the same transaction that
-                        // inserted them targets unmeasured rows and produced the
-                        // exact lurch this exists to prevent. When the target was
-                        // just moved into the eager part, it doesn't exist as an
-                        // eager row until the next render, so both passes wait.
-                        if !targetMadeEager { restore() }
-                        DispatchQueue.main.async {
-                            restore()
-                            if targetMadeEager {
-                                DispatchQueue.main.async {
-                                    restore()
-                                    store.pendingScrollAnchorId = nil
-                                }
-                            } else {
-                                store.pendingScrollAnchorId = nil
-                            }
-                        }
+                        restoreAnchor(anchor, proxy)
                     }
                     // Paging is state-driven, not edge-driven: re-check whenever
                     // something that could have blocked the last attempt changes.
@@ -947,7 +884,30 @@ struct MessageListView: View {
                         // next runloop turn, once that seed has happened and the
                         // rows have laid out. If the cache was empty this is a
                         // no-op and the ListKey change above lands it.
-                        DispatchQueue.main.async { landInitial(proxy) }
+                        //
+                        // First, an anchor that was set while this list was NOT
+                        // on screen. selectedChannel outlives its list (Mentions
+                        // keeps it, on both layouts), so an older page can land,
+                        // or a notification into the selected channel can set a
+                        // jump, with no list to restore it. onChange only sees
+                        // changes made while the view exists, so it never fires
+                        // for such an anchor, and it would sit there blocking
+                        // paging and every re-landing for the whole open. Only
+                        // one still unchanged a turn later is taken over here
+                        // (an anchor from another channel is cleared by
+                        // openChannel; a new one goes through onChange).
+                        let anchorAtAppear = store.pendingScrollAnchorId
+                        DispatchQueue.main.async {
+                            if let anchor = anchorAtAppear, store.pendingScrollAnchorId == anchor {
+                                if store.messages.contains(where: { $0.id == anchor }) {
+                                    restoreAnchor(anchor, proxy)
+                                } else {
+                                    // Nothing to scroll to: land as usual.
+                                    store.pendingScrollAnchorId = nil
+                                }
+                            }
+                            landInitial(proxy)
+                        }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                             didInitialScroll = true
                         }
@@ -1045,7 +1005,10 @@ struct MessageListView: View {
             // empty, so a draft can't clobber text the user is already entering
             // (this fires again on returning from a sheet).
             if draft.isEmpty { draft = Self.loadDraft(channel.id) }
+            takePendingShare()
         }
+        // A share can arrive while this conversation is already open.
+        .onChange(of: store.pendingShare?.id) { _, _ in takePendingShare() }
         // Persist on every keystroke rather than on disappear: the app can be
         // killed from the switcher without any teardown callback running, which
         // is exactly the "closed the app" case this is meant to survive.
@@ -1111,6 +1074,76 @@ struct MessageListView: View {
         }
         renderProbe.log("land \(landing == .bottom ? "bottom" : "unread") msgs:\(store.messages.count)")
         applyLanding(proxy, reason: "open")
+    }
+
+    /// Scroll to `store.pendingScrollAnchorId` and consume it: a jump target
+    /// (mention, notification) or the row that was at the top before an older
+    /// page was prepended.
+    private func restoreAnchor(_ anchor: String, _ proxy: ScrollViewProxy) {
+        // An older page this view asked for has landed ABOVE a
+        // reader who is at the bottom — a short conversation whose
+        // top was already within reach. `.defaultScrollAnchor
+        // (.bottom)` has kept their place; scrolling the old top
+        // row up to the top of the screen would yank them off the
+        // newest messages for history they never scrolled to.
+        let isOwnPrepend = anchor == scrollClock.prependFromId
+        if isOwnPrepend { scrollClock.prependFromId = nil }
+        if isOwnPrepend && isNearBottom {
+            renderProbe.log("older page arrived; kept the bottom")
+            DispatchQueue.main.async { store.pendingScrollAnchorId = nil }
+            return
+        }
+        // After an older page prepends, jump back to the message
+        // that was previously at the top so the view doesn't lurch.
+        // Anchored jumps (deep links, prepend restores) land
+        // mid-history — close the near-bottom gate so an incoming
+        // message can't yank the user off the anchor. If the
+        // anchor is in fact near the bottom, the geometry pass
+        // reopens the gate on the next frame.
+        isNearBottom = false
+        // The anchor now owns the position: retire this open's
+        // landing so the settle window can't drag the user back
+        // off the message they jumped to once the anchor clears.
+        landing = nil
+        landedChannelId = channel.id
+        // A jump target older than the eager part — an "around"
+        // window loaded in FRONT of the rows already here (a
+        // mention, a notification into older history) — would
+        // sit in the lazy stack, where a programmatic scroll can
+        // land on rows that were never built: the black-chat
+        // failure the eager part exists to avoid. Pull the eager
+        // part back to take it in, with some context above, and
+        // scroll only once that render has happened.
+        var targetMadeEager = false
+        if !isOwnPrepend, !forceLazyList,
+           let target = store.messages.firstIndex(where: { $0.id == anchor }),
+           target < lazySplitIndex(in: store.messages) {
+            pinEagerAnchor(at: target - Self.unreadLandingMaxRowsBack)
+            targetMadeEager = true
+        }
+        renderProbe.log("scrollTo …\(anchor.suffix(4)) top (\(isOwnPrepend ? "prepend restore" : "jump"))"
+                        + (targetMadeEager ? " after making it eager" : ""))
+        let restore = { withAnimation(.none) { proxy.scrollTo(anchor, anchor: .top) } }
+        // Two-phase restore: once synchronously (limits the
+        // visible flash), then again on the next runloop turn
+        // AFTER the freshly-inserted rows have actually laid
+        // out — scrolling only in the same transaction that
+        // inserted them targets unmeasured rows and produced the
+        // exact lurch this exists to prevent. When the target was
+        // just moved into the eager part, it doesn't exist as an
+        // eager row until the next render, so both passes wait.
+        if !targetMadeEager { restore() }
+        DispatchQueue.main.async {
+            restore()
+            if targetMadeEager {
+                DispatchQueue.main.async {
+                    restore()
+                    store.pendingScrollAnchorId = nil
+                }
+            } else {
+                store.pendingScrollAnchorId = nil
+            }
+        }
     }
 
     /// Re-apply this open's chosen landing. No-op before a landing has been
@@ -2222,6 +2255,33 @@ struct MessageListView: View {
         case "unflip": return arg.isEmpty ? unflip : "\(arg) \(unflip)"
         case "spoiler": return arg.isEmpty ? input : "||\(arg)||"
         default: return input
+        }
+    }
+
+    /// Put what the Share Extension staged (AppStore.consumeStagedShare) into
+    /// this composer: its text joins the draft, its files become pending
+    /// attachments, and the user presses send — never sent on its own. Only
+    /// in the conversation it was shared to, or, when none was picked in the
+    /// share sheet, the next one that is open. (In an encrypted chat that is
+    /// still locked it waits in the hidden composer until unlock, and is
+    /// encrypted at send like anything else.)
+    private func takePendingShare() {
+        guard let share = store.pendingShare,
+              share.channelId == nil || share.channelId == channel.id else { return }
+        store.pendingShare = nil
+        if let text = share.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
+            draft = draft.isEmpty ? text : draft + "\n" + text
+        }
+        for file in store.takeSharedFiles(share.files) {
+            // Cap at the server's MAX_FILES_PER_MESSAGE (10).
+            guard pendingAttachments.count < 10 else { break }
+            let type = UTType(filenameExtension: (file.filename as NSString).pathExtension)
+            let isVideo = type?.conforms(to: .movie) ?? false
+            let preview = (type?.conforms(to: .image) ?? false) ? UIImage(data: file.data) : nil
+            pendingAttachments.append(PendingAttachment(
+                data: file.data, filename: file.filename,
+                mime: type?.preferredMIMEType ?? "application/octet-stream",
+                isVideo: isVideo, preview: preview))
         }
     }
 
@@ -3975,7 +4035,7 @@ private struct EnableE2EESheet: View {
                     }
                     .disabled(!canEnable || busy)
 
-                    Text("Note: enabling encryption is permanent until disabled, and existing plaintext history stays readable. New messages from both sides are encrypted.")
+                    Text("Note: enabling encryption is permanent until disabled, and existing plaintext history stays readable. New messages from both sides are encrypted. Link previews are off by default; when on, the link — not the message — is sent to your server to build the preview.")
                         .font(.zkSans(12))
                         .foregroundColor(Theme.ink3)
 
@@ -6630,7 +6690,7 @@ struct DmSettingsSheet: View {
                         }
                         .padding(12)
                         .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
-                        Text("Messages are encrypted with your shared password. Turning this off permanently deletes the encrypted history for both of you.")
+                        Text("Messages are encrypted with your shared password. Link previews are off by default; when on (Settings → Security), the link — not the message — is sent to your server to build the preview. Turning this off permanently deletes the encrypted history for both of you.")
                             .font(.zkSans(12)).foregroundColor(Theme.ink3)
                     } else {
                         Button { showEnableE2EE = true } label: {

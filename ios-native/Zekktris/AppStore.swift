@@ -1328,14 +1328,6 @@ final class AppStore: ObservableObject {
         case "dm":
             let cid = url.pathComponents.first(where: { $0 != "/" }) ?? ""
             openDMById(cid)
-        case "share":
-            // The Share Extension staged a payload in the App Group and opened
-            // us. It deliberately does not send anything itself — it has no
-            // session, no network stack and no E2EE keys for the target channel,
-            // so sending there would mean a second, weaker copy of the send path.
-            // We open the conversation with the payload staged in the composer;
-            // the user presses send. Never auto-sent, matching Android.
-            consumeStagedShare()
         case "device-login":
             // A QR/link carrying a device-login user code. This ONLY opens the
             // approval screen — it approves nothing. A link is exactly how a
@@ -1351,38 +1343,86 @@ final class AppStore: ObservableObject {
 
     /// Payload handed over by the Share Extension, if any.
     struct StagedShare {
+        /// Lets the composer notice a new share (onChange) even when the
+        /// conversation it is for is already on screen.
+        let id = UUID()
         let channelId: String?
         let text: String?
         /// Filenames inside the App Group's SharedInbox directory.
         let files: [String]
     }
 
-    /// Most recent staged share, for the composer to pick up.
+    /// Most recent staged share. MessageListView.takePendingShare puts it in
+    /// the composer of the conversation it was shared to (or, when none was
+    /// picked, the next one opened); the user presses send.
     @Published var pendingShare: StagedShare?
 
-    /// Read and CLEAR the staged share. Clearing is not optional: leaving it
-    /// behind means the next unrelated launch re-opens someone's conversation
-    /// with a stale photo attached.
+    /// Read and CLEAR what the Share Extension staged in the App Group. Called
+    /// whenever the app becomes active while signed in (RootView) — the
+    /// extension cannot open the app itself. It deliberately does not send
+    /// anything — it has no session, no network stack and no E2EE keys for the
+    /// target channel, so sending there would mean a second, weaker copy of
+    /// the send path. Never auto-sent, matching Android.
+    ///
+    /// Clearing is not optional: leaving it behind means the next unrelated
+    /// launch re-opens someone's conversation with a stale photo attached.
     func consumeStagedShare() {
         let key = "zk.share.staged.v1"
         guard let d = UserDefaults(suiteName: AppGroupConfig.identifier),
               let raw = d.dictionary(forKey: key) else { return }
         d.removeObject(forKey: key)
+        let files = (raw["files"] as? [String]) ?? []
 
         // Ignore anything stale — a payload staged days ago is not what the user
         // is doing now, and silently attaching it would be baffling.
         if let at = raw["at"] as? TimeInterval,
-           Date().timeIntervalSince1970 - at > 300 { return }
+           Date().timeIntervalSince1970 - at > 300 {
+            removeSharedFiles(files)
+            return
+        }
 
+        // A newer share replaces one still waiting for its conversation.
+        if let older = pendingShare { removeSharedFiles(older.files) }
         let staged = StagedShare(
             channelId: raw["channelId"] as? String,
             text: raw["text"] as? String,
-            files: (raw["files"] as? [String]) ?? [],
+            files: files
         )
         pendingShare = staged
         // If the user picked a suggested person in the share sheet, go straight
         // there. Otherwise the payload waits for whichever conversation they open.
         if let cid = staged.channelId, !cid.isEmpty { openDMById(cid) }
+    }
+
+    /// The App Group directory the Share Extension copies shared files into.
+    private var sharedInboxURL: URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: AppGroupConfig.identifier)?
+            .appendingPathComponent("SharedInbox", isDirectory: true)
+    }
+
+    /// Read a staged share's files and delete them — once they are in the
+    /// composer, the copies in the App Group are only leftovers. Returns
+    /// (attachment filename, bytes) with the extension's UUID prefix removed.
+    func takeSharedFiles(_ names: [String]) -> [(filename: String, data: Data)] {
+        guard let dir = sharedInboxURL else { return [] }
+        var out: [(filename: String, data: Data)] = []
+        for name in names where !name.contains("/") {
+            let url = dir.appendingPathComponent(name)
+            if let data = try? Data(contentsOf: url) {
+                // "<36-char UUID>-<original name>", see ShareViewController.
+                let original = name.count > 37 ? String(name.dropFirst(37)) : name
+                out.append((original, data))
+            }
+            try? FileManager.default.removeItem(at: url)
+        }
+        return out
+    }
+
+    private func removeSharedFiles(_ names: [String]) {
+        guard let dir = sharedInboxURL else { return }
+        for name in names where !name.contains("/") {
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
+        }
     }
 
     /// Open a DM by channel id — resolve locally, else reload the DM list then
@@ -1443,6 +1483,9 @@ final class AppStore: ObservableObject {
         WidgetBridge.publish(dms: [], token: nil)
         WidgetCenter.shared.reloadAllTimelines()
         WatchSync.shared.sync(token: nil, targets: [])
+        // A share still waiting for a conversation belongs to this account.
+        if let share = pendingShare { removeSharedFiles(share.files) }
+        pendingShare = nil
         currentUserId = nil
         currentUser = nil
         didInitialReady = false
@@ -1685,6 +1728,13 @@ final class AppStore: ObservableObject {
         unreadBoundaryId = nil
     }
     private func resetStack() { stack = []; threadList = []; showMembers = false; pendingJumpMessageId = nil; pendingReplyMessageId = nil }
+
+    /// True when `channel`'s message list is the page on screen — not merely
+    /// the selected channel, which outlives its view (showMentions keeps it).
+    private func isShowingMessages(of channel: Channel) -> Bool {
+        guard railPage == nil, case .messages(let c)? = stack.last else { return false }
+        return c.id == channel.id
+    }
 
     /// Called by MessageListView.onAppear to load the channel it shows.
     /// Guarded by id so a re-appear (keyboard etc.) doesn't reload.
@@ -3608,10 +3658,7 @@ final class AppStore: ObservableObject {
         } catch { return (error as? APIError)?.message ?? error.localizedDescription }
     }
 
-    /// Send an image (or file) attachment via multipart, with an optional
-    /// caption. Not used for E2EE channels (the composer hides the picker
-    /// there, since attachment encryption isn't implemented).
-    /// Send one or more picked photos/videos as a SINGLE message (the server
+    /// Send one or more picked photos/videos/files as a SINGLE message (the server
     /// accepts up to 10 attachments). In an E2EE DM every attachment is
     /// encrypted with the channel key (.zke suffix) so the server only ever
     /// sees ciphertext — same scheme as the message text.
@@ -4323,6 +4370,15 @@ final class AppStore: ObservableObject {
     func openMention(_ mention: Mention) {
         guard let ch = channels.first(where: { $0.id == mention.channelId })
             ?? dms.first(where: { $0.id == mention.channelId }) else { return }
+        // The mention's channel can still be SELECTED without its message list
+        // being on screen: opening Mentions resets the stack but keeps
+        // selectedChannel. Then nothing would navigate, and the anchor set
+        // below would sit unconsumed (the list's onChange never sees it), so
+        // close it and take the full open path below instead — the same one a
+        // mention in another channel takes.
+        if selectedChannel?.id == ch.id, !isShowingMessages(of: ch) {
+            leaveOpenConversation()
+        }
         if selectedChannel?.id == ch.id {
             if messages.contains(where: { $0.id == mention.id }) {
                 // Already loaded — just scroll to it.
@@ -6390,10 +6446,32 @@ final class AppStore: ObservableObject {
     // MARK: E2EE link previews (client-side unfurl)
     //
     // The server can't unfurl E2EE content (it only holds ciphertext), so an
-    // E2EE message always arrives with `embeds: []`. After decrypting on this
-    // device we extract any URLs from the plaintext and resolve previews via
-    // GET /unfurl, caching them by message id for the view to render. Plaintext
-    // never leaves the device — only the URL the user already shared is sent.
+    // E2EE message always arrives with `embeds: []`. OFF BY DEFAULT: resolving
+    // a preview means sending the URL from the decrypted message to the
+    // server (GET /unfurl), which then knows which links are shared in this
+    // "end-to-end encrypted" chat, by whom and when. Only with the device-local
+    // "Link previews in encrypted chats" setting on do we extract URLs from the
+    // plaintext and unfurl them, caching by message id for the view to render.
+    // The rest of the message never leaves the device — only the link does.
+
+    /// UserDefaults key of that setting (Settings → Security binds the same
+    /// key with @AppStorage). Absent = off.
+    static let e2eeLinkPreviewsKey = "zk.e2eeLinkPreviews"
+    private var e2eeLinkPreviewsEnabled: Bool {
+        UserDefaults.standard.bool(forKey: Self.e2eeLinkPreviewsKey)
+    }
+
+    /// The setting changed. Off: drop the previews already fetched so nothing
+    /// unfurled under the old choice keeps showing. On: unfurl the open
+    /// conversation's already-decrypted messages (later ones resolve as they
+    /// decrypt).
+    func e2eeLinkPreviewsChanged() {
+        guard e2eeLinkPreviewsEnabled else {
+            e2eeEmbeds = [:]
+            return
+        }
+        for m in messages { if let pt = decrypted[m.id] { resolveE2EEEmbeds(m.id, pt) } }
+    }
 
     /// messageId → client-resolved link previews (empty array = "resolved, none").
     @Published var e2eeEmbeds: [String: [MessageEmbed]] = [:]
@@ -6407,6 +6485,8 @@ final class AppStore: ObservableObject {
     }
 
     private func resolveE2EEEmbeds(_ messageId: String, _ plaintext: String) {
+        // Never send a decrypted link to the server unless the user opted in.
+        guard e2eeLinkPreviewsEnabled else { return }
         guard e2eeEmbeds[messageId] == nil, !e2eeEmbedResolving.contains(messageId) else { return }
         let urls = Self.extractURLs(from: plaintext)
         guard !urls.isEmpty else { return }
@@ -6427,6 +6507,8 @@ final class AppStore: ObservableObject {
             }
             let found = slots.compactMap { $0 }
             e2eeEmbedResolving.remove(messageId)
+            // Turned off while these were in flight: don't show them.
+            guard e2eeLinkPreviewsEnabled else { return }
             // Record the result even when empty so we don't re-fetch on every
             // re-decrypt / re-render.
             e2eeEmbeds[messageId] = found

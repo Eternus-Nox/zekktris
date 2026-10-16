@@ -195,6 +195,13 @@ targets:
       - path: ShareExtension
     entitlements:
       path: ShareExtension/ShareExtension.entitlements
+      properties:
+        # REQUIRED: the extension stages the share (text + copied files) in
+        # the App Group for the app to pick up. Without it the shared container
+        # is nil and the staged payload lands in the extension's own defaults,
+        # where the app never sees it.
+        com.apple.security.application-groups:
+          - group.com.zekktris.native
     info:
       path: ShareExtension/Info.plist
       properties:
@@ -248,6 +255,12 @@ targets:
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+        # Same ATS exception as the app, for a home-network server (plain http
+        # to a LAN IP, *.local or a bare hostname): this extension downloads
+        # avatars and images from it. iOS 17 no longer exempts IP literals from
+        # ATS by default, so without the key those requests fail silently.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     entitlements:
       path: NotificationService/NotificationService.entitlements
       properties:
@@ -285,6 +298,9 @@ targets:
         CFBundleVersion: "6"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        # Pokes the server directly — see the NotificationService note.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     entitlements:
       path: ZekktrisWidgets/ZekktrisWidgets.entitlements
       properties:
@@ -364,6 +380,9 @@ targets:
           - CFBundleURLName: com.zekktris.native.watchkitapp
             CFBundleURLSchemes:
               - zekktris
+        # Talks to the server directly — see the NotificationService note.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     entitlements:
       path: ZekktrisWatch/ZekktrisWatch.entitlements
       properties:
@@ -406,6 +425,9 @@ targets:
         CFBundleVersion: "6"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        # Pokes the server directly — see the NotificationService note.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     entitlements:
       path: ZekktrisWatchWidgets/ZekktrisWatchWidgets.entitlements
       properties:
@@ -446,6 +468,9 @@ targets:
             # Must be a subset of the iPhone extension's IntentsSupported.
             IntentsSupported:
               - INSendMessageIntent
+        # Sends to the server directly — see the NotificationService note.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     entitlements:
       path: ZekktrisWatchIntents/ZekktrisWatchIntents.entitlements
       properties:
@@ -493,6 +518,9 @@ targets:
           NSExtensionAttributes:
             IntentsSupported:
               - INSendMessageIntent
+        # Sends to the server directly — see the NotificationService note.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     entitlements:
       path: ZekktrisIntents/ZekktrisIntents.entitlements
       properties:
@@ -531,6 +559,9 @@ targets:
         CFBundleVersion: "6"
         EXAppExtensionAttributes:
           EXExtensionPointIdentifier: com.apple.appintents-extension
+        # Sends to the server directly — see the NotificationService note.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     entitlements:
       path: ZekktrisWatchAppIntents/ZekktrisWatchAppIntents.entitlements
       properties:

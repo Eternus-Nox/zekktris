@@ -593,6 +593,8 @@ final class APIClient {
     /// Resolve a single link preview for a URL found in a DECRYPTED E2EE
     /// message (the server can't unfurl ciphertext, so the client does it after
     /// decryption). Returns nil when the server couldn't build a preview.
+    /// Sends the link to the server, so only called when the user opted in
+    /// (AppStore.e2eeLinkPreviewsKey).
     func unfurl(url: String) async throws -> MessageEmbed? {
         // Percent-encode the URL as a query VALUE — keep its own &/=/?/+/#
         // from being read as query structure.

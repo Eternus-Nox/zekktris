@@ -2034,6 +2034,8 @@ struct SettingsView: View {
     @State private var imageUploading = false
     @AppStorage("zk.showFamily") private var showFamilyButton = false
     @AppStorage("zk.hideClanTags") private var hideClanTags = false
+    // Same key as AppStore.e2eeLinkPreviewsKey. Off unless the user opts in.
+    @AppStorage("zk.e2eeLinkPreviews") private var e2eeLinkPreviews = false
     @AppStorage("zk.notifyMessages") private var notifyMessages = true
     @AppStorage("zk.notifyCalls") private var notifyCalls = true
     @AppStorage("zk.cameraQuality") private var cameraQuality = "high"
@@ -3325,6 +3327,21 @@ struct SettingsView: View {
                 .padding(.horizontal, 12).padding(.vertical, 10)
                 .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
             }
+
+            // Device-local, off by default: a preview means sending the link
+            // from a decrypted message to the server (AppStore.resolveE2EEEmbeds).
+            Toggle(isOn: $e2eeLinkPreviews) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Link previews in encrypted chats")
+                        .font(.zkSans(15)).foregroundColor(Theme.ink1)
+                    Text("Off by default. When on, the link — not the message — is sent to your server to build the preview.")
+                        .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                }
+            }
+            .tint(Theme.accent)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+            .onChange(of: e2eeLinkPreviews) { _, _ in store.e2eeLinkPreviewsChanged() }
 
             // Passkeys are bound to zekktris.com (associated domains), so
             // they're only offered there.
