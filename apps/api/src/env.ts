@@ -301,6 +301,35 @@ export const envSchema = z.object({
     .default('true')
     .transform((v) => v !== 'false' && v !== '0'),
 
+  // ── Gateway abuse limits ───────────────────────────────────────────────
+  /**
+   * WebSocket upgrades to /gateway accepted per client IP per minute; over it
+   * the upgrade is refused with HTTP 429 and the client's normal reconnect
+   * backoff retries. Clients back off exponentially (1s → 30s), so one device
+   * reconnects a handful of times a minute even in a storm; 120 leaves room
+   * for a household or office behind one NAT, each with several tabs, a phone
+   * and a desktop app, all reconnecting at once (e.g. a rolling deploy). Keyed
+   * on the TRUST_PROXY-aware client IP, so set TRUST_PROXY behind a reverse
+   * proxy or every client shares the proxy's address. 0 disables. Shared
+   * across replicas when REDIS_URL is set (fails open on Redis errors).
+   */
+  GATEWAY_CONNECTS_PER_MINUTE_PER_IP: emptyAsUndefined(
+    z.coerce.number().int().min(0).default(120),
+  ),
+  /**
+   * IDENTIFY + RESUME attempts per user per minute (counted after the token
+   * verifies, before any DB work). Over it the socket is closed with 4008
+   * RATE_LIMITED — never INVALID_SESSION, which clients treat as fatal — and
+   * the client's backoff retries. A reconnect costs at most two attempts (a
+   * RESUME that falls back to IDENTIFY), so 60 covers ~30 sockets for one
+   * account reconnecting together (many tabs plus phone and desktop) while
+   * capping a connect/IDENTIFY loop at one snapshot load per second. 0
+   * disables.
+   */
+  GATEWAY_IDENTIFIES_PER_MINUTE_PER_USER: emptyAsUndefined(
+    z.coerce.number().int().min(0).default(60),
+  ),
+
   // ── Cookies ────────────────────────────────────────────────────────────
   /** Domain set on the refresh-token cookie. Leave empty to default to the request host. */
   COOKIE_DOMAIN: emptyAsUndefined(z.string().optional()),

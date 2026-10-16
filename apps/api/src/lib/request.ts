@@ -22,33 +22,61 @@
  * We never trust the leftmost.
  */
 
+import type { IncomingMessage } from 'node:http';
 import type { Context } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { env } from '../env';
 
-export function getClientIp(c: Context): string | null {
+/** The resolution order above, over any request shape: a header reader plus
+ *  the TCP peer address (the fallback, and the only source without proxy
+ *  trust). */
+function resolveClientIp(
+  header: (name: string) => string | undefined,
+  peerAddress: () => string | null,
+): string | null {
   if (env.TRUST_PROXY) {
     // X-Real-IP first: Caddy sets it to the real peer and strips any inbound
     // copy, so it is not client-spoofable.
-    const xri = c.req.header('x-real-ip');
+    const xri = header('x-real-ip');
     if (xri) {
       const v = xri.trim();
       if (v) return v;
     }
     // Fall back to the RIGHTMOST X-Forwarded-For entry (appended by our own
     // trusted proxy). Never the leftmost — that half is attacker-controlled.
-    const xff = c.req.header('x-forwarded-for');
+    const xff = header('x-forwarded-for');
     if (xff) {
       const parts = xff.split(',');
       const last = parts[parts.length - 1]?.trim();
       if (last) return last;
     }
   }
-  try {
-    return getConnInfo(c).remote.address ?? null;
-  } catch {
-    return null;
-  }
+  return peerAddress();
+}
+
+export function getClientIp(c: Context): string | null {
+  return resolveClientIp(
+    (name) => c.req.header(name),
+    () => {
+      try {
+        return getConnInfo(c).remote.address ?? null;
+      } catch {
+        return null;
+      }
+    },
+  );
+}
+
+/** getClientIp for a raw Node request — the gateway's WebSocket upgrade,
+ *  which runs at the http.Server level before Hono sees it. */
+export function getIncomingClientIp(req: IncomingMessage): string | null {
+  return resolveClientIp(
+    (name) => {
+      const v = req.headers[name];
+      return Array.isArray(v) ? v.join(', ') : v;
+    },
+    () => req.socket.remoteAddress ?? null,
+  );
 }
 
 export function getUserAgent(c: Context): string | null {
