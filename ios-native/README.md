@@ -5,10 +5,12 @@ API + realtime gateway. No WebView, no web bundle — this is a from-scratch
 Swift implementation of the client.
 
 The app is feature-complete across the core surface (auth, messaging, DMs,
-E2EE, threads/forums, voice & 1:1 calls, reactions, attachments, polls, push,
-search, mentions, settings) — see *What works* below. It builds with Xcode;
-the remaining gaps (background call ringing, video/screen-share, iPad
-multi-column) are listed under *Not built yet*.
+E2EE, threads/forums, voice & 1:1 calls with CallKit ringing, reactions,
+attachments, polls, push, search, mentions, settings, iPad/Mac multi-column) —
+see *What works* below. Alongside the app, `project.yml` builds an Apple Watch
+app and six extensions (see *Targets*). It works with zekktris.com or any
+self-hosted Zekktris server, chosen at sign-in (see *Pointing at a different
+server*). The remaining gaps are listed under *Not built yet*.
 
 > ⚠️ **Adding files:** if you regenerate the project, **re-run `xcodegen
 > generate`** so any newly-added Swift files are picked up (`project.yml` is
@@ -16,7 +18,8 @@ multi-column) are listed under *Not built yet*.
 > Xcode project, drag new files into the target instead.
 >
 > **Push Notifications.** `project.yml` generates a `Zekktris.entitlements`
-> with `aps-environment: development`. You must enable
+> with `aps-environment: $(APS_ENVIRONMENT)` — `development` for Debug,
+> `production` for Release/Archive (TestFlight + App Store). You must enable
 > the **Push Notifications** capability for the target in Xcode (Signing &
 > Capabilities) with a real Apple Developer team — and actually receiving
 > pushes needs a physical device plus the server's APNs config. The simulator
@@ -37,8 +40,8 @@ multi-column) are listed under *Not built yet*.
   access token stored in the Keychain and restored on next launch
   (`/users/@me`).
 - **Server rail** listing your guilds, with a **Direct Messages** button.
-- **Channel list** for the selected guild (text channels tappable; categories
-  shown as headers; voice channels shown but not joinable yet).
+- **Channel list** for the selected guild (text channels and voice channels
+  tappable; categories shown as headers).
 - **DMs**: your existing direct-message conversations list (`/users/@me/channels`),
   open one, read and send — same composer as guild channels.
 - **Friends & new DMs**: a Friends sheet (person-add button in the DM list) —
@@ -95,17 +98,26 @@ multi-column) are listed under *Not built yet*.
   keyed from the DM's shared key, and the web client was aligned to the same
   key derivation, so encrypted calls interoperate in **all** directions
   (native↔native, native↔web, web↔web — see the E2EE-call note below). Incoming
-  calls show a full-screen Accept / Decline
-  prompt (in-app ringing) while the app is foregrounded; declining ends the
-  caller's session. Mute and hang up from the call screen.
+  calls ring through **CallKit** — the system call screen, on the lock screen
+  too — woken by a **PushKit VoIP push** when the app is in the background or
+  closed (`CallManager.swift`, `Push.swift`); declining ends the caller's
+  session. Mute and hang up from the call screen or the system UI. Camera
+  video works; screen shares started elsewhere can be watched.
 - **Reactions**: long-press a message ▸ Add reaction to react; tap a reaction
   pill to toggle yours off/on. Counts update live as others react/unreact
   (`MESSAGE_REACTION_ADD` / `_REMOVE`), and your own taps apply optimistically.
 - **Attachments**: image attachments render inline; other files show a chip
   with name + size. You can also **send images** — tap the photo button in the
   composer, pick from your library, optionally add a caption, and send (uploaded
-  via the `payload_json` + `files[N]` multipart contract). The picker is hidden
-  in E2EE DMs, since attachment encryption isn't implemented.
+  via the `payload_json` + `files[N]` multipart contract). In E2EE DMs photos,
+  videos and files are encrypted on-device with the DM key before upload
+  (`.zke`), with an encrypted thumbnail, and decrypted for display — the
+  server only ever stores ciphertext. Files shared from other apps through the
+  **Share Extension** land in the composer of the chosen conversation (open
+  Zekktris to send them; nothing is sent automatically).
+- **Link previews in E2EE DMs** are **off by default**. With *Settings →
+  Security → Link previews in encrypted chats* on, the app sends the link (not
+  the message) to your server's `/unfurl` to build the preview.
 - **Polls**: create a poll from the composer (poll button → question, options,
   single/multiple choice, duration). Poll messages render with options as
   tappable bars showing live vote counts; tap to vote or retract, with
@@ -121,10 +133,8 @@ multi-column) are listed under *Not built yet*.
 
 ## Not built yet (future stages)
 
-Background call ringing (CallKit + PushKit VoIP push — needs a VoIP-push
-entitlement and server-side VoIP pushes, so for now ringing only works while the
-app is open), video & screen share. Layout is phone-first; iPad gets the same
-single-column flow for now.
+Publishing a screen share from iOS (the in-app ReplayKit capture was removed;
+shares from web/desktop can be watched).
 
 Known first-cut call limitation: if the callee declines or the other side hangs
 up, your own call screen isn't always auto-dismissed — you hang up manually. The
@@ -135,8 +145,12 @@ E2EE-call note below).
 
 ## Requirements
 
-- macOS with **Xcode 15 or newer**
-- iOS **16.0+** target (device or simulator)
+- macOS with a current **Xcode** (16.3 or newer: the sources use Swift 6.1
+  syntax such as trailing commas in argument lists)
+- iOS **17.0+** (interactive widgets need it), watchOS **10.0+** for the watch
+  app — device or simulator
+- **XcodeGen** — the project has an app, a watch app and six extension
+  targets, so generating it from `project.yml` is the supported path
 
 ## Open & run — Option A: XcodeGen (recommended)
 
@@ -152,34 +166,57 @@ open Zekktris.xcodeproj
 
 Then in Xcode: select the **Zekktris** target → **Signing & Capabilities** →
 pick your Team (and adjust the bundle id if `com.zekktris.native` is taken) →
-choose a simulator or device → **Run**.
+choose a simulator or device → **Run**. `project.yml` sets a
+`DEVELOPMENT_TEAM`; change it to yours. With your own bundle ids, register the
+App Group (`group.com.zekktris.native`, see `AppGroupConfig.swift`) and enable
+it on the app and **every** extension and watch target, including the Share
+Extension — the widgets, Siri, the notification extension and the share sheet
+all hand data to the app through it.
 
-## Open & run — Option B: manual Xcode project (no XcodeGen)
+### Targets
 
-1. Xcode → **File ▸ New ▸ Project… ▸ iOS ▸ App**.
-2. Product Name **Zekktris**, Interface **SwiftUI**, Language **Swift**.
-3. In the new project, **delete the auto-generated `ZekktrisApp.swift` and
-   `ContentView.swift`** (otherwise you'll have two `@main` entry points).
-4. Drag every `.swift` file from `ios-native/Zekktris/` into the project
-   navigator (check *Copy items if needed* and add to the Zekktris target).
-5. Set the **iOS Deployment Target to 16.0** and select your signing **Team**.
-6. **Run.**
+| Target | What it is |
+| --- | --- |
+| `Zekktris` | The iOS / iPadOS app (also runs on Apple Silicon Macs) |
+| `NotificationService` | Decrypts E2EE message previews and attaches images on-device |
+| `ShareExtension` | "Zekktris" in the share sheet; stages the share for the app |
+| `ZekktrisWidgets` | Home/Lock-Screen Quick DM widget with one-tap poke |
+| `ZekktrisIntents` | Siri "send a message to … on Zekktris" without opening the app |
+| `ZekktrisWatch` | The Apple Watch app (messages and pokes to recent DMs) |
+| `ZekktrisWatchWidgets` | Watch complications / Smart Stack widgets |
+| `ZekktrisWatchIntents`, `ZekktrisWatchAppIntents` | Siri on the watch |
+| `ZekktrisTests` | Host-less logic tests (E2EE call keys, Siri matching) |
+
+## Open & run — Option B: the committed project
+
+`Zekktris.xcodeproj` is committed, generated from `project.yml`. It opens
+as-is, but it is only as current as the last `xcodegen generate`: after adding
+files or editing `project.yml`, regenerate rather than editing the project by
+hand. (Recreating the project manually is not practical any more — it would
+mean re-creating all the targets, entitlements and Info.plist keys
+`project.yml` declares.)
 
 ---
 
 ## Pointing at a different server
 
-All endpoints live in **`Config.swift`**:
+No rebuild needed. The sign-in screen has a server chip: tap it and enter your
+server's address (`chat.example.com`, `203.0.113.5`,
+`https://chat.example.com:8443`, or a home-network `192.168.1.20:5550`). The
+app checks `/api/v1/instance/info` and remembers the choice; it defaults to
+zekktris.com. Without a scheme it tries HTTPS first and, for a home-network
+address only (private / link-local / CGNAT IP literals, `*.local`, single-label
+names), falls back to plain `http://` on the typed port or on 80 and 5550 (the
+installer's `--lan` port). See `ServerPickerSheet` / `ServerProbe` in
+`AuthViews.swift`.
 
-```swift
-static let apiBaseURL  = "https://zekktris.com/api/v1"   // REST (no trailing slash)
-static let gatewayURL  = URL(string: "wss://zekktris.com/gateway")!
-static let assetOrigin = "https://zekktris.com"          // prefixes /cdn/... avatars
-```
-
-Change these to hit a local/staging deployment. (For a non-TLS localhost dev
-server you'd also need an App Transport Security exception in the Info.plist
-properties in `project.yml`.)
+`Config.swift` derives everything from that one origin (`serverOrigin` →
+`apiBaseURL`, `gatewayURL`, `assetOrigin`) and stores it in the App Group, so
+the widgets, Siri and the notification extension use the same server; the
+watch gets it from the phone. Plain http is allowed only to local addresses:
+every target that talks to the server sets `NSAllowsLocalNetworking`, and
+anything on the internet still needs HTTPS. Change servers only while signed
+out — a session belongs to one server.
 
 ---
 
@@ -190,7 +227,7 @@ ios-native/
 ├── project.yml            XcodeGen spec (generates Zekktris.xcodeproj)
 ├── README.md
 └── Zekktris/
-    ├── Config.swift        Base URLs + asset URL helper
+    ├── Config.swift        Server origin (picked at sign-in) → base URLs + asset URL helper
     ├── Theme.swift         Color tokens from the web index.css
     ├── Keychain.swift      Access-token persistence
     ├── Models.swift        Codable DTOs (User/Guild/Channel/Message/…)
@@ -231,8 +268,8 @@ Gateway  ── URLSessionWebSocketTask; onEvent(name, data) → AppStore
 3. ~~E2EE DMs~~ ✅ done (Stage 3).
 4. ~~Threads & forums~~ ✅ done (Stage 4).
 5. ~~Voice (guild channels)~~ ✅ done (Stage 5). ~~1:1 DM calls~~ ✅ done
-   (Stage 17): in-app ringing, call E2EE, mute/hang-up. Remaining: background
-   ringing (CallKit + VoIP push), video, screen share.
+   (Stage 17): CallKit + PushKit ringing, call E2EE, mute/hang-up, camera
+   video. Remaining: publishing a screen share from iOS.
 6. ~~Reactions + attachments (display + image upload)~~ ✅ done (Stage 6–7).
    Remaining: polls, typing indicators.
 7. ~~Edit & delete messages~~ ✅ done (Stage 8), incl. live `MESSAGE_UPDATE` /
@@ -240,17 +277,15 @@ Gateway  ── URLSessionWebSocketTask; onEvent(name, data) → AppStore
 8. ~~Push registration~~ ✅ done (Stage 13) — APNs token register/unregister.
    Receiving needs a real device + dev account + server APNs config.
 9. ~~Settings~~ ✅ done (Stage 14) — profile, presence, display name, custom
-   status, logout. Remaining product surface: iPad multi-column.
+   status, logout. ~~iPad multi-column~~ ✅ done.
 10. ~~Polls~~ ✅ done (Stages 10–11: display, voting, creation).
     ~~Typing indicators~~ ✅ done (Stage 12). ~~Search~~ ✅ done (Stage 15).
-    ~~Mentions inbox~~ ✅ done (Stage 16). Remaining: iPad multi-column,
-    background call ringing.
+    ~~Mentions inbox~~ ✅ done (Stage 16).
 
 ## Status & caveats
 
 The app builds and runs. Remaining gaps are product features, not scaffolding —
-see *Not built yet* (background call ringing, video/screen-share, iPad
-multi-column).
+see *Not built yet* (publishing a screen share from iOS).
 
 The **E2EE call path** in `Voice.swift` now interoperates with the web client
 (previously native↔web encrypted calls were garbled). It configures LiveKit's

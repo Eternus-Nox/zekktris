@@ -22,7 +22,10 @@ open Zekktris.xcodeproj
 ```
 
 Then set your signing Team in **Signing & Capabilities**, pick a simulator or
-device, and Run. Point it at your server by editing `ios-native/Zekktris/Config.swift`.
+device, and Run (iOS 17.0+). There is nothing to edit to use your own server:
+pick it from the server chip on the sign-in screen (a home-network
+`http://LAN_IP:5550` from the installer's `--lan` mode works too). The
+README covers the watch app and extensions, and the App Group they share.
 
 ---
 
