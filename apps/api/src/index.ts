@@ -26,26 +26,8 @@ import { sweepStreakWarnings } from './services/streaks';
 import { pruneDeadInvites } from './services/invites';
 import { sweepParentLinksByAge } from './services/supervisionAgeSweep';
 import { refreshDiscoverableMemberCounts } from './services/discovery';
-import { initClusterIdentity, startLeaderElection, isLeader, releaseCluster } from './cluster';
-
-/**
- * setInterval for GLOBAL background work — work that mutates shared state and
- * must therefore happen ONCE across the cluster, not once per replica.
- *
- * Several of the sweeps below delete rows; running them concurrently on three
- * replicas is how data goes missing. `isLeader()` is a synchronous field read
- * (see cluster.ts) so this costs nothing, and it returns true unconditionally
- * on a single instance, leaving today's behaviour untouched.
- *
- * NOT for per-process housekeeping — an in-memory cache sweep has to run in
- * every process that owns a cache. Those keep using plain setInterval.
- */
-function leaderInterval(fn: () => void, ms: number): ReturnType<typeof setInterval> {
-  return setInterval(() => {
-    if (!isLeader()) return;
-    fn();
-  }, ms);
-}
+import { initClusterIdentity, startLeaderElection, releaseCluster } from './cluster';
+import { leaderInterval, leaderTimeout } from './lib/leaderTimers';
 
 async function main(): Promise<void> {
   // FIRST: settle this process's snowflake worker id. Must precede
@@ -127,6 +109,22 @@ async function main(): Promise<void> {
   // operators can verify a redeploy actually took.
   log.info('zekktris build', { build: 'v2.144' });
 
+  // ── Expired-session purge ──────────────────────────────────────────────
+  // Expired session rows (logged-out devices, password-changed sessions,
+  // etc.) accumulate forever otherwise. Runs on the inactivity sweep's
+  // cadence but independently of it: an operator who disables account
+  // deletion (INACTIVITY_TTL_DAYS=0) must not also lose session cleanup.
+  // Same error-isolation pattern: a purge failure logs and continues.
+  const sweepIntervalMs = env.INACTIVITY_SWEEP_INTERVAL_HOURS * 60 * 60 * 1000;
+  const runSessionPurge = () =>
+    void purgeExpiredSessions()
+      .then((n) => {
+        if (n > 0) log.info('expired sessions purged', { count: n });
+      })
+      .catch((err) => log.error('session purge failed', { err }));
+  leaderTimeout(runSessionPurge, 5 * 60 * 1000);
+  const sessionPurgeTimer = leaderInterval(runSessionPurge, sweepIntervalMs);
+
   // ── Inactivity sweep timer ─────────────────────────────────────────────
   // Periodically delete accounts that haven't been used in
   // INACTIVITY_TTL_DAYS days. We schedule the first run 5 minutes
@@ -135,26 +133,13 @@ async function main(): Promise<void> {
   // process — a sweep failure is not a service outage.
   let sweepTimer: ReturnType<typeof setInterval> | null = null;
   if (env.INACTIVITY_TTL_DAYS > 0) {
-    const intervalMs = env.INACTIVITY_SWEEP_INTERVAL_HOURS * 60 * 60 * 1000;
     const runOnce = () => {
       void sweepInactiveAccounts().catch((err) =>
         log.error('inactivity sweep failed', { err }),
       );
-      // Piggy-back the session purge on the same tick. Expired
-      // session rows (logged-out devices, password-changed
-      // sessions, etc.) accumulate forever otherwise — the function
-      // existed but wasn't wired to anything. Same low-priority
-      // maintenance window, same error-isolation pattern: a purge
-      // failure logs and continues, doesn't block the rest of the
-      // sweep.
-      void purgeExpiredSessions()
-        .then((n) => {
-          if (n > 0) log.info('expired sessions purged', { count: n });
-        })
-        .catch((err) => log.error('session purge failed', { err }));
     };
-    setTimeout(runOnce, 5 * 60 * 1000);
-    sweepTimer = leaderInterval(runOnce, intervalMs);
+    leaderTimeout(runOnce, 5 * 60 * 1000);
+    sweepTimer = leaderInterval(runOnce, sweepIntervalMs);
     log.info('inactivity sweep scheduled', {
       ttlDays: env.INACTIVITY_TTL_DAYS,
       intervalHours: env.INACTIVITY_SWEEP_INTERVAL_HOURS,
@@ -199,8 +184,9 @@ async function main(): Promise<void> {
     // self-guards on the UTC hour and the per-row watermark makes it idempotent,
     // so a process that boots/restarts INSIDE the 18:00–24:00 UTC window still
     // warns that day instead of waiting up to a full 30-min interval (which,
-    // under deploy churn, could skip the whole day).
-    setTimeout(runStreakWarnings, 30_000);
+    // under deploy churn, could skip the whole day). Leader-gated like the
+    // interval, so only the replica that runs the sweeps does the leading run.
+    leaderTimeout(runStreakWarnings, 30_000);
     streakWarnTimer = leaderInterval(runStreakWarnings, 30 * 60_000);
     log.info('streak-warning sweep scheduled', {
       hoursBefore: env.STREAK_WARN_HOURS_BEFORE,
@@ -243,7 +229,7 @@ async function main(): Promise<void> {
           log.error('image compression sweep failed', { err });
         }
       })();
-    setTimeout(runCompress, 10 * 60 * 1000);
+    leaderTimeout(runCompress, 10 * 60 * 1000);
     compressTimer = leaderInterval(runCompress, intervalMs);
     log.info('image compression sweep scheduled', {
       quality: env.IMAGE_COMPRESS_QUALITY,
@@ -268,7 +254,7 @@ async function main(): Promise<void> {
           if (n > 0) log.info('expired invites pruned', { count: n });
         })
         .catch((err) => log.error('invite prune sweep failed', { err }));
-    setTimeout(runInvitePrune, 60_000);
+    leaderTimeout(runInvitePrune, 60_000);
     invitePruneTimer = leaderInterval(runInvitePrune, 6 * 60 * 60 * 1000); // 6h
     log.info('invite prune sweep scheduled', {
       graceDays: env.INVITE_PRUNE_GRACE_DAYS,
@@ -291,7 +277,7 @@ async function main(): Promise<void> {
           if (r.revoked > 0) log.info('supervision links auto-released (child turned 18)', { revoked: r.revoked });
         })
         .catch((err) => log.error('supervision age sweep failed', { err }));
-    setTimeout(runParentLinkAge, 5 * 60_000);
+    leaderTimeout(runParentLinkAge, 5 * 60_000);
     parentLinkAgeTimer = leaderInterval(runParentLinkAge, intervalMs);
     log.info('supervision age sweep scheduled', {
       intervalHours: env.PARENT_LINK_AGE_CHECK_INTERVAL_HOURS,
@@ -321,7 +307,7 @@ async function main(): Promise<void> {
       })
       .catch((err) => log.error('auto-unban sweep failed', { err }));
   };
-  setTimeout(runSubscriptionSweep, 6 * 60_000);
+  leaderTimeout(runSubscriptionSweep, 6 * 60_000);
   const subscriptionSweepTimer = leaderInterval(runSubscriptionSweep, 60 * 60 * 1000);
 
   // ── Discovery member-count refresh ────────────────────────────────────
@@ -337,7 +323,7 @@ async function main(): Promise<void> {
         if (n > 0) log.info('discovery member counts refreshed', { updated: n });
       })
       .catch((err) => log.error('discovery member-count refresh failed', { err }));
-  setTimeout(runDiscoveryCountRefresh, 30_000);
+  leaderTimeout(runDiscoveryCountRefresh, 30_000);
   const discoveryCountTimer = leaderInterval(runDiscoveryCountRefresh, 10 * 60_000); // 10m
 
   // ── Event status sweep ────────────────────────────────────────────────
@@ -692,7 +678,7 @@ async function main(): Promise<void> {
       }
     })();
   // Defer the first run so boot stays fast.
-  setTimeout(runAttachmentGc, 5 * 60 * 1000);
+  leaderTimeout(runAttachmentGc, 5 * 60 * 1000);
   attachmentGcTimer = leaderInterval(runAttachmentGc, 60 * 60 * 1000);
 
   // ── Media-retention sweep (opt-in) ─────────────────────────────────────
@@ -738,7 +724,7 @@ async function main(): Promise<void> {
           log.error('attachment retention sweep failed', { err });
         }
       })();
-    setTimeout(runRetention, 6 * 60 * 1000);
+    leaderTimeout(runRetention, 6 * 60 * 1000);
     retentionTimer = leaderInterval(runRetention, 24 * 60 * 60 * 1000);
     log.info('attachment retention sweep scheduled', {
       days: env.ATTACHMENT_RETENTION_DAYS,
@@ -770,6 +756,7 @@ async function main(): Promise<void> {
     // Stop the inactivity sweep timer so we don't kick off a long
     // delete query mid-shutdown.
     if (sweepTimer) clearInterval(sweepTimer);
+    clearInterval(sessionPurgeTimer);
     clearInterval(dmSweepTimer);
     if (streakWarnTimer) clearInterval(streakWarnTimer);
     if (compressTimer) clearInterval(compressTimer);
