@@ -3,7 +3,7 @@
  * --------
  * Two-pane layout: roles list on the left, editor on the right. Click
  * a role to edit; the editor lets you change name, color, hoist,
- * mentionable, and the 30-bit permission grid.
+ * mentionable, and the permission grid (every bit in lib/permissions).
  *
  * Display order is highest-position first (= "highest in hierarchy"),
  * with @everyone always pinned to the bottom. Role moves use up/down
