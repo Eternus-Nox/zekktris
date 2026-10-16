@@ -54,6 +54,7 @@ import * as dispatch from './dispatch';
 import * as dms from '../services/dms';
 import * as relationships from '../services/relationships';
 import { touchLastSeen } from '../services/presence';
+import { isCurrentlyBanned } from '../services/instanceBans';
 
 const GATEWAY_PATH = '/gateway';
 
@@ -520,8 +521,9 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
   // to the access-token TTL (~15min). The admin force-signout path
   // closes EXISTING connections; this check prevents NEW ones from
   // being established. Generic close code to avoid leaking the
-  // specific moderation state.
-  if (user[0].bannedAt || user[0].deletedAt) {
+  // specific moderation state. isCurrentlyBanned, like REST login: an
+  // EXPIRED timed ban is not a ban, even before the sweep clears it.
+  if (isCurrentlyBanned(user[0]) || user[0].deletedAt) {
     conn.send(invalidSessionFrame(false));
     conn.close(CloseCode.AUTHENTICATION_FAILED, 'account unavailable');
     return;
@@ -786,6 +788,7 @@ async function handleResume(conn: Connection, payload: ResumePayload | undefined
     .select({
       status: schema.users.status,
       bannedAt: schema.users.bannedAt,
+      bannedUntil: schema.users.bannedUntil,
       deletedAt: schema.users.deletedAt,
     })
     .from(schema.users)
@@ -796,7 +799,7 @@ async function handleResume(conn: Connection, payload: ResumePayload | undefined
     conn.close(CloseCode.AUTHENTICATION_FAILED, 'user not found');
     return;
   }
-  if (userRow.bannedAt || userRow.deletedAt) {
+  if (isCurrentlyBanned(userRow) || userRow.deletedAt) {
     conn.send(invalidSessionFrame(false));
     conn.close(CloseCode.AUTHENTICATION_FAILED, 'account unavailable');
     return;

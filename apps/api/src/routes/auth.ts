@@ -1188,13 +1188,15 @@ authRouter.post(
             id: schema.users.id,
             email: schema.users.email,
             bannedAt: schema.users.bannedAt,
+            bannedUntil: schema.users.bannedUntil,
           })
           .from(schema.users)
           .where(and(eq(schema.users.email, email), isNull(schema.users.deletedAt)))
           .limit(1);
 
-        if (!user || user.bannedAt) {
-          // No account, or banned. Nothing to do — but we still
+        if (!user || isCurrentlyBanned(user)) {
+          // No account, or banned (an EXPIRED timed ban doesn't count —
+          // same predicate as /login). Nothing to do — but we still
           // reached this point asynchronously, so the response
           // already went out at constant time.
           return;
