@@ -597,6 +597,13 @@ function E2eeToggle({ channel, selfId }: { channel: Channel; selfId: string }) {
                 : 'This conversation is encrypted. Enter the shared password to read and send messages.'
               : 'Off. Messages travel in plain text. Turn on to pick a shared password that encrypts this conversation.'}
           </p>
+          {enabled && (
+            <p className="text-xs text-ink-3 mt-1 leading-snug">
+              Link previews are off by default in encrypted chats. If you turn
+              them on in Settings, the link (not the message) is sent to the
+              server to build the preview.
+            </p>
+          )}
         </div>
         <button
           type="button"

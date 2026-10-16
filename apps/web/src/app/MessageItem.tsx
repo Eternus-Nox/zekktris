@@ -36,6 +36,7 @@ import { AvatarImage } from '../lib/AvatarImage';
 import { AvatarDecoration } from '../lib/avatarDecorations';
 import { useProfileCard } from '../lib/useProfileCard';
 import { Edit, Trash, Pin, CornerUpLeft, Forward as ForwardIcon, MessageSquare, Smile, Phone, Shield, Bookmark } from '../lib/icons';
+import { useE2eeLinkPreviews } from '../lib/e2eeLinkPreviews';
 import { decryptForDm, peekDecryptedText, encryptForDm, isEncryptedWireFormat, hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
 import { POKE_VARIANTS, type PokeType } from '../lib/poke';
 import { ForwardModal } from './ForwardModal';
@@ -394,12 +395,15 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   // Client-side link previews for E2EE messages. The server can't unfurl
   // ciphertext, so an E2EE message arrives with embeds: []; once we have the
   // decrypted plaintext we extract URLs and resolve previews via /unfurl.
+  // That sends each link to the server, so it only happens when the user
+  // opted in on this device ("Link previews in encrypted chats", default off).
+  const e2eeLinkPreviews = useE2eeLinkPreviews();
   const [e2eeEmbeds, setE2eeEmbeds] = useState<MessageEmbed[]>([]);
   useEffect(() => {
     const plain = decResult.plaintext;
     // Only for E2EE messages with no server-resolved embeds and a successful
     // decryption.
-    if (!encMeta.isEncrypted || encMeta.noKey || !plain) {
+    if (!e2eeLinkPreviews || !encMeta.isEncrypted || encMeta.noKey || !plain) {
       setE2eeEmbeds([]);
       return;
     }
@@ -434,7 +438,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [decResult.plaintext, encMeta.isEncrypted, encMeta.noKey, message.embeds, message.channelId]);
+  }, [e2eeLinkPreviews, decResult.plaintext, encMeta.isEncrypted, encMeta.noKey, message.embeds, message.channelId]);
 
   // Combined view in the original shape the rest of the component consumes.
   const decryption: {

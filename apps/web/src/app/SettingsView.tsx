@@ -23,6 +23,7 @@ import { useAppState } from '../state/AppState';
 import { AchievementsShelf } from './AchievementsShelf';
 import { useParentalControlsEnabled, setParentalControlsEnabled } from '../lib/familyPrefs';
 import { useHideClanTags, setHideClanTags } from '../lib/displayPrefs';
+import { E2eeLinkPreviewsToggle } from './E2eeLinkPreviewsToggle';
 import { TierBadge, TIER_META } from '../lib/TierBadge';
 import { isNative, requestNotificationPermission } from '../lib/native';
 import {
@@ -1168,6 +1169,12 @@ export function SettingsView() {
             {passkeysAvailable() && <PasskeysSection />}
             <TwoFactorSection />
             <DeviceApprovalSection />
+
+            {/* Privacy — per-device; off by default (see lib/e2eeLinkPreviews). */}
+            <section className="space-y-2">
+              <div className="text-xs uppercase tracking-wider text-ink-3">Privacy</div>
+              <E2eeLinkPreviewsToggle />
+            </section>
 
             {/* Account identity — username + email (credential changes, each
                 re-confirmed with the current password), then the copyable
