@@ -2593,20 +2593,41 @@ export class RestClient {
    * other participant can rederive the same key from the same
    * passphrase and verify they typed it correctly.
    *
-   * Calling on an already-enabled DM rotates the password — the
-   * previous verifier is overwritten and the previous password
-   * becomes uncheckable (so anyone with only the OLD password is
-   * locked out).
+   * `purgeProof` (from `computePurgeProof`) is stored only as a hash
+   * and is what a later disable must present, so only a key holder
+   * can purge the encrypted history.
+   *
+   * Calling on an already-enabled DM with a different salt/verifier
+   * is refused (409); changing the password means disable + enable.
    */
   enableDmE2ee(
     channelId: string,
     salt: string,
     verifier: string,
+    purgeProof: string,
   ): Promise<{ ok: true }> {
     return this.request(
       'PUT',
       `/users/@me/channels/${channelId}/e2ee-enable`,
-      { salt, verifier },
+      { salt, verifier, purgeProof },
+    );
+  }
+
+  /**
+   * Register the purge proof on an encrypted DM that has none yet
+   * (`channel.e2eePurgeProofSet === false`: encrypted before the
+   * proof existed, or by an older client). First registration wins;
+   * a different proof already stored is refused (409).
+   */
+  registerDmE2eePurgeProof(
+    channelId: string,
+    verifier: string,
+    purgeProof: string,
+  ): Promise<{ ok: true }> {
+    return this.request(
+      'PUT',
+      `/users/@me/channels/${channelId}/e2ee-purge-proof`,
+      { verifier, purgeProof },
     );
   }
 
@@ -2617,19 +2638,21 @@ export class RestClient {
    * side. Re-enabling later generates a fresh salt; the old
    * password is permanently dead.
    *
-   * Requires `verifier` — the SHA-256 verifier derived from the
-   * caller's LOCAL key (proof they know the passphrase). The server
-   * rejects a missing/wrong verifier, so the conversation must be
-   * unlocked on this device before it can be turned off.
+   * Requires `verifier` and `purgeProof`, both derived from the
+   * caller's LOCAL key. The verifier is public, so the proof is what
+   * shows the caller holds the key; the server rejects a missing or
+   * wrong one, so the conversation must be unlocked on this device
+   * before it can be turned off.
    */
   disableDmE2ee(
     channelId: string,
     verifier: string,
+    purgeProof: string,
   ): Promise<{ ok: true; purgedCount: number }> {
     return this.request(
       'DELETE',
       `/users/@me/channels/${channelId}/e2ee-disable`,
-      { verifier },
+      { verifier, purgeProof },
     );
   }
 

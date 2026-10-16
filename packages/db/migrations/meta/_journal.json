@@ -883,6 +883,13 @@
       "when": 1784773130000,
       "tag": "0126_free_perks",
       "breakpoints": true
+    },
+    {
+      "idx": 127,
+      "version": "7",
+      "when": 1784945930000,
+      "tag": "0128_e2ee_purge_proof",
+      "breakpoints": true
     }
   ]
 }

@@ -285,15 +285,28 @@ const enableE2eeSchema = z.object({
     .max(28)
     .regex(/^[A-Za-z0-9+/=]+$/),
   verifier: verifierSchema,
+  /** base64 SHA-256(key || "zkE2EE/purge-v1"), same shape as the verifier.
+      Stored only as a hash and never returned, so it proves a later purge
+      comes from a key holder. Optional: old clients don't send it. */
+  purgeProof: verifierSchema.optional(),
 });
 
 /** Disabling E2EE purges all encrypted history, so we require proof the
-    caller knows the conversation passphrase: they send the verifier they
-    derive from their LOCAL key, and the service checks it against the stored
-    one. Without this, any DM recipient could disable + purge without ever
-    knowing the password. */
+    caller holds the conversation key. The verifier alone proves nothing (it
+    is public: every participant receives it in the channel DTO), so the
+    caller also sends the purgeProof derived from their LOCAL key, which the
+    service checks against the hash stored at enable time. Without it, any
+    DM recipient could echo the verifier back and wipe the history. */
 const disableE2eeSchema = z.object({
   verifier: verifierSchema,
+  purgeProof: verifierSchema.optional(),
+});
+
+/** Register the purge proof on a DM that has none yet (see
+    dms.registerE2eePurgeProof). */
+const registerPurgeProofSchema = z.object({
+  verifier: verifierSchema,
+  purgeProof: verifierSchema,
 });
 
 /** PUT — enable E2EE on this DM. The caller has already derived the
@@ -309,7 +322,7 @@ dmsRouter.put(
     const userId = requireUserId(c);
     const channelId = BigInt(c.req.valid('param').channelId);
     await dms.ensureRecipient(channelId, userId);
-    const { salt, verifier } = c.req.valid('json');
+    const { salt, verifier, purgeProof } = c.req.valid('json');
     // SERVER-SIDE supervision enforcement — a supervised minor's 1:1 DMs must
     // stay plaintext so the guardian can review them. The "suppressed" flag on
     // the channel DTO is only a client advisory; a modified/older client (or a
@@ -327,7 +340,7 @@ dmsRouter.put(
     }
     // First-writer-wins: a racing second enable can't clobber the first
     // party's salt/verifier (which would break their handshake).
-    const result = await dms.enableE2ee(channelId, salt, verifier);
+    const result = await dms.enableE2ee(channelId, salt, verifier, purgeProof);
     if (result.status === 'already_enabled') {
       throw errors.conflict(
         'This conversation is already encrypted (the other participant just turned it on). Enter their password to unlock it instead.',
@@ -354,11 +367,56 @@ dmsRouter.put(
   },
 );
 
+/** PUT — register the purge proof on an encrypted DM that has none (enabled
+    before the proof existed, or by an old client). First registration wins;
+    a different proof is refused with 409. Clients call this once they hold
+    the key, when the DTO reports `e2eePurgeProofSet: false`. */
+dmsRouter.put(
+  '/:channelId/e2ee-purge-proof',
+  validate('param', z.object({ channelId: snowflakeSchema })),
+  validate('json', registerPurgeProofSchema),
+  async (c) => {
+    const userId = requireUserId(c);
+    const channelId = BigInt(c.req.valid('param').channelId);
+    await dms.ensureRecipient(channelId, userId);
+    const { verifier, purgeProof } = c.req.valid('json');
+    const result = await dms.registerE2eePurgeProof(channelId, verifier, purgeProof);
+    if (result.status === 'not_enabled') {
+      throw errors.conflict('This conversation is not encrypted.');
+    }
+    if (result.status === 'verifier_mismatch') {
+      throw errors.forbidden(
+        'Unlock this conversation (enter the password) before registering its key.',
+      );
+    }
+    if (result.status === 'already_registered') {
+      throw errors.conflict('A different key is already registered for this conversation.');
+    }
+    if (result.status === 'registered') {
+      // Flip e2eePurgeProofSet on both clients so neither re-registers.
+      const channel = await channelsSvc.getChannel(channelId);
+      if (channel) {
+        const recipientUsers = await dms.loadOtherRecipients(channelId, userId);
+        // Same suppression as enable: a supervised pair must keep seeing the
+        // DM as plaintext.
+        const suppressed =
+          channel.type === 'dm' && recipientUsers[0]
+            ? !(await supervision.isE2eeAllowedBetween(userId, recipientUsers[0].id))
+            : false;
+        const channelDTO = toChannel(channel, null, recipientUsers, suppressed);
+        dispatch.dmChannelUpdated({ channelId, channelDTO });
+      }
+    }
+    return c.json({ ok: true });
+  },
+);
+
 /** DELETE — disable E2EE on this DM AND purge all encrypted messages
     in the conversation. Either recipient can disable, but ONLY if they
-    prove they know the passphrase: the body must carry a `verifier`
-    matching the one stored at enable time. This stops a recipient who
-    never knew the password from wiping the encrypted history. */
+    prove they hold the key: the body carries the `verifier` and, for any
+    DM with a registered proof, the `purgeProof` whose hash was stored at
+    enable time. The verifier is public, so the proof is what stops a
+    recipient who never knew the password from wiping the history. */
 dmsRouter.delete(
   '/:channelId/e2ee-disable',
   validate('param', z.object({ channelId: snowflakeSchema })),
@@ -367,14 +425,22 @@ dmsRouter.delete(
     const userId = requireUserId(c);
     const channelId = BigInt(c.req.valid('param').channelId);
     await dms.ensureRecipient(channelId, userId);
-    const { verifier } = c.req.valid('json');
+    const { verifier, purgeProof } = c.req.valid('json');
 
-    // Service verifies the submitted verifier against the stored one (proof
-    // the caller knows the passphrase) and only then purges — all in one tx.
-    const result = await dms.disableE2eeAndPurge(channelId, verifier);
+    // Service verifies the submitted verifier + purge proof against the
+    // stored ones (proof the caller holds the key) and only then purges —
+    // all in one tx.
+    const result = await dms.disableE2eeAndPurge(channelId, verifier, purgeProof);
     if (result.status === 'verifier_mismatch') {
       throw errors.forbidden(
         'Unlock this conversation (enter the password) before turning off encryption.',
+      );
+    }
+    if (result.status === 'purge_proof_mismatch') {
+      throw errors.forbidden(
+        purgeProof
+          ? "This device's key couldn't be confirmed for this conversation, so nothing was deleted."
+          : 'Update Zekktris to turn off encryption in this conversation.',
       );
     }
     if (result.status === 'not_enabled') {

@@ -11,7 +11,7 @@
  * up via a JOIN that requires both rows to be present.
  */
 
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { and, asc, desc, eq, exists, inArray, isNull, like, ne, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors } from '../errors';
@@ -468,17 +468,29 @@ export type EnableE2eeResult =
  * Intentional password ROTATION is deliberately NOT done by re-calling enable
  * (that's indistinguishable from a racing duplicate and would silently clobber
  * the peer). Rotation goes through the gated disable (which requires the
- * current verifier — see disableE2eeAndPurge) + a fresh enable.
+ * current purge proof — see disableE2eeAndPurge) + a fresh enable.
+ *
+ * `purgeProof` (base64 SHA-256(key || "zkE2EE/purge-v1")) is stored only as
+ * its hash and gates the purge. Optional so an old client can still enable;
+ * such a DM starts without a proof and is handled like a pre-0128 one (see
+ * registerE2eePurgeProof).
  */
 export async function enableE2ee(
   channelId: bigint,
   salt: string,
   verifier: string,
+  purgeProof?: string,
 ): Promise<EnableE2eeResult> {
+  const purgeProofHash = purgeProof ? hashPurgeProof(purgeProof) : null;
   const claim = () =>
     db
       .update(schema.channels)
-      .set({ e2eeEnabled: true, e2eeSalt: salt, e2eeVerifier: verifier })
+      .set({
+        e2eeEnabled: true,
+        e2eeSalt: salt,
+        e2eeVerifier: verifier,
+        e2eePurgeProofHash: purgeProofHash,
+      })
       .where(and(eq(schema.channels.id, channelId), eq(schema.channels.e2eeEnabled, false)))
       .returning({ id: schema.channels.id });
 
@@ -514,11 +526,94 @@ function verifiersMatch(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
+/** What channels.e2ee_purge_proof_hash stores for a client purgeProof: hex
+    SHA-256 of the base64 string. The proof is itself a 256-bit hash of the
+    key, so one unsalted round is enough to keep the stored value from being
+    replayable if the row ever leaks. */
+export function hashPurgeProof(purgeProof: string): string {
+  return createHash('sha256').update(purgeProof, 'utf8').digest('hex');
+}
+
+/** Constant-time check of a submitted purgeProof against a stored hash. */
+function purgeProofMatches(submitted: string | undefined, storedHash: string): boolean {
+  if (!submitted) return false;
+  return verifiersMatch(hashPurgeProof(submitted), storedHash);
+}
+
+export type RegisterPurgeProofResult =
+  /** The DM had no proof; the caller's is now stored. */
+  | { status: 'registered' }
+  /** The identical proof is already stored — idempotent, no-op. */
+  | { status: 'unchanged' }
+  /** A DIFFERENT proof is already stored — refused, never overwritten. */
+  | { status: 'already_registered' }
+  /** E2EE is off on this DM. */
+  | { status: 'not_enabled' }
+  /** The submitted verifier isn't the DM's current one (stale key). */
+  | { status: 'verifier_mismatch' };
+
+/**
+ * Register the purge proof for a DM that has none: one encrypted before
+ * migration 0128, or enabled by a client that predates the proof.
+ *
+ * The server cannot check that a proof was derived from the DM key (it only
+ * knows the public verifier), so this is trust-on-first-use: the first
+ * registration wins and is never overwritten. Updated clients register as
+ * soon as they hold the key (on unlock, or on opening an unlocked DM whose
+ * DTO says `e2eePurgeProofSet: false`), which closes the window in which a
+ * participant without the password could echo the public verifier and purge.
+ * A peer who races in first with a bogus proof gains nothing they could not
+ * already do in that window (purge with the verifier); at worst the key
+ * holders can no longer purge, which loses no data.
+ *
+ * The verifier must match so a stale key from an earlier enable can't
+ * register against the current one.
+ */
+export async function registerE2eePurgeProof(
+  channelId: bigint,
+  verifier: string,
+  purgeProof: string,
+): Promise<RegisterPurgeProofResult> {
+  const hash = hashPurgeProof(purgeProof);
+  const claimed = await db
+    .update(schema.channels)
+    .set({ e2eePurgeProofHash: hash })
+    .where(
+      and(
+        eq(schema.channels.id, channelId),
+        eq(schema.channels.e2eeEnabled, true),
+        eq(schema.channels.e2eeVerifier, verifier),
+        isNull(schema.channels.e2eePurgeProofHash),
+      ),
+    )
+    .returning({ id: schema.channels.id });
+  if (claimed.length > 0) return { status: 'registered' };
+
+  const [ch] = await db
+    .select({
+      enabled: schema.channels.e2eeEnabled,
+      verifier: schema.channels.e2eeVerifier,
+      purgeProofHash: schema.channels.e2eePurgeProofHash,
+    })
+    .from(schema.channels)
+    .where(eq(schema.channels.id, channelId))
+    .limit(1);
+  if (!ch || !ch.enabled || !ch.verifier) return { status: 'not_enabled' };
+  if (!verifiersMatch(verifier, ch.verifier)) return { status: 'verifier_mismatch' };
+  if (ch.purgeProofHash && verifiersMatch(hash, ch.purgeProofHash)) {
+    return { status: 'unchanged' };
+  }
+  return { status: 'already_registered' };
+}
+
 export type DisableE2eeResult =
   /** E2EE was already off (or never on) — nothing to verify or purge. */
   | { status: 'not_enabled'; purgedMessageIds: bigint[] }
   /** The submitted verifier didn't match the stored one — refused, no purge. */
   | { status: 'verifier_mismatch'; purgedMessageIds: bigint[] }
+  /** The DM has a stored purge proof and the caller's was missing or wrong —
+      refused, no purge. */
+  | { status: 'purge_proof_mismatch'; purgedMessageIds: bigint[] }
   /** Disabled + purged. */
   | { status: 'disabled'; purgedMessageIds: bigint[] };
 
@@ -526,11 +621,23 @@ export type DisableE2eeResult =
  * Disable E2EE on a DM and purge all encrypted messages in the
  * conversation — BUT only after verifying the caller knows the passphrase.
  *
- * Because disabling hard-deletes the encrypted history, we require proof:
- * `submittedVerifier` (derived from the caller's local key) must match the
- * channel's stored verifier. A missing/wrong verifier returns
- * `verifier_mismatch` and purges nothing. Without this, any DM recipient —
- * including one who never knew the password — could wipe the conversation.
+ * Because disabling hard-deletes the encrypted history, we require proof
+ * that only a key holder can produce:
+ *   - `submittedVerifier` must match the stored verifier (`verifier_mismatch`
+ *     otherwise). The verifier is PUBLIC (every participant gets it in the
+ *     channel DTO), so on its own this only catches a stale key.
+ *   - When the DM has a stored purge-proof hash, `submittedPurgeProof` must
+ *     hash to it (`purge_proof_mismatch` otherwise). The hash is never sent to
+ *     clients, so a participant who never knew the password can't produce it,
+ *     and an old client that sends no proof can't purge such a DM.
+ * Either refusal purges nothing.
+ *
+ * A DM with NO stored hash (encrypted before migration 0128, or by an old
+ * client, and no key holder has registered a proof yet — see
+ * registerE2eePurgeProof) still purges on the verifier alone, as before, so
+ * old clients keep working there. Any proof would be accepted for such a DM
+ * anyway (the server can't check it against the key), so requiring one would
+ * only lock out old clients without stopping anyone.
  *
  * "Purge" means hard delete of messages whose content begins with the
  * `zkE2EE/` wire-format prefix. Plaintext messages from before E2EE was
@@ -544,21 +651,32 @@ export type DisableE2eeResult =
 export async function disableE2eeAndPurge(
   channelId: bigint,
   submittedVerifier: string,
+  submittedPurgeProof?: string,
 ): Promise<DisableE2eeResult> {
   return db.transaction(async (tx) => {
     const [ch] = await tx
       .select({
         e2eeEnabled: schema.channels.e2eeEnabled,
         e2eeVerifier: schema.channels.e2eeVerifier,
+        e2eePurgeProofHash: schema.channels.e2eePurgeProofHash,
       })
       .from(schema.channels)
       .where(eq(schema.channels.id, channelId))
-      .limit(1);
+      .limit(1)
+      // Row lock: a concurrent registerE2eePurgeProof can't slip a hash in
+      // between this check and the purge.
+      .for('update');
     if (!ch || !ch.e2eeEnabled || !ch.e2eeVerifier) {
       return { status: 'not_enabled', purgedMessageIds: [] };
     }
     if (!verifiersMatch(submittedVerifier, ch.e2eeVerifier)) {
       return { status: 'verifier_mismatch', purgedMessageIds: [] };
+    }
+    if (
+      ch.e2eePurgeProofHash &&
+      !purgeProofMatches(submittedPurgeProof, ch.e2eePurgeProofHash)
+    ) {
+      return { status: 'purge_proof_mismatch', purgedMessageIds: [] };
     }
     // Find every encrypted message in the channel. We match on the
     // content prefix `zkE2EE/` so future wire-format bumps (zkE2EE/2:,
@@ -578,13 +696,14 @@ export async function disableE2eeAndPurge(
         .delete(schema.messages)
         .where(inArray(schema.messages.id, purgedMessageIds));
     }
-    // Clear the E2EE state. enabled→false, salt+verifier→null.
+    // Clear the E2EE state. enabled→false, salt+verifier+proof hash→null.
     await tx
       .update(schema.channels)
       .set({
         e2eeEnabled: false,
         e2eeSalt: null,
         e2eeVerifier: null,
+        e2eePurgeProofHash: null,
       })
       .where(eq(schema.channels.id, channelId));
     return { status: 'disabled', purgedMessageIds };

@@ -559,6 +559,11 @@ export interface ChannelDTO {
    *                  password without exposing the password or key
    *                  to the server.
    *
+   *   e2eePurgeProofSet — whether a purge-proof hash is stored. The
+   *                  hash itself is NEVER exposed (it gates the purge);
+   *                  false on an encrypted DM tells a key holder's
+   *                  client to register one (PUT .../e2ee-purge-proof).
+   *
    * When enabled is false, salt + verifier are null. When enabled
    * is true, both are non-null. Disabling triggers a server-side
    * purge of all zkE2EE/* messages in the conversation.
@@ -566,6 +571,7 @@ export interface ChannelDTO {
   e2eeEnabled?: boolean;
   e2eeSalt?: string | null;
   e2eeVerifier?: string | null;
+  e2eePurgeProofSet?: boolean;
 }
 
 export function toChannel(
@@ -602,17 +608,18 @@ export function toChannel(
       ? { permissionOverrides: overrides.map(toPermissionOverride) }
       : {}),
     ...(recipients ? { recipients: recipients.map(toPublicUser) } : {}),
-    // E2EE only meaningful on DMs. We include the three fields
+    // E2EE only meaningful on DMs. We include the E2EE fields
     // unconditionally on DM channels so the client can simply read
     // them; on non-DM channels we omit so we don't pollute every
-    // guild channel with three null fields they'll never use.
+    // guild channel with E2EE fields they'll never use.
     ...(c.type === 'dm' || c.type === 'group_dm'
       ? e2eeSuppressed
-        ? { e2eeEnabled: false, e2eeSalt: null, e2eeVerifier: null }
+        ? { e2eeEnabled: false, e2eeSalt: null, e2eeVerifier: null, e2eePurgeProofSet: false }
         : {
             e2eeEnabled: c.e2eeEnabled === true,
             e2eeSalt: c.e2eeSalt ?? null,
             e2eeVerifier: c.e2eeVerifier ?? null,
+            e2eePurgeProofSet: c.e2eePurgeProofHash != null,
           }
       : {}),
   };
