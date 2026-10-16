@@ -320,6 +320,9 @@ data class Channel(
     val e2eeEnabled: Boolean? = null,
     val e2eeSalt: String? = null,
     val e2eeVerifier: String? = null,
+    // Whether the server holds a purge-proof hash (never the hash itself).
+    // false on an encrypted DM ⇒ register ours once we hold the key. null on older servers.
+    val e2eePurgeProofSet: Boolean? = null,
 ) {
     val isE2EE: Boolean get() = e2eeEnabled == true
     val isDM: Boolean get() = type == "dm" || type == "group_dm"

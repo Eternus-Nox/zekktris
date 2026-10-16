@@ -22,8 +22,9 @@ import kotlinx.serialization.Serializable
 @Serializable data class EmojiWrap(val emoji: GuildEmoji)
 
 // Shared-key E2EE enable/disable bodies (salt + verifier derived client-side).
-@Serializable data class E2EEEnableBody(val salt: String, val verifier: String)
-@Serializable data class E2EEDisableBody(val verifier: String)
+@Serializable data class E2EEEnableBody(val salt: String, val verifier: String, val purgeProof: String)
+@Serializable data class E2EEDisableBody(val verifier: String, val purgeProof: String)
+@Serializable data class E2EEPurgeProofBody(val verifier: String, val purgeProof: String)
 @Serializable data class MessagesWrap(val messages: List<Message> = emptyList())
 @Serializable data class MessageWrap(val message: Message)
 @Serializable data class ChannelAttachmentsWrap(val attachments: List<Attachment> = emptyList())

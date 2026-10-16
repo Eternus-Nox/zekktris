@@ -1030,18 +1030,37 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
         authorized(HttpMethod.Delete, "/users/@me/channels/$channelId") {}
     }
 
-    // Shared-key E2EE: salt + verifier are derived client-side; the server never
-    // sees the key. Disable requires the verifier as proof we hold the key.
-    suspend fun enableDmE2EE(channelId: String, salt: String, verifier: String) {
-        authorized(HttpMethod.Put, "/users/@me/channels/$channelId/e2ee-enable") {
-            contentType(ContentType.Application.Json); setBody(com.zekktris.data.model.E2EEEnableBody(salt, verifier))
-        }
+    // Shared-key E2EE: salt + verifier + purge proof are derived client-side; the
+    // server never sees the key. Disable requires the purge proof (the verifier is
+    // public) as proof we hold the key. Non-2xx throws, so a refused enable (409)
+    // or purge (403) is never mistaken for success.
+    suspend fun enableDmE2EE(channelId: String, salt: String, verifier: String, purgeProof: String) {
+        expectOk(
+            authorized(HttpMethod.Put, "/users/@me/channels/$channelId/e2ee-enable") {
+                contentType(ContentType.Application.Json)
+                setBody(com.zekktris.data.model.E2EEEnableBody(salt, verifier, purgeProof))
+            },
+        )
     }
 
-    suspend fun disableDmE2EE(channelId: String, verifier: String) {
-        authorized(HttpMethod.Delete, "/users/@me/channels/$channelId/e2ee-disable") {
-            contentType(ContentType.Application.Json); setBody(com.zekktris.data.model.E2EEDisableBody(verifier))
-        }
+    suspend fun disableDmE2EE(channelId: String, verifier: String, purgeProof: String) {
+        expectOk(
+            authorized(HttpMethod.Delete, "/users/@me/channels/$channelId/e2ee-disable") {
+                contentType(ContentType.Application.Json)
+                setBody(com.zekktris.data.model.E2EEDisableBody(verifier, purgeProof))
+            },
+        )
+    }
+
+    // Register the purge proof on an encrypted DM the server has none for (encrypted
+    // before purge proofs existed, or by an older client). First registration wins.
+    suspend fun registerDmE2EEPurgeProof(channelId: String, verifier: String, purgeProof: String) {
+        expectOk(
+            authorized(HttpMethod.Put, "/users/@me/channels/$channelId/e2ee-purge-proof") {
+                contentType(ContentType.Application.Json)
+                setBody(com.zekktris.data.model.E2EEPurgeProofBody(verifier, purgeProof))
+            },
+        )
     }
 
     // ---- account security ----------------------------------------------------

@@ -1563,6 +1563,28 @@ class AppStore(
     /** Reflect stored-key state into e2eeUnlocked when a DM opens (for the UI). */
     fun refreshE2EEUnlocked(channelId: String) {
         if (hasE2EEKey(channelId)) markUnlocked(channelId, true)
+        registerE2EEPurgeProofIfNeeded(channelId)
+    }
+
+    // "channelId:verifier" pairs already tried this session: a refusal (409, a
+    // different proof already registered) is final; a network error retries next launch.
+    private val purgeProofAttempts: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())
+
+    /**
+     * A DM encrypted before purge proofs existed (or by an older client) has none on
+     * the server (`e2eePurgeProofSet == false`), and until one is registered the
+     * server still purges it on the public verifier alone. Register ours (first
+     * registration wins) as soon as we hold the CURRENT key (iOS
+     * `registerE2EEPurgeProofIfNeeded`). The server's CHANNEL_UPDATE flips the flag.
+     */
+    private fun registerE2EEPurgeProofIfNeeded(channelId: String) {
+        val ch = dmById(channelId) ?: return
+        if (!ch.isE2EE || ch.e2eePurgeProofSet != false) return
+        val verifier = ch.e2eeVerifier ?: return
+        val key = e2eeKeyFor(channelId) ?: return
+        if (!purgeProofAttempts.add("$channelId:$verifier")) return
+        val proof = com.zekktris.crypto.E2EE.purgeProof(key)
+        scope.launch { runCatching { api.registerDmE2EEPurgeProof(channelId, verifier, proof) } }
     }
 
     /**
@@ -1614,7 +1636,8 @@ class AppStore(
             val key = withContext(kotlinx.coroutines.Dispatchers.Default) { com.zekktris.crypto.E2EE.deriveKey(password, salt) }
             if (key == null) { onResult(false); return@launch }
             val verifier = com.zekktris.crypto.E2EE.verifier(key)
-            val ok = runCatching { api.enableDmE2EE(channelId, salt, verifier) }.isSuccess
+            val purgeProof = com.zekktris.crypto.E2EE.purgeProof(key)
+            val ok = runCatching { api.enableDmE2EE(channelId, salt, verifier, purgeProof) }.isSuccess
             if (ok) {
                 e2eeStore.put(channelId, key)
                 _state.update { st ->
@@ -1640,17 +1663,20 @@ class AppStore(
             if (key == null || com.zekktris.crypto.E2EE.verifier(key) != verifier) { onResult(false); return@launch }
             e2eeStore.put(channelId, key)
             markUnlocked(channelId, true)
+            registerE2EEPurgeProofIfNeeded(channelId)
             onResult(true)
         }
     }
 
-    /** Turn E2EE off (server purges encrypted history). Requires the key. */
+    /** Turn E2EE off (server purges encrypted history). Requires the key: the
+     *  server checks the purge proof derived from it (the verifier is public). */
     fun disableE2EE(channelId: String, onResult: (Boolean) -> Unit) {
         scope.launch {
             val key = e2eeKeyFor(channelId)
             if (key == null) { onResult(false); return@launch }
             val verifier = com.zekktris.crypto.E2EE.verifier(key)
-            val ok = runCatching { api.disableDmE2EE(channelId, verifier) }.isSuccess
+            val purgeProof = com.zekktris.crypto.E2EE.purgeProof(key)
+            val ok = runCatching { api.disableDmE2EE(channelId, verifier, purgeProof) }.isSuccess
             if (ok) {
                 e2eeStore.remove(channelId)
                 // Decrypted media is plaintext derived from the (now-dropped)
