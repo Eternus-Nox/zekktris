@@ -1499,6 +1499,8 @@ final class AppStore: ObservableObject {
         selectedChannel = nil
         decrypted = [:]
         e2eeKeyCache = [:]
+        // Keyed by raw key bytes: they must not outlive the session either.
+        verifierMemo = [:]
         clearDecryptedMedia()
         // Emoji bitmaps are per-session public assets with no ceiling; drop them
         // (and in-flight markers, so cleared emojis re-fetch) on sign-out so the
@@ -6123,6 +6125,7 @@ final class AppStore: ObservableObject {
     /// E2EE.verifier is a SHA-256 + base64 of the key, and display(for:) runs
     /// it through e2eeKey(for:) for EVERY encrypted row on EVERY render of the
     /// message list. It is a pure function of the key bytes, so remember it.
+    /// Cleared with the keys themselves (relockE2EE, sign-out).
     private func verifier(forKey key: Data) -> String {
         if let known = verifierMemo[key] { return known }
         let v = E2EE.verifier(forKey: key)
@@ -6230,6 +6233,9 @@ final class AppStore: ObservableObject {
     /// Forget the local key (re-locks this device).
     func relockE2EE(_ channelId: String) {
         e2eeKeyCache.removeValue(forKey: channelId)
+        // The verifier memo is keyed by raw key bytes; relocking must not leave
+        // them behind in memory. (It's tiny and cheap to rebuild.)
+        verifierMemo = [:]
         e2eeKeychainDelete(e2eeKeychainKey(channelId))
         for m in messages where m.channelId == channelId {
             decrypted.removeValue(forKey: m.id)
