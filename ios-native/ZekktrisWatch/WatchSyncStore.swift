@@ -41,9 +41,11 @@ struct PokeFlash: Identifiable, Equatable {
 }
 
 /// Receives the auth token + API base URL + poke targets from the paired
-/// iPhone over WatchConnectivity. We rely on `applicationContext` (the system
-/// persists the LATEST one and redelivers it on activation), so the token is
-/// held only IN MEMORY here — never written to the watch's own storage.
+/// iPhone over WatchConnectivity. `applicationContext` is persisted by the
+/// system (the LATEST one is redelivered on activation), and `publishToWidget`
+/// writes the token and the per-DM E2EE keys to the watch's app-group keychain
+/// (after-first-unlock) so the complications and Siri extensions can use them.
+/// So the credentials live on the watch's storage, not only in memory.
 @MainActor
 final class WatchSyncStore: NSObject, ObservableObject {
     @Published var token: String?
