@@ -1566,7 +1566,14 @@ final class AppStore: ObservableObject {
         inDMs = true
         if !preservingSelection {
             resetStack()
-            selectedChannel = nil
+            // Leave the open conversation the way pop() does: cache it, then
+            // drop its rows and plaintext. jumpToDM (push, widget and deep-link
+            // opens) comes through here and opens the next DM straight away;
+            // without this, that DM's first frame drew the PREVIOUS
+            // conversation's rows — decrypted E2EE text included — under the
+            // new header, and the conversation being left was never cached
+            // because selectedChannel was already nil when openChannel tried.
+            leaveOpenConversation()
         }
         if dms.isEmpty { Task { await loadDMs() } }
     }
@@ -1659,16 +1666,21 @@ final class AppStore: ObservableObject {
         // trivial subtree). openChannel() repopulates on the next open. Gated on
         // stack.isEmpty so popping a thread back to its parent channel (deeper
         // stack) doesn't wipe the parent's still-visible messages.
-        if stack.isEmpty {
-            snapshotCurrentChannel()
-            messages = []
-            selectedChannel = nil
-            typing = [:]
-            replyingTo = nil
-            pins = []
-            decrypted = [:]
-            unreadBoundaryId = nil
-        }
+        if stack.isEmpty { leaveOpenConversation() }
+    }
+
+    /// Close the open conversation: cache its rows (snapshotCurrentChannel
+    /// reads selectedChannel, so this must run before it is cleared), then drop
+    /// its rows, decrypted plaintext and per-conversation state.
+    private func leaveOpenConversation() {
+        snapshotCurrentChannel()
+        messages = []
+        selectedChannel = nil
+        typing = [:]
+        replyingTo = nil
+        pins = []
+        decrypted = [:]
+        unreadBoundaryId = nil
     }
     private func resetStack() { stack = []; threadList = []; showMembers = false; pendingJumpMessageId = nil; pendingReplyMessageId = nil }
 
@@ -1725,8 +1737,14 @@ final class AppStore: ObservableObject {
         // memory" intent and growing unbounded. decryptVisible() repopulates
         // for the new channel right after loadMessages.
         decrypted = [:]
-        // Re-derive plaintext for any seeded rows immediately so a cached E2EE
-        // convo isn't briefly shown as undecryptable (selectedChannel is set above).
+        // If a locally cached key no longer matches this DM's verifier (it was
+        // re-keyed, or belonged to a different password), drop it so we prompt
+        // for the password rather than silently failing to decrypt. BEFORE the
+        // seed decrypt below, so a stale key never decrypts the seeded rows.
+        purgeStaleE2EEKey(channel)
+        // Re-derive plaintext for any seeded rows immediately — synchronously,
+        // see decryptVisible — so a cached E2EE convo is never shown as
+        // undecryptable, not even for a frame (selectedChannel is set above).
         if !messages.isEmpty { decryptVisible() }
         typing = [:]
         replyingTo = nil
@@ -1742,10 +1760,6 @@ final class AppStore: ObservableObject {
         } else {
             unreadBoundaryId = nil
         }
-        // If a locally cached key no longer matches this DM's verifier (it was
-        // re-keyed, or belonged to a different password), drop it so we prompt
-        // for the password rather than silently failing to decrypt.
-        purgeStaleE2EEKey(channel)
         Task { await loadMessages(channel); await loadSavedMembership(messages.map { $0.id }); markChannelRead(channel) }
         Task { await loadPins(channel) }
     }
@@ -3148,13 +3162,24 @@ final class AppStore: ObservableObject {
             channels[j] = updated
         }
         if selectedChannel?.id == updated.id {
+            let previous = selectedChannel
             selectedChannel = updated
-            // A re-key (new salt/verifier) invalidates any cached key.
+            // A re-key (new salt/verifier) invalidates any cached key. (When it
+            // does, relockE2EE bumps e2eeUnlockVersion itself.)
             purgeStaleE2EEKey(updated)
             // If we still hold a valid key, decrypt anything already loaded.
             decryptVisible()
-            // Re-evaluate the lock gate (e.g. E2EE was just turned on/off).
-            e2eeUnlockVersion += 1
+            // Re-evaluate the lock gate when E2EE was just turned on/off or
+            // re-keyed — and ONLY then. Every message row carries
+            // e2eeUnlockVersion, and every encrypted image/video keys its load
+            // task on it, so bumping it for any CHANNEL_UPDATE (a rename, a
+            // topic, a last-message move) re-rendered every row and restarted
+            // every media task in the open conversation for nothing.
+            if previous?.e2eeEnabled != updated.e2eeEnabled
+                || previous?.e2eeSalt != updated.e2eeSalt
+                || previous?.e2eeVerifier != updated.e2eeVerifier {
+                e2eeUnlockVersion += 1
+            }
         }
     }
 
@@ -3880,14 +3905,23 @@ final class AppStore: ObservableObject {
     /// Persist the open channel's current rows so reopening it paints instantly.
     /// Caches only server-confirmed rows (drops optimistic placeholders, whose
     /// ids are send-nonces) so a sending/failed message can't resurrect on reopen.
+    ///
+    /// Only the newest page (50 rows) is kept. On reopen loadMessages replaces
+    /// the seed with the server's latest 50 a moment later and drops every
+    /// older seed row anyway, so caching paged-in history only meant painting
+    /// a much taller list first and then deleting a block of it above the
+    /// viewport while the open was still settling.
     private func snapshotCurrentChannel() {
         guard let id = selectedChannel?.id, !messages.isEmpty else { return }
         let confirmed = messages.filter { $0.sendState == nil }
         if !confirmed.isEmpty {
-            messageCache[id] = confirmed
+            messageCache[id] = Array(confirmed.suffix(Self.messageCachePageSize))
             touchMessageCache(id)
         }
     }
+
+    /// Rows kept per cached conversation: one server page.
+    private static let messageCachePageSize = 50
 
     /// Mark a channel most-recently-used and evict the least-recently-used
     /// channels once the cache exceeds its budget (never the selected one).
@@ -5539,7 +5573,8 @@ final class AppStore: ObservableObject {
                 // poll). Dedup by id; cap from the front to bound memory.
                 if !cached.contains(where: { $0.id == message.id }) {
                     cached.append(message)
-                    if cached.count > 100 { cached.removeFirst(cached.count - 100) }
+                    let cap = Self.messageCachePageSize
+                    if cached.count > cap { cached.removeFirst(cached.count - cap) }
                     messageCache[message.channelId] = cached
                 }
             }
@@ -6254,26 +6289,56 @@ final class AppStore: ObservableObject {
             .filter { E2EE.isDecryptable($0.text) && decrypted[$0.id] == nil }
             .map { ($0.id, $0.text) }
         guard !inputs.isEmpty else { return }
+        // A page-sized batch decrypts RIGHT HERE, in the same main-actor turn
+        // that put the rows on screen, so the list's first layout already has
+        // the plaintext. Done off-main, every seeded row was first laid out as
+        // a one-line "Couldn't decrypt" (display(for:) can't tell "not yet"
+        // from "failed") and then EVERY row changed height in one publish, a
+        // few ms later — a visible error flash on each E2EE open, and a
+        // whole-list resize landing right while the open was scrolling to the
+        // bottom (the trigger that made E2EE chats the ones that opened black).
+        // AES-GCM is hardware-accelerated: a 50-message page of text is well
+        // under the cost of one frame.
+        if inputs.count <= Self.syncDecryptLimit {
+            publishDecrypted(inputs.compactMap { id, text in
+                E2EE.decrypt(text, key: key).map { (id, $0) }
+            })
+            return
+        }
         Task {
-            // AES-GCM open is a pure function — run the whole page off the main
-            // actor so opening a 50-message E2EE DM doesn't spike the UI thread.
+            // A large backlog (e.g. unlocking a long, already-paged chat): run
+            // it off the main actor so the UI thread doesn't spike.
             let results: [(String, String)] = await Task.detached(priority: .userInitiated) {
                 inputs.compactMap { id, text in E2EE.decrypt(text, key: key).map { (id, $0) } }
             }.value
-            guard !results.isEmpty else { return }
             // Drop if we navigated away or the key was relocked/rotated while we
             // were off-main (never cache stale plaintext). Re-validate against
             // the CURRENT selected channel + its current key.
             guard let cur = selectedChannel, cur.id == channelId, e2eeKey(for: cur) != nil else { return }
-            // Publish ALL decrypts in ONE @Published write — previously each
-            // message fired objectWillChange separately, forcing the message
-            // list to re-render up to N times on E2EE open (the dominant cause
-            // of "choppiest for E2EE").
-            var next = decrypted
-            for (id, pt) in results where next[id] == nil { next[id] = pt }
-            decrypted = next
-            for (id, pt) in results { resolveE2EEEmbeds(id, pt) }
+            publishDecrypted(results)
         }
+    }
+
+    /// Most messages `decryptVisible` will decrypt synchronously. Two pages, so
+    /// the open window, a reload and one prepended page never wait.
+    private static let syncDecryptLimit = 120
+
+    /// Publish decrypts in ONE @Published write — one objectWillChange per
+    /// batch, not per message (per-message writes re-rendered the list up to N
+    /// times per open, the old "choppiest for E2EE"). Skips the write entirely
+    /// when the batch adds nothing new: a cached open and the server reload
+    /// both decrypt the same page, and an empty second publish used to
+    /// re-render every row for nothing.
+    private func publishDecrypted(_ results: [(String, String)]) {
+        var next = decrypted
+        var added: [(String, String)] = []
+        for (id, pt) in results where next[id] == nil {
+            next[id] = pt
+            added.append((id, pt))
+        }
+        guard !added.isEmpty else { return }
+        decrypted = next
+        for (id, pt) in added { resolveE2EEEmbeds(id, pt) }
     }
 
     private func decryptOne(_ message: Message) {

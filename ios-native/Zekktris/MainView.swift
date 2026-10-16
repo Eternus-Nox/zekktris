@@ -4855,6 +4855,9 @@ struct AdminView: View {
     @State private var monetSaved = false
     /// Chat diagnostics overlay switch — same key MessageListView reads.
     @AppStorage("zk.chatDiagnostics") private var chatDiagnostics = false
+    /// A/B switch for the message list's old all-lazy layout — same key
+    /// MessageListView reads.
+    @AppStorage("zk.chatLazyList") private var chatLazyList = false
 
     /// Moderators get the restricted panel: Users / Servers / Security only,
     /// with the reduced action set inside each. The API enforces the same
@@ -5141,15 +5144,25 @@ struct AdminView: View {
     }
 
     @ViewBuilder
-    /// Device-local switch for the chat diagnostics overlay (ChatDiagnosticsHUD
-    /// in MessageViews). Shows live list state + three redraw probes on top of
-    /// every chat, so the black-DM bug can be measured on a real phone.
+    /// Device-local switches for chasing message-list bugs on a real phone:
+    /// the diagnostics overlay (ChatDiagnosticsHUD in MessageViews — live list
+    /// state, an event timeline, and probes) and the A/B switch that puts the
+    /// list back on its old all-lazy layout for comparison.
     private var chatDiagnosticsToggle: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 12) {
             Toggle(isOn: $chatDiagnostics) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Chat diagnostics").font(.zkSans(15, weight: .semibold)).foregroundColor(Theme.ink1)
-                    Text("Shows a live readout over every chat, this device only. If a DM opens black, tap Copy and send it — then try Last row, Relayout, Rebuild in that order and note which one brings the messages back.")
+                    Text("Shows a live readout over every chat, this device only. If a chat opens black or in the wrong place, tap Copy right away and send it. Then try Drag, Bottom, Tint and Rebuild, and note which one changes what you see.")
+                        .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .tint(Theme.accent)
+            Toggle(isOn: $chatLazyList) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Old lazy message list").font(.zkSans(15, weight: .semibold)).foregroundColor(Theme.ink1)
+                    Text("For comparison only, this device only. Builds every message row lazily, the way chats worked before the black-chat fix, so the same chat can be opened both ways. Leave this off.")
                         .font(.zkSans(12)).foregroundColor(Theme.ink3)
                         .fixedSize(horizontal: false, vertical: true)
                 }

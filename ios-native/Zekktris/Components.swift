@@ -149,8 +149,33 @@ struct RetryingImage: View {
     }
 }
 
+/// Whether a chat row is close enough to the viewport to load its media.
+///
+/// The message list builds its newest rows eagerly (MessageListView
+/// .eagerRowCount — the fix for chats opening black), so without this every
+/// photo and encrypted attachment in that window would start downloading and
+/// decrypting the moment the chat opened. Each row sets it from its measured
+/// position (RowProximity in MessageViews). Everything outside the message
+/// list keeps the default `true`, so other screens load exactly as before.
+private struct ChatMediaNearKey: EnvironmentKey {
+    static let defaultValue = true
+}
+extension EnvironmentValues {
+    var chatMediaNear: Bool {
+        get { self[ChatMediaNearKey.self] }
+        set { self[ChatMediaNearKey.self] = newValue }
+    }
+}
+
+/// `.task(id:)` key for CachedImage: a new URL, or the row coming near the
+/// viewport, starts a load.
+private struct CachedImageLoadKey: Equatable {
+    let url: URL
+    let near: Bool
+}
+
 /// Cached, retrying image for inline message media. Shares DecodedImageCache +
-/// RetryingImage.load, so a recycled LazyVStack row paints an already-decoded
+/// RetryingImage.load, so a row that is rebuilt paints an already-decoded
 /// image on the FIRST frame instead of re-fetching + re-decoding full-res on
 /// every scroll-back (the reported "images load slowly / choppy scroll"). Unlike
 /// RetryingImage (hardwired scaledToFill for avatars) the caller picks the
@@ -163,6 +188,9 @@ struct CachedImage<Placeholder: View, Failure: View>: View {
     @State private var image: UIImage?
     @State private var loadedURL: URL?
     @State private var failed = false
+    /// False while a message row is far from the viewport: a cached decode
+    /// still paints, but a network load waits until the row comes near.
+    @Environment(\.chatMediaNear) private var mediaNear
 
     init(
         url: URL,
@@ -189,13 +217,13 @@ struct CachedImage<Placeholder: View, Failure: View>: View {
                 placeholder()
             }
         }
-        .task(id: url) {
+        .task(id: CachedImageLoadKey(url: url, near: mediaNear)) {
             if loadedURL != url {
                 image = DecodedImageCache.shared.object(forKey: url as NSURL)
                 loadedURL = url
                 failed = false
             }
-            if image == nil {
+            if image == nil, mediaNear {
                 if let loaded = await RetryingImage.load(url) {
                     DecodedImageCache.store(loaded, for: url)
                     image = loaded

@@ -487,76 +487,73 @@ struct MessageListView: View {
     /// window is bounded so it can't fight a user who scrolls up later.
     @State private var stickToBottomOnGrow = false
     /// Near-bottom gate for the incoming-message auto-scroll (web parity).
-    /// ScrollViewReader exposes no scroll offset, so nearness is tracked by the
-    /// bottom sentinel row's onAppear/onDisappear: while the sentinel is inside
-    /// the lazy render window we're "near the bottom" and incoming messages may
-    /// pull the list down; once the user scrolls up into history the sentinel
-    /// disappears and incoming messages must NOT yank them (the unread divider
-    /// already handles catch-up). The user's OWN sends always scroll.
+    /// While it is open, incoming messages may pull the list down; once the
+    /// user scrolls up into history it closes, so an incoming message can't
+    /// yank them (the unread divider already handles catch-up). The user's OWN
+    /// sends always scroll. Written only from measured geometry, through
+    /// `setNearBottom`: NearBottomGeometry on iOS 18+, the content-container
+    /// reading (`nearBottomFallback`) on iOS 17.
     @State private var isNearBottom = true
-    /// Live geometry backing `isNearBottom` (see SentinelOffsetKey).
-    @State private var sentinelOffset: CGFloat = .greatestFiniteMagnitude
-    @State private var viewportHeight: CGFloat = 0
-    /// True once `onScrollGeometryChange` has driven the gate at least once, at
-    /// which point the preference-based fallback stops writing it.
-    @State private var usesScrollGeometry = false
-    /// How many times THIS open has been rescued from an offset past the end of
-    /// the content (see BlankViewportRescue). Bounded so a landing that cannot
-    /// converge re-pins a few times instead of looping against the layout.
-    @State private var blankRescues = 0
-    /// Counts rows that have actually been DRAWN since the current landing.
-    /// A class box on purpose: bumping it from every row's onAppear must not
-    /// re-render the list, which an @State Int would.
+    /// True while the top of the loaded history is within `loadOlderDistance`
+    /// of the top of the viewport. `maybeLoadOlder()` reads it, and is the only
+    /// thing that pages older history in.
+    @State private var nearTop = false
+    /// Diagnostics and the event timeline behind the overlay. A class box on
+    /// purpose: row callbacks and geometry actions write to it constantly, and
+    /// that must not re-render the list it describes.
     @State private var renderProbe = RenderProbe()
+    /// Bookkeeping the scroll code needs without re-rendering (see ScrollClock).
+    @State private var scrollClock = ScrollClock()
     /// Staff-only diagnostics overlay (Admin → Overview → "Chat diagnostics").
     /// A device-local switch, off by default; see ChatDiagnosticsHUD.
     @AppStorage("zk.chatDiagnostics") private var chatDiagnostics = false
+    /// Staff-only A/B switch (Admin → Overview): put EVERY row back in the lazy
+    /// stack, the way the list was built before the black-chat fix, so the same
+    /// conversation can be opened both ways. Device-local, off by default.
+    @AppStorage("zk.chatLazyList") private var forceLazyList = false
     /// Bumped by the overlay's "Rebuild" button: recreates the whole scroll view.
     @State private var listNonce = 0
-    /// Remedy ladder step 1 (see runBlankListRemedies): 1pt for one pass, else 0.
-    @State private var viewportNudge: CGFloat = 0
+    /// The overlay's "Tint" probe: paints the content container, which shows
+    /// at a glance whether the content layer is on screen at all.
+    @State private var tintContent = false
 
-    /// Reports the message list's laid-out content height, so a late growth
-    /// (image load / embed render / E2EE decrypt) can re-pin us to the bottom
-    /// during the open settle window.
-    private struct ContentHeightKey: PreferenceKey {
-        static var defaultValue: CGFloat = 0
-        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-    }
-
-    /// Distance from the top of the scroll VIEWPORT to the top of the bottom
-    /// sentinel, in the scroll view's own coordinate space. Shrinks toward the
-    /// viewport height as you approach the bottom of the list.
+    /// How many of the NEWEST rows are built eagerly, in a plain VStack, instead
+    /// of in the lazy stack. This is the fix for "a chat opens black until I
+    /// swipe".
     ///
-    /// Two earlier drivers of `isNearBottom` failed, both for the same reason —
-    /// they depended on the bottom sentinel, which lives inside the LazyVStack:
+    /// That bug was a LazyVStack failure, not a scroll-position one. Opening a
+    /// conversation taller than the screen positions the list at its bottom
+    /// programmatically (`.defaultScrollAnchor(.bottom)` plus the landing's
+    /// `scrollTo`). A lazy stack only knows the heights of rows it has built and
+    /// guesses the rest, and after that jump it could settle on a visible range
+    /// with no rows in it. The scroll view's own geometry then looked perfectly
+    /// healthy (device readouts: offset inside the content, viewport 754pt) while
+    /// not one row existed, and nothing rebuilt them until a finger scroll.
+    /// Every programmatic remedy (scrollTo a row, a relayout, rebuilding the
+    /// whole scroll view, a UIKit offset nudge) re-ran the same lazy bookkeeping
+    /// and stayed black. It is a long-standing SwiftUI bug (Apple Developer
+    /// Forums 741406; on iOS 27, 848608 adds that scrollTo no longer reaches
+    /// rows a lazy stack hasn't built), and every report says a plain VStack
+    /// does not have it. E2EE chats hit it far more often because every row
+    /// used to change height (the "Couldn't decrypt" placeholder → plaintext)
+    /// right while the landing scroll was running.
     ///
-    /// 1. `onAppear`/`onDisappear` on the sentinel. A lazy stack keeps a
-    ///    prefetch buffer, so the sentinel stayed "appeared" while scrolled well
-    ///    off-screen and `onDisappear` never fired. With `isNearBottom`
-    ///    initialised to `true`, the gate stuck open forever and the button
-    ///    never rendered at all.
-    /// 2. Measuring the sentinel's own offset. Better, but the sentinel is
-    ///    eventually UNMOUNTED on scroll-up; its reader then stops reporting and
-    ///    the reading freezes wherever it last was. The button showed up, but
-    ///    late and inconsistently.
-    ///
-    /// So this is measured on the content CONTAINER, which is never unmounted.
-    /// The value is the content's bottom edge in the scroll's coordinate space:
-    /// it equals the viewport height at rest and grows continuously as you
-    /// scroll up, from the very first point of movement.
-    private struct SentinelOffsetKey: PreferenceKey {
-        static var defaultValue: CGFloat = .greatestFiniteMagnitude
-        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-    }
+    /// So the window every open lands in is not lazy at all: a page is 50 rows,
+    /// and the open, the unread divider (≤15 rows back), deep-link "around"
+    /// windows and live appends all fall inside the newest 80. Only history the
+    /// reader pages in by scrolling up goes into the lazy stack above it. A
+    /// finger scroll is what drives that part, and it does not need a
+    /// programmatic landing. Rows near the viewport still decide when their
+    /// media loads (RowProximity / `chatMediaNear`), so building them eagerly
+    /// does not download every photo in the window at once.
+    private static let eagerRowCount = 80
 
-    /// Height of the scroll viewport (not the content).
-    private struct ViewportHeightKey: PreferenceKey {
-        static var defaultValue: CGFloat = 0
-        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-    }
+    /// How close the top of the loaded history must come to the top of the
+    /// viewport before the next older page is fetched. Roughly the ten rows the
+    /// old per-row prefetch looked ahead.
+    private static let loadOlderDistance: CGFloat = 600
 
-    /// Coordinate space the sentinel offset is measured in.
+    /// Coordinate space the list measures its rows and content against.
     private var chatScrollSpace: String { "chatScroll-\(channel.id)" }
 
     /// How far the content's bottom edge may sit below the viewport before we
@@ -605,102 +602,103 @@ struct MessageListView: View {
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 2) {
-                            if store.loadingMessages && store.messages.isEmpty {
+                        // One snapshot of the rows for this pass. Every per-row
+                        // helper indexes THIS array, so a lazily-built row can
+                        // never work out its header or dividers against a newer
+                        // `store.messages` whose indices have since shifted.
+                        let rows = store.messages
+                        let indexed = Array(rows.enumerated())
+                        let split = lazySplitIndex(rowCount: rows.count)
+                        let receiptAnchors = dmReceiptAnchors(in: rows)
+                        // Plain values for the @Sendable geometry transforms below.
+                        let space = chatScrollSpace
+                        let olderDistance = Self.loadOlderDistance
+                        let slop = Self.nearBottomSlop
+                        VStack(alignment: .leading, spacing: 2) {
+                            if store.loadingMessages && rows.isEmpty {
                                 ProgressView().tint(Theme.accent)
                                     .frame(maxWidth: .infinity)
                                     .padding(.top, 24)
-                            } else if store.messages.isEmpty {
+                            } else if rows.isEmpty {
                                 emptyState
                             }
 
-                            // Load-older trigger: when scrolled to the top and
-                            // more history exists, page back in.
-                            if store.hasMoreMessages && !store.messages.isEmpty {
+                            // More history exists above. Only a visual: paging is
+                            // driven by `maybeLoadOlder()` from measured geometry.
+                            // An onAppear here can't do it — in a non-lazy stack a
+                            // view "appears" the moment it is inserted, scrolled to
+                            // or not.
+                            if store.hasMoreMessages && !rows.isEmpty {
                                 ProgressView().tint(Theme.accent)
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 8)
-                                    .onAppear {
-                                        guard didInitialScroll else { return }
-                                        Task { await store.loadOlderMessages() }
-                                    }
                             }
 
-                            let receiptAnchors = dmReceiptAnchors()
-                            ForEach(Array(store.messages.enumerated()), id: \.element.id) { index, message in
-                                if shouldShowDateDivider(at: index) {
-                                    DateDividerView(label: dateDividerLabel(message.createdAt))
-                                }
-                                if shouldShowUnreadDivider(at: index) {
-                                    UnreadDividerView()
-                                }
-                                let header = showHeader(at: index)
-                                // .equatable() lets SwiftUI skip a row whose
-                                // MessageRowData is unchanged — so per-row edits
-                                // and presence/typing churn no longer re-render
-                                // every visible row (O5).
-                                MessageRow(store: store, data: rowData(for: message, showHeader: header, anchors: receiptAnchors))
-                                    .equatable()
-                                    .id(message.id)
-                                    .padding(.top, header ? 10 : 0)
-                                    .onDisappear { renderProbe.liveRows -= 1 }
-                                    .onAppear {
-                                        renderProbe.rowsDrawn += 1
-                                        renderProbe.liveRows += 1
-                                        // Prefetch the next older page BEFORE the user reaches
-                                        // the very top, so scrollback feels instant. Fires when
-                                        // a row within ~10 of the oldest loaded message appears;
-                                        // loadOlderMessages is re-entrancy-guarded + dedup-safe.
-                                        if didInitialScroll, store.hasMoreMessages, index <= 10 {
-                                            Task { await store.loadOlderMessages() }
-                                        }
+                            // History paged in by scrolling up: LAZY. Only a finger
+                            // scroll reaches it, and laziness keeps a long session
+                            // from holding every older row (and its images) in
+                            // memory. See `eagerRowCount`.
+                            if split > 0 {
+                                LazyVStack(alignment: .leading, spacing: 2) {
+                                    ForEach(indexed[..<split], id: \.element.id) { index, message in
+                                        messageElement(index, message, rows: rows, anchors: receiptAnchors)
                                     }
+                                }
                             }
 
-                            // Bottom sentinel: scroll target AND the near-bottom
-                            // tracker (see isNearBottom above).
-                            //
-                            // onAppear/onDisappear used to drive `isNearBottom`
-                            // from here. They can't be trusted for a 1pt
-                            // `Color.clear` in a LazyVStack (see
-                            // SentinelOffsetKey), so the flag is now derived
-                            // from this view's measured offset instead. onAppear
-                            // is kept ONLY as an optimistic open — the geometry
-                            // reading corrects it either way on the next frame.
-                            // NO onAppear here. It used to set isNearBottom = true
-                            // as an "optimistic open", and that is what kept the
-                            // jump button hidden until you had scrolled a long way:
-                            // a LazyVStack fires onAppear every time this re-enters
-                            // its render buffer, slamming the gate back open on
-                            // every pass. Only once the sentinel genuinely unmounted
-                            // did the geometry reading get to win. The gate is now
-                            // written by recomputeNearBottom() alone, plus the
-                            // one-shot landing seeds; this view is purely a scroll
-                            // target.
+                            // The newest rows: EAGER. Every open, landing, unread
+                            // divider and jump target lives here, so whatever
+                            // positions the list, the rows under the viewport exist.
+                            ForEach(indexed[split...], id: \.element.id) { index, message in
+                                messageElement(index, message, rows: rows, anchors: receiptAnchors)
+                            }
+
+                            // Bottom sentinel: the landing's scroll target. Purely a
+                            // target — the near-bottom gate is measured, not read
+                            // off this view appearing.
                             Color.clear.frame(height: 1)
                                 .id(bottomAnchor)
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
-                        .background(GeometryReader { gp in
-                            Color.clear
-                                .preference(key: ContentHeightKey.self, value: gp.size.height)
-                                // Bottom edge of ALL content, in the scroll's space.
-                                //
-                                // Measured HERE, on the content container, and not on
-                                // the bottom sentinel: the sentinel lives inside the
-                                // LazyVStack, so scrolling up eventually unmounts it,
-                                // its GeometryReader stops reporting, and the reading
-                                // freezes at whatever it last said. That is why the
-                                // button appeared late and erratically — the gate only
-                                // moved while the sentinel happened to still be
-                                // mounted. This container is never unmounted, so the
-                                // measurement is continuous the whole way up.
-                                .preference(
-                                    key: SentinelOffsetKey.self,
-                                    value: gp.frame(in: .named(chatScrollSpace)).maxY,
-                                )
-                        })
+                        .background(tintContent ? Color.red.opacity(0.25) : Color.clear)
+                        // These three measurements replace three PreferenceKeys
+                        // that never delivered a value on any device: each reduced
+                        // with `value = nextValue()`, so the implicit default from a
+                        // sibling that sets nothing overwrote the real reading, and
+                        // every onPreferenceChange fired once with 0 / 0 / ∞ (the
+                        // `content:0 vp:0 sentinel:∞ calls 1/1/1` in every readout).
+                        // That silently disabled the settle-window re-pin and the
+                        // whole iOS 17 near-bottom gate. onGeometryChange (iOS 16+)
+                        // has no reducer to get wrong, and it reports its initial
+                        // value.
+                        //
+                        // 1. Laid-out content height → re-pin the landing as
+                        //    late-sizing content settles.
+                        .onGeometryChange(for: CGFloat.self) { @Sendable geo in
+                            geo.size.height.rounded()
+                        } action: { height in
+                            contentHeightChanged(height, proxy)
+                        }
+                        // 2. The top of the loaded history is within reach of the
+                        //    viewport → page the next older batch in. A Bool, so
+                        //    this fires on the crossing, not on every scrolled frame.
+                        .onGeometryChange(for: Bool.self) { @Sendable geo in
+                            geo.frame(in: .named(space)).minY > -olderDistance
+                        } action: { isNearTop in
+                            nearTopChanged(isNearTop)
+                        }
+                        // 3. The content's bottom edge sits at (or within the slop
+                        //    of) the viewport's → "at the bottom". The near-bottom
+                        //    gate on iOS 17; on iOS 18+ NearBottomGeometry owns it
+                        //    and this is only recorded for the diagnostics overlay.
+                        .onGeometryChange(for: Bool.self) { @Sendable geo in
+                            let viewport = geo.bounds(of: .named(space))?.height ?? 0
+                            guard viewport > 0 else { return true }
+                            return geo.frame(in: .named(space)).maxY <= viewport + slop
+                        } action: { near in
+                            nearBottomFallback(near)
+                        }
                     }
                     // A conversation is read from the bottom up. Without this,
                     // content shorter than the viewport renders TOP-aligned —
@@ -709,117 +707,37 @@ struct MessageListView: View {
                     // it because there is nothing to scroll. It also means a
                     // freshly-created ScrollView starts at the newest row
                     // rather than at offset 0 (the oldest of the loaded 50),
-                    // which is the floor under every landing below.
+                    // and that content growing (a photo loading, a page of
+                    // history arriving above) keeps the reader's place measured
+                    // from the bottom. Safe because the rows it lands on are
+                    // eager — see `eagerRowCount`.
                     .defaultScrollAnchor(.bottom)
-                    // Remedy ladder step 1: shrink the scroll view's OWN frame by
-                    // a point for one pass, so SwiftUI re-lays it out against a
-                    // new viewport (see runBlankListRemedies). 0 at rest.
-                    .padding(.bottom, viewportNudge)
+                    // Hosts the overlay's "Drag" probe (a real UIKit scroll).
                     .background(ScrollViewNudger(probe: renderProbe))
-                    // Named space the bottom sentinel measures itself against,
-                    // plus the viewport height to compare it to. Both feed the
-                    // near-bottom gate below.
+                    // Named space the rows and the content container measure
+                    // themselves against.
                     .coordinateSpace(name: chatScrollSpace)
-                    .background(GeometryReader { vp in
-                        Color.clear.preference(key: ViewportHeightKey.self, value: vp.size.height)
-                    })
-                    .onPreferenceChange(ViewportHeightKey.self) { h in
-                        renderProbe.viewportCalls += 1
-                        viewportHeight = h
-                        recomputeNearBottom()
-                    }
-                    .onPreferenceChange(SentinelOffsetKey.self) { y in
-                        renderProbe.sentinelCalls += 1
-                        sentinelOffset = y
-                        recomputeNearBottom()
-                        // Blank-viewport detection, measured rather than
-                        // inferred: this IS the bottom edge of all content in
-                        // the viewport's own space, so <= 0 means every row is
-                        // above the top of the screen and there is nothing to
-                        // see. See rescueBlankViewport.
-                        if y <= 0 { rescueBlankViewport(proxy) }
+                    // Viewport height, for the diagnostics overlay.
+                    .onGeometryChange(for: CGFloat.self) { @Sendable geo in
+                        geo.size.height.rounded()
+                    } action: { height in
+                        renderProbe.viewportHeight = height
                     }
                     // PRIMARY driver of the near-bottom gate on iOS 18+.
                     //
-                    // The preference above measures the content container's
-                    // bottom edge against the scroll's coordinate space, which
-                    // is correct but depends on SwiftUI republishing a
-                    // preference from inside the scrolling content on every
-                    // frame — and it does not do that reliably. The gate then
-                    // freezes at whatever it last read, which is exactly the
-                    // reported behaviour: scrolling up never showed the button,
-                    // some unrelated relayout later shoved the reading through
-                    // and it appeared, and after tapping it the gate never
-                    // reopened so the button stayed on screen at the bottom.
-                    // Stale in BOTH directions, from one stale input.
-                    //
-                    // onScrollGeometryChange is built for this and fires with
-                    // the live offset while the scroll is moving. Kept
-                    // availability-gated with the preference path as the iOS 17
-                    // fallback rather than replacing it.
+                    // onScrollGeometryChange reports the live offset while the
+                    // scroll is moving, with the content insets to hand (see
+                    // NearBottomGeometry for why both measures are taken). On
+                    // iOS 17 it is a no-op and the content-container reading
+                    // above drives the gate instead.
                     .modifier(NearBottomGeometry(slop: Self.nearBottomSlop) { near in
-                        usesScrollGeometry = true
-                        if near != isNearBottom { isNearBottom = near }
+                        setNearBottom(near, source: "scroll")
                     })
-                    // LAST LINE OF DEFENCE against "the DM opens black".
-                    //
-                    // applyLanding scrolls, then scrolls again on the next
-                    // runloop turn, because the first pass runs against rows
-                    // the LazyVStack has not measured and can land at an offset
-                    // PAST the real content — an empty viewport. One extra pass
-                    // fixes it only if the layout has settled by then, and on a
-                    // smaller screen (more rows in flight, slower device) it
-                    // often has not: the offset stays beyond the end and the
-                    // chat sits on blank background until a drag re-clamps it.
-                    //
-                    // Rather than guess at a longer delay, watch the geometry
-                    // and correct the state that IS the bug: scrolled so far
-                    // past the content that nothing can be on screen. Gated on
-                    // the scroll being idle so it cannot fight a rubber-band,
-                    // and on a full viewport of overshoot so ordinary bounce
-                    // never reaches it.
-                    .modifier(BlankViewportRescue { rescueBlankViewport(proxy) })
                     .modifier(DiagnosticsGeometry(probe: renderProbe))
-                    .onPreferenceChange(ContentHeightKey.self) { h in
-                        renderProbe.contentCalls += 1
-                        renderProbe.contentHeight = h
-                        // Late-sizing content (webhook embeds, photos/attachments
-                        // loading, E2EE text decrypting) grows the rows AFTER the
-                        // landing, pushing the chosen row off screen. While the
-                        // open settle window is active, re-apply THE SAME landing
-                        // on each growth.
-                        //
-                        // This used to bail out for a guild channel with unread
-                        // (`channel.isDM || store.unreadBoundaryId == nil`), which
-                        // — together with the count-keyed trigger that never fired
-                        // on a cached re-open — meant such a channel performed
-                        // ZERO scrolls and opened 50 messages up. Re-applying the
-                        // landing is correct for the divider case too, because the
-                        // divider IS the chosen position.
-                        // Two ways this re-applies:
-                        //
-                        // 1. `stickToBottomOnGrow` — the bounded window after an
-                        //    open, which also covers a DIVIDER landing (there the
-                        //    divider, not the bottom, is the position to hold).
-                        // 2. Any time we landed at the BOTTOM and the user is still
-                        //    there. This one is not time-bounded on purpose. The
-                        //    window is 1.5s, but a photo, a link embed or an E2EE
-                        //    decrypt can finish sizing well after that — and when it
-                        //    did, nothing re-pinned, so the growth pushed the newest
-                        //    message off-screen and the chat sat scrolled up. That
-                        //    was the "randomly opens scrolled up" report: a race
-                        //    against how fast the content happened to load.
-                        //
-                        // `isNearBottom` is the right gate rather than a longer
-                        // timer: it says the user is still at the bottom, so this
-                        // cannot fight someone who has scrolled up into history.
-                        let holdingBottom = landing == .bottom && isNearBottom
-                        guard stickToBottomOnGrow || holdingBottom,
-                              store.pendingScrollAnchorId == nil else { return }
-                        applyLanding(proxy)
-                    }
                     .onChange(of: ListKey(count: store.messages.count,
                                          lastId: store.messages.last?.id)) { old, new in
+                        renderProbe.log("rows \(old.count)→\(new.count)"
+                                        + (old.lastId == new.lastId ? "" : " new tail"))
                         // 1. This open hasn't landed yet — a cold open, where the
                         //    rows arrive after onAppear. Land now.
                         if landedChannelId != channel.id {
@@ -840,6 +758,8 @@ struct MessageListView: View {
                         //    with the bottom of the conversation.
                         if ownSend {
                             landing = .bottom
+                            scrollClock.noteAnimatedScroll()
+                            renderProbe.log("scrollTo bottom (own send, animated)")
                             withAnimation(.easeOut(duration: 0.2)) {
                                 proxy.scrollTo(bottomAnchor, anchor: .bottom)
                             }
@@ -854,7 +774,7 @@ struct MessageListView: View {
                         //    to a jump/prepend anchor, which owns the position —
                         //    same guard the height-growth re-pin uses.)
                         if stickToBottomOnGrow, store.pendingScrollAnchorId == nil {
-                            applyLanding(proxy)
+                            applyLanding(proxy, reason: "window swap")
                             return
                         }
                         // 4. Steady state: follow an APPEND only while the user is
@@ -863,15 +783,35 @@ struct MessageListView: View {
                         //    yank them down (the unread divider handles catch-up),
                         //    and a deletion (count shrink) never scrolls.
                         if appended, isNearBottom {
+                            scrollClock.noteAnimatedScroll()
+                            renderProbe.log("scrollTo bottom (follow append, animated)")
                             withAnimation(.easeOut(duration: 0.2)) {
                                 proxy.scrollTo(bottomAnchor, anchor: .bottom)
                             }
                         }
                     }
                     .onChange(of: store.pendingScrollAnchorId) { _, anchor in
+                        // Cleared: the restore below has finished, which is one of
+                        // the moments a still-near-top list may page again.
+                        guard let anchor else {
+                            maybeLoadOlder()
+                            return
+                        }
+                        // An older page this view asked for has landed ABOVE a
+                        // reader who is at the bottom — a short conversation whose
+                        // top was already within reach. `.defaultScrollAnchor
+                        // (.bottom)` has kept their place; scrolling the old top
+                        // row up to the top of the screen would yank them off the
+                        // newest messages for history they never scrolled to.
+                        let isOwnPrepend = anchor == scrollClock.prependFromId
+                        if isOwnPrepend { scrollClock.prependFromId = nil }
+                        if isOwnPrepend && isNearBottom {
+                            renderProbe.log("older page arrived; kept the bottom")
+                            DispatchQueue.main.async { store.pendingScrollAnchorId = nil }
+                            return
+                        }
                         // After an older page prepends, jump back to the message
                         // that was previously at the top so the view doesn't lurch.
-                        guard let anchor else { return }
                         // Anchored jumps (deep links, prepend restores) land
                         // mid-history — close the near-bottom gate so an incoming
                         // message can't yank the user off the anchor. If the
@@ -883,40 +823,65 @@ struct MessageListView: View {
                         // off the message they jumped to once the anchor clears.
                         landing = nil
                         landedChannelId = channel.id
+                        renderProbe.log("scrollTo …\(anchor.suffix(4)) top (\(isOwnPrepend ? "prepend restore" : "jump"))")
                         // Two-phase restore: once synchronously (limits the
                         // visible flash), then again on the next runloop turn
-                        // AFTER the freshly-prepended LazyVStack rows have
-                        // actually laid out — scrolling only in the same
-                        // transaction that inserted them targets unmeasured
-                        // rows and produced the exact lurch this exists to
-                        // prevent.
+                        // AFTER the freshly-inserted rows have actually laid
+                        // out — scrolling only in the same transaction that
+                        // inserted them targets unmeasured rows and produced the
+                        // exact lurch this exists to prevent.
                         withAnimation(.none) { proxy.scrollTo(anchor, anchor: .top) }
                         DispatchQueue.main.async {
                             withAnimation(.none) { proxy.scrollTo(anchor, anchor: .top) }
                             store.pendingScrollAnchorId = nil
                         }
                     }
+                    // Paging is state-driven, not edge-driven: re-check whenever
+                    // something that could have blocked the last attempt changes.
+                    // (An edge-only trigger could swallow its one crossing while,
+                    // say, the first 0.6s guard was still up, and never fire again
+                    // in a chat too short to scroll away from the top.)
+                    .onChange(of: didInitialScroll) { _, _ in maybeLoadOlder() }
+                    .onChange(of: store.loadingMessages) { _, _ in maybeLoadOlder() }
+                    .onChange(of: store.loadingOlder) { _, loading in
+                        if !loading, let from = scrollClock.prependFromId,
+                           store.messages.first?.id == from {
+                            // That request brought nothing new (a network error,
+                            // or a page of duplicates). Don't retry in a loop while
+                            // the top stays in reach — wait for the reader to
+                            // scroll away from it and come back.
+                            scrollClock.prependFromId = nil
+                            scrollClock.stalledAtId = from
+                            renderProbe.log("older page brought nothing; waiting for a scroll")
+                        }
+                        maybeLoadOlder()
+                    }
+                    .onChange(of: chatDiagnostics, initial: true) { _, on in
+                        renderProbe.enabled = on
+                    }
                     .onAppear {
                         // A fresh open: nothing has landed for this channel yet.
                         // (Both hosts key the page on the route — MainView
-                        // `.id(routeKey)` — so this fires once per channel open.)
+                        // `.id(routeKey)` — so this fires once per channel open,
+                        // and again only when the overlay's Rebuild recreates
+                        // the scroll view.)
                         landedChannelId = nil
                         landing = nil
-                        blankRescues = 0
-                        renderProbe.openedAt = Date()
-                        renderProbe.lastRescue = "none"
+                        renderProbe.markOpened()
+                        renderProbe.log("appear msgs:\(store.messages.count) nonce:\(listNonce)"
+                                        + (forceLazyList ? " lazy-only" : ""))
                         // A fresh open lands at, or a screenful above, the bottom,
                         // so seed the gate open; the geometry pass closes it as soon
                         // as the user scrolls up into history.
                         isNearBottom = true
                         // Re-apply the landing as late-sizing content settles
-                        // (see stickToBottomOnGrow + the height preference above).
+                        // (see stickToBottomOnGrow + contentHeightChanged).
                         stickToBottomOnGrow = true
                         // Rows are usually ALREADY present here: openChannel seeds
                         // them synchronously from the message cache. Land on the
                         // next runloop turn, once that seed has happened and the
-                        // LazyVStack has laid the rows out. If the cache was empty
-                        // this is a no-op and the ListKey change above lands it.
+                        // rows have laid out. If the cache was empty this is a
+                        // no-op and the ListKey change above lands it.
                         DispatchQueue.main.async { landInitial(proxy) }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                             didInitialScroll = true
@@ -937,16 +902,16 @@ struct MessageListView: View {
                         // "Replying to" bar keeps the user in place by design.
                         guard composerFocused, store.replyingTo == nil else { return }
                         DispatchQueue.main.async {
+                            scrollClock.noteAnimatedScroll()
+                            renderProbe.log("scrollTo bottom (keyboard, animated)")
                             withAnimation(.easeOut(duration: 0.2)) {
                                 proxy.scrollTo(bottomAnchor, anchor: .bottom)
                             }
                         }
                     }
                     // Jump-to-newest, pinned to the bottom-right of the message
-                    // list. LAST in the chain on purpose: an overlay's content
-                    // contributes preferences to whatever sits ABOVE it, so
-                    // adding it here keeps it out of the ContentHeightKey
-                    // reduction the landing logic reads.
+                    // list. LAST in the chain on purpose, after every measurement
+                    // above, so nothing it draws is counted as list content.
                     //
                     // Anchoring it to the ScrollView (rather than to the
                     // composer's safeAreaInset) is what makes it track the
@@ -955,11 +920,11 @@ struct MessageListView: View {
                     // the button rides up with it — no height measurement.
                     .overlay(alignment: .bottomTrailing) {
                         // REUSES the near-bottom gate the incoming-message
-                        // auto-scroll already owns (`isNearBottom`, driven by the
-                        // bottom sentinel) instead of adding a second threshold
-                        // that could disagree with it: "new messages won't pull
-                        // the list down" and "show the jump button" are the same
-                        // state, and they must never be true separately.
+                        // auto-scroll already owns (`isNearBottom`) instead of
+                        // adding a second threshold that could disagree with it:
+                        // "new messages won't pull the list down" and "show the
+                        // jump button" are the same state, and they must never be
+                        // true separately.
                         //
                         // A plain `if` — no opacity fade, no `.transition`. At
                         // the bottom the button must be ABSENT from the
@@ -973,28 +938,30 @@ struct MessageListView: View {
                     .overlay(alignment: .topLeading) {
                         if chatDiagnostics {
                             ChatDiagnosticsHUD(
-                                snapshot: { diagnosticsSnapshot() },
+                                snapshot: { diagnosticsSnapshot(fullLog: false) },
+                                copyText: { diagnosticsSnapshot(fullLog: true) },
                                 probes: [
-                                    ("Viewport", {
-                                        renderProbe.lastRescue = "manual: viewport"
-                                        viewportNudge = 1
-                                        DispatchQueue.main.async { viewportNudge = 0 }
+                                    ("Drag", {
+                                        // A REAL multi-frame scroll: up 120pt with
+                                        // UIKit's own animation, then back 0.6s
+                                        // later. The old probe moved 1pt and back in
+                                        // the same pass, which nothing ever saw.
+                                        renderProbe.lastProbe = "drag " + (renderProbe.dragUIKit?() ?? "no hook")
+                                        renderProbe.log(renderProbe.lastProbe)
                                     }),
-                                    ("Animated", {
-                                        renderProbe.lastRescue = "manual: animated"
-                                        let ids = store.messages.suffix(2).map(\.id)
-                                        if let first = ids.first, let last = ids.last {
-                                            withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(first, anchor: .bottom) }
-                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                                                withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last, anchor: .bottom) }
-                                            }
-                                        }
+                                    ("Bottom", {
+                                        renderProbe.lastProbe = "bottom"
+                                        renderProbe.log("probe: scrollTo bottom")
+                                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
                                     }),
-                                    ("UIKit", {
-                                        renderProbe.lastRescue = "manual: uikit " + (renderProbe.nudgeUIKit?() ?? "no hook")
+                                    ("Tint", {
+                                        tintContent.toggle()
+                                        renderProbe.lastProbe = tintContent ? "tint on" : "tint off"
+                                        renderProbe.log("probe: " + renderProbe.lastProbe)
                                     }),
                                     ("Rebuild", {
-                                        renderProbe.lastRescue = "manual: rebuild"
+                                        renderProbe.lastProbe = "rebuild"
+                                        renderProbe.log("probe: rebuild → nonce \(listNonce + 1)")
                                         listNonce += 1
                                     }),
                                 ]
@@ -1054,6 +1021,7 @@ struct MessageListView: View {
         if store.pendingScrollAnchorId != nil {
             landedChannelId = channel.id
             landing = nil
+            renderProbe.log("land: a jump anchor owns the position")
             return
         }
         // Nothing to land on yet — a later trigger will call back.
@@ -1073,108 +1041,24 @@ struct MessageListView: View {
         } else {
             landing = .bottom
         }
-        renderProbe.rowsDrawn = 0
-        applyLanding(proxy)
-        scheduleRenderWatchdog(proxy)
-    }
-
-    /// The "DM opens black until I swipe" case the two geometry detectors can't
-    /// see. Both of them watch the scroll POSITION, and on real phones neither
-    /// ever fired — so the position is fine. What is not fine is that the
-    /// LazyVStack never draws the rows sitting in the viewport: the offset is
-    /// valid, nothing is materialised, and it stays that way until a scroll
-    /// event makes the lazy stack re-evaluate what is visible. That is exactly
-    /// what the user's swipe does.
-    ///
-    /// So check the thing itself. If messages exist but not one row has
-    /// appeared since the landing, scroll to the last real message row: a
-    /// `scrollTo` a specific row forces SwiftUI to lay out and draw it, which is
-    /// the programmatic version of the swipe. A false positive (rows were
-    /// already drawn before the counter reset, landing moved nothing) costs a
-    /// scroll to where the list already is.
-    private func scheduleRenderWatchdog(_ proxy: ScrollViewProxy) {
-        let openedChannel = channel.id
-        renderProbe.remedyLog = []
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            guard landedChannelId == openedChannel, !store.messages.isEmpty,
-                  renderProbe.rowsDrawn == 0 else { return }
-            runBlankListRemedies(proxy, step: 0, channelId: openedChannel)
-        }
-    }
-
-    /// The blank-list remedy ladder.
-    ///
-    /// Device readout (2026-09-30), taken while a DM was black: rows drawn 0,
-    /// yet the scroll view itself was healthy — 754pt tall, ~9,400pt of
-    /// content, scrolled to the bottom — and every measurement the list takes
-    /// of itself read zero or never arrived. A non-animated scrollTo, a padding
-    /// change INSIDE the content, and rebuilding the scroll view all left it
-    /// black; only a finger-scroll brought the rows back. So SwiftUI's lazy
-    /// layout is holding a stale, empty visible region, and the question is
-    /// what makes it recompute.
-    ///
-    /// Rather than bet on one answer, try the candidates in order — each is
-    /// a different way of forcing that recompute — and stop at the first that
-    /// actually gets rows drawn. Each step is logged with the rows drawn after
-    /// it, so the diagnostics overlay names the one that worked (or shows that
-    /// none did):
-    ///   0  resize the scroll view's own frame by 1pt for one pass
-    ///   1  an ANIMATED scroll (continuous offset changes, like a fling)
-    ///   2  a UIKit-level contentOffset nudge on the backing UIScrollView
-    private func runBlankListRemedies(_ proxy: ScrollViewProxy, step: Int, channelId: String) {
-        guard landedChannelId == channelId, !store.messages.isEmpty else { return }
-        let before = renderProbe.rowsDrawn
-        guard before == 0 else {
-            renderProbe.remedyLog.append("ok drawn:\(before)")
-            return
-        }
-        let name: String
-        switch step {
-        case 0:
-            name = "viewport"
-            viewportNudge = 1
-            DispatchQueue.main.async { viewportNudge = 0 }
-        case 1:
-            name = "animated"
-            let ids = store.messages.suffix(2).map(\.id)
-            if let first = ids.first, let last = ids.last {
-                withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(first, anchor: .bottom) }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                    withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last, anchor: .bottom) }
-                }
-            }
-        case 2:
-            name = "uikit:" + (renderProbe.nudgeUIKit?() ?? "no hook")
-        default:
-            renderProbe.remedyLog.append("all failed")
-            renderProbe.lastRescue = "remedies: " + renderProbe.remedyLog.joined(separator: " → ")
-            return
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-            renderProbe.remedyLog.append("\(name)→\(renderProbe.rowsDrawn)")
-            renderProbe.lastRescue = "remedies: " + renderProbe.remedyLog.joined(separator: " → ")
-            if renderProbe.rowsDrawn == 0 {
-                runBlankListRemedies(proxy, step: step + 1, channelId: channelId)
-            }
-        }
+        renderProbe.log("land \(landing == .bottom ? "bottom" : "unread") msgs:\(store.messages.count)")
+        applyLanding(proxy, reason: "open")
     }
 
     /// Re-apply this open's chosen landing. No-op before a landing has been
     /// chosen, and after a jump anchor has taken ownership of the position.
-    private func applyLanding(_ proxy: ScrollViewProxy) {
+    /// `reason` only labels the diagnostics timeline.
+    private func applyLanding(_ proxy: ScrollViewProxy, reason: String) {
         switch landing {
         case .bottom:
+            renderProbe.log("scrollTo bottom (\(reason))")
             // No animation: animating here reads as the view "scrolling down to"
             // the newest message on every open, which is what we don't want.
             proxy.scrollTo(bottomAnchor, anchor: .bottom)
-            // And again after layout. A first open scrolls while the LazyVStack
-            // rows are still unmeasured, and scrolling to an anchor the layout
-            // has not sized yet lands at an offset PAST the real content: the
-            // screen shows nothing but background until a drag re-clamps it,
-            // which is the "a DM opens black until I swipe" bug. The repeat is
-            // a no-op whenever the first pass was already right, and it is the
-            // same two-phase shape the prepend-anchor restore above uses for
-            // exactly this reason.
+            // And again on the next runloop turn, once rows inserted in this
+            // same transaction have been measured. The repeat is a no-op
+            // whenever the first pass was already right, and it is the same
+            // two-phase shape the prepend-anchor restore uses.
             DispatchQueue.main.async {
                 guard landing == .bottom else { return }
                 proxy.scrollTo(bottomAnchor, anchor: .bottom)
@@ -1182,6 +1066,7 @@ struct MessageListView: View {
         case .unread(let boundary):
             // Re-resolved against the CURRENT rows every time — see Landing.
             if let target = unreadLandingId(boundary) {
+                renderProbe.log("scrollTo …\(target.suffix(4)) top (unread, \(reason))")
                 proxy.scrollTo(target, anchor: .top)
             }
             DispatchQueue.main.async {
@@ -1191,6 +1076,164 @@ struct MessageListView: View {
         case nil:
             break
         }
+    }
+
+    /// The content's laid-out height changed. Late-sizing content — webhook
+    /// embeds, photos and attachments loading, client-side E2EE link previews —
+    /// grows rows AFTER the landing and can push the chosen row off screen, so
+    /// re-apply THE SAME landing on each change, in two cases:
+    ///
+    /// 1. `stickToBottomOnGrow`: the bounded window after an open. It covers a
+    ///    DIVIDER landing too, where the divider, not the bottom, is the
+    ///    position to hold.
+    /// 2. Any time this open landed at the BOTTOM and the reader is still
+    ///    there. Not time-bounded on purpose: a photo or an embed can finish
+    ///    sizing well after the 1.5s window, and `isNearBottom` (not a longer
+    ///    timer) is what proves the reader hasn't scrolled away into history.
+    ///
+    /// Both paths were written long ago but never ran: their input was a
+    /// PreferenceKey that only ever delivered its default (see the measurements
+    /// on the content container).
+    private func contentHeightChanged(_ height: CGFloat, _ proxy: ScrollViewProxy) {
+        let previous = renderProbe.contentHeight
+        renderProbe.contentHeight = height
+        renderProbe.log("content \(Int(previous))→\(Int(height))")
+        let holdingBottom = landing == .bottom && isNearBottom
+        guard stickToBottomOnGrow || holdingBottom,
+              store.pendingScrollAnchorId == nil else { return }
+        // An append, own send, keyboard re-pin or jump-button tap has an
+        // ANIMATED scroll to the bottom in flight, and its own new row is what
+        // grew the content. A non-animated re-pin now would cut that animation
+        // short and snap; it is already headed to the same place.
+        guard !scrollClock.isAnimatingScroll else { return }
+        applyLanding(proxy, reason: "content resized")
+    }
+
+    /// Where the lazy part of the list ends and the eager part begins: rows
+    /// before this index are lazy, rows from it on are built eagerly. See
+    /// `eagerRowCount`. The staff A/B switch puts everything back in the lazy
+    /// stack.
+    private func lazySplitIndex(rowCount: Int) -> Int {
+        forceLazyList ? rowCount : max(0, rowCount - Self.eagerRowCount)
+    }
+
+    private func nearTopChanged(_ isNearTop: Bool) {
+        nearTop = isNearTop
+        // Scrolled away from the top: a page that came back empty last time may
+        // be tried again the next time the top comes into reach.
+        if !isNearTop { scrollClock.stalledAtId = nil }
+        maybeLoadOlder()
+    }
+
+    /// Page the next older batch in, when the top of the loaded history is
+    /// within reach and nothing else owns the list right now.
+    ///
+    /// The only trigger for paging. It used to be two onAppear hooks — the
+    /// top spinner, and every row within 10 of the oldest — and neither works
+    /// for rows that are built eagerly: they "appear" the moment they are
+    /// inserted, scrolled to or not. That would page on open (the first-0.6s
+    /// guard aside), run away down every freshly prepended page, and fire
+    /// again for the rows of a fresh server window landing after 0.6s.
+    ///
+    /// Called from every state change that can unblock it (see the onChange
+    /// hooks next to the list), so a crossing swallowed by a guard is retried
+    /// instead of lost.
+    private func maybeLoadOlder() {
+        guard nearTop, didInitialScroll, store.hasMoreMessages,
+              !store.loadingOlder, !store.loadingMessages,
+              store.pendingScrollAnchorId == nil,
+              let oldest = store.messages.first?.id,
+              oldest != scrollClock.stalledAtId else { return }
+        // Remembered so the anchor restore can tell this prepend from a jump.
+        scrollClock.prependFromId = oldest
+        renderProbe.log("load older (before …\(oldest.suffix(4)))")
+        Task { await store.loadOlderMessages() }
+    }
+
+    /// The ONE writer of `isNearBottom` from measured geometry. (The landing
+    /// and the anchor restore seed it; this corrects it from the next reading.)
+    private func setNearBottom(_ near: Bool, source: String) {
+        guard near != isNearBottom else { return }
+        isNearBottom = near
+        renderProbe.nearSource = source
+        renderProbe.log("near-bottom \(near) (\(source))")
+    }
+
+    /// The content container's own "at the bottom" reading. It drives the gate
+    /// on iOS 17, where onScrollGeometryChange does not exist. On iOS 18+
+    /// NearBottomGeometry owns the gate — two writers measuring differently is
+    /// how the gate and the jump button drifted apart before — so there this
+    /// is only recorded for the diagnostics overlay.
+    private func nearBottomFallback(_ near: Bool) {
+        renderProbe.nearBottomMeasured = near
+        if #available(iOS 18.0, *) { return }
+        setNearBottom(near, source: "content")
+    }
+
+    /// Hardware model identifier (e.g. "iPhone18,2") for the diagnostics overlay.
+    private static let deviceModel: String = {
+        var info = utsname()
+        uname(&info)
+        return withUnsafeBytes(of: &info.machine) { raw in
+            String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
+        }
+    }()
+
+    /// One text block describing the list's state right now, for the staff-only
+    /// diagnostics overlay: which build and OS, how the rows are split between
+    /// the eager and lazy stacks, whether rows exist and which are on screen,
+    /// what is measured, and a timeline of every scroll the code issued.
+    /// `fullLog` is the Copy version, with the whole timeline.
+    private func diagnosticsSnapshot(fullLog: Bool) -> String {
+        let p = renderProbe
+        let rows = store.messages
+        let split = lazySplitIndex(rowCount: rows.count)
+        let landingText: String
+        switch landing {
+        case .bottom: landingText = "bottom"
+        case .unread: landingText = "unread"
+        case nil: landingText = "nil"
+        }
+        let visible = rows.indices.filter { p.visibleIds.contains(rows[$0].id) }
+        let visibleRange: String
+        if let first = visible.first, let last = visible.last {
+            visibleRange = "\(first)–\(last)"
+        } else {
+            visibleRange = "none"
+        }
+        let measured = p.nearBottomMeasured.map { $0 ? "true" : "false" } ?? "–"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        let stackMode = forceLazyList ? "lazy-only" : "eager \(Self.eagerRowCount)"
+        let events = fullLog ? p.events : Array(p.events.suffix(8))
+        return """
+        iOS \(UIDevice.current.systemVersion) · \(Self.deviceModel) · build \(build) · \(stackMode)
+        ch …\(channel.id.suffix(4)) \(channel.isDM ? "dm" : "guild") e2ee:\(channel.isE2EE) locked:\(isLocked)
+        msgs:\(rows.count) eager:\(rows.count - split) lazy:\(split) more:\(store.hasMoreMessages) loading:\(store.loadingMessages) older:\(store.loadingOlder) pending:\(store.pendingScrollAnchorId != nil)
+        landed:\(landedChannelId == channel.id) landing:\(landingText) initScroll:\(didInitialScroll) settle:\(stickToBottomOnGrow)
+        near:\(isNearBottom) by:\(p.nearSource) measured:\(measured) top:\(nearTop)
+        rows live:\(p.liveRows) appeared:\(p.appearedRows) visible:\(visible.count) [\(visibleRange)]
+        content:\(Int(p.contentHeight)) vp:\(Int(p.viewportHeight))
+        geo off:\(Int(p.geoOffset)) content:\(Int(p.geoContent)) h:\(Int(p.geoContainer)) inset:\(Int(p.geoInsetTop))/\(Int(p.geoInsetBottom))
+        t+\(String(format: "%.1f", Date().timeIntervalSince(p.openedAt)))s nonce:\(listNonce) probe:\(p.lastProbe)
+        \(events.joined(separator: "\n"))
+        """
+    }
+
+    /// What a tap does. Extracted so the high-priority gesture and the
+    /// accessibility action invoke exactly the same thing.
+    private func jumpToLatest(_ proxy: ScrollViewProxy) {
+        // Tapping is engagement with the bottom of the conversation, the
+        // same as sending: retire a "New messages" divider landing so the
+        // open settle window can't drag the user back up to it.
+        landing = .bottom
+        scrollClock.noteAnimatedScroll()
+        renderProbe.log("scrollTo bottom (jump button, animated)")
+        withAnimation(.easeOut(duration: 0.2)) {
+            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+        }
+        // `isNearBottom` is NOT set here. Measured geometry owns it and updates
+        // as the list settles; writing it from two places is how the gate and
+        // the button drift apart.
     }
 
     /// "You are scrolled up" → tap to come back to the newest message.
@@ -1206,99 +1249,6 @@ struct MessageListView: View {
     /// the disc — not the padding — is what sits on the trailing inset and
     /// 2pt above the composer's top hairline. That is what keeps the
     /// touchable area off the send button, which the disc is centred over.
-    /// Single writer for `isNearBottom`, from measured geometry.
-    ///
-    /// The sentinel sits at the very end of the content, so its top edge in the
-    /// scroll's coordinate space is at `viewportHeight` exactly when the list is
-    /// scrolled fully down. Anything meaningfully below that means there is
-    /// still content underneath → show the jump button.
-    ///
-    /// Guarded on `viewportHeight > 0` so the first frame (before the viewport
-    /// has been measured) can't briefly declare "not near bottom" and flash the
-    /// button on open.
-    /// One text block describing the list's state right now, for the staff-only
-    /// diagnostics overlay. Everything the three "DM opens black" theories
-    /// disagree about is here: are rows drawn, where is the scroll, how big is
-    /// the content, did a rescue run.
-    private func diagnosticsSnapshot() -> String {
-        let p = renderProbe
-        let landingText: String
-        switch landing {
-        case .bottom: landingText = "bottom"
-        case .unread: landingText = "unread"
-        case nil: landingText = "nil"
-        }
-        let sentinel = sentinelOffset == .greatestFiniteMagnitude ? "∞" : "\(Int(sentinelOffset))"
-        return """
-        ch …\(channel.id.suffix(4)) \(channel.isDM ? "dm" : "guild") e2ee:\(channel.isE2EE) locked:\(isLocked)
-        msgs:\(store.messages.count) loading:\(store.loadingMessages) pending:\(store.pendingScrollAnchorId != nil)
-        landed:\(landedChannelId == channel.id) landing:\(landingText) initScroll:\(didInitialScroll)
-        drawn:\(p.rowsDrawn) live:\(p.liveRows)
-        content:\(Int(p.contentHeight)) vp:\(Int(viewportHeight)) sentinel:\(sentinel)
-        calls vp:\(p.viewportCalls) content:\(p.contentCalls) sentinel:\(p.sentinelCalls)
-        geo off:\(Int(p.geoOffset)) content:\(Int(p.geoContent)) h:\(Int(p.geoContainer))
-        near:\(isNearBottom) rescues:\(blankRescues) last:\(p.lastRescue)
-        t+\(String(format: "%.1f", Date().timeIntervalSince(p.openedAt)))s nonce:\(listNonce)
-        """
-    }
-
-    /// Put the chat back on screen after the open landed past the end of its
-    /// own content — the "DM opens black until I swipe" bug.
-    ///
-    /// Two detectors feed this, on purpose. `onScrollGeometryChange` only
-    /// delivers its action when the value CHANGES, so when the bad offset is
-    /// already in place at the first reading it fires nothing at all — which is
-    /// why the geometry-only version of this fix did not help. The sentinel
-    /// preference is republished by layout as the rows measure, so it catches
-    /// exactly that case.
-    ///
-    /// The correction scrolls to the last MESSAGE row rather than the 1pt
-    /// bottom sentinel. Re-running the same `scrollTo(bottomAnchor)` that
-    /// mislanded can simply mis-land again; a real row has a measured height by
-    /// the time this runs, so anchoring on it lands where the content actually
-    /// is. The sentinel pass afterwards then trims to the true bottom.
-    private func rescueBlankViewport(_ proxy: ScrollViewProxy) {
-        guard blankRescues < 5, store.pendingScrollAnchorId == nil else { return }
-        guard !store.messages.isEmpty else { return }
-        blankRescues += 1
-        renderProbe.lastRescue = "rescue#\(blankRescues) @\(String(format: "%.1f", Date().timeIntervalSince(renderProbe.openedAt)))s"
-        switch landing {
-        case .unread:
-            // The divider is the chosen position; re-applying re-resolves it
-            // against the current rows.
-            applyLanding(proxy)
-        case .bottom, nil:
-            if let lastId = store.messages.last?.id {
-                proxy.scrollTo(lastId, anchor: .bottom)
-            }
-            DispatchQueue.main.async { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
-        }
-    }
-
-    private func recomputeNearBottom() {
-        // Stand down once the scroll-geometry driver has reported: two writers
-        // disagreeing is how the gate and the button drifted apart before.
-        guard !usesScrollGeometry else { return }
-        guard viewportHeight > 0, sentinelOffset != .greatestFiniteMagnitude else { return }
-        let near = sentinelOffset <= viewportHeight + Self.nearBottomSlop
-        if near != isNearBottom { isNearBottom = near }
-    }
-
-    /// What a tap does. Extracted so the high-priority gesture and the
-    /// accessibility action invoke exactly the same thing.
-    private func jumpToLatest(_ proxy: ScrollViewProxy) {
-        // Tapping is engagement with the bottom of the conversation, the
-        // same as sending: retire a "New messages" divider landing so the
-        // open settle window can't drag the user back up to it.
-        landing = .bottom
-        withAnimation(.easeOut(duration: 0.2)) {
-            proxy.scrollTo(bottomAnchor, anchor: .bottom)
-        }
-        // `isNearBottom` is NOT set here. The sentinel's measured offset owns
-        // it and updates as the list settles; writing it from two places is how
-        // the gate and the button drift apart.
-    }
-
     private func jumpToLatestButton(_ proxy: ScrollViewProxy) -> some View {
         // NOT a `Button`. A Button's tap is an ordinary gesture, so while the
         // list is still decelerating UIKit spends the first tap stopping the
@@ -1350,15 +1300,54 @@ struct MessageListView: View {
         .padding(.bottom, 2)
     }
 
+    /// One message's slot in the list: its optional date and "New messages"
+    /// dividers, then the row. Shared by the lazy and eager parts of the list.
+    ///
+    /// ONE view per message on purpose. A lazy stack addresses its children by
+    /// index, and a ForEach element that resolves to a varying number of views
+    /// (divider? + divider? + row) makes it construct elements just to count
+    /// them, and to find a scroll target's ID (WWDC26 "Dive into lazy stacks
+    /// and scrolling"). Spacing is unchanged: the wrapper uses the list's own
+    /// 2pt between a divider and its row.
+    ///
+    /// `rows` is the pass's snapshot (see the list body); every index here
+    /// refers to it, never to the live `store.messages`.
+    @ViewBuilder
+    private func messageElement(_ index: Int, _ message: Message, rows: [Message],
+                                anchors: (latest: Message?, lastRead: Message?)) -> some View {
+        let header = showHeader(at: index, in: rows)
+        VStack(alignment: .leading, spacing: 2) {
+            if shouldShowDateDivider(at: index, in: rows) {
+                DateDividerView(label: dateDividerLabel(message.createdAt))
+            }
+            if shouldShowUnreadDivider(at: index, in: rows) {
+                UnreadDividerView()
+            }
+            // .equatable() lets SwiftUI skip a row whose MessageRowData is
+            // unchanged — so per-row edits and presence/typing churn no longer
+            // re-render every row (O5).
+            MessageRow(store: store, data: rowData(for: message, showHeader: header, anchors: anchors))
+                .equatable()
+                .id(message.id)
+                .padding(.top, header ? 10 : 0)
+        }
+        // Tells the row's media whether it is near the screen yet (eagerly
+        // built rows far from the viewport must not all start downloading),
+        // and records what is visible for the diagnostics overlay.
+        .modifier(RowProximity(space: chatScrollSpace, messageId: message.id, probe: renderProbe))
+        .onAppear { renderProbe.rowAppeared() }
+        .onDisappear { renderProbe.rowDisappeared(message.id) }
+    }
+
     /// 1:1 DM read receipts (web parity): "Read" anchors on the newest own
     /// message the recipient has viewed; "Sent"/"Delivered" anchors on the
     /// newest own message when it's still unread. Group DMs and guild
     /// channels render no receipts. Computed ONCE per render pass.
-    private func dmReceiptAnchors() -> (latest: Message?, lastRead: Message?) {
+    private func dmReceiptAnchors(in rows: [Message]) -> (latest: Message?, lastRead: Message?) {
         guard channel.type == "dm", let selfId = store.currentUserId else { return (nil, nil) }
         var latest: Message? = nil
         var lastRead: Message? = nil
-        for m in store.messages
+        for m in rows
         where (m.authorId ?? m.author?.id) == selfId
             && m.sendState == nil
             && m.metadata?.kind != "streak_warning" {
@@ -1385,8 +1374,8 @@ struct MessageListView: View {
     /// read off the store directly. MessageRow then holds a non-observing plain
     /// store ref, so a store mutation re-renders THIS view, recomputes each
     /// visible row's data, and only rows whose data actually changed re-render
-    /// (the rest are skipped by .equatable()). Runs lazily per realized row
-    /// inside the LazyVStack's ForEach.
+    /// (the rest are skipped by .equatable()). Runs once per row in the eager
+    /// part of the list, and per built row in the lazy part above it.
     private func rowData(for message: Message,
                          showHeader: Bool,
                          anchors: (latest: Message?, lastRead: Message?)) -> MessageRowData {
@@ -2187,15 +2176,17 @@ struct MessageListView: View {
         m.metadata?.kind == "streak_warning" || m.metadata?.kind == "poke" || m.type == "system_call"
     }
 
-    private func showHeader(at index: Int) -> Bool {
-        // The ForEach iterates an enumerated snapshot, so a lazily-rendered row
-        // can call this with a stale index after `messages` shrank (e.g. a
-        // channel switch clears it) — guard the live array before subscripting.
-        guard index < store.messages.count else { return false }
-        if shouldShowDateDivider(at: index) { return true }
+    /// `rows` is the list's per-pass snapshot. Reading it, not the live
+    /// `store.messages`, is what keeps a lazily-built row from computing its
+    /// header against an array that has since shifted (a prepend, or the cache
+    /// seed being replaced by the server window). The bounds guard stays as a
+    /// second line of defence.
+    private func showHeader(at index: Int, in rows: [Message]) -> Bool {
+        guard index < rows.count else { return false }
+        if shouldShowDateDivider(at: index, in: rows) { return true }
         guard index > 0 else { return true }
-        let current = store.messages[index]
-        let previous = store.messages[index - 1]
+        let current = rows[index]
+        let previous = rows[index - 1]
         // A notice (streak/call) just above broke the visual run, so re-show the
         // author header even if the notice was posted under the SAME authorId
         // (streak warnings are authored by a participant) — that's the "show the
@@ -2218,14 +2209,14 @@ struct MessageListView: View {
         // Same-author continuation: count how far back this uninterrupted run
         // goes (stopping at a date divider OR a notice — both break the run; a
         // divider already forces a header), and re-show the header on every Nth
-        // message of the run. Cheap: only the handful of LazyVStack-visible rows
-        // call this, and it's integer compares.
+        // message of the run. Integer and date compares over at most the run
+        // itself.
         var runLength = 1
         var i = index
         while i > 0,
-              store.messages[i - 1].authorId == current.authorId,
-              !shouldShowDateDivider(at: i),
-              !isNoticeRow(store.messages[i - 1]) {
+              rows[i - 1].authorId == current.authorId,
+              !shouldShowDateDivider(at: i, in: rows),
+              !isNoticeRow(rows[i - 1]) {
             runLength += 1
             i -= 1
         }
@@ -2249,19 +2240,19 @@ struct MessageListView: View {
 
     /// Show a date divider above the first message and whenever the calendar
     /// day changes between consecutive messages.
-    private func shouldShowDateDivider(at index: Int) -> Bool {
-        guard index < store.messages.count else { return false }
+    private func shouldShowDateDivider(at index: Int, in rows: [Message]) -> Bool {
+        guard index < rows.count else { return false }
         if index == 0 { return true }
-        return isDifferentDay(store.messages[index - 1].createdAt, store.messages[index].createdAt)
+        return isDifferentDay(rows[index - 1].createdAt, rows[index].createdAt)
     }
 
     /// Show the "New messages" divider before the first message newer than the
     /// frozen unread boundary captured when the channel was opened.
-    private func shouldShowUnreadDivider(at index: Int) -> Bool {
-        guard let boundary = store.unreadBoundaryId, index < store.messages.count else { return false }
-        guard snowflakeGreater(store.messages[index].id, than: boundary) else { return false }
+    private func shouldShowUnreadDivider(at index: Int, in rows: [Message]) -> Bool {
+        guard let boundary = store.unreadBoundaryId, index < rows.count else { return false }
+        guard snowflakeGreater(rows[index].id, than: boundary) else { return false }
         if index == 0 { return true }
-        return !snowflakeGreater(store.messages[index - 1].id, than: boundary)
+        return !snowflakeGreater(rows[index - 1].id, than: boundary)
     }
 
     /// The row a guild channel with unread history lands on: the first loaded
@@ -3429,10 +3420,26 @@ struct MessageRow: View, Equatable {
         let images = media.filter { isGridImage($0) && !$0.blobExpired }
         // Same for "Save all": only what can still be fetched at full size.
         let savable = media.filter { !$0.blobExpired }
-        let cols = [GridItem(.flexible(), spacing: 4), GridItem(.flexible(), spacing: 4)]
+        // Two columns, built eagerly. This used to be a LazyVGrid, i.e. a lazy
+        // container nested inside a row of the message list — the same family
+        // of lazy bookkeeping behind the black-chat bug, for at most a handful
+        // of cells. Same geometry: two equal columns, 4pt apart both ways, an
+        // odd last photo in the left column.
+        let pairs = stride(from: 0, to: media.count, by: 2).map {
+            Array(media[$0..<min($0 + 2, media.count)])
+        }
         VStack(alignment: .leading, spacing: 6) {
-            LazyVGrid(columns: cols, spacing: 4) {
-                ForEach(media) { att in gridCell(att, images: images) }
+            VStack(spacing: 4) {
+                ForEach(pairs, id: \.first?.id) { pair in
+                    HStack(spacing: 4) {
+                        ForEach(pair) { att in
+                            gridCell(att, images: images).frame(maxWidth: .infinity)
+                        }
+                        if pair.count == 1 {
+                            Color.clear.frame(maxWidth: .infinity)
+                        }
+                    }
+                }
             }
             .frame(maxWidth: 260)
             if !savable.isEmpty {
@@ -5936,6 +5943,8 @@ private struct EncryptedThumb: View {
     let e2eeUnlockVersion: Int
     let onTap: () -> Void
     @State private var image: UIImage?
+    /// False while the row is far from the viewport (see RowProximity).
+    @Environment(\.chatMediaNear) private var mediaNear
 
     var body: some View {
         Rectangle()
@@ -5955,11 +5964,14 @@ private struct EncryptedThumb: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
             .onTapGesture { if image != nil { onTap() } }
-            .task(id: e2eeUnlockVersion) {
+            .task(id: MediaTaskKey(version: e2eeUnlockVersion, near: mediaNear)) {
                 guard image == nil else { return }
                 // Decoded-thumb cache: on scroll-back paint instantly, skipping
                 // both the byte fetch and the ImageIO re-decode.
                 if let cached = EncryptedThumbCache.image(attachment.id, 400) { image = cached; return }
+                // Not near the screen yet: the download + decrypt waits, and
+                // this task re-runs when the row comes near.
+                guard mediaNear else { return }
                 // Prefer the small encrypted thumbnail (tiny download + decrypt);
                 // fall back to the full blob for old messages without one — but
                 // never once retention expired that blob (the fetch would 404
@@ -6692,6 +6704,9 @@ struct EncryptedAttachmentView: View {
     @State private var playingVideo: VideoItem?
     @State private var failed = false
     @State private var loading = true
+    /// False while the row is far from the viewport (see RowProximity). A
+    /// video here is a FULL-blob download and decrypt, so this matters most.
+    @Environment(\.chatMediaNear) private var mediaNear
 
     /// Original name without the .zke wire suffix.
     private var displayName: String {
@@ -6823,13 +6838,21 @@ struct EncryptedAttachmentView: View {
             // NSTemporaryDirectory); remove it when the row goes away.
             if let videoURL { try? FileManager.default.removeItem(at: videoURL) }
         }
-        .task(id: e2eeUnlockVersion) {
-            // e2eeUnlockVersion bumps on ANY CHANNEL_UPDATE for the open channel,
-            // not just key changes — don't redo the decrypt/decode (or re-write
-            // the video temp file) once this row has already resolved. A not-yet-
-            // resolved row (incl. a previously-failed one) still retries, so a
-            // real unlock recovers.
+        .task(id: MediaTaskKey(version: e2eeUnlockVersion, near: mediaNear)) {
+            // Don't redo the decrypt/decode (or re-write the video temp file)
+            // once this row has already resolved. A not-yet-resolved row (incl.
+            // a previously-failed one) still retries, so a real unlock recovers.
             guard image == nil, videoURL == nil else { return }
+            // Decoded-thumb cache: on scroll-back paint instantly, skipping the
+            // byte fetch + ImageIO re-decode — even before the row is near.
+            if !isVideo, let cached = EncryptedThumbCache.image(attachment.id, 720) {
+                image = cached
+                loading = false
+                return
+            }
+            // Not near the screen yet: the download + decrypt waits, and this
+            // task re-runs when the row comes near.
+            guard mediaNear else { return }
             loading = true
             failed = false
             if isVideo {
@@ -6858,13 +6881,7 @@ struct EncryptedAttachmentView: View {
                     failed = true
                 }
             } else {
-                // Inline image. Decoded-thumb cache: on scroll-back paint
-                // instantly, skipping the byte fetch + ImageIO re-decode.
-                if let cached = EncryptedThumbCache.image(attachment.id, 720) {
-                    image = cached
-                    loading = false
-                    return
-                }
+                // Inline image (the decoded-thumb cache was checked above).
                 // Decrypt the small thumbnail (tiny download + decrypt); fall back
                 // to the full blob for old messages — but never once retention
                 // expired that blob. Decode off-main. The lightbox / Save decrypt
@@ -7211,60 +7228,178 @@ private struct PokePopover: View {
     }
 }
 
-/// Reports whether a scroll view is at (or within `slop` of) its bottom, from
-/// the LIVE scroll geometry rather than a preference published from inside the
-/// scrolling content.
-///
-/// Split out as a ViewModifier purely so the availability check can wrap a
-/// single modifier: `onScrollGeometryChange` is iOS 18+, and on iOS 17 this is
-/// a no-op, leaving the `SentinelOffsetKey` preference path to drive the gate.
-/// See MessageListView.renderProbe — a reference type so that counting drawn
-/// rows never triggers a re-render of the list it is counting.
+/// Diagnostics for the message list, behind the staff-only overlay
+/// (ChatDiagnosticsHUD). A reference type so that recording into it — from
+/// every row's onAppear and every geometry action — never re-renders the list
+/// it is describing.
 final class RenderProbe {
-    var rowsDrawn = 0
-    // ── Chat diagnostics (staff-only overlay; see ChatDiagnosticsHUD) ──
-    /// Rows currently materialised: +1 on appear, −1 on disappear.
+    /// Mirrors the overlay switch. The timeline only records while it is on.
+    var enabled = false
+    var openedAt = Date()
+    private var opened = false
+    /// Rows currently built: +1 on appear, −1 on disappear. Never reset, so it
+    /// cannot be wiped by a reset that runs after the first layout (which made
+    /// the old `drawn:0` read as "no row ever existed" when it didn't prove it).
     var liveRows = 0
-    /// Last ContentHeightKey reading — the laid-out height of all rows.
+    /// Every row onAppear since this list was created.
+    var appearedRows = 0
+    /// Ids of rows whose frame currently intersects the viewport, as measured
+    /// by RowProximity. "Rows exist but none is on screen" and "nothing exists"
+    /// are different bugs; this tells them apart.
+    var visibleIds: Set<String> = []
+    /// Measured content and viewport heights (onGeometryChange).
     var contentHeight: CGFloat = 0
-    /// Last scroll geometry (iOS 18+): offset, content height, container height.
+    var viewportHeight: CGFloat = 0
+    /// iOS 18+ scroll geometry: offset, content height, container height and
+    /// the content insets.
     var geoOffset: CGFloat = 0
     var geoContent: CGFloat = 0
     var geoContainer: CGFloat = 0
-    /// What the rescue paths last did, for the overlay.
-    var lastRescue = "none"
-    var openedAt = Date()
-    /// How many times each measurement callback actually FIRED. The first
-    /// device readout had viewport 0 / content 0 / sentinel ∞ — these tell a
-    /// callback that never runs apart from one that runs and reports zero.
-    var viewportCalls = 0
-    var contentCalls = 0
-    var sentinelCalls = 0
-    /// The blank-list remedy ladder's log: each step and the rows drawn after it.
-    var remedyLog: [String] = []
-    /// Set by ScrollViewNudger once it is in a window: nudges the backing
-    /// UIScrollView's contentOffset by a point and back — at the UIKit level,
-    /// the same thing a finger does.
-    var nudgeUIKit: (() -> String)?
+    var geoInsetTop: CGFloat = 0
+    var geoInsetBottom: CGFloat = 0
+    /// Which measurement last moved the near-bottom gate ("seed" until one has).
+    var nearSource = "seed"
+    /// The content container's own at-the-bottom reading (nil until measured).
+    var nearBottomMeasured: Bool?
+    /// The last overlay probe tapped, and what it reported.
+    var lastProbe = "none"
+    /// Set by ScrollViewNudger once it is in a window: a real UIKit scroll of
+    /// the backing UIScrollView (see its `drag()`).
+    var dragUIKit: (() -> String)?
+    /// Timeline: every landing, scrollTo, row-count change, content resize,
+    /// page load and probe, with seconds since the open. Bounded.
+    private(set) var events: [String] = []
+
+    /// The first appear of this list sets the clock; a Rebuild re-runs the
+    /// appear but keeps the timeline, so the events before it stay readable.
+    func markOpened() {
+        guard !opened else { return }
+        opened = true
+        openedAt = Date()
+    }
+
+    func log(_ event: String) {
+        guard enabled else { return }
+        events.append(String(format: "%.2f ", Date().timeIntervalSince(openedAt)) + event)
+        if events.count > 60 { events.removeFirst(events.count - 60) }
+    }
+
+    func rowAppeared() {
+        liveRows += 1
+        appearedRows += 1
+    }
+
+    func rowDisappeared(_ id: String) {
+        liveRows -= 1
+        visibleIds.remove(id)
+    }
+
+    func rowPlacement(_ id: String, visible: Bool) {
+        if visible { visibleIds.insert(id) } else { visibleIds.remove(id) }
+    }
 }
 
-/// Staff-only diagnostics overlay for the "DM opens black" bug. Shows the
-/// list's live state (refreshed twice a second) and probes, each a different
-/// way of forcing the lazy list to recompute what's visible — whichever one
-/// brings the messages back names the mechanism. Round 1 (Last row / Relayout
-/// / Rebuild) all failed on device; round 2 is Viewport / Animated / UIKit /
-/// Rebuild, and the same three run automatically (runBlankListRemedies).
-/// "Copy" puts the text on the clipboard so it can be pasted into a report.
+/// Scroll bookkeeping MessageListView needs without re-rendering (a class
+/// box, like RenderProbe).
+final class ScrollClock {
+    /// Until when an ANIMATED scroll to the bottom (own send, followed append,
+    /// keyboard, jump button) is still running.
+    private var animatedScrollUntil = Date.distantPast
+    /// The oldest loaded message id when this view asked for an older page.
+    /// The store sets that same id as `pendingScrollAnchorId` once the page has
+    /// prepended, which is how the restore tells a prepend from a jump.
+    var prependFromId: String?
+    /// An older-page request from this oldest id brought nothing new; don't ask
+    /// again until the reader scrolls away from the top and back.
+    var stalledAtId: String?
+
+    var isAnimatingScroll: Bool { Date() < animatedScrollUntil }
+
+    /// The scrolls use `.easeOut(duration: 0.2)`; a little slack covers layout.
+    func noteAnimatedScroll(duration: TimeInterval = 0.2) {
+        animatedScrollUntil = Date().addingTimeInterval(duration + 0.15)
+    }
+}
+
+/// Where a row sits relative to the chat's viewport.
+private enum RowPlacement: Equatable, Sendable {
+    case visible, near, far
+
+    init(frame: CGRect, viewport: CGFloat) {
+        // No viewport reading: fail open, so the row's media still loads.
+        guard viewport > 0 else {
+            self = .near
+            return
+        }
+        if frame.maxY > 0 && frame.minY < viewport {
+            self = .visible
+        } else if frame.maxY > -2 * viewport && frame.minY < 3 * viewport {
+            // Two screens above to two screens below: the band a lazy stack
+            // would roughly have built, so media starts loading before it's seen.
+            self = .near
+        } else {
+            self = .far
+        }
+    }
+}
+
+/// Measures a message row's placement against the chat viewport, in the
+/// list's named coordinate space, and hands its media `chatMediaNear`.
+///
+/// The newest rows are built eagerly (see MessageListView.eagerRowCount).
+/// Without this, every photo, encrypted image and encrypted video in that
+/// window would start downloading and decrypting the moment the chat opened,
+/// where the lazy list used to load only what was near the screen. The flag
+/// is latched: once a row has been near, its media stays loaded, as it did
+/// while a lazy row was alive.
+private struct RowProximity: ViewModifier {
+    let space: String
+    let messageId: String
+    let probe: RenderProbe
+    @State private var near = false
+
+    func body(content: Content) -> some View {
+        let space = self.space
+        content
+            .environment(\.chatMediaNear, near)
+            .onGeometryChange(for: RowPlacement.self) { @Sendable geo in
+                RowPlacement(frame: geo.frame(in: .named(space)),
+                             viewport: geo.bounds(of: .named(space))?.height ?? 0)
+            } action: { placement in
+                if placement != .far, !near { near = true }
+                probe.rowPlacement(messageId, visible: placement == .visible)
+            }
+    }
+}
+
+/// `.task(id:)` key for media that waits until its row is near the viewport:
+/// re-runs on an E2EE unlock (version) and when the row first comes near.
+private struct MediaTaskKey: Equatable {
+    let version: Int
+    let near: Bool
+}
+
+/// Staff-only diagnostics overlay for the message list. Shows the list's live
+/// state (refreshed twice a second) and the end of its event timeline, plus
+/// probes that each test one thing for real:
+///  • Drag — a genuine UIKit scroll of 120pt and back (a finger, minus the
+///    finger), with the visible-row count before and after in the timeline.
+///  • Bottom — the landing's own scrollTo.
+///  • Tint — paints the content container, to show whether the content layer
+///    is on screen at all.
+///  • Rebuild — recreates the scroll view.
+/// "Copy" puts the full readout, with the whole timeline, on the clipboard so
+/// it can be pasted into a report.
 private struct ChatDiagnosticsHUD: View {
     let snapshot: () -> String
+    let copyText: () -> String
     let probes: [(String, () -> Void)]
     @State private var copied = false
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.5)) { _ in
-            let text = snapshot()
             VStack(alignment: .leading, spacing: 6) {
-                Text(text)
+                Text(snapshot())
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(.green)
                     .fixedSize(horizontal: false, vertical: true)
@@ -7273,7 +7408,7 @@ private struct ChatDiagnosticsHUD: View {
                         probe(p.0, p.1)
                     }
                     probe(copied ? "Copied" : "Copy") {
-                        UIPasteboard.general.string = text
+                        UIPasteboard.general.string = copyText()
                         copied = true
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
                     }
@@ -7300,15 +7435,18 @@ private struct ChatDiagnosticsHUD: View {
 }
 
 /// Finds the UIScrollView backing the chat's SwiftUI ScrollView and exposes a
-/// one-point contentOffset nudge through the render probe. Remedy ladder step 2
-/// and the "UIKit" probe: a finger-scroll is the one thing known to bring a
-/// blank list back, and at the UIKit level a finger-scroll is contentOffset
-/// changing on this view — so this is the closest code can get to one.
+/// real scroll of it through the render probe (the overlay's "Drag").
+///
+/// The old probe set the offset 1pt away and straight back in the same pass,
+/// which SwiftUI never observed — so "uikit:ok→0" in earlier readouts proved
+/// nothing. This one animates 120pt up with UIKit's own animation and back
+/// 0.6s later: continuous offset changes across many frames, the closest code
+/// can get to a finger.
 ///
 /// It sits in the ScrollView's background (a sibling of its content, since the
 /// content may be exactly what never rendered), so it searches outward: up the
 /// superview chain, and at each level for a UIScrollView covering this view's
-/// centre. Returns a short status string for the diagnostics log.
+/// centre.
 private struct ScrollViewNudger: UIViewRepresentable {
     let probe: RenderProbe
 
@@ -7324,17 +7462,18 @@ private struct ScrollViewNudger: UIViewRepresentable {
 
     final class FinderView: UIView {
         weak var probe: RenderProbe? {
-            didSet { probe?.nudgeUIKit = { [weak self] in self?.nudge() ?? "gone" } }
+            didSet { probe?.dragUIKit = { [weak self] in self?.drag() ?? "gone" } }
         }
 
-        func nudge() -> String {
+        func drag() -> String {
             guard let sv = findScrollView() else { return "no scrollview" }
-            let o = sv.contentOffset
-            sv.setContentOffset(CGPoint(x: o.x, y: max(0, o.y - 1)), animated: false)
-            sv.setContentOffset(o, animated: false)
-            sv.setNeedsLayout()
-            sv.layoutIfNeeded()
-            return "ok"
+            let start = sv.contentOffset
+            let top = -sv.adjustedContentInset.top
+            sv.setContentOffset(CGPoint(x: start.x, y: max(top, start.y - 120)), animated: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak sv] in
+                sv?.setContentOffset(start, animated: true)
+            }
+            return "ok from \(Int(start.y))"
         }
 
         private func findScrollView() -> UIScrollView? {
@@ -7369,9 +7508,11 @@ private struct DiagnosticsGeometry: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 18.0, *) {
             content.onScrollGeometryChange(for: [CGFloat].self) { geo in
-                [geo.contentOffset.y, geo.contentSize.height, geo.containerSize.height]
+                [geo.contentOffset.y, geo.contentSize.height, geo.containerSize.height,
+                 geo.contentInsets.top, geo.contentInsets.bottom]
             } action: { _, v in
                 probe.geoOffset = v[0]; probe.geoContent = v[1]; probe.geoContainer = v[2]
+                probe.geoInsetTop = v[3]; probe.geoInsetBottom = v[4]
             }
         } else {
             content
@@ -7379,49 +7520,14 @@ private struct DiagnosticsGeometry: ViewModifier {
     }
 }
 
-/// Fires when the scroll is parked past the end of its own content by a full
-/// viewport or more — the state behind "the DM opened black". See the call
-/// site for why the two-phase `scrollTo` in applyLanding isn't enough on its
-/// own.
+/// Reports whether a scroll view is at (or within `slop` of) its bottom, from
+/// the LIVE scroll geometry rather than a measurement published from inside
+/// the scrolling content.
 ///
-/// Two gates keep this off the user's back:
-///
-///  • IDLE ONLY. A rubber-band drag is an overshoot by definition, so acting
-///    during one would yank the list out from under the finger. The phase
-///    tracker means this only ever runs once everything has come to rest —
-///    at which point a genuine bounce has already snapped back to zero.
-///  • A FULL VIEWPORT of overshoot. Bounce is a fraction of the screen and
-///    settles; being a whole screen past the end at rest is not something the
-///    scroll view does on its own. It is the bad landing, and nothing else.
-private struct BlankViewportRescue: ViewModifier {
-    let onBlank: () -> Void
-    @State private var idle = true
-
-    func body(content: Content) -> some View {
-        if #available(iOS 18.0, *) {
-            content
-                .onScrollPhaseChange { _, phase in idle = phase == .idle }
-                .onScrollGeometryChange(for: CGFloat.self) { geo in
-                    // Same measure as the near-bottom gate, negated: how far
-                    // the viewport's bottom edge sits BELOW the content's, as a
-                    // FRACTION of the viewport. A fraction, not points, so the
-                    // "a whole screen of nothing" test means the same thing on
-                    // an SE and on a Max — and so the reading is comparable
-                    // whatever the composer's inset happens to be.
-                    guard geo.containerSize.height > 0, geo.contentSize.height > 0 else { return 0 }
-                    let overshoot = (geo.contentOffset.y + geo.containerSize.height)
-                        - (geo.contentSize.height + geo.contentInsets.bottom)
-                    return overshoot / geo.containerSize.height
-                } action: { _, blankFraction in
-                    guard idle, blankFraction >= 1 else { return }
-                    onBlank()
-                }
-        } else {
-            content
-        }
-    }
-}
-
+/// Split out as a ViewModifier purely so the availability check can wrap a
+/// single modifier: `onScrollGeometryChange` is iOS 18+, and on iOS 17 this is
+/// a no-op, leaving MessageListView's content-container reading to drive the
+/// gate.
 private struct NearBottomGeometry: ViewModifier {
     let slop: CGFloat
     let onChange: (Bool) -> Void
