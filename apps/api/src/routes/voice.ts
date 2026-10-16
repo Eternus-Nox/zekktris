@@ -33,6 +33,7 @@ import {
   Permissions,
 } from '../services/permissions';
 import { sendToUser } from '../services/push';
+import { signCallDeclineToken } from '../auth/callDeclineToken';
 import { db, schema } from '../db';
 
 export const voiceRouter = new Hono();
@@ -274,6 +275,18 @@ voiceRouter.post(
           data: {
             channelId: channelId.toString(),
             callerName,
+            // Lets the SW's Decline button end THIS call without a bearer
+            // token (POST /call-decline). See auth/callDeclineToken.ts.
+            ...(channel.dmActiveCallStartedAt
+              ? {
+                  declineToken: signCallDeclineToken({
+                    userId: otherUserId,
+                    channelId,
+                    callerId: userId,
+                    callStartedAtMs: channel.dmActiveCallStartedAt.getTime(),
+                  }),
+                }
+              : {}),
           },
           // The deeplink the SW falls back to when the user taps
           // the notification body (not one of the action buttons).
@@ -409,10 +422,9 @@ voiceRouter.delete(
 //
 // Server-side flow:
 //   1. Look up channel; must be type='dm' (1:1).
-//   2. Find the OTHER recipient via getOtherRecipient. If the user
-//      isn't a member of this DM, getOtherRecipient returns null
-//      (the where clause excludes them) — treat that as 404 so we
-//      don't leak channel existence.
+//   2. The user must be a recipient of this DM (404 otherwise, so we
+//      don't leak channel existence); then find the OTHER recipient
+//      via getOtherRecipient.
 //   3. Check the other recipient is currently in voice in THIS
 //      channel. If they're not, the call has already ended (idempotent
 //      no-op, return 200).
@@ -420,66 +432,108 @@ voiceRouter.delete(
 //      operation they'd do themselves to hang up, just initiated by
 //      the recipient. Dispatch voiceStateUpdate so both clients see
 //      the call end.
+//
+// The same flow backs POST /call-decline (routes/callDecline.ts), the
+// token-authenticated variant a push notification's Decline button uses;
+// that one passes `expectedCall` so the token only ever ends the call it
+// was issued for.
 voiceRouter.post(
   '/:channelId/voice/decline',
   validate('param', z.object({ channelId: snowflakeSchema })),
   async (c) => {
     const userId = requireUserId(c);
     const channelId = BigInt(c.req.valid('param').channelId);
-    const channel = await getChannel(channelId);
-    if (!channel || channel.type !== 'dm') {
+    const result = await declineDmCall(userId, channelId);
+    if (result === 'not_found') {
       return c.json({ error: 'channel_not_found' }, 404);
-    }
-    const otherUserId = await getOtherRecipient(channelId, userId);
-    if (otherUserId === null) {
-      // Not a recipient OR no other recipient in DB (shouldn't
-      // happen for a valid 1:1 DM, but defensive). Same 404 as
-      // channel-not-found so the response doesn't leak which side
-      // failed the check.
-      return c.json({ error: 'channel_not_found' }, 404);
-    }
-    // Verify the other user is currently in voice IN THIS CHANNEL.
-    // If they're not, the "call" they were on already ended — return
-    // success without acting so retries from a buggy client don't
-    // start kicking them out of unrelated voice channels.
-    const otherVoiceState = await db
-      .select()
-      .from(schema.voiceStates)
-      .where(eq(schema.voiceStates.userId, otherUserId))
-      .limit(1);
-    const otherVoice = otherVoiceState[0];
-    if (!otherVoice || otherVoice.channelId !== channelId) {
-      return c.json({ ok: true });
-    }
-    // Declining is a FORCED removal of the caller — evict them from the SFU
-    // too, or a declined caller whose client doesn't process the leave event
-    // (suspended socket) keeps streaming and ringing into a dead call.
-    const result = await voice.leaveVoice(otherUserId, {
-      evictFromSfu: true,
-      // Only evict from the channel we verified above — not one they may have
-      // raced into since.
-      expectedChannelId: channelId,
-    });
-    if (result.priorState) {
-      dispatch.voiceStateUpdate({
-        guildId: result.priorState.guildId,
-        channelId: result.priorState.channelId,
-        voiceState: leftVoiceStateDTO({
-          userId: otherUserId,
-          guildId: result.priorState.guildId,
-          channelId: result.priorState.channelId,
-        }),
-      });
-    }
-    if (result.systemCallMessage && result.systemCallChannelId !== null) {
-      await dispatchSystemCallMessage(
-        result.systemCallChannelId,
-        result.systemCallMessage,
-      );
     }
     return c.json({ ok: true });
   },
 );
+
+/**
+ * Decline (end) the 1:1 DM call ringing `userId` in `channelId` by removing
+ * the other recipient from voice. 'not_found' when the channel isn't a 1:1
+ * DM this user is in; 'ok' otherwise (including the idempotent "no call to
+ * decline" case). With `expectedCall`, only acts when the caller and the
+ * call's start time still match — a later call is left alone.
+ */
+export async function declineDmCall(
+  userId: bigint,
+  channelId: bigint,
+  expectedCall?: { callerId: bigint; callStartedAtMs: number },
+): Promise<'ok' | 'not_found'> {
+  const channel = await getChannel(channelId);
+  if (!channel || channel.type !== 'dm') {
+    return 'not_found';
+  }
+  // getOtherRecipient only EXCLUDES the caller; it doesn't require them to
+  // be in the DM, so membership is checked explicitly — otherwise any user
+  // could hang up a stranger's ringing call.
+  try {
+    await dms.ensureRecipient(channelId, userId);
+  } catch {
+    return 'not_found';
+  }
+  const otherUserId = await getOtherRecipient(channelId, userId);
+  if (otherUserId === null) {
+    // No other recipient in DB (shouldn't happen for a valid 1:1 DM,
+    // but defensive). Same 404 as channel-not-found so the response
+    // doesn't leak which side failed the check.
+    return 'not_found';
+  }
+  if (
+    expectedCall &&
+    (expectedCall.callerId !== otherUserId ||
+      channel.dmActiveCallStartedAt?.getTime() !== expectedCall.callStartedAtMs ||
+      channel.dmActiveCallAnsweredAt !== null)
+  ) {
+    // Not the call this decline was issued for (it ended, or a new one
+    // started), or it was already answered (e.g. on another device) — a
+    // stale ring notification must not hang up a live call.
+    return 'ok';
+  }
+  // Verify the other user is currently in voice IN THIS CHANNEL.
+  // If they're not, the "call" they were on already ended — return
+  // success without acting so retries from a buggy client don't
+  // start kicking them out of unrelated voice channels.
+  const otherVoiceState = await db
+    .select()
+    .from(schema.voiceStates)
+    .where(eq(schema.voiceStates.userId, otherUserId))
+    .limit(1);
+  const otherVoice = otherVoiceState[0];
+  if (!otherVoice || otherVoice.channelId !== channelId) {
+    return 'ok';
+  }
+  // Declining is a FORCED removal of the caller — evict them from the SFU
+  // too, or a declined caller whose client doesn't process the leave event
+  // (suspended socket) keeps streaming and ringing into a dead call.
+  const result = await voice.leaveVoice(otherUserId, {
+    evictFromSfu: true,
+    // Only evict from the channel we verified above — not one they may have
+    // raced into since.
+    expectedChannelId: channelId,
+  });
+  if (result.priorState) {
+    dispatch.voiceStateUpdate({
+      guildId: result.priorState.guildId,
+      channelId: result.priorState.channelId,
+      voiceState: leftVoiceStateDTO({
+        userId: otherUserId,
+        guildId: result.priorState.guildId,
+        channelId: result.priorState.channelId,
+      }),
+    });
+  }
+  if (result.systemCallMessage && result.systemCallChannelId !== null) {
+    await dispatchSystemCallMessage(
+      result.systemCallChannelId,
+      result.systemCallMessage,
+    );
+  }
+  return 'ok';
+}
 
 // ── Move a user between voice channels ─────────────────────────────────
 //

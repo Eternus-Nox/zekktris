@@ -235,11 +235,9 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
     //   NAVIGATE     — sent on a notification body tap or Answer action;
     //                  routes the URL through History so React Router
     //                  picks it up without a hard reload.
-    //   DECLINE_CALL — sent when the user taps the Decline action on
-    //                  an incoming-call notification. We translate it
-    //                  into a leaveVoice REST call to clear our voice
-    //                  state, which terminates the caller's
-    //                  ringing-out instead of letting it time out.
+    //
+    // A notification's Decline action is handled entirely in the SW
+    // (signed per-call token → POST /call-decline); no page round-trip.
     navigator.serviceWorker.addEventListener('message', (event) => {
       if (event.data?.type === 'NAVIGATE' && typeof event.data.url === 'string') {
         try {
@@ -251,28 +249,6 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
         } catch {
           // Bad URL — ignore.
         }
-      } else if (
-        event.data?.type === 'DECLINE_CALL' &&
-        typeof event.data.channelId === 'string'
-      ) {
-        // Best-effort decline POST. We don't have the rest client
-        // available at module scope (it lives inside AuthContext),
-        // so we fall back to a direct fetch with the session cookie.
-        //
-        // POST /voice/decline (NOT DELETE /voice). The DELETE endpoint
-        // removes the AUTHENTICATED USER from voice; the recipient
-        // isn't in voice at decline time (they never accepted), so
-        // that path was a no-op. The decline endpoint removes the
-        // OTHER party (the caller) from voice, which is what ends
-        // the ring on their side. Idempotent — server returns 200
-        // when there's no call to decline.
-        // Failure (network / 401 / 404) is silently dropped; the
-        // caller's timeout is the backstop.
-        const channelId = event.data.channelId;
-        fetch(`/api/v1/channels/${encodeURIComponent(channelId)}/voice/decline`, {
-          method: 'POST',
-          credentials: 'include',
-        }).catch(() => undefined);
       }
     });
   });
