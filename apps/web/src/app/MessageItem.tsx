@@ -37,6 +37,7 @@ import { AvatarDecoration } from '../lib/avatarDecorations';
 import { useProfileCard } from '../lib/useProfileCard';
 import { Edit, Trash, Pin, CornerUpLeft, Forward as ForwardIcon, MessageSquare, Smile, Phone, Shield, Bookmark } from '../lib/icons';
 import { useE2eeLinkPreviews } from '../lib/e2eeLinkPreviews';
+import { e2eeSupported, E2EE_INSECURE_SHORT } from '../lib/e2eeSupport';
 import { decryptForDm, peekDecryptedText, encryptForDm, isEncryptedWireFormat, hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
 import { POKE_VARIANTS, type PokeType } from '../lib/poke';
 import { ForwardModal } from './ForwardModal';
@@ -1040,9 +1041,11 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
           <div className="text-ink-3 italic text-sm whitespace-pre-wrap break-words flex items-center gap-1.5">
             <Shield size={11} className="text-ink-3 shrink-0" />
             <span>
-              {decryption.noKey
-                ? 'Encrypted — enter the password (banner above the message box) to read.'
-                : "Couldn't decrypt this message — the password may have changed."}
+              {!e2eeSupported()
+                ? E2EE_INSECURE_SHORT
+                : decryption.noKey
+                  ? 'Encrypted — enter the password (banner above the message box) to read.'
+                  : "Couldn't decrypt this message — the password may have changed."}
             </span>
           </div>
         ) : (

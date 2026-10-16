@@ -17,6 +17,7 @@
 
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
+import { e2eeSupported, E2EE_INSECURE_MESSAGE } from '../lib/e2eeSupport';
 import type { Channel, Message, PokeHistoryEntry, PublicUser } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
 import { POKE_TYPES, POKE_VARIANTS, type PokeType } from '../lib/poke';
@@ -986,10 +987,25 @@ export function MessageView({
                 it as "my messages are gone." This gives an explicit
                 [Enter password] that opens the existing unlock panel. Gate
                 matches the send-gate exactly so banner-visible ⇔ send-blocked.
-                keyVersion makes it disappear live on unlock. */}
+                keyVersion makes it disappear live on unlock. On a plain-http
+                origin (no WebCrypto) a password can't help, so the banner
+                says why instead. */}
             {isDM1to1 &&
               channel.e2eeEnabled === true &&
               !dmE2eeSuppressed(supervision, channel) &&
+              !e2eeSupported() && (
+                <div
+                  role="status"
+                  className="mx-3 mb-2 px-3 py-2 rounded-md bg-amber-500/10 border border-amber-500/30 flex items-center gap-3"
+                >
+                  <Lock size={16} className="text-amber-400 shrink-0" />
+                  <div className="flex-1 min-w-0 text-sm text-ink-2">{E2EE_INSECURE_MESSAGE}</div>
+                </div>
+              )}
+            {isDM1to1 &&
+              channel.e2eeEnabled === true &&
+              !dmE2eeSuppressed(supervision, channel) &&
+              e2eeSupported() &&
               !hasLocalKey(channel.id) &&
               (void keyVersion, true) && (
                 <div
@@ -1097,6 +1113,10 @@ export function MessageView({
                   !dmE2eeSuppressed(supervision, channel)
                 ) {
                   try {
+                    if (!e2eeSupported()) {
+                      toasts.push(E2EE_INSECURE_MESSAGE, 'error');
+                      return; // abort send
+                    }
                     const { encryptForDm, hasLocalKey } = await import('../lib/e2ee');
                     if (!hasLocalKey(channel.id)) {
                       toasts.push(
@@ -1208,6 +1228,10 @@ export function MessageView({
                   channel.e2eeEnabled &&
                   !dmE2eeSuppressed(supervision, channel)
                 ) {
+                  if (!e2eeSupported()) {
+                    toasts.push(E2EE_INSECURE_MESSAGE, 'error');
+                    return;
+                  }
                   const { encryptForDm, hasLocalKey } = await import('../lib/e2ee');
                   if (!hasLocalKey(channel.id)) {
                     toasts.push(

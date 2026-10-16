@@ -31,6 +31,7 @@ import { ApiError, type Channel } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useToasts } from '../state/Toasts';
 import { Paperclip, Shield, XCircle } from '../lib/icons';
+import { e2eeSupported, E2EE_INSECURE_MESSAGE } from '../lib/e2eeSupport';
 
 const OPTIONS: { value: number | null; label: string; sublabel?: string }[] = [
   { value: null, label: 'Off', sublabel: 'Messages stay forever' },
@@ -495,6 +496,9 @@ function E2eeToggle({ channel, selfId }: { channel: Channel; selfId: string }) {
   void selfId;
 
   const enabled = channel.e2eeEnabled === true;
+  // No WebCrypto on a plain-http origin (e.g. a --lan install): say so up
+  // front rather than failing later with a generic derive/encrypt error.
+  const supported = e2eeSupported();
 
   // Whether THIS device has the derived key cached. Tracked via
   // state so the component re-renders after a successful unlock /
@@ -591,7 +595,9 @@ function E2eeToggle({ channel, selfId }: { channel: Channel; selfId: string }) {
             End-to-end encryption
           </h3>
           <p className="text-xs text-ink-3 mt-0.5 leading-snug">
-            {enabled
+            {!supported
+              ? E2EE_INSECURE_MESSAGE
+              : enabled
               ? haveLocalKey
                 ? 'Messages in this conversation are encrypted with a shared key only you and the other person hold.'
                 : 'This conversation is encrypted. Enter the shared password to read and send messages.'
@@ -628,7 +634,7 @@ function E2eeToggle({ channel, selfId }: { channel: Channel; selfId: string }) {
               setPickModalOpen(true);
             }
           }}
-          disabled={pending}
+          disabled={pending || !supported}
           className={`relative w-10 h-6 rounded-full transition-colors shrink-0 disabled:opacity-60 ${
             enabled ? 'bg-accent' : 'bg-bg-3'
           }`}
@@ -646,7 +652,7 @@ function E2eeToggle({ channel, selfId }: { channel: Channel; selfId: string }) {
       {/* Enabled + no local key on this device. Prompt to enter the
           password the OTHER party shared (or that you set earlier on
           another device). */}
-      {enabled && !haveLocalKey && (
+      {supported && enabled && !haveLocalKey && (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 space-y-2">
           <p className="text-xs text-amber-200 leading-snug">
             Enter the conversation password to unlock this DM on this device.
