@@ -781,6 +781,15 @@ struct MessageListView: View {
                         // to the bottom — that case is owned by the anchor
                         // restore below.
                         let appended = new.count > old.count && new.lastId != old.lastId
+                        // A long session: live appends have grown the eager part
+                        // well past a page. While the reader is at the bottom,
+                        // move the seam up so rows far above go back to the lazy
+                        // stack — they are screens away, so nothing being read or
+                        // played is torn down — and the eager part stays bounded.
+                        if appended, isNearBottom,
+                           store.messages.count - lazySplitIndex(in: store.messages) > 2 * Self.eagerRowCount {
+                            pinEagerAnchor(at: store.messages.count - Self.eagerRowCount)
+                        }
                         let ownSend = appended
                             && store.messages.last?.authorId != nil
                             && store.messages.last?.authorId == store.currentUserId
@@ -854,17 +863,43 @@ struct MessageListView: View {
                         // off the message they jumped to once the anchor clears.
                         landing = nil
                         landedChannelId = channel.id
-                        renderProbe.log("scrollTo …\(anchor.suffix(4)) top (\(isOwnPrepend ? "prepend restore" : "jump"))")
+                        // A jump target older than the eager part — an "around"
+                        // window loaded in FRONT of the rows already here (a
+                        // mention, a notification into older history) — would
+                        // sit in the lazy stack, where a programmatic scroll can
+                        // land on rows that were never built: the black-chat
+                        // failure the eager part exists to avoid. Pull the eager
+                        // part back to take it in, with some context above, and
+                        // scroll only once that render has happened.
+                        var targetMadeEager = false
+                        if !isOwnPrepend,
+                           let target = store.messages.firstIndex(where: { $0.id == anchor }),
+                           target < lazySplitIndex(in: store.messages) {
+                            pinEagerAnchor(at: target - Self.unreadLandingMaxRowsBack)
+                            targetMadeEager = true
+                        }
+                        renderProbe.log("scrollTo …\(anchor.suffix(4)) top (\(isOwnPrepend ? "prepend restore" : "jump"))"
+                                        + (targetMadeEager ? " after making it eager" : ""))
+                        let restore = { withAnimation(.none) { proxy.scrollTo(anchor, anchor: .top) } }
                         // Two-phase restore: once synchronously (limits the
                         // visible flash), then again on the next runloop turn
                         // AFTER the freshly-inserted rows have actually laid
                         // out — scrolling only in the same transaction that
                         // inserted them targets unmeasured rows and produced the
-                        // exact lurch this exists to prevent.
-                        withAnimation(.none) { proxy.scrollTo(anchor, anchor: .top) }
+                        // exact lurch this exists to prevent. When the target was
+                        // just moved into the eager part, it doesn't exist as an
+                        // eager row until the next render, so both passes wait.
+                        if !targetMadeEager { restore() }
                         DispatchQueue.main.async {
-                            withAnimation(.none) { proxy.scrollTo(anchor, anchor: .top) }
-                            store.pendingScrollAnchorId = nil
+                            restore()
+                            if targetMadeEager {
+                                DispatchQueue.main.async {
+                                    restore()
+                                    store.pendingScrollAnchorId = nil
+                                }
+                            } else {
+                                store.pendingScrollAnchorId = nil
+                            }
                         }
                     }
                     // Paging is state-driven, not edge-driven: re-check whenever
@@ -6027,6 +6062,9 @@ private struct EncryptedThumb: View {
     @State private var image: UIImage?
     /// False while the row is far from the viewport (see RowProximity).
     @Environment(\.chatMediaNear) private var mediaNear
+    /// The bitmap was let go because the row went far; don't repaint it from
+    /// the cache until the row comes back near.
+    @State private var released = false
 
     var body: some View {
         Rectangle()
@@ -6050,10 +6088,16 @@ private struct EncryptedThumb: View {
             // square, so nothing moves). Coming back repaints from
             // EncryptedThumbCache, or re-decrypts if that has been evicted.
             .onChange(of: mediaNear) { _, near in
-                if !near { image = nil }
+                if !near, image != nil {
+                    image = nil
+                    released = true
+                }
             }
             .task(id: MediaTaskKey(version: e2eeUnlockVersion, near: mediaNear)) {
                 guard image == nil else { return }
+                // Let go while far: stay that way until the row comes back.
+                if released && !mediaNear { return }
+                released = false
                 // Decoded-thumb cache: on scroll-back paint instantly, skipping
                 // both the byte fetch and the ImageIO re-decode.
                 if let cached = EncryptedThumbCache.image(attachment.id, 400) { image = cached; return }
@@ -6795,6 +6839,9 @@ struct EncryptedAttachmentView: View {
     /// False while the row is far from the viewport (see RowProximity). A
     /// video here is a FULL-blob download and decrypt, so this matters most.
     @Environment(\.chatMediaNear) private var mediaNear
+    /// The image was let go because the row went far; don't repaint it from
+    /// the cache until the row comes back near.
+    @State private var released = false
 
     /// Original name without the .zke wire suffix.
     private var displayName: String {
@@ -6934,6 +6981,7 @@ struct EncryptedAttachmentView: View {
             if !near, image != nil, reservedSize != nil {
                 image = nil
                 loading = true
+                released = true
             }
         }
         .task(id: MediaTaskKey(version: e2eeUnlockVersion, near: mediaNear)) {
@@ -6941,6 +6989,9 @@ struct EncryptedAttachmentView: View {
             // once this row has already resolved. A not-yet-resolved row (incl.
             // a previously-failed one) still retries, so a real unlock recovers.
             guard image == nil, videoURL == nil else { return }
+            // Let go while far: stay that way until the row comes back.
+            if released && !mediaNear { return }
+            released = false
             // Decoded-thumb cache: on scroll-back paint instantly, skipping the
             // byte fetch + ImageIO re-decode — even before the row is near.
             if !isVideo, let cached = EncryptedThumbCache.image(attachment.id, 720) {
