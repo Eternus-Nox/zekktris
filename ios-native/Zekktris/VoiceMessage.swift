@@ -270,6 +270,9 @@ struct VoiceMessageView: View {
     // The decrypted-audio temp file (encrypted clips only) — deleted on
     // disappear so it doesn't linger in tmp.
     @State private var tempAudioURL: URL?
+    // False while its message row is far from the screen (see chatMediaNear);
+    // true everywhere outside the message list.
+    @Environment(\.chatMediaNear) private var mediaNear
 
     init(store: AppStore, attachment: Attachment, channel: Channel) {
         self.store = store
@@ -315,11 +318,13 @@ struct VoiceMessageView: View {
         .frame(maxWidth: 260)
         .background(Theme.bg2)
         .clipShape(RoundedRectangle(cornerRadius: 12))
-        .task {
+        .task(id: mediaNear) {
             // Encrypted voice note: fetch + decrypt the audio, write it to a
             // temp file, and hand that URL to the player. Plaintext clips are
-            // already ready (set in init) and skip this.
-            guard !ready, attachment.filename?.hasSuffix(".zke") == true else { return }
+            // already ready (set in init) and skip this. In the message list it
+            // waits until its row is near the screen (see chatMediaNear): the
+            // newest rows are built eagerly, and this is a full-blob download.
+            guard mediaNear, !ready, attachment.filename?.hasSuffix(".zke") == true else { return }
             if let data = await store.decryptedAttachmentData(attachment, in: channel) {
                 let tmp = FileManager.default.temporaryDirectory
                     .appendingPathComponent(UUID().uuidString + ".m4a")

@@ -498,6 +498,18 @@ struct MessageListView: View {
     /// of the top of the viewport. `maybeLoadOlder()` reads it, and is the only
     /// thing that pages older history in.
     @State private var nearTop = false
+    /// How many rows were laid out when `nearTop` was measured. Geometry is
+    /// reported AFTER layout, so for one update after the rows change (the
+    /// first page arriving on a cold open, a prepend) `nearTop` still describes
+    /// the OLD content — on a cold open, a loading spinner, which is "at the
+    /// top". Paging only trusts a reading taken against the current rows.
+    @State private var nearTopRows = -1
+    /// The first row of the eager part of the list (see `eagerRowCount`).
+    /// Pinned to a message rather than computed from the count, so a live
+    /// append doesn't push the oldest eager row into the lazy stack (tearing it
+    /// down mid-read, stopping a voice note), and a prepended page goes into
+    /// the lazy stack whole.
+    @State private var eagerAnchor: EagerAnchor?
     /// Diagnostics and the event timeline behind the overlay. A class box on
     /// purpose: row callbacks and geometry actions write to it constantly, and
     /// that must not re-render the list it describes.
@@ -539,13 +551,14 @@ struct MessageListView: View {
     /// right while the landing scroll was running.
     ///
     /// So the window every open lands in is not lazy at all: a page is 50 rows,
-    /// and the open, the unread divider (≤15 rows back), deep-link "around"
-    /// windows and live appends all fall inside the newest 80. Only history the
-    /// reader pages in by scrolling up goes into the lazy stack above it. A
-    /// finger scroll is what drives that part, and it does not need a
-    /// programmatic landing. Rows near the viewport still decide when their
-    /// media loads (RowProximity / `chatMediaNear`), so building them eagerly
-    /// does not download every photo in the window at once.
+    /// and the open, the unread divider (≤15 rows back) and deep-link "around"
+    /// windows all fall inside the newest 80, which are pinned as eager when the
+    /// open lands (`eagerAnchor`); live appends join them. Only history the
+    /// reader pages in by scrolling up goes into the lazy stack above. A finger
+    /// scroll is what drives that part, and it does not need a programmatic
+    /// landing. Rows near the viewport still decide when their media loads
+    /// (RowProximity / `chatMediaNear`), so building them eagerly does not
+    /// download every photo in the window at once.
     private static let eagerRowCount = 80
 
     /// How close the top of the loaded history must come to the top of the
@@ -608,12 +621,17 @@ struct MessageListView: View {
                         // `store.messages` whose indices have since shifted.
                         let rows = store.messages
                         let indexed = Array(rows.enumerated())
-                        let split = lazySplitIndex(rowCount: rows.count)
+                        let split = lazySplitIndex(in: rows)
+                        // Header / divider flags for every row in ONE forward
+                        // pass (the old per-row backward walk was O(n·run), and
+                        // the eager rows run it on every render).
+                        let flags = rowFlags(for: rows)
                         let receiptAnchors = dmReceiptAnchors(in: rows)
                         // Plain values for the @Sendable geometry transforms below.
                         let space = chatScrollSpace
                         let olderDistance = Self.loadOlderDistance
                         let slop = Self.nearBottomSlop
+                        let rowCount = rows.count
                         VStack(alignment: .leading, spacing: 2) {
                             if store.loadingMessages && rows.isEmpty {
                                 ProgressView().tint(Theme.accent)
@@ -641,7 +659,7 @@ struct MessageListView: View {
                             if split > 0 {
                                 LazyVStack(alignment: .leading, spacing: 2) {
                                     ForEach(indexed[..<split], id: \.element.id) { index, message in
-                                        messageElement(index, message, rows: rows, anchors: receiptAnchors)
+                                        messageElement(message, flags: flags[index], anchors: receiptAnchors)
                                     }
                                 }
                             }
@@ -650,7 +668,7 @@ struct MessageListView: View {
                             // divider and jump target lives here, so whatever
                             // positions the list, the rows under the viewport exist.
                             ForEach(indexed[split...], id: \.element.id) { index, message in
-                                messageElement(index, message, rows: rows, anchors: receiptAnchors)
+                                messageElement(message, flags: flags[index], anchors: receiptAnchors)
                             }
 
                             // Bottom sentinel: the landing's scroll target. Purely a
@@ -681,12 +699,16 @@ struct MessageListView: View {
                             contentHeightChanged(height, proxy)
                         }
                         // 2. The top of the loaded history is within reach of the
-                        //    viewport → page the next older batch in. A Bool, so
-                        //    this fires on the crossing, not on every scrolled frame.
-                        .onGeometryChange(for: Bool.self) { @Sendable geo in
-                            geo.frame(in: .named(space)).minY > -olderDistance
-                        } action: { isNearTop in
-                            nearTopChanged(isNearTop)
+                        //    viewport → page the next older batch in. Changes only
+                        //    on the crossing (or when the row count does), not on
+                        //    every scrolled frame. The row count rides along so
+                        //    paging can tell a reading of THESE rows from one of
+                        //    the content before them (see `nearTopRows`).
+                        .onGeometryChange(for: NearTopReading.self) { @Sendable geo in
+                            NearTopReading(near: geo.frame(in: .named(space)).minY > -olderDistance,
+                                           rows: rowCount)
+                        } action: { reading in
+                            nearTopChanged(reading)
                         }
                         // 3. The content's bottom edge sits at (or within the slop
                         //    of) the viewport's → "at the bottom". The near-bottom
@@ -738,6 +760,15 @@ struct MessageListView: View {
                                          lastId: store.messages.last?.id)) { old, new in
                         renderProbe.log("rows \(old.count)→\(new.count)"
                                         + (old.lastId == new.lastId ? "" : " new tail"))
+                        // The eager part's first row is gone — the cache seed was
+                        // replaced by the server window, a jump loaded an
+                        // "around" window, or it was deleted. Re-pin the anchor
+                        // to the row that now starts the eager part, so the split
+                        // stays where it is instead of jumping.
+                        if let anchor = eagerAnchor,
+                           !store.messages.contains(where: { $0.id == anchor.id }) {
+                            pinEagerAnchor(at: lazySplitIndex(in: store.messages))
+                        }
                         // 1. This open hasn't landed yet — a cold open, where the
                         //    rows arrive after onAppear. Land now.
                         if landedChannelId != channel.id {
@@ -849,10 +880,16 @@ struct MessageListView: View {
                             // That request brought nothing new (a network error,
                             // or a page of duplicates). Don't retry in a loop while
                             // the top stays in reach — wait for the reader to
-                            // scroll away from it and come back.
+                            // scroll away from it and come back. Only while it IS
+                            // still in reach: if they already scrolled away during
+                            // the request, the crossing that clears a stall has
+                            // passed, and their next return to the top should
+                            // simply try again.
                             scrollClock.prependFromId = nil
-                            scrollClock.stalledAtId = from
-                            renderProbe.log("older page brought nothing; waiting for a scroll")
+                            if nearTop {
+                                scrollClock.stalledAtId = from
+                                renderProbe.log("older page brought nothing; waiting for a scroll")
+                            }
                         }
                         maybeLoadOlder()
                     }
@@ -1021,6 +1058,7 @@ struct MessageListView: View {
         if store.pendingScrollAnchorId != nil {
             landedChannelId = channel.id
             landing = nil
+            pinEagerAnchor(at: max(0, store.messages.count - Self.eagerRowCount))
             renderProbe.log("land: a jump anchor owns the position")
             return
         }
@@ -1028,6 +1066,8 @@ struct MessageListView: View {
         guard !store.messages.isEmpty else { return }
 
         landedChannelId = channel.id
+        // The rows this open lands in are the eager part (see eagerRowCount).
+        pinEagerAnchor(at: max(0, store.messages.count - Self.eagerRowCount))
         if !channel.isDM, let boundary = store.unreadBoundaryId,
            unreadLandingId(boundary) != nil {
             // Guild channels with unread → land on the divider. DMs always land
@@ -1113,15 +1153,33 @@ struct MessageListView: View {
     /// before this index are lazy, rows from it on are built eagerly. See
     /// `eagerRowCount`. The staff A/B switch puts everything back in the lazy
     /// stack.
-    private func lazySplitIndex(rowCount: Int) -> Int {
-        forceLazyList ? rowCount : max(0, rowCount - Self.eagerRowCount)
+    private func lazySplitIndex(in rows: [Message]) -> Int {
+        if forceLazyList { return rows.count }
+        let byCount = max(0, rows.count - Self.eagerRowCount)
+        guard let anchor = eagerAnchor else { return byCount }
+        if let i = rows.firstIndex(where: { $0.id == anchor.id }) { return i }
+        // The anchor row itself is gone (until the next row-count change
+        // re-pins it): keep everything from its time on eager.
+        return rows.firstIndex(where: { $0.createdAt >= anchor.createdAt }) ?? byCount
     }
 
-    private func nearTopChanged(_ isNearTop: Bool) {
-        nearTop = isNearTop
+    /// Pin the eager part to start at `index` in the current rows.
+    private func pinEagerAnchor(at index: Int) {
+        let rows = store.messages
+        guard !rows.isEmpty else {
+            eagerAnchor = nil
+            return
+        }
+        let row = rows[min(max(0, index), rows.count - 1)]
+        eagerAnchor = EagerAnchor(id: row.id, createdAt: row.createdAt)
+    }
+
+    private func nearTopChanged(_ reading: NearTopReading) {
+        nearTop = reading.near
+        nearTopRows = reading.rows
         // Scrolled away from the top: a page that came back empty last time may
         // be tried again the next time the top comes into reach.
-        if !isNearTop { scrollClock.stalledAtId = nil }
+        if !reading.near { scrollClock.stalledAtId = nil }
         maybeLoadOlder()
     }
 
@@ -1139,7 +1197,17 @@ struct MessageListView: View {
     /// hooks next to the list), so a crossing swallowed by a guard is retried
     /// instead of lost.
     private func maybeLoadOlder() {
-        guard nearTop, didInitialScroll, store.hasMoreMessages,
+        // `nearTopRows == count`: the reading must describe THESE rows. On a
+        // slow cold open the first page arrives in the same update as
+        // loadingMessages turning false, while `nearTop` is still the reading
+        // of the loading spinner — which is at the top. Acting on it paged
+        // history in right after landing at the bottom, and for a guild
+        // channel's unread landing the prepend restore then dragged the reader
+        // 35-50 rows up, off the "New messages" divider. The post-layout
+        // reading of the new rows re-runs this with the true value.
+        guard nearTop, nearTopRows == store.messages.count,
+              landedChannelId == channel.id, didInitialScroll,
+              store.hasMoreMessages,
               !store.loadingOlder, !store.loadingMessages,
               store.pendingScrollAnchorId == nil,
               let oldest = store.messages.first?.id,
@@ -1187,7 +1255,7 @@ struct MessageListView: View {
     private func diagnosticsSnapshot(fullLog: Bool) -> String {
         let p = renderProbe
         let rows = store.messages
-        let split = lazySplitIndex(rowCount: rows.count)
+        let split = lazySplitIndex(in: rows)
         let landingText: String
         switch landing {
         case .bottom: landingText = "bottom"
@@ -1310,26 +1378,25 @@ struct MessageListView: View {
     /// and scrolling"). Spacing is unchanged: the wrapper uses the list's own
     /// 2pt between a divider and its row.
     ///
-    /// `rows` is the pass's snapshot (see the list body); every index here
-    /// refers to it, never to the live `store.messages`.
+    /// `flags` come from `rowFlags(for:)` over the pass's snapshot of the rows
+    /// (see the list body), never from the live `store.messages`.
     @ViewBuilder
-    private func messageElement(_ index: Int, _ message: Message, rows: [Message],
+    private func messageElement(_ message: Message, flags: RowFlags,
                                 anchors: (latest: Message?, lastRead: Message?)) -> some View {
-        let header = showHeader(at: index, in: rows)
         VStack(alignment: .leading, spacing: 2) {
-            if shouldShowDateDivider(at: index, in: rows) {
+            if flags.dateDivider {
                 DateDividerView(label: dateDividerLabel(message.createdAt))
             }
-            if shouldShowUnreadDivider(at: index, in: rows) {
+            if flags.unreadDivider {
                 UnreadDividerView()
             }
             // .equatable() lets SwiftUI skip a row whose MessageRowData is
             // unchanged — so per-row edits and presence/typing churn no longer
             // re-render every row (O5).
-            MessageRow(store: store, data: rowData(for: message, showHeader: header, anchors: anchors))
+            MessageRow(store: store, data: rowData(for: message, showHeader: flags.header, anchors: anchors))
                 .equatable()
                 .id(message.id)
-                .padding(.top, header ? 10 : 0)
+                .padding(.top, flags.header ? 10 : 0)
         }
         // Tells the row's media whether it is near the screen yet (eagerly
         // built rows far from the viewport must not all start downloading),
@@ -2176,51 +2243,66 @@ struct MessageListView: View {
         m.metadata?.kind == "streak_warning" || m.metadata?.kind == "poke" || m.type == "system_call"
     }
 
-    /// `rows` is the list's per-pass snapshot. Reading it, not the live
-    /// `store.messages`, is what keeps a lazily-built row from computing its
-    /// header against an array that has since shifted (a prepend, or the cache
-    /// seed being replaced by the server window). The bounds guard stays as a
-    /// second line of defence.
-    private func showHeader(at index: Int, in rows: [Message]) -> Bool {
-        guard index < rows.count else { return false }
-        if shouldShowDateDivider(at: index, in: rows) { return true }
-        guard index > 0 else { return true }
-        let current = rows[index]
-        let previous = rows[index - 1]
-        // A notice (streak/call) just above broke the visual run, so re-show the
-        // author header even if the notice was posted under the SAME authorId
-        // (streak warnings are authored by a participant) — that's the "show the
-        // profile picture again after a server message" case.
-        if isNoticeRow(previous) { return true }
-        if current.authorId != previous.authorId { return true }
-        // Break the group on a time gap: a message sent a minute or more after
-        // the previous one re-shows the avatar + name + timestamp, so separate
-        // exchanges don't read as one clump. (Same-author grouping previously
-        // had NO time bound — messages hours apart on the same day merged.)
-        if let dp = messageDate(previous.createdAt),
-           let dc = messageDate(current.createdAt),
-           dc.timeIntervalSince(dp) >= 60 { return true }
-        // A message YOU sent that someone else has reacted to re-shows your
-        // avatar once it's "settled" — already seen, or older than 5 minutes —
-        // so a reacted message is clearly attributed. Gated on settled so a
-        // just-sent message in an active run doesn't reflow the instant a
-        // reaction lands.
-        if reactedOwnSettled(current) { return true }
-        // Same-author continuation: count how far back this uninterrupted run
-        // goes (stopping at a date divider OR a notice — both break the run; a
-        // divider already forces a header), and re-show the header on every Nth
-        // message of the run. Integer and date compares over at most the run
-        // itself.
-        var runLength = 1
-        var i = index
-        while i > 0,
-              rows[i - 1].authorId == current.authorId,
-              !shouldShowDateDivider(at: i, in: rows),
-              !isNoticeRow(rows[i - 1]) {
-            runLength += 1
-            i -= 1
+    /// Header and divider flags for every row, in ONE forward pass over the
+    /// list's per-pass snapshot.
+    ///
+    /// Reading the snapshot, not the live `store.messages`, keeps a lazily-built
+    /// row from computing its header against an array that has since shifted (a
+    /// prepend, or the cache seed being replaced by the server window). And one
+    /// pass replaces a per-row backward walk over each same-author run, which
+    /// was O(n·run): fine for the dozen rows a lazy stack built, ~10ms per
+    /// render for a long single-author run (a bot channel, notes to self) once
+    /// the newest 80 rows are built eagerly.
+    private func rowFlags(for rows: [Message]) -> [RowFlags] {
+        var flags: [RowFlags] = []
+        flags.reserveCapacity(rows.count)
+        // Length of the uninterrupted same-author run ending at the current row
+        // (a date divider or a notice breaks it).
+        var runLength = 0
+        for index in rows.indices {
+            let current = rows[index]
+            let dateDivider = shouldShowDateDivider(at: index, in: rows)
+            let header: Bool
+            if index == 0 {
+                runLength = 1
+                header = true
+            } else {
+                let previous = rows[index - 1]
+                let continuesRun = previous.authorId == current.authorId
+                    && !dateDivider && !isNoticeRow(previous)
+                runLength = continuesRun ? runLength + 1 : 1
+                header = dateDivider
+                    // A notice (streak/call) just above broke the visual run, so
+                    // re-show the author header even if the notice was posted
+                    // under the SAME authorId (streak warnings are authored by a
+                    // participant) — the "show the profile picture again after
+                    // a server message" case.
+                    || isNoticeRow(previous)
+                    || current.authorId != previous.authorId
+                    // Break the group on a time gap: a message sent a minute or
+                    // more after the previous one re-shows the avatar + name +
+                    // timestamp, so separate exchanges don't read as one clump.
+                    || startsNewExchange(after: previous, current)
+                    // A message YOU sent that someone else has reacted to
+                    // re-shows your avatar once it's "settled" — seen, or older
+                    // than 5 minutes — so the reaction is clearly attributed.
+                    || reactedOwnSettled(current)
+                    // Same-author continuation: re-show the header on every Nth
+                    // message of the run.
+                    || runLength % headerEveryNInRun == 1
+            }
+            flags.append(RowFlags(dateDivider: dateDivider,
+                                  unreadDivider: shouldShowUnreadDivider(at: index, in: rows),
+                                  header: header))
         }
-        return runLength % headerEveryNInRun == 1
+        return flags
+    }
+
+    /// A minute or more since the previous message.
+    private func startsNewExchange(after previous: Message, _ current: Message) -> Bool {
+        guard let dp = messageDate(previous.createdAt),
+              let dc = messageDate(current.createdAt) else { return false }
+        return dc.timeIntervalSince(dp) >= 60
     }
 
     /// True for one of YOUR OWN messages that another person has reacted to and
@@ -5964,6 +6046,12 @@ private struct EncryptedThumb: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
             .onTapGesture { if image != nil { onTap() } }
+            // Far off screen: let go of the decoded bitmap (the cell is a fixed
+            // square, so nothing moves). Coming back repaints from
+            // EncryptedThumbCache, or re-decrypts if that has been evicted.
+            .onChange(of: mediaNear) { _, near in
+                if !near { image = nil }
+            }
             .task(id: MediaTaskKey(version: e2eeUnlockVersion, near: mediaNear)) {
                 guard image == nil else { return }
                 // Decoded-thumb cache: on scroll-back paint instantly, skipping
@@ -6838,6 +6926,16 @@ struct EncryptedAttachmentView: View {
             // NSTemporaryDirectory); remove it when the row goes away.
             if let videoURL { try? FileManager.default.removeItem(at: videoURL) }
         }
+        // Far off screen: let go of the decoded image — but only when its slot
+        // is reserved from known dimensions, so the row keeps its height and
+        // nothing on screen moves. Coming back repaints from
+        // EncryptedThumbCache, or re-decrypts if that has been evicted.
+        .onChange(of: mediaNear) { _, near in
+            if !near, image != nil, reservedSize != nil {
+                image = nil
+                loading = true
+            }
+        }
         .task(id: MediaTaskKey(version: e2eeUnlockVersion, near: mediaNear)) {
             // Don't redo the decrypt/decode (or re-write the video temp file)
             // once this row has already resolved. A not-yet-resolved row (incl.
@@ -7321,9 +7419,39 @@ final class ScrollClock {
     }
 }
 
+/// One row's header and divider decisions for a render pass (see
+/// MessageListView.rowFlags).
+private struct RowFlags {
+    let dateDivider: Bool
+    let unreadDivider: Bool
+    let header: Bool
+}
+
+/// The near-top measurement, with the row count it was taken against (see
+/// MessageListView.nearTopRows).
+private struct NearTopReading: Equatable, Sendable {
+    let near: Bool
+    let rows: Int
+}
+
+/// The message that starts the eager part of the list (see
+/// MessageListView.eagerAnchor). `createdAt` keeps the split sensible for the
+/// moment between that row disappearing and the anchor being re-pinned.
+private struct EagerAnchor: Equatable {
+    let id: String
+    let createdAt: String
+}
+
 /// Where a row sits relative to the chat's viewport.
 private enum RowPlacement: Equatable, Sendable {
-    case visible, near, far
+    /// Intersects the viewport.
+    case visible
+    /// Within two screens above or below: start loading its media.
+    case near
+    /// Further, but within five screens: leave its media as it is.
+    case far
+    /// More than five screens away: its media may be released.
+    case distant
 
     init(frame: CGRect, viewport: CGFloat) {
         // No viewport reading: fail open, so the row's media still loads.
@@ -7334,11 +7462,13 @@ private enum RowPlacement: Equatable, Sendable {
         if frame.maxY > 0 && frame.minY < viewport {
             self = .visible
         } else if frame.maxY > -2 * viewport && frame.minY < 3 * viewport {
-            // Two screens above to two screens below: the band a lazy stack
-            // would roughly have built, so media starts loading before it's seen.
+            // Roughly the band a lazy stack would have built, so media starts
+            // loading before it is seen.
             self = .near
-        } else {
+        } else if frame.maxY > -5 * viewport && frame.minY < 6 * viewport {
             self = .far
+        } else {
+            self = .distant
         }
     }
 }
@@ -7347,11 +7477,14 @@ private enum RowPlacement: Equatable, Sendable {
 /// list's named coordinate space, and hands its media `chatMediaNear`.
 ///
 /// The newest rows are built eagerly (see MessageListView.eagerRowCount).
-/// Without this, every photo, encrypted image and encrypted video in that
-/// window would start downloading and decrypting the moment the chat opened,
-/// where the lazy list used to load only what was near the screen. The flag
-/// is latched: once a row has been near, its media stays loaded, as it did
-/// while a lazy row was alive.
+/// Without this, every photo, encrypted image, encrypted video and voice note
+/// in that window would start downloading and decrypting the moment the chat
+/// opened, where the lazy list used to load only what was near the screen.
+///
+/// Hysteresis, so nothing flickers at an edge: a row turns near within two
+/// screens and turns back only beyond five. Media that turns far may drop its
+/// decoded image (only where that cannot change the row's height) so an
+/// eager window that has been scrolled through doesn't pin every bitmap in it.
 private struct RowProximity: ViewModifier {
     let space: String
     let messageId: String
@@ -7366,7 +7499,14 @@ private struct RowProximity: ViewModifier {
                 RowPlacement(frame: geo.frame(in: .named(space)),
                              viewport: geo.bounds(of: .named(space))?.height ?? 0)
             } action: { placement in
-                if placement != .far, !near { near = true }
+                switch placement {
+                case .visible, .near:
+                    if !near { near = true }
+                case .distant:
+                    if near { near = false }
+                case .far:
+                    break
+                }
                 probe.rowPlacement(messageId, visible: placement == .visible)
             }
     }

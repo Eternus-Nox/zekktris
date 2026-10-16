@@ -5254,7 +5254,23 @@ final class AppStore: ObservableObject {
         selectChannel(channel)
     }
     func jumpToGuild(_ guild: Guild) { selectGuild(guild) }
-    func jumpToDM(_ dm: Channel) { showDMs(); selectChannel(dm) }
+    func jumpToDM(_ dm: Channel) {
+        // Already reading this DM (a poke banner from the person you're talking
+        // to, their widget, sharing to them): stay put and top it up. Going
+        // through showDMs() + selectChannel() pops and re-pushes the SAME route
+        // ("m-<id>-1"), so the page is not remounted and openChannel never runs
+        // — and showDMs would have just closed the conversation, leaving an
+        // empty, dead chat. Same shape as openFromPush's alreadyOpen path.
+        if selectedChannel?.id == dm.id, case .messages(let open)? = stack.last, open.id == dm.id {
+            showDMs(preservingSelection: true)
+            clearPokePill(dm.id)
+            pendingJumpMessageId = nil
+            Task { await refreshOpenChannelLatest() }
+            return
+        }
+        showDMs()
+        selectChannel(dm)
+    }
 
     // MARK: Profile cards
 
@@ -6098,11 +6114,23 @@ final class AppStore: ObservableObject {
     /// which always re-checks the cached key against `channel.e2eeVerifier`.
     func e2eeKey(for channel: Channel) -> Data? {
         guard let key = e2eeKey(for: channel.id) else { return nil }
-        if let expected = channel.e2eeVerifier, E2EE.verifier(forKey: key) != expected {
+        if let expected = channel.e2eeVerifier, verifier(forKey: key) != expected {
             return nil
         }
         return key
     }
+
+    /// E2EE.verifier is a SHA-256 + base64 of the key, and display(for:) runs
+    /// it through e2eeKey(for:) for EVERY encrypted row on EVERY render of the
+    /// message list. It is a pure function of the key bytes, so remember it.
+    private func verifier(forKey key: Data) -> String {
+        if let known = verifierMemo[key] { return known }
+        let v = E2EE.verifier(forKey: key)
+        if verifierMemo.count >= 32 { verifierMemo.removeAll() }
+        verifierMemo[key] = v
+        return v
+    }
+    private var verifierMemo: [Data: String] = [:]
 
     func hasE2EEKey(for channel: Channel) -> Bool { e2eeKey(for: channel) != nil }
 

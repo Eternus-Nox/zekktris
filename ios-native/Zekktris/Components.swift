@@ -224,6 +224,9 @@ struct CachedImage<Placeholder: View, Failure: View>: View {
                 failed = false
             }
             if image == nil, mediaNear {
+                // A retry (the row came back near after a load was cancelled or
+                // failed) shows the placeholder while it loads, not the failure.
+                failed = false
                 if let loaded = await RetryingImage.load(url) {
                     DecodedImageCache.store(loaded, for: url)
                     image = loaded
