@@ -198,6 +198,10 @@ struct Channel: Codable, Identifiable, Hashable {
     var e2eeEnabled: Bool?
     var e2eeSalt: String?
     var e2eeVerifier: String?
+    /// Whether the server holds a purge-proof hash for this DM (the hash is
+    /// never sent). `false` on an encrypted DM: register ours once we hold
+    /// the key (AppStore.registerE2EEPurgeProofIfNeeded). nil on older servers.
+    var e2eePurgeProofSet: Bool?
     /// Link channels (type == guild_link): the external URL they open.
     var linkUrl: String?
     /// True when permission overrides hide this channel from @everyone —
@@ -1060,8 +1064,9 @@ struct PasskeyInfo: Codable, Identifiable {
     let lastUsedAt: String?
 }
 struct OpenDMBody: Codable { let recipientId: String }
-struct E2EEEnableBody: Codable { let salt: String; let verifier: String }
-struct E2EEDisableBody: Codable { let verifier: String }
+struct E2EEEnableBody: Codable { let salt: String; let verifier: String; let purgeProof: String }
+struct E2EEDisableBody: Codable { let verifier: String; let purgeProof: String }
+struct E2EEPurgeProofBody: Codable { let verifier: String; let purgeProof: String }
 struct ForumPostBody: Codable { let title: String; let content: String }
 
 // MARK: Server discovery / creation / invites

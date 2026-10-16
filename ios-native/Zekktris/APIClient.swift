@@ -1011,9 +1011,17 @@ final class APIClient {
 
     /// Enable shared-key E2EE on a DM. salt + verifier are derived client-side;
     /// the server never sees the password or key.
-    func enableDmE2EE(channelId: String, salt: String, verifier: String) async throws {
-        let body = try JSONEncoder().encode(E2EEEnableBody(salt: salt, verifier: verifier))
+    func enableDmE2EE(channelId: String, salt: String, verifier: String, purgeProof: String) async throws {
+        let body = try JSONEncoder().encode(E2EEEnableBody(salt: salt, verifier: verifier, purgeProof: purgeProof))
         let _: OkWrap = try await send("PUT", "/users/@me/channels/\(channelId)/e2ee-enable", bodyData: body)
+    }
+
+    /// Register the purge proof on an encrypted DM the server has none for
+    /// (encrypted before purge proofs existed, or by an older client). First
+    /// registration wins; a different stored proof is refused (409).
+    func registerDmE2EEPurgeProof(channelId: String, verifier: String, purgeProof: String) async throws {
+        let body = try JSONEncoder().encode(E2EEPurgeProofBody(verifier: verifier, purgeProof: purgeProof))
+        let _: OkWrap = try await send("PUT", "/users/@me/channels/\(channelId)/e2ee-purge-proof", bodyData: body)
     }
 
     /// Upload a new profile avatar (multipart 'file'); returns the updated user.
@@ -1064,11 +1072,12 @@ final class APIClient {
     }
 
     /// Disable E2EE on a DM (server purges encrypted history). The server
-    /// requires the `verifier` derived from the local key as proof we know
-    /// the passphrase — without it (or with a wrong one) it returns 403 and
-    /// does NOT purge. Throws on failure so the caller can surface it.
-    func disableDmE2EE(channelId: String, verifier: String) async throws {
-        let body = try JSONEncoder().encode(E2EEDisableBody(verifier: verifier))
+    /// requires the `verifier` and `purgeProof` derived from the local key as
+    /// proof we hold it (the verifier alone is public) — without them (or
+    /// with wrong ones) it returns 403 and does NOT purge. Throws on failure
+    /// so the caller can surface it.
+    func disableDmE2EE(channelId: String, verifier: String, purgeProof: String) async throws {
+        let body = try JSONEncoder().encode(E2EEDisableBody(verifier: verifier, purgeProof: purgeProof))
         try await sendVoid("DELETE", "/users/@me/channels/\(channelId)/e2ee-disable", bodyData: body)
     }
 

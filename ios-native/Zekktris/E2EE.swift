@@ -9,6 +9,7 @@ import CommonCrypto
 ///   • Key:       PBKDF2-SHA-256(password, salt, 250 000 iterations) → 32 bytes
 ///   • Salt:      16 random bytes, base64
 ///   • Verifier:  base64( SHA-256( keyBytes ‖ UTF8("zkE2EE/verify-v2") ) )
+///   • PurgeProof: base64( SHA-256( keyBytes ‖ UTF8("zkE2EE/purge-v1") ) )
 ///   • Cipher:    AES-256-GCM, 12-byte random IV per message
 ///   • Wire:      "zkE2EE/3:" + base64( iv(12) ‖ ciphertext ‖ tag(16) )
 ///   • Base64:    standard (RFC 4648) with padding (matches tweetnacl-util)
@@ -25,6 +26,7 @@ enum E2EE {
     static let saltBytes = 16
     static let pbkdf2Iterations = 250_000
     static let verifierTag = "zkE2EE/verify-v2"
+    static let purgeProofTag = "zkE2EE/purge-v1"
 
     /// Cheap prefix check — does this content look like an encrypted message?
     static func isEncrypted(_ s: String) -> Bool {
@@ -59,6 +61,16 @@ enum E2EE {
     static func verifier(forKey key: Data) -> String {
         var combined = key
         combined.append(Data(verifierTag.utf8))
+        let digest = SHA256.hash(data: combined)
+        return Data(digest).base64EncodedString()
+    }
+
+    /// base64( SHA-256( key ‖ "zkE2EE/purge-v1" ) ) — sent on enable (the
+    /// server keeps only its hash) and on disable. Unlike the verifier the
+    /// server never hands it out, so only a key holder can purge the history.
+    static func purgeProof(forKey key: Data) -> String {
+        var combined = key
+        combined.append(Data(purgeProofTag.utf8))
         let digest = SHA256.hash(data: combined)
         return Data(digest).base64EncodedString()
     }
