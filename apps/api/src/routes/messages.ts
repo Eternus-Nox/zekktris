@@ -1123,10 +1123,10 @@ messagesRouter.post(
     // isn't re-registered — which silently drops the live MESSAGE_CREATE for an
     // OPEN conversation (the recipient fails conn.dmChannelIds.has(channelId) in
     // the gateway's channel-audience filter) even though the push still fires.
-    // addDMToUser only touches currently-connected sockets and is idempotent
-    // (Set.add + index guard), so this is a cheap no-op once a connection is
-    // correctly registered — but it guarantees live delivery to anyone with the
-    // DM open. Guild channels don't need this (membership/viewability is fixed
+    // dmSubscribeRecipients only touches currently-connected sockets (on every
+    // replica, via one small internal bus signal) and is idempotent (Set.add +
+    // index guard), so this is a cheap no-op once a connection is correctly
+    // registered — but it guarantees live delivery to anyone with the DM open. Guild channels don't need this (membership/viewability is fixed
     // at IDENTIFY and on join). Must run BEFORE the dispatch so THIS message is
     // delivered, not just future ones.
     // Snapshot the DM recipient set ONCE for this request — reused by both the
@@ -1137,9 +1137,7 @@ messagesRouter.post(
     if (ctx.isDM) {
       try {
         dmRecipients = await dms.listAllRecipients(channelId);
-        for (const rid of dmRecipients) {
-          registry.addDMToUser(rid, channelId);
-        }
+        dispatch.dmSubscribeRecipients({ channelId, recipientIds: dmRecipients });
       } catch {
         // Best-effort: a failed re-subscribe just falls back to whatever the
         // connection already had; the push + REST refetch still cover it.

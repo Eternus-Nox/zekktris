@@ -144,9 +144,21 @@ When the snapshot needs to change (user joins/leaves a guild, a
 permission override flips, etc.), the dispatch helpers in
 `dispatch.ts` (e.g. `applyGuildPermissionChange`) call into
 `registry.byUserId()` to find the user's local connections and
-update their snapshots. **In a multi-node setup, this only updates
-the snapshot on the replica where the user is connected.** That's
-exactly what we want — other replicas don't need to know.
+update their snapshots. That is a node-local write: it only reaches
+connections held by the replica that HANDLED THE REQUEST, which is
+not necessarily the replica the user is connected to. So every
+snapshot change also fans out as an internal signal:
+
+- Guild join/leave/kick/ban, guild delete and DM open/close publish
+  `_zk.internal.membership` (Redis-only, no local echo). Every other
+  replica applies the same `registry.addGuildToUser` /
+  `removeGuildFromUser` / `addDMToUser` / `removeDMFromUser` to its
+  own connections. The signal is published in the same order as the
+  client events around it (a join before `GUILD_MEMBER_ADD`, a leave
+  after `GUILD_DELETE`), and the bus preserves publish order, so the
+  peer's filter sees the same sequence the origin's does.
+- Permission/role changes publish `_zk.internal.viewability_invalidate`
+  (below).
 
 Note that `applyGuildPermissionChange` / `applyMemberRoleChange`
 recompute the per-connection snapshot LOCALLY (`registry.byUserId()`
