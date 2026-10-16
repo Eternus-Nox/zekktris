@@ -1,7 +1,7 @@
 /**
  * Permission catalog
  * ------------------
- * The 30 permission bits with display metadata: human label, group, a
+ * Every permission bit (0..33) with display metadata: human label, group, a
  * one-line explanation, and whether the bit is meaningful as a per-
  * channel override.
  *
@@ -28,7 +28,7 @@
 export type PermissionScope = 'guild' | 'channel' | 'voice';
 
 export interface PermissionDef {
-  /** Bit position (0..31). The bitfield bit is `1n << BigInt(bit)`. */
+  /** Bit position (0..33). The bitfield bit is `1n << BigInt(bit)`. */
   bit: number;
   /** Stable identifier used in code paths and logs. */
   key: string;
@@ -90,6 +90,14 @@ export const PERMISSIONS: PermissionDef[] = [
     key: 'VIEW_AUDIT_LOG',
     label: 'View Audit Log',
     description: 'Read the audit log of admin actions.',
+    group: 'general',
+    scope: 'guild',
+  },
+  {
+    bit: 32,
+    key: 'MANAGE_EVENTS',
+    label: 'Manage Events',
+    description: 'Create, edit, cancel, and delete scheduled events.',
     group: 'general',
     scope: 'guild',
   },
@@ -202,6 +210,15 @@ export const PERMISSIONS: PermissionDef[] = [
     scope: 'channel',
   },
   {
+    // Checked server-wide (not per channel) by the thread routes.
+    bit: 33,
+    key: 'MANAGE_THREADS',
+    label: 'Manage Threads',
+    description: 'Archive, resolve, and delete any thread or forum post, not just your own.',
+    group: 'text',
+    scope: 'guild',
+  },
+  {
     bit: 9,
     key: 'MENTION_EVERYONE',
     label: 'Mention @everyone, @here, all roles',
@@ -280,6 +297,14 @@ export const PERMISSIONS: PermissionDef[] = [
     key: 'PRIORITY_SPEAKER',
     label: 'Priority Speaker',
     description: 'When you speak, others get attenuated.',
+    group: 'voice',
+    scope: 'voice',
+  },
+  {
+    bit: 31,
+    key: 'USE_EMBEDDED_ACTIVITIES',
+    label: 'Use Activities',
+    description: 'Start shared activities in voice channels. (Reserved.)',
     group: 'voice',
     scope: 'voice',
   },
