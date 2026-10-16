@@ -1140,6 +1140,9 @@ export class RestClient {
       label: string | null;
       createdAt: string;
       lastUsedAt: string;
+      /** Hex SHA-256 of the push endpoint URL — match against this
+          browser's own PushSubscription.endpoint to find its row. */
+      endpointHash: string;
     }>;
   }> {
     return this.request('GET', '/users/@me/push-subscriptions');

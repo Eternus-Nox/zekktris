@@ -24,6 +24,7 @@ import { AchievementsShelf } from './AchievementsShelf';
 import { useParentalControlsEnabled, setParentalControlsEnabled } from '../lib/familyPrefs';
 import { useHideClanTags, setHideClanTags } from '../lib/displayPrefs';
 import { E2eeLinkPreviewsToggle } from './E2eeLinkPreviewsToggle';
+import { findOwnPushDevice } from '../lib/pushEndpoint';
 import { TierBadge, TIER_META } from '../lib/TierBadge';
 import { isNative, requestNotificationPermission } from '../lib/native';
 import {
@@ -2452,7 +2453,13 @@ function NotificationSettings() {
   const [enabled, setEnabled] = useState<boolean | null>(null); // null = loading
   const [subscribed, setSubscribed] = useState<boolean | null>(null);
   const [devices, setDevices] = useState<
-    Array<{ id: string; label: string | null; createdAt: string; lastUsedAt: string }>
+    Array<{
+      id: string;
+      label: string | null;
+      createdAt: string;
+      lastUsedAt: string;
+      endpointHash: string;
+    }>
   >([]);
   const [pending, setPending] = useState(false);
 
@@ -2565,11 +2572,15 @@ function NotificationSettings() {
       const reg = await navigator.serviceWorker.getRegistration();
       const sub = reg ? await reg.pushManager.getSubscription() : null;
       if (sub) {
-        // Find the matching server-side row and delete it before the
-        // browser unsubscribes. Order matters: if we unsubscribe in the
-        // browser first and the DELETE fails, we have a phantom
-        // subscription on the server that gets pruned on the next 410.
-        const matching = devices.find(() => true); // best-effort match — only one per browser anyway
+        // Find THIS browser's server-side row (by endpoint hash — the list
+        // spans all the user's devices) and delete it before the browser
+        // unsubscribes. Order matters: if we unsubscribe in the browser
+        // first and the DELETE fails, we have a phantom subscription on
+        // the server that gets pruned on the next 410.
+        const { subscriptions: current } = await rest
+          .listPushSubscriptions()
+          .catch(() => ({ subscriptions: devices }));
+        const matching = await findOwnPushDevice(current, sub.endpoint);
         if (matching) {
           await rest.deletePushSubscription(matching.id).catch(() => undefined);
         }

@@ -10,6 +10,7 @@
  * GET    /api/v1/users/:id                  public profile lookup
  */
 
+import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { validate } from '../lib/validate';
 import { RateLimiter } from '../lib/rateLimit';
@@ -1403,6 +1404,9 @@ usersRouter.post(
  * List the current user's push subscriptions. Returns shape suitable
  * for a "your devices" list — never returns the auth secret or p256dh
  * key (those are sensitive material the client doesn't need to see).
+ * `endpointHash` (hex SHA-256 of the push endpoint URL) lets a browser
+ * find ITS OWN row — it hashes its PushSubscription.endpoint the same
+ * way — without the list handing out every device's endpoint capability.
  */
 usersRouter.get('/@me/push-subscriptions', requireAuth, async (c) => {
   const userId = requireUserId(c);
@@ -1414,6 +1418,7 @@ usersRouter.get('/@me/push-subscriptions', requireAuth, async (c) => {
       label: s.label,
       createdAt: s.createdAt.toISOString(),
       lastUsedAt: s.lastUsedAt.toISOString(),
+      endpointHash: createHash('sha256').update(s.endpoint).digest('hex'),
     })),
   });
 });
