@@ -1274,7 +1274,7 @@ function VoiceChannelRow({
   const voiceStatesByUser = useAppStateSelector((v) => v.state.voiceStatesByUser);
   const supervision = useAppStateSelector((v) => v.state.supervision);
   const mergeChannelVoiceStates = useAppStateSelector((v) => v.mergeChannelVoiceStates);
-  const restForChannel = useAppStateSelector((v) => v.restForChannel);
+  const rest = useAppStateSelector((v) => v.rest);
   const state = { voiceStatesByUser, supervision };
   const { user } = useAuth();
   const toasts = useToasts();
@@ -1319,7 +1319,7 @@ function VoiceChannelRow({
     // moderator dragged us, and races a second join against this one.
     claimVoiceChannel(channel.id);
     try {
-      const r = await (await restForChannel(channel.id)).joinVoice(channel.id);
+      const r = await rest.joinVoice(channel.id);
       // Merge the channel's authoritative voice state snapshot into
       // our local view before connecting — defends against any
       // earlier missed VOICE_STATE_UPDATE events so the joining
@@ -1341,7 +1341,7 @@ function VoiceChannelRow({
           // denied, no UDP, SFU down) would otherwise leave us as a silent
           // ghost in the channel forever (our gateway is healthy, so the 45s
           // grace never fires). Best-effort — the gateway echoes the leave.
-          void (await restForChannel(channel.id)).leaveVoice(channel.id).catch(() => {});
+          void rest.leaveVoice(channel.id).catch(() => {});
           if (e instanceof VoiceError) {
             toasts.push(e.message, 'error');
           } else {
@@ -1385,7 +1385,7 @@ function VoiceChannelRow({
       return;
     }
     try {
-      await (await restForChannel(channel.id)).moveVoiceMember({
+      await rest.moveVoiceMember({
         userId: droppedUserId,
         channelId: channel.id,
       });
@@ -1519,7 +1519,7 @@ function VoiceParticipant({ userId, muted, deaf }: { userId: string; muted: bool
   const membersByGuild = useAppStateSelector((v) => v.state.membersByGuild);
   const rolesByGuild = useAppStateSelector((v) => v.state.rolesByGuild);
   const channelsByGuild = useAppStateSelector((v) => v.state.channelsByGuild);
-  const restForChannel = useAppStateSelector((v) => v.restForChannel);
+  const rest = useAppStateSelector((v) => v.rest);
   const state = { usersById, voiceStatesByUser, guildsById, membersByGuild, rolesByGuild, channelsByGuild };
   const { user } = useAuth();
   const toasts = useToasts();
@@ -1562,7 +1562,7 @@ function VoiceParticipant({ userId, muted, deaf }: { userId: string; muted: bool
 
   async function moveTo(channelId: string) {
     try {
-      await (await restForChannel(channelId)).moveVoiceMember({ userId, channelId });
+      await rest.moveVoiceMember({ userId, channelId });
     } catch (e) {
       toasts.push(
         e instanceof ApiError ? e.message : 'Could not move user',

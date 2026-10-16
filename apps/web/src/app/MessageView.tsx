@@ -3100,7 +3100,7 @@ function DmHeaderName({ user, label }: { user: PublicUser; label: string }) {
 function DmHeaderCallButton({ channel }: { channel: Channel }) {
   // Granular subscriptions (was `useAppState()`).
   const mergeChannelVoiceStates = useAppStateSelector((v) => v.mergeChannelVoiceStates);
-  const restForChannel = useAppStateSelector((v) => v.restForChannel);
+  const rest = useAppStateSelector((v) => v.rest);
   const voiceStatesByUser = useAppStateSelector((v) => v.state.voiceStatesByUser);
   const supervision = useAppStateSelector((v) => v.state.supervision);
   const { user } = useAuth();
@@ -3164,7 +3164,7 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
     // as "a moderator dragged me somewhere else."
     claimVoiceChannel(channel.id);
     try {
-      const r = await (await restForChannel(channel.id)).joinVoice(channel.id);
+      const r = await rest.joinVoice(channel.id);
       mergeChannelVoiceStates(channel.id, r.channelVoiceStates);
       if (r.token && r.wsUrl) {
         try {
@@ -3185,7 +3185,7 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
           // strand us as a silent ghost — for a 1:1 DM call that means the
           // other party sits in dead air with someone who "answered." The
           // gateway echoes the leave. Best-effort.
-          void (await restForChannel(channel.id)).leaveVoice(channel.id).catch(() => {});
+          void rest.leaveVoice(channel.id).catch(() => {});
           toasts.push(
             e instanceof VoiceError
               ? e.message
@@ -3215,7 +3215,7 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
     try {
       await disconnectVoice();
       try {
-        await (await restForChannel(channel.id)).leaveVoice(channel.id);
+        await rest.leaveVoice(channel.id);
       } catch (e) {
         if (!(e instanceof ApiError && e.status === 404)) {
           toasts.push(e instanceof ApiError ? e.message : 'Failed to hang up', 'error');
@@ -3286,7 +3286,7 @@ function pokeAgo(iso: string): string {
 }
 
 function DmHeaderPokeButton({ channel }: { channel: Channel }) {
-  const restForChannel = useAppStateSelector((v) => v.restForChannel);
+  const rest = useAppStateSelector((v) => v.rest);
   const toasts = useToasts();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -3300,8 +3300,8 @@ function DmHeaderPokeButton({ channel }: { channel: Channel }) {
       const next = !wasOpen;
       if (next) {
         setLoadingHistory(true);
-        void restForChannel(channel.id)
-          .then((rest) => rest.listPokes(channel.id))
+        void rest
+          .listPokes(channel.id)
           .then((r) => setHistory(r.pokes))
           .catch(() => setHistory([]))
           .finally(() => setLoadingHistory(false));
@@ -3315,7 +3315,6 @@ function DmHeaderPokeButton({ channel }: { channel: Channel }) {
     setBusy(true);
     setOpen(false);
     try {
-      const rest = await restForChannel(channel.id);
       await rest.poke(channel.id, pokeType);
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Could not send that poke', 'error');

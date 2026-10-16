@@ -29,7 +29,7 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
   // on every reducer dispatch).
   const voiceStatesByUser = useAppStateSelector((v) => v.state.voiceStatesByUser);
   const channelsByGuild = useAppStateSelector((v) => v.state.channelsByGuild);
-  const restForChannel = useAppStateSelector((v) => v.restForChannel);
+  const rest = useAppStateSelector((v) => v.rest);
   const mergeChannelVoiceStates = useAppStateSelector((v) => v.mergeChannelVoiceStates);
   const { user } = useAuth();
   const toasts = useToasts();
@@ -81,7 +81,7 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
     if (e instanceof ApiError && e.status === 409) {
       await disconnectVoice();
       try {
-        const r = await (await restForChannel(channelId)).listVoiceStates(channelId);
+        const r = await rest.listVoiceStates(channelId);
         mergeChannelVoiceStates(channelId, r.voiceStates);
       } catch {
         // The roster heals on the next gateway event; the call is already down.
@@ -107,7 +107,7 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
     }
     if (dropDeafen) setDeafenedState(false);
     try {
-      await (await restForChannel(my.channelId)).updateVoiceState(
+      await rest.updateVoiceState(
         my.channelId,
         dropDeafen
           ? { selfMute: nextMuted, selfDeaf: false }
@@ -136,7 +136,7 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
     // the prior state was on undeafen, so users undeafening saw
     // their mute indicator persist until they clicked unmute too.
     try {
-      await (await restForChannel(my.channelId)).updateVoiceState(my.channelId, {
+      await rest.updateVoiceState(my.channelId, {
         selfDeaf: next,
         selfMute: next,
       });
@@ -149,7 +149,7 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
     if (!my?.channelId) return;
     await disconnectVoice();
     try {
-      await (await restForChannel(my.channelId)).leaveVoice(my.channelId);
+      await rest.leaveVoice(my.channelId);
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Failed to leave', 'error');
     }

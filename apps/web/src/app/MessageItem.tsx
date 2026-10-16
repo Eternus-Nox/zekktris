@@ -157,7 +157,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   // fixes (#11a/#11b) ensure no-op events don't flip slice references
   // unnecessarily, so this migration's payoff is real.
   const retrySendMessage = useAppStateSelector((v) => v.retrySendMessage);
-  const restForChannel = useAppStateSelector((v) => v.restForChannel);
+  const rest = useAppStateSelector((v) => v.rest);
   const discardFailedMessage = useAppStateSelector((v) => v.discardFailedMessage);
   const membersByGuild = useAppStateSelector((v) => v.state.membersByGuild);
   const rolesByGuild = useAppStateSelector((v) => v.state.rolesByGuild);
@@ -419,21 +419,16 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
     }
     let cancelled = false;
     void (async () => {
-      try {
-        const rest = await restForChannel(message.channelId);
-        const found: MessageEmbed[] = [];
-        for (const u of urls) {
-          try {
-            const { embed } = await rest.unfurl(u);
-            if (embed) found.push(embed);
-          } catch {
-            // best-effort per URL
-          }
+      const found: MessageEmbed[] = [];
+      for (const u of urls) {
+        try {
+          const { embed } = await rest.unfurl(u);
+          if (embed) found.push(embed);
+        } catch {
+          // best-effort per URL
         }
-        if (!cancelled) setE2eeEmbeds(found);
-      } catch {
-        // couldn't get a rest client — leave previews empty
       }
+      if (!cancelled) setE2eeEmbeds(found);
     })();
     return () => {
       cancelled = true;
@@ -608,7 +603,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
       outgoing = encrypted;
     }
     try {
-      await (await restForChannel(message.channelId)).editMessage(message.channelId, message.id, outgoing);
+      await rest.editMessage(message.channelId, message.id, outgoing);
       setEditing(false);
     } catch (e) {
       setEditErr(e instanceof ApiError ? e.message : 'Edit failed');
@@ -622,7 +617,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
     // modal in the polish pass.
     if (!confirm('Delete this message?')) return;
     try {
-      await (await restForChannel(message.channelId)).deleteMessage(message.channelId, message.id);
+      await rest.deleteMessage(message.channelId, message.id);
     } catch (e) {
       // No state to roll back; the gateway will deliver the delete event.
       // If REST failed, the event won't come, and the message stays —
@@ -641,9 +636,9 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   async function togglePin() {
     try {
       if (message.pinned) {
-        await (await restForChannel(message.channelId)).unpinMessage(message.channelId, message.id);
+        await rest.unpinMessage(message.channelId, message.id);
       } else {
-        await (await restForChannel(message.channelId)).pinMessage(message.channelId, message.id);
+        await rest.pinMessage(message.channelId, message.id);
       }
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Pin/unpin failed', 'error');
@@ -1277,7 +1272,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
           guildId={guildIdForChannel ?? undefined}
           onSelect={(emoji) => {
             setReactPickerOpen(false);
-            void restForChannel(message.channelId).then((api) => api.addReaction(message.channelId, message.id, emoji)).catch(() => {
+            void rest.addReaction(message.channelId, message.id, emoji).catch(() => {
               // Reactions component shows surfaced errors via toasts;
               // we deliberately drop here since this is the hover-
               // strip variant and the user just sees nothing happen

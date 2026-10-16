@@ -206,7 +206,7 @@ export function VoiceView({
   const voiceStatesByUser = useAppStateSelector((v) => v.state.voiceStatesByUser);
   const usersById = useAppStateSelector((v) => v.state.usersById);
   const mergeChannelVoiceStates = useAppStateSelector((v) => v.mergeChannelVoiceStates);
-  const restForChannel = useAppStateSelector((v) => v.restForChannel);
+  const rest = useAppStateSelector((v) => v.rest);
   const { user } = useAuth();
   // Parental controls: a supervised child may be barred from video and/or
   // screen sharing. The server already enforces this at the SFU token;
@@ -378,7 +378,7 @@ export function VoiceView({
     // self-move detector into a duplicate "moderator dragged me" rejoin.
     claimVoiceChannel(channel.id);
     try {
-      const r = await (await restForChannel(channel.id)).joinVoice(channel.id);
+      const r = await rest.joinVoice(channel.id);
       mergeChannelVoiceStates(channel.id, r.channelVoiceStates);
       if (r.token && r.wsUrl) {
         try {
@@ -399,7 +399,7 @@ export function VoiceView({
           // Roll back the server-side join so a failed media connect doesn't
           // leave us as a silent ghost in the channel (the gateway echoes the
           // leave). Best-effort.
-          void (await restForChannel(channel.id)).leaveVoice(channel.id).catch(() => {});
+          void rest.leaveVoice(channel.id).catch(() => {});
           toasts.push(
             e instanceof VoiceError
               ? e.message
@@ -451,7 +451,7 @@ export function VoiceView({
       await disconnectVoice();
       if (myVoice?.channelId) {
         try {
-          await (await restForChannel(myVoice.channelId)).leaveVoice(myVoice.channelId);
+          await rest.leaveVoice(myVoice.channelId);
         } catch (e) {
           toasts.push(e instanceof ApiError ? e.message : 'Failed to leave', 'error');
         }
@@ -497,7 +497,7 @@ export function VoiceView({
     }
     if (dropDeafen) setDeafenedState(false);
     try {
-      await (await restForChannel(myVoice.channelId)).updateVoiceState(
+      await rest.updateVoiceState(
         myVoice.channelId,
         dropDeafen ? { selfMute: next, selfDeaf: false } : { selfMute: next },
       );
@@ -517,7 +517,7 @@ export function VoiceView({
     if (e instanceof ApiError && e.status === 409) {
       await disconnectVoice();
       try {
-        const r = await (await restForChannel(channelId)).listVoiceStates(channelId);
+        const r = await rest.listVoiceStates(channelId);
         mergeChannelVoiceStates(channelId, r.voiceStates);
       } catch {
         // The roster heals on the next gateway event; the call is already down.
@@ -554,7 +554,7 @@ export function VoiceView({
       // truth for other participants.
     }
     try {
-      await (await restForChannel(myVoice.channelId)).updateVoiceState(myVoice.channelId, {
+      await rest.updateVoiceState(myVoice.channelId, {
         selfDeaf: next,
         selfMute: next,
       });

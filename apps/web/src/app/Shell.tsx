@@ -144,7 +144,6 @@ export function Shell() {
   // actually reads changes. This is high-leverage: a Shell re-render
   // cascades into all four columns.
   const loadChannels = useAppStateSelector((v) => v.loadChannels);
-  const restForChannel = useAppStateSelector((v) => v.restForChannel);
   const voiceStatesByUser = useAppStateSelector((v) => v.state.voiceStatesByUser);
   const dmChannels = useAppStateSelector((v) => v.state.dmChannels);
   const guildIds = useAppStateSelector((v) => v.state.guildIds);
@@ -491,7 +490,7 @@ export function Shell() {
     }
     void (async () => {
       try {
-        await (await restForChannel(leaving)).leaveVoice(leaving);
+        await rest.leaveVoice(leaving);
         // Success: leave the guard latched. Our row is about to disappear and
         // clear it, and releasing early would let a re-render fire a
         // duplicate leave before the gateway echo lands.
