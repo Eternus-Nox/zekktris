@@ -781,15 +781,8 @@ struct MessageListView: View {
                         // to the bottom — that case is owned by the anchor
                         // restore below.
                         let appended = new.count > old.count && new.lastId != old.lastId
-                        // A long session: live appends have grown the eager part
-                        // well past a page. While the reader is at the bottom,
-                        // move the seam up so rows far above go back to the lazy
-                        // stack — they are screens away, so nothing being read or
-                        // played is torn down — and the eager part stays bounded.
-                        if appended, isNearBottom,
-                           store.messages.count - lazySplitIndex(in: store.messages) > 2 * Self.eagerRowCount {
-                            pinEagerAnchor(at: store.messages.count - Self.eagerRowCount)
-                        }
+                        // A long session's live appends grow the eager part.
+                        if appended { boundEagerPart() }
                         let ownSend = appended
                             && store.messages.last?.authorId != nil
                             && store.messages.last?.authorId == store.currentUserId
@@ -872,7 +865,7 @@ struct MessageListView: View {
                         // part back to take it in, with some context above, and
                         // scroll only once that render has happened.
                         var targetMadeEager = false
-                        if !isOwnPrepend,
+                        if !isOwnPrepend, !forceLazyList,
                            let target = store.messages.firstIndex(where: { $0.id == anchor }),
                            target < lazySplitIndex(in: store.messages) {
                             pinEagerAnchor(at: target - Self.unreadLandingMaxRowsBack)
@@ -1260,6 +1253,26 @@ struct MessageListView: View {
         isNearBottom = near
         renderProbe.nearSource = source
         renderProbe.log("near-bottom \(near) (\(source))")
+        // Back at the bottom after reading far up (e.g. after a jump made a
+        // long stretch eager): a good moment to trim.
+        if near { boundEagerPart() }
+    }
+
+    /// Keep the eager part bounded. Live appends over a long session, or a
+    /// jump that made everything from an old message down eager, can leave
+    /// hundreds of rows built and measured on every render and scroll frame.
+    /// Past two pages of them — while the reader is at the bottom and nothing
+    /// owns the position — move the seam up to the newest `eagerRowCount`.
+    /// The rows that go lazy are screens above the reader. Skipped while any
+    /// voice note is playing: moving a row between the stacks rebuilds it,
+    /// which would stop its clip.
+    private func boundEagerPart() {
+        guard !forceLazyList, isNearBottom, store.pendingScrollAnchorId == nil,
+              VoiceClipPlayer.playingCount == 0 else { return }
+        let rows = store.messages
+        guard rows.count - lazySplitIndex(in: rows) > 2 * Self.eagerRowCount else { return }
+        pinEagerAnchor(at: rows.count - Self.eagerRowCount)
+        renderProbe.log("eager part trimmed to the newest \(Self.eagerRowCount)")
     }
 
     /// The content container's own "at the bottom" reading. It drives the gate

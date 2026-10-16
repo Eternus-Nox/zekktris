@@ -154,7 +154,17 @@ final class VoiceRecorder: ObservableObject {
 /// Streams a single voice-message clip with play/pause and progress.
 @MainActor
 final class VoiceClipPlayer: ObservableObject {
-    @Published var playing = false
+    /// How many clips are playing right now, app-wide. The message list reads
+    /// it before moving rows between its eager and lazy stacks: a moved row is
+    /// rebuilt, and rebuilding a VoiceMessageView stops its clip.
+    private(set) static var playingCount = 0
+
+    @Published var playing = false {
+        didSet {
+            guard playing != oldValue else { return }
+            Self.playingCount += playing ? 1 : -1
+        }
+    }
     @Published var progress: Double = 0   // 0…1
 
     private var player: AVPlayer?
@@ -230,6 +240,12 @@ final class VoiceClipPlayer: ObservableObject {
         player?.pause()
         player = nil
         playing = false
+    }
+
+    /// Normally cleanup() has already stopped it; if the player goes away
+    /// still marked playing, keep the app-wide count honest.
+    deinit {
+        if playing { Self.playingCount -= 1 }
     }
 }
 
