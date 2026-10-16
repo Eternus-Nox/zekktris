@@ -547,11 +547,14 @@ function E2eeToggle({ channel, selfId }: { channel: Channel; selfId: string }) {
     if (pending) return;
     setPending(true);
     try {
-      // Prove we know the passphrase: derive the verifier from the local
-      // key and send it. The disable button is only shown when unlocked
-      // (haveLocalKey), so the key should be present; bail defensively if
-      // it isn't rather than firing a request the server will reject.
-      const { getLocalKey, computeVerifier, clearLocalKey } = await import('../lib/e2ee');
+      // Prove we hold the key: derive the verifier AND the purge proof from
+      // the local key and send both (the verifier is public, so the proof is
+      // what the server actually trusts). The disable button is only shown
+      // when unlocked (haveLocalKey), so the key should be present; bail
+      // defensively if it isn't rather than firing a request the server will
+      // reject.
+      const { getLocalKey, computeVerifier, computePurgeProof, clearLocalKey } =
+        await import('../lib/e2ee');
       const keyBytes = getLocalKey(channel.id);
       if (!keyBytes) {
         toasts.push('Unlock this conversation first to turn off encryption.', 'error');
@@ -559,8 +562,10 @@ function E2eeToggle({ channel, selfId }: { channel: Channel; selfId: string }) {
         return;
       }
       const { encodeBase64 } = await import('tweetnacl-util');
-      const verifier = await computeVerifier(encodeBase64(keyBytes));
-      await rest.disableDmE2ee(channel.id, verifier);
+      const keyBase64 = encodeBase64(keyBytes);
+      const verifier = await computeVerifier(keyBase64);
+      const purgeProof = await computePurgeProof(keyBase64);
+      await rest.disableDmE2ee(channel.id, verifier, purgeProof);
       clearLocalKey(channel.id);
       setHaveLocalKey(false);
       setDisableModalOpen(false);
@@ -699,7 +704,7 @@ function E2eeToggle({ channel, selfId }: { channel: Channel; selfId: string }) {
 /**
  * Modal shown when enabling E2EE on a DM. User picks a passphrase
  * and confirms it. On submit: generate salt, derive key, compute
- * verifier, PUT /e2ee-enable, cache local key.
+ * verifier + purge proof, PUT /e2ee-enable, cache local key.
  *
  * Includes a tip line that the user needs to share this password
  * with the other person via any out-of-band channel — text message,
@@ -739,12 +744,14 @@ function PickPasswordModal({
         generateSalt,
         deriveKeyFromPassword,
         computeVerifier,
+        computePurgeProof,
         saveLocalKey,
       } = await import('../lib/e2ee');
       const salt = generateSalt();
       const key = await deriveKeyFromPassword(password, salt);
       const verifier = await computeVerifier(key);
-      await rest.enableDmE2ee(channel.id, salt, verifier);
+      const purgeProof = await computePurgeProof(key);
+      await rest.enableDmE2ee(channel.id, salt, verifier, purgeProof);
       saveLocalKey(channel.id, key);
       toasts.push(
         'Encryption enabled. Share the password with the other person through any other channel.',

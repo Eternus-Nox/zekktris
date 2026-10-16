@@ -12,6 +12,10 @@
  *   verifier: SHA-256 of the derived key (base64). Lets each
  *             client confirm "I typed the right password" without
  *             the server learning the key.
+ *   purge proof: SHA-256 of the key under a different tag. The
+ *             server stores only ITS hash and never returns it, so
+ *             presenting it proves key possession before a purge
+ *             (the verifier can't: every participant receives it).
  *
  * Algorithm: PBKDF2-SHA-256 (250 000 iterations, 32-byte output)
  * → 256-bit symmetric key → AES-256-GCM with a 12-byte random IV
@@ -202,6 +206,23 @@ export async function computeVerifier(keyBase64: string): Promise<string> {
   // also hashes the key directly. The tag bytes break any such
   // accidental overlap.
   const tag = naclUtil.decodeUTF8('zkE2EE/verify-v2');
+  const combined = new Uint8Array(keyBytes.length + tag.length);
+  combined.set(keyBytes, 0);
+  combined.set(tag, keyBytes.length);
+  const hash = await crypto.subtle.digest('SHA-256', combined as BufferSource);
+  return naclUtil.encodeBase64(new Uint8Array(hash));
+}
+
+/**
+ * Compute the purge proof for a derived key — base64
+ * SHA-256(key || "zkE2EE/purge-v1"), built exactly like the verifier
+ * but with its own tag. Sent on enable (the server keeps only its
+ * hash) and on disable; unlike the verifier the server never hands it
+ * out, so only a key holder can purge the encrypted history.
+ */
+export async function computePurgeProof(keyBase64: string): Promise<string> {
+  const keyBytes = naclUtil.decodeBase64(keyBase64);
+  const tag = naclUtil.decodeUTF8('zkE2EE/purge-v1');
   const combined = new Uint8Array(keyBytes.length + tag.length);
   combined.set(keyBytes, 0);
   combined.set(tag, keyBytes.length);
