@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   encodeAudience,
   decodeAudience,
@@ -9,6 +9,7 @@ import {
 } from '../src/gateway/redis-bus';
 import type { PublishedEvent } from '../src/gateway/bus';
 import type { Audience } from '../src/gateway/types';
+import { log } from '../src/log';
 
 const ev = (over: Partial<PublishedEvent> = {}): PublishedEvent => ({
   t: 'MESSAGE_CREATE' as PublishedEvent['t'],
@@ -153,5 +154,63 @@ describe('RedisEventBus', () => {
 
     expect(got).toHaveLength(0);
     expect(errors.length).toBeGreaterThan(0);
+  });
+});
+
+describe('RedisEventBus during a Redis outage', () => {
+  it('skips (does not queue) cross-replica publishes while the publisher is not ready', async () => {
+    const pub = Object.assign(fakeRedis(), { status: 'reconnecting' });
+    const sub = fakeRedis();
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(log, 'info').mockImplementation(() => {});
+    try {
+      const bus = new RedisEventBus(pub as RedisLike, sub as RedisLike, {
+        instanceId: 'A',
+        channel: 'test',
+      });
+      const got: PublishedEvent[] = [];
+      bus.subscribe((e) => got.push(e));
+
+      for (let i = 0; i < 50; i++) bus.publish(ev());
+      bus.publishRemote(ev());
+
+      expect(got).toHaveLength(50); // local delivery is unaffected
+      expect(pub.published).toHaveLength(0); // nothing handed to Redis
+      expect(warn).toHaveBeenCalledTimes(1); // one warning per outage, not per event
+
+      // Redis comes back: publishing resumes and the recovery is logged once.
+      pub.status = 'ready';
+      bus.publish(ev());
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(pub.published).toHaveLength(1);
+      expect(info).toHaveBeenCalledWith(
+        'gateway redis bus: cross-replica publish recovered',
+        { dropped: 51 },
+      );
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
+  it('reports a rejected publish once per outage', async () => {
+    const pub = fakeRedis();
+    pub.publish = () => Promise.reject(new Error('Command timed out'));
+    const sub = fakeRedis();
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    try {
+      const bus = new RedisEventBus(pub as RedisLike, sub as RedisLike, {
+        instanceId: 'A',
+        channel: 'test',
+      });
+      bus.publish(ev());
+      bus.publish(ev());
+      bus.publish(ev());
+      await new Promise((r) => setTimeout(r, 0));
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
