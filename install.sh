@@ -635,22 +635,25 @@ if [[ $START -eq 0 ]]; then
     exit 0
 fi
 
+# The api first, the rest once it is healthy: on an existing install whose
+# uploads root still owns, the api hands them to its own user before it starts,
+# which can outlast the proxy's wait for it (scripts/lib/start-stack.sh).
+[[ -r scripts/lib/start-stack.sh ]] || fail "scripts/lib/start-stack.sh is missing — is this the Zekktris folder?"
+# shellcheck source=scripts/lib/start-stack.sh
+. scripts/lib/start-stack.sh
+
 step "Building and starting Zekktris"
 info "The first build takes several minutes."
-$COMPOSE up -d --build
+$COMPOSE build
+$COMPOSE up -d api || fail "Couldn't start the server. Fix the problem above, then run ./install.sh again."
 
 step "Waiting for the server to come up"
-deadline=$(( $(date +%s) + 180 ))
-healthy=0
-while [[ $(date +%s) -lt $deadline ]]; do
-    if $COMPOSE exec -T api wget -qO- http://127.0.0.1:3000/health >/dev/null 2>&1; then healthy=1; break; fi
-    sleep 3
-done
-if [[ $healthy -eq 0 ]]; then
+if ! wait_for_api 180 "The server is handing its uploads folder to its unprivileged user (once) — waiting for that, up to an hour."; then
     warn "The server didn't report healthy within 3 minutes. Its last log lines:"
     $COMPOSE logs --tail=60 api || true
     fail "Fix the problem above, then run ./install.sh again."
 fi
+$COMPOSE up -d || fail "The server is running, but the rest of Zekktris didn't start. Fix the problem above, then run: $COMPOSE up -d"
 ok "Server is running"
 admin_account_create
 

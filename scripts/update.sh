@@ -54,14 +54,10 @@ if docker compose version >/dev/null 2>&1; then COMPOSE="docker compose"
 elif command -v docker-compose >/dev/null 2>&1; then COMPOSE="docker-compose"
 else fail "docker compose not found"; fi
 
-# The api's first boot after it stopped running as root hands uploads/ to its
-# own user (ops/api-entrypoint.sh) before it starts, which on a large tree can
-# outlast the health wait. True while that is still going.
-handover_running() {
-    local last
-    last="$($COMPOSE logs --tail 200 api 2>&1 | grep -E 'api-entrypoint: (handing|handed|could not hand)' | tail -1 || true)"
-    [[ "$last" == *"api-entrypoint: handing "* ]]
-}
+# wait_for_api and why the api is started before the rest. Read now, before
+# the merge below can change or (on a rollback) remove it.
+# shellcheck source=lib/start-stack.sh
+. "$SCRIPT_DIR/lib/start-stack.sh"
 
 # ── What would change ───────────────────────────────────────────────────────
 step "Checking for updates"
@@ -198,21 +194,21 @@ fi
 step "Rebuilding"
 $COMPOSE build api proxy
 
-step "Restarting"
-$COMPOSE up -d
+# The api alone first (scripts/lib/start-stack.sh says why); the proxy and the
+# rest follow once it is healthy. A failure here is not fatal: the wait below
+# then fails too, and that is what rolls back.
+step "Restarting the api"
+API_STARTED=1
+$COMPOSE up -d api || API_STARTED=0
 
 step "Waiting for startup checks (up to 90 seconds)"
-DEADLINE=$(( $(date +%s) + 90 )); HEALTHY=0; LIMIT=$(( $(date +%s) + 3600 )); NOTED=0
-while [[ $(date +%s) -lt $DEADLINE ]]; do
-    if $COMPOSE exec -T api wget -qO- http://127.0.0.1:3000/health >/dev/null 2>&1; then HEALTHY=1; break; fi
-    if [[ $(date +%s) -lt $LIMIT ]] && handover_running; then
-        [[ "$NOTED" == "1" ]] || warn "the api is handing uploads/ to its unprivileged user (once) — waiting for that, up to an hour"
-        NOTED=1; DEADLINE=$(( $(date +%s) + 90 ))
-    fi
-    sleep 3
-done
+HEALTHY=0
+if [[ "$API_STARTED" == "1" ]] && wait_for_api 90; then HEALTHY=1; fi
 
 if [[ "$HEALTHY" == "1" ]]; then
+    step "Starting the rest of the stack"
+    $COMPOSE up -d || fail "the api is healthy on the new code, but the rest of the stack did not start.
+    Fix the error above, then run: $COMPOSE up -d"
     echo
     ok "${BOLD}Updated to $(git rev-parse --short HEAD) and healthy.${RESET}"
     [[ -z "$EDGE_WARNING" ]] || warn "$EDGE_WARNING"
@@ -230,7 +226,8 @@ if [[ "$DEPLOY_ONLY" == "1" ]]; then
     echo
     fail "The rebuild did not come up healthy. The code is unchanged, so this is
     a build or runtime failure rather than a bad update.
-    Check: $COMPOSE logs api --tail 80"
+    Check: $COMPOSE logs api --tail 80
+    Once the cause is fixed, start it with: $COMPOSE up -d"
 fi
 
 warn "the new build did not come up healthy — rolling the code back to $CURRENT"
@@ -239,7 +236,13 @@ warn "the new build did not come up healthy — rolling the code back to $CURREN
 # other files). --hard silently threw those edits away.
 git reset --keep "$CURRENT" >/dev/null || fail "could not roll the code back (git reset --keep $CURRENT failed).
     The code is still at $TARGET. Check 'git status', then roll back by hand."
-$COMPOSE build api proxy && $COMPOSE up -d
+if ! { $COMPOSE build api proxy && $COMPOSE up -d api && wait_for_api 90 && $COMPOSE up -d; }; then
+    echo
+    fail "Update failed. The code is back at $(git rev-parse --short HEAD), but the previous build did not come up
+    healthy either. Check: $COMPOSE logs api --tail 80
+    Once the cause is fixed, start it with: $COMPOSE up -d
+    If a migration had already applied, restore the pre-update backup as well."
+fi
 echo
 fail "Update failed and was rolled back. Check: $COMPOSE logs api --tail 80
 If a migration had already applied, restore the pre-update backup as well."
