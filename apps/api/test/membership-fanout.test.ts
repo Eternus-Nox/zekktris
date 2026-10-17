@@ -178,7 +178,13 @@ describe('membership snapshots fan out across replicas', () => {
     const b = connectOnB(PEER, [], []);
 
     onReplicaA(() =>
-      dispatch.dmChannelCreated({ channelDTO: { id: 'dm' }, channelId: DM, recipientIds: [U, PEER] }),
+      dispatch.dmChannelCreated({
+        channelId: DM,
+        dtos: [
+          { userId: U, channelDTO: { id: 'dm' } },
+          { userId: PEER, channelDTO: { id: 'dm' } },
+        ],
+      }),
     );
     expect(b.conn.dmChannelIds.has(DM)).toBe(true);
     onReplicaA(() => dispatch.messageCreate({ messageDTO: { id: 'd1' }, channelId: DM, guildId: null }));
@@ -194,6 +200,22 @@ describe('membership snapshots fan out across replicas', () => {
     // A DM message send re-subscribes recipients on every replica.
     onReplicaA(() => dispatch.dmSubscribeRecipients({ channelId: DM, recipientIds: [U, PEER] }));
     expect(b.conn.dmChannelIds.has(DM)).toBe(true);
+  });
+
+  it('a DM update handled on A gives each recipient on B its own DTO', () => {
+    const bU = connectOnB(U, [], [DM]);
+    const bPeer = connectOnB(PEER, [], [DM]);
+
+    onReplicaA(() =>
+      dispatch.dmChannelUpdated({
+        dtos: [
+          { userId: U, channelDTO: { id: 'for-u' } },
+          { userId: PEER, channelDTO: { id: 'for-peer' } },
+        ],
+      }),
+    );
+    expect(ids(bU.sent)).toEqual(['CHANNEL_UPDATE:for-u']);
+    expect(ids(bPeer.sent)).toEqual(['CHANNEL_UPDATE:for-peer']);
   });
 
   it('the internal signal is never delivered to a client socket', () => {

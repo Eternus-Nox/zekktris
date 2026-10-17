@@ -12,6 +12,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
+import type { Channel } from '@zekktris/db';
 import { requireAuth, requireUserId } from '../auth/middleware';
 import { validate } from '../lib/validate';
 import { snowflakeSchema } from '../lib/validation';
@@ -27,6 +28,32 @@ import { errors } from '../errors';
 export const dmsRouter = new Hono();
 dmsRouter.use('*', requireAuth);
 
+/**
+ * Build a DM's channel DTO once per recipient, each from that recipient's own
+ * point of view: `recipients` is everyone else in the DM. Every gateway
+ * CHANNEL_CREATE / CHANNEL_UPDATE for a DM goes through this — one DTO built
+ * for the caller and sent to the whole DM would hand the peer a DM whose
+ * recipient is the peer themself.
+ */
+async function dmChannelDTOsByRecipient(channel: Channel) {
+  const users = await dms.loadAllRecipientUsers(channel.id);
+  // A supervised pair can't actually go E2EE — report it suppressed. The check
+  // is symmetric in its two users, so one call covers both sides of a 1:1 DM.
+  const suppressed =
+    channel.type === 'dm' && users.length === 2
+      ? !(await supervision.isE2eeAllowedBetween(users[0]!.id, users[1]!.id))
+      : false;
+  return users.map((u) => ({
+    userId: u.id,
+    channelDTO: toChannel(
+      channel,
+      null,
+      users.filter((o) => o.id !== u.id),
+      suppressed,
+    ),
+  }));
+}
+
 const createDMSchema = z.object({ recipientId: snowflakeSchema });
 
 dmsRouter.post('/', validate('json', createDMSchema), async (c) => {
@@ -37,24 +64,17 @@ dmsRouter.post('/', validate('json', createDMSchema), async (c) => {
   if (!channel) throw errors.internal('DM channel disappeared');
   // Hydrate the recipient (just one for a 1:1 DM) so the client
   // can render the proper "DM with X" header without a follow-up
-  // round-trip. Excludes self.
-  const recipientUsers = await dms.loadOtherRecipients(channelId, userId);
-  const suppressed =
-    channel.type === 'dm' && recipientUsers[0]
-      ? !(await supervision.isE2eeAllowedBetween(userId, recipientUsers[0].id))
-      : false;
-  const channelDTO = toChannel(channel, null, recipientUsers, suppressed);
+  // round-trip. Each recipient's DTO excludes that recipient.
+  const dtos = await dmChannelDTOsByRecipient(channel);
+  const mine = dtos.find((d) => d.userId === userId);
+  if (!mine) throw errors.internal('DM channel disappeared');
   // Only dispatch on a *new* DM. Re-opening an existing one is a no-op
   // for the gateway: both recipients' connection snapshots already
   // include the channel from IDENTIFY-time loading.
   if (created) {
-    dispatch.dmChannelCreated({
-      channelDTO,
-      channelId,
-      recipientIds: [userId, recipient],
-    });
+    dispatch.dmChannelCreated({ channelId, dtos });
   }
-  return c.json({ channel: channelDTO }, 201);
+  return c.json({ channel: mine.channelDTO }, 201);
 });
 
 dmsRouter.get('/', async (c) => {
@@ -353,14 +373,7 @@ dmsRouter.put(
       // sees E2EE was enabled and prompts them for the password.
       const channel = await channelsSvc.getChannel(channelId);
       if (channel) {
-        const recipientUsers = await dms.loadOtherRecipients(channelId, userId);
-        // A supervised pair can't actually go E2EE — report it suppressed.
-        const suppressed =
-          channel.type === 'dm' && recipientUsers[0]
-            ? !(await supervision.isE2eeAllowedBetween(userId, recipientUsers[0].id))
-            : false;
-        const channelDTO = toChannel(channel, null, recipientUsers, suppressed);
-        dispatch.dmChannelUpdated({ channelId, channelDTO });
+        dispatch.dmChannelUpdated({ dtos: await dmChannelDTOsByRecipient(channel) });
       }
     }
     return c.json({ ok: true });
@@ -394,17 +407,11 @@ dmsRouter.put(
     }
     if (result.status === 'registered') {
       // Flip e2eePurgeProofSet on both clients so neither re-registers.
+      // (Same suppression as enable, via the helper: a supervised pair must
+      // keep seeing the DM as plaintext.)
       const channel = await channelsSvc.getChannel(channelId);
       if (channel) {
-        const recipientUsers = await dms.loadOtherRecipients(channelId, userId);
-        // Same suppression as enable: a supervised pair must keep seeing the
-        // DM as plaintext.
-        const suppressed =
-          channel.type === 'dm' && recipientUsers[0]
-            ? !(await supervision.isE2eeAllowedBetween(userId, recipientUsers[0].id))
-            : false;
-        const channelDTO = toChannel(channel, null, recipientUsers, suppressed);
-        dispatch.dmChannelUpdated({ channelId, channelDTO });
+        dispatch.dmChannelUpdated({ dtos: await dmChannelDTOsByRecipient(channel) });
       }
     }
     return c.json({ ok: true });
@@ -451,9 +458,7 @@ dmsRouter.delete(
     // and clear their local cached key. Re-fetch the post-disable row.
     const updated = await channelsSvc.getChannel(channelId);
     if (updated) {
-      const recipientUsers = await dms.loadOtherRecipients(channelId, userId);
-      const channelDTO = toChannel(updated, null, recipientUsers);
-      dispatch.dmChannelUpdated({ channelId, channelDTO });
+      dispatch.dmChannelUpdated({ dtos: await dmChannelDTOsByRecipient(updated) });
     }
     // Fan out delete events for each purged message so both clients
     // remove them from their local state immediately. Without this,
