@@ -134,6 +134,14 @@ export interface GuildCommand {
 
 export interface SelfUser extends PublicUser {
   email: string;
+  /** The status the user PICKED (online / idle = "Away" / dnd / invisible) —
+      what the status picker shows and edits via `updateMe({ status })`.
+      `status` is the EFFECTIVE presence everyone sees, derived by the server
+      from this and the activity of each connected device, and kept current
+      by PRESENCE_UPDATE frames for the user's own id. Absent from servers
+      that predate multi-device presence (READY features.presence_activity),
+      where `status` is both. */
+  chosenStatus?: 'online' | 'idle' | 'dnd' | 'invisible';
   /** Whether the account's email has been confirmed. Drives the
       verify-email gate when the deployment requires verification. */
   emailVerified: boolean;
@@ -856,7 +864,12 @@ export interface GuildEmoji {
 //
 // Re-exported for the client's convenience so consumers don't need to know
 // about @zekktris/shared.
-export type { GatewayFrame, GatewayEventName } from '@zekktris/shared/events';
+export type {
+  GatewayFrame,
+  GatewayEventName,
+  PresenceActivity,
+  ReadyFeatures,
+} from '@zekktris/shared/events';
 export { GatewayOp, GatewayEvent } from '@zekktris/shared/events';
 
 // ── Webhooks ─────────────────────────────────────────────────────────────

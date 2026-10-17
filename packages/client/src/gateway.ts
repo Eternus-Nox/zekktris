@@ -16,12 +16,20 @@
  * Token handling: token is read fresh on each (re)connect via `getToken()`,
  * not captured at construction. That way a refresh flow can rotate the
  * access token without restarting the client.
+ *
+ * Presence: the host reports this device's activity with setPresenceActive()
+ * (on every local active↔idle transition). The value rides on each IDENTIFY /
+ * RESUME, and — only on a server whose READY advertised
+ * `features.presence_activity` — changes are sent as PRESENCE_UPDATE (op 3),
+ * at most once per actual change. Hosts that never call it behave exactly as
+ * before (the server counts a silent connection as active).
  */
 
 import {
   GatewayOp,
   type GatewayEventName,
   type GatewayFrame,
+  type ReadyFeatures,
 } from './types';
 
 type Handler = (data: unknown) => void;
@@ -105,6 +113,15 @@ export class GatewayClient {
    *  failed (fatal)". */
   private resuming = false;
   private intentionallyClosed = false;
+  /** This device's activity as the host last reported it (setPresenceActive).
+   *  Null until the host reports — IDENTIFY then omits `presence`, which the
+   *  server reads as active (the pre-feature behaviour). */
+  private presenceActive: boolean | null = null;
+  /** The activity value the server's session currently holds for us (sent in
+   *  IDENTIFY/RESUME or op 3), so a change is sent once and never repeated. */
+  private presenceSent: boolean | null = null;
+  /** `features` from the last READY. Kept across a RESUME (same server). */
+  private features: ReadyFeatures = {};
 
   constructor(private opts: GatewayClientOptions) {}
 
@@ -147,7 +164,32 @@ export class GatewayClient {
     this.sessionId = null;
     this.lastSeq = null;
     this.resuming = false;
+    this.presenceSent = null;
     this.setStatus('closed');
+  }
+
+  /**
+   * Report this device's activity: true while the person is using it, false
+   * once they stop (idle threshold, app backgrounded, tab hidden, screen
+   * locked). Call it on every transition; repeats are dropped here. Sent as
+   * PRESENCE_UPDATE only when the server supports it (supportsPresenceActivity)
+   * and always included in the next IDENTIFY/RESUME.
+   */
+  setPresenceActive(active: boolean): void {
+    this.presenceActive = active;
+    this.flushPresence();
+  }
+
+  /** Capabilities from the server's last READY ({} before the first one). */
+  getFeatures(): Readonly<ReadyFeatures> {
+    return this.features;
+  }
+
+  /** Whether the server derives presence from device activity (READY
+   *  `features.presence_activity`). When true the host must not PATCH
+   *  /users/@me {status} automatically; when false keep the legacy path. */
+  supportsPresenceActivity(): boolean {
+    return this.features.presence_activity === true;
   }
 
   /**
@@ -412,7 +454,14 @@ export class GatewayClient {
           this.resuming = false;
           const sid = (frame.d as { session_id?: string } | undefined)?.session_id;
           if (typeof sid === 'string') this.sessionId = sid;
+          // Capabilities come with READY only; a RESUMED keeps the last set.
+          if (frame.t === 'READY') {
+            const f = (frame.d as { features?: ReadyFeatures } | undefined)?.features;
+            this.features = f && typeof f === 'object' ? f : {};
+          }
           this.setStatus('ready');
+          // An activity change reported while we were (re)connecting.
+          this.flushPresence();
         }
         this.emit(frame.t, frame.d);
         return;
@@ -438,7 +487,12 @@ export class GatewayClient {
     this.setStatus('identifying');
     this.send({
       op: GatewayOp.RESUME,
-      d: { token, session_id: this.sessionId, seq: this.lastSeq },
+      d: {
+        token,
+        session_id: this.sessionId,
+        seq: this.lastSeq,
+        ...this.presenceForHandshake(),
+      },
     });
   }
 
@@ -460,8 +514,27 @@ export class GatewayClient {
           browser: detectBrowser(),
           device: 'web',
         },
+        ...this.presenceForHandshake(),
       },
     });
+  }
+
+  /** `{ presence }` for IDENTIFY/RESUME once the host has reported activity;
+   *  records it as what the server now holds. Harmless to an older server,
+   *  which ignores unknown fields. */
+  private presenceForHandshake(): { presence?: { active: boolean } } {
+    this.presenceSent = this.presenceActive;
+    return this.presenceActive === null ? {} : { presence: { active: this.presenceActive } };
+  }
+
+  /** Send PRESENCE_UPDATE if the reported activity differs from what the
+   *  server holds — only while live, and only to a server that supports it. */
+  private flushPresence(): void {
+    if (this.status !== 'ready' || !this.supportsPresenceActivity()) return;
+    if (this.presenceActive === null || this.presenceActive === this.presenceSent) return;
+    if (!this.ws || this.ws.readyState !== this.ws.OPEN) return;
+    this.presenceSent = this.presenceActive;
+    this.send({ op: GatewayOp.PRESENCE_UPDATE, d: { active: this.presenceActive } });
   }
 
   private startHeartbeat(intervalMs: number): void {
