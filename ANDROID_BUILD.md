@@ -1,25 +1,81 @@
 # Android build
 
-The Android client is a **Capacitor wrapper around the web app** — the same
-thin-shell pattern as the Electron desktop client. The native shell loads the
-live web app from the production origin (`server.url` in
-[`apps/web/capacitor.config.ts`](./apps/web/capacitor.config.ts)) and adds the
-native bits a browser can't do: FCM push, the system notification tray, and
-mic/camera access for LiveKit voice. Because it runs the exact same web bundle,
-it is **1:1 with the web app by construction** (which in turn mirrors the native
-iOS app).
+The Android app is the **native Kotlin/Jetpack Compose client** in
+[`android-native/`](./android-native) (application id `com.zekktris.android`).
+Like the native iOS app it connects to **any** Zekktris server: the sign-in
+screen's "Server · Change" chip
+([`ServerPicker.kt`](./android-native/app/src/main/kotlin/com/zekktris/ui/screens/ServerPicker.kt))
+takes zekktris.com or the address of a self-hosted server.
 
-> Why a wrapper here but native on iOS? The Capacitor approach was explored and
-> *rejected* for iOS in favour of a from-scratch SwiftUI app (see
-> [`IOS_BUILD.md`](./IOS_BUILD.md)). For Android the wrapper **is** the chosen
-> approach: it reuses 100% of the web client and ships in a fraction of the time.
-> A native Kotlin/Compose rewrite remains an option later.
+## Native app (`android-native/`)
 
-The native project lives at [`apps/web/android/`](./apps/web/android) (generated
+### Prerequisites
+
+- **Android Studio** with its bundled **JDK 17**, and the Android SDK for
+  `compileSdk` 36 (`minSdk` 26). From the CLI, set `ANDROID_HOME` or create
+  `android-native/local.properties` with `sdk.dir=…`.
+- **`google-services.json`** for FCM in `android-native/app/` (see
+  [Push notifications](#push-notifications-fcm)). The Google Services Gradle
+  plugin is applied unconditionally in `app/build.gradle.kts`, so the build
+  stops without the file. The repo's copy is the upstream Firebase project's;
+  for your own push setup replace it with yours.
+
+### Build & run
+
+```bash
+cd android-native
+./gradlew :app:assembleDebug      # or open the folder in Android Studio → Run ▶
+```
+
+Mic, camera and voice need a real device; the emulator is fine for UI. Release
+builds are sideloaded APKs: `desktop/release.sh` copies the APK named by
+`ZK_APK_PATH` to the server's `/desktop/updates/Zekktris.apk` (the download
+link on the landing page) — point it at your signed build of this app, not the
+legacy wrapper's APK that the example in `desktop/.env.release.example` still
+names. Bump `versionCode` / `versionName` in `app/build.gradle.kts` for every
+published build (Android refuses to install an older `versionCode` over a newer
+one). `app/build.gradle.kts` has no release signing config yet — sign the APK
+yourself (Android Studio → **Build → Generate Signed App Bundle / APK**) and
+keep the keystore out of git.
+
+### Push notifications (FCM)
+
+Same server half as below (`FCM_PROJECT_ID`, `FCM_CLIENT_EMAIL`,
+`FCM_PRIVATE_KEY`); in the Firebase console register an Android app with
+package name **`com.zekktris.android`**. Pushes are data-only and rendered by
+`push/ZekMessagingService.kt`, so they arrive with the app in the background or
+killed.
+
+---
+
+## Legacy: Capacitor wrapper (`apps/web/android/`, `com.zekktris.app`)
+
+> **Superseded by `android-native/`. Do not build this for a self-hosted
+> server.** The wrapper loads the web app from a hard-coded origin
+> (`server.url` = `https://zekktris.com` in
+> [`apps/web/capacitor.config.ts`](./apps/web/capacitor.config.ts)) and its
+> HTTPS App Links only match `zekktris.com`, so it cannot follow the apps'
+> "connect to any server" flow — a self-hoster who builds it as-is gets an app
+> pointed at zekktris.com. It stays in the repo for installs that already have
+> it. Everything below documents it as it is.
+
+The wrapper is a **Capacitor shell around the web app** — the same thin-shell
+pattern as the Electron desktop client. The native shell loads the live web app
+from the production origin and adds the native bits a browser can't do: FCM
+push, the system notification tray, and mic/camera access for LiveKit voice.
+Because it runs the exact same web bundle, it matches the web app by
+construction.
+
+> History: the Capacitor approach was rejected for iOS in favour of a
+> from-scratch SwiftUI app (see [`IOS_BUILD.md`](./IOS_BUILD.md)), and the same
+> later happened on Android with `android-native/`. The two Android apps use
+> different application ids, so both can be installed side by side.
+
+The project lives at [`apps/web/android/`](./apps/web/android) (generated
 by `npx cap add android`; the source is committed, build artifacts and the
 copied web assets are gitignored).
 
-## Prerequisites
+### Prerequisites
 
 - **Android Studio** (bundles a JDK 17 — there is no system `java` on the build
   machine, so the CLI gradle step is expected to defer to Studio).
@@ -27,7 +83,7 @@ copied web assets are gitignored).
   `~/Library/Android/sdk`). Set `ANDROID_HOME` / create
   `apps/web/android/local.properties` with `sdk.dir=…` if building from the CLI.
 
-## Build & run
+### Build & run
 
 ```bash
 pnpm -C apps/web build                    # 1. build the web app → apps/web/dist
@@ -56,7 +112,7 @@ UI* → re-run `cap sync android`.
 (`http://<lan-ip>:5173`, `cleartext: true`), run `pnpm -C apps/web dev`, then
 `cap sync android` + Run. Revert before a release build.
 
-## Pointing at your server
+### Pointing at your server
 
 `capacitor.config.ts` `server.url` defaults to `https://zekktris.com`. **Change
 it to your deployment before shipping.** The web app talks to a same-origin
@@ -65,7 +121,7 @@ origin. If you self-host over **plain HTTP**, also set `android.cleartext: true`
 in `capacitor.config.ts` (HTTPS is strongly preferred — WebRTC/`getUserMedia`
 and Web Push both require a secure origin).
 
-## Push notifications (FCM)
+### Push notifications (FCM) — legacy wrapper
 
 Android push uses **Firebase Cloud Messaging**. Two halves:
 
@@ -119,7 +175,7 @@ Android push uses **Firebase Cloud Messaging**. Two halves:
    `platform = 'android'`; the push dispatcher routes them to FCM (and never to
    APNs).
 
-## Permissions
+### Permissions
 
 Already declared in
 [`AndroidManifest.xml`](./apps/web/android/app/src/main/AndroidManifest.xml):
@@ -128,7 +184,7 @@ Already declared in
 the WebView. Capacitor's `WebChromeClient` grants the WebView's `getUserMedia`
 request from these.
 
-## Release (Play Store)
+### Release (Play Store)
 
 Release signing is **already wired** in `app/build.gradle`: it reads
 `apps/web/android/keystore.properties` and signs the release build with it. That
@@ -157,7 +213,7 @@ fresh clone still builds.
 > Google re-signs with the app key — the SHA-256 fingerprint you'd need for
 > HTTPS App Links or FCM comes from the Play Console, not your local keystore.
 
-## Known gaps vs. native iOS (follow-ups)
+### Known gaps vs. native iOS (follow-ups)
 
 - **E2EE notification previews:** iOS decrypts E2EE DM previews in a Notification
   Service Extension. Android has no equivalent wired up, so E2EE DM pushes show
@@ -170,7 +226,7 @@ fresh clone still builds.
   reuses the existing `ZekktrisCalls` web bridge (`apps/web/src/lib/native.ts`)
   and recommends a full-screen-notification MVP before full Telecom.
 
-## Deep links
+### Deep links
 
 The `zekktris://` custom scheme is wired (intent-filter in `AndroidManifest.xml`,
 matching the iOS scheme). Capacitor's App plugin fires `appUrlOpen`, and the web

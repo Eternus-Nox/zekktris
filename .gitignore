@@ -28,6 +28,15 @@ Pods/
 /db/
 /caddy-data/
 /caddy-config/
+# Backup bundles (the whole database, .env and the APNs key) and the host
+# agent's request queue. They land in the repo whenever APPDATA_PATH is the
+# repo itself (Unraid), and a bundle is as sensitive as the server.
+/backups/
+/control/
+# restore.sh keeps the replaced .env alongside — same secrets as .env.
+.env.before-restore-*
+# Host-local state written by ops/livekit-wan-watchdog.sh.
+/.livekit-wan.state
 # Build / release artifacts served by the host
 /desktop-updates/
 /download/

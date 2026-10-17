@@ -1,5 +1,8 @@
-Per-install TLS mode for ops/Caddyfile, picked by TLS_MODE in .env and
-imported as /etc/caddy/modes/<TLS_MODE>.global and <TLS_MODE>.site.
+Per-install modes for ops/Caddyfile, copied into the proxy image at
+/etc/caddy/modes/.
+
+TLS mode, picked by TLS_MODE in .env and imported as <TLS_MODE>.global and
+<TLS_MODE>.site:
 
   none  default. A domain in SITE_ADDRESS gets an ordinary Let's Encrypt
         certificate automatically; ":5550" serves plain http (LAN, or behind
@@ -10,3 +13,19 @@ imported as /etc/caddy/modes/<TLS_MODE>.global and <TLS_MODE>.site.
         arrives on a LAN/container address and browsers send no SNI for an
         IP, so default_sni tells Caddy which certificate to present.
         Needs Caddy 2.11.4+ and inbound TCP 80 or 443 for validation.
+
+Edge proxy, picked by EDGE_PROXY in .env and imported as
+edge-<EDGE_PROXY>.servers inside the global `servers` block. It decides whose
+word Caddy takes for the client's IP address (the X-Real-IP the API keys rate
+limits, bans, audit entries and sessions on):
+
+  none        default. Caddy is the edge (every ./install.sh mode). Nobody is
+              trusted; the client address is the TCP peer and request headers
+              cannot change it.
+  cloudflare  the instance is reached only through Cloudflare (proxied DNS or
+              a Cloudflare Tunnel, like zekktris.com). Trusts Cloudflare's
+              edge ranges plus the Docker bridge range (where a host-run
+              cloudflared connects from) and reads Cf-Connecting-Ip. Do not
+              set it unless ALL outside traffic comes through Cloudflare:
+              a direct visitor arriving from a trusted range could then forge
+              its address.

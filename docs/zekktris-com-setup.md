@@ -55,29 +55,38 @@ challenges over 443, but the initial cert wants 80.
 ## 2. Bring up Zekktris
 
 ```bash
-cp .env.example .env
-# Set these in .env:
-PUBLIC_URL=https://zekktris.com:5551
-ACME_EMAIL=you@your-real-email.com    # cert-renewal warnings go here
-COOKIE_SECURE=true                    # required when PUBLIC_URL is https://
-HTTP_PORT=5550
-HTTPS_PORT=5551
-DB_PASSWORD=$(openssl rand -hex 24)
-JWT_SECRET=$(openssl rand -hex 32)
-JWT_REFRESH_SECRET=$(openssl rand -hex 32)
+./install.sh --domain zekktris.com
 ```
 
-> If you front Zekktris with Cloudflare on the default 443, you'll
-> want to forward `:443` on the server's firewall to `:5551`, or set
-> `HTTPS_PORT=443` directly. Cloudflare always talks to your origin
-> on whatever port the DNS record points at — typically 443.
+The installer writes `.env` with fresh secrets (database password, JWT and
+field-encryption keys, LiveKit and Web-Push keys), sets `SITE_ADDRESS`,
+`PUBLIC_URL` and `COOKIE_SECURE=true` for the domain, and starts the stack.
+While it runs, keep the Cloudflare records on **DNS only** (grey cloud) so the
+first Let's Encrypt certificate can be issued; switch the proxy back on
+afterwards.
+
+Then tell Caddy that Cloudflare is in front — it decides whose word Caddy takes
+for the visitor's IP address:
 
 ```bash
-docker compose up -d
+echo 'EDGE_PROXY=cloudflare' >> .env
+docker compose up -d proxy
 ```
 
+Without it every visitor appears to come from a Cloudflare edge (or, through a
+Cloudflare Tunnel, from the Docker bridge gateway), so per-IP rate limits and
+IP bans hit everyone at once. Only set it while **all** outside traffic comes
+through Cloudflare (proxied DNS or a Tunnel): it trusts Cloudflare's ranges and
+the Docker bridge range, and a visitor reaching Caddy directly from one of those
+could otherwise pick their own address. See `ops/caddy-modes/README`.
+`./scripts/doctor.sh` checks that the addresses come out right.
+
+> Cloudflare talks to your origin on whatever port the DNS record points at —
+> 443 for a proxied A record. `--domain` mode serves HTTP on 80 and HTTPS on
+> 443 directly.
+
 At this point `https://www.zekktris.com` should serve the app. If it
-doesn't, check `docker compose logs caddy` — the most common issues
+doesn't, check `docker compose logs proxy` (Caddy) — the most common issues
 are:
 - Port 80 blocked → ACME can't complete
 - Cloudflare proxy still on Flexible → cert mismatch
@@ -160,7 +169,7 @@ so replies and bounces have somewhere to land.
 ### 4c. Bounce back to Zekktris
 
 ```bash
-docker compose up -d   # picks up the new .env values
+docker compose up -d api   # picks up the new .env values
 docker compose logs api | grep -i smtp   # should show transport ready
 ```
 

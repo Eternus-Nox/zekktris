@@ -177,10 +177,14 @@ DOCKER="docker"
 if ! command -v docker >/dev/null 2>&1; then
     if [[ "$OS" == "Linux" && $IS_UNRAID -eq 0 ]]; then
         warn "Docker isn't installed."
-        if confirm "Install it now with Docker's official script (get.docker.com)?" Y; then
+        # Running a downloaded script as root is the operator's call, never a
+        # default: the answer defaults to No and --yes does not say yes to it.
+        info "Docker's convenience script (https://get.docker.com) can install it — it runs as root."
+        info "Or install it from your distribution's packages: https://docs.docker.com/engine/install/"
+        if [[ $ASSUME_YES -eq 0 && -n "$TTY" ]] && confirm "Download get.docker.com and run it as root now?" N; then
             curl -fsSL https://get.docker.com | $SUDO sh || fail "Docker install failed."
         else
-            fail "Docker is required: https://docs.docker.com/engine/install/"
+            fail "Docker is required. Install it (see above), then run ./install.sh again."
         fi
     else
         fail "Docker is required. macOS: install Docker Desktop or colima. Unraid: enable Docker in Settings."
@@ -310,6 +314,7 @@ if [[ "$MODE" == "domain" ]]; then
     elif [[ -n "$PUBLIC_IP" && " $dns_ips " != *" $PUBLIC_IP "* ]]; then
         warn "$DOMAIN points to $dns_ips, not to this network ($PUBLIC_IP)."
         warn "If it's behind Cloudflare's proxy (orange cloud), switch it to \"DNS only\" for the first setup."
+        warn "(To keep Cloudflare's proxy on afterwards, also set EDGE_PROXY=cloudflare in .env.)"
     else
         ok "$DOMAIN points here ($PUBLIC_IP)"
     fi
@@ -500,6 +505,9 @@ fi
 
 # LiveKit (voice/video) keys — the bundled SFU. The old shared LiveKit Cloud
 # credentials that early versions committed are replaced if still present.
+# Replacing them here does not revoke them: the pair is in the public git
+# history, so its owner must delete key APIAMD7Sj5psuK4 in the LiveKit Cloud
+# dashboard (docs/SELF-HOSTING.md, "Security notes").
 if [[ "$(env_get LIVEKIT_API_KEY)" == "APIAMD7Sj5psuK4" ]]; then
     env_set LIVEKIT_WS_URL ""; env_set LIVEKIT_API_KEY ""; env_set LIVEKIT_API_SECRET ""
 fi
