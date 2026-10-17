@@ -225,9 +225,10 @@ The installer asks for an admin email and password and, once the server is
 up, creates that account itself (already verified, already admin) — sign in
 with it. For scripted installs pass `--admin-email` plus `--admin-password-file`
 (or set `ZEKKTRIS_ADMIN_PASSWORD`). Re-run `./install.sh` any time (it never
-replaces your secrets); `--reconfigure` changes how the server is reached, and
+replaces your secrets); `--reconfigure` changes how the server is reached,
 `--admin-email` on an existing install makes that account an admin (creating it
-if needed).
+if needed; an existing account must have verified its address), and a server
+left without an admin by an interrupted install is offered one again.
 
 Then set `ALLOW_REGISTRATION=invite-only` (or `closed`) in `.env` and
 `docker compose up -d` if you want a private server. To drive it manually:

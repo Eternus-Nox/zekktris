@@ -363,12 +363,14 @@ fi
 # the password asked for here. Nothing is left for a stranger to race for —
 # the old way (BOOTSTRAP_ADMIN_EMAIL + "register with this email") made whoever
 # registered that address first the admin on an open server without SMTP, so
-# fresh installs no longer set it. Password sources, in order: the first line
-# of --admin-password-file, $ZEKKTRIS_ADMIN_PASSWORD, a hidden prompt (twice).
+# fresh installs no longer set it (and if someone registers the address before
+# the script runs, the install stops rather than promote them). Password
+# sources, in order: the first line of --admin-password-file,
+# $ZEKKTRIS_ADMIN_PASSWORD, a hidden prompt (twice).
 # It is never put on a command line; it reaches the script on stdin.
 ADMIN_PASSWORD_FILE="${ADMIN_PASSWORD_FILE:-}"
 ADMIN_PASSWORD="${ZEKKTRIS_ADMIN_PASSWORD:-}"
-ADMIN_CREATED=0
+ADMIN_CREATED=0; ADMIN_PROMOTED=0; ADMIN_MISSING=0
 ADMIN_PASSWORD_MIN=8   # PASSWORD_MIN_LENGTH in packages/shared/src/constants.ts
 
 # admin_password_collect [optional] → sets ADMIN_PASSWORD. "optional" (an
@@ -405,19 +407,50 @@ admin_password_collect() {
     ok "Admin password set"
 }
 
-# Runs once the api is healthy. Creates the account (or makes an existing one
-# admin, leaving its password alone) and stops the install if that fails.
+# Runs once the api is healthy. On a fresh install the account is created
+# with --create-only: registration is already open, so if someone registered
+# the address first that's an error, not an admin. With an explicit
+# --admin-email on an existing install an existing account is promoted
+# instead (password left alone; unverified ones are refused by the script).
+# An existing install with no admin at all (an earlier run that died before
+# this step) is offered a fresh one again. Stops the install on failure.
 admin_account_create() {
-    [[ -n "$ADMIN_EMAIL" ]] || return 0
-    step "Creating your admin account"
-    local out
+    local out rc mode="" existing_ok=0
+    if [[ -z "$ADMIN_EMAIL" ]]; then
+        rc=0; out="$($COMPOSE exec -T -e LOG_LEVEL=warn -w /app/apps/api api \
+            node --import tsx/esm scripts/create-admin.ts --check 2>&1)" || rc=$?
+        [[ $rc -eq 3 ]] || return 0   # has an admin (or can't tell: leave it)
+        step "This server has no admin account yet"
+        if [[ ( $ASSUME_YES -eq 1 || -z "$TTY" ) && -z "$ADMIN_PASSWORD" && -z "$ADMIN_PASSWORD_FILE" ]]; then
+            warn "Not creating one without a password (--yes / no terminal): set ZEKKTRIS_ADMIN_PASSWORD."
+            ADMIN_MISSING=1; return 0
+        fi
+        while :; do
+            ADMIN_EMAIL="$(ask "Admin email:" "$(env_get ACME_EMAIL)")"
+            [[ "$ADMIN_EMAIL" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] && break
+            ADMIN_EMAIL=""
+            [[ $ASSUME_YES -eq 1 || -z "$TTY" ]] && { ADMIN_MISSING=1; return 0; }
+            warn "That doesn't look like an email address."
+        done
+        admin_password_collect
+        mode="--create-only"
+    elif [[ $EXISTING -eq 0 ]]; then
+        mode="--create-only"
+    else
+        existing_ok=1
+    fi
+    if [[ $existing_ok -eq 1 ]]; then step "Making $ADMIN_EMAIL an admin"; else step "Creating your admin account"; fi
     if out="$(printf '%s\n' "$ADMIN_PASSWORD" | $COMPOSE exec -T -e LOG_LEVEL=warn -w /app/apps/api api \
-            node --import tsx/esm scripts/create-admin.ts --email "$ADMIN_EMAIL" 2>&1)"; then
-        ADMIN_CREATED=1
-        ok "${out:-Admin account ready}"
+            node --import tsx/esm scripts/create-admin.ts --email "$ADMIN_EMAIL" $mode 2>&1)"; then
+        # "Created admin account …" = the password given here is the account's.
+        if grep -q '^Created admin account' <<<"$out"; then ADMIN_CREATED=1; else ADMIN_PROMOTED=1; fi
+        ok "$(tail -1 <<<"$out")"
     else
         printf '%s\n' "$out" | tail -5 | sed 's/^/      /' >&2
-        fail "Couldn't create the admin account. The server is running; fix the above and run ./install.sh --admin-email $ADMIN_EMAIL"
+        if [[ $existing_ok -eq 1 ]]; then
+            fail "Couldn't make $ADMIN_EMAIL an admin. The server is running; fix the above and run ./install.sh --admin-email $ADMIN_EMAIL again."
+        fi
+        fail "Couldn't create the admin account. The server is running; fix the above and run ./install.sh again (it asks for the admin while there is none)."
     fi
     ADMIN_PASSWORD=""
 }
@@ -590,7 +623,7 @@ fi
 if [[ $START -eq 0 ]]; then
     step "Configuration written — not starting (--no-start)"
     info "Start it with: $COMPOSE up -d --build"
-    [[ -n "$ADMIN_EMAIL" ]] && info "Then create the admin: $COMPOSE exec -w /app/apps/api api node --import tsx/esm scripts/create-admin.ts --email $ADMIN_EMAIL"
+    [[ -n "$ADMIN_EMAIL" ]] && info "Then create the admin: $COMPOSE exec -w /app/apps/api api node --import tsx/esm scripts/create-admin.ts --email $ADMIN_EMAIL$([[ $EXISTING -eq 0 ]] && echo ' --create-only')"
     exit 0
 fi
 
@@ -645,6 +678,11 @@ echo
 echo "  Open:              ${BOLD}${URL}${RESET}"
 if [[ $ADMIN_CREATED -eq 1 ]]; then
     echo "  Sign in:           ${BOLD}${ADMIN_EMAIL}${RESET} with the password you chose — it's the admin."
+elif [[ $ADMIN_PROMOTED -eq 1 ]]; then
+    echo "  Admin:             ${BOLD}${ADMIN_EMAIL}${RESET} (an existing account — sign in with its own password)."
+elif [[ $ADMIN_MISSING -eq 1 ]]; then
+    echo "  ${YELLOW}No admin account yet.${RESET} Run ./install.sh again in a terminal to create one"
+    echo "                     (or set ZEKKTRIS_ADMIN_PASSWORD; see --admin-email)."
 fi
 echo "  In the apps:       on the sign-in screen tap ${BOLD}Server · Change${RESET} and enter ${BOLD}${URL#https://}${RESET}"
 case "$MODE" in

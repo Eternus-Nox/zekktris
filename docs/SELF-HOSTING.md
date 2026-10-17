@@ -89,7 +89,14 @@ It asks for the password twice (hidden; nothing lands in your shell history)
 and creates the account already verified and admin. To pipe the password in
 instead, add `-T` and send it on stdin. If an account with that email already
 exists — say you registered in the app first — it's made admin and its
-password is left alone (press Enter at the prompt).
+password is left alone (press Enter at the prompt). Registration may already
+be open, though, so an existing account is only promoted if its address is
+verified (`--promote-unverified` overrides that, if you're sure it's yours),
+and `--create-only` refuses an existing account outright — the installer uses
+that on a fresh install, so someone who registers your address first stops
+the install instead of becoming admin. `--check` just reports whether the
+server has an admin. Re-running `./install.sh` on a server with no admin asks
+for one again.
 
 The older alternative is `BOOTSTRAP_ADMIN_EMAIL=you@example.com` in `.env`:
 while no admin exists, an account with that address is promoted once the
