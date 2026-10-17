@@ -373,7 +373,7 @@ dmsRouter.put(
       // sees E2EE was enabled and prompts them for the password.
       const channel = await channelsSvc.getChannel(channelId);
       if (channel) {
-        dispatch.dmChannelUpdated({ dtos: await dmChannelDTOsByRecipient(channel) });
+        dispatch.dmChannelUpdated({ channelId, dtos: await dmChannelDTOsByRecipient(channel) });
       }
     }
     return c.json({ ok: true });
@@ -411,7 +411,7 @@ dmsRouter.put(
       // keep seeing the DM as plaintext.)
       const channel = await channelsSvc.getChannel(channelId);
       if (channel) {
-        dispatch.dmChannelUpdated({ dtos: await dmChannelDTOsByRecipient(channel) });
+        dispatch.dmChannelUpdated({ channelId, dtos: await dmChannelDTOsByRecipient(channel) });
       }
     }
     return c.json({ ok: true });
@@ -458,7 +458,7 @@ dmsRouter.delete(
     // and clear their local cached key. Re-fetch the post-disable row.
     const updated = await channelsSvc.getChannel(channelId);
     if (updated) {
-      dispatch.dmChannelUpdated({ dtos: await dmChannelDTOsByRecipient(updated) });
+      dispatch.dmChannelUpdated({ channelId, dtos: await dmChannelDTOsByRecipient(updated) });
     }
     // Fan out delete events for each purged message so both clients
     // remove them from their local state immediately. Without this,

@@ -51,6 +51,7 @@ describe('audience codec', () => {
   it('round-trips every audience kind, preserving bigints', () => {
     const cases: Audience[] = [
       { kind: 'user', userId: 123n },
+      { kind: 'dmRecipient', userId: 123n, channelId: 789n },
       { kind: 'guild', guildId: 456n },
       { kind: 'channel', channelId: 789n, guildId: 42n },
       { kind: 'channel', channelId: 789n, guildId: null }, // DM channel

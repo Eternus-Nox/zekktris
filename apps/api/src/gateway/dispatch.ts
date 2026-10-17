@@ -626,14 +626,24 @@ export function userLeftGuild(args: { userId: bigint; guildId: bigint }): void {
  */
 export type DMChannelDTOForRecipient = { userId: bigint; channelDTO: unknown };
 
-/** Send each DM recipient its own DTO, on a per-user audience (the bus
- *  carries it to whichever replica holds that user's sockets). */
+/** Send each DM recipient its own DTO (the bus carries it to whichever
+ *  replica holds that user's sockets). CHANNEL_CREATE goes to every socket
+ *  of the user — it is what puts the DM in front of them; anything later goes
+ *  only to sockets that still hold the DM, so a recipient who closed it
+ *  meanwhile doesn't get it back (what the channel audience guaranteed). */
 function publishDMChannelPerRecipient(
   t: typeof GatewayEvent[keyof typeof GatewayEvent],
+  channelId: bigint,
   dtos: DMChannelDTOForRecipient[],
 ): void {
   for (const { userId, channelDTO } of dtos) {
-    publish(t, channelDTO, { kind: 'user', userId });
+    publish(
+      t,
+      channelDTO,
+      t === GatewayEvent.CHANNEL_CREATE
+        ? { kind: 'user', userId }
+        : { kind: 'dmRecipient', userId, channelId },
+    );
   }
 }
 
@@ -654,7 +664,7 @@ export function dmChannelCreated(args: {
     channelId: args.channelId,
     recipientIds: args.dtos.map((d) => d.userId),
   });
-  publishDMChannelPerRecipient(GatewayEvent.CHANNEL_CREATE, args.dtos);
+  publishDMChannelPerRecipient(GatewayEvent.CHANNEL_CREATE, args.channelId, args.dtos);
 }
 
 /**
@@ -765,8 +775,8 @@ export function dmSettingsUpdated(args: {
  * channel record. Each recipient gets its OWN DTO (see
  * DMChannelDTOForRecipient) — never one channel-audience frame.
  */
-export function dmChannelUpdated(args: { dtos: DMChannelDTOForRecipient[] }): void {
-  publishDMChannelPerRecipient(GatewayEvent.CHANNEL_UPDATE, args.dtos);
+export function dmChannelUpdated(args: { channelId: bigint; dtos: DMChannelDTOForRecipient[] }): void {
+  publishDMChannelPerRecipient(GatewayEvent.CHANNEL_UPDATE, args.channelId, args.dtos);
 }
 
 /**

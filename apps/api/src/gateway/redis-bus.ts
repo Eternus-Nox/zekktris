@@ -43,6 +43,7 @@ const CHANNEL = 'zekktris:gateway';
 
 type WireAudience =
   | { kind: 'user'; userId: string }
+  | { kind: 'dmRecipient'; userId: string; channelId: string }
   | { kind: 'guild'; guildId: string }
   | { kind: 'channel'; channelId: string; guildId: string | null }
   | { kind: 'users'; userIds: string[] }
@@ -53,6 +54,8 @@ export function encodeAudience(a: Audience): WireAudience {
   switch (a.kind) {
     case 'user':
       return { kind: 'user', userId: a.userId.toString() };
+    case 'dmRecipient':
+      return { kind: 'dmRecipient', userId: a.userId.toString(), channelId: a.channelId.toString() };
     case 'guild':
       return { kind: 'guild', guildId: a.guildId.toString() };
     case 'channel':
@@ -83,6 +86,8 @@ export function decodeAudience(a: WireAudience): Audience {
   switch (a.kind) {
     case 'user':
       return { kind: 'user', userId: BigInt(a.userId) };
+    case 'dmRecipient':
+      return { kind: 'dmRecipient', userId: BigInt(a.userId), channelId: BigInt(a.channelId) };
     case 'guild':
       return { kind: 'guild', guildId: BigInt(a.guildId) };
     case 'channel':

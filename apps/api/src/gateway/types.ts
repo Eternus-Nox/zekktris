@@ -27,6 +27,13 @@ import { GatewayOp } from '@zekktris/shared/events';
 export type Audience =
   /** Specific user — both their connections (multi-device) get the event. */
   | { kind: 'user'; userId: bigint }
+  /**
+   * One DM recipient's connections that still hold the DM in their snapshot:
+   * a viewer-relative DM event (CHANNEL_UPDATE carries that viewer's own DTO)
+   * with the DM-channel audience's guarantee that a recipient who has closed
+   * the DM doesn't get it back.
+   */
+  | { kind: 'dmRecipient'; userId: bigint; channelId: bigint }
   /** Every member of a guild (no per-channel filter). Used for guild-wide events. */
   | { kind: 'guild'; guildId: bigint }
   /**

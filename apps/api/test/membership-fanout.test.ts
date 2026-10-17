@@ -208,6 +208,7 @@ describe('membership snapshots fan out across replicas', () => {
 
     onReplicaA(() =>
       dispatch.dmChannelUpdated({
+        channelId: DM,
         dtos: [
           { userId: U, channelDTO: { id: 'for-u' } },
           { userId: PEER, channelDTO: { id: 'for-peer' } },
@@ -216,6 +217,25 @@ describe('membership snapshots fan out across replicas', () => {
     );
     expect(ids(bU.sent)).toEqual(['CHANNEL_UPDATE:for-u']);
     expect(ids(bPeer.sent)).toEqual(['CHANNEL_UPDATE:for-peer']);
+  });
+
+  it('a DM update does not reach a recipient socket that no longer holds the DM', () => {
+    // The route snapshots the recipients, the peer closes the DM, then the
+    // update goes out: the closed DM must not come back on the peer's socket.
+    const bU = connectOnB(U, [], [DM]);
+    const bPeer = connectOnB(PEER, [], []);
+
+    onReplicaA(() =>
+      dispatch.dmChannelUpdated({
+        channelId: DM,
+        dtos: [
+          { userId: U, channelDTO: { id: 'for-u' } },
+          { userId: PEER, channelDTO: { id: 'for-peer' } },
+        ],
+      }),
+    );
+    expect(ids(bU.sent)).toEqual(['CHANNEL_UPDATE:for-u']);
+    expect(bPeer.sent).toEqual([]);
   });
 
   it('the internal signal is never delivered to a client socket', () => {

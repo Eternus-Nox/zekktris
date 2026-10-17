@@ -637,6 +637,8 @@ class Registry {
         // The live index set, not a copy — onPublished only iterates, and
         // every message event used to pay an Array.from allocation here.
         return this.byUser.get(audience.userId) ?? EMPTY_CONNECTION_SET;
+      case 'dmRecipient':
+        return this.byUser.get(audience.userId) ?? EMPTY_CONNECTION_SET;
       case 'users': {
         // A genuine merge — the one case that still builds an array. No dedup
         // needed: byUser sets are disjoint across distinct user ids (a
@@ -698,6 +700,8 @@ class Registry {
     switch (audience.kind) {
       case 'user':
         return conn.userId === audience.userId;
+      case 'dmRecipient':
+        return conn.userId === audience.userId && conn.dmChannelIds.has(audience.channelId);
       case 'users':
         return audience.userIds.includes(conn.userId);
       case 'multiUser':
