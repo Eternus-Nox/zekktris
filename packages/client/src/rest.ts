@@ -553,9 +553,22 @@ export class RestClient {
         | 'staffColor'
         | 'staffGlow'
       >
-    >,
+    > & {
+      /** Who set `status`. Defaults to 'manual' whenever `status` is given:
+          a status set through here is the user's own pick, so the server
+          never treats an 'idle' as an automatic away (which it ends when
+          the user's last device disconnects). Pass 'auto' only for an
+          automatic status change against a server without
+          `features.presence_activity` (which ignores the field anyway). */
+      statusSource?: 'manual' | 'auto';
+    },
   ): Promise<{ user: SelfUser }> {
-    return this.request('PATCH', '/users/@me', patch);
+    // Servers without multi-device presence strip the unknown field.
+    const body =
+      patch.status !== undefined
+        ? { ...patch, statusSource: patch.statusSource ?? 'manual' }
+        : patch;
+    return this.request('PATCH', '/users/@me', body);
   }
 
   /**

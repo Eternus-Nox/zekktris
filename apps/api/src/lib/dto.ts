@@ -27,12 +27,22 @@ export interface SelfUserDTO {
   bio: string | null;
   /** Cosmetic avatar decoration id (CSS ring/glow). Null = none. */
   avatarDecoration: string | null;
-  /** EFFECTIVE presence (unmasked — this is the user's own view): derived
-      from chosenStatus and the activity of their connected devices. */
-  status: User['status'];
+  /** The status the user PICKED — the same value as chosenStatus, never
+      'offline'. Kept with its pre-multi-device meaning on purpose: older
+      iOS / Android builds read their own `status` as their pick (status
+      picker checkmark, own dot, auto-away), so serving the effective value
+      here made them show — and act on — another device's idleness. Public
+      user DTOs keep `status` = effective (masked). */
+  status: User['chosenStatus'];
   /** The status the user picked (PATCH /users/@me {status}) — what the
       status picker shows. Never 'offline'. */
   chosenStatus: User['chosenStatus'];
+  /** EFFECTIVE presence (users.status, unmasked — this is the user's own
+      view): derived from chosenStatus and the activity of their connected
+      devices; what everyone else sees ('invisible' masked as 'offline').
+      Updated clients show it as their own dot until the first self
+      PRESENCE_UPDATE frame arrives. */
+  effectiveStatus: User['status'];
   customStatus: string | null;
   /** Emoji portion of the custom status. Independent of the text:
       either or both may be set. Null means no emoji. */
@@ -209,8 +219,9 @@ export function toSelfUser(
     bannerUrl: user.bannerUrl,
     bio: user.bio,
     avatarDecoration: user.avatarDecoration ?? null,
-    status: user.status,
+    status: user.chosenStatus,
     chosenStatus: user.chosenStatus,
+    effectiveStatus: user.status,
     customStatus: user.customStatus,
     customStatusEmoji: user.customStatusEmoji ?? null,
     customStatusExpiresAt: isoDate(user.customStatusExpiresAt),

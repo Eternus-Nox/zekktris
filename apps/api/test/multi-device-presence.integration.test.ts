@@ -99,6 +99,7 @@ async function row(userId: bigint) {
     .select({
       status: schema.users.status,
       chosenStatus: schema.users.chosenStatus,
+      chosenStatusAuto: schema.users.chosenStatusAuto,
       lastSeenAt: schema.users.lastSeenAt,
     })
     .from(schema.users)
@@ -165,11 +166,13 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     return dev;
   }
 
-  function patchStatus(token: string, status: string) {
+  /** PATCH a status. `source` omitted = a pre-update client (no marker);
+   *  'manual' = an updated client's status picker (packages/client patchMe). */
+  function patchStatus(token: string, status: string, source?: 'manual' | 'auto') {
     return app.request('/users/@me', {
       method: 'PATCH',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ status }),
+      body: JSON.stringify(source ? { status, statusSource: source } : { status }),
     });
   }
 
@@ -178,7 +181,11 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     const dev = await connect(u, { active: true });
     const ready = dev.ready()!.d!;
     expect(ready.features).toEqual({ presence_activity: true });
-    expect((ready.user as { chosenStatus: string }).chosenStatus).toBe('online');
+    expect(ready.user).toMatchObject({
+      chosenStatus: 'online',
+      // Older native builds read the self user's `status` as their pick.
+      status: 'online',
+    });
     await dev.close();
   });
 
@@ -250,7 +257,7 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     const res = await patchStatus(await tokenFor(u), 'dnd');
     expect(res.status).toBe(200);
     const body = (await res.json()) as { user: { status: string; chosenStatus: string } };
-    expect(body.user).toMatchObject({ status: 'dnd', chosenStatus: 'dnd' });
+    expect(body.user).toMatchObject({ status: 'dnd', chosenStatus: 'dnd', effectiveStatus: 'dnd' });
     await expectStatus(u, 'dnd');
 
     await dev.close();
@@ -313,45 +320,177 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     await mac.close();
   });
 
-  it('PATCH status writes the CHOSEN status; the response carries the effective one', async () => {
+  it('PATCH status writes the CHOSEN status; the self user carries it as status / chosenStatus and the effective one as effectiveStatus', async () => {
     const u = await createUser();
     const token = await tokenFor(u);
     // Not connected: choosing online leaves them offline.
-    let res = await patchStatus(token, 'online');
+    let res = await patchStatus(token, 'online', 'manual');
     expect(((await res.json()) as { user: unknown }).user).toMatchObject({
-      status: 'offline',
+      status: 'online',
       chosenStatus: 'online',
+      effectiveStatus: 'offline',
     });
     expect(await statusOf(u)).toBe('offline');
 
     const dev = await connect(u, { active: false });
     await expectStatus(u, 'idle');
     // Away by hand stays Away whatever the device does.
-    res = await patchStatus(token, 'idle');
+    res = await patchStatus(token, 'idle', 'manual');
     expect(((await res.json()) as { user: unknown }).user).toMatchObject({
       status: 'idle',
       chosenStatus: 'idle',
+      effectiveStatus: 'idle',
     });
-    // Back to online while the only device is idle → effective idle.
-    res = await patchStatus(token, 'online');
+    // Back to online while the only device is idle → effective idle. An old
+    // native build reads `status` as its pick: Online, not the Mac's idle.
+    res = await patchStatus(token, 'online', 'manual');
     expect(((await res.json()) as { user: unknown }).user).toMatchObject({
-      status: 'idle',
+      status: 'online',
       chosenStatus: 'online',
+      effectiveStatus: 'idle',
     });
-    res = await patchStatus(token, 'invisible');
+    let me = await app.request('/users/@me', { headers: { authorization: `Bearer ${token}` } });
+    expect(((await me.json()) as { user: unknown }).user).toMatchObject({
+      status: 'online',
+      chosenStatus: 'online',
+      effectiveStatus: 'idle',
+    });
+    res = await patchStatus(token, 'invisible', 'manual');
     expect(((await res.json()) as { user: unknown }).user).toMatchObject({
       status: 'invisible',
       chosenStatus: 'invisible',
+      effectiveStatus: 'invisible',
     });
     // 'offline' is not a status anyone can choose.
-    res = await patchStatus(token, 'offline');
+    res = await patchStatus(token, 'offline', 'manual');
+    expect(res.status).toBe(400);
+    // Nor is an unknown source.
+    res = await patchStatus(token, 'idle', 'robot' as 'manual');
     expect(res.status).toBe(400);
 
-    const me = await app.request('/users/@me', { headers: { authorization: `Bearer ${token}` } });
+    me = await app.request('/users/@me', { headers: { authorization: `Bearer ${token}` } });
     expect(((await me.json()) as { user: unknown }).user).toMatchObject({
       status: 'invisible',
       chosenStatus: 'invisible',
+      effectiveStatus: 'invisible',
     });
+    await dev.close();
+  });
+
+  it("a pre-update client's automatic idle (unmarked PATCH) ends when the user's last device disconnects", async () => {
+    const u = await createUser();
+    const token = await tokenFor(u);
+    // An old iOS build, in use, auto-aways after 5 minutes without input.
+    const phone = await connect(u);
+    await expectStatus(u, 'online');
+    const res = await patchStatus(token, 'idle');
+    expect(((await res.json()) as { user: unknown }).user).toMatchObject({
+      status: 'idle',
+      chosenStatus: 'idle',
+      effectiveStatus: 'idle',
+    });
+    expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
+    await expectStatus(u, 'idle');
+
+    // It is killed before it can PATCH 'online' back (that flag lived in its
+    // memory). The full disconnect ends the automatic away in the same write
+    // that offlines the user — as the old server's disconnect/reconnect did.
+    await phone.close();
+    await expectStatus(u, 'offline');
+    expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
+
+    // On the next connect — any device — they read online, not Away.
+    const mac = await connect(u, { active: true });
+    await expectStatus(u, 'online');
+    expect(mac.ready()!.d!.user).toMatchObject({ status: 'online', chosenStatus: 'online' });
+    await mac.close();
+    await expectStatus(u, 'offline');
+  });
+
+  it('an automatic idle PATCHed with no device connected that offlines a stale row is reported as already ended', async () => {
+    const u = await createUser();
+    // A row still reading online although nothing is connected (stale).
+    await db.update(schema.users).set({ status: 'online' }).where(eq(schema.users.id, u));
+    const res = await patchStatus(await tokenFor(u), 'idle');
+    expect(((await res.json()) as { user: unknown }).user).toMatchObject({
+      status: 'online',
+      chosenStatus: 'online',
+      effectiveStatus: 'offline',
+    });
+    expect(await row(u)).toMatchObject({
+      status: 'offline',
+      chosenStatus: 'online',
+      chosenStatusAuto: false,
+    });
+  });
+
+  it('the single-replica boot reset ends an automatic idle too (the process died with it connected)', async () => {
+    const auto = await createUser();
+    const manual = await createUser();
+    await db
+      .update(schema.users)
+      .set({ status: 'idle', chosenStatus: 'idle', chosenStatusAuto: true })
+      .where(eq(schema.users.id, auto));
+    await db
+      .update(schema.users)
+      .set({ status: 'idle', chosenStatus: 'idle', chosenStatusAuto: false })
+      .where(eq(schema.users.id, manual));
+    const { presence, resetPresenceOnBoot } = await import('../src/gateway/presence');
+    expect(presence().clustered).toBe(false);
+    await resetPresenceOnBoot(presence(), { userIds: [auto, manual] });
+    expect(await row(auto)).toMatchObject({
+      status: 'offline',
+      chosenStatus: 'online',
+      chosenStatusAuto: false,
+    });
+    expect(await row(manual)).toMatchObject({
+      status: 'offline',
+      chosenStatus: 'idle',
+      chosenStatusAuto: false,
+    });
+  });
+
+  it('a manually picked Away survives a full disconnect and reconnect', async () => {
+    const u = await createUser();
+    const token = await tokenFor(u);
+    const dev = await connect(u, { active: true });
+    await expectStatus(u, 'online');
+    // An automatic idle first, then the user picks Away by hand: the manual
+    // pick clears the automatic flag.
+    await patchStatus(token, 'idle');
+    expect((await row(u)).chosenStatusAuto).toBe(true);
+    await patchStatus(token, 'idle', 'manual');
+    expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: false });
+
+    await dev.close();
+    await expectStatus(u, 'offline');
+    expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: false });
+    const again = await connect(u, { active: true });
+    await expectStatus(u, 'idle');
+    expect(again.ready()!.d!.user).toMatchObject({ status: 'idle', chosenStatus: 'idle' });
+    await again.close();
+  });
+
+  it('an unmarked PATCH of online / dnd / invisible is a plain pick: never flagged, survives a full disconnect', async () => {
+    const u = await createUser();
+    const token = await tokenFor(u);
+    // An automatic idle, then the old app's own auto-return to online clears it.
+    let dev = await connect(u);
+    await patchStatus(token, 'idle');
+    expect((await row(u)).chosenStatusAuto).toBe(true);
+    await patchStatus(token, 'online');
+    expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
+    await expectStatus(u, 'online');
+
+    for (const pick of ['dnd', 'invisible'] as const) {
+      await patchStatus(token, pick);
+      expect(await row(u)).toMatchObject({ chosenStatus: pick, chosenStatusAuto: false });
+      await dev.close();
+      await expectStatus(u, pick === 'invisible' ? 'invisible' : 'offline');
+      expect((await row(u)).chosenStatus).toBe(pick);
+      dev = await connect(u);
+      await expectStatus(u, pick);
+    }
     await dev.close();
   });
 
@@ -421,10 +560,11 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
       .update(schema.users)
       .set({ chosenStatus: 'invisible', status: 'invisible', lastSeenAt: frozen })
       .where(eq(schema.users.id, u));
-    const res = await patchStatus(await tokenFor(u), 'online');
+    const res = await patchStatus(await tokenFor(u), 'online', 'manual');
     expect(((await res.json()) as { user: unknown }).user).toMatchObject({
-      status: 'offline',
+      status: 'online',
       chosenStatus: 'online',
+      effectiveStatus: 'offline',
     });
     expect((await row(u)).lastSeenAt).toEqual(frozen);
   });

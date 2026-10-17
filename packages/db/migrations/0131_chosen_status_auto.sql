@@ -1,0 +1,24 @@
+-- Multi-device presence: tell a pre-update client's AUTOMATIC "idle" apart
+-- from an Away the user picked.
+--
+-- Old iOS builds (and the old desktop shell) PATCH /users/@me {status:'idle'}
+-- by themselves after a few minutes without input, and PATCH 'online' back
+-- only from process memory. Since 0130 that PATCH sets the CHOSEN status,
+-- which nothing else changes — so an old app killed while auto-idle left the
+-- user Away on every device for good. The old server undid it on the next
+-- connect (full disconnect wrote 'offline', IDENTIFY turned 'offline' into
+-- 'online').
+--
+-- chosen_status_auto marks a chosen 'idle' set by a PATCH WITHOUT the
+-- `statusSource: 'manual'` marker updated clients send for a pick made in the
+-- status picker. When such a user's effective status next turns 'offline'
+-- (their last device disconnected — apps/api/src/gateway/presence.ts), or the
+-- single-replica boot reset offlines them, the chosen status goes back to
+-- 'online' and the flag clears, in the same write. A manual pick (and any
+-- non-'idle' status) clears the flag. It is only ever true alongside a chosen
+-- 'idle' (CHECK below). Existing rows start false: 0130 did not backfill any
+-- 'idle', so every chosen 'idle' today came from a PATCH after the upgrade,
+-- and there is no telling which of those were automatic.
+ALTER TABLE "users" ADD COLUMN "chosen_status_auto" boolean DEFAULT false NOT NULL;
+--> statement-breakpoint
+ALTER TABLE "users" ADD CONSTRAINT "users_chosen_status_auto_idle_only" CHECK (NOT "chosen_status_auto" OR "chosen_status" = 'idle');

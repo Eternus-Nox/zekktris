@@ -5,7 +5,11 @@
  * never written by a device directly. Inputs:
  *
  *   - chosen status (`users.chosen_status`): what the user picked — online,
- *     idle ("Away"), dnd or invisible. Only PATCH /users/@me {status} changes it.
+ *     idle ("Away"), dnd or invisible. Only PATCH /users/@me {status} sets
+ *     it. One exception undoes it: an 'idle' PATCHed WITHOUT the
+ *     `statusSource: 'manual'` marker (a pre-update client's automatic away,
+ *     `users.chosen_status_auto`) goes back to 'online' when the user's
+ *     effective status turns 'offline', as the old server's disconnect did.
  *   - every live gateway connection's activity (Connection.presenceActive),
  *     reported by its client in IDENTIFY/RESUME and op 3 PRESENCE_UPDATE. A
  *     connection that never reports counts as active (legacy clients).
@@ -54,7 +58,7 @@
  */
 
 import Redis from 'ioredis';
-import { and, asc, eq, gt, inArray } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { env } from '../env';
 import { log } from '../log';
@@ -296,7 +300,11 @@ export class PresenceEngine {
       for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
         const summary = await this.clusterSummary(userId);
         const [row] = await db
-          .select({ status: schema.users.status, chosenStatus: schema.users.chosenStatus })
+          .select({
+            status: schema.users.status,
+            chosenStatus: schema.users.chosenStatus,
+            chosenStatusAuto: schema.users.chosenStatusAuto,
+          })
           .from(schema.users)
           .where(eq(schema.users.id, userId))
           .limit(1);
@@ -308,17 +316,30 @@ export class PresenceEngine {
           }
           return next;
         }
+        // A pre-update client's AUTOMATIC away (chosen 'idle' from a PATCH
+        // without the manual marker — see users.chosenStatusAuto) ends when
+        // the user's last device leaves, as the old server's disconnect →
+        // reconnect did: an old app killed while auto-idle can no longer
+        // un-idle itself, and nothing else would. A picked Away stays.
+        const resetAutoIdle =
+          next === 'offline' && row.chosenStatus === 'idle' && row.chosenStatusAuto;
+        const chosen: ChosenStatus = resetAutoIdle ? 'online' : row.chosenStatus;
         // Compare-and-set on exactly what we read: if another recompute (or a
         // chosen-status PATCH) got in between, this matches nothing and we
         // start over from fresh inputs instead of overwriting newer truth.
         const updated = await db
           .update(schema.users)
-          .set({ status: next })
+          .set(
+            resetAutoIdle
+              ? { status: next, chosenStatus: chosen, chosenStatusAuto: false }
+              : { status: next },
+          )
           .where(
             and(
               eq(schema.users.id, userId),
               eq(schema.users.status, row.status),
               eq(schema.users.chosenStatus, row.chosenStatus),
+              eq(schema.users.chosenStatusAuto, row.chosenStatusAuto),
             ),
           )
           .returning({ id: schema.users.id });
@@ -331,7 +352,7 @@ export class PresenceEngine {
         if ((next === 'offline' && row.status !== 'invisible') || row.status === 'offline') {
           await touchLastSeen(userId);
         }
-        await this.broadcast(userId, next, row.chosenStatus, opts.audience);
+        await this.broadcast(userId, next, chosen, opts.audience);
         // One replica: recomputes are serialized here and every input change
         // queues one of its own, so what we read is what we wrote against.
         if (!this.clustered) return next;
@@ -677,7 +698,8 @@ export async function shutdownPresence(): Promise<void> {
  *
  * Single replica: there are no connections at boot by definition, so every
  * online / idle / dnd row is stale — reset them all to 'offline' ('invisible'
- * is preserved: it already reads as offline and is the user's choice).
+ * is preserved: it already reads as offline and is the user's choice), and
+ * end a legacy client's automatic away the way recompute does.
  *
  * Cluster: users connected to OTHER replicas are live; a blanket reset would
  * offline them. Run the sweep instead (it only touches users without a fresh
@@ -700,9 +722,15 @@ export async function resetPresenceOnBoot(
       });
     }
   }
+  // Like a recompute to 'offline', this ends a legacy client's automatic
+  // away (users.chosenStatusAuto — only ever set alongside chosen 'idle').
   const reset = await db
     .update(schema.users)
-    .set({ status: 'offline' })
+    .set({
+      status: 'offline',
+      chosenStatus: sql`CASE WHEN ${schema.users.chosenStatusAuto} THEN 'online'::user_status ELSE ${schema.users.chosenStatus} END`,
+      chosenStatusAuto: false,
+    })
     .where(
       and(
         inArray(schema.users.status, ['online', 'idle', 'dnd']),

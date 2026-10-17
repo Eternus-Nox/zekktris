@@ -911,6 +911,13 @@
       "when": 1785118730000,
       "tag": "0130_chosen_status",
       "breakpoints": true
+    },
+    {
+      "idx": 130,
+      "version": "7",
+      "when": 1785205130000,
+      "tag": "0131_chosen_status_auto",
+      "breakpoints": true
     }
   ]
 }
