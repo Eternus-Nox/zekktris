@@ -45,8 +45,9 @@ android {
         compose = true
     }
 
-    // Kotlin sources live under src/main/kotlin.
+    // Kotlin sources live under src/main/kotlin (JVM unit tests: src/test/kotlin).
     sourceSets["main"].java.srcDirs("src/main/kotlin")
+    sourceSets["test"].java.srcDirs("src/test/kotlin")
 }
 
 dependencies {
@@ -87,4 +88,6 @@ dependencies {
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
     debugImplementation(libs.androidx.ui.tooling)
+    // Host-JVM tests of pure logic (./gradlew :app:testDebugUnitTest).
+    testImplementation(libs.junit)
 }

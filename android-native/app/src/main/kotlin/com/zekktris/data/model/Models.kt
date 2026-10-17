@@ -1,5 +1,6 @@
 package com.zekktris.data.model
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 // Core wire models for the Zekktris API. Wire JSON is camelCase, so Kotlin
@@ -58,7 +59,13 @@ data class SelfUser(
     val avatarDecoration: String? = null,
     val bannerUrl: String? = null,
     val bio: String? = null,
+    /** EFFECTIVE status, unmasked (can be "invisible"). On a server without
+     *  multi-device presence ([chosenStatus] absent) it is also the choice. */
     val status: String? = null,
+    /** What the user picked: online | idle | dnd | invisible. Only servers
+     *  with multi-device presence send it; the status picker shows and edits
+     *  it (data/DevicePresence.kt). */
+    val chosenStatus: String? = null,
     val customStatus: String? = null,
     val customStatusEmoji: String? = null,
     val customStatusExpiresAt: String? = null,
@@ -95,6 +102,15 @@ data class SelfUser(
 ) {
     val bestName: String get() = displayName ?: username ?: "Unknown"
 }
+
+/** READY's `features` (snake_case, unlike the REST DTOs): what this server
+ *  supports. A RESUMED carries none; the last READY's stay in force. */
+@Serializable
+data class ReadyFeatures(
+    /** The server derives presence from per-device activity: report it
+     *  (IDENTIFY/RESUME `presence`, op 3) and never PATCH status on our own. */
+    @SerialName("presence_activity") val presenceActivity: Boolean = false,
+)
 
 @Serializable
 data class Guild(

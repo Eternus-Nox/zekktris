@@ -265,7 +265,13 @@ class AppStore(
         scope.launch(Dispatchers.Default) { gateway.events.collect { onDispatch(it) } }
         // Mirror LiveKit connection / speaking / mute state into the snapshot.
         scope.launch { voice.connState.collect { s -> _state.update { it.copy(voiceConn = s) } } }
-        scope.launch { voice.speaking.collect { s -> _state.update { it.copy(speakingUserIds = s) } } }
+        scope.launch {
+            voice.speaking.collect { s ->
+                _state.update { it.copy(speakingUserIds = s) }
+                // Talking in voice counts as using the device (presence).
+                if (_state.value.me?.id?.let { it in s } == true) noteInteraction()
+            }
+        }
         scope.launch { voice.muted.collect { m -> _state.update { it.copy(selfMuted = m) } } }
         scope.launch { voice.deafened.collect { d -> _state.update { it.copy(selfDeafened = d) } } }
         scope.launch { voice.mutedForMe.collect { s -> _state.update { it.copy(mutedForMeIds = s) } } }
@@ -296,6 +302,14 @@ class AppStore(
                 _state.value.selectedChannelId?.let { syncNewMessages(it) }
             }
         }
+        // Device presence: while foreground, re-check the 5-minute idle
+        // threshold (backgrounding reports idle on its own, at once).
+        scope.launch {
+            while (true) {
+                delay(com.zekktris.data.DevicePresence.TICK_MS)
+                if (appForeground) evaluatePresence()
+            }
+        }
     }
 
     /** Foreground/background flag fed by MainActivity (no AppState churn).
@@ -312,6 +326,46 @@ class AppStore(
      *  ringer (the gateway already rings a foregrounded, connected client). */
     val isForeground: Boolean get() = appForeground
 
+    // ---- device presence ----------------------------------------------------
+    //
+    // This device is "in use" while MainActivity is started and was touched
+    // within 5 minutes (or we're talking in voice); backgrounded is idle at
+    // once (DevicePresence.isActive). Every evaluation reports that to the
+    // gateway (Gateway.setPresenceActive), which rides in IDENTIFY/RESUME and
+    // sends op 3 only on a change, and only to a server whose READY carries
+    // features.presence_activity. Such a server derives the status everyone
+    // sees from the chosen status plus EVERY device's activity, so the phone in
+    // use reads online even while an idle Mac would say away, and a phone put
+    // away no longer keeps the user online. The app never writes the status
+    // itself; only the status picker does. Older servers ignore all of it.
+
+    /** elapsedRealtime of the last touch, key, typing or talking; null = none yet. */
+    @Volatile
+    private var lastInteractionAt: Long? = null
+
+    /** The activity last reported (null before the first evaluation). Lets a
+     *  touch after an idle report re-evaluate at once instead of on the tick. */
+    @Volatile
+    private var lastReportedActive: Boolean? = null
+
+    /** The person used this device: MainActivity.onUserInteraction (touch /
+     *  key), typing in the composer (the IME's keys never reach the activity),
+     *  talking in voice, and the app coming to the foreground. Cheap — it runs
+     *  on every touch; only the first one after an idle report evaluates. */
+    fun noteInteraction() {
+        lastInteractionAt = android.os.SystemClock.elapsedRealtime()
+        if (lastReportedActive != true) evaluatePresence()
+    }
+
+    private fun evaluatePresence() {
+        val st = _state.value
+        val talking = st.me?.id?.let { it in st.speakingUserIds } == true
+        val since = lastInteractionAt?.let { android.os.SystemClock.elapsedRealtime() - it }
+        val active = com.zekktris.data.DevicePresence.isActive(appForeground, since, talking)
+        lastReportedActive = active
+        gateway.setPresenceActive(active)
+    }
+
     /**
      * App returned to the foreground. Android commonly kills the socket in the
      * background with no close frame, and the heartbeat watchdog can take a
@@ -323,6 +377,8 @@ class AppStore(
      */
     fun onAppForeground() {
         appForeground = true
+        // Opening the app is using it: active before the reconnect's RESUME.
+        noteInteraction()
         if (_state.value.phase != Phase.Ready) return
         gateway.forceReconnect()
         // A resume replays events but can't recover one that was never
@@ -378,6 +434,8 @@ class AppStore(
 
     fun onAppBackground() {
         appForeground = false
+        // Put away: this device is idle at once (the socket may live on).
+        evaluatePresence()
     }
 
     /**
@@ -506,6 +564,10 @@ class AppStore(
     private suspend fun enterReady(me: SelfUser) {
         _state.update { it.copy(me = me, phase = Phase.Ready, authBusy = false, authError = null) }
         loadInitial()
+        // Decide this device's activity BEFORE the socket opens, so the first
+        // IDENTIFY carries it (a process woken by a push, with no activity
+        // started, connects idle).
+        evaluatePresence()
         gateway.start()
         // Now that we hold a valid session, (re)register this device for push.
         push.registerCurrentToken()
@@ -3650,6 +3712,7 @@ class AppStore(
     /** Throttled typing signal — at most one POST per 4s of continuous typing. */
     private var lastTypingSentAt = 0L
     fun noteTyping(channelId: String) {
+        noteInteraction()
         val now = System.currentTimeMillis()
         if (now - lastTypingSentAt < 3_000) return
         lastTypingSentAt = now
@@ -4214,7 +4277,23 @@ class AppStore(
                 val obj = d.data?.jsonObject ?: return
                 val uid = obj["user_id"]?.jsonPrimitive?.contentOrNull ?: return
                 val status = obj["status"]?.jsonPrimitive?.contentOrNull ?: return
-                _state.update { it.copy(presence = it.presence + (uid to status)) }
+                _state.update { st ->
+                    val next = st.copy(presence = st.presence + (uid to status))
+                    // Our own: on a server with multi-device presence these
+                    // frames carry our EFFECTIVE status (the own dot), and the
+                    // guild_id=null one to our own connections also carries
+                    // chosen_status, so a pick made on another device reaches
+                    // the Settings picker. Older servers' frames leave `me`
+                    // alone (there its status is the choice).
+                    val me = st.me
+                    if (me == null || me.id != uid) return@update next
+                    val own = com.zekktris.data.DevicePresence.selfFields(
+                        status = status,
+                        frameChosen = obj["chosen_status"]?.jsonPrimitive?.contentOrNull,
+                        knownChosen = me.chosenStatus,
+                    ) ?: return@update next
+                    next.copy(me = me.copy(chosenStatus = own.chosen, status = own.effective))
+                }
             }
             "USER_UPDATE" -> onUserUpdate(d.data)
             "MESSAGE_DELETE_BULK" -> {
@@ -4482,6 +4561,17 @@ class AppStore(
             _state.value.selectedChannelId?.let { refreshOpenChannelLatest(it) }
         }
         val obj = d?.jsonObject ?: return
+        // Our chosen status may have been changed on another device while this
+        // one was away. Only the choice: READY's effective `status` can predate
+        // this connection's own recompute, whose PRESENCE_UPDATE follows.
+        (obj["user"] as? kotlinx.serialization.json.JsonObject)?.get("chosenStatus")
+            ?.let { (it as? JsonPrimitive)?.contentOrNull }
+            ?.let { chosen ->
+                _state.update { st ->
+                    val me = st.me ?: return@update st
+                    if (me.chosenStatus == chosen) st else st.copy(me = me.copy(chosenStatus = chosen))
+                }
+            }
         obj["read_state"]?.let { arr ->
             val states = runCatching { api.json.decodeFromJsonElement<List<ReadState>>(arr) }.getOrDefault(emptyList())
             if (states.isNotEmpty()) {

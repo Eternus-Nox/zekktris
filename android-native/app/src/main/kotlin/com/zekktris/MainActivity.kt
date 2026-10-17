@@ -163,6 +163,13 @@ class MainActivity : FragmentActivity() {
         (application as ZekApp).store.onAppBackground()
     }
 
+    // Every touch / key the activity dispatches: the person is using this
+    // device (multi-device presence — AppStore.noteInteraction).
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        (application as ZekApp).store.noteInteraction()
+    }
+
     override fun onResume() {
         super.onResume()
         if (!pendingKeyguardDismiss) return

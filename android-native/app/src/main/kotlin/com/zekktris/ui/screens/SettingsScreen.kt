@@ -293,7 +293,9 @@ private fun ProfileSection(store: AppStore, state: AppState) {
     val bannerPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { pickAndUpload(it, true) }
     var displayName by remember { mutableStateOf(me.displayName ?: "") }
     var bio by remember { mutableStateOf(me.bio ?: "") }
-    val status = me.status ?: "online"
+    // The status the user PICKED (chosenStatus; an older server's `status`).
+    // Their dot shows the effective one, which follows the device in use.
+    val status = com.zekktris.data.DevicePresence.pickerStatus(me.chosenStatus, me.status)
     var customStatus by remember { mutableStateOf(me.customStatus ?: "") }
     var customStatusEmoji by remember { mutableStateOf(me.customStatusEmoji ?: "") }
     // keep = leave the current auto-clear timer alone; off = never clear.

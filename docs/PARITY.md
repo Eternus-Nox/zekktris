@@ -176,12 +176,13 @@ The genuine parity story is therefore **not** "web is far behind." It's:
 | Events: create / list / RSVP / attendees / status / edit / cancel | MainView.swift:4727–4950 | Full | EventsModal.tsx, CreateEventModal.tsx, MyEventsModal.tsx, EventAttendeesModal.tsx | — | |
 | Starfield voice background (cosmetic) | Voice.swift:1355 | Unverified | VoiceView.tsx | (A) | Web may use a plain/gradient background. |
 
-**Android native (`android-native/`) — E2EE 1:1 calls.** This matrix is iOS ↔ web;
+**Android native (`android-native/`) — E2EE 1:1 calls, multi-device presence.** This matrix is iOS ↔ web;
 the Android client is tracked here only where it has to interoperate with both.
 
 | Feature | Android (file) | Status | Note |
 |---|---|---|---|
 | E2EE 1:1 call media encryption | voice/CallEncryption.kt, voice/VoiceManager.kt, AppStore.kt `joinVoice` | Full (not yet device-tested) | Keys LiveKit exactly like web (`getCallKeyString` → `ExternalE2EEKeyProvider.setKey`) and iOS (`BaseKeyProvider(isSharedKey:sharedKey:)`): the base64 of the 32-byte DM key as a shared-key STRING → PBKDF2, salt `LKFrameEncryptionKey`, ratchet window 0, GCM — so Android ↔ web ↔ iOS calls share one media key. A DM whose key isn't unlocked (or is stale) refuses the call instead of joining in the clear. Before this, Android joined E2EE DM calls unencrypted. |
+| Multi-device presence (status follows the device in use) | data/DevicePresence.kt, data/Gateway.kt `setPresenceActive`, AppStore.kt `noteInteraction`, MainActivity.kt `onUserInteraction` | Full (not yet device-tested) | Same protocol as web/iOS: the phone is active while MainActivity is started and was touched (or typed in, or talked in voice) within 5 minutes, idle at once in the background; reported in IDENTIFY/RESUME and as op 3 `PRESENCE_UPDATE {active}` on each change, only when READY carries `features.presence_activity`. The Settings picker shows and sets `chosenStatus`; the own dot shows the effective status from our own `PRESENCE_UPDATE`s. Android never auto-PATCHed status, so an older server sees no change. |
 
 ---
 
