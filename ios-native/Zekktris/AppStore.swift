@@ -578,8 +578,15 @@ final class AppStore: ObservableObject {
     }
 
     /// Navigate to a channel from a notification tap; loads DMs first when
-    /// the target isn't in memory yet (cold launch).
-    func openFromPush(channelId: String, messageId: String?, autojoin: Bool) {
+    /// the target isn't in memory yet (cold launch). Also opens the
+    /// conversation a share was sent to (consumeStagedShare), which can be a
+    /// DM, a group DM or a guild channel. `onUnresolved` runs (on the main
+    /// actor) when the channel can't be found at all — deleted, no longer
+    /// visible to us, or the fetch failed.
+    func openFromPush(
+        channelId: String, messageId: String?, autojoin: Bool,
+        onUnresolved: (() -> Void)? = nil
+    ) {
         // A notification tap IS a foreground wake — but it can race the
         // scenePhase .active transition (navigation runs first on some paths),
         // and the tapped conversation must not depend on that ordering. Revive
@@ -608,6 +615,16 @@ final class AppStore: ObservableObject {
                     leaveOpenConversation()
                     alreadyOpen = false
                 }
+            }
+            if !alreadyOpen {
+                // A compact rail page (Discover, Admin…) is a full-screen cover:
+                // a channel pushed under it is not on screen — the tap seems to
+                // do nothing, and its composer never takes a waiting share
+                // (isShowingMessages). showDMs (a DM) and selectGuild (another
+                // guild's channel) clear this already; a channel of the guild
+                // that is already loaded did not.
+                railPage = nil
+                railContent = .normal
             }
             if alreadyOpen {
                 // We're already sitting in this conversation, so the view will NOT
@@ -658,7 +675,10 @@ final class AppStore: ObservableObject {
             // channel to learn its owning guild, switch to that guild, then open
             // it. Without this, a tapped guild-channel notification fell through
             // to the default landing instead of opening the channel.
-            guard let ch = try? await api.channel(id: channelId) else { return }
+            guard let ch = try? await api.channel(id: channelId) else {
+                onUnresolved?()
+                return
+            }
             if let gid = ch.guildId, !gid.isEmpty {
                 if guilds.isEmpty { await loadGuilds() }
                 if let guild = guilds.first(where: { $0.id == gid }) {
@@ -1360,7 +1380,9 @@ final class AppStore: ObservableObject {
         /// Lets the composer notice a new share (onChange) even when the
         /// conversation it is for is already on screen.
         let id = UUID()
-        let channelId: String?
+        /// The conversation picked in the share sheet (a DM, group DM or guild
+        /// channel); nil means the user picks one from the DM list.
+        var channelId: String?
         let text: String?
         /// Filenames inside the App Group's SharedInbox directory.
         let files: [String]
@@ -1415,18 +1437,39 @@ final class AppStore: ObservableObject {
             text: raw["text"] as? String,
             files: files
         )
-        // If the user picked a suggested person in the share sheet, go straight
-        // there. Otherwise show the DM list (with a "pick a conversation"
-        // banner) so the payload lands in the one they choose now, not in
-        // whatever happens to be open — the same as Android. Navigate first:
-        // the composer only takes a share while its list is on screen.
+        // If the user picked a suggested conversation in the share sheet, go
+        // straight there. Suggestions are DMs (ShareSuggestions) but also guild
+        // channels (NotificationService donates every conversation that
+        // notifies), so this resolves any channel id, not just the DM list.
+        // Otherwise — or when that conversation can't be opened — show the DM
+        // list (with a "pick a conversation" banner) so the payload lands in
+        // the one they choose now, not in whatever happens to be open — the
+        // same as Android. Navigate first: the composer only takes a share
+        // while its list is on screen.
         if let cid = staged.channelId, !cid.isEmpty {
             pendingShare = staged
-            openDMById(cid)
+            let shareId = staged.id
+            openFromPush(channelId: cid, messageId: nil, autojoin: false, onUnresolved: { [weak self] in
+                self?.pickConversationForShare(shareId)
+            })
         } else {
             showDMs()
             pendingShare = staged
         }
+    }
+
+    /// The conversation picked in the share sheet couldn't be opened: drop
+    /// the target and fall back to the DM list's "pick a conversation" banner,
+    /// rather than leave the share waiting for a conversation that never
+    /// appears. Only for the share it was opened for — a newer one may have
+    /// replaced it, or the user may already have placed it.
+    private func pickConversationForShare(_ shareId: UUID) {
+        guard var share = pendingShare, share.id == shareId else { return }
+        share.channelId = nil
+        // DM list first, as in consumeStagedShare: with no conversation on
+        // screen, no open composer can take the now-untargeted share.
+        showDMs()
+        pendingShare = share
     }
 
     /// Delete SharedInbox files older than a day that no share refers to any

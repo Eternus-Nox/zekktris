@@ -1395,9 +1395,9 @@ struct DMListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // A share from another app that didn't name a conversation
-            // (AppStore.consumeStagedShare brought us here): say why, and let
-            // the user drop it.
+            // A share from another app that didn't name a conversation, or
+            // whose conversation couldn't be opened (AppStore.consumeStagedShare
+            // brought us here): say why, and let the user drop it.
             if let share = store.pendingShare, share.channelId == nil, !share.isExpired {
                 pendingShareBanner
             }
