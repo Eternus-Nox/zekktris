@@ -2545,15 +2545,19 @@ struct SettingsView: View {
         .sheet(isPresented: $showAchievements) { AchievementsGallerySheet() }
     }
 
-    /// The status to show as selected. When the account has no status set
+    /// The status to show as selected: the one the user CHOSE
+    /// (`chosenStatus`), not the effective presence — with multi-device
+    /// presence a chosen Online reads Away while no device is in use, and the
+    /// picker must still show Online. An older server sends no chosenStatus
+    /// and `status` is the choice. When the account has no status set
     /// (nil/empty — e.g. a fresh account, or the launch snapshot before the
     /// gateway identifies), default to "online" so a status is always
-    /// selected rather than leaving every row unchecked.
-    private var effectiveStatus: String {
-        let s = session.currentUser?.status ?? ""
-        // "offline" is never a deliberate choice (it's the stale pre-connect
-        // snapshot) — show Online selected, matching the in-app presence.
-        return (s.isEmpty || s == "offline") ? "online" : s
+    /// selected rather than leaving every row unchecked; "offline" is never a
+    /// deliberate choice (it's the stale pre-connect snapshot) either.
+    private var selectedStatus: String {
+        DevicePresence.pickerStatus(
+            chosen: session.currentUser?.chosenStatus, status: session.currentUser?.status
+        )
     }
 
     private var statusSection: some View {
@@ -2561,8 +2565,10 @@ struct SettingsView: View {
             sectionTitle("STATUS")
             ForEach(statuses, id: \.1) { label, value, color in
                 Button {
+                    // Sets the CHOSEN status (the field keeps its old name).
                     // Surrender auto-idle control so the manual pick sticks
-                    // (a manual "idle" must not be auto-bounced to "online").
+                    // (a manual "idle" must not be auto-bounced to "online"
+                    // by the legacy auto-away on an older server).
                     store.noteManualStatusChange()
                     Task { await session.setStatus(value) }
                 } label: {
@@ -2570,7 +2576,7 @@ struct SettingsView: View {
                         Circle().fill(color).frame(width: 10, height: 10)
                         Text(label).font(.zkSans(15)).foregroundColor(Theme.ink1)
                         Spacer()
-                        if effectiveStatus == value {
+                        if selectedStatus == value {
                             Image(systemName: "checkmark")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundColor(Theme.accent)

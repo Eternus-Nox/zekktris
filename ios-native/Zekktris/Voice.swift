@@ -118,6 +118,9 @@ final class VoiceManager: ObservableObject {
     /// LiveKit identities (== user snowflakes) currently speaking. Drives the
     /// green ring in the voice/stage UI.
     @Published private(set) var speakingUserIds: Set<String> = []
+    /// Called with the new speaker set whenever it changes (AppStore counts
+    /// our own talking as using the device, for presence).
+    var onSpeakingChanged: ((Set<String>) -> Void)?
     /// User ids the local user has muted for themselves only (persisted).
     @Published private(set) var mutedForMe: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "zk.mutedForMe") ?? [])
 
@@ -931,7 +934,10 @@ extension VoiceManager: RoomDelegate {
             // Only republish when the set actually changed — an unchanged
             // reassignment still re-renders every speakingUserIds observer.
             // Mirrors the sameTracks/sameAudio guards in syncRemoteTracks.
-            if ids != self.speakingUserIds { self.speakingUserIds = ids }
+            if ids != self.speakingUserIds {
+                self.speakingUserIds = ids
+                self.onSpeakingChanged?(ids)
+            }
             // Frequent during calls — doubles as the remote-track refresh.
             self.syncRemoteTracks()
         }

@@ -4,9 +4,15 @@ import Foundation
 /// protocol in `packages/client/src/gateway.ts`:
 ///
 ///   server → HELLO (op 7, d.heartbeat_interval)
-///   client → IDENTIFY (op 2, d:{ token, properties })  + start heartbeats
+///   client → IDENTIFY (op 2, d:{ token, properties, presence? })  + start heartbeats
 ///   server → DISPATCH READY (op 0, t:"READY")  … then DISPATCH events
 ///   client → HEARTBEAT (op 1, d:{ seq }) every interval
+///   client → PRESENCE_UPDATE (op 3, d:{ active }) on an activity change
+///
+/// Presence: AppStore reports this device's activity with
+/// `setPresenceActive(_:)`. It rides in every IDENTIFY/RESUME (harmless to an
+/// older server) and goes out as op 3 on a change only when the last READY
+/// carried `features.presence_activity` (see DevicePresence.swift).
 ///
 /// Stage 1 surfaces dispatch events through `onEvent(name, rawData)` where
 /// `rawData` is the JSON of the frame's `d`. Robustness mirrors the web
@@ -20,6 +26,15 @@ final class Gateway: ObservableObject {
     }
 
     @Published private(set) var status: Status = .idle
+
+    /// Whether the server derives presence from device activity (the last
+    /// READY's `features.presence_activity`). A RESUMED carries no features
+    /// and keeps the last READY's. When true, AppStore must not PATCH
+    /// /users/@me {status} automatically.
+    private(set) var supportsPresenceActivity = false
+    /// This device's activity as AppStore last reported it, and what the
+    /// server's session holds — so each change is sent once.
+    private var presence = PresenceReport()
 
     /// Invoked on the main actor for every DISPATCH frame.
     /// `data` is the serialized `d` payload (decode it into the right model).
@@ -81,6 +96,7 @@ final class Gateway: ObservableObject {
         sessionId = nil
         lastSeq = nil
         resuming = false
+        presence.sessionEnded()
         reconnectTask?.cancel(); reconnectTask = nil
         // Track access-token rotations (15-min expiry + cookie refresh) so
         // the next IDENTIFY — e.g. after a reconnect — uses a live token
@@ -109,7 +125,20 @@ final class Gateway: ObservableObject {
         sessionId = nil
         lastSeq = nil
         resuming = false
+        presence.sessionEnded()
+        // Sign-out: the next sign-in may be to a different (older) server.
+        supportsPresenceActivity = false
         status = .closed
+    }
+
+    /// Report this device's activity: true while the person is using it, false
+    /// once they stop (5 min without input, or the app went to the background).
+    /// Call it on every evaluation; repeats are dropped here. Sent as
+    /// PRESENCE_UPDATE only to a server that supports it, and always included
+    /// in the next IDENTIFY/RESUME.
+    func setPresenceActive(_ active: Bool) {
+        presence.report(active)
+        flushPresence()
     }
 
     /// Force an immediate reconnect, bypassing the backoff wait. Called when
@@ -287,9 +316,18 @@ final class Gateway: ObservableObject {
                 // A live session means the token worked — re-arm the one-shot
                 // IDENTIFY-refresh recovery for any future expiry.
                 identifyRefreshAttempted = false
-                if let d = obj["d"] as? [String: Any], let sid = d["session_id"] as? String {
+                let d = obj["d"] as? [String: Any]
+                if let sid = d?["session_id"] as? String {
                     sessionId = sid
                 }
+                // Capabilities come with READY only; a RESUMED keeps the last.
+                // Set before onEvent so AppStore's READY handling sees them.
+                if t == "READY" {
+                    let features = d?["features"] as? [String: Any]
+                    supportsPresenceActivity = features?["presence_activity"] as? Bool == true
+                }
+                // An activity change reported while we were (re)connecting.
+                flushPresence()
             }
             // RESUMED signals "you're caught up": the missed events normally
             // arrive ahead of it as their own DISPATCH frames. We still FORWARD
@@ -323,14 +361,14 @@ final class Gateway: ObservableObject {
         guard let token else { return }
         resuming = false
         status = .identifying
-        let frame: [String: Any] = [
-            "op": 2,
-            "d": [
-                "token": token,
-                "properties": ["os": "iOS", "browser": "Zekktris-iOS", "device": "ios"],
-            ],
+        var d: [String: Any] = [
+            "token": token,
+            "properties": ["os": "iOS", "browser": "Zekktris-iOS", "device": "ios"],
         ]
-        send(frame)
+        // This device's activity at connect. Omitted until AppStore reports
+        // (the server then counts us as active); older servers ignore it.
+        if let active = presence.handshakeValue() { d["presence"] = ["active": active] }
+        send(["op": 2, "d": d])
     }
 
     /// We can RESUME only when a prior connection handed us a session id and we
@@ -347,7 +385,21 @@ final class Gateway: ObservableObject {
         }
         resuming = true
         status = .identifying
-        send(["op": 4, "d": ["token": token, "session_id": sid, "seq": seq]])
+        var d: [String: Any] = ["token": token, "session_id": sid, "seq": seq]
+        // Our activity NOW — it may have changed while the socket was down
+        // (backgrounded). Omitted = the server keeps the resumed session's.
+        if let active = presence.handshakeValue() { d["presence"] = ["active": active] }
+        send(["op": 4, "d": d])
+    }
+
+    /// Send PRESENCE_UPDATE if the reported activity differs from what the
+    /// server holds — only while live, and only to a server that supports it.
+    private func flushPresence() {
+        guard let active = presence.takeUpdate(
+            live: status == .ready && task != nil,
+            supported: supportsPresenceActivity
+        ) else { return }
+        send(["op": 3, "d": ["active": active]])
     }
 
     private func sendHeartbeat() {

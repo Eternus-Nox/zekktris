@@ -50,7 +50,20 @@ server*). The remaining gaps are listed under *Not built yet*.
   blocked list, and tap a friend to open or create a DM and jump in.
 - **Presence**: online / idle / dnd / offline dots on avatars (DM list, message
   authors, your own), seeded from the DTOs and updated live from
-  `PRESENCE_UPDATE` gateway events.
+  `PRESENCE_UPDATE` gateway events. Your status follows the device you are
+  actually using: the phone reports its own activity to the gateway — active
+  while the app is in the foreground and was touched or typed in within 5
+  minutes (or you're talking in voice), idle the moment it goes to the
+  background or when it is woken in the background for a call — in
+  IDENTIFY/RESUME and as `PRESENCE_UPDATE` (op 3) on each change. The server
+  combines every device's report with the status you picked: picked Online
+  reads Online while any device is in use and Away once none is. Your own dot
+  shows that effective status (from the `PRESENCE_UPDATE`s about you); the
+  Settings picker shows the status you picked (`chosenStatus`). Logic in
+  `DevicePresence.swift`. A server without multi-device presence (its READY
+  has no `features.presence_activity`) gets the old behaviour: the app
+  PATCHes your status to idle after 5 minutes without input and back to
+  online on activity.
 - **Typing indicators**: typing in the composer pings the channel (throttled to
   once every few seconds), and a "<name> is typing…" line shows above the
   composer when others type, self-expiring after ~8s (`TYPING_START`).
@@ -60,8 +73,9 @@ server*). The remaining gaps are listed under *Not built yet*.
   Developer account, the Push Notifications capability in signing, a real
   device, and the server's APNs config — it can't be exercised in the simulator.
 - **Settings**: a profile/settings sheet from the rail's user menu — see your
-  profile, set your presence (online / idle / dnd / invisible), edit your
-  display name and custom status (`PATCH /users/@me`), and log out.
+  profile, set your status (online / Away / dnd / invisible — the one you
+  pick; see *Presence*), edit your display name and custom status
+  (`PATCH /users/@me`), and log out.
 - **Search**: in-channel full-text message search (magnifier in the channel
   header) — type a query and see matching messages with author + snippet.
   Offered in non-E2EE channels only, since encrypted DM content is stored as
@@ -188,7 +202,7 @@ all hand data to the app through it.
 | `ZekktrisWatch` | The Apple Watch app (messages and pokes to recent DMs) |
 | `ZekktrisWatchWidgets` | Watch complications / Smart Stack widgets |
 | `ZekktrisWatchIntents`, `ZekktrisWatchAppIntents` | Siri on the watch |
-| `ZekktrisTests` | Host-less logic tests (E2EE call keys, Siri matching) |
+| `ZekktrisTests` | Host-less logic tests (E2EE call keys, Siri matching, device presence) |
 
 ## Open & run — Option B: the committed project
 

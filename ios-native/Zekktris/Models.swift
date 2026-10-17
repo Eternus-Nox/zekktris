@@ -105,7 +105,15 @@ struct SelfUser: Codable, Identifiable, Hashable {
     var bannerUrl: String?
     var bio: String?
     var email: String?
+    /// EFFECTIVE presence. On a server with multi-device presence (READY
+    /// `features.presence_activity`) it is derived from `chosenStatus` and the
+    /// activity of every connected device, and unmasked ("invisible" stays
+    /// "invisible" here). On an older server it is also the chosen status.
     var status: String?
+    /// The status the user PICKED (online / idle = "Away" / dnd / invisible):
+    /// what the status picker shows and sets (PATCH /users/@me {status}).
+    /// nil from older servers, where `status` is the choice. Never "offline".
+    var chosenStatus: String?
     var customStatus: String?
     var customStatusEmoji: String?
     /** ISO-8601 instant the custom status auto-clears, or nil for no expiry. */
