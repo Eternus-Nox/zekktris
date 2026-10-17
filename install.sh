@@ -464,7 +464,8 @@ admin_account_create() {
 if [[ $EXISTING -eq 1 && -n "$ADMIN_EMAIL" ]]; then
     step "Admin account"
     info "$ADMIN_EMAIL becomes an admin: an existing account is promoted, otherwise it is created."
-    admin_password_collect optional
+    # Only used once the server is up; --no-start prints the command instead.
+    if [[ $START -eq 1 ]]; then admin_password_collect optional; fi
 fi
 if [[ $EXISTING -eq 0 ]]; then
     step "Your admin account"
@@ -476,7 +477,7 @@ if [[ $EXISTING -eq 0 ]]; then
         [[ $ASSUME_YES -eq 1 && -z "$ADMIN_EMAIL" ]] && fail "Pass --admin-email together with --yes."
     done
     ok "Admin: $ADMIN_EMAIL"
-    admin_password_collect
+    if [[ $START -eq 1 ]]; then admin_password_collect; fi
 
     if [[ -z "$DATA_DIR" ]]; then
         if [[ $IS_UNRAID -eq 1 ]]; then DATA_DIR="/mnt/user/appdata/zekktris"; else DATA_DIR="$ROOT/data"; fi
