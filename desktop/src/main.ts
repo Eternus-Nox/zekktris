@@ -43,7 +43,7 @@ import {
   setServerUrl,
   DEFAULT_SERVER_URL,
 } from './config';
-import { findServer } from './server';
+import { findServer, isServerMove, probeServer } from './server';
 import { externalUrl, isSameOrigin, permissionAllowed } from './trust';
 
 const PROTOCOL = 'zekktris';
@@ -335,10 +335,17 @@ function createMainWindow(serverUrl: string, startHidden = false): void {
   });
   // A server-side redirect to another origin never fires will-navigate, and
   // without this it would load in the app window with the preload attached.
+  // Cancelling leaves whatever page the window already shows; when it shows
+  // none yet (the server's own address now redirects), say so instead of
+  // leaving a blank frameless window — see serverRedirected.
   mainWindow.webContents.on('will-redirect', (e) => {
     if (e.isMainFrame && !isInternal(e.url)) {
       e.preventDefault();
-      openExternalSafely(e.url);
+      if (mainWindow && !isInternal(mainWindow.webContents.getURL())) {
+        void serverRedirected(e.url);
+      } else {
+        openExternalSafely(e.url);
+      }
     }
   });
 
@@ -519,16 +526,23 @@ function createTray(): void {
 
 let serverWindow: BrowserWindow | null = null;
 
-function showServerPicker(): void {
+/** Set when the picker was opened because the server moved (see
+    serverRedirected): the app has nothing to show, so closing it quits. */
+let pickerForMovedServer = false;
+
+function showServerPicker(moved?: { from: string; to: string | null }): void {
   if (serverWindow) {
     serverWindow.focus();
     return;
   }
+  pickerForMovedServer = !!moved;
+  // A moved server's picker stands alone: the main window is hidden then.
+  const parent = moved ? undefined : (mainWindow ?? undefined);
   serverWindow = new BrowserWindow({
     width: 460,
-    height: 400,
-    parent: mainWindow ?? undefined,
-    modal: !!mainWindow,
+    height: moved ? 440 : 400,
+    parent,
+    modal: !!parent,
     resizable: false,
     minimizable: false,
     maximizable: false,
@@ -541,11 +555,48 @@ function showServerPicker(): void {
       nodeIntegration: false,
     },
   });
-  void serverWindow.loadFile(join(__dirname, 'static', 'server.html'));
+  void serverWindow.loadFile(join(__dirname, 'static', 'server.html'), {
+    query: moved ? { from: moved.from, to: moved.to ?? '' } : {},
+  });
   keepOnShellPage(serverWindow);
   serverWindow.on('closed', () => {
     serverWindow = null;
+    if (pickerForMovedServer && !isQuitting) {
+      isQuitting = true;
+      app.quit();
+    }
   });
+}
+
+/**
+ * The window's own load of the chosen server was redirected to another
+ * origin, so the app has no page to show (the window only ever shows the
+ * chosen origin). The same server at a new address — moved to https, or its
+ * www/apex twin, and answering as Zekktris there — is followed by switching to
+ * it. Anything else is the user's call: the server picker explains, offering
+ * the new address.
+ */
+let handlingServerRedirect = false;
+async function serverRedirected(target: string): Promise<void> {
+  if (handlingServerRedirect) return;
+  handlingServerRedirect = true;
+  const saved = getServerUrl();
+  let to: string | null = null;
+  try {
+    const u = new URL(target);
+    if (u.protocol === 'https:' || u.protocol === 'http:') to = u.origin;
+  } catch {
+    /* not a URL: nothing to offer */
+  }
+  if (to && isServerMove(saved, to)) {
+    const probed = await probeServer(to);
+    if (probed.ok && probed.origin === to) {
+      switchServer(to);
+      return;
+    }
+  }
+  mainWindow?.hide();
+  showServerPicker({ from: new URL(saved).host, to });
 }
 
 /** The shell's own file:// windows never leave the page they were opened on,

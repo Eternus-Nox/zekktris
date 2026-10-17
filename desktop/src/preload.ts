@@ -5,7 +5,7 @@
  * entirely by the desktop shell, independent of the web app's code.
  */
 
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webFrame } from 'electron';
 
 // Who may see the bridge: the chosen server's own pages (main.ts passes its
 // origin as --zk-server-origin) and the shell's own file:// pages. Main.ts
@@ -108,9 +108,11 @@ function injectTitleBar(): void {
   if (document.getElementById('zk-frame-bar')) return;
   if (!document.body) return;
 
-  const style = document.createElement('style');
-  style.id = 'zk-frame-style';
-  style.textContent = `
+  // Injected through webFrame, not a <style> element: the page's
+  // Content-Security-Policy (style-src 'self', no 'unsafe-inline') governs
+  // elements the preload inserts too, and would drop the bar's CSS — leaving
+  // a frameless window that can't be dragged. Injected sheets are exempt.
+  webFrame.insertCSS(`
     html.zk-frame, html.zk-frame body { height: calc(100dvh - ${TITLEBAR_H}px) !important; }
     html.zk-frame body { margin-top: ${TITLEBAR_H}px !important; }
     html.zk-frame .min-h-screen { min-height: calc(100dvh - ${TITLEBAR_H}px) !important; }
@@ -137,8 +139,7 @@ function injectTitleBar(): void {
     }
     #zk-frame-bar .zk-frame-btn:hover { background: rgba(255,255,255,0.08); color: #e6ecf7; }
     #zk-frame-bar .zk-frame-btn.close:hover { background: #e23b3b; color: #fff; }
-  `;
-  document.head.appendChild(style);
+  `);
   document.documentElement.classList.add('zk-frame');
 
   const bar = document.createElement('div');

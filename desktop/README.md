@@ -234,13 +234,17 @@ refuse the update signed with the new one.
 
 1. Join the Apple Developer Program and create a **Developer ID
    Application** certificate. Put it in the build Mac's keychain (or set
-   `CSC_LINK` + `CSC_KEY_PASSWORD`).
+   `MAC_CSC_LINK` + `MAC_CSC_KEY_PASSWORD` in `.env.release`; `release.sh`
+   hands them to the macOS build only, as `CSC_LINK`, because
+   electron-builder would otherwise also sign the Windows build with a
+   plain `CSC_LINK` when no `WIN_CSC_LINK` is set — and installs of that
+   build would then refuse every properly signed update).
 2. For notarization, set **one** of: `APPLE_API_KEY` (path to the `.p8`) +
    `APPLE_API_KEY_ID` + `APPLE_API_ISSUER` (recommended), or `APPLE_ID` +
    `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID`.
 3. Build with `./release.sh --sign` (or `MAC_SIGN=1` in `.env.release`).
-   Without it, `release.sh` turns identity discovery off and builds
-   unsigned.
+   Without it, `release.sh` turns identity discovery off, passes no
+   certificate and builds unsigned (and so not notarized).
 
 A signed app only installs updates signed by the same Developer ID team.
 Signed builds use the hardened runtime; `entitlements.mac.plist` grants the
@@ -268,7 +272,10 @@ treats that page as untrusted web content:
   another origin opens in the default browser instead of loading in the
   window, and the shell hands the OS only `http:`, `https:` and `mailto:`
   links (never `file:`, `smb:`, `search-ms:` or other apps' protocol
-  handlers).
+  handlers). If the server's own address starts redirecting elsewhere,
+  the app follows it only to the same host on `https://` or its
+  `www.`/apex twin (after checking it answers as Zekktris); for any other
+  target it opens the server picker, explains, and offers the new address.
 - The screen-share source list and the choice of source are only
   available to the shell's picker window, while the page's
   `getDisplayMedia()` request is pending. The page can't list windows or

@@ -152,3 +152,26 @@ export async function findServer(
   }
   return { ok: false, error: firstError ?? "Couldn't reach that server." };
 }
+
+/**
+ * Whether the saved server `from` redirecting the app to `to` is the same
+ * server at a new address the app may follow by itself: the same host moved
+ * to https (a LAN server that turned TLS on), or its www / apex twin. Anything
+ * else — another host — is the user's call (main.ts asks in the server
+ * picker). The caller still probes `to` before switching.
+ */
+export function isServerMove(from: string, to: string): boolean {
+  let a: URL;
+  let b: URL;
+  try {
+    a = new URL(from);
+    b = new URL(to);
+  } catch {
+    return false;
+  }
+  if (a.origin === b.origin) return false;
+  if (b.protocol !== 'https:' && b.protocol !== a.protocol) return false;
+  if (!normalizeServerUrl(b.origin).ok) return false;
+  const bare = (h: string) => h.replace(/^www\./, '');
+  return bare(a.hostname) === bare(b.hostname);
+}

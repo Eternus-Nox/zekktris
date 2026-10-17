@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { answeredFrom, findServer } from '../src/server.ts';
+import { answeredFrom, findServer, isServerMove } from '../src/server.ts';
 
 function listen(handler: Parameters<typeof createServer>[1]): Promise<Server> {
   return new Promise((resolve) => {
@@ -60,4 +60,21 @@ test('a redirect is held to the same rules as a typed address', () => {
   });
   // Plain http on the public internet is refused, as when typed.
   assert.equal(answeredFrom('http://chat.example.com/api/v1/instance/info').ok, false);
+});
+
+test('isServerMove follows the same host to https or its www/apex twin only', () => {
+  // Same server, new address: followed without asking.
+  assert.equal(isServerMove('http://192.168.1.20', 'https://192.168.1.20'), true);
+  assert.equal(isServerMove('http://192.168.1.20:5550', 'https://192.168.1.20'), true);
+  assert.equal(isServerMove('https://example.com', 'https://www.example.com'), true);
+  assert.equal(isServerMove('https://www.example.com', 'https://example.com'), true);
+  // Anything else is the user's call.
+  assert.equal(isServerMove('https://example.com', 'https://chat.example.com'), false);
+  assert.equal(isServerMove('https://example.com', 'https://example.com.evil.test'), false);
+  assert.equal(isServerMove('https://example.com', 'https://evil.test'), false);
+  assert.equal(isServerMove('https://example.com', 'http://example.com'), false);
+  assert.equal(isServerMove('https://example.com', 'http://www.example.com'), false);
+  assert.equal(isServerMove('https://example.com', 'https://example.com/other'), false);
+  assert.equal(isServerMove('https://example.com', 'file:///etc/passwd'), false);
+  assert.equal(isServerMove('https://example.com', 'not a url'), false);
 });

@@ -65,6 +65,16 @@ ZK_APK_PATH="${ZK_APK_PATH:-}"
 # Load saved config (publish target + any overrides). Kept out of git.
 if [ -f .env.release ]; then set -a; . ./.env.release; set +a; fi
 
+# Signing credentials reach only the build they are for. electron-builder signs
+# Windows with CSC_LINK whenever WIN_CSC_LINK is unset, so a Developer ID .p12
+# left in the environment would Authenticode-sign the Windows build with it and
+# pin that (untrusted on Windows) publisher into every install's update check.
+# The Mac certificate is MAC_CSC_LINK (CSC_LINK still read, for old configs) and
+# goes to the macOS step only, and only with --sign.
+MAC_CSC_LINK="${MAC_CSC_LINK:-${CSC_LINK:-}}"
+MAC_CSC_KEY_PASSWORD="${MAC_CSC_KEY_PASSWORD:-${CSC_KEY_PASSWORD:-}}"
+unset CSC_LINK CSC_KEY_PASSWORD
+
 # ── Args ────────────────────────────────────────────────────────────────────
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -199,9 +209,13 @@ if [ "$DO_MAC" = "1" ]; then
     # doesn't fail trying to sign. (Unsigned mac apps download + run via
     # right-click→Open, but macOS auto-update requires a SIGNED build.)
     MAC_ENV="CSC_IDENTITY_AUTO_DISCOVERY=false"
+  elif [ -n "$MAC_CSC_LINK" ]; then
+    # This build only (see the scoping note at the top); unset again below.
+    export CSC_LINK="$MAC_CSC_LINK" CSC_KEY_PASSWORD="$MAC_CSC_KEY_PASSWORD"
   fi
   say "Building macOS ($MAC_ARCH) dmg + zip"
   run "$MAC_ENV npx electron-builder --mac --$MAC_ARCH --publish never"
+  unset CSC_LINK CSC_KEY_PASSWORD
 else
   warn "Skipping macOS build."
 fi
