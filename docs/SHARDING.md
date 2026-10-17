@@ -96,7 +96,16 @@ A replica only sees its own sockets, so:
   ran on its own view, users whose entry had gone missing (the leader swept
   it as stale and recomputed them without this replica's devices), and users
   it holds whose row reads `offline` (e.g. Redis was unreachable at another
-  replica's boot, so the blanket reset ran).
+  replica's boot, so the blanket reset ran). That last check runs only when
+  the beat itself reached Redis: a replica cut off from Redis but not from
+  Postgres can't publish, so the leader's sweep reads its users as gone and
+  offlines them; re-onlining them from its own view would be undone by the
+  next sweep, flapping every co-member's dot offline/online every 30 s.
+  Instead they read offline for the length of the partition (their own
+  socket is unaffected) and heal on the first beat that reaches Redis again.
+  A recompute the partitioned replica runs for its own reasons meanwhile (a
+  device connects or reports activity) still writes its own view, and the
+  next sweep corrects it.
 - During a rolling deploy from a version without this, users connected only
   to old replicas have no entries yet, so a new replica's boot sweep may show
   them offline until their next reconnect.

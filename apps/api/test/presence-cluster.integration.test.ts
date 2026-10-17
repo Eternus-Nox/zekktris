@@ -329,6 +329,45 @@ describe.runIf(redisReady)('presence across replicas (integration, Redis)', () =
     expect(await statusOf(u)).toBe('online');
   });
 
+  it('a replica cut off from Redis (Postgres still reachable) does not flap its users offline/online every sweep', async () => {
+    const leader = replica('replica-leader-p', { staleMs: STALE_MS });
+    const part = replica('replica-partitioned', { staleMs: STALE_MS });
+    const u = await newUser();
+    connect(part.registry, u, true);
+    expect(await part.engine.recompute(u)).toBe('online');
+
+    // The partition: the replica's Redis client now reaches nothing.
+    const healthy = part.redis;
+    const swap = (r: Redis) => {
+      (part.engine as unknown as { redis: Redis }).redis = r;
+    };
+    const dead = client('redis://127.0.0.1:1/0');
+    clients.push(dead);
+    swap(dead);
+
+    // Its entry goes stale; the leader's sweep reads the user as gone.
+    const seen: string[] = [];
+    for (let cycle = 0; cycle < 3; cycle++) {
+      await sleep(STALE_MS + 50);
+      await leader.engine.sweep({ userIds: [u] });
+      seen.push(await statusOf(u));
+      // The partitioned replica's heartbeat fails its Redis pipeline: it
+      // must not "heal" the row from its own view (the next sweep would
+      // just undo it, broadcasting both ways every cycle).
+      await part.engine.heartbeat();
+      seen.push(await statusOf(u));
+    }
+    expect(seen).toEqual(['offline', 'offline', 'offline', 'offline', 'offline', 'offline']);
+
+    // Redis is back: the first heartbeat re-creates the swept entry and heals.
+    swap(healthy);
+    await part.engine.heartbeat();
+    expect(await statusOf(u)).toBe('online');
+    // And the leader agrees from now on.
+    await leader.engine.sweep({ userIds: [u] });
+    expect(await statusOf(u)).toBe('online');
+  });
+
   it("Redis unreachable: falls back to this replica's own view (never hangs, never throws)", async () => {
     const down = replica('replica-down', { url: 'redis://127.0.0.1:1/0' });
     const u = await newUser();

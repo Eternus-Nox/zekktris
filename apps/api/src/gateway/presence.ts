@@ -469,7 +469,14 @@ export class PresenceEngine {
    *   - users whose last recompute here ran on this replica's view alone
    *     because Redis was failing;
    *   - users this replica holds whose row reads 'offline' (e.g. offlined by
-   *     another replica's boot reset while Redis was unreachable).
+   *     another replica's boot reset while Redis was unreachable) — only when
+   *     this beat reached Redis. A replica cut off from Redis (but not from
+   *     Postgres) can't publish its entries, so the leader's sweep rightly
+   *     reads its users as gone and offlines them; healing them back from
+   *     this replica's own view would be undone by the next sweep, flapping
+   *     every member's dot offline/online for as long as the partition
+   *     lasts. They stay offline until a beat reaches Redis again, and that
+   *     beat's HSET re-creates the swept field, which heals them above.
    */
   async heartbeat(): Promise<void> {
     const r = this.redis;
@@ -477,6 +484,7 @@ export class PresenceEngine {
     const users = [...new Set<bigint>([...this.source.liveUserIds(), ...this.holds.keys()])];
     const heal = new Set<bigint>();
     const now = Date.now();
+    let redisOk = false;
     try {
       const p = r.pipeline();
       for (const userId of users) {
@@ -499,6 +507,7 @@ export class PresenceEngine {
       for (const userId of users) this.published.add(userId);
       for (const userId of this.degraded) heal.add(userId);
       this.degraded.clear();
+      redisOk = true;
     } catch (err) {
       this.warnRedis(err);
     }
@@ -511,7 +520,9 @@ export class PresenceEngine {
       );
     }
 
-    // Heal (one indexed read per 1000 users).
+    // Heal rows read as offline (one indexed read per 1000 users) — not
+    // while this replica is cut off from Redis (see above).
+    if (!redisOk) return;
     const ids = [...this.source.liveUserIds()];
     for (let i = 0; i < ids.length; i += 1000) {
       const chunk = ids.slice(i, i + 1000);
