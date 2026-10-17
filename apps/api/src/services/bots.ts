@@ -350,7 +350,7 @@ export async function setBotEventConfig(
 async function postEventToBot(
   url: string,
   secret: string,
-  body: unknown,
+  body: { type: string } & Record<string, unknown>,
 ): Promise<void> {
   const { isPrivateIp } = await import('./embeds');
   const { Agent, fetch: undiciFetch } = await import('undici');
@@ -390,9 +390,28 @@ async function postEventToBot(
   // pair. HMAC is immune by design.
   const signature = createHmac('sha256', secret).update(payload).digest('hex');
 
+  const pinnedIp = pinned.ip;
+  const pinnedFamily = pinned.family;
   const agent = new Agent({
     connect: {
-      lookup: (_h, _o, cb) => cb(null, pinned!.ip, pinned!.family),
+      // Same pinning hook as the embeds fetcher (services/embeds.ts), and
+      // for the same reason: undici's connector calls this with
+      // { all: true } (autoSelectFamily, on by default since Node 20) and
+      // expects an ARRAY of { address, family }. The legacy 3-arg form,
+      // callback(null, ip, family), makes it throw ERR_INVALID_IP_ADDRESS
+      // before connecting, which silently dropped every bot event.
+      lookup: (_hostname, opts, callback) => {
+        if (opts?.all) {
+          (
+            callback as unknown as (
+              err: null,
+              addresses: Array<{ address: string; family: number }>,
+            ) => void
+          )(null, [{ address: pinnedIp, family: pinnedFamily }]);
+        } else {
+          callback(null, pinnedIp, pinnedFamily);
+        }
+      },
     },
   });
   const controller = new AbortController();
@@ -405,7 +424,8 @@ async function postEventToBot(
       headers: {
         'content-type': 'application/json',
         'user-agent': 'Zekktris-BotEvents/1.0',
-        'x-zekktris-event': 'message.create',
+        // The payload's own type: message.create or interaction.create.
+        'x-zekktris-event': body.type,
         // HMAC-SHA256 of the raw body, keyed by the bot's event secret.
         // The bot recomputes this and compares to authenticate the POST.
         'x-zekktris-signature': signature,
@@ -433,7 +453,7 @@ export async function deliverMessageEventToBots(args: {
   channelId: bigint;
   authorId: bigint;
   authorIsBot: boolean;
-  event: Record<string, unknown>;
+  event: { type: string } & Record<string, unknown>;
 }): Promise<void> {
   // Loop guard: don't fan out bot-authored messages to other bots.
   if (args.authorIsBot) return;
