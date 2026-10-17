@@ -17,10 +17,10 @@
 
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
-import { e2eeSupported, E2EE_INSECURE_MESSAGE } from '../lib/e2eeSupport';
 import type { Channel, Message, PokeHistoryEntry, PublicUser } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
 import { POKE_TYPES, POKE_VARIANTS, type PokeType } from '../lib/poke';
+import { e2eeSupported, E2EE_INSECURE_MESSAGE } from '../lib/e2eeSupport';
 import { useAuth } from '../auth/AuthContext';
 import { useAppStateSelector, useDmNickname, voiceStatesForChannel, dmE2eeSuppressed } from '../state/AppState';
 import { useTypingPing, useTypingUsers } from '../state/Typing';
