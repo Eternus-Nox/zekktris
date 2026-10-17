@@ -3,8 +3,9 @@
  * ------------------
  * The checks a message has to pass before it is created, shared by every
  * path that creates or rewrites one on a user's behalf: the live send route,
- * the edit route, reactions / poll votes (participation only), and the
- * scheduled-message worker at FIRE time. They live here, not in the route,
+ * forum posts, message-anchored thread creation, the edit route, reactions /
+ * poll votes (participation only), and the scheduled-message worker at FIRE
+ * time. They live here, not in the route,
  * so the worker cannot drift from the live send: a scheduled message used to
  * re-check only SEND_MESSAGES, which let a timed-out member, or text automod
  * would block, be posted by scheduling it a minute out.
@@ -144,8 +145,9 @@ export async function enforceGuildContentModeration(args: {
  * order: archived-thread lock → SEND_MESSAGES → ATTACH_FILES (when the
  * message carries files) → participation (pending / timeout / supervision) →
  * slowmode (unless skipped; MANAGE_MESSAGES bypasses it) → instance spam
- * throttle → banned words + automod. Request-shape checks (forum / link
- * channels) and instance mute stay with the caller.
+ * throttle → banned words + automod over `content`, then over `extraText`.
+ * Request-shape checks (forum / link channels) and instance mute stay with
+ * the caller.
  */
 export async function enforceGuildSendGates(args: {
   channel: schema.Channel;
@@ -153,13 +155,21 @@ export async function enforceGuildSendGates(args: {
   channelPerms: bigint;
   userId: bigint;
   content: string;
+  /** Other user-visible text stored alongside `content` (a forum post's
+   *  title, a poll's question + answers). Moderated as its own text after
+   *  `content`, so `content` alone still feeds repeat_message the way it is
+   *  stored. */
+  extraText?: string;
   hasFiles?: boolean;
-  /** False for scheduled fires: the author can't respond to a slowmode
-   *  rejection at fire time, and the 60 s minimum schedule delay already
-   *  bounds the rate. */
-  enforceSlowmode: boolean;
+  /** Which per-user slowmode applies. `true` (live send): time since the
+   *  author's last message in `channel`. `'forum_post'` (new forum post):
+   *  time since their last post under the forum, which holds no messages of
+   *  its own. `false` for scheduled fires (the author can't respond to a
+   *  slowmode rejection at fire time, and the 60 s minimum schedule delay
+   *  already bounds the rate) and thread creation (it posts no message). */
+  enforceSlowmode: boolean | 'forum_post';
 }): Promise<void> {
-  const { channel, channelPerms, userId, content } = args;
+  const { channel, channelPerms, userId, content, extraText } = args;
   const guildId = channel.guildId;
   if (guildId === null) return;
   // Archived threads are read-only. To send to an archived thread, a
@@ -179,14 +189,21 @@ export async function enforceGuildSendGates(args: {
   // MANAGE_MESSAGES (a timed-out mod stays timed out).
   await enforceGuildParticipationGates(guildId, userId);
   if (args.enforceSlowmode && !hasPermission(channelPerms, Permissions.MANAGE_MESSAGES)) {
-    const { enforceSlowmode } = await import('./messages');
-    await enforceSlowmode(channel.id, userId, channel.rateLimitPerUser);
+    const messagesSvc = await import('./messages');
+    if (args.enforceSlowmode === 'forum_post') {
+      await messagesSvc.enforceForumPostSlowmode(channel.id, userId, channel.rateLimitPerUser);
+    } else {
+      await messagesSvc.enforceSlowmode(channel.id, userId, channel.rateLimitPerUser);
+    }
   }
   // Instance security (Admin → Security): spam throttle, then banned words +
   // automod. Guild plaintext only — E2EE/DMs are exempt by design.
   const security = await import('./security');
   await security.checkSpam({ userId, guildId, channelId: channel.id });
   await enforceGuildContentModeration({ guildId, channelId: channel.id, userId, content });
+  if (extraText) {
+    await enforceGuildContentModeration({ guildId, channelId: channel.id, userId, content: extraText });
+  }
 }
 
 /**
