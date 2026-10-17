@@ -3,9 +3,9 @@
  * ------------------
  * The checks a message has to pass before it is created, shared by every
  * path that creates or rewrites one on a user's behalf: the live send route,
- * forum posts, message-anchored thread creation, the edit route, reactions /
- * poll votes (participation only), and the scheduled-message worker at FIRE
- * time. They live here, not in the route,
+ * forum posts, message-anchored thread creation, bot command invokes, the
+ * edit route, reactions / poll votes (participation only), and the
+ * scheduled-message worker at FIRE time. They live here, not in the route,
  * so the worker cannot drift from the live send: a scheduled message used to
  * re-check only SEND_MESSAGES, which let a timed-out member, or text automod
  * would block, be posted by scheduling it a minute out.
@@ -66,6 +66,11 @@ export async function enforceGuildParticipationGates(guildId: bigint, userId: bi
  * exemptions apply, repeat_message is skipped (see automod.checkMessage),
  * and a block_and_timeout rule only blocks — it must not time out whoever
  * happened to create the webhook.
+ *
+ * Pass `skipRepeatMessage` when `content` is not stored as message content
+ * (a title, thread name, poll text, forward snapshot or bot command
+ * arguments): repeat_message compares against the author's stored messages,
+ * so restating one of them there is not a flood.
  */
 export async function enforceGuildContentModeration(args: {
   guildId: bigint;
@@ -73,8 +78,9 @@ export async function enforceGuildContentModeration(args: {
   userId: bigint;
   content: string;
   webhookId?: bigint;
+  skipRepeatMessage?: boolean;
 }): Promise<void> {
-  const { guildId, channelId, userId, content, webhookId } = args;
+  const { guildId, channelId, userId, content, webhookId, skipRepeatMessage } = args;
   const security = await import('./security');
   await security.checkBannedWords({ userId, guildId, channelId, content });
 
@@ -87,6 +93,7 @@ export async function enforceGuildContentModeration(args: {
     content,
     memberRoleIds: roleIds,
     webhookId,
+    skipRepeatMessage,
   });
   if (!violation) return;
 
@@ -156,10 +163,11 @@ export async function enforceGuildSendGates(args: {
   channelPerms: bigint;
   userId: bigint;
   content: string;
-  /** Other user-visible text stored alongside `content` (a forum post's
-   *  title, a poll's question + answers). Moderated as its own text after
-   *  `content`, so `content` alone still feeds repeat_message the way it is
-   *  stored. */
+  /** Other user-visible text that is not stored as message content (a
+   *  forum post's title, a poll's question + answers, a thread name, a bot
+   *  command's arguments). Moderated as its own text after `content`, with
+   *  repeat_message skipped: only `content` is compared against, and later
+   *  stored as, the author's message history. */
   extraText?: string;
   hasFiles?: boolean;
   /** Which per-user slowmode applies. `true` (live send): time since the
@@ -167,7 +175,8 @@ export async function enforceGuildSendGates(args: {
    *  time since their last post under the forum, which holds no messages of
    *  its own. `false` for scheduled fires (the author can't respond to a
    *  slowmode rejection at fire time, and the 60 s minimum schedule delay
-   *  already bounds the rate) and thread creation (it posts no message). */
+   *  already bounds the rate), thread creation and bot command invokes
+   *  (neither posts a message of the caller's). */
   enforceSlowmode: boolean | 'forum_post';
 }): Promise<void> {
   const { channel, channelPerms, userId, content, extraText } = args;
@@ -203,7 +212,13 @@ export async function enforceGuildSendGates(args: {
   await security.checkSpam({ userId, guildId, channelId: channel.id });
   await enforceGuildContentModeration({ guildId, channelId: channel.id, userId, content });
   if (extraText) {
-    await enforceGuildContentModeration({ guildId, channelId: channel.id, userId, content: extraText });
+    await enforceGuildContentModeration({
+      guildId,
+      channelId: channel.id,
+      userId,
+      content: extraText,
+      skipRepeatMessage: true,
+    });
   }
 }
 

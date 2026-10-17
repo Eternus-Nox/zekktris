@@ -5,11 +5,18 @@ import { Permissions as P } from '@zekktris/shared/permissions';
 import { db, schema } from '../src/db';
 import { nextSnowflake } from '../src/snowflake';
 import { messagesRouter } from '../src/routes/messages';
+import { guildsRouter } from '../src/routes/guilds';
 import { errorHandler } from '../src/middleware';
 import { createSession } from '../src/auth/sessions';
 import { signAccessToken } from '../src/auth/tokens';
 import { createRule } from '../src/services/automod';
 import { addBannedWord, removeBannedWord } from '../src/services/security';
+import {
+  createBot,
+  addBotToGuild,
+  registerBotCommand,
+  setBotEventConfig,
+} from '../src/services/bots';
 import { createUser, createGuild, addMember, createChannel, createMessage, cleanupAll } from './seed';
 import { probeDb, closeDb } from './db-available';
 
@@ -22,6 +29,7 @@ if (!dbReady) {
 const app = new Hono();
 app.onError(errorHandler);
 app.route('/channels', messagesRouter);
+app.route('/guilds', guildsRouter);
 
 const MEMBER = P.VIEW_CHANNEL | P.SEND_MESSAGES | P.READ_MESSAGE_HISTORY;
 // Unique to this file so the instance-wide list never matches another suite.
@@ -65,6 +73,13 @@ async function threadsUnder(parentId: bigint) {
 }
 async function messagesIn(channelId: bigint) {
   return db.select().from(schema.messages).where(eq(schema.messages.channelId, channelId));
+}
+async function timeoutOf(g: bigint, u: bigint) {
+  const [row] = await db
+    .select({ until: schema.guildMembers.communicationDisabledUntil })
+    .from(schema.guildMembers)
+    .where(and(eq(schema.guildMembers.guildId, g), eq(schema.guildMembers.userId, u)));
+  return row!.until;
 }
 
 /** A guild with an automod word rule, a text channel and a forum, plus a
@@ -311,6 +326,154 @@ describe.runIf(dbReady)('send gates on every guild send path', () => {
       expect(res).toMatchObject({ status: 403, code: 'FORBIDDEN' });
       const [row] = await db.select().from(schema.messages).where(eq(schema.messages.id, mid));
       expect(row!.content).toBe('before');
+    });
+  });
+
+  // repeat_message compares against the author's stored messages. A title,
+  // thread name or poll text is not stored as one, so restating a message
+  // there must not count as a repeat (under block_and_timeout it also timed
+  // the member out).
+  describe('repeat_message only counts text stored as a message', () => {
+    async function repeatFixture() {
+      const f = await fixture();
+      await createRule({
+        guildId: f.g,
+        actorId: f.owner,
+        name: 'no-repeats',
+        ruleType: 'repeat_message',
+        threshold: 2,
+        windowSeconds: 300,
+        action: 'block_and_timeout',
+        timeoutSeconds: 600,
+      });
+      const earlier = await createMessage(f.text, {
+        authorId: f.member,
+        content: 'Login crash on Android',
+      });
+      return { ...f, earlier };
+    }
+
+    it('lets a forum post title, a thread name and a poll restate an earlier message', async () => {
+      const { g, owner, member, text, forum, earlier } = await repeatFixture();
+      const post = await req('POST', `/channels/${forum}/posts`, member, {
+        title: 'Login crash on Android',
+        content: 'Steps: open the app, tap sign in.',
+      });
+      expect(post.status).toBe(201);
+      const anchor = await createMessage(text, { authorId: owner, content: 'anchor' });
+      const thread = await req('POST', `/channels/${text}/messages/${anchor}/threads`, member, {
+        name: 'Login crash on Android',
+      });
+      expect(thread.status).toBe(201);
+      const poll = await req('POST', `/channels/${text}/messages`, member, {
+        poll: { question: 'Login crash on Android', options: ['yes', 'no'], durationHours: 1 },
+      });
+      expect(poll.status).toBe(201);
+      // Forwarding your own message elsewhere: the snapshot is not stored as
+      // the new message's content.
+      const elsewhere = await createChannel(g);
+      const fwd = await req('POST', `/channels/${elsewhere}/messages`, member, {
+        forwardFromMessageId: earlier.toString(),
+      });
+      expect(fwd.status).toBe(201);
+      expect(await timeoutOf(g, member)).toBeNull();
+    });
+
+    it('still blocks a repeated message body', async () => {
+      const { g, member, text } = await repeatFixture();
+      const again = await req('POST', `/channels/${text}/messages`, member, {
+        content: 'Login crash on Android',
+      });
+      expect(again).toMatchObject({ status: 400, code: 'AUTOMOD_BLOCKED' });
+      expect(await timeoutOf(g, member)).not.toBeNull();
+    });
+  });
+
+  // A bot command makes the bot post into the channel for the invoker, often
+  // echoing argText. It used to need only membership + VIEW_CHANNEL.
+  describe('POST /guilds/:guildId/commands/invoke', () => {
+    async function botFixture(everyonePerms: bigint = MEMBER) {
+      const owner = await createUser();
+      const g = await createGuild(owner, everyonePerms);
+      await addMember(g, owner);
+      const member = await createUser();
+      await addMember(g, member);
+      const text = await createChannel(g);
+      const { bot } = await createBot({ ownerId: owner, username: `sg_${owner}`, displayName: 'SayBot' });
+      await addBotToGuild({ botId: bot.id, guildId: g, actorId: owner });
+      await registerBotCommand({ botId: bot.id, ownerId: owner, guildId: null, name: 'say', description: 'says' });
+      // Unreachable callback: delivery is fire-and-forget inside the service.
+      await setBotEventConfig(bot.id, owner, 'https://bot.invalid/events');
+      await createRule({
+        guildId: g,
+        actorId: owner,
+        name: 'no-word',
+        ruleType: 'word_blocklist',
+        patterns: [AUTOMOD],
+      });
+      const invoke = (userId: bigint, argText?: string) =>
+        req('POST', `/guilds/${g}/commands/invoke`, userId, {
+          channelId: text.toString(),
+          name: 'say',
+          ...(argText !== undefined ? { argText } : {}),
+        });
+      return { owner, g, member, text, invoke };
+    }
+
+    it('invokes for a member in good standing', async () => {
+      const { member, invoke } = await botFixture();
+      expect((await invoke(member, 'hello')).status).toBe(200);
+    });
+
+    it('refuses a timed-out member with TIMED_OUT, like the live send', async () => {
+      const { g, member, invoke } = await botFixture();
+      await setTimeout_(g, member);
+      expect(await invoke(member, 'hello')).toMatchObject({ status: 403, code: 'TIMED_OUT' });
+    });
+
+    it('refuses a member who has not acknowledged the rules', async () => {
+      const { g, member, invoke } = await botFixture();
+      await setPending(g, member);
+      expect(await invoke(member, 'hello')).toMatchObject({
+        status: 403,
+        code: 'PENDING_ACKNOWLEDGMENT',
+      });
+    });
+
+    it('refuses a supervision-restricted (unlinked minor) member', async () => {
+      const { g, invoke } = await botFixture();
+      const minor = await createUser({ dateOfBirth: dobForAge(15) });
+      await addMember(g, minor);
+      expect(await invoke(minor, 'hello')).toMatchObject({ status: 403, code: 'FORBIDDEN' });
+    });
+
+    it('refuses an instance-muted member', async () => {
+      const { member, invoke } = await botFixture();
+      await db
+        .update(schema.users)
+        .set({ mutedAt: new Date(), mutedUntil: null })
+        .where(eq(schema.users.id, member));
+      expect(await invoke(member, 'hello')).toMatchObject({ status: 403, code: 'INSTANCE_MUTED' });
+    });
+
+    it('requires SEND_MESSAGES, not just VIEW_CHANNEL', async () => {
+      const { member, invoke } = await botFixture(P.VIEW_CHANNEL | P.READ_MESSAGE_HISTORY);
+      expect(await invoke(member, 'hello')).toMatchObject({
+        status: 403,
+        code: 'MISSING_PERMISSIONS',
+      });
+    });
+
+    it('blocks an automod or banned word in the arguments', async () => {
+      const { member, invoke } = await botFixture();
+      expect(await invoke(member, `say ${AUTOMOD}`)).toMatchObject({
+        status: 400,
+        code: 'AUTOMOD_BLOCKED',
+      });
+      expect(await invoke(member, `say ${BANNED}`)).toMatchObject({
+        status: 400,
+        code: 'BAD_REQUEST',
+      });
     });
   });
 });

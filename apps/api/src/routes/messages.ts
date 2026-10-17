@@ -714,11 +714,15 @@ messagesRouter.post(
         forwardSnapshot &&
         !E2EE_CIPHERTEXT_RE.test(forwardSnapshot.content)
       ) {
+        // repeat_message is skipped: the snapshot is not stored as this
+        // message's content, and forwarding your own recent message
+        // elsewhere is not a flood.
         await enforceGuildContentModeration({
           guildId: ctx.channel.guildId,
           channelId,
           userId,
           content: forwardSnapshot.content,
+          skipRepeatMessage: true,
         });
       }
     }
@@ -2810,12 +2814,15 @@ messagesRouter.post(
     // the caller's last message here, and starting a thread posts none (at
     // most one thread per message, so messages already bound the rate). The
     // fallback name below is the anchor message's own text, which passed
-    // its author's send gates; it isn't the caller's words to moderate.
+    // its author's send gates; it isn't the caller's words to moderate. The
+    // name goes in as extraText, not content: it is not stored as a message,
+    // so it must not trip repeat_message by echoing one of the caller's.
     await enforceGuildSendGates({
       channel: ctx.channel,
       channelPerms: ctx.channelPerms,
       userId: callerId,
-      content: body.name ?? '',
+      content: '',
+      extraText: body.name,
       enforceSlowmode: false,
     });
 
