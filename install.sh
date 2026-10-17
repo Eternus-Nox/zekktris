@@ -632,6 +632,9 @@ fi
 if [[ $START -eq 0 ]]; then
     step "Configuration written — not starting (--no-start)"
     info "Start it with: $COMPOSE up -d --build"
+    # An existing install may still have root-owned uploads, which the api's
+    # first boot hands to its own user before it starts (see below).
+    [[ $EXISTING -eq 1 ]] && info "If that stops with \"container zekktris-api is unhealthy\", the api is still handing its uploads folder over (once): wait until $COMPOSE ps shows it healthy, then run $COMPOSE up -d again (docs/SELF-HOSTING.md §9)."
     [[ -n "$ADMIN_EMAIL" ]] && info "Then create the admin: $COMPOSE exec -w /app/apps/api api node --import tsx/esm scripts/create-admin.ts --email $ADMIN_EMAIL$([[ $EXISTING -eq 0 ]] && echo ' --create-only')"
     exit 0
 fi

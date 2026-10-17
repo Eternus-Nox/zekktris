@@ -201,7 +201,7 @@ step "Restarting the api"
 API_STARTED=1
 $COMPOSE up -d api || API_STARTED=0
 
-step "Waiting for startup checks (up to 90 seconds)"
+step "Waiting for startup checks (up to about 3 minutes)"
 HEALTHY=0
 if [[ "$API_STARTED" == "1" ]] && wait_for_api 90; then HEALTHY=1; fi
 

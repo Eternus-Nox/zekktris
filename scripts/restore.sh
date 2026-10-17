@@ -286,10 +286,10 @@ ok "attachments in place"
 step "Starting the api"
 $COMPOSE up -d api || fail "could not start the api. The database, .env and uploads ARE restored;
     fix the cause above, then run: $COMPOSE up -d"
-step "Waiting for api startup checks (up to 90 seconds)"
+step "Waiting for api startup checks (up to about 3 minutes)"
 if ! wait_for_api 90 "the api is handing the restored uploads to its unprivileged user — waiting for that, up to an hour"; then
     echo
-    warn "Restore finished but the API did not report healthy within 90s, so the rest of"
+    warn "Restore finished but the API did not report healthy, so the rest of"
     warn "the stack was not restarted with the restored settings. Check: $COMPOSE logs api --tail 50"
     fail "Once the api is healthy, run: $COMPOSE up -d"
 fi
