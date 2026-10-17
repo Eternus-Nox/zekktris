@@ -443,7 +443,8 @@ export async function checkSpam(args: {
 }
 
 /**
- * Banned-word gate for guild messages (plaintext only — never E2EE).
+ * Banned-word gate for guild messages. Forward snapshots are checked too, even
+ * when they are E2EE ciphertext (the prefix is never trusted to skip it).
  * Throws 400 and logs a report when the content matches.
  */
 export async function checkBannedWords(args: {

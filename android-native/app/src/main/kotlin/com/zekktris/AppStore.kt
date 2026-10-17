@@ -2526,15 +2526,22 @@ class AppStore(
     /** Edit a message. The server runs the participation gates (onboarding,
      *  timeout, supervision) and banned words / automod on an edit, so a
      *  rejection reaches [onError] with the server's reason. */
-    fun editMessage(channelId: String, messageId: String, content: String, onError: (String) -> Unit = {}) {
+    /** [onDone] runs only once the server accepted the edit, so the composer
+     *  can keep the edited text (and stay in edit mode) when it's refused. */
+    fun editMessage(
+        channelId: String, messageId: String, content: String,
+        onError: (String) -> Unit = {}, onDone: () -> Unit = {},
+    ) {
         // Re-encrypt an edited E2EE message so the edit doesn't land as plaintext.
         val wire: String = if (dmById(channelId)?.isE2EE == true) {
-            val key = e2eeKeyFor(channelId) ?: return
-            com.zekktris.crypto.E2EE.encrypt(content, key) ?: return
+            val key = e2eeKeyFor(channelId)
+            val sealed = key?.let { com.zekktris.crypto.E2EE.encrypt(content, it) }
+            if (sealed == null) { onError("Couldn't encrypt the edit."); return }
+            sealed
         } else content
         scope.launch {
             runCatching { api.editMessage(channelId, messageId, wire) }
-                .onSuccess { upsertMessage(channelId, it) }
+                .onSuccess { upsertMessage(channelId, it); onDone() }
                 .onFailure { onError((it as? com.zekktris.data.ApiException)?.message ?: "Couldn't edit the message.") }
         }
     }

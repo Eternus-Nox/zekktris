@@ -2555,11 +2555,19 @@ private fun Composer(
         val t = text.trim()
         val e = editing
         if (e != null) {
-            if (t.isNotEmpty() && t != e.content) store.editMessage(channelId, e.id, t) { err ->
-                android.widget.Toast.makeText(ctx, err, android.widget.Toast.LENGTH_LONG).show()
+            // Compare with what the composer showed (decrypted for an E2EE DM).
+            if (t.isEmpty() || t == store.renderContent(channelId, e.content)) {
+                text = ""
+                onSent()
+                return
             }
-            text = ""
-            onSent()
+            // Leave edit mode only once the server accepts the edit: a refused
+            // edit (e.g. blocked by the server's moderation) keeps the text.
+            store.editMessage(
+                channelId, e.id, t,
+                onError = { err -> android.widget.Toast.makeText(ctx, err, android.widget.Toast.LENGTH_LONG).show() },
+                onDone = { text = ""; onSent() },
+            )
             return
         }
         if (t.isEmpty() && pendingFiles.isEmpty()) return
