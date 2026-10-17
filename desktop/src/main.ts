@@ -846,8 +846,10 @@ function checkForUpdates(interactive = false): void {
 
 // ── Idle / away detection ───────────────────────────────────────────────────
 // Tells the renderer when the machine has been idle (or locked/suspended)
-// so the web app can auto-set presence to Away, and back to Online on
-// return. Only the native shell can see system-wide idle; a browser tab
+// and when it's back. The web app reports that as this device's activity
+// (apps/web/src/lib/usePresenceActivity.ts), so the user's presence follows
+// the device in use; against an older server it auto-sets Away / Online
+// instead. Only the native shell can see system-wide idle; a browser tab
 // can't. Threshold: 10 minutes.
 const IDLE_THRESHOLD_SEC = 600;
 const IDLE_POLL_MS = 30_000;

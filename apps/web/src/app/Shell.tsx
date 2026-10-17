@@ -37,7 +37,7 @@ const lazyFallback = (
 );
 import { useAuth } from '../auth/AuthContext';
 import { useNativePush } from './useNativePush';
-import { useDesktopIdleStatus } from '../lib/useDesktopIdleStatus';
+import { usePresenceActivity } from '../lib/usePresenceActivity';
 import { useAppStateSelector, totalMentionCount, voiceStatesForChannel, selfVoiceState } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
 import { disconnectVoice, getActiveVoiceSessionId, getConnectedChannelId } from '../lib/voice';
@@ -136,8 +136,8 @@ function writePartnerSeen(latch: string | null): void {
 
 export function Shell() {
   const { token, user, hydrating, rest, emailVerificationRequired } = useAuth();
-  // Desktop-only: auto-set Away/Online from system idle (no-op in browser).
-  useDesktopIdleStatus();
+  // Tell the server whether this device is in use (presence follows it).
+  usePresenceActivity();
   const params = useParams<{ guildId?: string; channelId?: string; messageId?: string }>();
   // Granular subscriptions (was `useAppState()`): the top-level shell no
   // longer re-renders on every dispatch — only when one of the slices it

@@ -68,6 +68,7 @@ import { hydrateVoicePrefs, setVoicePrefsSyncer, getVoicePrefs } from '../lib/vo
 import { playMessagePing } from '../lib/sounds';
 import { showDesktopNotification } from '../lib/desktopNotify';
 import { getNotifyPrefs } from '../lib/notifyPrefs';
+import { selfPresencePatch, type PresenceUpdateFrame } from '../lib/presenceActivity';
 
 // ── Shape ──────────────────────────────────────────────────────────────────
 
@@ -2192,7 +2193,7 @@ function clearChannelNotifications(channelId: string): void {
 }
 
 export function AppStateProvider({ children }: { children: ReactNode }) {
-  const { rest, gateway, token, user } = useAuth();
+  const { rest, gateway, token, user, updateUser } = useAuth();
   const toasts = useToasts();
   const [state, dispatch] = useReducer(reducer, initialState);
 
@@ -3783,17 +3784,22 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       // color updates live without re-fetching the member list. Servers
       // dispatch one event per guild the user is in, so we just trust
       // the guild_id that came in.
-      gateway.on<{
-        guild_id: string;
-        user_id: string;
-        status: 'online' | 'idle' | 'dnd' | 'offline';
-      }>(GatewayEvent.PRESENCE_UPDATE, (d) => {
+      //
+      // Our OWN effective status arrives the same way (multi-device presence:
+      // it follows whichever of our devices is in use), and the guild_id=null
+      // frame of it also carries our chosen status — mirror both into the
+      // auth user, which drives our own avatar dot and the status picker.
+      gateway.on<PresenceUpdateFrame>(GatewayEvent.PRESENCE_UPDATE, (d) => {
         dispatch({
           type: 'PRESENCE_PATCH',
-          guildId: d.guild_id,
+          guildId: d.guild_id ?? '',
           userId: d.user_id,
           status: d.status,
         });
+        if (user && d.user_id === selfId) {
+          const patch = selfPresencePatch(user, d);
+          if (patch) updateUser(patch);
+        }
       }),
 
       // USER_UPDATE — fired when a user's profile (display name, avatar,
@@ -4089,6 +4095,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       toasts.push,
       rest,
       resyncChannelWindow,
+      updateUser,
     ],
   );
 
