@@ -119,5 +119,10 @@ CMD ["node", "--import", "tsx/esm", "src/index.ts"]
 # Use 127.0.0.1 (not 'localhost') because Node v17+ resolves localhost as
 # IPv6 first, but the api binds to 0.0.0.0 (IPv4-only); without forcing
 # IPv4 the healthcheck fails on systems where ::1 is preferred.
+# The start period deliberately does NOT cover the one-time uploads handover
+# in api-entrypoint.sh: stretching it that far would leave a genuinely hung
+# boot "starting" (and a hand-run `docker compose up -d` silently waiting on
+# it) just as long. The scripts that start the stack wait the handover out
+# themselves (scripts/lib/start-stack.sh).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD wget -qO- http://127.0.0.1:3000/health/ready || exit 1

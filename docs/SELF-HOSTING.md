@@ -273,6 +273,7 @@ rather than reporting success on a half-restored instance.
 | Password reset says email isn't enabled | SMTP not configured — see §5. |
 | No admin account | `docker compose exec -w /app/apps/api api node --import tsx/esm scripts/create-admin.ts --email you@example.com` (see §3). |
 | Everyone shares one IP in the sessions list / rate limits hit everyone | Behind Cloudflare without `EDGE_PROXY=cloudflare` — see §4. |
+| `docker compose up -d` says `container zekktris-api is unhealthy` after an update or restore | The api's one-time handover of `uploads/` is still running (§9). Wait for `api-entrypoint: handed …` in `docker compose logs api` and for the api to show `healthy` in `docker compose ps`, then run `docker compose up -d` again. |
 
 Useful commands:
 
@@ -290,14 +291,22 @@ docker compose down               # stop everything (data persists)
 
 - **The api runs as an unprivileged user** (`node`, uid 1000). On the first
   boot after updating, its entrypoint hands `uploads/` and `control/requests/`
-  (written by root until then) to that user — on a large uploads folder that
-  pass takes a while. `update.sh` waits for it, but the update that first
-  brings this in still runs the previous `update.sh`, which gives up after 90
-  seconds and rolls back (the next attempt picks up where the pass stopped).
-  With many gigabytes of uploads, run `sudo chown -R 1000:1000
-  <APPDATA_PATH>/uploads` on the host before that update instead. If the
-  entrypoint cannot hand them over (an NFS export with root_squash, say) the
-  api keeps running as root and says so in `docker compose logs api`.
+  (written by root until then) to that user before the api starts — on a large
+  uploads folder that pass takes a while, and restoring a bundle taken before
+  this change brings it back once. `update.sh`, `restore.sh` and `install.sh`
+  start the api on its own first, wait for the pass (up to an hour), and only
+  then start the proxy and the rest. But the update that first brings this in
+  still runs the previous `update.sh`, and a plain `docker compose up -d` does
+  not wait: once the pass outlasts the api's health check (about two minutes)
+  it stops with `dependency failed to start: container zekktris-api is
+  unhealthy`, leaving the site down. The pass carries on regardless; wait for
+  `api-entrypoint: handed /data/uploads to 'node'` in `docker compose logs api`
+  and for `docker compose ps` to show the api `healthy` (up to half a minute
+  later), then run `docker compose up -d` again. With many gigabytes of
+  uploads, run `sudo chown -R 1000:1000 <APPDATA_PATH>/uploads` on the host
+  before that update instead. If the entrypoint cannot hand them over (an NFS
+  export with root_squash, say) the api keeps running as root and says so in
+  `docker compose logs api`.
   `control/` itself and `control/status/` stay root's, because the root-run
   `scripts/agent.sh` writes there; the agent refuses to run if they are not. A
   host account that also has uid 1000 can write to `uploads/` and

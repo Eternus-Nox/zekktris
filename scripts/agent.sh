@@ -96,6 +96,24 @@ write_schedule_status() {
 }
 write_schedule_status
 
+# The plain "apply what is on disk" action: rebuild, then start the api first
+# and the rest once it is healthy, as update.sh does (scripts/lib/start-stack.sh
+# says why a single `up -d --build` is not enough).
+restart_stack() {
+    local COMPOSE="docker compose"
+    docker compose version >/dev/null 2>&1 || COMPOSE="docker-compose"
+    warn() { echo "! $*"; }
+    # shellcheck source=lib/start-stack.sh
+    . "$SCRIPT_DIR/lib/start-stack.sh" || return 1
+    $COMPOSE build || return 1
+    $COMPOSE up -d api || return 1
+    if ! wait_for_api 90; then
+        echo "the api did not come up healthy — check: $COMPOSE logs api --tail 80"
+        return 1
+    fi
+    $COMPOSE up -d
+}
+
 shopt -s nullglob
 for req in "$REQ_DIR"/*.json; do
     NAME="$(basename "$req" .json)"
@@ -192,13 +210,7 @@ for req in "$REQ_DIR"/*.json; do
             "$SCRIPT_DIR/doctor.sh" --fix > "$LOG" 2>&1; RC=$?
             ;;
         restart)
-            # Rebuild and recreate, the plain "apply what is on disk" action.
-            if docker compose version >/dev/null 2>&1; then
-                docker compose up -d --build > "$LOG" 2>&1
-            else
-                docker-compose up -d --build > "$LOG" 2>&1
-            fi
-            RC=$?
+            restart_stack > "$LOG" 2>&1; RC=$?
             ;;
         *)
             echo "ignored unknown action: ${ACTION:-<none>}" > "$LOG"

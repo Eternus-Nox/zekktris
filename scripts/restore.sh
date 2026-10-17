@@ -74,14 +74,9 @@ if docker compose version >/dev/null 2>&1; then COMPOSE="docker compose"
 elif command -v docker-compose >/dev/null 2>&1; then COMPOSE="docker-compose"
 else fail "docker compose not found"; fi
 
-# The api's first boot after it stopped running as root hands uploads/ to its
-# own user (ops/api-entrypoint.sh) before it starts, which on a large tree can
-# outlast the health wait. True while that is still going.
-handover_running() {
-    local last
-    last="$($COMPOSE logs --tail 200 api 2>&1 | grep -E 'api-entrypoint: (handing|handed|could not hand)' | tail -1 || true)"
-    [[ "$last" == *"api-entrypoint: handing "* ]]
-}
+# wait_for_api, and why the api is started before the rest of the stack.
+# shellcheck source=lib/start-stack.sh
+. "$SCRIPT_DIR/lib/start-stack.sh"
 
 # Verify the dump is structurally intact BEFORE touching anything. pg_restore
 # -l lists the archive's table of contents and fails on a truncated or corrupt
@@ -285,29 +280,25 @@ tar -xf "$STAGE/uploads.tar" -C "$APPDATA" \
 ok "attachments in place"
 
 # ── 7. Bring it up and wait for it to actually be ready ─────────────────────
-step "Starting the stack"
-$COMPOSE up -d
-step "Waiting for api startup checks (up to 90 seconds)"
-DEADLINE=$(( $(date +%s) + 90 ))
-HEALTHY=0; LIMIT=$(( $(date +%s) + 3600 )); NOTED=0
-while [[ $(date +%s) -lt $DEADLINE ]]; do
-    if $COMPOSE exec -T api wget -qO- http://127.0.0.1:3000/health >/dev/null 2>&1; then
-        HEALTHY=1; break
-    fi
-    if [[ $(date +%s) -lt $LIMIT ]] && handover_running; then
-        [[ "$NOTED" == "1" ]] || warn "the api is handing the restored uploads to its unprivileged user — waiting for that, up to an hour"
-        NOTED=1; DEADLINE=$(( $(date +%s) + 90 ))
-    fi
-    sleep 3
-done
+# The api alone first: a bundle taken while the api still ran as root restores
+# root-owned uploads, which its next boot hands over before it starts — longer
+# than the proxy's wait for a healthy api allows (scripts/lib/start-stack.sh).
+step "Starting the api"
+$COMPOSE up -d api || fail "could not start the api. The database, .env and uploads ARE restored;
+    fix the cause above, then run: $COMPOSE up -d"
+step "Waiting for api startup checks (up to about 3 minutes)"
+if ! wait_for_api 90 "the api is handing the restored uploads to its unprivileged user — waiting for that, up to an hour"; then
+    echo
+    warn "Restore finished but the API did not report healthy, so the rest of"
+    warn "the stack was not restarted with the restored settings. Check: $COMPOSE logs api --tail 50"
+    fail "Once the api is healthy, run: $COMPOSE up -d"
+fi
+step "Starting the rest of the stack"
+$COMPOSE up -d || fail "the restore is complete and the api is healthy, but the rest of the stack did not start.
+    Fix the error above, then run: $COMPOSE up -d"
 
 echo
-if [[ "$HEALTHY" == "1" ]]; then
-    ok "${BOLD}Restore complete and the API is healthy.${RESET}"
-    echo
-    echo "Migrations apply themselves at boot, so a bundle from an older commit"
-    echo "is brought up to the current schema automatically."
-else
-    warn "Restore finished but the API did not report healthy within 90s."
-    warn "Check: $COMPOSE logs api --tail 50"
-fi
+ok "${BOLD}Restore complete and the API is healthy.${RESET}"
+echo
+echo "Migrations apply themselves at boot, so a bundle from an older commit"
+echo "is brought up to the current schema automatically."
