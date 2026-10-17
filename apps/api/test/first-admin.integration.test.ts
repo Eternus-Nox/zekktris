@@ -47,11 +47,11 @@ vi.mock('../src/services/email', async (importOriginal) => {
   };
 });
 
-const { db, schema, closeDb } = await import('../src/db');
+const { db, client, schema, closeDb } = await import('../src/db');
 const { probeDb } = await import('./db-available');
 const { env } = await import('../src/env');
 const { runBootstrapAdmin, promoteIfBootstrapAdmin } = await import('../src/bootstrap-admin');
-const { createAdmin, usernameFromEmail, CreateAdminError } = await import(
+const { createAdmin, hasAdmin, usernameFromEmail, CreateAdminError } = await import(
   '../src/admin/createAdmin'
 );
 const { verifyPassword } = await import('../src/auth/passwords');
@@ -196,6 +196,99 @@ describe.runIf(dbReady)('first admin', () => {
     });
   });
 
+  describe('verification links are bound to the address they were sent to', () => {
+    it('a change to the bootstrap address landing mid-/verify-email does not verify it', async () => {
+      // The interleaving: /verify-email has the token in hand, the account
+      // moves to BOOTSTRAP_ADMIN_EMAIL (and its tokens are deleted, as
+      // /change-unverified-email does), then the verify lands. Played out
+      // deterministically: this transaction holds the account row (as
+      // /change-unverified-email's does) until verify is waiting on it.
+      mail.configured = true;
+      const id = await addUser('attacker@example.test', { verified: false });
+      const { session } = await createSession({ userId: id, userAgent: null, ipAddress: null });
+      const access = await signAccessToken({ userId: id, sessionId: session.id });
+      const resend = await app.request('/auth/resend-verification', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${access}` },
+      });
+      expect(resend.status).toBe(200);
+      expect(mail.sent.map((m) => m.to)).toEqual(['attacker@example.test']);
+      const token = new URL(mail.sent[0]!.verifyUrl).searchParams.get('token')!;
+
+      let verify!: Promise<Response>;
+      await client.begin(async (tx) => {
+        const [me] = await tx<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
+        await tx`SELECT 1 FROM users WHERE id = ${id.toString()}::bigint FOR UPDATE`;
+        verify = Promise.resolve(
+          app.request('/auth/verify-email', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ token }),
+          }),
+        );
+        await vi.waitFor(
+          async () => {
+            // From another connection: pg_stat_activity is snapshotted once
+            // per transaction, so polling it inside `tx` would never change.
+            const w = await db.execute<{ n: number }>(sql`
+              SELECT count(*)::int AS n FROM pg_stat_activity
+              WHERE ${me!.pid}::int = ANY(pg_blocking_pids(pid))`);
+            expect(w[0]!.n).toBe(1);
+          },
+          { timeout: 5000, interval: 20 },
+        );
+        await tx`UPDATE users SET email = ${BOOT} WHERE id = ${id.toString()}::bigint`;
+        await tx`DELETE FROM email_verifications WHERE user_id = ${id.toString()}::bigint`;
+      });
+
+      expect((await verify).status).toBe(400);
+      const u = await row(id);
+      expect(u.email).toBe(BOOT);
+      expect(u.emailVerified).toBe(false);
+      expect(u.isAdmin).toBe(false);
+    });
+    it('a link being issued while the address changes is not stored or sent', async () => {
+      // /resend-verification read the old address; the change (tokens deleted)
+      // lands before the token is stored — the late link must not be mailed
+      // to the old inbox while the account holds the new address.
+      mail.configured = true;
+      const id = await addUser('attacker@example.test', { verified: false });
+      const { session } = await createSession({ userId: id, userAgent: null, ipAddress: null });
+      const access = await signAccessToken({ userId: id, sessionId: session.id });
+
+      let resend!: Promise<Response>;
+      await client.begin(async (tx) => {
+        const [me] = await tx<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
+        await tx`SELECT 1 FROM users WHERE id = ${id.toString()}::bigint FOR UPDATE`;
+        resend = Promise.resolve(
+          app.request('/auth/resend-verification', {
+            method: 'POST',
+            headers: { authorization: `Bearer ${access}` },
+          }),
+        );
+        await vi.waitFor(
+          async () => {
+            const w = await db.execute<{ n: number }>(sql`
+              SELECT count(*)::int AS n FROM pg_stat_activity
+              WHERE ${me!.pid}::int = ANY(pg_blocking_pids(pid))`);
+            expect(w[0]!.n).toBe(1);
+          },
+          { timeout: 5000, interval: 20 },
+        );
+        await tx`UPDATE users SET email = ${BOOT} WHERE id = ${id.toString()}::bigint`;
+        await tx`DELETE FROM email_verifications WHERE user_id = ${id.toString()}::bigint`;
+      });
+
+      expect((await resend).status).toBe(200);
+      expect(mail.sent).toEqual([]);
+      const left = await db
+        .select()
+        .from(schema.emailVerifications)
+        .where(eq(schema.emailVerifications.userId, id));
+      expect(left).toEqual([]);
+    });
+  });
+
   describe('signup with SMTP configured', () => {
     it('is not admin until the address is verified; verifying promotes it', async () => {
       mail.configured = true;
@@ -279,19 +372,50 @@ describe.runIf(dbReady)('first admin', () => {
       expect(lb.user.isAdmin).toBe(true);
     });
 
-    it('promotes and verifies an existing account without touching its password', async () => {
+    it('promotes an existing verified account without touching its password', async () => {
       const other = await addUser('first@example.test', { verified: true, admin: true });
-      const id = await addUser(BOOT, { verified: false });
+      const id = await addUser(BOOT, { verified: true });
       const r = await createAdmin({ email: BOOT, password: 'ignored-for-existing' });
       expect(r).toMatchObject({ outcome: 'promoted', wasAdmin: false, banned: false });
       const u = await row(id);
       expect(u.isAdmin).toBe(true); // even with another admin present
-      expect(u.emailVerified).toBe(true);
       expect(u.passwordHash).toBe('scrypt-v1$00$00');
       expect((await row(other)).isAdmin).toBe(true);
 
       const again = await createAdmin({ email: BOOT });
       expect(again).toMatchObject({ outcome: 'promoted', wasAdmin: true });
+    });
+
+    it('refuses an existing UNVERIFIED account unless promoteUnverified is passed', async () => {
+      // Anyone can register any address on a server with SMTP.
+      const id = await addUser(BOOT, { verified: false });
+      await expect(createAdmin({ email: BOOT })).rejects.toThrow(/not verified its address/);
+      expect((await row(id)).isAdmin).toBe(false);
+
+      const r = await createAdmin({ email: BOOT, promoteUnverified: true });
+      expect(r).toMatchObject({ outcome: 'promoted', wasAdmin: false });
+      const u = await row(id);
+      expect(u.isAdmin).toBe(true);
+      expect(u.emailVerified).toBe(true);
+    });
+
+    it('createOnly (fresh install) refuses an address someone already registered', async () => {
+      // Registration is open while install.sh runs: a stranger who got the
+      // address first must make the install fail, not become admin.
+      const id = await addUser(BOOT, { verified: true });
+      await expect(
+        createAdmin({ email: BOOT, password: 'operator-chosen-pw', createOnly: true }),
+      ).rejects.toThrow(/already exists .* NOT made admin/);
+      expect((await row(id)).isAdmin).toBe(false);
+      expect(await hasAdmin()).toBe(false);
+
+      const r = await createAdmin({
+        email: 'fresh@example.test',
+        password: 'operator-chosen-pw',
+        createOnly: true,
+      });
+      expect(r.outcome).toBe('created');
+      expect(await hasAdmin()).toBe(true);
     });
 
     it('picks a free username when the derived one is taken; honours an explicit one', async () => {

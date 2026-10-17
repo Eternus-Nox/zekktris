@@ -119,6 +119,15 @@ const EMAIL_VERIFICATION_EXPIRY_MS = 24 * 60 * 60_000; // 24h
  * Generate a single-use verification token, store its hash, and email
  * the verification link to the user. Mirrors the password-reset flow.
  * Caller is responsible for gating on isEmailConfigured().
+ *
+ * A token only ever verifies the address it was mailed to. The rows don't
+ * record that address, so it's held as a lock-ordered invariant instead: the
+ * token is stored only while the account (row-locked) still has `email`, and
+ * /change-unverified-email deletes every token in the same transaction that
+ * changes the address, under the same lock; /verify-email takes that lock
+ * before claiming. Without it a concurrent change could let a link mailed to
+ * one inbox verify another address (e.g. BOOTSTRAP_ADMIN_EMAIL). Sends
+ * nothing if the address changed (or got verified) meanwhile.
  */
 async function issueEmailVerification(userId: bigint, email: string): Promise<void> {
   const { randomBytes, createHash } = await import('node:crypto');
@@ -128,12 +137,22 @@ async function issueEmailVerification(userId: bigint, email: string): Promise<vo
     .replace(/\//g, '_')
     .replace(/=+$/, '');
   const tokenHash = createHash('sha256').update(plaintext).digest('hex');
-  await db.insert(schema.emailVerifications).values({
-    id: nextSnowflake(),
-    userId,
-    tokenHash,
-    expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_EXPIRY_MS),
+  const stored = await db.transaction(async (tx) => {
+    const [u] = await tx
+      .select({ email: schema.users.email, emailVerified: schema.users.emailVerified })
+      .from(schema.users)
+      .where(eq(schema.users.id, userId))
+      .for('update');
+    if (!u || u.email !== email || u.emailVerified) return false;
+    await tx.insert(schema.emailVerifications).values({
+      id: nextSnowflake(),
+      userId,
+      tokenHash,
+      expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_EXPIRY_MS),
+    });
+    return true;
   });
+  if (!stored) return;
   const verifyUrl = `${env.PUBLIC_URL}/verify-email?token=${encodeURIComponent(plaintext)}`;
   const { sendEmailVerification } = await import('../services/email');
   await sendEmailVerification({
@@ -1476,30 +1495,49 @@ authRouter.post(
     // AND unexpired. This makes the single-use guarantee deterministic under
     // concurrency (two requests can't both pass a separate SELECT check) and,
     // by putting the expiry in the WHERE, an expired token isn't burned.
+    // The account row is locked FIRST (same order as /change-unverified-email:
+    // account, then its tokens), so an address change can't land between the
+    // claim and the verify; one that already did has deleted the token, and
+    // the claim finds nothing. See issueEmailVerification.
     const now = new Date();
-    const claimed = await db
-      .update(schema.emailVerifications)
-      .set({ usedAt: now })
-      .where(
-        and(
-          eq(schema.emailVerifications.tokenHash, tokenHash),
-          isNull(schema.emailVerifications.usedAt),
-          gt(schema.emailVerifications.expiresAt, now),
-        ),
-      )
-      .returning({ userId: schema.emailVerifications.userId });
-    if (claimed.length === 0) {
+    const userId = await db.transaction(async (tx) => {
+      const [tok] = await tx
+        .select({ userId: schema.emailVerifications.userId })
+        .from(schema.emailVerifications)
+        .where(eq(schema.emailVerifications.tokenHash, tokenHash))
+        .limit(1);
+      if (!tok) return null;
+      await tx
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(eq(schema.users.id, tok.userId))
+        .for('update');
+      const claimed = await tx
+        .update(schema.emailVerifications)
+        .set({ usedAt: now })
+        .where(
+          and(
+            eq(schema.emailVerifications.tokenHash, tokenHash),
+            eq(schema.emailVerifications.userId, tok.userId),
+            isNull(schema.emailVerifications.usedAt),
+            gt(schema.emailVerifications.expiresAt, now),
+          ),
+        )
+        .returning({ userId: schema.emailVerifications.userId });
+      if (claimed.length === 0) return null;
+      await tx
+        .update(schema.users)
+        .set({ emailVerified: true })
+        .where(eq(schema.users.id, tok.userId));
+      return tok.userId;
+    });
+    if (userId === null) {
       throw errors.badRequest('This verification link is invalid or has expired');
     }
 
-    await db
-      .update(schema.users)
-      .set({ emailVerified: true })
-      .where(eq(schema.users.id, claimed[0]!.userId));
-
     // A verified BOOTSTRAP_ADMIN_EMAIL on a server with no admin yet.
     const { promoteIfBootstrapAdmin } = await import('../bootstrap-admin');
-    await promoteIfBootstrapAdmin(claimed[0]!.userId);
+    await promoteIfBootstrapAdmin(userId);
 
     return c.json({ ok: true });
   },
@@ -1570,23 +1608,35 @@ authRouter.post(
     // No-op when unchanged — still re-send so a user who just mistyped can
     // retry the same address without an error.
     if (user.email !== email) {
-      try {
-        await db
-          .update(schema.users)
-          .set({ email })
-          .where(
-            and(eq(schema.users.id, userId), eq(schema.users.emailVerified, false)),
-          );
-      } catch (err) {
-        if (isUniqueViolation(err)) {
-          throw errors.conflict('That email is already registered to another account.');
-        }
-        throw err;
+      // One transaction, account row locked by the UPDATE before the tokens
+      // are touched (the order /verify-email uses too): no link mailed to the
+      // OLD address can verify the new one, even mid-flight.
+      const changed = await db
+        .transaction(async (tx) => {
+          const rows = await tx
+            .update(schema.users)
+            .set({ email })
+            .where(
+              and(eq(schema.users.id, userId), eq(schema.users.emailVerified, false)),
+            )
+            .returning({ id: schema.users.id });
+          if (rows.length === 0) return false;
+          // Invalidate any verification links sent to the OLD address.
+          await tx
+            .delete(schema.emailVerifications)
+            .where(eq(schema.emailVerifications.userId, userId));
+          return true;
+        })
+        .catch((err) => {
+          if (isUniqueViolation(err)) {
+            throw errors.conflict('That email is already registered to another account.');
+          }
+          throw err;
+        });
+      // Verified in the meantime (its own link was just clicked).
+      if (!changed) {
+        throw errors.badRequest('This account is already verified; change your email in settings.');
       }
-      // Invalidate any verification links sent to the OLD address.
-      await db
-        .delete(schema.emailVerifications)
-        .where(eq(schema.emailVerifications.userId, userId));
     }
 
     const { isEmailConfigured } = await import('../services/email');

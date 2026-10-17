@@ -4,12 +4,13 @@
  * The installer's way to give a fresh server its first admin: it asks the
  * operator for an email + password and runs scripts/create-admin.ts inside
  * the api container, which calls this. Nothing on the network is involved,
- * so there is no window where a stranger can register the admin's address
- * first (the race BOOTSTRAP_ADMIN_EMAIL has on an open server without SMTP).
+ * and the installer runs it with `createOnly`, so a stranger who registers the
+ * admin's address first (the race BOOTSTRAP_ADMIN_EMAIL has on an open server
+ * without SMTP) makes the install fail loudly instead of becoming admin.
  *
  * The operator has shell access to the box, so this trusts them the same way
- * SQL access would: the address counts as verified, and the account is made
- * admin whether or not another admin already exists.
+ * SQL access would: an account it creates counts as verified, and the account
+ * is made admin whether or not another admin already exists.
  *
  *   - No live account with the email → a new account, built like a signup
  *     (same email / username / display-name / password rules, scrypt hash,
@@ -17,15 +18,21 @@
  *     date of birth to ask for here, so it's left unset and UNLOCKED: null
  *     reads as an adult everywhere, and the app's one-time "confirm your date
  *     of birth" banner lets the admin fill it in.
- *   - A live account already has the email → it is promoted (is_admin +
- *     email_verified). Its password is NOT touched; `password` is only used
- *     when an account is created.
+ *   - A live account already has the email → it is promoted (is_admin).
+ *     Its password is NOT touched; `password` is only used when an account
+ *     is created. But registration is open while this runs, so that account
+ *     may be a stranger's, not the operator's:
+ *       · `createOnly` (the installer on a fresh install, where nobody else
+ *         should have an account yet) refuses instead of promoting;
+ *       · an account whose address is UNVERIFIED (anyone can register any
+ *         address on a server with SMTP) is refused unless the operator
+ *         passes `promoteUnverified`, which then also marks it verified.
  *
  * Pure of process I/O so it is integration-testable; the CLI is a thin
  * wrapper (scripts/create-admin.ts).
  */
 
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { USERNAME_MAX_LENGTH, USERNAME_MIN_LENGTH } from '@zekktris/shared/constants';
 import { db, schema, isUniqueViolation } from '../db';
@@ -46,6 +53,10 @@ export interface CreateAdminInput {
   username?: string;
   /** Defaults to the username. */
   displayName?: string;
+  /** Fail if a live account already has the email instead of promoting it. */
+  createOnly?: boolean;
+  /** Also promote (and mark verified) an existing account that is unverified. */
+  promoteUnverified?: boolean;
 }
 
 export type CreateAdminResult =
@@ -104,6 +115,7 @@ export async function createAdmin(input: CreateAdminInput): Promise<CreateAdminR
       username: schema.users.username,
       isAdmin: schema.users.isAdmin,
       isBot: schema.users.isBot,
+      emailVerified: schema.users.emailVerified,
       bannedAt: schema.users.bannedAt,
     })
     .from(schema.users)
@@ -112,6 +124,21 @@ export async function createAdmin(input: CreateAdminInput): Promise<CreateAdminR
 
   if (existing) {
     if (existing.isBot) throw new CreateAdminError('That email belongs to a bot account.');
+    if (input.createOnly) {
+      throw new CreateAdminError(
+        `An account with ${email} already exists (username ${existing.username}), so it was NOT ` +
+          'made admin: on a new server it may have been registered by someone else. If it is ' +
+          'yours, run create-admin again without --create-only (./install.sh --admin-email ' +
+          `${email}); if not, use another email and remove that account from the admin panel.`,
+      );
+    }
+    if (!existing.emailVerified && !input.promoteUnverified) {
+      throw new CreateAdminError(
+        `An account with ${email} exists (username ${existing.username}) but has not verified ` +
+          'its address, so anyone could have registered it. If it is yours, open its ' +
+          'verification link first, or run create-admin with --promote-unverified.',
+      );
+    }
     await db
       .update(schema.users)
       .set({ isAdmin: true, emailVerified: true, updatedAt: new Date() })
@@ -172,4 +199,13 @@ export async function createAdmin(input: CreateAdminInput): Promise<CreateAdminR
     }
   }
   throw new CreateAdminError('Could not find a free username; pass one explicitly.');
+}
+
+/** Whether any live account is an admin (install.sh re-runs check this). */
+export async function hasAdmin(): Promise<boolean> {
+  const [r] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(schema.users)
+    .where(and(eq(schema.users.isAdmin, true), isNull(schema.users.deletedAt)));
+  return (r?.n ?? 0) > 0;
 }
