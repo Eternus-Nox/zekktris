@@ -74,17 +74,34 @@ Android push uses **Firebase Cloud Messaging**. Two halves:
      project and add an **Android app** with package name `com.zekktris.app`.
    - Download **`google-services.json`** and drop it into
      [`apps/web/android/app/`](./apps/web/android/app) — and, for the native
-     app, [`android-native/app/`](./android-native/app). The gradle is already
-     wired: `app/build.gradle` applies the `com.google.gms.google-services`
-     plugin **only when that file is present**, so the app builds fine without
-     it (push just won't register).
+     app, [`android-native/app/`](./android-native/app). The Capacitor gradle
+     (`apps/web/android/app/build.gradle`) applies the
+     `com.google.gms.google-services` plugin **only when that file is
+     present**, so the shell builds fine without it (push just won't register).
+     The native app's `android-native/app/build.gradle.kts` applies the plugin
+     **unconditionally**, so that build needs the file.
 
-   > **`google-services.json` is NOT committed for either project** — both
-   > paths are in `.gitignore`. It embeds a Firebase API key and the project
-   > id, so a clone of this repo does not carry them; supply the file at build
-   > time (drop it in locally, or have CI write it from a secret). Restrict the
-   > key to your Android package + signing certificate in the Google Cloud
-   > console so a leaked copy can't be used elsewhere.
+   > **Which copy is committed.** The Capacitor shell's path is in `.gitignore`
+   > — supply that file at build time. The native app's
+   > `android-native/app/google-services.json` **is committed** (Firebase
+   > project `zekktris`, registered for both `com.zekktris.android` and
+   > `com.zekktris.app`) so a fresh clone builds. That is deliberate: an
+   > Android Firebase client config is not a secret — it ships inside every
+   > APK and only identifies the project; what authorises *sending* pushes is
+   > the server's service-account key below, which is never committed. Still
+   > restrict the project's API key to the Android packages + their signing
+   > certificates in the Google Cloud console, so a copy of the file can't be
+   > reused against the project from anywhere else.
+   >
+   > **Self-hosting with your own push:** the committed file registers your
+   > devices with the *upstream* Firebase project, and your server can't send
+   > through a project it doesn't hold a service account for. Create your own
+   > Firebase project, add an Android app with package `com.zekktris.android`
+   > (or your own `applicationId`), download its `google-services.json`, and
+   > **overwrite** `android-native/app/google-services.json` with it before
+   > building (keep the change local, or commit it in your fork). Then point
+   > the server's `FCM_*` variables (step 2) at that same project, and restrict
+   > its API key to your package + signing-certificate SHA-1/SHA-256.
    - No client code change is needed — `@capacitor/push-notifications` yields an
      FCM token on Android, and [`useNativePush.ts`](./apps/web/src/app/useNativePush.ts)
      already registers it with the server tagged `platform: 'android'`.

@@ -176,6 +176,13 @@ The genuine parity story is therefore **not** "web is far behind." It's:
 | Events: create / list / RSVP / attendees / status / edit / cancel | MainView.swift:4727–4950 | Full | EventsModal.tsx, CreateEventModal.tsx, MyEventsModal.tsx, EventAttendeesModal.tsx | — | |
 | Starfield voice background (cosmetic) | Voice.swift:1355 | Unverified | VoiceView.tsx | (A) | Web may use a plain/gradient background. |
 
+**Android native (`android-native/`) — E2EE 1:1 calls.** This matrix is iOS ↔ web;
+the Android client is tracked here only where it has to interoperate with both.
+
+| Feature | Android (file) | Status | Note |
+|---|---|---|---|
+| E2EE 1:1 call media encryption | voice/CallEncryption.kt, voice/VoiceManager.kt, AppStore.kt `joinVoice` | Full (not yet device-tested) | Keys LiveKit exactly like web (`getCallKeyString` → `ExternalE2EEKeyProvider.setKey`) and iOS (`BaseKeyProvider(isSharedKey:sharedKey:)`): the base64 of the 32-byte DM key as a shared-key STRING → PBKDF2, salt `LKFrameEncryptionKey`, ratchet window 0, GCM — so Android ↔ web ↔ iOS calls share one media key. A DM whose key isn't unlocked (or is stale) refuses the call instead of joining in the clear. Before this, Android joined E2EE DM calls unencrypted. |
+
 ---
 
 ## 6. Admin, Moderation, Family (Parental Controls), Platform

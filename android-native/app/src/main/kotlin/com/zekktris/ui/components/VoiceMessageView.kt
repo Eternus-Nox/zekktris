@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.zekktris.data.CleartextPolicy
 import com.zekktris.data.Config
 import com.zekktris.data.model.Attachment
 import com.zekktris.ui.theme.ZkInk
@@ -45,7 +46,9 @@ import kotlinx.coroutines.delay
 @Composable
 fun VoiceMessageView(att: Attachment) {
     val p = ZkTheme.palette
-    val url = Config.absoluteUrl(att.url) ?: return
+    // MediaPlayer fetches outside the OkHttp guard: plain http:// only to a
+    // local-network host (CleartextPolicy).
+    val url = Config.absoluteUrl(att.url)?.takeIf { CleartextPolicy.allows(it) } ?: return
     val levels = remember(att.waveform) { decodeWaveform(att.waveform) }
     var playing by remember { mutableStateOf(false) }
     var prepared by remember { mutableStateOf(false) }

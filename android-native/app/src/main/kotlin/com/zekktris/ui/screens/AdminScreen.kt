@@ -99,13 +99,14 @@ fun AdminScreen(store: AppStore, state: AppState) {
         return
     }
 
-    // (index, label), gated: Overview/Storage/Monetization are admin-only.
+    // (index, label), gated: Overview/Storage/Perks are admin-only. "Perks"
+    // matches the web and iOS tab name for the monetization settings.
     val tabs = buildList {
         if (isAdmin) add(0 to "Overview")
         add(1 to "Users"); add(2 to "Servers")
         if (isAdmin) add(3 to "Storage")
         add(4 to "Security")
-        if (isAdmin) add(5 to "Monetization")
+        if (isAdmin) add(5 to "Perks")
     }
 
     androidx.compose.runtime.CompositionLocalProvider(LocalAdminStore provides store) {
@@ -172,59 +173,7 @@ private fun OverviewTab(state: AppState) {
                 if (m.redis.configured) "bus + blacklist" else "in-memory",
             )
         }
-        VoiceDiagnosticCard()
         ActivityFeedSection()
-    }
-}
-
-/** VOICE / LIVEKIT card: on-demand "Test voice" → ok/configured badge, wsUrl,
- *  and per-check pass/fail/warn rows (iOS voiceDiagnosticSection). */
-@Composable
-private fun VoiceDiagnosticCard() {
-    val p = ZkTheme.palette
-    val scope = rememberCoroutineScope()
-    var running by remember { mutableStateOf(false) }
-    var diag by remember { mutableStateOf<com.zekktris.data.model.LivekitDiagnostic?>(null) }
-    val storeRef = LocalAdminStore.current
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(p.bg2).padding(12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("VOICE / LIVEKIT", color = ZkInk.ink3, fontFamily = ZkSans, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.weight(1f))
-            diag?.let { d ->
-                val ok = d.ok
-                Text(
-                    if (ok) "OK" else if (d.configured) "ISSUES" else "NOT CONFIGURED",
-                    color = if (ok) ZkStatus.success else ZkStatus.danger,
-                    fontFamily = ZkSans, fontWeight = FontWeight.Bold, fontSize = 10.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(4.dp)).background((if (ok) ZkStatus.success else ZkStatus.danger).copy(alpha = 0.15f)).padding(horizontal = 6.dp, vertical = 2.dp),
-                )
-            }
-        }
-        diag?.wsUrl?.let { Text(it, color = ZkInk.ink3, fontFamily = ZkMono, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp)) }
-        diag?.checks?.forEach { c ->
-            Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                val (glyph, tint) = when (c.status) {
-                    "pass" -> "✓" to ZkStatus.success
-                    "fail" -> "✕" to ZkStatus.danger
-                    else -> "!" to com.zekktris.ui.theme.ZkFx.plasmaAmber
-                }
-                Text(glyph, color = tint, fontFamily = ZkSans, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                Column(Modifier.padding(start = 8.dp)) {
-                    Text(c.label, color = ZkInk.ink1, fontFamily = ZkSans, fontSize = 13.sp)
-                    if (c.detail.isNotBlank()) Text(c.detail, color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 11.sp)
-                }
-            }
-        }
-        Text(
-            if (running) "Testing…" else "Test voice",
-            color = p.accent, fontFamily = ZkSans, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
-            modifier = Modifier.padding(top = 8.dp).clip(RoundedCornerShape(8.dp)).background(p.accent.copy(alpha = 0.12f))
-                .clickable(enabled = !running) {
-                    val st = storeRef ?: return@clickable
-                    running = true
-                    scope.launch { diag = st.adminVoiceDiagnostic(); running = false }
-                }
-                .padding(horizontal = 12.dp, vertical = 7.dp),
-        )
     }
 }
 

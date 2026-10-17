@@ -247,27 +247,7 @@ data class UploadCapsMb(
     val legend: Int? = null,
 )
 
-// ── Admin Overview extras: voice diagnostic + recent-activity feed ───────────
-
-/** One pass/fail/warn row of GET /admin/voice-diagnostic. */
-@Serializable
-data class LivekitCheck(
-    val id: String,
-    val label: String = "",
-    val status: String = "",
-    val detail: String = "",
-)
-
-/** Result of GET /admin/voice-diagnostic (no secrets — config URLs + guidance). */
-@Serializable
-data class LivekitDiagnostic(
-    val configured: Boolean = false,
-    val ok: Boolean = false,
-    val wsUrl: String? = null,
-    val checks: List<LivekitCheck> = emptyList(),
-    val generatedAt: String = "",
-)
-@Serializable data class DiagnosticWrap(val diagnostic: LivekitDiagnostic)
+// ── Admin Overview extras: recent-activity feed ──────────────────────────────
 
 /** GET /admin/activity — recent signups + newly-created servers. */
 @Serializable

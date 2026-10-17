@@ -230,6 +230,9 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
     }
 
     val http = HttpClient(OkHttp) {
+        // Plain http/ws only to a local-network host — the server's own URLs
+        // (attachments, redirects) included. See CleartextPolicy.
+        engine { config { CleartextPolicy.install(this) } }
         expectSuccess = false
         install(ContentNegotiation) { json(json) }
         install(HttpCookies) { storage = cookieStorage }
@@ -2144,11 +2147,6 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
             .decodeOrThrow<com.zekktris.data.model.SecurityWordsWrap>().words
 
     // ---- monetization ---------------------------------------------------------
-
-    /** On-demand LiveKit diagnostic (GET /admin/voice-diagnostic). */
-    suspend fun adminVoiceDiagnostic(): com.zekktris.data.model.LivekitDiagnostic =
-        authorized(HttpMethod.Get, "/admin/voice-diagnostic")
-            .decodeOrThrow<com.zekktris.data.model.DiagnosticWrap>().diagnostic
 
     /** Admin Overview recent-activity feed (GET /admin/activity). */
     suspend fun adminActivity(): com.zekktris.data.model.AdminActivity =

@@ -215,9 +215,10 @@ data class ReactionRoleMapping(
 )
 @Serializable data class ReactionRolesWrap(val reactionRoles: List<ReactionRoleMapping> = emptyList())
 
-/** Permission bitfield catalog + helpers. Bits go up to 32 (MANAGE_EVENTS) so
+/** Permission bitfield catalog + helpers. Bits go up to 33 (MANAGE_THREADS) so
  *  the bitfield is a 64-bit Long. Wire format is a decimal string. Mirrors
- *  ios-native Models.swift `Permissions` + apps/web/src/lib/permissions.ts. */
+ *  packages/shared/src/permissions.ts (and ios-native Models.swift `Permissions`
+ *  + apps/web/src/lib/permissions.ts). */
 object Permissions {
     const val ADMINISTRATOR = 0
     const val VIEW_CHANNEL = 1
@@ -233,6 +234,7 @@ object Permissions {
     const val MANAGE_EMOJIS = 21
     const val MANAGE_INVITES = 22
     const val MANAGE_EVENTS = 32
+    const val MANAGE_THREADS = 33
 
     data class Def(val bit: Int, val key: String, val label: String, val group: String)
 
@@ -269,6 +271,7 @@ object Permissions {
         Def(20, "MANAGE_WEBHOOKS", "Manage Webhooks", "Advanced"),
         Def(21, "MANAGE_EMOJIS", "Manage Emoji", "Advanced"),
         Def(32, "MANAGE_EVENTS", "Manage Events", "Advanced"),
+        Def(33, "MANAGE_THREADS", "Manage Threads", "Advanced"),
     )
     val groupOrder = listOf("General", "Membership", "Text", "Voice", "Advanced")
 

@@ -71,8 +71,9 @@ object Config {
      * "https://chat.example.com:8443/", "http://192.168.1.20:5550") into an
      * origin. No scheme → https. Plain http is only accepted for a server on
      * the local network (private / link-local IPs, localhost, *.local) — the
-     * app allows cleartext traffic for exactly that case, so this check is
-     * what keeps everything on the internet on HTTPS.
+     * app allows cleartext traffic for exactly that case. This keeps the
+     * server address itself on HTTPS; [CleartextPolicy] applies the same rule
+     * to every URL the server hands back.
      */
     fun normalizeOrigin(input: String): String? {
         var text = input.trim()

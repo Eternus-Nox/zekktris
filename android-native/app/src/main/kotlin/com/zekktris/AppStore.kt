@@ -1428,9 +1428,6 @@ class AppStore(
         }
     }
 
-    suspend fun adminVoiceDiagnostic(): com.zekktris.data.model.LivekitDiagnostic? =
-        runCatching { api.adminVoiceDiagnostic() }.getOrNull()
-
     suspend fun adminActivity(): com.zekktris.data.model.AdminActivity? =
         runCatching { api.adminActivity() }.getOrNull()
 
@@ -3106,6 +3103,16 @@ class AppStore(
         joiningVoice = true
         scope.launch {
             try {
+                // E2EE DM: resolve the media key BEFORE touching the server, so a
+                // locked conversation fails cleanly here instead of joining a call
+                // whose encrypted peer can't decode us — or, worse, sending our
+                // media through the SFU in the clear (iOS openVoice, web
+                // 'e2ee_locked').
+                val media = callMedia(channelId)
+                if (media is CallMedia.Locked) {
+                    android.widget.Toast.makeText(appContext, "Unlock this conversation to start an encrypted call.", android.widget.Toast.LENGTH_LONG).show()
+                    return@launch
+                }
                 // Switching channels: leave the current one first. Otherwise the
                 // server keeps our old voice_state (we linger as a ghost others
                 // can still hear) and, worse, we'd spin up a second LiveKit Room
@@ -3158,7 +3165,7 @@ class AppStore(
                 val token = res.token
                 val url = res.wsUrl
                 if (token != null && url != null) {
-                    voice.connect(url, token)
+                    voice.connect(url, token, e2eeKey = (media as? CallMedia.Encrypted)?.keyBase64)
                     // The server's roster starts everyone unmuted and only learns
                     // otherwise from a POST — but we can join with the mic already
                     // CLOSED (push-to-talk, or a deafen carried over from the last
@@ -3183,6 +3190,34 @@ class AppStore(
                 joiningVoice = false
             }
         }
+    }
+
+    private sealed interface CallMedia {
+        data object Plain : CallMedia
+        data object Locked : CallMedia
+        data class Encrypted(val keyBase64: String) : CallMedia
+    }
+
+    /** How a call in [channelId] is keyed. An E2EE DM is [CallMedia.Encrypted]
+     *  with the base64 (padded, RFC 4648) of its 32-byte DM key — byte for byte
+     *  the string web (getCallKeyString) and iOS (Voice.swift) hand LiveKit, so
+     *  all three derive the same media key (voice/CallEncryption) — or
+     *  [CallMedia.Locked] when this device has no current key for it. */
+    private suspend fun callMedia(channelId: String): CallMedia {
+        // A call answered from the ring on a cold start can get here before
+        // loadInitial has the DM list, and an unknown channel must not be taken
+        // for a plain one. Guild voice channels are always loaded by then.
+        val ch = dmById(channelId)
+            ?: runCatching { api.listDMs() }.getOrNull()?.firstOrNull { it.id == channelId }
+        // Still unknown (offline): only a DM we hold a key for can be E2EE.
+        val isE2EE = ch?.isE2EE ?: (e2eeStore.key(channelId) != null)
+        if (!isE2EE) return CallMedia.Plain
+        val key = e2eeKeyFor(channelId)
+            // e2eeKeyFor checks the verifier of the channel in state; one only
+            // just fetched above is checked here.
+            ?.takeIf { k -> ch?.e2eeVerifier.let { it == null || com.zekktris.crypto.E2EE.verifier(k) == it } }
+            ?: return CallMedia.Locked
+        return CallMedia.Encrypted(android.util.Base64.encodeToString(key, android.util.Base64.NO_WRAP))
     }
 
     /** Leave the active call (single-flight): disconnect LiveKit + REST leave. */

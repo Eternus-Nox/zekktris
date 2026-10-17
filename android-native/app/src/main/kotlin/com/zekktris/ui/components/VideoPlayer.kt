@@ -30,6 +30,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import com.zekktris.data.CleartextPolicy
 
 /**
  * Full-screen in-app video player for a message attachment, mirroring iOS's
@@ -41,9 +42,14 @@ fun VideoPlayerDialog(url: String, onDismiss: () -> Unit) {
     val ctx = LocalContext.current
     val player = remember(url) {
         ExoPlayer.Builder(ctx).build().apply {
-            setMediaItem(MediaItem.fromUri(url))
-            prepare()
-            playWhenReady = true
+            // Media3 fetches on its own HTTP stack, outside the OkHttp guard:
+            // plain http:// only to a local-network host (CleartextPolicy).
+            // (Its default data source already refuses https→http redirects.)
+            if (CleartextPolicy.allows(url)) {
+                setMediaItem(MediaItem.fromUri(url))
+                prepare()
+                playWhenReady = true
+            }
         }
     }
     // Pause when the app is backgrounded / screen locks — otherwise audio keeps
