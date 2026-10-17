@@ -238,7 +238,8 @@ and the code goes back to where it was, so running the update again (or
 pressing **Update** in the admin UI again) retries it. An update that stopped
 after the code moved — the rest of the stack did not start, or the run was
 killed — is picked up again by the next run rather than reported as already up
-to date.
+to date; if the new code had already passed its health check, that run only
+starts the rest of the stack. **Restart** in the admin UI finishes it too.
 
 ---
 

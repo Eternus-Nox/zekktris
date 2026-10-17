@@ -111,7 +111,13 @@ restart_stack() {
         echo "the api did not come up healthy — check: $COMPOSE logs api --tail 80"
         return 1
     fi
-    $COMPOSE up -d
+    $COMPOSE up -d || return 1
+    # The checkout's code now runs healthy, which finishes any update.sh run
+    # that stopped halfway; left marked, its next run would treat the commit
+    # that update started from as the one to roll back to.
+    local gitdir
+    gitdir="$(git -C "$ROOT" rev-parse --absolute-git-dir 2>/dev/null)" || return 0
+    rm -f "$gitdir/zekktris-update-unfinished"
 }
 
 shopt -s nullglob

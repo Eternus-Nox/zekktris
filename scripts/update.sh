@@ -108,15 +108,35 @@ if [[ "$DEPLOY_ONLY" == "1" ]]; then
     fi
 else
     TARGET="$(git rev-parse origin/master)"
-    # An update that stopped after the code moved (the rest of the stack did
-    # not start, or the run was killed) left the checkout at its target, which
+    # An update that stopped after the code moved (the run was killed, or the
+    # rest of the stack did not start) left the checkout at its target, which
     # would read as "already up to date" from then on while the containers ran
-    # something else. Start from where that update started instead, so this
-    # run finishes it and can still roll back to there.
+    # something else. The marker says where it got to: the commit it started
+    # from until the api is healthy on the new code, that new commit after.
     PREV="$(cat "$UNFINISHED" 2>/dev/null || true)"
-    if [[ -n "$PREV" && "$PREV" != "$CURRENT" ]] && git merge-base --is-ancestor "$PREV" HEAD 2>/dev/null; then
-        CURRENT="$(git rev-parse "$PREV")"
-        warn "the update from $(git rev-parse --short "$CURRENT") did not finish — $([[ "$MODE" == check ]] && echo "the next update picks it up again" || echo "picking it up again")"
+    if [[ -n "$PREV" ]] && git merge-base --is-ancestor "$PREV" HEAD 2>/dev/null; then
+        PREV="$(git rev-parse "$PREV")"
+        if [[ "$PREV" != "$CURRENT" ]]; then
+            # Stopped before the new code passed the health gate: start from
+            # where that update started, so this run finishes it and can still
+            # roll back to there.
+            CURRENT="$PREV"
+            warn "the update from $(git rev-parse --short "$CURRENT") did not finish — $([[ "$MODE" == check ]] && echo "the next update picks it up again" || echo "picking it up again")"
+        elif [[ "$CURRENT" == "$TARGET" ]]; then
+            # The api passed the health gate on this code; only starting the
+            # rest of the stack is left. Nothing to rebuild or roll back.
+            if [[ "$MODE" == "check" ]]; then
+                warn "the last update did not finish starting the stack — the next update does that"
+                exit 0
+            fi
+            step "Finishing the last update: starting the rest of the stack"
+            $COMPOSE up -d || fail "the rest of the stack did not start. Fix the error above, then run the update again."
+            rm -f "$UNFINISHED"
+            ok "${BOLD}Updated to $(git rev-parse --short HEAD) and healthy.${RESET}"
+            exit 0
+        fi
+        # Otherwise the api is healthy on HEAD and there is more upstream: an
+        # ordinary update from HEAD, which starts the whole stack anyway.
     fi
     if [[ "$CURRENT" == "$TARGET" ]]; then
         ok "already up to date ($(git rev-parse --short HEAD))"
@@ -223,6 +243,7 @@ if ! $COMPOSE build api proxy; then
     # A service that finished building before the failure is already tagged
     # with the new code, and the next plain `up -d` would start it. Build the
     # previous code again (from cache, mostly) so the tags match what runs.
+    step "Restoring the previous images (from the build cache, mostly)"
     $COMPOSE build api proxy >/dev/null 2>&1 \
         || warn "could not rebuild the previous images; do not run '$COMPOSE up -d' by hand before the next update"
     fail "Update failed: the build did not complete. Nothing was restarted and the code is back
@@ -242,10 +263,13 @@ HEALTHY=0
 if [[ "$API_STARTED" == "1" ]] && wait_for_api 90; then HEALTHY=1; fi
 
 if [[ "$HEALTHY" == "1" ]]; then
+    # From here on the new code is the one to fall back to, never what this
+    # update started from: it has passed the health gate.
+    [[ "$DEPLOY_ONLY" == "1" ]] || echo "$TARGET" > "$UNFINISHED"
     step "Starting the rest of the stack"
     # The update stays marked unfinished here, so running it again finishes it.
     $COMPOSE up -d || fail "the api is healthy on the new code, but the rest of the stack did not start.
-    Fix the error above, then run: $COMPOSE up -d (or run the update again)"
+    Fix the error above, then run the update again (it only starts the rest)."
     rm -f "$UNFINISHED"
     echo
     ok "${BOLD}Updated to $(git rev-parse --short HEAD) and healthy.${RESET}"
