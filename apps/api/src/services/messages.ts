@@ -91,6 +91,9 @@ export async function listRecentContentByAuthor(
     .where(
       and(
         eq(schema.messages.authorId, userId),
+        // Webhook posts carry their creator as authorId; they are not the
+        // member's own messages.
+        isNull(schema.messages.webhookId),
         eq(schema.channels.guildId, guildId),
         gt(schema.messages.createdAt, cutoff),
         isNull(schema.messages.deletedAt),

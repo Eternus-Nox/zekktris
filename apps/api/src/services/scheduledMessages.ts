@@ -6,17 +6,25 @@
  *   1. User-facing CRUD: schedule a future send, list my pending,
  *      cancel one.
  *
- *   2. Worker interface: fetch-due, complete-on-success, fail-on-error.
- *      These run from `apps/api/src/workers/scheduledMessages.ts`
- *      every minute and reify scheduled rows as real messages.
+ *   2. Worker interface: claim-due, fire, complete-on-success,
+ *      fail-on-error. These run from the leader-gated scheduled-message
+ *      sweep in `apps/api/src/index.ts` and reify scheduled rows as real
+ *      messages.
  *
  * Permission model: we check "can the user post to this channel?"
- * AT SCHEDULE TIME. Permission can change in the gap between
- * scheduling and sending — if the user loses access (kicked from
- * guild, channel deleted, blocked by recipient), the worker fails
- * gracefully and bumps the attempt counter. After 3 failures the
- * row freezes and shows up in the user's list with an error tag,
- * letting them investigate.
+ * AT SCHEDULE TIME, and fireScheduled re-runs every live-send gate
+ * (permissions, mute, timeout, onboarding, supervision, spam, banned
+ * words / automod, DM blocks) AT FIRE TIME — only slowmode is skipped.
+ * If a gate fails (kicked from guild, channel deleted, blocked by
+ * recipient, timed out), the worker fails gracefully and bumps the
+ * attempt counter. After 3 failures the row freezes and shows up in
+ * the user's list with an error tag, letting them investigate.
+ *
+ * Fires count toward the author's instance spam throttle like live sends
+ * (otherwise scheduling would bypass it). So a burst of rows due in the
+ * same minute past `spamMaxMessages` is refused in part; those rows retry
+ * on later ticks (one passes per minute during the cooldown) and only
+ * freeze if the burst is large enough to exhaust their 3 attempts.
  */
 
 import { and, asc, eq, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
@@ -200,4 +208,72 @@ export async function failScheduled(
       claimedAt: null,
     })
     .where(eq(schema.scheduledMessages.id, scheduledId));
+}
+
+/**
+ * Worker calls this per claimed row: re-run every gate a live send would
+ * face NOW (enforceScheduledFireGates — the author may have been muted,
+ * timed out, kicked or blocked since scheduling, or automod rules may have
+ * changed), create the message, broadcast it, and run the parental
+ * watch-word scan the live send runs. Throws on a gate failure; the caller
+ * records it with failScheduled and finishes a success with completeScheduled.
+ */
+export async function fireScheduled(args: {
+  row: schema.ScheduledMessage;
+  channel: schema.Channel;
+  /** The author row, pre-batched by the worker; null skips the broadcast. */
+  author: schema.User | null;
+}): Promise<void> {
+  const { row, channel, author } = args;
+  // Sequential, not Promise.all: concurrent dynamic imports of this cyclic
+  // module graph deadlock under vite-node (the test runner).
+  const gates = await import('./messageGates');
+  const messagesSvc = await import('./messages');
+  const dispatch = await import('../gateway/dispatch');
+  const { toMessage } = await import('../lib/dto');
+  const supervision = await import('./supervision');
+  await gates.enforceScheduledFireGates({
+    channel,
+    authorId: row.authorId,
+    content: row.content,
+  });
+  // Scheduled messages can NEVER @everyone — even if the user has the
+  // permission. A message firing at 3am to ping the whole guild is a
+  // footgun; require it to be a manual send.
+  const created = await messagesSvc.createMessage({
+    channelId: row.channelId,
+    authorId: row.authorId,
+    content: row.content,
+    replyToId: row.replyToMessageId ?? null,
+    guildId: channel.guildId ?? null,
+    attachments: [],
+    allowEveryoneMention: false,
+  });
+
+  // Dispatch the messageCreate over the gateway so live clients pick it up.
+  if (author) {
+    dispatch.messageCreate({
+      messageDTO: toMessage({
+        message: created.message,
+        author,
+        attachments: [],
+        reactions: [],
+      }),
+      guildId: channel.guildId ?? null,
+      channelId: row.channelId,
+    });
+  }
+
+  // Same watch-word scan as a live send. Best-effort: the message is
+  // already posted, so a scan failure must not mark the row failed (and
+  // re-send it on the next tick).
+  await supervision
+    .scanMessageForFlags({
+      messageId: created.message.id,
+      channelId: row.channelId,
+      channelType: channel.type,
+      authorId: row.authorId,
+      content: row.content,
+    })
+    .catch(() => undefined);
 }

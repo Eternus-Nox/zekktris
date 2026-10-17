@@ -12,7 +12,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { errors } from '../errors';
-import { requireAuth, requireUserId } from '../auth/middleware';
+import { requireAuth, requireUserId, requireHumanSession } from '../auth/middleware';
 import { validate } from '../lib/validate';
 import { snowflakeSchema } from '../lib/validation';
 import { toInvite, toInvitePreview, toGuild, toGuildMember } from '../lib/dto';
@@ -59,6 +59,10 @@ invitesRouter.get(
 invitesRouter.post(
   '/:code',
   requireAuth,
+  // Humans only: a bot joins a guild solely through addBotToGuild, which
+  // requires MANAGE_GUILD from the person adding it. Letting a bot token
+  // accept invites itself would bypass that rule.
+  requireHumanSession,
   validate('param', z.object({ code: codeSchema })),
   async (c) => {
     const userId = requireUserId(c);

@@ -1,14 +1,14 @@
 /**
  * Message search
  * --------------
- * Full-text search over guild messages, scoped to the channels the
- * requesting user can actually see. Uses Postgres `websearch_to_tsquery`
+ * Full-text search over guild messages, scoped to the channels whose
+ * history the requesting user can actually read. Uses Postgres `websearch_to_tsquery`
  * (natural query syntax: quoted "phrases", OR, and -exclusion) against the
  * GIN-indexed English text-search vector of message content.
  */
 import { db, schema } from '../db';
 import { and, eq, desc, lt, gt, inArray, isNull, sql } from 'drizzle-orm';
-import { listViewableGuildChannelIds } from './permissions';
+import { Permissions, listViewableGuildChannelIds } from './permissions';
 
 export interface SearchMessagesOptions {
   query: string;
@@ -33,9 +33,13 @@ export async function searchGuildMessages(
   userId: bigint,
   opts: SearchMessagesOptions,
 ): Promise<SearchResultRow[]> {
-  // Only ever search channels the requester can view — this is the
-  // permission boundary for search. An empty set means nothing to search.
-  const viewable = await listViewableGuildChannelIds(guildId, userId);
+  // Only ever search channels whose history the requester can read
+  // (VIEW_CHANNEL + READ_MESSAGE_HISTORY, the same gate as per-channel
+  // search and message listing) — this is the permission boundary for
+  // search. An empty set means nothing to search.
+  const viewable = await listViewableGuildChannelIds(guildId, userId, {
+    alsoRequire: Permissions.READ_MESSAGE_HISTORY,
+  });
   if (viewable.length === 0) return [];
 
   let channelScope = viewable;

@@ -2097,8 +2097,9 @@ guildsRouter.patch(
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // Full-text search across the channels the requester can view in this guild.
-// Members-only; the per-channel view permission is enforced inside the
-// service (results are restricted to viewable channels).
+// Members-only; the per-channel permissions are enforced inside the
+// service (results are restricted to channels with VIEW_CHANNEL +
+// READ_MESSAGE_HISTORY).
 
 guildsRouter.get(
   '/:guildId/messages/search',

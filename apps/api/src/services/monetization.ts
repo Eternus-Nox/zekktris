@@ -17,6 +17,17 @@
  *       MAX_UPLOAD_SIZE_MB default. The env cap is ALWAYS the hard ceiling:
  *       effective cap = min(env, configured).
  *
+ * Where each gate is enforced:
+ *   - Upload caps: server-side, on every upload (uploads.ts, and the message
+ *     send route via uploadCapMbForTier).
+ *   - Stream / camera quality: CLIENT-side only. The apps read this config
+ *     from /instance/monetization and limit their own quality pickers and
+ *     capture settings. The server can't enforce it: a LiveKit join token
+ *     can restrict WHICH sources a participant publishes (voice.ts) but not
+ *     their resolution or frame rate, so a modified client can publish above
+ *     its tier. tierRank / isAllowed / requiredTierFor below are not called
+ *     on any server path for that reason.
+ *
  * 720p at 30fps is always free — deliberately not a key. Cosmetics
  * (Appearance) are free for everyone and no longer configurable; `appearance`
  * stays in the config shape, pinned to 'none', so older apps that still read

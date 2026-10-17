@@ -24,12 +24,18 @@ import {
   messagePageLimitSchema,
   emojiSchema,
 } from '../lib/validation';
-import { toMessage, toPublicUser, toReadState, toChannel, toPoll, toForwardSource, toSticker, toGuildMember, toAttachment, type PollDTO, type ForwardSourceDTO, type StickerDTO } from '../lib/dto';
+import { toMessage, toPublicUser, toReadState, toChannel, toPoll, toForwardSource, toSticker, toAttachment, type PollDTO, type ForwardSourceDTO, type StickerDTO } from '../lib/dto';
 import * as messages from '../services/messages';
 import * as polls from '../services/polls';
 import * as embeds from '../services/embeds';
 import * as supervision from '../services/supervision';
 import { assertNotInstanceMuted } from '../services/instanceMutes';
+import {
+  E2EE_CIPHERTEXT_RE,
+  enforceGuildContentModeration,
+  enforceGuildParticipationGates,
+  enforceGuildSendGates,
+} from '../services/messageGates';
 import * as stickers from '../services/stickers';
 import * as reactions from '../services/reactions';
 import * as reactionRolesSvc from '../services/reactionRoles';
@@ -120,109 +126,18 @@ async function loadChannelContext(channelId: bigint, userId: bigint): Promise<Ch
 }
 
 /**
- * Participation gates shared by the send, reaction, and poll-vote paths for a
- * GUILD channel: a pending (un-onboarded) member, a timed-out member, or a
- * supervision-restricted minor may not participate. No-op for DMs (no guild
- * membership / timeout / server-messaging restriction applies). Call AFTER the
- * per-action permission check. Kept as one helper so a new participation path
- * (like poll voting, which previously bypassed these) can't drift from send.
+ * Whether the server should unfurl link previews for the caller's message in
+ * this channel: EMBED_LINKS in a guild channel; always in DMs (no permission
+ * system there). Webhooks don't come through here — they post channel-owned
+ * rich embeds, which Discord likewise never gates on EMBED_LINKS.
  */
-async function enforceGuildParticipationGates(guildId: bigint, userId: bigint): Promise<void> {
-  // One member-row read (pending + timeout) in parallel with the independent
-  // supervision read — 2 round-trips instead of 3 serial ones. Throw priority
-  // unchanged: pending → timeout → restricted.
-  const [part, restr] = await Promise.all([
-    membersSvc.getParticipationRow(guildId, userId),
-    supervision.getEffectiveRestrictions(userId),
-  ]);
-  if (part.state === 'pending') throw errors.pendingAcknowledgment();
-  if (part.timeoutUntil !== null) throw errors.timedOut(part.timeoutUntil);
-  if (restr && !restr.allowMessaging) {
-    throw new AppError(
-      'FORBIDDEN',
-      'Messaging is restricted — connect a guardian to continue',
-      { supervisionRestricted: 'messaging' },
-    );
-  }
-}
-
-/**
- * Content moderation for GUILD plaintext: banned-words filter + automod rules
- * (block / block-and-timeout / log_only, with the trigger audit + member-update
- * dispatch on timeout). Throws on a blocking violation. Shared by the send AND
- * edit paths so an edit faces the same gate as a fresh send — otherwise a user
- * could post "hi" and edit it into banned content within the mutate window.
- * Spam throttling stays send-only (it's rate-based; edits don't add volume).
- * No-op for DMs / E2EE (never inspected).
- */
-async function enforceGuildContentModeration(args: {
-  guildId: bigint;
-  channelId: bigint;
-  userId: bigint;
-  content: string;
-}): Promise<void> {
-  const { guildId, channelId, userId, content } = args;
-  const security = await import('../services/security');
-  await security.checkBannedWords({ userId, guildId, channelId, content });
-
-  const { checkMessage } = await import('../services/automod');
-  const roleIds = await membersSvc.getMemberRoleIds(guildId, userId);
-  const violation = await checkMessage({ guildId, channelId, userId, content, memberRoleIds: roleIds });
-  if (!violation) return;
-
-  let timeoutApplied = false;
-  if (violation.action === 'block_and_timeout' && violation.timeoutSeconds) {
-    try {
-      const until = new Date(Date.now() + violation.timeoutSeconds * 1000);
-      await membersSvc.setMemberTimeout({ guildId, userId, actorId: userId, until });
-      timeoutApplied = true;
-      const updated = await membersSvc.getMemberDetailed(guildId, userId);
-      if (updated) {
-        dispatch.guildMemberUpdate(
-          toGuildMember(updated.member, updated.user, updated.roleIds),
-          guildId,
-        );
-      }
-    } catch {
-      // Timeout failed but the message is still blocked — surfacing the block
-      // is the priority.
-    }
-  }
-
-  try {
-    const snippet = content.length > 80 ? content.slice(0, 80) + '…' : content;
-    const { writeAudit } = await import('../services/audit');
-    await writeAudit({
-      guildId,
-      actorId: userId,
-      action: 'automod.rule_triggered',
-      targetType: 'automod_rule',
-      targetId: violation.id,
-      changes: {
-        ruleName: violation.name,
-        ruleType: violation.ruleType,
-        snippet,
-        channelId: channelId.toString(),
-        timeoutApplied,
-        action: violation.action,
-      },
-    });
-  } catch {
-    // Audit write failed — don't surface to the user.
-  }
-
-  if (violation.action !== 'log_only') {
-    throw errors.automodBlocked(violation.name, timeoutApplied);
-  }
+function canEmbedLinks(ctx: ChannelContext): boolean {
+  return ctx.channelPerms === null || hasPermission(ctx.channelPerms, Permissions.EMBED_LINKS);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /:channelId/messages
 // ═══════════════════════════════════════════════════════════════════════════
-
-/** Our E2EE wire format: `zkE2EE/<version>:<base64>`. Used server-side only to
- *  REJECT ciphertext from a supervised DM (the server never decrypts). */
-const E2EE_CIPHERTEXT_RE = /^zkE2EE\/\d+:/;
 
 const pollInputSchema = z.object({
   question: z.string().min(1).max(300),
@@ -637,18 +552,6 @@ messagesRouter.post(
 
     // ── Permission gating (guild channels only) ──────────────────────────
     if (!ctx.isDM && ctx.channelPerms !== null) {
-      // Archived threads are read-only. The threads service's
-      // setArchived doc-comment promised this would be enforced
-      // here, but until this round it wasn't actually checked.
-      // To send to an archived thread, a moderator unarchives it
-      // first via PATCH /channels/:id. No MANAGE_MESSAGES override
-      // — keeping the rule simple: archived means locked, period.
-      if (
-        ctx.channel.type === 'public_thread' &&
-        ctx.channel.threadArchivedAt !== null
-      ) {
-        throw errors.forbidden('This thread is archived');
-      }
       // Forums are post containers — they hold public_thread children
       // (posts), not direct messages. The ForumView surface doesn't
       // render a message stream for the forum itself; messages sent
@@ -666,72 +569,18 @@ messagesRouter.post(
           'Link channels are bookmarks — they don\'t carry messages',
         );
       }
-      if (!hasPermission(ctx.channelPerms, Permissions.SEND_MESSAGES)) {
-        throw errors.missingPermissions(['SEND_MESSAGES']);
-      }
-      if (files.length > 0 && !hasPermission(ctx.channelPerms, Permissions.ATTACH_FILES)) {
-        throw errors.missingPermissions(['ATTACH_FILES']);
-      }
-      // Onboarding gate. Members who haven't acknowledged the guild's
-      // rules can't send messages. Placed before timeout because
-      // onboarding is more fundamental — if you haven't agreed to
-      // the rules yet, the timeout state isn't even relevant. The
-      // client gets a distinct error code so it can surface the
-      // rules-acknowledgment prompt rather than a generic permission
-      // error.
-      //
-      // These three gates (pending-acknowledgment, active-timeout, supervision)
-      // used to run as three serial round-trips — and the first two point-read
-      // the SAME guild_members row. Fold them into one member-row read
-      // (getParticipationRow) run in parallel with the independent supervision
-      // read: 2 round-trips instead of 3 on this, the hottest write path. Throw
-      // priority is unchanged: pending → timeout → restricted.
-      //
-      // Timeout is NOT bypassed by MANAGE_MESSAGES (a timed-out mod stays timed
-      // out); the until-timestamp rides on the error so the client can render
-      // "you can send again at <time>". Supervision blocks a restricted minor.
-      if (ctx.channel.guildId) {
-        const [part, restr] = await Promise.all([
-          membersSvc.getParticipationRow(ctx.channel.guildId, userId),
-          supervision.getEffectiveRestrictions(userId),
-        ]);
-        if (part.state === 'pending') {
-          throw errors.pendingAcknowledgment();
-        }
-        if (part.timeoutUntil !== null) {
-          throw errors.timedOut(part.timeoutUntil);
-        }
-        if (restr && !restr.allowMessaging) {
-          throw new AppError(
-            'FORBIDDEN',
-            'Messaging is restricted — connect a guardian to continue',
-            { supervisionRestricted: 'messaging' },
-          );
-        }
-      }
-      // Slowmode — bypassed for MANAGE_MESSAGES (mods).
-      if (!hasPermission(ctx.channelPerms, Permissions.MANAGE_MESSAGES)) {
-        await messages.enforceSlowmode(channelId, userId, ctx.channel.rateLimitPerUser);
-      }
-      // Instance security (Admin → Security): spam throttle + banned-word
-      // gate. Guild plaintext only — E2EE/DMs are exempt by design.
-      // Spam throttle stays here (send-only); banned-words + automod run
-      // through the shared enforceGuildContentModeration helper so the edit
-      // path applies the exact same content gate.
-      if (ctx.channel.guildId) {
-        const security = await import('../services/security');
-        await security.checkSpam({
-          userId,
-          guildId: ctx.channel.guildId,
-          channelId: ctx.channel.id,
-        });
-        await enforceGuildContentModeration({
-          guildId: ctx.channel.guildId,
-          channelId: ctx.channel.id,
-          userId,
-          content: payload.content,
-        });
-      }
+      // Archived-thread lock, SEND_MESSAGES / ATTACH_FILES, onboarding,
+      // timeout, supervision, slowmode, spam, banned words + automod. One
+      // shared helper so the scheduled-message worker applies the exact same
+      // gates at fire time.
+      await enforceGuildSendGates({
+        channel: ctx.channel,
+        channelPerms: ctx.channelPerms,
+        userId,
+        content: payload.content,
+        hasFiles: files.length > 0,
+        enforceSlowmode: true,
+      });
     }
 
     // DM send throttle — guild sends go through security.checkSpam above; DMs
@@ -1222,8 +1071,13 @@ messagesRouter.post(
     // the resolved embeds onto the message row and broadcasts a
     // MESSAGE_UPDATE so connected clients see the cards appear inline
     // 100-2000ms later. Skip when there's no content to scan
-    // (attachment-only messages, polls without text, etc.).
-    if (payload.content && payload.content.trim().length > 0) {
+    // (attachment-only messages, polls without text, etc.), and when the
+    // author lacks EMBED_LINKS in this channel (DMs always have it).
+    if (
+      payload.content &&
+      payload.content.trim().length > 0 &&
+      canEmbedLinks(ctx)
+    ) {
       void embeds.resolveAndPersistEmbeds({
         messageId: result.message.id,
         channelId,
@@ -2049,6 +1903,23 @@ messagesRouter.patch(
         content: c.req.valid('json').content,
       });
     }
+    // Supervised-pair plaintext invariant, same as send: without this a
+    // supervised minor (or their peer) could post plaintext and edit it into
+    // ciphertext the guardian can't read within the mutate window.
+    if (
+      ctx.isDM &&
+      ctx.channel.type === 'dm' &&
+      E2EE_CIPHERTEXT_RE.test(c.req.valid('json').content)
+    ) {
+      const other = await dms.getOtherRecipient(channelId, userId);
+      if (other !== null && !(await supervision.isE2eeAllowedBetween(userId, other))) {
+        throw new AppError(
+          'FORBIDDEN',
+          'Encrypted messages are unavailable while this conversation is supervised.',
+          { supervisionRestricted: 'e2ee' },
+        );
+      }
+    }
 
     const allowEveryone = ctx.isDM
       ? true
@@ -2130,6 +2001,20 @@ messagesRouter.patch(
       guildId: ctx.channel.guildId ?? null,
     });
 
+    // Parental controls: the same watch-word scan as send, so a flagged word
+    // edited in after posting still raises a flag. previousContent keeps a
+    // word that was already flagged on the original from being flagged twice.
+    void supervision
+      .scanMessageForFlags({
+        messageId: result.message.id,
+        channelId,
+        channelType: ctx.channel.type,
+        authorId: userId,
+        content: c.req.valid('json').content,
+        previousContent: existing.content ?? '',
+      })
+      .catch(() => undefined);
+
     // Re-resolve embeds for the new content. Without this the
     // message keeps the embeds resolved at original-send time —
     // editing "look at https://old.com" to "look at https://new.com"
@@ -2140,12 +2025,13 @@ messagesRouter.patch(
     // a follow-up MESSAGE_UPDATE goes out 100-2000ms later with
     // the new embeds. We resolve even on empty content because
     // the user may have just deleted the only URL, in which case
-    // we need to publish the cleared list.
+    // we need to publish the cleared list. Without EMBED_LINKS the
+    // resolver gets no content, which just clears any previews.
     void embeds.resolveAndPersistEmbeds({
       messageId: result.message.id,
       channelId,
       guildId: ctx.channel.guildId ?? null,
-      content: c.req.valid('json').content,
+      content: canEmbedLinks(ctx) ? c.req.valid('json').content : '',
     });
 
     return c.json({ message: messageDTO });
@@ -3238,7 +3124,9 @@ messagesRouter.post(
 // for later either. Slowmode is intentionally NOT enforced — a
 // scheduled message firing past the slowmode window is fine and
 // is the whole point of the feature; preventing it would force
-// users to do math.
+// users to do math. Every other live-send gate (timeout, onboarding,
+// supervision, spam, banned words / automod, DM blocks) re-runs when
+// the message FIRES — see scheduledMessages.fireScheduled.
 //
 // Attachments are NOT supported in v1 of scheduling — the simpler
 // surface ships first. Attachments would need to upload-and-pin

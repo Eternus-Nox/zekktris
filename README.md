@@ -9,7 +9,10 @@ your home network. The apps connect to any server from their sign-in screen
 
 Everything is free, cosmetics included. Scout / Guardian / Legend are perk
 tiers a server's admins hand out for higher streaming quality (by default:
-everyone 720p30, Scout 1080p + 60fps, Guardian 2K, Legend 4K).
+everyone 720p30, Scout 1080p + 60fps, Guardian 2K, Legend 4K). The quality
+ladder is applied by the apps; LiveKit tokens can't limit resolution or frame
+rate, so the server doesn't enforce it. Per-tier upload caps are enforced by
+the server.
 
 > **Status:** active development, but well past "skeleton" — Zekktris is a
 > working v1.x platform with voice/video calls, end-to-end-encrypted DMs,
@@ -137,8 +140,16 @@ pnpm --filter @zekktris/web dev
 ```
 
 Monorepo tasks run through Turborepo: `pnpm typecheck`, `pnpm test` (Vitest),
-`pnpm build`. Database: `pnpm db:generate` (diff schema → new migration),
-`pnpm db:migrate` (apply against `$DATABASE_URL`).
+`pnpm build`. Database: `pnpm db:migrate` (apply against `$DATABASE_URL`).
+
+Migrations are hand-written SQL. To change the schema, add the next numbered
+file in `packages/db/migrations/` (`NNNN_my_change.sql`, with NNNN the next
+unused number), append a matching entry to
+`packages/db/migrations/meta/_journal.json` (next `idx`, the file name without
+`.sql` as `tag`, a `when` later than the previous entry), and update the
+Drizzle schema in `packages/db/src/schema/` to match. Don't use `drizzle-kit
+generate` or `push`: its snapshots stop at 0004, so it would try to re-create
+existing tables or drop objects that exist only in SQL.
 
 Quick auth smoke test:
 

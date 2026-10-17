@@ -31,7 +31,7 @@ import { and, desc, eq, gt, ilike, inArray, isNotNull, isNull, or, sql } from 'd
 import { alias } from 'drizzle-orm/pg-core';
 import { db, isUniqueViolation, schema } from '../db';
 import { nextSnowflake } from '../snowflake';
-import { emailSchema, usernameSchema } from '../lib/validation';
+import { emailSchema, usernameSchema, queryBooleanSchema } from '../lib/validation';
 import { dateOfBirthSchema } from '../lib/age';
 import { errors } from '../errors';
 import { validate } from '../lib/validate';
@@ -314,7 +314,7 @@ adminRouter.get('/voice-live', async (c) => {
 //   owned by the restoring admin. Per-guild best-effort; returns the results.
 adminRouter.get(
   '/backup',
-  validate('query', z.object({ includeImages: z.coerce.boolean().optional() })),
+  validate('query', z.object({ includeImages: queryBooleanSchema.optional() })),
   async (c) => {
     const { exportInstance } = await import('../services/instanceBackup');
     const includeImages = c.req.valid('query').includeImages ?? true;
@@ -415,7 +415,7 @@ const listUsersQuery = z.object({
   before: z.string().regex(/^[0-9]+$/).optional(),
   limit: z.coerce.number().int().min(1).max(50).optional(),
   /** Filter to banned users only. Useful for moderation review. */
-  bannedOnly: z.coerce.boolean().optional(),
+  bannedOnly: queryBooleanSchema.optional(),
 });
 
 adminRouter.get('/users', validate('query', listUsersQuery), async (c) => {

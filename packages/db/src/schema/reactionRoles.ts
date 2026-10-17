@@ -1,4 +1,5 @@
 import { pgTable, bigint, text, timestamp, primaryKey, index } from 'drizzle-orm/pg-core';
+import { users } from './users';
 
 /**
  * Reaction-role mapping. A row links a (message, emoji) pair to a
@@ -19,7 +20,11 @@ export const reactionRoles = pgTable(
     guildId: bigint('guild_id', { mode: 'bigint' }).notNull(),
     channelId: bigint('channel_id', { mode: 'bigint' }).notNull(),
     roleId: bigint('role_id', { mode: 'bigint' }).notNull(),
-    createdBy: bigint('created_by', { mode: 'bigint' }),
+    /** Attribution only. SET NULL on user delete (migration 0127) so
+        deleting the creator never blocks on, or removes, the mapping. */
+    createdBy: bigint('created_by', { mode: 'bigint' }).references(() => users.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

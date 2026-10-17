@@ -1140,9 +1140,14 @@ export async function scanMessageForFlags(input: {
   channelType: string;
   authorId: bigint | null;
   content: string;
+  /** For an edit: the content before it. Words already present there were
+   *  scanned (and flagged) when that version was posted, so only newly added
+   *  words raise a flag. */
+  previousContent?: string;
 }): Promise<void> {
   const content = (input.content || '').toLowerCase();
   if (!content.trim() || !input.authorId) return;
+  const previous = (input.previousContent ?? '').toLowerCase();
 
   // Fast path: no children under active supervision → nothing to scan, zero
   // queries. (This is the steady state for most self-hosted instances.)
@@ -1164,7 +1169,9 @@ export async function scanMessageForFlags(input: {
     if (words.length === 0) continue;
     const parents = await getActiveParentIds(cand.childId);
     if (parents.length === 0) continue; // not supervised (cache raced a revoke)
-    const matched = [...new Set(words.filter((w) => content.includes(w)))];
+    const matched = [
+      ...new Set(words.filter((w) => content.includes(w) && !previous.includes(w))),
+    ];
     if (matched.length === 0) continue;
     const matchedWord = matched.join(', ').slice(0, 200);
     await db.insert(schema.flaggedMessages).values({

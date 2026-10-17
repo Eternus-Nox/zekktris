@@ -17,7 +17,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { errors } from '../errors';
-import { requireAuth, requireUserId } from '../auth/middleware';
+import { requireAuth, requireUserId, requireHumanSession } from '../auth/middleware';
 import { validate } from '../lib/validate';
 import { RateLimiter } from '../lib/rateLimit';
 import { snowflakeSchema } from '../lib/validation';
@@ -82,6 +82,9 @@ discoveryRouter.get(
 discoveryRouter.post(
   '/guilds/:guildId/discovery/join',
   requireAuth,
+  // Humans only — bots join through addBotToGuild (MANAGE_GUILD), as on
+  // invite accept.
+  requireHumanSession,
   validate('param', z.object({ guildId: snowflakeSchema })),
   async (c) => {
     const userId = requireUserId(c);

@@ -110,6 +110,32 @@ describe.runIf(dbReady)('instance backup / restore', () => {
     }
   });
 
+  it("query flags parse 'false' as false (z.coerce.boolean read it as true)", async () => {
+    const admin = await createUser();
+    await makeAdmin(admin);
+    const auth = { authorization: `Bearer ${await tokenFor(admin)}` };
+    const includeImages = async (qs: string) => {
+      const res = await app.request(`/admin/backup${qs}`, { headers: auth });
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { backup: { includeImages: boolean } }).backup.includeImages;
+    };
+    expect(await includeImages('?includeImages=false')).toBe(false);
+    expect(await includeImages('?includeImages=true')).toBe(true);
+    expect(await includeImages('')).toBe(true); // default
+    expect((await app.request('/admin/backup?includeImages=nope', { headers: auth })).status).toBe(400);
+
+    // bannedOnly=false must not filter to banned users.
+    const target = await createUser();
+    const [row] = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.id, target));
+    const listed = async (bannedOnly: string) => {
+      const res = await app.request(`/admin/users?q=${row!.username}&bannedOnly=${bannedOnly}`, { headers: auth });
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { users: unknown[] }).users.length;
+    };
+    expect(await listed('false')).toBe(1);
+    expect(await listed('true')).toBe(0);
+  });
+
   it('importInstance rejects a non-instance-backup document', async () => {
     const u = await createUser();
     await expect(importInstance(u, { format: 'nope', version: 1, guilds: [] })).rejects.toThrow();

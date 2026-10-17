@@ -319,6 +319,16 @@ export interface ExecuteWebhookInput {
   embeds?: schema.MessageEmbedJson[] | null;
 }
 
+/** The human-readable text of webhook-supplied embeds, for moderation. */
+function richEmbedText(embeds: schema.MessageEmbedJson[] | null | undefined): string[] {
+  const out: string[] = [];
+  for (const e of embeds ?? []) {
+    out.push(e.title ?? '', e.description ?? '', e.authorName ?? '', e.footerText ?? '');
+    for (const f of e.fields ?? []) out.push(f.name, f.value);
+  }
+  return out.filter((t) => t.length > 0);
+}
+
 export async function executeWebhook(input: ExecuteWebhookInput): Promise<schema.Message> {
   // Pin the lookup on BOTH id and token. We read both in a single query
   // so a leaked id without the token can't be confirmed (the row simply
@@ -389,6 +399,20 @@ export async function executeWebhook(input: ExecuteWebhookInput): Promise<schema
   if (!ownerRows[0] || isCurrentlyBanned(ownerRows[0]) || ownerRows[0].deletedAt !== null) {
     throw errors.unauthenticated('Invalid webhook id or token');
   }
+
+  // Guild content moderation: the same banned-words + automod gate as every
+  // other send, over the content AND any rich-embed text (a webhook could
+  // otherwise move blocked text into an embed description). Timeouts,
+  // onboarding and spam don't apply: those gate a member's participation,
+  // and a webhook is a channel-owned integration, rate-limited per webhook.
+  const { enforceGuildContentModeration } = await import('./messageGates');
+  await enforceGuildContentModeration({
+    guildId: wh.guildId,
+    channelId: wh.channelId,
+    userId: wh.createdBy,
+    content: [input.content, ...richEmbedText(input.embeds)].filter(Boolean).join('\n'),
+    webhookId: wh.id,
+  });
 
   const result = await createMessage({
     channelId: wh.channelId,

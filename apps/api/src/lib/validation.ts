@@ -284,3 +284,10 @@ export const cdnPathOrNullSchema = z
   .max(2048)
   .regex(/^\/cdn\//, 'Must be a /cdn/ path produced by the upload flow')
   .nullable();
+
+/**
+ * Boolean query-string flag: exactly 'true' or 'false' (anything else is a
+ * 400). Not z.coerce.boolean(), which is Boolean(value) and so turns the
+ * string 'false' into true.
+ */
+export const queryBooleanSchema = z.enum(['true', 'false']).transform((v) => v === 'true');

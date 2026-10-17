@@ -338,8 +338,9 @@ export async function joinPublic(args: {
     if (banned[0]) throw errors.forbidden('You are banned from this guild');
 
     // Supervision: an unlinked minor (or a guardian-restricted child) can't
-    // join servers — same capability gate as invite-accept.
-    const { getEffectiveRestrictions } = await import('./supervision');
+    // join servers, and a guardian's per-server block applies here too —
+    // same gates as invite-accept.
+    const { getEffectiveRestrictions, isGuildBlockedForChild } = await import('./supervision');
     const restr = await getEffectiveRestrictions(args.userId);
     if (restr && !restr.allowJoinGuilds) {
       throw new AppError(
@@ -347,6 +348,12 @@ export async function joinPublic(args: {
         'Joining servers is restricted — connect a guardian to continue',
         { supervisionRestricted: 'join_guild', guildId: args.guildId.toString() },
       );
+    }
+    if (await isGuildBlockedForChild(args.userId, args.guildId)) {
+      throw new AppError('FORBIDDEN', 'This server is restricted by your parent', {
+        supervisionRestricted: 'guild',
+        guildId: args.guildId.toString(),
+      });
     }
 
     // Raid protection — same gates as invite-accept.

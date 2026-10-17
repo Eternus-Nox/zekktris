@@ -41,6 +41,7 @@ import {
   assertCanManageRole,
   assertCanManageMember,
   computeMemberGuildPermissions,
+  computeMemberChannelPermissions,
   hasPermission,
 } from '../services/permissions';
 
@@ -732,7 +733,8 @@ guildChannelsRouter.patch(
 // POST /channels/:id/unarchive → clear archived_at + refresh activity stamp
 //
 // Authorization:
-//   - MANAGE_THREADS on the guild lets you archive/unarchive any thread
+//   - MANAGE_THREADS in the thread's channel (parent overrides apply) lets
+//     you archive/unarchive any thread; a caller who can't view it gets 404
 //   - Without MANAGE_THREADS, the post creator can still archive their
 //     own post (tidy-up affordance). Creator = author of the anchor
 //     message for message-rooted threads, OR author of the first
@@ -764,6 +766,29 @@ async function resolveThreadCreator(thread: typeof schema.channels.$inferSelect)
   return first?.authorId ?? null;
 }
 
+/**
+ * Authorization for the archive / resolve lifecycle, run BEFORE anything
+ * about the thread is returned (including the idempotent no-op response).
+ * A caller who can't VIEW the thread (its parent's permissions, overrides
+ * included) gets the same 404 as for a missing channel. Then MANAGE_THREADS
+ * in that channel, or being the thread's creator, is required.
+ */
+async function assertCanToggleThreadState(
+  thread: typeof schema.channels.$inferSelect,
+  userId: bigint,
+): Promise<void> {
+  const perms = await computeMemberChannelPermissions(thread.id, userId, thread);
+  if (!hasPermission(perms, Permissions.VIEW_CHANNEL)) {
+    throw errors.notFound('Channel');
+  }
+  if (!hasPermission(perms, Permissions.MANAGE_THREADS)) {
+    const creatorId = await resolveThreadCreator(thread);
+    if (creatorId !== userId) {
+      throw errors.missingPermissions(['MANAGE_THREADS']);
+    }
+  }
+}
+
 async function handleArchiveTransition(
   c: import('hono').Context,
   archived: boolean,
@@ -786,22 +811,16 @@ async function handleArchiveTransition(
     throw errors.forbidden('Threads only exist in guild channels');
   }
 
+  // Authorization: MANAGE_THREADS lets you archive any thread.
+  // Without it, only the post creator can archive their own.
+  await assertCanToggleThreadState(thread, userId);
+
   // Idempotent: if state already matches request, return success
   // without writing. Avoids spamming broadcasts on rage-clicked
   // archive buttons.
   const isAlreadyArchived = thread.threadArchivedAt !== null;
   if (isAlreadyArchived === archived) {
     return c.json({ channel: toChannel(thread) });
-  }
-
-  // Authorization: MANAGE_THREADS lets you archive any thread.
-  // Without it, only the post creator can archive their own.
-  const perms = await computeMemberGuildPermissions(thread.guildId, userId);
-  if (!hasPermission(perms, Permissions.MANAGE_THREADS)) {
-    const creatorId = await resolveThreadCreator(thread);
-    if (creatorId !== userId) {
-      throw errors.missingPermissions(['MANAGE_THREADS']);
-    }
   }
 
   const updated = await import('../services/threads').then((m) =>
@@ -862,18 +881,12 @@ async function handleResolveTransition(
     throw errors.forbidden('Threads only exist in guild channels');
   }
 
+  await assertCanToggleThreadState(thread, userId);
+
   // Idempotent.
   const isAlreadyResolved = thread.threadResolvedAt !== null;
   if (isAlreadyResolved === resolved) {
     return c.json({ channel: toChannel(thread) });
-  }
-
-  const perms = await computeMemberGuildPermissions(thread.guildId, userId);
-  if (!hasPermission(perms, Permissions.MANAGE_THREADS)) {
-    const creatorId = await resolveThreadCreator(thread);
-    if (creatorId !== userId) {
-      throw errors.missingPermissions(['MANAGE_THREADS']);
-    }
   }
 
   const updated = await import('../services/threads').then((m) =>
