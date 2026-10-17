@@ -74,6 +74,15 @@ if docker compose version >/dev/null 2>&1; then COMPOSE="docker compose"
 elif command -v docker-compose >/dev/null 2>&1; then COMPOSE="docker-compose"
 else fail "docker compose not found"; fi
 
+# The api's first boot after it stopped running as root hands uploads/ to its
+# own user (ops/api-entrypoint.sh) before it starts, which on a large tree can
+# outlast the health wait. True while that is still going.
+handover_running() {
+    local last
+    last="$($COMPOSE logs --tail 200 api 2>&1 | grep -E 'api-entrypoint: (handing|handed|could not hand)' | tail -1 || true)"
+    [[ "$last" == *"api-entrypoint: handing "* ]]
+}
+
 # Verify the dump is structurally intact BEFORE touching anything. pg_restore
 # -l lists the archive's table of contents and fails on a truncated or corrupt
 # file — which is the failure a backup script cannot detect at write time.
@@ -148,6 +157,18 @@ if [[ -f .env ]]; then
         warn "keeping this host's APPDATA_PATH ($HOST_APPDATA), not the bundle's (${BUNDLE_APPDATA:-<default>})"
     fi
 fi
+# Compose refuses to start anything while a `${VAR:?}` variable is empty, and
+# it reads FINAL_ENV — so a bundle taken before one of them became required
+# could never be restored, whatever this host's .env said. Fill those from this
+# host's .env (a JWT secret from here just signs everyone out once).
+for key in $(grep -oE '\$\{[A-Z0-9_]+:\?' docker-compose.yml | sed -E 's/^\$\{([A-Z0-9_]+):\?$/\1/' | sort -u); do
+    [[ -n "$(envval "$key" "$FINAL_ENV")" ]] && continue
+    [[ -f .env && -n "$(envval "$key" .env)" ]] \
+        || fail "the bundle's .env has no $key, which docker-compose.yml requires, and this host's .env has none either. Add $key=… to .env and run this again."
+    { grep -vE "^$key=" "$FINAL_ENV" || true; grep -E "^$key=" .env | tail -1; } > "$FINAL_ENV.new"
+    mv "$FINAL_ENV.new" "$FINAL_ENV"
+    warn "the bundle's .env has no $key — using this host's"
+done
 APPDATA="$(envval APPDATA_PATH "$FINAL_ENV")"
 APPDATA="${APPDATA:-/mnt/user/appdata/zekktris}"
 DB_PASSWORD_FINAL="$(envval DB_PASSWORD "$FINAL_ENV")"
@@ -155,33 +176,50 @@ DB_PASSWORD_FINAL="$(envval DB_PASSWORD "$FINAL_ENV")"
 RCOMPOSE="$COMPOSE --env-file $FINAL_ENV"
 
 # ── 3. Refuse to overwrite a populated instance ─────────────────────────────
+# Prints the target's user count, 0 on a fresh volume. Asks whether the table
+# exists first, so "fresh volume" and "cannot query the database" are not both
+# read as zero users. $1 is the compose command to ask through.
+count_users() {
+    local has
+    has="$($1 exec -T db psql -U commune -d commune -tAc \
+        "select to_regclass('public.users') is not null" 2>"$STAGE/psql.err" | tr -d '[:space:]')" \
+        || { cat "$STAGE/psql.err" >&2; return 1; }
+    if [[ "$has" != "t" ]]; then echo 0; return 0; fi
+    $1 exec -T db psql -U commune -d commune -tAc "select count(*) from users" 2>"$STAGE/psql.err" \
+        | tr -d '[:space:]' || { cat "$STAGE/psql.err" >&2; return 1; }
+}
+refuse_if_populated() {
+    if [[ "${1:-0}" -gt 0 && "$MODE" != "force" ]]; then
+        echo
+        fail "target already has ${1} users. Restoring over live data half-applies and leaves an instance that looks up but is quietly wrong. Re-run with --force ONLY if you mean to replace it."
+    fi
+}
+
 step "Checking the target instance is empty"
+# A database that is already running is asked first, as it is: starting it
+# under the bundle's settings below recreates its container when they differ
+# (another DB_PASSWORD), and an instance we are about to refuse should not have
+# its database restarted for nothing.
+if [[ "$MODE" != "force" ]] && $COMPOSE ps db --format '{{.State}}' 2>/dev/null | grep -q running; then
+    USERS="$(count_users "$COMPOSE")" || fail "could not query the target database — nothing has been changed"
+    refuse_if_populated "$USERS"
+fi
 if ! $RCOMPOSE up -d db >"$STAGE/up.log" 2>&1; then
     cat "$STAGE/up.log" >&2
     fail "could not start the database — nothing has been changed"
 fi
+# Over TCP, not the socket: on a fresh volume the image's entrypoint first runs
+# a socket-only server to initialise it and then restarts it, and a check that
+# lands on that temporary one would race the restart.
 READY=0
 for _ in $(seq 1 60); do
-    if $RCOMPOSE exec -T db pg_isready -U commune >/dev/null 2>&1; then READY=1; break; fi
+    if $RCOMPOSE exec -T db pg_isready -h 127.0.0.1 -U commune >/dev/null 2>&1; then READY=1; break; fi
     sleep 1
 done
 [[ "$READY" == "1" ]] || fail "the database did not become ready within 60s ($COMPOSE logs db) — nothing has been changed"
-# Ask whether the table exists first, so "fresh volume" and "cannot query the
-# database" are not both read as zero users.
-HAS_USERS="$($RCOMPOSE exec -T db psql -U commune -d commune -tAc \
-    "select to_regclass('public.users') is not null" 2>"$STAGE/psql.err" | tr -d '[:space:]')" \
-    || { cat "$STAGE/psql.err" >&2; fail "could not query the target database — nothing has been changed"; }
-USERS=0
-if [[ "$HAS_USERS" == "t" ]]; then
-    USERS="$($RCOMPOSE exec -T db psql -U commune -d commune -tAc \
-        "select count(*) from users" 2>"$STAGE/psql.err" | tr -d '[:space:]')" \
-        || { cat "$STAGE/psql.err" >&2; fail "could not count the target's users — nothing has been changed"; }
-fi
+USERS="$(count_users "$RCOMPOSE")" || fail "could not query the target database — nothing has been changed"
+refuse_if_populated "$USERS"
 if [[ "${USERS:-0}" -gt 0 ]]; then
-    if [[ "$MODE" != "force" ]]; then
-        echo
-        fail "target already has ${USERS} users. Restoring over live data half-applies and leaves an instance that looks up but is quietly wrong. Re-run with --force ONLY if you mean to replace it."
-    fi
     warn "overwriting an instance with ${USERS} existing users (--force)"
 fi
 
@@ -251,10 +289,14 @@ step "Starting the stack"
 $COMPOSE up -d
 step "Waiting for api startup checks (up to 90 seconds)"
 DEADLINE=$(( $(date +%s) + 90 ))
-HEALTHY=0
+HEALTHY=0; LIMIT=$(( $(date +%s) + 3600 )); NOTED=0
 while [[ $(date +%s) -lt $DEADLINE ]]; do
     if $COMPOSE exec -T api wget -qO- http://127.0.0.1:3000/health >/dev/null 2>&1; then
         HEALTHY=1; break
+    fi
+    if [[ $(date +%s) -lt $LIMIT ]] && handover_running; then
+        [[ "$NOTED" == "1" ]] || warn "the api is handing the restored uploads to its unprivileged user — waiting for that, up to an hour"
+        NOTED=1; DEADLINE=$(( $(date +%s) + 90 ))
     fi
     sleep 3
 done

@@ -57,6 +57,12 @@ describe('docker-compose.yml api environment', () => {
     expect(missing).toEqual([]);
   });
 
+  it('forwards nothing env.ts does not read', () => {
+    // A leftover after a variable is dropped from env.ts (say, STRIPE_*) is
+    // dead configuration that still looks like it does something.
+    expect([...composeEnv.keys()].filter((k) => !schemaKeys.includes(k))).toEqual([]);
+  });
+
   it('takes each one from .env under its own name', () => {
     const notFromEnv = [...composeEnv.entries()]
       .filter(([k, v]) => !FIXED.has(k) && !v.startsWith('${' + k + ':'))
@@ -75,6 +81,7 @@ describe('docker-compose.yml api environment', () => {
       const m = /^\$\{[A-Z0-9_]+:-([^${}]*)\}$/.exec(value);
       if (!m) continue; // required (`:?`) or composite values have no default to compare
       const field = envSchema.shape[key as keyof typeof envSchema.shape];
+      if (!field) continue; // not read by env.ts at all — reported by the test above
       const fromCompose = field.safeParse(m[1]);
       const fromCode = field.safeParse(undefined);
       if (!fromCompose.success || !fromCode.success) {

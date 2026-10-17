@@ -182,7 +182,10 @@ fi
 head2 "Client IP"
 EDGE_PROXY="$(grep -E '^EDGE_PROXY=' .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"'' || true)"
 if [[ "${EDGE_PROXY:-none}" != "cloudflare" ]]; then
-    if docker logs --tail 300 zekktris-proxy 2>&1 | grep -q '"Cf-Warp-Tag-Id"'; then
+    # Captured, not piped into grep -q: grep stopping at the first match kills
+    # `docker logs` with SIGPIPE, and pipefail then reads the match as a miss.
+    PROXY_LOG="$(docker logs --tail 300 zekktris-proxy 2>&1 || true)"
+    if grep -q '"Cf-Warp-Tag-Id"' <<<"$PROXY_LOG"; then
         warn "requests are arriving through a Cloudflare Tunnel but EDGE_PROXY is not 'cloudflare' — every visitor shares the tunnel's address (set EDGE_PROXY=cloudflare in .env, then: docker compose up -d proxy)"
     else
         ok "Caddy is the edge (EDGE_PROXY=${EDGE_PROXY:-none}); visitor addresses come from the connection itself"

@@ -54,6 +54,15 @@ if docker compose version >/dev/null 2>&1; then COMPOSE="docker compose"
 elif command -v docker-compose >/dev/null 2>&1; then COMPOSE="docker-compose"
 else fail "docker compose not found"; fi
 
+# The api's first boot after it stopped running as root hands uploads/ to its
+# own user (ops/api-entrypoint.sh) before it starts, which on a large tree can
+# outlast the health wait. True while that is still going.
+handover_running() {
+    local last
+    last="$($COMPOSE logs --tail 200 api 2>&1 | grep -E 'api-entrypoint: (handing|handed|could not hand)' | tail -1 || true)"
+    [[ "$last" == *"api-entrypoint: handing "* ]]
+}
+
 # ── What would change ───────────────────────────────────────────────────────
 step "Checking for updates"
 # Git refuses to operate on a repo owned by another user, which is the normal
@@ -131,6 +140,17 @@ if [[ -n "$LOCAL_EDITS" ]]; then
     ok "local edits kept across the update: $(echo "$LOCAL_EDITS" | tr '\n' ' ')"
 fi
 
+# Trusting Cloudflare's client-IP header is opt-in (EDGE_PROXY). An install
+# behind a Cloudflare Tunnel that has not opted in would, after this update, see
+# every visitor as the tunnel's address — and rate-limit and ban them as one.
+EDGE_WARNING=""
+EDGE_PROXY_SET="$(grep -E '^EDGE_PROXY=' .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"'' || true)"
+if [[ "${EDGE_PROXY_SET:-none}" != "cloudflare" ]] \
+    && grep -q '"Cf-Warp-Tag-Id"' <<<"$(docker logs --tail 300 zekktris-proxy 2>&1 || true)"; then
+    EDGE_WARNING="requests arrive through a Cloudflare Tunnel but .env does not set EDGE_PROXY=cloudflare — add it, then: $COMPOSE up -d proxy"
+    warn "$EDGE_WARNING"
+fi
+
 if [[ "$MODE" == "check" ]]; then
     echo
     ok "Check only. Nothing was changed."
@@ -182,15 +202,20 @@ step "Restarting"
 $COMPOSE up -d
 
 step "Waiting for startup checks (up to 90 seconds)"
-DEADLINE=$(( $(date +%s) + 90 )); HEALTHY=0
+DEADLINE=$(( $(date +%s) + 90 )); HEALTHY=0; LIMIT=$(( $(date +%s) + 3600 )); NOTED=0
 while [[ $(date +%s) -lt $DEADLINE ]]; do
     if $COMPOSE exec -T api wget -qO- http://127.0.0.1:3000/health >/dev/null 2>&1; then HEALTHY=1; break; fi
+    if [[ $(date +%s) -lt $LIMIT ]] && handover_running; then
+        [[ "$NOTED" == "1" ]] || warn "the api is handing uploads/ to its unprivileged user (once) — waiting for that, up to an hour"
+        NOTED=1; DEADLINE=$(( $(date +%s) + 90 ))
+    fi
     sleep 3
 done
 
 if [[ "$HEALTHY" == "1" ]]; then
     echo
     ok "${BOLD}Updated to $(git rev-parse --short HEAD) and healthy.${RESET}"
+    [[ -z "$EDGE_WARNING" ]] || warn "$EDGE_WARNING"
     exit 0
 fi
 
