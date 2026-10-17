@@ -65,6 +65,16 @@ ZK_APK_PATH="${ZK_APK_PATH:-}"
 # Load saved config (publish target + any overrides). Kept out of git.
 if [ -f .env.release ]; then set -a; . ./.env.release; set +a; fi
 
+# Signing credentials reach only the build they are for. electron-builder signs
+# Windows with CSC_LINK whenever WIN_CSC_LINK is unset, so a Developer ID .p12
+# left in the environment would Authenticode-sign the Windows build with it and
+# pin that (untrusted on Windows) publisher into every install's update check.
+# The Mac certificate is MAC_CSC_LINK (CSC_LINK still read, for old configs) and
+# goes to the macOS step only, and only with --sign.
+MAC_CSC_LINK="${MAC_CSC_LINK:-${CSC_LINK:-}}"
+MAC_CSC_KEY_PASSWORD="${MAC_CSC_KEY_PASSWORD:-${CSC_KEY_PASSWORD:-}}"
+unset CSC_LINK CSC_KEY_PASSWORD
+
 # ── Args ────────────────────────────────────────────────────────────────────
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -167,8 +177,10 @@ say "Releasing Zekktris desktop v$VER"
 # The Docker path installs and builds inside the container, so a Windows +
 # Linux run needs no Node on the host — which is what lets it run on Unraid.
 if [ "$DO_MAC" = "1" ] || [ "$CROSS" = "wine" ]; then
-  say "Installing deps + building main/preload (npm install && npm run build)"
-  run "npm install"
+  # npm ci: exactly the versions in package-lock.json, so every release ships
+  # the same Electron/updater it was tested with.
+  say "Installing deps + building main/preload (npm ci && npm run build)"
+  run "npm ci"
   run "npm run build"
 fi
 
@@ -197,9 +209,13 @@ if [ "$DO_MAC" = "1" ]; then
     # doesn't fail trying to sign. (Unsigned mac apps download + run via
     # right-click→Open, but macOS auto-update requires a SIGNED build.)
     MAC_ENV="CSC_IDENTITY_AUTO_DISCOVERY=false"
+  elif [ -n "$MAC_CSC_LINK" ]; then
+    # This build only (see the scoping note at the top); unset again below.
+    export CSC_LINK="$MAC_CSC_LINK" CSC_KEY_PASSWORD="$MAC_CSC_KEY_PASSWORD"
   fi
   say "Building macOS ($MAC_ARCH) dmg + zip"
   run "$MAC_ENV npx electron-builder --mac --$MAC_ARCH --publish never"
+  unset CSC_LINK CSC_KEY_PASSWORD
 else
   warn "Skipping macOS build."
 fi
@@ -220,14 +236,17 @@ else
       # Mount the project; shadow node_modules with an anonymous volume so the
       # container's Linux/wine npm install never clobbers the host's macOS
       # node_modules (esbuild/electron are platform-specific). Cache electron
-      # downloads on the host so repeat runs are fast.
+      # downloads on the host so repeat runs are fast. Pass the Windows
+      # signing certificate through when one is configured (README: "Signing
+      # and update integrity"); unset, the build is unsigned as before.
       run "docker run --rm \
+        -e WIN_CSC_LINK -e WIN_CSC_KEY_PASSWORD \
         -v \"\$PWD\":/project \
         -v /project/node_modules \
         -v \"\${HOME}/.cache/electron\":/root/.cache/electron \
         -v \"\${HOME}/.cache/electron-builder\":/root/.cache/electron-builder \
         electronuserland/builder:wine \
-        /bin/bash -c \"cd /project && npm install && npm run build && npx electron-builder $TARGETS --publish never\""
+        /bin/bash -c \"cd /project && npm ci && npm run build && npx electron-builder $TARGETS --publish never\""
       ;;
     wine)
       command -v wine >/dev/null || die "wine not found. 'brew install --cask wine-stable', or use --cross docker."

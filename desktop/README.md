@@ -27,6 +27,7 @@ the desktop app when you change the web app. On top of the web app it adds:
   unread count shows in the tray tooltip.
 - **Window size/position persistence**
 - **External links open in your default browser**, not inside the app
+  (web and `mailto:` links only — see [Security model](#security-model))
 - **Single-instance lock** — launching again focuses the running window
 - **`zekktris://` deep-link protocol**
 - **Screen sharing** — a native source picker (screens + windows) wired
@@ -43,18 +44,29 @@ Electron's tooling is separate from the monorepo.
 
 ## Prerequisites
 
-- Node.js 18+
-- The dependencies install Electron's prebuilt binary, so the machine you
-  build on needs internet access the first time.
+- Node.js 22.18+ (Electron's npm package needs 22.12+; `npm test` runs the
+  TypeScript tests directly, which needs 22.18+).
+- Internet access the first time: `npm run dev` downloads Electron's
+  prebuilt binary on its first run, and `electron-builder` downloads the
+  Electron build it packages. (Since Electron 42 nothing is downloaded at
+  `npm install` time, so `ELECTRON_SKIP_BINARY_DOWNLOAD` is no longer needed.)
+- The app runs on 64-bit Windows 10+, macOS 13+ and 64-bit Linux
+  (Electron 44 dropped 32-bit Windows and macOS 12).
 
 ## Install
 
 ```bash
 cd desktop
-npm install
+npm ci
 ```
 
-(Use `npm` here, not the repo's `pnpm` — this is a standalone project.)
+(Use `npm` here, not the repo's `pnpm` — this is a standalone project.
+`package-lock.json` is committed so every build ships the same dependency
+versions: use `npm ci` to install exactly those, and commit the lockfile
+whenever you change `package.json`. `release.sh` uses `npm ci`.)
+
+`npm run typecheck` type-checks the shell and `npm test` runs its unit
+tests (the trust rules in `src/trust.ts`, server-address handling).
 
 ## Run in development
 
@@ -79,9 +91,9 @@ Output lands in `desktop/release/`.
 
 > Cross-compiling has caveats: building a macOS `.dmg` requires macOS;
 > Windows builds are easiest on Windows (or via Wine on Linux). Linux
-> builds work anywhere. For personal use, unsigned builds are fine — code
-> signing / notarization is only needed for public distribution and is
-> configured in `electron-builder.yml`.
+> builds work anywhere. For personal use, unsigned builds are fine. Anything
+> you hand to other people should be signed: see
+> [Signing and update integrity](#signing-and-update-integrity).
 
 ---
 
@@ -166,8 +178,113 @@ The first install is always manual (download the `.AppImage` once);
 every release after that is picked up automatically, same as Windows.
 
 > Auto-update only runs in the **installed** app, not `npm run dev`.
-> Unsigned builds update fine for personal use; code signing only
-> affects the SmartScreen prompt on first install.
+> Unsigned Windows and Linux builds still update, but nothing checks who
+> built the update: see the next section.
+
+### Signing and update integrity
+
+Updates download and install automatically (on quit, or when the user
+clicks *Restart*), so **whoever can write to the update feed can run code
+on every installed copy** — including copies pointed at someone else's
+self-hosted server: the feed is the desktop app's release channel
+(`publish.url` in `electron-builder.yml`), not the chat server. TLS and the
+`sha512` in `latest*.yml` only prove the file wasn't corrupted in transit;
+they come from the same folder as the installer. Code signing is what ties
+an update to *you*. The build is wired so that signing, once you set it up,
+is enforced on the installed apps; without it everything still builds and
+runs, just unchecked.
+
+**Windows** (the check is done by electron-updater):
+
+1. Get an Authenticode code-signing certificate (OV or EV) from a CA, or
+   use Azure Trusted Signing. New certificates come on a hardware token or
+   a cloud HSM, not as a plain `.pfx`, so how you sign depends on the
+   provider:
+   - A `.pfx` you can export: set `WIN_CSC_LINK` (path, `https://` URL or
+     base64 of the `.pfx`) and `WIN_CSC_KEY_PASSWORD` in the build
+     environment (e.g. `desktop/.env.release`; `release.sh` passes them into
+     the Docker build). Use a base64 or `https://` value for the Docker
+     build: a host path doesn't exist inside the container.
+   - Azure Trusted Signing: add `azureSignOptions` (with `publisherName`,
+     `endpoint`, `codeSigningAccountName`, `certificateProfileName`) under
+     `win:` in `electron-builder.yml` and the `AZURE_*` credentials to the
+     environment (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
+     `AZURE_CLIENT_SECRET`). It signs through PowerShell's TrustedSigning
+     module, so build Windows where that is installed (easiest: on Windows).
+   - A hardware token / other HSM: build on the machine that holds it, with
+     `win.signtoolOptions.certificateSubjectName` or `certificateSha1`
+     pointing at it (or a custom `win.signtoolOptions.sign` hook).
+2. Build as usual. electron-builder signs the app and installer, and —
+   because `win.verifyUpdateCodeSignature` is `true` — writes the
+   certificate's publisher name into the packaged `app-update.yml`.
+3. From then on the installed app refuses any update that isn't signed by
+   that publisher (electron-updater checks the downloaded installer's
+   Authenticode signature before running it). To pin the full subject DN
+   rather than the certificate's CN, set
+   `win.signtoolOptions.publisherName` (or `azureSignOptions.publisherName`).
+
+An unsigned build writes no publisher name, so it updates without any
+check — and so does an install of an unsigned build when it fetches the
+first signed one. Only installs of a signed build are protected, so ship a
+signed build first and treat it as the new baseline. Keep the same
+publisher name when you renew the certificate, or installed apps will
+refuse the update signed with the new one.
+
+**macOS** (the check is done by Squirrel.Mac):
+
+1. Join the Apple Developer Program and create a **Developer ID
+   Application** certificate. Put it in the build Mac's keychain (or set
+   `MAC_CSC_LINK` + `MAC_CSC_KEY_PASSWORD` in `.env.release`; `release.sh`
+   hands them to the macOS build only, as `CSC_LINK`, because
+   electron-builder would otherwise also sign the Windows build with a
+   plain `CSC_LINK` when no `WIN_CSC_LINK` is set — and installs of that
+   build would then refuse every properly signed update).
+2. For notarization, set **one** of: `APPLE_API_KEY` (path to the `.p8`) +
+   `APPLE_API_KEY_ID` + `APPLE_API_ISSUER` (recommended), or `APPLE_ID` +
+   `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID`.
+3. Build with `./release.sh --sign` (or `MAC_SIGN=1` in `.env.release`).
+   Without it, `release.sh` turns identity discovery off, passes no
+   certificate and builds unsigned (and so not notarized).
+
+A signed app only installs updates signed by the same Developer ID team.
+Signed builds use the hardened runtime; `entitlements.mac.plist` grants the
+microphone and camera it would otherwise block. Unsigned macOS builds run
+(right-click → Open the first time) but never install updates themselves,
+and since Electron 42 can't show native notifications.
+
+**Linux:** electron-updater doesn't verify AppImage signatures, so a Linux
+install's updates rest on TLS plus the `sha512` in `latest-linux.yml`.
+Keep the feed folder writable only by the release account, or don't
+publish Linux updates to installs you don't control.
+
+**Protect the feed folder regardless.** Signing stops a stranger's build
+from installing, but not a rollback to an older signed release that had a
+bug: only someone who can write `desktop-updates/` can do that, so limit
+who can.
+
+## Security model
+
+The main window shows whichever server the user picked, so the shell
+treats that page as untrusted web content:
+
+- `window.zekktris` is exposed only on the chosen server's own origin and
+  on the shell's `file://` pages. A navigation or server-side redirect to
+  another origin opens in the default browser instead of loading in the
+  window, and the shell hands the OS only `http:`, `https:` and `mailto:`
+  links (never `file:`, `smb:`, `search-ms:` or other apps' protocol
+  handlers). If the server's own address starts redirecting elsewhere,
+  the app follows it only to the same host on `https://` or its
+  `www.`/apex twin (after checking it answers as Zekktris); for any other
+  target it opens the server picker, explains, and offers the new address.
+- The screen-share source list and the choice of source are only
+  available to the shell's picker window, while the page's
+  `getDisplayMedia()` request is pending. The page can't list windows or
+  pick a source itself.
+- Only the permissions the web app uses (notifications, mic/camera,
+  screen share, fullscreen, screen wake lock, clipboard *write*) are
+  granted, and only to the chosen server's origin. Clipboard read is never
+  granted.
+- Switching servers is only possible from the shell's own server picker.
 
 ---
 
@@ -222,8 +339,11 @@ icon) — but you'll want a real glyph before shipping. You can generate the
 desktop/
   src/
     main.ts      Electron main process (windows, tray, badge, deep links)
-    preload.ts   contextBridge — exposes window.zekktris.{saveServerUrl,…}
+    preload.ts   contextBridge — exposes window.zekktris (server origin only)
+    trust.ts     what the remote page may do (links, permissions)
+    server.ts    server-address handling for the server picker
     config.ts    persists window bounds (JSON in userData)
+  test/          `npm test` (node --test)
   static/
   build/         your icons (see table above)
   electron-builder.yml

@@ -41,7 +41,6 @@ Pods/
 /desktop-updates/
 /download/
 desktop/updates/
-desktop/package-lock.json
 # Host-local deploy scaffolding (not part of the monorepo)
 /src/
 /static/

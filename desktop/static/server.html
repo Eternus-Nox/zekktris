@@ -32,8 +32,8 @@
   </head>
   <body>
     <div class="wrap">
-      <h1>Server</h1>
-      <p>
+      <h1 id="title">Server</h1>
+      <p id="intro">
         Zekktris runs on zekktris.com, and anyone can run their own server. Enter the address you
         were given — a web address like chat.example.com, or an IP address.
       </p>
@@ -62,6 +62,26 @@
         $('current').textContent = s.host;
         $('reset').hidden = s.isDefault;
       });
+
+      // Opened because the saved server now sends the app to another address
+      // (main.ts serverRedirected). The app has nothing else to show, so
+      // Cancel quits; the new address is offered, not taken.
+      const moved = new URLSearchParams(location.search);
+      if (moved.has('from')) {
+        const to = moved.get('to');
+        let toHost = '';
+        try { toHost = to ? new URL(to).host : ''; } catch {}
+        $('title').textContent = 'Your server moved';
+        $('intro').textContent = toHost
+          ? `${moved.get('from')} now sends the app to ${toHost}, a different address. ` +
+            'Zekktris only opens the server you chose, so connect to the new address if you trust it, or enter another one.'
+          : `${moved.get('from')} now sends the app somewhere else. Enter your server's current address.`;
+        if (toHost) {
+          input.value = to;
+          connectBtn.disabled = false;
+        }
+        $('cancel').textContent = 'Quit';
+      }
 
       input.addEventListener('input', () => {
         connectBtn.disabled = !input.value.trim();
