@@ -13,12 +13,12 @@
  *
  * Permission model: we check "can the user post to this channel?"
  * AT SCHEDULE TIME, and fireScheduled re-runs every live-send gate
- * (permissions, mute, timeout, onboarding, supervision, spam, banned
- * words / automod, DM blocks) AT FIRE TIME — only slowmode is skipped.
- * If a gate fails (kicked from guild, channel deleted, blocked by
- * recipient, timed out), the worker fails gracefully and bumps the
- * attempt counter. After 3 failures the row freezes and shows up in
- * the user's list with an error tag, letting them investigate.
+ * (instance ban / deleted account, permissions, mute, timeout, onboarding,
+ * supervision, spam, banned words / automod, DM blocks) AT FIRE TIME — only
+ * slowmode is skipped. If a gate fails (banned, kicked from guild, channel
+ * deleted, blocked by recipient, timed out), the worker fails gracefully and
+ * bumps the attempt counter. After 3 failures the row freezes and shows up
+ * in the user's list with an error tag, letting them investigate.
  *
  * Fires count toward the author's instance spam throttle like live sends
  * (otherwise scheduling would bypass it). So a burst of rows due in the
@@ -221,7 +221,8 @@ export async function failScheduled(
 export async function fireScheduled(args: {
   row: schema.ScheduledMessage;
   channel: schema.Channel;
-  /** The author row, pre-batched by the worker; null skips the broadcast. */
+  /** The author row, pre-batched by the worker; null (no such user) fails
+   *  the fire gates. */
   author: schema.User | null;
 }): Promise<void> {
   const { row, channel, author } = args;
@@ -235,6 +236,7 @@ export async function fireScheduled(args: {
   await gates.enforceScheduledFireGates({
     channel,
     authorId: row.authorId,
+    author,
     content: row.content,
   });
   // Scheduled messages can NEVER @everyone — even if the user has the

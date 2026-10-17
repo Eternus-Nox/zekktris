@@ -278,6 +278,11 @@ export async function purgeAccount(userId: bigint): Promise<PurgeResult> {
       .delete(schema.messageUserMentions)
       .where(eq(schema.messageUserMentions.userId, userId));
     await tx.delete(schema.subscriptions).where(eq(schema.subscriptions.userId, userId));
+    // Queued sends would otherwise sit in the table (their text is theirs) and
+    // be retried against a deleted author until they fail out.
+    await tx
+      .delete(schema.scheduledMessages)
+      .where(eq(schema.scheduledMessages.authorId, userId));
 
     // ── Memberships and live state ───────────────────────────────────────
     await tx.delete(schema.memberRoles).where(eq(schema.memberRoles.userId, userId));

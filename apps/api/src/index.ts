@@ -511,7 +511,7 @@ async function main(): Promise<void> {
               throw new Error('Channel no longer exists');
             }
             // Re-runs every live-send gate at fire time (the author may
-            // have been kicked, muted, timed out or blocked since
+            // have been banned, kicked, muted, timed out or blocked since
             // scheduling), then creates + broadcasts the message. A
             // failure lands in the catch below: attempts bump + lastError
             // surfaces to the user's scheduled-messages list.

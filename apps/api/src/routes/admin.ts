@@ -571,6 +571,11 @@ adminRouter.post(
   // additionally prevents refresh, so the lag is the worst case for
   // REST requests.
   await revokeAllUserSessions(targetId);
+  // Their pending scheduled messages are left queued on purpose: the
+  // worker's fire-time gates refuse a banned author (isCurrentlyBanned), so
+  // rows due during the ban fail with a visible lastError, and rows due after
+  // a timed ban lifts still post, as a live send would then. Deleting them
+  // here would also destroy those. (Account deletion does delete them.)
 
   // Voice eviction. Instance ban is more sweeping than the guild-level
   // ban handled in routes/guilds.ts (fix #20), so the unscoped variant

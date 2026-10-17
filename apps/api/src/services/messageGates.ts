@@ -18,6 +18,7 @@ import * as dispatch from '../gateway/dispatch';
 import { toGuildMember } from '../lib/dto';
 import { Permissions, hasPermission, computeMemberChannelPermissions } from './permissions';
 import { assertNotInstanceMuted } from './instanceMutes';
+import { isCurrentlyBanned } from './instanceBans';
 import type { schema } from '../db';
 
 /** Our E2EE wire format: `zkE2EE/<version>:<base64>`. Used server-side only to
@@ -209,16 +210,25 @@ export async function enforceGuildSendGates(args: {
 /**
  * Fire-time gates for a scheduled message: the same checks a live send of
  * `content` by `authorId` into `channel` would face right now, because the
- * author may have been muted, timed out, kicked, blocked or put under
- * supervision since scheduling. Slowmode is skipped (see enforceGuildSendGates).
- * Throws on any failure; the worker records the message as the row's lastError.
+ * author may have been banned, deleted, muted, timed out, kicked, blocked or
+ * put under supervision since scheduling. Slowmode is skipped (see
+ * enforceGuildSendGates). Throws on any failure; the worker records the
+ * message as the row's lastError.
  */
 export async function enforceScheduledFireGates(args: {
   channel: schema.Channel;
   authorId: bigint;
+  /** The author's user row (null if it no longer exists). */
+  author: Pick<schema.User, 'bannedAt' | 'bannedUntil' | 'deletedAt'> | null;
   content: string;
 }): Promise<void> {
-  const { channel, authorId, content } = args;
+  const { channel, authorId, author, content } = args;
+  // requireAuth refuses every live send from a banned or deleted account; the
+  // worker has no request, so apply the same predicate here. An expired timed
+  // ban is not a ban (isCurrentlyBanned), so its queued messages still post.
+  if (!author || isCurrentlyBanned(author) || author.deletedAt !== null) {
+    throw new Error('Account unavailable');
+  }
   await assertNotInstanceMuted(authorId);
   // computeMemberChannelPermissions fails closed (0n) for non-members and
   // non-recipients, so one check covers kicked members and DMs alike.

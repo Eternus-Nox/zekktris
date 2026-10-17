@@ -5,7 +5,7 @@ import { db, schema } from '../src/db';
 import { nextSnowflake } from '../src/snowflake';
 import { createRule } from '../src/services/automod';
 import { getConfig } from '../src/services/security';
-import { fireScheduled } from '../src/services/scheduledMessages';
+import { failScheduled, fireScheduled, listForUser } from '../src/services/scheduledMessages';
 import { createUser, createGuild, addMember, createChannel, addRelationship, createDmChannel, cleanupAll } from './seed';
 import { probeDb, closeDb } from './db-available';
 
@@ -142,6 +142,82 @@ describe.runIf(dbReady)('scheduled message fire-time gates', () => {
     const dm = await createDmChannel([child, pal]);
     await expect(fire(child, dm, 'zkE2EE/3:abcdef')).rejects.toThrow(/supervised/);
     expect(await messagesIn(dm)).toHaveLength(0);
+  });
+
+  // requireAuth refuses a live send from a banned or deleted account, but the
+  // worker has no request: a banned spammer's queued messages used to post.
+  describe('author account state', () => {
+    async function ban(u: bigint, until: Date | null) {
+      await db
+        .update(schema.users)
+        .set({ bannedAt: new Date(Date.now() - 60_000), bannedUntil: until })
+        .where(eq(schema.users.id, u));
+    }
+
+    // The worker's per-row path (index.ts): fire, and on a throw record the
+    // error with failScheduled, which keeps the row for the author to see.
+    async function runWorkerOn(authorId: bigint, channelId: bigint, content: string) {
+      const id = nextSnowflake();
+      const [row] = await db
+        .insert(schema.scheduledMessages)
+        .values({ id, authorId, channelId, content, scheduledFor: new Date(), claimedAt: new Date() })
+        .returning();
+      const [channel] = await db.select().from(schema.channels).where(eq(schema.channels.id, channelId));
+      const [author] = await db.select().from(schema.users).where(eq(schema.users.id, authorId));
+      try {
+        await fireScheduled({ row: row!, channel: channel!, author: author ?? null });
+      } catch (err) {
+        await failScheduled(id, (err as Error).message);
+      }
+      return id;
+    }
+
+    it('refuses a permanently banned author; the row fails and stays listed', async () => {
+      const u = await createUser();
+      const { ch } = await guildWith(u);
+      await ban(u, null);
+      const id = await runWorkerOn(u, ch, 'scheduled by a banned user');
+      expect(await messagesIn(ch)).toHaveLength(0);
+      const pending = await listForUser(u);
+      const row = pending.find((r) => r.id === id);
+      expect(row).toBeDefined();
+      expect(row!.attempts).toBe(1);
+      expect(row!.lastError).toBe('Account unavailable');
+      expect(row!.claimedAt).toBeNull();
+    });
+
+    it('refuses an author whose timed ban is still running', async () => {
+      const u = await createUser();
+      const { ch } = await guildWith(u);
+      await ban(u, new Date(Date.now() + 3600_000));
+      await expect(fire(u, ch, 'hello')).rejects.toThrow('Account unavailable');
+      expect(await messagesIn(ch)).toHaveLength(0);
+    });
+
+    it('posts once a timed ban has expired, even before the sweep clears it', async () => {
+      const u = await createUser();
+      const { ch } = await guildWith(u);
+      await ban(u, new Date(Date.now() - 1000));
+      await fire(u, ch, 'back again');
+      expect(await messagesIn(ch)).toHaveLength(1);
+    });
+
+    it('refuses a soft-deleted author', async () => {
+      const u = await createUser();
+      const { ch } = await guildWith(u);
+      await db.update(schema.users).set({ deletedAt: new Date() }).where(eq(schema.users.id, u));
+      await expect(fire(u, ch, 'hello')).rejects.toThrow('Account unavailable');
+      expect(await messagesIn(ch)).toHaveLength(0);
+    });
+
+    it('refuses a DM from a banned author too', async () => {
+      const u = await createUser();
+      const pal = await createUser();
+      const dm = await createDmChannel([u, pal]);
+      await ban(u, null);
+      await expect(fire(u, dm, 'hello')).rejects.toThrow('Account unavailable');
+      expect(await messagesIn(dm)).toHaveLength(0);
+    });
   });
 
   // Deliberate: scheduling is not a way around the instance flood limit, so
