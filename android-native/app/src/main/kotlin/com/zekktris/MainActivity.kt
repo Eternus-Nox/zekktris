@@ -160,7 +160,14 @@ class MainActivity : FragmentActivity() {
 
     override fun onStop() {
         super.onStop()
-        (application as ZekApp).store.onAppBackground()
+        (application as ZekApp).store.onAppBackground(changingConfigurations = isChangingConfigurations)
+    }
+
+    // Every touch / key the activity dispatches: the person is using this
+    // device (multi-device presence — AppStore.noteInteraction).
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        (application as ZekApp).store.noteInteraction()
     }
 
     override fun onResume() {
