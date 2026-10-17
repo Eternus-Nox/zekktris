@@ -55,7 +55,7 @@ import { EmojiPicker } from './EmojiPicker';
 import { useMentionAutocomplete } from '../lib/useMentionAutocomplete';
 import { useEmojiAutocomplete } from '../lib/useEmojiAutocomplete';
 import { ErrorBoundary } from '../lib/ErrorBoundary';
-import { computeMemberGuildPerms, hasBit } from '../lib/permissions';
+import { computeMemberGuildPerms, hasBit, threadToggleErrorMessage } from '../lib/permissions';
 import { useProfileCard } from '../lib/useProfileCard';
 
 // Threshold for "auto-follow the bottom on new messages." If the user
@@ -369,8 +369,8 @@ export function MessageView({
   // UI mirrors that by hiding the composer + showing an archived
   // banner with an Unarchive CTA.
   //
-  // canManageThread: true when the user has MANAGE_THREADS in the
-  // guild (admin / mod), OR when they appear to be the thread's
+  // canManageThread: true when the user has MANAGE_THREADS from their
+  // guild roles (admin / mod), OR when they appear to be the thread's
   // creator (heuristic via the first message in the thread — for
   // forum posts the first message IS the post body; the author is
   // by definition the creator). For message-rooted threads the
@@ -379,6 +379,12 @@ export function MessageView({
   // positives just show a button that the server 403s, false
   // negatives hide a button the user IS entitled to. The server is
   // the source of truth either way.
+  //
+  // MANAGE_THREADS is a per-channel permission: the server checks it
+  // against the parent channel's (and its category's) overrides. The
+  // web client has no per-channel resolver, so a channel-level deny
+  // still shows the buttons (the server 403s; the toast explains why)
+  // and a channel-only allow hides them.
   const threadArchived = isThread && channel.threadArchivedAt != null;
 
   const myMember = useMemo(() => {
@@ -392,7 +398,7 @@ export function MessageView({
     if (!isThread || !channel.guildId || !user || !myMember) return false;
     const guild = guildsById[channel.guildId];
     if (!guild) return false;
-    // MANAGE_THREADS at the guild level wins for any thread.
+    // MANAGE_THREADS from guild roles (channel overrides not applied).
     const roles = rolesByGuild[channel.guildId] ?? [];
     const isOwner = guild.ownerId === user.id;
     const perms = computeMemberGuildPerms(roles, channel.guildId, myMember.roleIds, isOwner);
@@ -556,10 +562,7 @@ export function MessageView({
         toasts.push('Thread archived', 'info');
       }
     } catch (e) {
-      toasts.push(
-        e instanceof ApiError ? e.message : 'Could not change archive state',
-        'error',
-      );
+      toasts.push(threadToggleErrorMessage(e, 'Could not change archive state'), 'error');
     } finally {
       setArchiveBusy(false);
     }
@@ -584,10 +587,7 @@ export function MessageView({
         toasts.push('Marked as resolved', 'success');
       }
     } catch (e) {
-      toasts.push(
-        e instanceof ApiError ? e.message : 'Could not change resolved state',
-        'error',
-      );
+      toasts.push(threadToggleErrorMessage(e, 'Could not change resolved state'), 'error');
     } finally {
       setResolveBusy(false);
     }

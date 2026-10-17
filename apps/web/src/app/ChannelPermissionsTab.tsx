@@ -29,6 +29,7 @@ import { Portal } from '../lib/Portal';
 import {
   PERMISSIONS,
   PERMISSION_GROUPS,
+  channelOverridePermissions,
   hasBit,
   parsePerms,
   permsToString,
@@ -193,10 +194,7 @@ export function ChannelPermissionsTab({ channel }: { channel: Channel }) {
   }
 
   // Filter the editable bits to channel + (voice if voice channel) scope.
-  const editableBits = PERMISSIONS.filter(
-    (p) =>
-      p.scope === 'channel' || (p.scope === 'voice' && channel.type === 'guild_voice'),
-  );
+  const editableBits = channelOverridePermissions(channel.type);
 
   // Whether the "Sync to category" affordance is shown. Hide for:
   //   - DM channels (no guildId — already handled above)
