@@ -1,11 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Self-hosted servers on a home network are often plain http
-  (e.g. http://192.168.1.20:5550), so cleartext is allowed here. The app only
-  accepts an http:// server address when the host is a local-network address
-  (Config.normalizeOrigin / isLocalHost); every server on the internet still
-  has to use HTTPS. Android can't scope cleartext to IP ranges in this file,
-  which is why the check lives in code.
+  (e.g. http://192.168.1.20:5550), so cleartext is allowed here. Android can't
+  scope cleartext to IP ranges in this file, so the rule lives in code: the
+  app only accepts an http:// server address for a local-network host
+  (Config.normalizeOrigin / isLocalHost), and CleartextPolicy refuses
+  http:// / ws:// to any other host on every client the app drives (API +
+  gateway, images, LiveKit signalling, media players) — including URLs the
+  server hands back. Everything on the internet has to use HTTPS / WSS.
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true">

@@ -30,9 +30,12 @@ class ZekApp : Application(), ImageLoaderFactory {
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     /** Coil's global loader — with the animated-image decoder so animated custom
-     * emoji / stickers actually move (default only decodes the first frame). */
+     * emoji / stickers actually move (default only decodes the first frame), on
+     * an OkHttp client that refuses cleartext to anything but a local-network
+     * host (an http:// og:image or favicon from a link preview included). */
     override fun newImageLoader(): ImageLoader =
         ImageLoader.Builder(this)
+            .okHttpClient { com.zekktris.data.CleartextPolicy.okHttpClient }
             .components {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) add(ImageDecoderDecoder.Factory())
                 else add(GifDecoder.Factory())

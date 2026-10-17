@@ -3,6 +3,7 @@ package com.zekktris.voice
 import android.content.Context
 import android.media.AudioManager
 import io.livekit.android.LiveKit
+import io.livekit.android.LiveKitOverrides
 import io.livekit.android.events.RoomEvent
 import io.livekit.android.events.collect
 import io.livekit.android.renderer.TextureViewRenderer
@@ -272,6 +273,9 @@ class VoiceManager(private val appContext: Context, private val scope: Coroutine
                 videoTrackCaptureDefaults = LocalVideoTrackOptions(captureParams = cap),
                 videoTrackPublishDefaults = cameraPublishDefaults(enc),
             ),
+            // Signalling goes through the app's cleartext guard: a ws:// LiveKit
+            // URL is only followed to a local-network host (CleartextPolicy).
+            overrides = LiveKitOverrides(okHttpClient = com.zekktris.data.CleartextPolicy.okHttpClient),
         )
         room = r
         eventsJob = scope.launch { r.events.collect { onEvent(it) } }

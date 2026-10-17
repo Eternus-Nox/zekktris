@@ -230,6 +230,9 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
     }
 
     val http = HttpClient(OkHttp) {
+        // Plain http/ws only to a local-network host — the server's own URLs
+        // (attachments, redirects) included. See CleartextPolicy.
+        engine { config { CleartextPolicy.install(this) } }
         expectSuccess = false
         install(ContentNegotiation) { json(json) }
         install(HttpCookies) { storage = cookieStorage }
