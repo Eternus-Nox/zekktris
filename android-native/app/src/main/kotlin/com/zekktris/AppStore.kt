@@ -334,6 +334,7 @@ class AppStore(
             if (dms != null) {
                 _state.update { it.copy(dms = sortDms(dms)) }
                 seedPresence(dms.flatMap { it.recipients ?: emptyList() }, presenceBefore)
+                registerE2EEPurgeProofsForDms()
                 // Recency (and names/avatars) may have moved on another device.
                 refreshShareShortcuts()
             }
@@ -522,6 +523,7 @@ class AppStore(
         val dms = runCatching { api.listDMs() }.getOrDefault(emptyList())
         _state.update { it.copy(guilds = guilds, dms = sortDms(dms)) }
         seedPresence(dms.flatMap { it.recipients ?: emptyList() }, presenceBefore)
+        registerE2EEPurgeProofsForDms()
         loadNotificationOverrides()
         loadDmNicknames()
         // Family/supervision snapshot at startup (iOS loadFamily parity) — the
@@ -1574,7 +1576,8 @@ class AppStore(
      * A DM encrypted before purge proofs existed (or by an older client) has none on
      * the server (`e2eePurgeProofSet == false`), and until one is registered the
      * server still purges it on the public verifier alone. Register ours (first
-     * registration wins) as soon as we hold the CURRENT key (iOS
+     * registration wins) as soon as we hold the CURRENT key: on DM open, unlock,
+     * every DM list load and a DM's CHANNEL_UPDATE (iOS
      * `registerE2EEPurgeProofIfNeeded`). The server's CHANNEL_UPDATE flips the flag.
      */
     private fun registerE2EEPurgeProofIfNeeded(channelId: String) {
@@ -1585,6 +1588,12 @@ class AppStore(
         if (!purgeProofAttempts.add("$channelId:$verifier")) return
         val proof = com.zekktris.crypto.E2EE.purgeProof(key)
         scope.launch { runCatching { api.registerDmE2EEPurgeProof(channelId, verifier, proof) } }
+    }
+
+    /** [registerE2EEPurgeProofIfNeeded] for every loaded DM, after a DM list load
+     *  (a cold start can open a DM before the list is there, so dmById misses it). */
+    private fun registerE2EEPurgeProofsForDms() {
+        _state.value.dms.forEach { registerE2EEPurgeProofIfNeeded(it.id) }
     }
 
     /**
@@ -4203,6 +4212,7 @@ class AppStore(
                             it.copy(dms = dms)
                         }
                         if (d.type == "CHANNEL_CREATE") seedPresence(ch.recipients ?: emptyList())
+                        registerE2EEPurgeProofIfNeeded(ch.id)
                         // A new/renamed DM belongs in the share sheet too.
                         refreshShareShortcuts()
                     }

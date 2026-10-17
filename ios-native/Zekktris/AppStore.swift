@@ -1952,6 +1952,9 @@ final class AppStore: ObservableObject {
             dms = fetched.sorted {
                 snowflakeGreater($0.lastMessageId ?? $0.id, than: $1.lastMessageId ?? $1.id)
             }
+            // Every legacy encrypted DM we already hold the key for, not just
+            // the open one (a cold start can select a DM before this loads).
+            for dm in dms { registerE2EEPurgeProofIfNeeded(dm) }
             // A caller's hangup may have arrived before `dms` loaded on a cold
             // VoIP launch — now that DMs are here, dismiss those CallKit rings.
             if !pendingCallerCancels.isEmpty {
@@ -3170,6 +3173,7 @@ final class AppStore: ObservableObject {
             // A re-key (new salt/verifier) invalidates any cached key. (When it
             // does, relockE2EE bumps e2eeUnlockVersion itself.)
             purgeStaleE2EEKey(updated)
+            registerE2EEPurgeProofIfNeeded(updated)
             // If we still hold a valid key, decrypt anything already loaded.
             decryptVisible()
             // Re-evaluate the lock gate when E2EE was just turned on/off or
@@ -6179,7 +6183,8 @@ final class AppStore: ObservableObject {
     /// none on the server (`e2eePurgeProofSet == false`), and until one is
     /// registered the server still purges it on the public verifier alone.
     /// Register ours (first registration wins) as soon as we hold the CURRENT
-    /// key. Once per channel+verifier per session: a refusal (409, a different
+    /// key: on DM select, unlock, every DM list load and a CHANNEL_UPDATE of
+    /// the open DM. Once per channel+verifier per session: a refusal (409, a different
     /// proof already registered) is final, and a network error is retried
     /// next launch. The server's CHANNEL_UPDATE flips the flag on success.
     func registerE2EEPurgeProofIfNeeded(_ channel: Channel) {
