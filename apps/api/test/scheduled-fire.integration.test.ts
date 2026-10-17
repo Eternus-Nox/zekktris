@@ -4,6 +4,7 @@ import { Permissions as P } from '@zekktris/shared/permissions';
 import { db, schema } from '../src/db';
 import { nextSnowflake } from '../src/snowflake';
 import { createRule } from '../src/services/automod';
+import { getConfig } from '../src/services/security';
 import { fireScheduled } from '../src/services/scheduledMessages';
 import { createUser, createGuild, addMember, createChannel, addRelationship, createDmChannel, cleanupAll } from './seed';
 import { probeDb, closeDb } from './db-available';
@@ -141,5 +142,19 @@ describe.runIf(dbReady)('scheduled message fire-time gates', () => {
     const dm = await createDmChannel([child, pal]);
     await expect(fire(child, dm, 'zkE2EE/3:abcdef')).rejects.toThrow(/supervised/);
     expect(await messagesIn(dm)).toHaveLength(0);
+  });
+
+  // Deliberate: scheduling is not a way around the instance flood limit, so
+  // fires count toward the author's throttle like live sends. A fire over the
+  // limit is refused (the worker records it and retries on a later tick).
+  it('counts fires toward the spam throttle and refuses one over the limit', async () => {
+    const cfg = await getConfig();
+    expect(cfg.spamEnabled).toBe(true);
+    const u = await createUser();
+    const { ch } = await guildWith(u);
+    // spamMaxMessages + 1 send; that last one starts the cooldown.
+    for (let i = 0; i <= cfg.spamMaxMessages; i++) await fire(u, ch, `m${i}`);
+    await expect(fire(u, ch, 'one more')).rejects.toThrow(/too fast/);
+    expect(await messagesIn(ch)).toHaveLength(cfg.spamMaxMessages + 1);
   });
 });

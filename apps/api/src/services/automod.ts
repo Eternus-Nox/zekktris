@@ -221,6 +221,8 @@ export async function checkMessage(args: {
   userId: bigint;
   content: string;
   memberRoleIds: bigint[];
+  /** Set for a webhook execute (`userId` is then the webhook's creator). */
+  webhookId?: bigint;
 }): Promise<schema.AutomodRule | null> {
   // Index-only scan on the partial index. Zero-rule guilds pay only
   // the index probe + nothing-to-iterate cost.
@@ -289,7 +291,11 @@ export async function checkMessage(args: {
       }
     }
 
-    if (rule.ruleType === 'repeat_message') {
+    // Webhooks skip repeat_message: it is a per-member flood rule, while an
+    // integration's output repeats by nature ("Build passed") and webhooks
+    // are rate-limited per webhook instead. The member history below also
+    // excludes webhook posts, which are stored under the creator's id.
+    if (rule.ruleType === 'repeat_message' && args.webhookId === undefined) {
       // Threshold = how many identical messages within windowSeconds
       // triggers the rule. The current send counts as one of them,
       // so we need (threshold - 1) prior matches in history.

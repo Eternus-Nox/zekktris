@@ -19,6 +19,12 @@
  * recipient, timed out), the worker fails gracefully and bumps the
  * attempt counter. After 3 failures the row freezes and shows up in
  * the user's list with an error tag, letting them investigate.
+ *
+ * Fires count toward the author's instance spam throttle like live sends
+ * (otherwise scheduling would bypass it). So a burst of rows due in the
+ * same minute past `spamMaxMessages` is refused in part; those rows retry
+ * on later ticks (one passes per minute during the cooldown) and only
+ * freeze if the burst is large enough to exhaust their 3 attempts.
  */
 
 import { and, asc, eq, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';

@@ -143,9 +143,10 @@ Monorepo tasks run through Turborepo: `pnpm typecheck`, `pnpm test` (Vitest),
 `pnpm build`. Database: `pnpm db:migrate` (apply against `$DATABASE_URL`).
 
 Migrations are hand-written SQL. To change the schema, add the next numbered
-file in `packages/db/migrations/` (e.g. `0128_my_change.sql`), append a matching
-entry to `packages/db/migrations/meta/_journal.json` (next `idx`, the file name
-without `.sql` as `tag`, a `when` later than the previous entry), and update the
+file in `packages/db/migrations/` (`NNNN_my_change.sql`, with NNNN the next
+unused number), append a matching entry to
+`packages/db/migrations/meta/_journal.json` (next `idx`, the file name without
+`.sql` as `tag`, a `when` later than the previous entry), and update the
 Drizzle schema in `packages/db/src/schema/` to match. Don't use `drizzle-kit
 generate` or `push`: its snapshots stop at 0004, so it would try to re-create
 existing tables or drop objects that exist only in SQL.

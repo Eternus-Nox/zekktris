@@ -61,8 +61,9 @@ export async function enforceGuildParticipationGates(guildId: bigint, userId: bi
  *
  * Webhook executes pass `webhookId` (with the webhook's creator as `userId`,
  * the message's recorded author): a webhook is not a member, so no role
- * exemptions apply and a block_and_timeout rule only blocks — it must not
- * time out whoever happened to create the webhook.
+ * exemptions apply, repeat_message is skipped (see automod.checkMessage),
+ * and a block_and_timeout rule only blocks — it must not time out whoever
+ * happened to create the webhook.
  */
 export async function enforceGuildContentModeration(args: {
   guildId: bigint;
@@ -77,7 +78,14 @@ export async function enforceGuildContentModeration(args: {
 
   const { checkMessage } = await import('./automod');
   const roleIds = webhookId !== undefined ? [] : await membersSvc.getMemberRoleIds(guildId, userId);
-  const violation = await checkMessage({ guildId, channelId, userId, content, memberRoleIds: roleIds });
+  const violation = await checkMessage({
+    guildId,
+    channelId,
+    userId,
+    content,
+    memberRoleIds: roleIds,
+    webhookId,
+  });
   if (!violation) return;
 
   let timeoutApplied = false;

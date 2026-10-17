@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { Permissions as P } from '@zekktris/shared/permissions';
 import { db, schema } from '../src/db';
-import { createRule } from '../src/services/automod';
+import { checkMessage, createRule } from '../src/services/automod';
 import { createWebhook, executeWebhook } from '../src/services/webhooks';
 import { createUser, createGuild, addMember, createChannel, cleanupAll } from './seed';
 import { probeDb, closeDb } from './db-available';
@@ -70,5 +70,29 @@ describe.runIf(dbReady)('webhook execute content moderation', () => {
       .from(schema.guildMembers)
       .where(and(eq(schema.guildMembers.guildId, g), eq(schema.guildMembers.userId, owner)));
     expect(member!.until).toBeNull();
+  });
+
+  it('repeat_message ignores webhook posts: integrations may repeat, and they are not the creator\'s messages', async () => {
+    const owner = await createUser();
+    const g = await createGuild(owner, P.VIEW_CHANNEL | P.SEND_MESSAGES);
+    await addMember(g, owner);
+    const ch = await createChannel(g);
+    await createRule({
+      guildId: g,
+      actorId: owner,
+      name: 'no-repeat',
+      ruleType: 'repeat_message',
+      threshold: 3,
+      windowSeconds: 300,
+    });
+    const wh = await createWebhook({ channelId: ch, actorId: owner, name: 'CI' });
+    for (let i = 0; i < 4; i++) {
+      await executeWebhook({ webhookId: wh.id, token: wh.token, content: 'Build passed' });
+    }
+    expect(await count(ch)).toBe(4);
+    // The creator's own send of the same text has no prior member messages.
+    expect(
+      await checkMessage({ guildId: g, channelId: ch, userId: owner, content: 'Build passed', memberRoleIds: [] }),
+    ).toBeNull();
   });
 });
