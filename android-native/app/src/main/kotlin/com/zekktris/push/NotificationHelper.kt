@@ -232,12 +232,15 @@ object NotificationHelper {
         )
 
         // Answer → open the call screen (same as the full-screen intent).
+        // MainActivity is exported, so the answer carries this install's
+        // CallActionToken — without it the launch is ignored.
         val answerPending = PendingIntent.getActivity(
             context,
             ("ringans-$channelId").hashCode(),
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 putExtra(EXTRA_ANSWER_CALL_CHANNEL_ID, channelId)
+                CallActionToken.attach(context, this)
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -275,6 +278,15 @@ object NotificationHelper {
     /** Dismiss the incoming-call ring for [channelId] (answered / declined / ended). */
     fun cancelIncomingCall(context: Context, channelId: String) {
         NotificationManagerCompat.from(context).cancel("call-$channelId", CALL_NOTIFICATION_ID)
+    }
+
+    /** True while the ring for [channelId] is still posted — it is ongoing and
+     *  only goes away when answered, declined, ended or timed out. */
+    fun isRinging(context: Context, channelId: String): Boolean {
+        val mgr = context.getSystemService(NotificationManager::class.java) ?: return false
+        return runCatching {
+            mgr.activeNotifications.any { it.tag == "call-$channelId" && it.id == CALL_NOTIFICATION_ID }
+        }.getOrDefault(false)
     }
 
     /**

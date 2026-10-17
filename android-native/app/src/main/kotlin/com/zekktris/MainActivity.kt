@@ -243,12 +243,21 @@ class MainActivity : FragmentActivity() {
         // Answering a call from the ring notification's "Answer" action: join the
         // call (the pending-voice flow requests the mic) and clear the ring.
         intent.getStringExtra(com.zekktris.push.NotificationHelper.EXTRA_ANSWER_CALL_CHANNEL_ID)?.let { cid ->
+            val token = intent.getStringExtra(com.zekktris.push.CallActionToken.EXTRA)
             // Consume it. The launch intent outlives every Activity recreation
             // (rotation, dark-mode flip, split-screen), so leaving the extra in
             // place re-joins a call the user already hung up on the next config
             // change.
             intent.removeExtra(com.zekktris.push.NotificationHelper.EXTRA_ANSWER_CALL_CHANNEL_ID)
+            intent.removeExtra(com.zekktris.push.CallActionToken.EXTRA)
             setIntent(intent)
+            // This activity is exported, so any installed app can send this
+            // extra. Only our own ring's Answer action carries the install's
+            // token, and only a ring that is still up can be answered — anything
+            // else would join a call (mic open) nobody asked to join.
+            if (!com.zekktris.push.CallActionToken.matches(this, token) ||
+                !com.zekktris.push.NotificationHelper.isRinging(this, cid)
+            ) return
             // Answering hands off from the showWhenLocked ring activity to HERE,
             // which is not lock-screen visible: without showing over the keyguard
             // and then asking to dismiss it, the user is left on the lock screen
