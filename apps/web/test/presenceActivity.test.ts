@@ -4,6 +4,7 @@ import {
   IDLE_AFTER_MS,
   INPUT_THROTTLE_MS,
   chosenStatusOf,
+  effectiveStatusOf,
   SelfStatusStore,
   resolveSelfStatus,
   selfStatusFromFrame,
@@ -209,6 +210,20 @@ describe('chosenStatusOf', () => {
   });
 });
 
+describe('effectiveStatusOf', () => {
+  it('reads effectiveStatus when the server sends it', () => {
+    expect(effectiveStatusOf({ status: 'online', chosenStatus: 'online', effectiveStatus: 'idle' })).toBe('idle');
+    expect(effectiveStatusOf({ status: 'idle', chosenStatus: 'idle', effectiveStatus: 'offline' })).toBe('offline');
+  });
+
+  it('falls back to status on servers without it', () => {
+    // Multi-device server before effectiveStatus: status was the effective one.
+    expect(effectiveStatusOf({ status: 'idle', chosenStatus: 'online' })).toBe('idle');
+    // Pre-multi-device server: one value.
+    expect(effectiveStatusOf({ status: 'dnd' })).toBe('dnd');
+  });
+});
+
 describe('selfStatusFromFrame', () => {
   it('takes our status and chosen status from our own guild_id=null frame', () => {
     expect(
@@ -270,6 +285,26 @@ describe('resolveSelfStatus', () => {
       status: 'dnd',
       chosenStatus: 'dnd',
     });
+  });
+
+  it("reads a current server's snapshot: status is the pick, effectiveStatus the dot", () => {
+    // Chose Online, every device idle. SelfUser.status carries the pick again
+    // (older iOS / Android builds read it as such); the dot must not go green.
+    expect(
+      resolveSelfStatus({ id: '1', status: 'online', chosenStatus: 'online', effectiveStatus: 'idle' }, null),
+    ).toEqual({ status: 'idle', chosenStatus: 'online' });
+    // Invisible stays unmasked for ourselves.
+    expect(
+      resolveSelfStatus(
+        { id: '1', status: 'invisible', chosenStatus: 'invisible', effectiveStatus: 'invisible' },
+        null,
+      ),
+    ).toEqual({ status: 'invisible', chosenStatus: 'invisible' });
+    // No device connected yet: the snapshot says offline; the picker still
+    // shows the pick.
+    expect(
+      resolveSelfStatus({ id: '1', status: 'dnd', chosenStatus: 'dnd', effectiveStatus: 'offline' }, null),
+    ).toEqual({ status: 'offline', chosenStatus: 'dnd' });
   });
 
   it('prefers the latest frame over a user snapshot that arrives after it', () => {

@@ -114,6 +114,7 @@ import {
 import { MicLevelMeter } from '../lib/MicLevelMeter';
 import { useStepUpPassword } from '../lib/StepUpPassword';
 import { recordSelfUser, useSelfStatus } from '../lib/selfStatus';
+import { effectiveStatusOf } from '../lib/presenceActivity';
 
 type Status = 'online' | 'idle' | 'dnd' | 'invisible';
 
@@ -387,7 +388,7 @@ export function SettingsView() {
         username: r.user.username,
         displayName: r.user.displayName,
         avatarUrl: r.user.avatarUrl,
-        status: r.user.status,
+        status: effectiveStatusOf(r.user),
         customStatus: r.user.customStatus,
       });
     } catch (e) {
@@ -433,7 +434,7 @@ export function SettingsView() {
         username: r.user.username,
         displayName: r.user.displayName,
         avatarUrl: r.user.avatarUrl,
-        status: r.user.status,
+        status: effectiveStatusOf(r.user),
         customStatus: r.user.customStatus,
       });
       toasts.push('Avatar updated', 'success');
@@ -464,7 +465,7 @@ export function SettingsView() {
         username: r.user.username,
         displayName: r.user.displayName,
         avatarUrl: r.user.avatarUrl,
-        status: r.user.status,
+        status: effectiveStatusOf(r.user),
         customStatus: r.user.customStatus,
       });
       setAvatarPreview(null);
@@ -573,7 +574,7 @@ export function SettingsView() {
         username: r.user.username,
         displayName: r.user.displayName,
         avatarUrl: r.user.avatarUrl,
-        status: r.user.status,
+        status: effectiveStatusOf(r.user),
         customStatus: r.user.customStatus,
       });
       setDisplayName(r.user.displayName);

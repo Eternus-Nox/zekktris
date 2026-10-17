@@ -68,7 +68,11 @@ import { hydrateVoicePrefs, setVoicePrefsSyncer, getVoicePrefs } from '../lib/vo
 import { playMessagePing } from '../lib/sounds';
 import { showDesktopNotification } from '../lib/desktopNotify';
 import { getNotifyPrefs } from '../lib/notifyPrefs';
-import { selfStatusFromFrame, type PresenceUpdateFrame } from '../lib/presenceActivity';
+import {
+  effectiveStatusOf,
+  selfStatusFromFrame,
+  type PresenceUpdateFrame,
+} from '../lib/presenceActivity';
 import { selfStatusStore } from '../lib/selfStatus';
 
 // ── Shape ──────────────────────────────────────────────────────────────────
@@ -2918,7 +2922,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
               username: user.username,
               displayName: user.displayName,
               avatarUrl: user.avatarUrl ?? null,
-              status: user.status,
+              status: effectiveStatusOf(user),
               customStatus: user.customStatus ?? null,
             }
           : null,
