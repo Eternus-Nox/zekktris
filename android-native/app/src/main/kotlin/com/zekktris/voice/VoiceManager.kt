@@ -236,13 +236,16 @@ class VoiceManager(private val appContext: Context, private val scope: Coroutine
      *  (the server token has canPublish=false anyway — trying to publish would
      *  just fail at the SFU). A later promotion reconnects with publishMic=true.
      *
+     *  [e2eeKey] non-null = an E2EE DM call: LiveKit encrypts every frame with
+     *  that shared key (see [CallEncryption]); null = no media E2EE.
+     *
      *  Thin wrapper: the work runs under [sessionLock] so a leave/hangup arriving
      *  mid-connect waits instead of tearing down the transport under us. */
-    suspend fun connect(url: String, token: String, publishMic: Boolean = true) {
-        sessionLock.withLock { performConnect(url, token, publishMic) }
+    suspend fun connect(url: String, token: String, publishMic: Boolean = true, e2eeKey: String? = null) {
+        sessionLock.withLock { performConnect(url, token, publishMic, e2eeKey) }
     }
 
-    private suspend fun performConnect(url: String, token: String, publishMic: Boolean) {
+    private suspend fun performConnect(url: String, token: String, publishMic: Boolean, e2eeKey: String?) {
         // Already inside the serialized section: call the raw teardown, NOT the
         // public disconnect() — that would deadlock on the lock we hold.
         performDisconnect()
@@ -280,6 +283,10 @@ class VoiceManager(private val appContext: Context, private val scope: Coroutine
         room = r
         eventsJob = scope.launch { r.events.collect { onEvent(it) } }
         try {
+            // E2EE DM call: arm frame encryption BEFORE connect so not one frame
+            // leaves unencrypted. A key LiveKit refuses throws into the catch
+            // below and fails the call rather than connecting in the clear.
+            if (e2eeKey != null) r.e2eeOptions = CallEncryption.options(e2eeKey)
             r.connect(url, token)
             runCatching { CallService.start(appContext) }
             preferSpeakerphone(true)
