@@ -22,7 +22,9 @@ import { isCurrentlyBanned } from './instanceBans';
 import type { schema } from '../db';
 
 /** Our E2EE wire format: `zkE2EE/<version>:<base64>`. Used server-side only to
- *  REJECT ciphertext from a supervised DM (the server never decrypts). */
+ *  REJECT ciphertext from a supervised DM (the server never decrypts). It only
+ *  matches the prefix, which any plaintext can carry, so it must never be used
+ *  to SKIP a check (moderation of a forward snapshot once did). */
 export const E2EE_CIPHERTEXT_RE = /^zkE2EE\/\d+:/;
 
 /**

@@ -701,12 +701,12 @@ messagesRouter.post(
       // The snapshot is re-posted here under the caller's name, so in a guild
       // it faces this guild's banned words + automod like text they typed:
       // otherwise a forward could carry text in from a server (or a time)
-      // whose rules allowed it. Ciphertext from an encrypted DM is opaque.
-      if (
-        ctx.channel.guildId !== null &&
-        forwardSnapshot &&
-        !E2EE_CIPHERTEXT_RE.test(forwardSnapshot.content)
-      ) {
+      // whose rules allowed it. There is NO exemption for E2EE-looking
+      // content: the `zkE2EE/<v>:` prefix is just text any DM can carry
+      // (plaintext DMs are never moderated), so skipping on it let blocked
+      // words ride into a guild behind the prefix. Real ciphertext is base64
+      // noise and doesn't realistically trip word or link rules.
+      if (ctx.channel.guildId !== null && forwardSnapshot) {
         // repeat_message is skipped: the snapshot is not stored as this
         // message's content, and forwarding your own recent message
         // elsewhere is not a flood.

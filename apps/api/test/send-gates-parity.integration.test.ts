@@ -17,7 +17,15 @@ import {
   registerBotCommand,
   setBotEventConfig,
 } from '../src/services/bots';
-import { createUser, createGuild, addMember, createChannel, createMessage, cleanupAll } from './seed';
+import {
+  createUser,
+  createGuild,
+  addMember,
+  createChannel,
+  createMessage,
+  createDmChannel,
+  cleanupAll,
+} from './seed';
 import { probeDb, closeDb } from './db-available';
 
 const dbReady = await probeDb();
@@ -313,6 +321,47 @@ describe.runIf(dbReady)('send gates on every guild send path', () => {
       });
       expect(res).toMatchObject({ status: 400, code: 'AUTOMOD_BLOCKED' });
       expect(await messagesIn(text)).toHaveLength(0);
+    });
+
+    // The forward gate used to skip moderation for any snapshot starting with
+    // the E2EE wire prefix. Plaintext DMs are never moderated, so prefixing a
+    // blocked word in an ordinary DM and forwarding it carried it into the
+    // guild past automod and the instance banned words.
+    it('moderates forwarded DM text that merely starts with the E2EE prefix', async () => {
+      const { member, text } = await fixture();
+      const friend = await createUser();
+      const dm = await createDmChannel([member, friend]);
+      for (const [word, code] of [
+        [AUTOMOD, 'AUTOMOD_BLOCKED'],
+        [BANNED, 'BAD_REQUEST'],
+      ] as const) {
+        const sent = await req('POST', `/channels/${dm}/messages`, member, {
+          content: `zkE2EE/3: ${word}, visible in the guild`,
+        });
+        expect(sent.status).toBe(201);
+        const sourceId = (sent.json as unknown as { message: { id: string } }).message.id;
+        const res = await req('POST', `/channels/${text}/messages`, member, {
+          forwardFromMessageId: sourceId,
+        });
+        expect(res).toMatchObject({ status: 400, code });
+      }
+      expect(await messagesIn(text)).toHaveLength(0);
+    });
+
+    it('still forwards real E2EE ciphertext into a guild', async () => {
+      const { member, text } = await fixture();
+      const friend = await createUser();
+      const dm = await createDmChannel([member, friend]);
+      await db.update(schema.channels).set({ e2eeEnabled: true }).where(eq(schema.channels.id, dm));
+      const source = await createMessage(dm, {
+        authorId: friend,
+        content: 'zkE2EE/1:q83vEjRWeJA0Vh8mPq1xYk9ZbLw2c3RlcmFuZG9tYnl0ZXM=',
+      });
+      const res = await req('POST', `/channels/${text}/messages`, member, {
+        forwardFromMessageId: source.toString(),
+      });
+      expect(res.status).toBe(201);
+      expect(await messagesIn(text)).toHaveLength(1);
     });
 
     it('refuses an edit by a supervision-restricted member', async () => {
