@@ -70,12 +70,10 @@ final class ShareViewController: UIViewController {
         var text: String?
         var fileNames: [String] = []
 
-        // The channel id, if the user picked a suggested conversation.
+        // The channel id, if the user picked a suggested conversation. Needs
+        // IntentsSupported = [INSendMessageIntent] in this target's
+        // NSExtensionAttributes, or iOS never sets the intent.
         let channelId = (extensionContext?.intent as? INSendMessageIntent)?.conversationIdentifier
-
-        // A new share replaces whatever an earlier one left behind (it is
-        // staged under the same key), so its files are dead weight now.
-        clearInbox()
 
         for item in (extensionContext?.inputItems as? [NSExtensionItem]) ?? [] {
             for provider in item.attachments ?? [] {
@@ -92,7 +90,13 @@ final class ShareViewController: UIViewController {
             }
         }
 
+        // Only after staging succeeds does this share replace an earlier one
+        // the app hasn't picked up (same key), so only then are that one's
+        // files dead weight. Never the whole inbox: files the app already took
+        // into a share that is still waiting for its conversation live there too.
+        let previous = stagedFiles()
         let staged = stage(channelId: channelId, text: text, files: fileNames)
+        removeFromInbox(staged ? previous : fileNames)
         statusLabel.text = staged
             ? "Ready in Zekktris. Open Zekktris to finish sending — nothing is sent until you press send."
             : "Couldn't hand this to Zekktris. Open Zekktris and share from there."
@@ -123,9 +127,17 @@ final class ShareViewController: UIViewController {
             .appendingPathComponent(inboxName, isDirectory: true)
     }
 
-    private func clearInbox() {
+    /// Files of the payload currently staged and not yet consumed by the app.
+    private func stagedFiles() -> [String] {
+        let raw = UserDefaults(suiteName: appGroup)?.dictionary(forKey: stagedKey)
+        return (raw?["files"] as? [String]) ?? []
+    }
+
+    private func removeFromInbox(_ names: [String]) {
         guard let dir = inboxURL else { return }
-        try? FileManager.default.removeItem(at: dir)
+        for name in names where !name.contains("/") {
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
+        }
     }
 
     /// Destination for one file. The UUID prefix keeps two shared files with
@@ -140,6 +152,9 @@ final class ShareViewController: UIViewController {
         guard let dest = inboxDestination(for: src.lastPathComponent) else { return nil }
         do {
             try FileManager.default.copyItem(at: src, to: dest)
+            // The copy keeps the original's dates; stamp it now so the app's
+            // day-old sweep (AppStore.sweepSharedInbox) can't take it for a leftover.
+            try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: dest.path)
             return dest.lastPathComponent
         } catch {
             return nil

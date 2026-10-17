@@ -8,7 +8,7 @@ The app is feature-complete across the core surface (auth, messaging, DMs,
 E2EE, threads/forums, voice & 1:1 calls with CallKit ringing, reactions,
 attachments, polls, push, search, mentions, settings, iPad/Mac multi-column) —
 see *What works* below. Alongside the app, `project.yml` builds an Apple Watch
-app and six extensions (see *Targets*). It works with zekktris.com or any
+app and seven extensions (see *Targets*). It works with zekktris.com or any
 self-hosted Zekktris server, chosen at sign-in (see *Pointing at a different
 server*). The remaining gaps are listed under *Not built yet*.
 
@@ -113,8 +113,9 @@ server*). The remaining gaps are listed under *Not built yet*.
   videos and files are encrypted on-device with the DM key before upload
   (`.zke`), with an encrypted thumbnail, and decrypted for display — the
   server only ever stores ciphertext. Files shared from other apps through the
-  **Share Extension** land in the composer of the chosen conversation (open
-  Zekktris to send them; nothing is sent automatically).
+  **Share Extension** are picked up when you next open Zekktris: a suggested
+  conversation tapped in the share sheet opens with them in its composer;
+  otherwise the DM list asks you to pick one. Nothing is sent automatically.
 - **Link previews in E2EE DMs** are **off by default**. With *Settings →
   Security → Link previews in encrypted chats* on, the app sends the link (not
   the message) to your server's `/unfurl` to build the preview.
@@ -149,7 +150,7 @@ E2EE-call note below).
   syntax such as trailing commas in argument lists)
 - iOS **17.0+** (interactive widgets need it), watchOS **10.0+** for the watch
   app — device or simulator
-- **XcodeGen** — the project has an app, a watch app and six extension
+- **XcodeGen** — the project has an app, a watch app and seven extension
   targets, so generating it from `project.yml` is the supported path
 
 ## Open & run — Option A: XcodeGen (recommended)

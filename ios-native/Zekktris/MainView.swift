@@ -1395,6 +1395,12 @@ struct DMListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // A share from another app that didn't name a conversation
+            // (AppStore.consumeStagedShare brought us here): say why, and let
+            // the user drop it.
+            if let share = store.pendingShare, share.channelId == nil, !share.isExpired {
+                pendingShareBanner
+            }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     quickRow("person.2.fill", "Friends") { showFriends = true }
@@ -1458,6 +1464,29 @@ struct DMListView: View {
         .sheet(isPresented: $showDMSearch) {
             DMSearchSheet()
         }
+    }
+
+    private var pendingShareBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "square.and.arrow.down")
+                .font(.system(size: 14))
+                .foregroundColor(Theme.accent)
+            Text("Pick a conversation for your share")
+                .font(.zkSans(13, weight: .semibold))
+                .foregroundColor(Theme.ink2)
+            Spacer(minLength: 0)
+            Button { store.discardPendingShare() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Theme.ink3)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Discard share")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Theme.accent.opacity(0.12))
     }
 
     /// Web quick-switcher row: icon 16 ink-3 + 14pt ink-2 label.

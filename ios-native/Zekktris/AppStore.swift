@@ -592,9 +592,23 @@ final class AppStore: ObservableObject {
             // every DM. The whole alreadyOpen branch below was therefore dead code
             // on the exact path it was written for — which is why this bug
             // survived several rounds of fixes aimed squarely at it.
-            let alreadyOpen = selectedChannel?.id == ch.id
+            var alreadyOpen = selectedChannel?.id == ch.id
             if ch.isDM { showDMs(preservingSelection: alreadyOpen) }
             if autojoin { openVoice(ch); return }
+            // Selected is not the same as on screen: Mentions resets the stack
+            // but keeps selectedChannel, and a rail page can cover the list.
+            // Treating that as open set an anchor nothing consumed and never
+            // navigated (the same bug as openMention's). Uncover a list that is
+            // merely covered; otherwise close it and take the full open below.
+            if alreadyOpen, !isShowingMessages(of: ch) {
+                if case .messages(let c)? = stack.last, c.id == ch.id {
+                    railPage = nil
+                    railContent = .normal
+                } else {
+                    leaveOpenConversation()
+                    alreadyOpen = false
+                }
+            }
             if alreadyOpen {
                 // We're already sitting in this conversation, so the view will NOT
                 // remount and nothing reloads on its own — this Task is the only
@@ -1350,12 +1364,24 @@ final class AppStore: ObservableObject {
         let text: String?
         /// Filenames inside the App Group's SharedInbox directory.
         let files: [String]
+        let receivedAt = Date()
+
+        /// A share nobody placed within this window is dropped rather than
+        /// turning up in some unrelated conversation opened much later.
+        var isExpired: Bool { Date().timeIntervalSince(receivedAt) > 600 }
     }
 
     /// Most recent staged share. MessageListView.takePendingShare puts it in
     /// the composer of the conversation it was shared to (or, when none was
-    /// picked, the next one opened); the user presses send.
+    /// picked, the one the user picks from the DM list); the user presses send.
     @Published var pendingShare: StagedShare?
+
+    /// Drop the waiting share and its files (the DM list banner's close button,
+    /// or an expired share).
+    func discardPendingShare() {
+        if let share = pendingShare { removeSharedFiles(share.files) }
+        pendingShare = nil
+    }
 
     /// Read and CLEAR what the Share Extension staged in the App Group. Called
     /// whenever the app becomes active while signed in (RootView) — the
@@ -1372,6 +1398,7 @@ final class AppStore: ObservableObject {
               let raw = d.dictionary(forKey: key) else { return }
         d.removeObject(forKey: key)
         let files = (raw["files"] as? [String]) ?? []
+        sweepSharedInbox(keeping: files)
 
         // Ignore anything stale — a payload staged days ago is not what the user
         // is doing now, and silently attaching it would be baffling.
@@ -1382,16 +1409,39 @@ final class AppStore: ObservableObject {
         }
 
         // A newer share replaces one still waiting for its conversation.
-        if let older = pendingShare { removeSharedFiles(older.files) }
+        discardPendingShare()
         let staged = StagedShare(
             channelId: raw["channelId"] as? String,
             text: raw["text"] as? String,
             files: files
         )
-        pendingShare = staged
         // If the user picked a suggested person in the share sheet, go straight
-        // there. Otherwise the payload waits for whichever conversation they open.
-        if let cid = staged.channelId, !cid.isEmpty { openDMById(cid) }
+        // there. Otherwise show the DM list (with a "pick a conversation"
+        // banner) so the payload lands in the one they choose now, not in
+        // whatever happens to be open — the same as Android. Navigate first:
+        // the composer only takes a share while its list is on screen.
+        if let cid = staged.channelId, !cid.isEmpty {
+            pendingShare = staged
+            openDMById(cid)
+        } else {
+            showDMs()
+            pendingShare = staged
+        }
+    }
+
+    /// Delete SharedInbox files older than a day that no share refers to any
+    /// more — left behind when the app was killed with a share still waiting,
+    /// or the extension was dismissed half-way through copying.
+    private func sweepSharedInbox(keeping staged: [String]) {
+        guard let dir = sharedInboxURL,
+              let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return }
+        let keep = Set(staged + (pendingShare?.files ?? []))
+        let cutoff = Date().addingTimeInterval(-86_400)
+        for name in names where !keep.contains(name) {
+            let url = dir.appendingPathComponent(name)
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            if let modified, modified < cutoff { try? FileManager.default.removeItem(at: url) }
+        }
     }
 
     /// The App Group directory the Share Extension copies shared files into.
@@ -1484,8 +1534,7 @@ final class AppStore: ObservableObject {
         WidgetCenter.shared.reloadAllTimelines()
         WatchSync.shared.sync(token: nil, targets: [])
         // A share still waiting for a conversation belongs to this account.
-        if let share = pendingShare { removeSharedFiles(share.files) }
-        pendingShare = nil
+        discardPendingShare()
         currentUserId = nil
         currentUser = nil
         didInitialReady = false
@@ -1731,7 +1780,7 @@ final class AppStore: ObservableObject {
 
     /// True when `channel`'s message list is the page on screen — not merely
     /// the selected channel, which outlives its view (showMentions keeps it).
-    private func isShowingMessages(of channel: Channel) -> Bool {
+    func isShowingMessages(of channel: Channel) -> Bool {
         guard railPage == nil, case .messages(let c)? = stack.last else { return false }
         return c.id == channel.id
     }

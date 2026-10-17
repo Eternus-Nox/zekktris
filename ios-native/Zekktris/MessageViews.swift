@@ -2262,12 +2262,18 @@ struct MessageListView: View {
     /// this composer: its text joins the draft, its files become pending
     /// attachments, and the user presses send — never sent on its own. Only
     /// in the conversation it was shared to, or, when none was picked in the
-    /// share sheet, the next one that is open. (In an encrypted chat that is
-    /// still locked it waits in the hidden composer until unlock, and is
-    /// encrypted at send like anything else.)
+    /// share sheet, the one the user opens from the DM list. (In an encrypted
+    /// chat that is still locked it waits in the hidden composer until unlock,
+    /// and is encrypted at send like anything else.)
+    ///
+    /// Only while this list is the page on screen: a parent channel under a
+    /// pushed thread, or a list on its way out, sees the same onChange and
+    /// must not take the share into a conversation the user isn't looking at.
     private func takePendingShare() {
-        guard let share = store.pendingShare,
-              share.channelId == nil || share.channelId == channel.id else { return }
+        guard let share = store.pendingShare else { return }
+        if share.isExpired { store.discardPendingShare(); return }
+        guard share.channelId == nil || share.channelId == channel.id,
+              store.isShowingMessages(of: channel) else { return }
         store.pendingShare = nil
         if let text = share.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
             draft = draft.isEmpty ? text : draft + "\n" + text

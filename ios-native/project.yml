@@ -229,6 +229,12 @@ targets:
               NSExtensionActivationSupportsImageWithMaxCount: 10
               NSExtensionActivationSupportsMovieWithMaxCount: 5
               NSExtensionActivationSupportsFileWithMaxCount: 10
+            # Lets the share sheet's suggested conversations (the
+            # INSendMessageIntents ShareSuggestions and NotificationService
+            # donate) open this extension with that intent on its context —
+            # without it extensionContext.intent is always nil.
+            IntentsSupported:
+              - INSendMessageIntent
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.share
