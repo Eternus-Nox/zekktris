@@ -276,12 +276,21 @@ docker compose down               # stop everything (data persists)
 ## 9. Security notes for operators
 
 - **The api runs as an unprivileged user** (`node`, uid 1000). On the first
-  boot after updating, its entrypoint hands `uploads/` and `control/` (written
-  by root until then) to that user; if it cannot (an NFS export with
-  root_squash, say) it keeps running as root and says so in
-  `docker compose logs api`. Caddy keeps running as root (it owns the
-  certificate store from earlier installs); Postgres and Redis drop privileges
-  inside their official images.
+  boot after updating, its entrypoint hands `uploads/` and `control/requests/`
+  (written by root until then) to that user — on a large uploads folder that
+  pass takes a while. `update.sh` waits for it, but the update that first
+  brings this in still runs the previous `update.sh`, which gives up after 90
+  seconds and rolls back (the next attempt picks up where the pass stopped).
+  With many gigabytes of uploads, run `sudo chown -R 1000:1000
+  <APPDATA_PATH>/uploads` on the host before that update instead. If the
+  entrypoint cannot hand them over (an NFS export with root_squash, say) the
+  api keeps running as root and says so in `docker compose logs api`.
+  `control/` itself and `control/status/` stay root's, because the root-run
+  `scripts/agent.sh` writes there; the agent refuses to run if they are not. A
+  host account that also has uid 1000 can write to `uploads/` and
+  `control/requests/`. Caddy keeps running as root (it owns the certificate
+  store from earlier installs); Postgres and Redis drop privileges inside
+  their official images.
 - **Client IPs** are only taken from a proxy when you say one is in front
   (`EDGE_PROXY`, §4).
 - **Webhook tokens** are masked in Caddy's logs (`/api/webhooks/<id>/REDACTED`).

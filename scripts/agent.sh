@@ -37,6 +37,32 @@ STATUS_DIR="$CONTROL/status"
 LOCK="$CONTROL/.agent.lock"
 mkdir -p "$REQ_DIR" "$STATUS_DIR"
 
+# The api (uid 1000 inside its container) owns requests/ and nothing else here.
+# Everything this script writes — the lock, the consumed request, status, logs —
+# lives in folders only this script's user can change, or a symlink planted
+# there would have root write through it to anywhere on the host. A folder
+# someone else owns (install.sh run as a normal user, then this from root's
+# crontab) is taken over, and any symlink already in it removed, before use.
+for dir in "$CONTROL" "$STATUS_DIR"; do
+    if [[ -L "$dir" || ! -d "$dir" ]]; then
+        echo "$(date -Iseconds) agent: refusing to run — $dir must be a real directory, not a link" >&2
+        exit 1
+    fi
+    owner="$(stat -c %u "$dir")"
+    if [[ "$owner" != "0" && "$owner" != "$(id -u)" ]]; then
+        if [[ "$(id -u)" != "0" ]] || ! chown root:root "$dir"; then
+            echo "$(date -Iseconds) agent: refusing to run — $dir belongs to uid $owner;" \
+                 "it must belong to the user this runs as (only requests/ belongs to the api)" >&2
+            exit 1
+        fi
+        find "$dir" -mindepth 1 -maxdepth 1 -type l -delete
+        echo "$(date -Iseconds) agent: took ownership of $dir (was uid $owner)"
+    fi
+done
+# …and readable by it: the api walks through control/ to requests/ and reads
+# status/, whatever umask cron gave this script.
+chmod 755 "$CONTROL" "$STATUS_DIR"
+
 # One run at a time. A backup and an update overlapping would have them fighting
 # over the same containers, and cron fires again while a long job is still going.
 exec 9>"$LOCK"
@@ -66,16 +92,12 @@ write_schedule_status() {
     printf '{"enabled":%s,"nightly":"03:30 database-only","weekly":"Sun 04:00 full"}\n' \
         "$(if schedule_enabled; then echo true; else echo false; fi)" \
         > "$STATUS_DIR/schedule.json"
+    chmod 644 "$STATUS_DIR/schedule.json"   # read by the api, which is not root
 }
 write_schedule_status
 
 shopt -s nullglob
 for req in "$REQ_DIR"/*.json; do
-    # Read the action with a strict pattern rather than a JSON parser: this runs
-    # as root, and the less of an attacker-controlled file we interpret, the
-    # better. Anything not matching exactly is ignored.
-    ACTION="$(grep -oE '"action"[[:space:]]*:[[:space:]]*"[a-z-]{1,32}"' "$req" 2>/dev/null \
-              | head -1 | sed -E 's/.*"([a-z-]+)"$/\1/')"
     NAME="$(basename "$req" .json)"
     STARTED="$(date -Iseconds)"
     LOG="$STATUS_DIR/$NAME.log"
@@ -84,8 +106,24 @@ for req in "$REQ_DIR"/*.json; do
     # box reboots mid-run), a leftover request would otherwise re-run forever —
     # and a re-running RESTORE would be catastrophic. The body is kept aside so
     # the restore branch can still read its (pattern-validated) filename.
-    cp -f "$req" "$CONTROL/requests-consumed.json" 2>/dev/null || true
-    rm -f "$req"
+    #
+    # A rename, not a copy: it moves the directory entry itself, so a request
+    # that is a symlink (to /etc/shadow, say) is never read through, and once
+    # it sits in the root-only folder the api can no longer swap it. Only a
+    # plain file with one link is read; anything else is dropped unread.
+    CONSUMED="$CONTROL/requests-consumed.json"
+    mv -f "$req" "$CONSUMED" 2>/dev/null || { rm -f "$req"; continue; }
+    if [[ -L "$CONSUMED" || ! -f "$CONSUMED" || "$(stat -c %h "$CONSUMED")" != "1" ]]; then
+        rm -f "$CONSUMED"
+        echo "$(date -Iseconds) agent: ignored $NAME.json — not a plain file"
+        continue
+    fi
+
+    # Read the action with a strict pattern rather than a JSON parser: this runs
+    # as root, and the less of an attacker-controlled file we interpret, the
+    # better. Anything not matching exactly is ignored.
+    ACTION="$(grep -oE '"action"[[:space:]]*:[[:space:]]*"[a-z-]{1,32}"' "$CONSUMED" 2>/dev/null \
+              | head -1 | sed -E 's/.*"([a-z-]+)"$/\1/')"
 
     case "$ACTION" in
         backup)
@@ -123,7 +161,7 @@ for req in "$REQ_DIR"/*.json; do
             # so it cannot escape to another path or carry shell metacharacters.
             # Widening this pattern would hand the caller arbitrary arguments to
             # a root-run command; do not.
-            FILE="$(grep -oE '"file"[[:space:]]*:[[:space:]]*"zekktris-[0-9]{8}-[0-9]{6}\.tar\.gz"' "$CONTROL/requests-consumed.json" 2>/dev/null | head -1 | sed -E 's/.*"(zekktris-[0-9]{8}-[0-9]{6}\.tar\.gz)"$/\1/')"
+            FILE="$(grep -oE '"file"[[:space:]]*:[[:space:]]*"zekktris-[0-9]{8}-[0-9]{6}\.tar\.gz"' "$CONSUMED" 2>/dev/null | head -1 | sed -E 's/.*"(zekktris-[0-9]{8}-[0-9]{6}\.tar\.gz)"$/\1/')"
             TARGET="$APPDATA/backups/$FILE"
             if [[ -z "$FILE" || ! -f "$TARGET" ]]; then
                 echo "restore refused: no such bundle (${FILE:-<none>})" > "$LOG"; RC=66
@@ -177,5 +215,6 @@ for req in "$REQ_DIR"/*.json; do
         tail -c 4000 "$LOG" 2>/dev/null | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || echo '""'
         printf '}\n'
     } > "$STATUS_DIR/last.json"
+    chmod 644 "$STATUS_DIR/last.json"
     echo "$(date -Iseconds) agent: ${ACTION:-unknown} exit=$RC"
 done
