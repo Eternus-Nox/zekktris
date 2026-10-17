@@ -9,7 +9,9 @@
 #   ./install.sh --yes ...        take the recommended answer everywhere
 #
 # Other options:
-#   --admin-email you@example.com   the account that becomes admin
+#   --admin-email you@example.com   the admin account the installer creates
+#   --admin-password-file /path     its password (first line), for scripted
+#                                   installs; or set ZEKKTRIS_ADMIN_PASSWORD
 #   --data-dir /path                where the database and uploads live
 #   --no-upnp                       don't ask the router to open ports
 #   --reconfigure                   change how an existing install is reached
@@ -85,6 +87,7 @@ while [[ $# -gt 0 ]]; do
         --domain) MODE="domain"; DOMAIN="${2:-}"; [[ -n "$DOMAIN" ]] || fail "--domain needs a name"; shift 2 ;;
         --lan) MODE="lan"; shift ;;
         --admin-email) ADMIN_EMAIL="${2:-}"; shift 2 ;;
+        --admin-password-file) ADMIN_PASSWORD_FILE="${2:-}"; shift 2 ;;
         --data-dir) DATA_DIR="${2:-}"; shift 2 ;;
         --no-upnp) USE_UPNP=0; shift ;;
         --reconfigure) RECONFIGURE=1; shift ;;
@@ -354,10 +357,80 @@ if [[ $NEED_ADDRESSING -eq 1 ]]; then
     fi
 fi
 
+# ── Admin account ───────────────────────────────────────────────────────────
+# The installer creates the admin account itself, inside the api container
+# (apps/api/scripts/create-admin.ts), once the stack is healthy: verified, with
+# the password asked for here. Nothing is left for a stranger to race for —
+# the old way (BOOTSTRAP_ADMIN_EMAIL + "register with this email") made whoever
+# registered that address first the admin on an open server without SMTP, so
+# fresh installs no longer set it. Password sources, in order: the first line
+# of --admin-password-file, $ZEKKTRIS_ADMIN_PASSWORD, a hidden prompt (twice).
+# It is never put on a command line; it reaches the script on stdin.
+ADMIN_PASSWORD_FILE="${ADMIN_PASSWORD_FILE:-}"
+ADMIN_PASSWORD="${ZEKKTRIS_ADMIN_PASSWORD:-}"
+ADMIN_CREATED=0
+ADMIN_PASSWORD_MIN=8   # PASSWORD_MIN_LENGTH in packages/shared/src/constants.ts
+
+# admin_password_collect [optional] → sets ADMIN_PASSWORD. "optional" (an
+# existing install promoting an account that may already exist) allows empty.
+admin_password_collect() {
+    local optional="${1:-}" a="" b=""
+    if [[ -n "$ADMIN_PASSWORD_FILE" ]]; then
+        [[ -r "$ADMIN_PASSWORD_FILE" ]] || fail "Can't read $ADMIN_PASSWORD_FILE (--admin-password-file)."
+        IFS= read -r ADMIN_PASSWORD <"$ADMIN_PASSWORD_FILE" || true
+    fi
+    if [[ -z "$ADMIN_PASSWORD" ]]; then
+        if [[ $ASSUME_YES -eq 1 || -z "$TTY" ]]; then
+            [[ -n "$optional" ]] && return 0
+            fail "Set ZEKKTRIS_ADMIN_PASSWORD or pass --admin-password-file when running with --yes or without a terminal."
+        fi
+        while :; do
+            if [[ -n "$optional" ]]; then
+                printf '  Admin password (hidden; leave empty if the account already exists): ' >/dev/tty
+            else
+                printf '  Admin password (at least %s characters, hidden): ' "$ADMIN_PASSWORD_MIN" >/dev/tty
+            fi
+            IFS= read -rs a </dev/tty || true; echo >/dev/tty
+            [[ -z "$a" && -n "$optional" ]] && return 0
+            if [[ ${#a} -lt $ADMIN_PASSWORD_MIN ]]; then warn "Use at least $ADMIN_PASSWORD_MIN characters."; continue; fi
+            printf '  Repeat it: ' >/dev/tty
+            IFS= read -rs b </dev/tty || true; echo >/dev/tty
+            if [[ "$a" != "$b" ]]; then warn "The two didn't match — try again."; continue; fi
+            ADMIN_PASSWORD="$a"; break
+        done
+    fi
+    if [[ ${#ADMIN_PASSWORD} -lt $ADMIN_PASSWORD_MIN ]]; then
+        fail "The admin password must be at least $ADMIN_PASSWORD_MIN characters."
+    fi
+    ok "Admin password set"
+}
+
+# Runs once the api is healthy. Creates the account (or makes an existing one
+# admin, leaving its password alone) and stops the install if that fails.
+admin_account_create() {
+    [[ -n "$ADMIN_EMAIL" ]] || return 0
+    step "Creating your admin account"
+    local out
+    if out="$(printf '%s\n' "$ADMIN_PASSWORD" | $COMPOSE exec -T -e LOG_LEVEL=warn -w /app/apps/api api \
+            node --import tsx/esm scripts/create-admin.ts --email "$ADMIN_EMAIL" 2>&1)"; then
+        ADMIN_CREATED=1
+        ok "${out:-Admin account ready}"
+    else
+        printf '%s\n' "$out" | tail -5 | sed 's/^/      /' >&2
+        fail "Couldn't create the admin account. The server is running; fix the above and run ./install.sh --admin-email $ADMIN_EMAIL"
+    fi
+    ADMIN_PASSWORD=""
+}
+
 # ── 7. Admin + data ─────────────────────────────────────────────────────────
+if [[ $EXISTING -eq 1 && -n "$ADMIN_EMAIL" ]]; then
+    step "Admin account"
+    info "$ADMIN_EMAIL becomes an admin: an existing account is promoted, otherwise it is created."
+    admin_password_collect optional
+fi
 if [[ $EXISTING -eq 0 ]]; then
     step "Your admin account"
-    info "Register in the app with this email and you become the server's admin."
+    info "The installer creates this account for you and makes it the server's admin."
     while [[ -z "$ADMIN_EMAIL" || ! "$ADMIN_EMAIL" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]; do
         [[ -n "$ADMIN_EMAIL" ]] && warn "That doesn't look like an email address."
         ADMIN_EMAIL="$(ask "Admin email:" "")"
@@ -365,6 +438,7 @@ if [[ $EXISTING -eq 0 ]]; then
         [[ $ASSUME_YES -eq 1 && -z "$ADMIN_EMAIL" ]] && fail "Pass --admin-email together with --yes."
     done
     ok "Admin: $ADMIN_EMAIL"
+    admin_password_collect
 
     if [[ -z "$DATA_DIR" ]]; then
         if [[ $IS_UNRAID -eq 1 ]]; then DATA_DIR="/mnt/user/appdata/zekktris"; else DATA_DIR="$ROOT/data"; fi
@@ -383,7 +457,6 @@ if [[ $EXISTING -eq 0 ]]; then
     env_set JWT_REFRESH_SECRET "$(rand_hex 32)"
     env_set FIELD_ENCRYPTION_KEY "$(rand_hex 32)"
     env_set APPDATA_PATH "$DATA_DIR"
-    env_set BOOTSTRAP_ADMIN_EMAIL "$ADMIN_EMAIL"
     env_set ACME_EMAIL "$ADMIN_EMAIL"
     env_set ALLOW_REGISTRATION open
     ok "Fresh secrets generated (.env, readable only by you)"
@@ -418,7 +491,7 @@ if [[ -z "$(env_get VAPID_PUBLIC_KEY)" || -z "$(env_get VAPID_PRIVATE_KEY)" ]]; 
     fi
     rm -f "$der"
 fi
-env_default VAPID_CONTACT_EMAIL "$(env_get BOOTSTRAP_ADMIN_EMAIL)"
+env_default VAPID_CONTACT_EMAIL "$(env_get ACME_EMAIL)"
 [[ -z "$(env_get VAPID_CONTACT_EMAIL)" ]] && env_set VAPID_CONTACT_EMAIL "admin@example.com"
 
 if [[ $NEED_ADDRESSING -eq 1 ]]; then
@@ -517,6 +590,7 @@ fi
 if [[ $START -eq 0 ]]; then
     step "Configuration written — not starting (--no-start)"
     info "Start it with: $COMPOSE up -d --build"
+    [[ -n "$ADMIN_EMAIL" ]] && info "Then create the admin: $COMPOSE exec -w /app/apps/api api node --import tsx/esm scripts/create-admin.ts --email $ADMIN_EMAIL"
     exit 0
 fi
 
@@ -537,6 +611,7 @@ if [[ $healthy -eq 0 ]]; then
     fail "Fix the problem above, then run ./install.sh again."
 fi
 ok "Server is running"
+admin_account_create
 
 HTTPS_OK=0
 if [[ "$MODE" == "ip" || "$MODE" == "domain" ]]; then
@@ -564,13 +639,12 @@ if [[ "$MODE" == "ip" || "$MODE" == "domain" ]]; then
 fi
 
 # ── 11. Done ────────────────────────────────────────────────────────────────
-ADMIN="$(env_get BOOTSTRAP_ADMIN_EMAIL)"
 echo
 echo "${BOLD}${GREEN}Zekktris is running.${RESET}"
 echo
 echo "  Open:              ${BOLD}${URL}${RESET}"
-if [[ $EXISTING -eq 0 && -n "$ADMIN" ]]; then
-    echo "  First step:        register with ${BOLD}${ADMIN}${RESET} — that account becomes the admin."
+if [[ $ADMIN_CREATED -eq 1 ]]; then
+    echo "  Sign in:           ${BOLD}${ADMIN_EMAIL}${RESET} with the password you chose — it's the admin."
 fi
 echo "  In the apps:       on the sign-in screen tap ${BOLD}Server · Change${RESET} and enter ${BOLD}${URL#https://}${RESET}"
 case "$MODE" in

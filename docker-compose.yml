@@ -196,10 +196,10 @@ services:
       # (shown on the web app's Terms/Privacy pages). Empty = upstream repo.
       SOURCE_CODE_URL: ${SOURCE_CODE_URL:-}
       # First-install bootstrap: if no user has is_admin yet AND a user
-      # exists with this email, promote them on boot. Idempotent once any
-      # admin exists, so it is safe to leave set. Without this line the
-      # documented "register, then become admin" flow silently no-ops and
-      # a fresh instance ends up with zero admins and no way in.
+      # has VERIFIED this email, promote them. Idempotent once any admin
+      # exists, so it is safe to leave set. install.sh no longer sets it —
+      # it creates the admin with apps/api/scripts/create-admin.ts — but
+      # without this line older installs relying on it would silently no-op.
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
       # Encrypts sensitive fields at rest (TOTP 2FA secrets, bot event secrets,
       # and the SSO/OIDC client secret). REQUIRED to enable SSO. 32 bytes as 64
