@@ -582,9 +582,12 @@ final class AppStore: ObservableObject {
     /// conversation a share was sent to (consumeStagedShare), which can be a
     /// DM, a group DM or a guild channel. `onUnresolved` runs (on the main
     /// actor) when the channel can't be found at all — deleted, no longer
-    /// visible to us, or the fetch failed.
+    /// visible to us, or the fetch failed. A share passes `reviveSocket:
+    /// false`: it is consumed from the .active transition or right after
+    /// store.start, which already (re)connect.
     func openFromPush(
         channelId: String, messageId: String?, autojoin: Bool,
+        reviveSocket: Bool = true,
         onUnresolved: (() -> Void)? = nil
     ) {
         // A notification tap IS a foreground wake — but it can race the
@@ -592,7 +595,7 @@ final class AppStore: ObservableObject {
         // and the tapped conversation must not depend on that ordering. Revive
         // the socket + run the full REST resync NOW so the chat we're about to
         // open loads fresh and the next send has a live session behind it.
-        foregroundReconnectDebounced()
+        if reviveSocket { foregroundReconnectDebounced() }
         func open(_ ch: Channel) {
             // MUST be read BEFORE showDMs(): that call nils `selectedChannel`, so
             // reading this after it made `alreadyOpen` unconditionally FALSE for
@@ -1449,7 +1452,7 @@ final class AppStore: ObservableObject {
         if let cid = staged.channelId, !cid.isEmpty {
             pendingShare = staged
             let shareId = staged.id
-            openFromPush(channelId: cid, messageId: nil, autojoin: false, onUnresolved: { [weak self] in
+            openFromPush(channelId: cid, messageId: nil, autojoin: false, reviveSocket: false, onUnresolved: { [weak self] in
                 self?.pickConversationForShare(shareId)
             })
         } else {

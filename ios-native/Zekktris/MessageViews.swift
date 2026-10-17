@@ -1009,6 +1009,12 @@ struct MessageListView: View {
         }
         // A share can arrive while this conversation is already open.
         .onChange(of: store.pendingShare?.id) { _, _ in takePendingShare() }
+        // …or while a rail page covers it (compact): openFromPush uncovers the
+        // list after the share was set, and the cover's dismissal isn't
+        // guaranteed to fire onAppear here again.
+        .onChange(of: store.railPage) { _, page in
+            if page == nil { takePendingShare() }
+        }
         // Persist on every keystroke rather than on disappear: the app can be
         // killed from the switcher without any teardown callback running, which
         // is exactly the "closed the app" case this is meant to survive.
