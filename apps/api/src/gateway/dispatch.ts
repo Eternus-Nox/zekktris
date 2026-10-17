@@ -421,17 +421,27 @@ export function presenceUpdate(payload: {
    * DM channel ids the user is part of. Without this, two users who
    * only know each other via DM never see each other's presence
    * change — the guild fan-out below would skip them entirely. The
-   * caller (gateway server's onUserFullyDisconnected hook + IDENTIFY
-   * online-flip) loads these alongside guildIds.
+   * caller (the presence recompute, gateway/presence.ts) loads these
+   * alongside guildIds.
    */
   dmChannelIds?: bigint[];
   /**
    * Accepted-friend user ids. Delivered a single guild_id=null frame each so
    * a friend who shares NO guild and NO DM channel still sees the subject's
    * status change live (the null frame drives usersById + the Friends dot).
-   * The caller loads these via relationships.listAcceptedFriendIds.
+   * The caller loads these via relationships.listAcceptedFriendIds, and adds
+   * the subject's own id so each of their devices learns their effective
+   * status too.
    */
   userIds?: bigint[];
+  /**
+   * The subject's CHOSEN status, for their own connections only: their
+   * guild_id=null frame carries it as `chosen_status`, so a pick made on one
+   * device reaches the status pickers of the others. Never sent to anyone
+   * else (it rides in the audience, not in `d`). Their own connections must
+   * be in `userIds` (or reachable via `dmChannelIds`) to get that frame.
+   */
+  self?: { userId: bigint; chosenStatus: 'online' | 'idle' | 'dnd' | 'invisible' };
 }): void {
   // ONE bus publish carrying the user's full membership footprint. The
   // registry expands it at delivery into the exact frames the previous
@@ -456,7 +466,13 @@ export function presenceUpdate(payload: {
       user_id: payload.userId.toString(),
       status: payload.status,
     },
-    { kind: 'presence', guildIds, dmChannelIds, userIds },
+    {
+      kind: 'presence',
+      guildIds,
+      dmChannelIds,
+      userIds,
+      ...(payload.self ? { self: payload.self } : {}),
+    },
   );
 }
 

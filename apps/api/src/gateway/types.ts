@@ -54,9 +54,18 @@ export type Audience =
    * the web client uses to patch that guild's member list) plus one
    * `guild_id: null` frame for DM peers. No DB queries — the caller supplies
    * the membership lists. The payload `d` carries `{ user_id, status }`; the
-   * per-frame `guild_id` is injected at delivery time.
+   * per-frame `guild_id` is injected at delivery time. `self`, when set, is
+   * the subject's chosen status: their OWN connections' null frame carries
+   * it as `chosen_status` (it lives here, not in `d`, so it can never reach
+   * anyone else — a replica that doesn't know the field drops it).
    */
-  | { kind: 'presence'; guildIds: bigint[]; dmChannelIds: bigint[]; userIds: bigint[] }
+  | {
+      kind: 'presence';
+      guildIds: bigint[];
+      dmChannelIds: bigint[];
+      userIds: bigint[];
+      self?: { userId: bigint; chosenStatus: string };
+    }
   /**
    * A profile change (USER_UPDATE) for one user, destined for every guild
    * they're in PLUS explicit extra recipients (their DM peers + themselves
@@ -114,6 +123,11 @@ export const HEARTBEAT_GRACE_MS = 10_000;
 
 /** Window for IDENTIFY after connect; close the socket if not received. */
 export const IDENTIFY_TIMEOUT_MS = 15_000;
+
+/** Minimum spacing of applied op-3 PRESENCE_UPDATE changes per connection.
+ *  Faster changes are coalesced (latest wins), never rejected — see
+ *  Connection.reportPresenceActivity. */
+export const PRESENCE_UPDATE_MIN_INTERVAL_MS = 2_000;
 
 // ── Close codes ────────────────────────────────────────────────────────────
 //

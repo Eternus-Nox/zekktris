@@ -47,7 +47,13 @@ type WireAudience =
   | { kind: 'guild'; guildId: string }
   | { kind: 'channel'; channelId: string; guildId: string | null }
   | { kind: 'users'; userIds: string[] }
-  | { kind: 'presence'; guildIds: string[]; dmChannelIds: string[]; userIds: string[] }
+  | {
+      kind: 'presence';
+      guildIds: string[];
+      dmChannelIds: string[];
+      userIds: string[];
+      self?: { userId: string; chosenStatus: string };
+    }
   | { kind: 'multiUser'; guildIds: string[]; userIds: string[] };
 
 export function encodeAudience(a: Audience): WireAudience {
@@ -72,6 +78,9 @@ export function encodeAudience(a: Audience): WireAudience {
         guildIds: a.guildIds.map((id) => id.toString()),
         dmChannelIds: a.dmChannelIds.map((id) => id.toString()),
         userIds: a.userIds.map((id) => id.toString()),
+        ...(a.self
+          ? { self: { userId: a.self.userId.toString(), chosenStatus: a.self.chosenStatus } }
+          : {}),
       };
     case 'multiUser':
       return {
@@ -104,6 +113,9 @@ export function decodeAudience(a: WireAudience): Audience {
         guildIds: a.guildIds.map((id) => BigInt(id)),
         dmChannelIds: a.dmChannelIds.map((id) => BigInt(id)),
         userIds: a.userIds.map((id) => BigInt(id)),
+        ...(a.self
+          ? { self: { userId: BigInt(a.self.userId), chosenStatus: a.self.chosenStatus } }
+          : {}),
       };
     case 'multiUser':
       return {

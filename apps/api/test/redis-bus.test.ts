@@ -56,6 +56,14 @@ describe('audience codec', () => {
       { kind: 'channel', channelId: 789n, guildId: 42n },
       { kind: 'channel', channelId: 789n, guildId: null }, // DM channel
       { kind: 'users', userIds: [1n, 2n, 3n] },
+      { kind: 'presence', guildIds: [4n], dmChannelIds: [5n], userIds: [6n] },
+      {
+        kind: 'presence',
+        guildIds: [],
+        dmChannelIds: [],
+        userIds: [6n],
+        self: { userId: 6n, chosenStatus: 'invisible' },
+      },
     ];
     for (const a of cases) {
       expect(decodeAudience(encodeAudience(a))).toEqual(a);

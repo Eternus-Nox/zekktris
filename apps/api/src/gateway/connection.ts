@@ -30,6 +30,7 @@ import {
   HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_GRACE_MS,
   IDENTIFY_TIMEOUT_MS,
+  PRESENCE_UPDATE_MIN_INTERVAL_MS,
   helloFrame,
   heartbeatAckFrame,
 } from './types';
@@ -64,6 +65,11 @@ export class Connection {
 
   /** Set after IDENTIFY succeeds. */
   userId: bigint | null = null;
+
+  /** The sign-in session (sessions.id) whose access token authenticated this
+   *  socket — lets the page-hide beacon close only the closing browser's
+   *  sockets, not the user's other devices. Set by IDENTIFY / RESUME. */
+  authSessionId: bigint | null = null;
 
   /** Snapshot of guild ids the user is a member of (post-IDENTIFY). */
   guildIds = new Set<bigint>();
@@ -101,6 +107,21 @@ export class Connection {
    * one map entry instead of scanning the user's entire channelToGuild.
    */
   guildToChannels = new Map<bigint, Set<bigint>>();
+
+  /**
+   * This device's activity as its client reports it (IDENTIFY/RESUME
+   * `presence`, op 3 PRESENCE_UPDATE): true while the person is using the
+   * device. A client that never reports stays true — a legacy connection
+   * counts as active, exactly the old "connected = online". Read by the
+   * presence recompute (gateway/presence.ts) through the registry.
+   */
+  presenceActive = true;
+
+  /** When an op-3 change was last applied (rate limit), and the latest value
+   *  that arrived too soon, applied when the window reopens. */
+  private presenceAppliedAt = 0;
+  private presencePending: boolean | null = null;
+  private presenceTimer?: ReturnType<typeof setTimeout>;
 
   /**
    * Last frame sequence number sent on this connection. Bumped on every
@@ -213,6 +234,9 @@ export class Connection {
     this.guildToChannels = prev.guildToChannels;
     this.seq = prev.currentSeq;
     this.resumeBuffer = prev.resumeBuffer;
+    // The device is the same one; the RESUME handler overrides this when the
+    // client sent its current activity.
+    this.presenceActive = prev.presenceActive;
     if (this.identifyTimer) {
       clearTimeout(this.identifyTimer);
       this.identifyTimer = undefined;
@@ -235,6 +259,44 @@ export class Connection {
 
   noteHeartbeat(): void {
     this.lastHeartbeatAt = Date.now();
+  }
+
+  /**
+   * Apply an op-3 activity report. A value equal to the current one is
+   * ignored. Changes are applied at most once per
+   * PRESENCE_UPDATE_MIN_INTERVAL_MS: one arriving sooner is held and applied
+   * when the window reopens, and further ones in the meantime just replace it
+   * (latest wins) — a flapping client costs one recompute per window and its
+   * final state is never lost. Never closes the socket. `onChange` runs after
+   * each applied change (the caller recomputes the user's presence).
+   */
+  reportPresenceActivity(active: boolean, onChange: () => void): void {
+    if (this.closed) return;
+    if (this.presenceTimer) {
+      this.presencePending = active;
+      return;
+    }
+    if (active === this.presenceActive) return;
+    const wait = this.presenceAppliedAt + PRESENCE_UPDATE_MIN_INTERVAL_MS - Date.now();
+    if (wait <= 0) {
+      this.applyPresenceActivity(active, onChange);
+      return;
+    }
+    this.presencePending = active;
+    this.presenceTimer = setTimeout(() => {
+      this.presenceTimer = undefined;
+      const next = this.presencePending;
+      this.presencePending = null;
+      if (next === null || this.closed || next === this.presenceActive) return;
+      this.applyPresenceActivity(next, onChange);
+    }, wait);
+    (this.presenceTimer as { unref?: () => void }).unref?.();
+  }
+
+  private applyPresenceActivity(active: boolean, onChange: () => void): void {
+    this.presenceActive = active;
+    this.presenceAppliedAt = Date.now();
+    onChange();
   }
 
   // ── Membership-snapshot mutators ─────────────────────────────────────────
@@ -398,6 +460,7 @@ export class Connection {
     this.closed = true;
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.identifyTimer) clearTimeout(this.identifyTimer);
+    if (this.presenceTimer) clearTimeout(this.presenceTimer);
     try {
       this.ws.close(code, reason);
     } catch {
@@ -415,6 +478,7 @@ export class Connection {
     this.closed = true;
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.identifyTimer) clearTimeout(this.identifyTimer);
+    if (this.presenceTimer) clearTimeout(this.presenceTimer);
     if (this.onCleanup) {
       this.onCleanup();
       this.onCleanup = null;

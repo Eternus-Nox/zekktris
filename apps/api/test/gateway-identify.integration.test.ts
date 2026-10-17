@@ -53,7 +53,8 @@ describe.runIf(dbReady)('gateway IDENTIFY/RESUME (integration)', () => {
 
   beforeAll(async () => {
     server = createServer();
-    attachGateway(server);
+    // No boot presence reset: it would offline other test files' users.
+    attachGateway(server, { resetPresenceOnBoot: false });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/gateway`;
   });

@@ -708,6 +708,15 @@ async function main(): Promise<void> {
     // Close all gateway connections first; they're the long-lived ones.
     detachGateway();
 
+    // Withdraw this replica's presence entries from Redis, so its users stop
+    // counting now rather than after the staleness window (multi-replica).
+    try {
+      const { shutdownPresence } = await import('./gateway/presence');
+      await shutdownPresence();
+    } catch (err) {
+      log.error('presence shutdown failed', { err });
+    }
+
     // Release the event bus's resources (Redis connections, when enabled).
     try {
       await closeEventBus();

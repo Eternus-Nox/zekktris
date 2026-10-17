@@ -94,6 +94,15 @@ export const GatewayEvent = {
 
   // Presence / typing
   TYPING_START: 'TYPING_START',
+  // Payload: { user_id, status, guild_id } — `status` is the EFFECTIVE
+  // presence, 'invisible' masked as 'offline'. One frame per shared guild
+  // (guild_id set) plus one guild_id=null frame for DM peers, friends and,
+  // on a server with features.presence_activity, the user's OWN connections
+  // (so each of their devices shows their current effective dot). That
+  // frame to the user's own connections (guild_id=null) also carries
+  // `chosen_status` — what they picked, unmasked — so a pick made on one
+  // device reaches the status pickers of the others. No one else ever gets
+  // `chosen_status`.
   PRESENCE_UPDATE: 'PRESENCE_UPDATE',
 
   // Poke / nudge — an EPHEMERAL notification (no stored message, no history).
@@ -243,6 +252,18 @@ export interface GatewayFrame<T = unknown> {
 // Specific frame payload shapes (client → server)
 // ───────────────────────────────────────────────────────────────────────────
 
+/**
+ * A device's activity, as its client reports it: `active` while the person is
+ * using this device (input within the client's idle threshold, app/tab in the
+ * foreground, or the desktop shell's system-wide signal), false once they
+ * stop. The server derives the user's effective presence from every live
+ * connection's activity: chosen 'online' reads 'online' if ANY device is
+ * active, else 'idle'. A connection that never reports counts as active.
+ */
+export interface PresenceActivity {
+  active: boolean;
+}
+
 export interface IdentifyPayload {
   token: string;
   /** Optional: client info, used for session display. */
@@ -251,12 +272,16 @@ export interface IdentifyPayload {
     browser?: string;
     device?: string;
   };
+  /** This device's activity at connect time. Omitted = active (legacy). */
+  presence?: PresenceActivity;
 }
 
 export interface ResumePayload {
   token: string;
   session_id: string;
   seq: number;
+  /** This device's activity now. Omitted = keep the resumed session's value. */
+  presence?: PresenceActivity;
 }
 
 export interface HeartbeatPayload {
@@ -264,10 +289,15 @@ export interface HeartbeatPayload {
   seq: number | null;
 }
 
-export interface PresenceUpdatePayload {
-  status: 'online' | 'idle' | 'dnd' | 'invisible';
-  custom_status?: string | null;
-}
+/**
+ * Client → server PRESENCE_UPDATE (op 3): `d: { active }`. Send it on each
+ * local active↔idle transition and never otherwise — the server ignores a
+ * repeat of the connection's current value and applies at most one change per
+ * connection every 2 s (a faster flip is coalesced, latest value wins). Only
+ * send it to a server whose READY carried `features.presence_activity`.
+ * The user's CHOSEN status is not set here; that is PATCH /users/@me {status}.
+ */
+export type PresenceUpdatePayload = PresenceActivity;
 
 // ───────────────────────────────────────────────────────────────────────────
 // Specific frame payload shapes (server → client)
@@ -302,4 +332,14 @@ export interface ReadyPayload {
   private_channels: unknown[]; // DM/GroupDM DTOs
   relationships: unknown[]; // RelationshipDTO[]
   read_state: unknown[]; // ReadStateDTO[]
+  /** Server capabilities. Absent on servers older than the flag itself, so a
+   *  client must treat a missing object / key as "not supported". */
+  features?: ReadyFeatures;
+}
+
+export interface ReadyFeatures {
+  /** The server derives presence from per-device activity: clients report it
+   *  (IDENTIFY/RESUME `presence`, op 3 PRESENCE_UPDATE) and must NOT PATCH
+   *  /users/@me {status} automatically; the self user carries `chosenStatus`. */
+  presence_activity?: true;
 }

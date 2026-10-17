@@ -620,10 +620,10 @@ adminRouter.post(
   // gateway only re-checks ban state at IDENTIFY/RESUME, so a socket
   // held by another replica would otherwise keep receiving live
   // dispatches until it drops. Each connection's own close handler
-  // fires onUserFullyDisconnected which sets users.status='offline'
-  // and broadcasts presence — same path as the disconnect-beacon
-  // endpoint uses. We DON'T need to manually broadcast presence
-  // here; the close cascade handles it.
+  // fires onUserFullyDisconnected, whose presence recompute sets
+  // users.status='offline' and broadcasts presence — same path as the
+  // disconnect-beacon endpoint uses. We DON'T need to manually
+  // broadcast presence here; the close cascade handles it.
   dispatch.forceDisconnectUser(targetId);
 
   return c.json({ ok: true });

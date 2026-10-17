@@ -20,8 +20,9 @@
  * Client frames handled here:
  *   - IDENTIFY: validates token, loads membership snapshot, sends READY
  *   - HEARTBEAT: bumps the watchdog, replies HEARTBEAT_ACK
- *   - RESUME: rejected for v1 (always responds INVALID_SESSION resumable=false)
- *   - PRESENCE_UPDATE: updates the user's online status (deferred — minimal v1)
+ *   - RESUME: replays a retained session's missed events (see handleResume)
+ *   - PRESENCE_UPDATE: this device's activity {active} — feeds the user's
+ *     effective presence (gateway/presence.ts)
  */
 
 import type { IncomingMessage, Server as HttpServer } from 'node:http';
@@ -32,11 +33,13 @@ import type {
   GatewayFrame,
   IdentifyPayload,
   HeartbeatPayload,
+  PresenceActivity,
+  PresenceUpdatePayload,
   ResumePayload,
 } from '@zekktris/shared/events';
 import { verifyAccessToken } from '../auth/tokens';
 import { db, schema } from '../db';
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { log } from '../log';
 import { Connection } from './connection';
 import { initInternalDispatchBus } from './dispatch';
@@ -56,14 +59,46 @@ import * as relationships from '../services/relationships';
 import { touchLastSeen } from '../services/presence';
 import { isCurrentlyBanned } from '../services/instanceBans';
 import { getIncomingClientIp } from '../lib/request';
+import { leaderInterval } from '../lib/leaderTimers';
 import { consumeGatewayConnect, consumeGatewayIdentify } from './limits';
+import {
+  presence,
+  resetPresenceOnBoot,
+  PRESENCE_HEARTBEAT_MS,
+  PRESENCE_SWEEP_MS,
+} from './presence';
 
 const GATEWAY_PATH = '/gateway';
 
+/** Grace after one of several live connections closes before the user's
+ *  presence is recomputed, so a reconnect blip (tab reload, network handoff)
+ *  doesn't flap their dot. The LAST connection closing waits for the longer
+ *  voice-eviction grace instead (VOICE_EVICT_GRACE_MS). */
+export const PRESENCE_CLOSE_GRACE_MS = 5_000;
+
+/** Test seams; production passes none and gets the defaults. */
+export interface GatewayOptions {
+  /** Default PRESENCE_CLOSE_GRACE_MS. */
+  presenceCloseGraceMs?: number;
+  /** Default 45 s — see VOICE_EVICT_GRACE_MS in attachGateway. */
+  voiceEvictGraceMs?: number;
+  /** Default true. Tests sharing a database with other test files turn the
+   *  boot reset off — it would offline those files' users mid-test. */
+  resetPresenceOnBoot?: boolean;
+}
+
 let wss: WebSocketServer | null = null;
+/** Timers owned by the attached gateway, cleared by detachGateway. */
+let gatewayTimers: Array<ReturnType<typeof setInterval>> = [];
+let pendingPresenceRecomputes = new Map<bigint, ReturnType<typeof setTimeout>>();
+
+/** A valid `presence` from IDENTIFY/RESUME, or null if absent/malformed. */
+function presenceActivity(p: PresenceActivity | undefined): boolean | null {
+  return p && typeof p === 'object' && typeof p.active === 'boolean' ? p.active : null;
+}
 
 /** Attach the gateway to a running http.Server. Idempotent. */
-export function attachGateway(httpServer: HttpServer): void {
+export function attachGateway(httpServer: HttpServer, opts: GatewayOptions = {}): void {
   if (wss) return;
 
   wss = new WebSocketServer({
@@ -87,34 +122,55 @@ export function attachGateway(httpServer: HttpServer): void {
   // A process restart or crash never runs those per-connection close
   // hooks, so the column is left asserting that everyone who was
   // connected at shutdown is still online — they then show as online to
-  // everyone else forever, despite holding no live connection. At boot
-  // there are zero connections by definition, so any non-offline,
-  // non-invisible status is stale. Reset them. 'invisible' is preserved
-  // (it's a privacy preference that already reads as offline to others
-  // and must survive across reconnects); this mirrors exactly how the
-  // graceful-disconnect handler treats each status.
-  void (async () => {
-    try {
-      const reset = await db
-        .update(schema.users)
-        .set({ status: 'offline' })
-        .where(
-          and(
-            ne(schema.users.status, 'offline'),
-            ne(schema.users.status, 'invisible'),
-          ),
-        )
-        .returning({ id: schema.users.id });
-      if (reset.length > 0) {
-        log.info('gateway: reset stale presence on boot', { count: reset.length });
-      }
-    } catch (err) {
+  // everyone else forever, despite holding no live connection. On a single
+  // replica every such row is stale at boot; in a cluster only those with no
+  // live connection on another replica are (resetPresenceOnBoot).
+  // 'invisible' is preserved (it's a privacy preference that already reads
+  // as offline to others and must survive across reconnects).
+  const presenceEngine = presence();
+  if (opts.resetPresenceOnBoot !== false) {
+    void resetPresenceOnBoot(presenceEngine).catch((err: unknown) => {
       log.warn('gateway: boot presence reset failed', { err: (err as Error).message });
-    }
-  })();
+    });
+  }
+  if (presenceEngine.clustered) {
+    // Keep this replica's per-user entries fresh (every replica), and let the
+    // leader recompute users stranded by a replica that died.
+    const beat = setInterval(() => void presenceEngine.heartbeat(), PRESENCE_HEARTBEAT_MS);
+    const sweep = leaderInterval(() => {
+      void presenceEngine.sweep().catch((err: unknown) => {
+        log.warn('gateway: presence sweep failed', { err: (err as Error).message });
+      });
+    }, PRESENCE_SWEEP_MS);
+    for (const t of [beat, sweep]) (t as { unref?: () => void }).unref?.();
+    gatewayTimers.push(beat, sweep);
+  }
+
+  // A live connection closed: recompute after a short grace (the device that
+  // left may have been the one in use). Debounced per user. For the user's
+  // last socket on this replica the device is held through the voice grace
+  // (below); the close grace then only SETTLES the hold — it keeps them from
+  // reading offline but no longer counts as in use while another device,
+  // e.g. on another replica, is connected (gateway/presence.ts).
+  const presenceCloseGraceMs = opts.presenceCloseGraceMs ?? PRESENCE_CLOSE_GRACE_MS;
+  function scheduleCloseGraceRecompute(userId: bigint): void {
+    const prior = pendingPresenceRecomputes.get(userId);
+    if (prior) clearTimeout(prior);
+    const t = setTimeout(() => {
+      pendingPresenceRecomputes.delete(userId);
+      presenceEngine.settleHold(userId);
+      void presenceEngine.recompute(userId);
+    }, presenceCloseGraceMs);
+    (t as { unref?: () => void }).unref?.();
+    pendingPresenceRecomputes.set(userId, t);
+  }
+  registry.onUserConnectionClosed = (userId: bigint) => {
+    scheduleCloseGraceRecompute(userId);
+  };
+
   // Pending voice-eviction timers keyed by userId (see grace period in
   // onUserFullyDisconnected below).
-  const VOICE_EVICT_GRACE_MS = 45_000;
+  const VOICE_EVICT_GRACE_MS = opts.voiceEvictGraceMs ?? 45_000;
   /** How many more grace windows to wait while LiveKit still reports the user
    *  in their room. 40 x 45s = 30 minutes: long enough to ride out any real
    *  signalling outage, bounded so a client whose gateway is permanently dead
@@ -127,12 +183,18 @@ export function attachGateway(httpServer: HttpServer): void {
   //   1. Voice: any joined room becomes ghost-attendee; clear it and
   //      broadcast a leave so the channel's voice list updates.
   //   2. Presence: their `users.status` row stays at whatever it was
-  //      (online/idle/dnd) until they explicitly change it, so other
-  //      users would forever see them as online. Mark them offline
-  //      and broadcast PRESENCE_UPDATE to every shared guild.
+  //      (online/idle/dnd), so other users would forever see them as
+  //      online. Recompute it (→ 'offline' unless they're connected to
+  //      another replica) and broadcast PRESENCE_UPDATE.
   // Fire-and-forget — the hook signature is sync to keep registry.ts
   // free of async machinery.
-  registry.onUserFullyDisconnected = (userId: bigint) => {
+  registry.onUserFullyDisconnected = (userId: bigint, conn: Connection) => {
+    // Until the grace below ends the user still counts as connected (with
+    // the last device's activity until the close grace settles it), so no
+    // other recompute flips them offline early — the offline flip keeps the
+    // voice grace's timing.
+    presenceEngine.hold(userId, conn.presenceActive);
+    scheduleCloseGraceRecompute(userId);
     // GRACE PERIOD before evicting from voice. A gateway WebSocket blip
     // (WiFi->LTE handoff, brief network loss — likelier under the load
     // of video/screen share) is NOT the same as leaving the call: the
@@ -144,6 +206,7 @@ export function attachGateway(httpServer: HttpServer): void {
     armVoiceEviction(userId, 0);
   };
   registry.onUserConnected = (userId: bigint) => {
+    presenceEngine.release(userId);
     const key = userId.toString();
     const pending = pendingVoiceEvictions.get(key);
     if (pending) {
@@ -271,64 +334,14 @@ export function attachGateway(httpServer: HttpServer): void {
       }
 
       try {
-        // Read the user's current status. If they're 'invisible' we
-        // leave it alone — their wire-presence is already 'offline' to
-        // others, and bumping the column would lose their privacy
-        // setting on next connect. For online/idle/dnd, transition
-        // to 'offline' so the row reflects reality.
-        const [u] = await db
-          .select({ status: schema.users.status })
-          .from(schema.users)
-          .where(eq(schema.users.id, userId))
-          .limit(1);
-        if (!u || u.status === 'invisible' || u.status === 'offline') return;
-
-        // The `status <> 'invisible'` predicate is load-bearing, not
-        // belt-and-braces: without it, a user who flips to invisible in the
-        // window between the SELECT above and this UPDATE gets clobbered back
-        // to 'offline' — and then touchLastSeen's own invisible guard is
-        // guaranteed to pass (we just wrote 'offline' ourselves), so the very
-        // race the guard exists to stop is the one case it could not catch.
-        // Leaving an invisible user's row as 'invisible' while disconnected is
-        // correct: it reads as 'offline' to everyone else through the mask.
-        await db
-          .update(schema.users)
-          .set({ status: 'offline' })
-          .where(and(eq(schema.users.id, userId), ne(schema.users.status, 'invisible')));
-
-        // "Last online" — this is the moment that matters for the friends
-        // list: they were visibly online (the early return above already
-        // dropped the invisible + already-offline cases) and now they're gone.
-        await touchLastSeen(userId);
-
-        // Broadcast to every guild this user is in so co-members'
-        // member-list dot recolors live. Also fan out to the user's
-        // DM channels so DM partners see the dot change too — without
-        // this, two users who only ever DM each other never see each
-        // other's presence transitions. We DON'T worry about race
-        // with a fresh reconnect — if the user reconnects before this
-        // finishes, the IDENTIFY handler will flip them back online
-        // and dispatch the appropriate transition.
-        const [memberRows, dmRows, friendIds] = await Promise.all([
-          db
-            .select({ guildId: schema.guildMembers.guildId })
-            .from(schema.guildMembers)
-            .where(eq(schema.guildMembers.userId, userId)),
-          db
-            .select({ channelId: schema.dmRecipients.channelId })
-            .from(schema.dmRecipients)
-            .where(eq(schema.dmRecipients.userId, userId)),
-          relationships.listAcceptedFriendIds(userId),
-        ]);
-        if (memberRows.length > 0 || dmRows.length > 0 || friendIds.length > 0) {
-          dispatch.presenceUpdate({
-            userId,
-            status: 'offline',
-            guildIds: memberRows.map((r) => r.guildId),
-            dmChannelIds: dmRows.map((r) => r.channelId),
-            userIds: friendIds,
-          });
-        }
+        // The grace is over: drop the hold and recompute. With no live
+        // connection anywhere this writes 'offline' (an 'invisible' user stays
+        // 'invisible' — it already reads as offline to others and is their
+        // choice), stamps "last online" and broadcasts to every guild, DM
+        // peer and friend. If they reconnected — here or on another replica —
+        // the recompute simply reflects that.
+        presenceEngine.release(userId);
+        await presenceEngine.recompute(userId);
       } catch (err) {
         log.warn('gateway: presence offline on disconnect failed', {
           userId: userId.toString(),
@@ -426,6 +439,11 @@ export function attachGateway(httpServer: HttpServer): void {
 /** Graceful shutdown — close all sockets and stop accepting upgrades. */
 export function detachGateway(): void {
   if (!wss) return;
+  for (const t of gatewayTimers) clearInterval(t);
+  gatewayTimers = [];
+  for (const t of pendingPresenceRecomputes.values()) clearTimeout(t);
+  pendingPresenceRecomputes = new Map();
+  registry.onUserConnectionClosed = null;
   registry.shutdown();
   wss.close();
   wss = null;
@@ -457,9 +475,7 @@ async function handleClientFrame(conn: Connection, raw: string): Promise<void> {
       await handleResume(conn, frame.d as ResumePayload | undefined);
       return;
     case GatewayOp.PRESENCE_UPDATE:
-      // Honor as a no-op for now. Online presence is set on IDENTIFY and
-      // reset on disconnect; explicit status changes ride on the REST
-      // PATCH /users/@me endpoint.
+      handlePresenceUpdate(conn, frame.d as PresenceUpdatePayload | undefined);
       return;
     default:
       conn.close(CloseCode.PROTOCOL_ERROR, `unsupported op ${frame.op}`);
@@ -600,6 +616,9 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
     dmChannelIdRows.map((r) => r.channelId),
     viewableChannels,
   );
+  conn.authSessionId = sessionId;
+  // This device's activity at connect. Absent (legacy client) = active.
+  conn.presenceActive = presenceActivity(payload.presence) ?? true;
   // NOTE: indexing for live fan-out is deferred until AFTER the READY frame is
   // sent (below) — see the comment there. Indexing here would let an event
   // fanned out during the awaited voice-states read reach this socket with a
@@ -633,6 +652,9 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
       private_channels: dmChannelIdRows.map((r) => ({ id: r.channelId.toString() })),
       read_state: readStateRows.map(toReadState),
       voice_states: voiceStateRows.map(toVoiceState),
+      // Clients switch to activity reporting (and stop PATCHing status
+      // automatically) only when they see this.
+      features: { presence_activity: true },
     }),
   );
 
@@ -705,16 +727,28 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
   // stuck appearing online with zero live connections.
   if (conn.isClosed()) return;
 
-  // Mark user online if they were offline. Critically, we DON'T blow
-  // away an explicit status pick (idle / dnd / invisible) — that's
-  // bug parity with Discord, where reconnecting doesn't yank you back
-  // to "Online" if you'd set "Do Not Disturb" before the disconnect.
-  // Only the offline → online transition resets to 'online'; any other
-  // current status is preserved verbatim.
-  await db
-    .update(schema.users)
-    .set({ status: 'online' })
-    .where(and(eq(schema.users.id, userId), eq(schema.users.status, 'offline')));
+  // Recompute the user's effective presence now that this device counts:
+  // offline → online (or idle, if this device connected idle and no other is
+  // in use). The chosen status is never touched, so a Do Not Disturb or
+  // Invisible picked before a disconnect is still in force — Discord parity.
+  //
+  // CRITICAL: we broadcast on EVERY successful IDENTIFY, not just on
+  // transitions ('always'). Reason — when a user reconnects (flaky mobile,
+  // app foregrounded after background WS suspension, etc.), other clients
+  // might have stale member-list data showing them offline. Re-broadcasting
+  // the current truth on every connect heals that drift cheaply, with one
+  // event per guild + DM. Without this, two users who silently had their
+  // WSes recycled by iOS suspension would each appear offline to the other
+  // forever despite both being "online". Re-uses the guild / DM / friend
+  // lists loaded for the snapshot above instead of querying them again.
+  await presence().recompute(userId, {
+    broadcast: 'always',
+    audience: {
+      guildIds,
+      dmChannelIds: dmChannelIdRows.map((r) => r.channelId),
+      friendIds,
+    },
+  });
 
   // "Last online": bound the stamp at the START of the session too, not just
   // at disconnect. The disconnect hook is what normally writes it, but it
@@ -723,41 +757,6 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
   // instant the server crashed. No-ops (in SQL) while they're invisible.
   // Runs after READY is already on the wire, so it adds no login latency.
   await touchLastSeen(userId);
-
-  // Derive the post-update status WITHOUT re-querying. The conditional
-  // UPDATE above only changes the row when status was 'offline' — for
-  // every other prior value the row is unchanged. So:
-  //   prior 'offline' → broadcast 'online' (we just bumped it)
-  //   prior anything-else → broadcast that anything-else verbatim
-  // Map invisible → offline for over-the-wire (others see invisible
-  // as offline; this matches what listMembers serves through the
-  // toPublicUser DTO). Online/idle/dnd pass through.
-  //
-  // CRITICAL: we broadcast on EVERY successful IDENTIFY, not just on
-  // transitions. Reason — when a user reconnects (flaky mobile, app
-  // foregrounded after background WS suspension, etc.), other clients
-  // might have stale member-list data showing them offline.
-  // Re-broadcasting the current truth on every connect heals that
-  // drift cheaply, with one event per guild + DM. Without this, two
-  // users who silently had their WSes recycled by iOS suspension
-  // would each appear offline to the other forever despite both
-  // being "online".
-  //
-  // Also re-uses guildIds and dmChannelIdRows we already loaded above
-  // for the snapshot — the previous implementation issued two more
-  // round-trips for the same data on every IDENTIFY.
-  const priorStatus = user[0].status;
-  const postUpdateStatus = priorStatus === 'offline' ? 'online' : priorStatus;
-  const broadcastStatus = postUpdateStatus === 'invisible' ? 'offline' : postUpdateStatus;
-  if (guildIds.length > 0 || dmChannelIdRows.length > 0 || friendIds.length > 0) {
-    dispatch.presenceUpdate({
-      userId,
-      status: broadcastStatus,
-      guildIds,
-      dmChannelIds: dmChannelIdRows.map((r) => r.channelId),
-      userIds: friendIds,
-    });
-  }
 
   log.info('gateway: identified', { sessionId: conn.id, userId: userId.toString() });
 }
@@ -831,7 +830,6 @@ async function handleResume(conn: Connection, payload: ResumePayload | undefined
   }
   const [userRow] = await db
     .select({
-      status: schema.users.status,
       bannedAt: schema.users.bannedAt,
       bannedUntil: schema.users.bannedUntil,
       deletedAt: schema.users.deletedAt,
@@ -890,6 +888,10 @@ async function handleResume(conn: Connection, payload: ResumePayload | undefined
   //    verbatim (original seqs, already-filtered bytes), then RESUMED.
   const missed = prev.resumeBuffer.framesAfter(payload.seq);
   conn.adoptResumedSession(prev);
+  conn.authSessionId = sessionId;
+  // The client's current activity, if it sent one (else the session's).
+  const resumedActivity = presenceActivity(payload.presence);
+  if (resumedActivity !== null) conn.presenceActive = resumedActivity;
   for (const json of missed) conn.sendRaw(json);
   conn.send(dispatchFrame('RESUMED', { session_id: conn.sessionId }));
 
@@ -897,41 +899,47 @@ async function handleResume(conn: Connection, payload: ResumePayload | undefined
   //    (index → onUserConnected cancels any pending voice eviction.)
   registry.completeResume(prev, conn);
 
-  // 5. Presence: heal back to online + re-broadcast, mirroring IDENTIFY's
-  //    every-connect re-broadcast so a >grace-period gap (where presence had
-  //    already flipped offline) recovers, and shorter gaps just heal drift.
-  await db
-    .update(schema.users)
-    .set({ status: 'online' })
-    .where(and(eq(schema.users.id, userId), eq(schema.users.status, 'offline')));
+  // 5. Presence: recompute + re-broadcast, mirroring IDENTIFY's every-connect
+  //    re-broadcast so a >grace-period gap (where presence had already
+  //    flipped offline) recovers, and shorter gaps just heal drift.
+  //    The connection snapshot carries guilds + DM channels but not the
+  //    friend list, so load accepted friends fresh here — this heals presence
+  //    for a friend who shares no guild/DM after a >grace-period gap.
+  const friendIds = await relationships.listAcceptedFriendIds(userId);
+  await presence().recompute(userId, {
+    broadcast: 'always',
+    audience: {
+      guildIds: Array.from(conn.guildIds),
+      dmChannelIds: Array.from(conn.dmChannelIds),
+      friendIds,
+    },
+  });
   // Same session-start bound as IDENTIFY — a RESUME is a connect too.
   await touchLastSeen(userId);
-  const broadcastStatus =
-    userRow.status === 'offline'
-      ? 'online'
-      : userRow.status === 'invisible'
-        ? 'offline'
-        : userRow.status;
-  const guildIds = Array.from(conn.guildIds);
-  const dmChannelIds = Array.from(conn.dmChannelIds);
-  // The connection snapshot carries guilds + DM channels but not the friend
-  // list, so load accepted friends fresh here — this heals presence for a
-  // friend who shares no guild/DM after a >grace-period gap flipped us offline.
-  const friendIds = await relationships.listAcceptedFriendIds(userId);
-  if (guildIds.length > 0 || dmChannelIds.length > 0 || friendIds.length > 0) {
-    dispatch.presenceUpdate({
-      userId,
-      status: broadcastStatus,
-      guildIds,
-      dmChannelIds,
-      userIds: friendIds,
-    });
-  }
 
   log.info('gateway: resumed', {
     sessionId: conn.sessionId,
     userId: userId.toString(),
     replayed: missed.length,
+  });
+}
+
+// ── PRESENCE_UPDATE ────────────────────────────────────────────────────────
+
+/**
+ * Op 3 `{ active }`: this device's activity changed. Ignored before IDENTIFY
+ * and when malformed; a repeat of the current value is ignored and changes
+ * are rate-limited per connection (Connection.reportPresenceActivity) — never
+ * a reason to close the socket. Each applied change recomputes the user's
+ * effective presence.
+ */
+function handlePresenceUpdate(conn: Connection, payload: PresenceUpdatePayload | undefined): void {
+  if (!conn.isAuthenticated() || conn.userId === null || conn.detached) return;
+  const active = presenceActivity(payload);
+  if (active === null) return;
+  const userId = conn.userId;
+  conn.reportPresenceActivity(active, () => {
+    void presence().recompute(userId);
   });
 }
 

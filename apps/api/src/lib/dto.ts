@@ -27,7 +27,12 @@ export interface SelfUserDTO {
   bio: string | null;
   /** Cosmetic avatar decoration id (CSS ring/glow). Null = none. */
   avatarDecoration: string | null;
+  /** EFFECTIVE presence (unmasked — this is the user's own view): derived
+      from chosenStatus and the activity of their connected devices. */
   status: User['status'];
+  /** The status the user picked (PATCH /users/@me {status}) — what the
+      status picker shows. Never 'offline'. */
+  chosenStatus: User['chosenStatus'];
   customStatus: string | null;
   /** Emoji portion of the custom status. Independent of the text:
       either or both may be set. Null means no emoji. */
@@ -205,6 +210,7 @@ export function toSelfUser(
     bio: user.bio,
     avatarDecoration: user.avatarDecoration ?? null,
     status: user.status,
+    chosenStatus: user.chosenStatus,
     customStatus: user.customStatus,
     customStatusEmoji: user.customStatusEmoji ?? null,
     customStatusExpiresAt: isoDate(user.customStatusExpiresAt),
