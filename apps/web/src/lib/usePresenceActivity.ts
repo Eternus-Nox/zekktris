@@ -79,13 +79,15 @@ export function usePresenceActivity(): void {
           if (idle) {
             if (currentStatus() === 'online') {
               autoSet = true;
-              const r = await rest.patchMe({ status: 'idle' });
+              // 'auto': an automatic change, not a pick. Only servers
+              // without the feature get here, and they drop the field.
+              const r = await rest.patchMe({ status: 'idle', statusSource: 'auto' });
               updateUser(r.user);
               recordSelfUser(r.user);
             }
           } else if (autoSet && currentStatus() === 'idle') {
             autoSet = false;
-            const r = await rest.patchMe({ status: 'online' });
+            const r = await rest.patchMe({ status: 'online', statusSource: 'auto' });
             updateUser(r.user);
             recordSelfUser(r.user);
           } else {

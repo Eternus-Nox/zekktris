@@ -3,6 +3,7 @@ import type { SelfUser } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import {
   SelfStatusStore,
+  effectiveStatusOf,
   resolveSelfStatus,
   type ChosenStatus,
   type EffectiveStatus,
@@ -35,5 +36,12 @@ export function currentSelfStatus(user: SelfUser): SelfStatusView {
  *  without multi-device presence sends no chosenStatus: nothing to record. */
 export function recordSelfUser(user: SelfUser): void {
   if (!user.chosenStatus) return;
-  selfStatusStore.set({ userId: user.id, status: user.status, chosenStatus: user.chosenStatus });
+  selfStatusStore.set({
+    userId: user.id,
+    // Not `user.status`: on a current server that is the pick (an Online
+    // pick while every device is idle would light the dot green until the
+    // next frame).
+    status: effectiveStatusOf(user),
+    chosenStatus: user.chosenStatus,
+  });
 }

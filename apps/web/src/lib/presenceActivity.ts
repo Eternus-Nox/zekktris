@@ -164,19 +164,37 @@ export class DeviceActivity {
 export type ChosenStatus = 'online' | 'idle' | 'dnd' | 'invisible';
 export type EffectiveStatus = ChosenStatus | 'offline';
 
-interface SelfStatusFields {
+/** The status fields of a SelfUser (REST / READY snapshot). */
+export interface SelfStatusFields {
+  /** The PICK on a current server (== chosenStatus). On a server from before
+   *  `effectiveStatus` existed it was the effective status; on a server
+   *  without multi-device presence, the single status column. */
   status: EffectiveStatus;
   chosenStatus?: ChosenStatus;
+  effectiveStatus?: EffectiveStatus;
 }
 
 /**
- * What the status picker shows: the CHOSEN status. A server that predates
- * multi-device presence sends no chosenStatus — there `status` is the pick
- * (an 'offline' there can only be a stale snapshot; show Online).
+ * What the status picker shows: the CHOSEN status — `chosenStatus ?? status`.
+ * A server that predates multi-device presence sends no chosenStatus — there
+ * `status` is the pick (an 'offline' there can only be a stale snapshot; show
+ * Online).
  */
 export function chosenStatusOf(user: SelfStatusFields): ChosenStatus {
   if (user.chosenStatus) return user.chosenStatus;
   return user.status === 'offline' ? 'online' : user.status;
+}
+
+/**
+ * Our EFFECTIVE status (own dot) from a REST / READY snapshot of the self
+ * user: `effectiveStatus ?? status`. A current server sends the pick in
+ * `status` (older iOS / Android builds read it as such) and the effective
+ * value in `effectiveStatus`; servers before that sent the effective value
+ * in `status` and no `effectiveStatus`. Only a fallback: once this device
+ * has our own PRESENCE_UPDATE frame, the frame wins (resolveSelfStatus).
+ */
+export function effectiveStatusOf(user: SelfStatusFields): EffectiveStatus {
+  return user.effectiveStatus ?? user.status;
 }
 
 /** PRESENCE_UPDATE dispatch payload, as it reaches the user's own devices. */
@@ -263,5 +281,5 @@ export function resolveSelfStatus(
   if (live && live.userId === user.id) {
     return { status: live.status, chosenStatus: live.chosenStatus };
   }
-  return { status: user.status, chosenStatus: chosenStatusOf(user) };
+  return { status: effectiveStatusOf(user), chosenStatus: chosenStatusOf(user) };
 }
