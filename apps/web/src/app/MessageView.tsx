@@ -420,6 +420,23 @@ export function MessageView({
     messages,
   ]);
 
+  // Deleting a thread is DELETE /channels/:id, which needs MANAGE_CHANNELS on
+  // the thread's channel (MANAGE_THREADS or being the creator isn't enough),
+  // so the Delete button follows that bit — guild-level, like the others.
+  const canDeleteThread = useMemo(() => {
+    if (!isThread || !channel.guildId || !user || !myMember) return false;
+    const guild = guildsById[channel.guildId];
+    if (!guild) return false;
+    const roles = rolesByGuild[channel.guildId] ?? [];
+    const perms = computeMemberGuildPerms(
+      roles,
+      channel.guildId,
+      myMember.roleIds,
+      guild.ownerId === user.id,
+    );
+    return hasBit(perms, 10 /* MANAGE_CHANNELS */);
+  }, [isThread, channel.guildId, user, myMember, guildsById, rolesByGuild]);
+
   // Whether to offer @everyone / @here in the mention autocomplete. Guild
   // channels only, and only when the caller actually has MENTION_EVERYONE
   // (owner/ADMINISTRATOR short-circuit to all-bits inside the compute), so we
@@ -824,7 +841,7 @@ export function MessageView({
               <Archive size={16} />
             </button>
           )}
-          {isThread && canManageThread && (
+          {isThread && canDeleteThread && (
             <button
               type="button"
               onClick={() => void handleDeleteThread()}
