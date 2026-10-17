@@ -227,10 +227,11 @@ with its access token; the server replies `READY` with a session snapshot
   `effectiveStatus`; public user DTOs keep `status` = effective (invisible
   masked). Updated clients send `statusSource: 'manual'` with a status the
   user picks; an unmarked `idle` (an older client's automatic away) is
-  flagged (`users.chosen_status_auto`) and reset to `online` when an updated
-  device reports itself in use (op 3 or IDENTIFY/RESUME `presence`
-  {active:true}) or the user's last device disconnects, as the old server's
-  disconnect/reconnect did.
+  flagged (`users.chosen_status_auto`) and reset to `online` by any presence
+  recompute (bar the one its own PATCH runs) that finds an updated device in
+  use — one that reports its activity (op 3 or IDENTIFY/RESUME `presence`),
+  on any replica — or when the user's last device disconnects, as the old
+  server's disconnect/reconnect did.
 - **Permission-filtered fanout.** Each connection caches its viewable-channel
   set (computed once at IDENTIFY). Channel-scoped events are filtered against
   it; the cache is refreshed live on any visibility-changing mutation, and

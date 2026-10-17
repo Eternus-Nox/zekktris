@@ -154,6 +154,40 @@ describe.runIf(redisReady)('presence across replicas (integration, Redis)', () =
     expect(Object.keys(await admin.hgetall(`zekktris:presence:u:${u}`))).toEqual(['replica-1']);
   });
 
+  it('an updated device in use on another replica ends a legacy automatic away (the `r` count is summed)', async () => {
+    const r1 = replica('replica-1');
+    const r2 = replica('replica-2');
+    const u = await newUser();
+    connect(r1.registry, u, true); // an old phone build: active, never reports
+    const mac = connect(r2.registry, u, false);
+    mac.reportsActivity = true;
+    await r2.engine.recompute(u);
+    expect(await r1.engine.recompute(u)).toBe('online');
+    // The old phone's automatic away.
+    await db
+      .update(schema.users)
+      .set({ chosenStatus: 'idle', chosenStatusAuto: true })
+      .where(eq(schema.users.id, u));
+    // A legacy device's activity alone doesn't end it.
+    expect(await r1.engine.recompute(u)).toBe('idle');
+
+    // The Mac comes into use; replica 2 publishes that without acting on it…
+    mac.presenceActive = true;
+    expect(await r2.engine.recompute(u, { keepAutoIdle: true })).toBe('idle');
+    expect(JSON.parse((await admin.hget(`zekktris:presence:u:${u}`, 'replica-2'))!)).toMatchObject({
+      l: 1,
+      a: 1,
+      r: 1,
+    });
+    // …and replica 1, which only sees the old phone, ends it from the sum.
+    expect(await r1.engine.recompute(u)).toBe('online');
+    const [after] = await db
+      .select({ chosenStatus: schema.users.chosenStatus, auto: schema.users.chosenStatusAuto })
+      .from(schema.users)
+      .where(eq(schema.users.id, u));
+    expect(after).toEqual({ chosenStatus: 'online', auto: false });
+  });
+
   it('a replica losing its last socket does not offline a user connected to another replica', async () => {
     const r1 = replica('replica-a');
     const r2 = replica('replica-b');

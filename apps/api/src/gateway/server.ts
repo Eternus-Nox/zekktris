@@ -619,6 +619,7 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
   conn.authSessionId = sessionId;
   // This device's activity at connect. Absent (legacy client) = active.
   conn.presenceActive = presenceActivity(payload.presence) ?? true;
+  conn.reportsActivity = presenceActivity(payload.presence) !== null;
   // NOTE: indexing for live fan-out is deferred until AFTER the READY frame is
   // sent (below) — see the comment there. Indexing here would let an event
   // fanned out during the awaited voice-states read reach this socket with a
@@ -892,7 +893,10 @@ async function handleResume(conn: Connection, payload: ResumePayload | undefined
   conn.authSessionId = sessionId;
   // The client's current activity, if it sent one (else the session's).
   const resumedActivity = presenceActivity(payload.presence);
-  if (resumedActivity !== null) conn.presenceActive = resumedActivity;
+  if (resumedActivity !== null) {
+    conn.presenceActive = resumedActivity;
+    conn.reportsActivity = true;
+  }
   for (const json of missed) conn.sendRaw(json);
   conn.send(dispatchFrame('RESUMED', { session_id: conn.sessionId }));
 
@@ -939,6 +943,7 @@ function handlePresenceUpdate(conn: Connection, payload: PresenceUpdatePayload |
   if (!conn.isAuthenticated() || conn.userId === null || conn.detached) return;
   const active = presenceActivity(payload);
   if (active === null) return;
+  conn.reportsActivity = true;
   const userId = conn.userId;
   conn.reportPresenceActivity(active, () => {
     void presence().recompute(userId, { endAutoIdle: conn.presenceActive });

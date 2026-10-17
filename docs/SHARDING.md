@@ -59,7 +59,9 @@ A replica only sees its own sockets, so:
 - Each replica publishes a per-user summary into the Redis hash
   `zekktris:presence:u:<userId>`: field = the replica's cluster instance id,
   value = `{l: live connections, a: active connections, t: timestamp}` (plus
-  `h` / `ha` for a held device, below). It writes it on every recompute
+  `h` / `ha` for a held device, below, and `r`: how many of the active ones
+  are updated clients that report their activity — that ends a pre-update
+  client's automatic away). It writes it on every recompute
   (connect, `PRESENCE_UPDATE` op, a socket closing, a status change) and
   refreshes all of its entries from a heartbeat every 15 s.
 - When a user's last socket on a replica closes, that replica holds the

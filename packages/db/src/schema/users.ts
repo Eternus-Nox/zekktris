@@ -71,7 +71,8 @@ export const users = pgTable(
       .default('online'),
     /** True when chosenStatus is an 'idle' set by a status PATCH without the
      *  `statusSource: 'manual'` marker — a pre-update client's automatic
-     *  away. The presence recompute resets such an 'idle' to 'online' when
+     *  away. The presence recompute resets such an 'idle' to 'online' while
+     *  an updated device (one that reports its activity) is in use, or when
      *  the user's effective status next turns 'offline' (their last device
      *  left), as the old server's disconnect/reconnect did; a manual pick
      *  persists. Only ever true with chosenStatus 'idle'

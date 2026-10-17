@@ -173,8 +173,9 @@ const patchMeSchema = z
         in their status picker (packages/client patchMe does it). Absent (a
         pre-update client) or 'auto': an 'idle' is that client's AUTOMATIC
         away and is flagged (users.chosen_status_auto), so it goes back to
-        'online' once the user's last device disconnects instead of pinning
-        them Away — the old server's disconnect/reconnect behaviour. A
+        'online' while an updated device is in use or once the user's last
+        device disconnects, instead of pinning them Away — the old server's
+        disconnect/reconnect behaviour. A
         'manual' pick (or any status other than 'idle') clears the flag.
         Ignored without `status`. Servers before this field strip it. */
     statusSource: z.enum(['manual', 'auto']).optional(),
@@ -421,7 +422,11 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   let user = updated;
   if (body.status !== undefined) {
     const { presence } = await import('../gateway/presence');
-    const effective = await presence().recompute(userId, { broadcast: 'always' });
+    const effective = await presence().recompute(userId, {
+      broadcast: 'always',
+      // Don't end the automatic away this very PATCH set (see keepAutoIdle).
+      keepAutoIdle: updated.chosenStatusAuto,
+    });
     if (effective) user = { ...updated, status: effective };
     // The recompute may have ended an automatic away it just offlined
     // (no device connected), so report the chosen status as stored now.

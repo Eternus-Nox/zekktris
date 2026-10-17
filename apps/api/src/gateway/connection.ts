@@ -116,6 +116,10 @@ export class Connection {
    * presence recompute (gateway/presence.ts) through the registry.
    */
   presenceActive = true;
+  /** This client reports its device's activity (presence in IDENTIFY/RESUME
+   *  or an op 3) — an updated client. Legacy clients never do; they count as
+   *  active but can't end a legacy automatic away (presence.ts). */
+  reportsActivity = false;
 
   /** When an op-3 change was last applied (rate limit), and the latest value
    *  that arrived too soon, applied when the window reopens. */
@@ -237,6 +241,7 @@ export class Connection {
     // The device is the same one; the RESUME handler overrides this when the
     // client sent its current activity.
     this.presenceActive = prev.presenceActive;
+    this.reportsActivity = prev.reportsActivity;
     if (this.identifyTimer) {
       clearTimeout(this.identifyTimer);
       this.identifyTimer = undefined;

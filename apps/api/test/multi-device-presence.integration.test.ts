@@ -426,11 +426,17 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     await expectStatus(u, 'online');
     expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
 
-    // A device connecting in use ends one too.
+    // A device connecting in use ends one too. (The Mac is swapped for an
+    // idle one first, so nothing updated is in use when the away lands.)
+    const idleMac = await connect(u, { active: false });
+    await mac.close();
+    await expectStatus(u, 'idle');
     const oldPhone2 = await connect(u);
     await patchStatus(token, 'idle');
-    await expectStatus(u, 'idle');
+    expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
     await oldPhone2.close();
+    await sleep(300);
+    expect(await row(u)).toMatchObject({ status: 'idle', chosenStatus: 'idle', chosenStatusAuto: true });
     const laptop = await connect(u, { active: true });
     await expectStatus(u, 'online');
     expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
@@ -438,13 +444,38 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     // A PICKED Away is never ended by device activity.
     await patchStatus(token, 'idle', 'manual');
     await expectStatus(u, 'idle');
-    mac.setActive(false);
+    laptop.setActive(false);
     await sleep(2_300); // op 3 changes apply at most every 2 s per connection
-    mac.setActive(true);
+    laptop.setActive(true);
     await sleep(2_300);
     expect(await row(u)).toMatchObject({ status: 'idle', chosenStatus: 'idle', chosenStatusAuto: false });
-    await mac.close();
+    await idleMac.close();
     await laptop.close();
+  });
+
+  it('a legacy automatic away that lands while an updated device is ALREADY in use ends on the next recompute', async () => {
+    const u = await createUser();
+    const token = await tokenFor(u);
+    // The Mac (updated) is in use; an old phone build sits open, untouched.
+    const mac = await connect(u, { active: true });
+    const oldPhone = await connect(u);
+    await expectStatus(u, 'online');
+    // The old build's automatic away. Its own PATCH response keeps it, or the
+    // old app would read Online and PATCH Away again on its next tick.
+    const res = await patchStatus(token, 'idle');
+    expect(((await res.json()) as { user: unknown }).user).toMatchObject({
+      status: 'idle',
+      chosenStatus: 'idle',
+    });
+    expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
+    // The old app is killed before it can PATCH 'online' back. No device
+    // reports a CHANGE of activity — the Mac was in use all along — yet the
+    // status follows it.
+    await oldPhone.close();
+    await expectStatus(u, 'online');
+    expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
+    await mac.close();
+    await expectStatus(u, 'offline');
   });
 
   it('an automatic idle PATCHed with no device connected that offlines a stale row is reported as already ended', async () => {

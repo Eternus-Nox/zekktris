@@ -77,6 +77,10 @@ export interface PresenceSummary {
   live: number;
   /** Of those, how many report their device in use. */
   active: number;
+  /** Of the active ones, how many are UPDATED clients that report activity
+   *  (legacy connections count as active but never report). Ends a legacy
+   *  automatic away — see recomputeNow. Absent = 0. */
+  reported?: number;
 }
 
 /** What the engine needs from a connection registry. */
@@ -108,11 +112,16 @@ export interface RecomputeOptions {
   audience?: PresenceAudience;
   /** An UPDATED device just reported itself in use (op 3 {active:true}, or
    *  presence {active:true} in IDENTIFY/RESUME — legacy clients never send
-   *  either). That ends a legacy client's automatic away (chosen 'idle' with
-   *  users.chosenStatusAuto): the status follows the device in use, and an old
-   *  phone killed while it was auto-idle can't un-idle itself — without this
-   *  an always-connected desktop would keep the user Away until they repick. */
+   *  either). Ends a legacy client's automatic away; the summary's `reported`
+   *  count does the same whenever such a device is in use (see recomputeNow).
+   *  Redundant with that count today, kept explicit for the event paths. */
   endAutoIdle?: boolean;
+  /** The recompute run by the unmarked PATCH that just SET an automatic away:
+   *  leave it for this one recompute. Ending it here would hand the old app
+   *  back 'online' in its own PATCH response, and it would PATCH 'idle' again
+   *  on its next 60 s tick, broadcasting each time. The next recompute (its
+   *  socket closing, another device's report, …) ends it. */
+  keepAutoIdle?: boolean;
 }
 
 const KEY_PREFIX = 'zekktris:presence:u:';
@@ -135,20 +144,22 @@ const keyFor = (userId: bigint): string => KEY_PREFIX + userId.toString();
  * One replica's contribution to a user's presence (the Redis entry, plus `t`).
  * `l` counts live connections AND held devices; `a` the active ones among
  * them, settled holds excluded; `h` settled holds and `ha` how many of those
- * were active when they left. See the module comment.
+ * were active when they left; `r` the active live connections of updated
+ * clients that report activity (holds never count). See the module comment.
  */
 interface Tally {
   l: number;
   a: number;
   h: number;
   ha: number;
+  r: number;
 }
 
 interface ClusterEntry extends Tally {
   t: number;
 }
 
-const EMPTY_TALLY: Tally = { l: 0, a: 0, h: 0, ha: 0 };
+const EMPTY_TALLY: Tally = { l: 0, a: 0, h: 0, ha: 0, r: 0 };
 
 function parseEntry(raw: string): ClusterEntry | null {
   try {
@@ -157,22 +168,28 @@ function parseEntry(raw: string): ClusterEntry | null {
     // h / ha are absent from entries written before holds settled.
     const h = typeof e.h === 'number' ? e.h : 0;
     const ha = typeof e.ha === 'number' ? e.ha : 0;
-    return { l: e.l, a: e.a, h, ha, t: e.t };
+    // r is absent from entries written before it existed (and when 0).
+    const r = typeof e.r === 'number' ? e.r : 0;
+    return { l: e.l, a: e.a, h, ha, r, t: e.t };
   } catch {
     return null;
   }
 }
 
 function serializeEntry(t: Tally, now: number): string {
-  return JSON.stringify(
-    t.h > 0 ? { l: t.l, a: t.a, h: t.h, ha: t.ha, t: now } : { l: t.l, a: t.a, t: now },
-  );
+  return JSON.stringify({
+    l: t.l,
+    a: t.a,
+    ...(t.h > 0 ? { h: t.h, ha: t.ha } : {}),
+    ...(t.r > 0 ? { r: t.r } : {}),
+    t: now,
+  });
 }
 
 /** A settled hold's activity only counts when held devices are all there is
  *  (the single-device disconnect keeps reading as before until offline). */
 function reduceTally(t: Tally): PresenceSummary {
-  return { live: t.l, active: t.l > t.h ? t.a : t.ha };
+  return { live: t.l, active: t.l > t.h ? t.a : t.ha, reported: t.r };
 }
 
 /** Restricts a sweep / boot reset to these users (tests share a database). */
@@ -266,11 +283,13 @@ export class PresenceEngine {
   /** This replica's contribution, a held user counting as one connection. */
   private localTally(userId: bigint): Tally {
     const s = this.source.presenceSummary(userId);
-    if (s.live > 0) return { l: s.live, a: s.active, h: 0, ha: 0 };
+    if (s.live > 0) return { l: s.live, a: s.active, h: 0, ha: 0, r: s.reported ?? 0 };
     const held = this.holds.get(userId);
     if (!held) return EMPTY_TALLY;
     const active = held.active ? 1 : 0;
-    return held.settled ? { l: 1, a: 0, h: 1, ha: active } : { l: 1, a: active, h: 0, ha: 0 };
+    return held.settled
+      ? { l: 1, a: 0, h: 1, ha: active, r: 0 }
+      : { l: 1, a: active, h: 0, ha: 0, r: 0 };
   }
 
   /** This replica's view of the user, a held user counting as one connection. */
@@ -317,15 +336,20 @@ export class PresenceEngine {
           .limit(1);
         if (!row) return null;
         // A pre-update client's AUTOMATIC away (chosen 'idle' from a PATCH
-        // without the manual marker — see users.chosenStatusAuto) ends when an
-        // updated device reports itself in use (opts.endAutoIdle), and when
-        // the user has no device left, as the old server's disconnect →
-        // reconnect did: an old app killed while auto-idle can no longer
-        // un-idle itself, and nothing else would. A picked Away stays. The
-        // no-device case includes an automatic idle PATCHed while the row
-        // ALREADY reads offline (an old app whose socket was down).
+        // without the manual marker — see users.chosenStatusAuto) ends while
+        // an updated device is in use anywhere in the cluster (`reported`;
+        // opts.endAutoIdle on the event paths), and when the user has no
+        // device left, as the old server's disconnect → reconnect did: an old
+        // app killed while auto-idle can no longer un-idle itself, and
+        // nothing else would. The status follows the device in use. Legacy
+        // connections count as active but never as `reported`, so an old app
+        // can't cancel its own away. A picked Away stays. The no-device case
+        // includes an automatic idle PATCHed while the row ALREADY reads
+        // offline (an old app whose socket was down).
         const autoIdle = row.chosenStatus === 'idle' && row.chosenStatusAuto;
-        let chosen: ChosenStatus = autoIdle && opts.endAutoIdle ? 'online' : row.chosenStatus;
+        const endAuto =
+          opts.endAutoIdle === true || (!opts.keepAutoIdle && (summary.reported ?? 0) > 0);
+        let chosen: ChosenStatus = autoIdle && endAuto ? 'online' : row.chosenStatus;
         const next = effectiveStatus(chosen, summary);
         if (autoIdle && next === 'offline') chosen = 'online';
         const resetAutoIdle = chosen !== row.chosenStatus;
@@ -364,9 +388,10 @@ export class PresenceEngine {
         if (changed && ((next === 'offline' && row.status !== 'invisible') || row.status === 'offline')) {
           await touchLastSeen(userId);
         }
-        // Only the chosen status changed (an automatic idle ended while
-        // already offline): others see nothing new, so no frame unless asked.
-        if (changed || opts.broadcast === 'always') {
+        // Only the chosen status changed: while offline (an automatic idle
+        // ended with no device left) others see nothing new, so no frame
+        // unless asked; otherwise the user's own devices need the new pick.
+        if (changed || opts.broadcast === 'always' || (resetAutoIdle && next !== 'offline')) {
           await this.broadcast(userId, next, chosen, opts.audience);
         }
         // One replica: recomputes are serialized here and every input change
@@ -468,6 +493,7 @@ export class PresenceEngine {
         total.a += e.a;
         total.h += e.h;
         total.ha += e.ha;
+        total.r += e.r;
       }
       return reduceTally(total);
     } catch (err) {
