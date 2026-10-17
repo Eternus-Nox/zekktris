@@ -44,6 +44,7 @@ import {
   DEFAULT_SERVER_URL,
 } from './config';
 import { findServer } from './server';
+import { externalUrl, isSameOrigin, permissionAllowed } from './trust';
 
 const PROTOCOL = 'zekktris';
 
@@ -66,12 +67,13 @@ const PROTOCOL = 'zekktris';
 // ── Auto-launch (start on login) ────────────────────────────────────────────
 // Apply the persisted openAtLogin setting to the OS login items. We
 // pass --hidden so a login-triggered launch starts straight to the
-// tray without flashing the window open.
+// tray without flashing the window open (Windows; macOS has no launch
+// args for login items, so there launchedAtLogin() reads
+// wasOpenedAtLogin instead — Electron 44 removed `openAsHidden`).
 function applyLoginItem(enabled: boolean): void {
   try {
     app.setLoginItemSettings({
       openAtLogin: enabled,
-      openAsHidden: enabled, // macOS: start hidden
       args: enabled ? ['--hidden'] : [],
     });
   } catch {
@@ -169,6 +171,22 @@ function handleDeepLink(url: string): void {
   }
 }
 
+// ── Trust boundary: the remote page ─────────────────────────────────────────
+// The main window shows whatever server the user picked, so its page is
+// untrusted web content: it gets the window.zekktris bridge and the
+// permissions below only on that server's own origin, and may only hand
+// web and mail links to the OS (see trust.ts).
+
+function openExternalSafely(url: string): void {
+  const safe = externalUrl(url);
+  if (safe) void shell.openExternal(safe);
+}
+
+/** True when `url` (a URL or an origin) is on the chosen server's origin. */
+function isServerOrigin(url: string | null | undefined): boolean {
+  return isSameOrigin(url, getServerUrl());
+}
+
 // ── Badge / unread indicators ──────────────────────────────────────────────
 // The web app sets document.title to "(3) #general · Zekktris" when there
 // are unread mentions. We extract the leading count and reflect it across
@@ -262,6 +280,8 @@ function createMainWindow(serverUrl: string, startHidden = false): void {
       // rate when the window is minimized or in the background — a
       // chat/voice app must not stall when it loses focus.
       backgroundThrottling: false,
+      // Tells the preload which origin may see window.zekktris.
+      additionalArguments: [`--zk-server-origin=${new URL(serverUrl).origin}`],
     },
   });
 
@@ -300,22 +320,25 @@ function createMainWindow(serverUrl: string, startHidden = false): void {
     mainWindow = null;
   });
 
-  // External links + off-origin navigations open in the default browser.
-  const isInternal = (url: string) => {
-    try {
-      return new URL(url).origin === new URL(serverUrl).origin;
-    } catch {
-      return false;
-    }
-  };
+  // External links + off-origin navigations open in the default browser
+  // (http/https/mailto only, see openExternalSafely) and never load here.
+  const isInternal = (url: string) => isSameOrigin(url, serverUrl);
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    openExternalSafely(url);
     return { action: 'deny' };
   });
-  mainWindow.webContents.on('will-navigate', (e, url) => {
-    if (!isInternal(url)) {
+  mainWindow.webContents.on('will-navigate', (e) => {
+    if (!isInternal(e.url)) {
       e.preventDefault();
-      void shell.openExternal(url);
+      openExternalSafely(e.url);
+    }
+  });
+  // A server-side redirect to another origin never fires will-navigate, and
+  // without this it would load in the app window with the preload attached.
+  mainWindow.webContents.on('will-redirect', (e) => {
+    if (e.isMainFrame && !isInternal(e.url)) {
+      e.preventDefault();
+      openExternalSafely(e.url);
     }
   });
 
@@ -519,9 +542,17 @@ function showServerPicker(): void {
     },
   });
   void serverWindow.loadFile(join(__dirname, 'static', 'server.html'));
+  keepOnShellPage(serverWindow);
   serverWindow.on('closed', () => {
     serverWindow = null;
   });
+}
+
+/** The shell's own file:// windows never leave the page they were opened on,
+    so the bridge calls only they may make stay with that page. */
+function keepOnShellPage(win: BrowserWindow): void {
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', (e) => e.preventDefault());
 }
 
 /** Only the shell's own server window may switch servers. */
@@ -568,10 +599,11 @@ ipcMain.on('zk:server-close', (e) => {
 // thumbnails. Resolves the pending getDisplayMedia callback with the
 // chosen source, or denies it on cancel.
 
-// Electron's own callback shape. Typed as `unknown` before, which is
-// unsound in the contravariant position and made every call site pass the
-// real handler through an `as never` cast.
-type DisplayMediaCallback = (streams: Electron.Streams) => void;
+// Electron's own callback shape. Deny with `null`, the documented way (the
+// page's getDisplayMedia rejects). The old `{ video: undefined }` denied too,
+// but only by tripping Electron's "Video was requested, but no video stream
+// was provided" TypeError.
+type DisplayMediaCallback = (streams: Electron.Streams | null) => void;
 let pickerWindow: BrowserWindow | null = null;
 let pendingPickerCallback: DisplayMediaCallback | null = null;
 let pendingSources: Electron.DesktopCapturerSource[] = [];
@@ -582,7 +614,7 @@ function showSourcePicker(
 ): void {
   // Only one picker at a time; deny a new request if one's already open.
   if (pickerWindow) {
-    callback({ video: undefined } as never);
+    callback(null);
     return;
   }
   pendingPickerCallback = callback;
@@ -624,34 +656,56 @@ function showSourcePicker(
     },
   });
   void pickerWindow.loadFile(join(__dirname, 'static', 'picker.html'));
+  keepOnShellPage(pickerWindow);
 
   pickerWindow.on('closed', () => {
     pickerWindow = null;
     // If it closed without a selection, deny the request so the web
     // app's getDisplayMedia promise rejects cleanly (rather than hanging).
     if (pendingPickerCallback) {
-      pendingPickerCallback({ video: undefined } as never);
+      pendingPickerCallback(null);
       pendingPickerCallback = null;
       pendingSources = [];
     }
   });
 }
 
+/** The source list and the choice belong to the shell's picker page alone,
+    and only while a getDisplayMedia request is waiting on it. The remote page
+    must never list windows (titles + thumbnails) or pick a source itself:
+    that would share the whole screen without the user choosing it. */
+function fromPickerWindow(e: Electron.IpcMainInvokeEvent): boolean {
+  const frame = e.senderFrame;
+  return (
+    !!pickerWindow &&
+    !!pendingPickerCallback &&
+    e.sender === pickerWindow.webContents &&
+    !!frame &&
+    frame.parent === null &&
+    frame.url.startsWith('file:')
+  );
+}
+
 // Picker asks for the source list (id, name, thumbnail data URL).
-ipcMain.handle('zk:get-screen-sources', () =>
-  pendingSources.map((s) => ({
+ipcMain.handle('zk:get-screen-sources', (e) => {
+  if (!fromPickerWindow(e)) return [];
+  return pendingSources.map((s) => ({
     id: s.id,
     name: s.name,
     thumbnail: s.thumbnail.toDataURL(),
     isScreen: s.id.startsWith('screen:'),
-  })),
-);
+  }));
+});
 
 // Picker reports the user's choice (sourceId) or null on cancel.
-ipcMain.handle('zk:pick-screen-source', (_e, sourceId: string | null) => {
+ipcMain.handle('zk:pick-screen-source', (e, sourceId: unknown) => {
+  if (!fromPickerWindow(e)) return;
   const cb = pendingPickerCallback;
   pendingPickerCallback = null;
-  const chosen = pendingSources.find((s) => s.id === sourceId) ?? null;
+  const chosen =
+    typeof sourceId === 'string'
+      ? (pendingSources.find((s) => s.id === sourceId) ?? null)
+      : null;
   pendingSources = [];
   if (pickerWindow) {
     const w = pickerWindow;
@@ -664,9 +718,9 @@ ipcMain.handle('zk:pick-screen-source', (_e, sourceId: string | null) => {
     // captures the machine's audio output on Windows; on Linux it's
     // honored where the audio backend supports it, and is ignored
     // gracefully otherwise (video still shares).
-    cb({ video: chosen, audio: 'loopback' } as never);
+    cb({ video: chosen, audio: 'loopback' });
   } else {
-    cb({ video: undefined } as never);
+    cb(null);
   }
 });
 
@@ -882,31 +936,24 @@ app.whenReady().then(() => {
     app.setAppUserModelId('com.zekktris.desktop');
   }
 
-  // Auto-grant the permissions the web app needs so nothing prompts:
-  //   - notifications: native message/call pop-ups
-  //   - media / mic / camera: voice + video
-  //   - display-capture: screen share (the request handler above does
-  //     the actual source selection)
-  const allowed = new Set([
-    'notifications',
-    'media',
-    'mediaKeySystem',
-    'audioCapture',
-    'videoCapture',
-    'display-capture',
-    // navigator.clipboard.writeText() triggers a clipboard permission check;
-    // without these the desktop renderer gets "clipboard access declined".
-    'clipboard-read',
-    'clipboard-write',
-    'clipboard-sanitized-write',
-  ]);
+  // Auto-grant the permissions the web app needs so nothing prompts — and
+  // only those (the list and why is in trust.ts), only to the chosen
+  // server's own pages in the main window: not the shell's file:// windows,
+  // not a third-party iframe. webContents is null for checks that don't come
+  // from a page (e.g. the service worker); the origin still has to match.
+  const inMainWindow = (wc: Electron.WebContents | null): boolean =>
+    wc === null || (!!mainWindow && wc === mainWindow.webContents);
   session.defaultSession.setPermissionRequestHandler(
-    (_wc, permission, callback) => {
-      callback(allowed.has(permission));
+    (wc, permission, callback, details) => {
+      callback(
+        inMainWindow(wc) &&
+          permissionAllowed(permission, details.requestingUrl, getServerUrl()),
+      );
     },
   );
   session.defaultSession.setPermissionCheckHandler(
-    (_wc, permission) => allowed.has(permission),
+    (wc, permission, requestingOrigin) =>
+      inMainWindow(wc) && permissionAllowed(permission, requestingOrigin, getServerUrl()),
   );
 
   // Screen-share support. getDisplayMedia() does nothing in Electron
@@ -914,12 +961,18 @@ app.whenReady().then(() => {
   // failing. We present a picker of screens + windows and resolve the
   // request with the user's choice.
   //
-  // Every platform, macOS included, goes through that picker. The OS-native
-  // picker (`useSystemPicker`) needs Electron 33+; on the pinned ^31 it is an
-  // unknown property that is silently dropped, leaving `video: undefined` —
-  // i.e. a hard deny. Don't re-add it without bumping Electron.
+  // Every platform, macOS included, goes through that picker. Electron's
+  // OS-native picker (`useSystemPicker`) is still marked experimental and is
+  // macOS 15+ only, so Windows, Linux and older Macs need this picker anyway;
+  // one shell-owned picker keeps screen share the same everywhere.
   session.defaultSession.setDisplayMediaRequestHandler(
-    (_request, callback) => {
+    (request, callback) => {
+      // Only the chosen server's own page may ask (not an iframe it embeds:
+      // its securityOrigin is the iframe's).
+      if (!isServerOrigin(request.securityOrigin || request.frame?.url)) {
+        callback(null);
+        return;
+      }
       void desktopCapturer
         .getSources({
           types: ['screen', 'window'],
@@ -929,12 +982,12 @@ app.whenReady().then(() => {
         .then((sources) => {
           if (sources.length === 0) {
             // Nothing to share — deny cleanly.
-            callback({ video: undefined } as never);
+            callback(null);
             return;
           }
           showSourcePicker(sources, callback);
         })
-        .catch(() => callback({ video: undefined } as never));
+        .catch(() => callback(null));
     },
   );
 

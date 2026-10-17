@@ -7,47 +7,67 @@
 
 import { contextBridge, ipcRenderer } from 'electron';
 
-contextBridge.exposeInMainWorld('zekktris', {
-  isDesktop: true,
-  /** Screen-share picker: list capturable sources. */
-  getScreenSources: (): Promise<
-    Array<{ id: string; name: string; thumbnail: string; isScreen: boolean }>
-  > => ipcRenderer.invoke('zk:get-screen-sources'),
-  /** Screen-share picker: report the chosen source id (or null to cancel). */
-  pickScreenSource: (sourceId: string | null): Promise<void> =>
-    ipcRenderer.invoke('zk:pick-screen-source', sourceId),
-  /** Set the native window / taskbar / dock / tray icons from PNG data URLs
-      (used to make every app icon track the selected in-app theme). Accepts
-      either a single string (legacy: window/dock only) or an object with
-      separate `window` and `tray` PNGs. */
-  setAppIcon: (
-    payload: string | { window?: string; tray?: string },
-  ): void => {
-    ipcRenderer.send('zk:set-app-icon', payload);
-  },
-  /** Tell the shell whether a voice/video call is currently connected, so it
-      can hold off actions that would destroy the Room (see the unresponsive
-      watchdog in main.ts). */
-  setCallActive: (active: boolean): void => {
-    ipcRenderer.send('zk:call-active', active);
-  },
-  /** Current idle state (true = system idle/locked). */
-  getIdleState: (): Promise<boolean> => ipcRenderer.invoke('zk:get-idle-state'),
-  /** Subscribe to idle-state changes (true = idle, false = active).
-      Returns an unsubscribe function. */
-  onIdleStateChange: (cb: (idle: boolean) => void): (() => void) => {
-    const listener = (_e: unknown, idle: boolean) => cb(idle);
-    ipcRenderer.on('zk:idle-state', listener);
-    return () => ipcRenderer.removeListener('zk:idle-state', listener);
-  },
-  /** Which Zekktris server the app is loading ({ url, host, isDefault }). */
-  getServer: (): Promise<{ url: string; host: string; isDefault: boolean }> =>
-    ipcRenderer.invoke('zk:server-current'),
-  /** Open the shell's server picker. Picking happens in that window. */
-  openServerPicker: (): void => {
-    ipcRenderer.send('zk:open-server-picker');
-  },
-});
+// Who may see the bridge: the chosen server's own pages (main.ts passes its
+// origin as --zk-server-origin) and the shell's own file:// pages. Main.ts
+// keeps the window on that origin; this is the second line, so a page that
+// still ends up somewhere else (a redirect, an error page) gets nothing.
+const SERVER_ORIGIN =
+  process.argv
+    .find((a) => a.startsWith('--zk-server-origin='))
+    ?.slice('--zk-server-origin='.length) ?? null;
+const IS_SHELL_PAGE = window.location.protocol === 'file:';
+const IS_SERVER_PAGE = !!SERVER_ORIGIN && window.location.origin === SERVER_ORIGIN;
+
+if (IS_SERVER_PAGE || IS_SHELL_PAGE) {
+  contextBridge.exposeInMainWorld('zekktris', {
+    isDesktop: true,
+    // The screen-share picker (static/picker.html, a file:// page the shell
+    // owns) lists the capturable sources and reports the choice. Remote pages
+    // never get these, and main.ts also checks the sender.
+    ...(IS_SHELL_PAGE
+      ? {
+          /** Screen-share picker: list capturable sources. */
+          getScreenSources: (): Promise<
+            Array<{ id: string; name: string; thumbnail: string; isScreen: boolean }>
+          > => ipcRenderer.invoke('zk:get-screen-sources'),
+          /** Screen-share picker: report the chosen source id (or null to cancel). */
+          pickScreenSource: (sourceId: string | null): Promise<void> =>
+            ipcRenderer.invoke('zk:pick-screen-source', sourceId),
+        }
+      : {}),
+    /** Set the native window / taskbar / dock / tray icons from PNG data URLs
+        (used to make every app icon track the selected in-app theme). Accepts
+        either a single string (legacy: window/dock only) or an object with
+        separate `window` and `tray` PNGs. */
+    setAppIcon: (
+      payload: string | { window?: string; tray?: string },
+    ): void => {
+      ipcRenderer.send('zk:set-app-icon', payload);
+    },
+    /** Tell the shell whether a voice/video call is currently connected, so it
+        can hold off actions that would destroy the Room (see the unresponsive
+        watchdog in main.ts). */
+    setCallActive: (active: boolean): void => {
+      ipcRenderer.send('zk:call-active', active);
+    },
+    /** Current idle state (true = system idle/locked). */
+    getIdleState: (): Promise<boolean> => ipcRenderer.invoke('zk:get-idle-state'),
+    /** Subscribe to idle-state changes (true = idle, false = active).
+        Returns an unsubscribe function. */
+    onIdleStateChange: (cb: (idle: boolean) => void): (() => void) => {
+      const listener = (_e: unknown, idle: boolean) => cb(idle);
+      ipcRenderer.on('zk:idle-state', listener);
+      return () => ipcRenderer.removeListener('zk:idle-state', listener);
+    },
+    /** Which Zekktris server the app is loading ({ url, host, isDefault }). */
+    getServer: (): Promise<{ url: string; host: string; isDefault: boolean }> =>
+      ipcRenderer.invoke('zk:server-current'),
+    /** Open the shell's server picker. Picking happens in that window. */
+    openServerPicker: (): void => {
+      ipcRenderer.send('zk:open-server-picker');
+    },
+  });
+}
 
 // The server picker itself (static/server.html, a file:// page the shell owns)
 // gets the calls that actually switch servers. Remote pages never see these,

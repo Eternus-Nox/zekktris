@@ -167,8 +167,10 @@ say "Releasing Zekktris desktop v$VER"
 # The Docker path installs and builds inside the container, so a Windows +
 # Linux run needs no Node on the host — which is what lets it run on Unraid.
 if [ "$DO_MAC" = "1" ] || [ "$CROSS" = "wine" ]; then
-  say "Installing deps + building main/preload (npm install && npm run build)"
-  run "npm install"
+  # npm ci: exactly the versions in package-lock.json, so every release ships
+  # the same Electron/updater it was tested with.
+  say "Installing deps + building main/preload (npm ci && npm run build)"
+  run "npm ci"
   run "npm run build"
 fi
 
@@ -220,14 +222,17 @@ else
       # Mount the project; shadow node_modules with an anonymous volume so the
       # container's Linux/wine npm install never clobbers the host's macOS
       # node_modules (esbuild/electron are platform-specific). Cache electron
-      # downloads on the host so repeat runs are fast.
+      # downloads on the host so repeat runs are fast. Pass the Windows
+      # signing certificate through when one is configured (README: "Signing
+      # and update integrity"); unset, the build is unsigned as before.
       run "docker run --rm \
+        -e WIN_CSC_LINK -e WIN_CSC_KEY_PASSWORD \
         -v \"\$PWD\":/project \
         -v /project/node_modules \
         -v \"\${HOME}/.cache/electron\":/root/.cache/electron \
         -v \"\${HOME}/.cache/electron-builder\":/root/.cache/electron-builder \
         electronuserland/builder:wine \
-        /bin/bash -c \"cd /project && npm install && npm run build && npx electron-builder $TARGETS --publish never\""
+        /bin/bash -c \"cd /project && npm ci && npm run build && npx electron-builder $TARGETS --publish never\""
       ;;
     wine)
       command -v wine >/dev/null || die "wine not found. 'brew install --cask wine-stable', or use --cross docker."
