@@ -20,6 +20,13 @@ import { currentSelfStatus, recordSelfUser } from './selfStatus';
  * only from/to 'online' and only if it set it, so a chosen 'dnd' or
  * 'invisible' is never stomped. A browser tab had no idle detection there and
  * still has none.
+ *
+ * Mounted once per tab, for every route, by <PresenceActivity/> in App — not
+ * by Shell. AuthProvider connects the gateway on every route (/terms,
+ * /privacy, /confirm-email, …), and the server counts a connection that
+ * never reports activity as an active device, so a signed-in tab outside the
+ * Shell must report too; and navigating between Shell and those routes must
+ * not drop the idle timers and visibility tracking.
  */
 
 interface ZekktrisIdleBridge {
@@ -141,4 +148,11 @@ export function usePresenceActivity(): void {
       for (const c of cleanups) c();
     };
   }, [gateway, rest, updateUser, userId]);
+}
+
+/** Renders nothing; runs usePresenceActivity for the signed-in user. Mount it
+ *  exactly once, inside AuthProvider and outside <Routes> (see App). */
+export function PresenceActivity(): null {
+  usePresenceActivity();
+  return null;
 }

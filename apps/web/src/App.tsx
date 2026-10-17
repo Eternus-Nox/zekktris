@@ -22,6 +22,7 @@ import { ToastProvider } from './state/Toasts';
 import { ErrorBoundary } from './lib/ErrorBoundary';
 import { PwaBanners } from './app/PwaBanners';
 import { DobBanner } from './app/DobBanner';
+import { PresenceActivity } from './lib/usePresenceActivity';
 
 /**
  * Picks the wrapper for `/invite/:code` based on auth state.
@@ -80,6 +81,12 @@ export function App() {
         <AuthProvider>
           <AppStateProvider>
             <TypingProvider>
+              {/* Outside <Routes>: every signed-in tab reports whether it is
+                  in use, whatever route it is on. AuthProvider connects the
+                  gateway on every route, and the server counts a connection
+                  that never reports as an ACTIVE device — a Terms tab left
+                  open in the background would keep the user Online. */}
+              <PresenceActivity />
               <PwaBanners />
               <DobBanner />
               <Routes>
