@@ -36,6 +36,7 @@ import { nextSnowflake } from '../snowflake';
 import { writeAudit } from './audit';
 import { log } from '../log';
 import { createMessage } from './messages';
+import { isCurrentlyBanned } from './instanceBans';
 import * as dispatch from '../gateway/dispatch';
 import { toMessage } from '../lib/dto';
 import { computeMemberChannelPermissions, Permissions, hasPermission } from './permissions';
@@ -385,7 +386,7 @@ export async function executeWebhook(input: ExecuteWebhookInput): Promise<schema
     .from(schema.users)
     .where(eq(schema.users.id, wh.createdBy))
     .limit(1);
-  if (!ownerRows[0] || ownerRows[0].bannedAt !== null || ownerRows[0].deletedAt !== null) {
+  if (!ownerRows[0] || isCurrentlyBanned(ownerRows[0]) || ownerRows[0].deletedAt !== null) {
     throw errors.unauthenticated('Invalid webhook id or token');
   }
 

@@ -54,6 +54,9 @@ import * as dispatch from './dispatch';
 import * as dms from '../services/dms';
 import * as relationships from '../services/relationships';
 import { touchLastSeen } from '../services/presence';
+import { isCurrentlyBanned } from '../services/instanceBans';
+import { getIncomingClientIp } from '../lib/request';
+import { consumeGatewayConnect, consumeGatewayIdentify } from './limits';
 
 const GATEWAY_PATH = '/gateway';
 
@@ -350,9 +353,39 @@ export function attachGateway(httpServer: HttpServer): void {
       socket.destroy();
       return;
     }
-    wss!.handleUpgrade(req, socket as Socket, head, (ws) => {
-      wss!.emit('connection', ws, req);
-    });
+    // Per-IP upgrade limit (gateway/limits.ts), checked BEFORE the handshake
+    // so a flood costs us neither a WebSocket nor an IDENTIFY timer. The
+    // limiter may await Redis; until ws takes the socket over, a client reset
+    // must not surface as an unhandled 'error' event, so guard it meanwhile.
+    const onEarlyError = () => socket.destroy();
+    socket.on('error', onEarlyError);
+    void consumeGatewayConnect(getIncomingClientIp(req))
+      .then((retryAfterMs) => {
+        if (socket.destroyed) return;
+        if (!wss) {
+          socket.destroy(); // gateway detached while we waited
+          return;
+        }
+        if (retryAfterMs !== null) {
+          // A plain HTTP 429 instead of an upgrade: clients see a failed
+          // connect and retry through their normal reconnect backoff.
+          socket.end(
+            'HTTP/1.1 429 Too Many Requests\r\n' +
+              `Retry-After: ${Math.max(1, Math.ceil(retryAfterMs / 1000))}\r\n` +
+              'Connection: close\r\nContent-Length: 0\r\n\r\n',
+          );
+          return;
+        }
+        // ws installs its own error handling from here on.
+        socket.removeListener('error', onEarlyError);
+        wss.handleUpgrade(req, socket as Socket, head, (ws) => {
+          wss!.emit('connection', ws, req);
+        });
+      })
+      .catch((err) => {
+        log.warn('gateway: upgrade failed', { err: (err as Error).message });
+        socket.destroy();
+      });
   });
 
   // ── New connection ─────────────────────────────────────────────────────
@@ -460,6 +493,14 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
       return;
     }
 
+    // Per-user IDENTIFY/RESUME limit, before any DB work. Close WITHOUT an
+    // INVALID_SESSION frame: clients treat that as fatal, whereas a plain
+    // close sends them through their reconnect backoff.
+    if (!(await consumeGatewayIdentify(userId))) {
+      conn.close(CloseCode.RATE_LIMITED, 'rate limited');
+      return;
+    }
+
     // Check that the underlying session hasn't been revoked. A valid
     // access token alone isn't enough — JWTs survive session
     // revocation up to their TTL (~15 min). After a password reset
@@ -520,8 +561,9 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
   // to the access-token TTL (~15min). The admin force-signout path
   // closes EXISTING connections; this check prevents NEW ones from
   // being established. Generic close code to avoid leaking the
-  // specific moderation state.
-  if (user[0].bannedAt || user[0].deletedAt) {
+  // specific moderation state. isCurrentlyBanned, like REST login: an
+  // EXPIRED timed ban is not a ban, even before the sweep clears it.
+  if (isCurrentlyBanned(user[0]) || user[0].deletedAt) {
     conn.send(invalidSessionFrame(false));
     conn.close(CloseCode.AUTHENTICATION_FAILED, 'account unavailable');
     return;
@@ -772,6 +814,11 @@ async function handleResume(conn: Connection, payload: ResumePayload | undefined
     conn.close(CloseCode.AUTHENTICATION_FAILED, 'invalid token');
     return;
   }
+  // Same per-user limit as IDENTIFY (one shared budget for both).
+  if (!(await consumeGatewayIdentify(userId))) {
+    conn.close(CloseCode.RATE_LIMITED, 'rate limited');
+    return;
+  }
   const sessionRows = await db
     .select({ revokedAt: schema.sessions.revokedAt })
     .from(schema.sessions)
@@ -786,6 +833,7 @@ async function handleResume(conn: Connection, payload: ResumePayload | undefined
     .select({
       status: schema.users.status,
       bannedAt: schema.users.bannedAt,
+      bannedUntil: schema.users.bannedUntil,
       deletedAt: schema.users.deletedAt,
     })
     .from(schema.users)
@@ -796,7 +844,7 @@ async function handleResume(conn: Connection, payload: ResumePayload | undefined
     conn.close(CloseCode.AUTHENTICATION_FAILED, 'user not found');
     return;
   }
-  if (userRow.bannedAt || userRow.deletedAt) {
+  if (isCurrentlyBanned(userRow) || userRow.deletedAt) {
     conn.send(invalidSessionFrame(false));
     conn.close(CloseCode.AUTHENTICATION_FAILED, 'account unavailable');
     return;

@@ -565,6 +565,18 @@ export function userJoinedGuild(args: {
   viewableChannelIds?: bigint[];
 }): void {
   registry.addGuildToUser(args.userId, args.guildId, args.viewableChannelIds);
+  // The user may be connected to another replica — update its snapshot too.
+  // Signalled BEFORE the events below; the bus preserves publish order, so the
+  // peer applies the join before GUILD_MEMBER_ADD reaches its filter.
+  publishMembershipRemote(
+    {
+      op: 'guild_add',
+      userId: args.userId.toString(),
+      guildId: args.guildId.toString(),
+      viewableChannelIds: args.viewableChannelIds?.map((id) => id.toString()),
+    },
+    { kind: 'user', userId: args.userId },
+  );
   publish(GatewayEvent.GUILD_CREATE, args.guildDTO, { kind: 'user', userId: args.userId });
   publish(GatewayEvent.GUILD_MEMBER_ADD, args.memberDTO, { kind: 'guild', guildId: args.guildId });
 }
@@ -597,7 +609,12 @@ export function userLeftGuild(args: { userId: bigint; guildId: bigint }): void {
 
   // 3. Snapshot update last. Any further events emitted in this same tick
   //    that target this guild will not reach the user, which is correct.
+  //    Fanned to the other replicas too, which may hold the user's sockets.
   registry.removeGuildFromUser(args.userId, args.guildId);
+  publishMembershipRemote(
+    { op: 'guild_remove', userId: args.userId.toString(), guildId: args.guildId.toString() },
+    { kind: 'user', userId: args.userId },
+  );
 }
 
 /**
@@ -613,9 +630,7 @@ export function dmChannelCreated(args: {
   channelId: bigint;
   recipientIds: bigint[];
 }): void {
-  for (const userId of args.recipientIds) {
-    registry.addDMToUser(userId, args.channelId);
-  }
+  dmSubscribeRecipients({ channelId: args.channelId, recipientIds: args.recipientIds });
   // One 'users'-audience publish — the CHANNEL_CREATE frame is identical for
   // every recipient, so the generic path serializes it once instead of N times
   // (and one Redis round-trip instead of N under the multi-node bus).
@@ -623,6 +638,26 @@ export function dmChannelCreated(args: {
     kind: 'users',
     userIds: args.recipientIds,
   });
+}
+
+/**
+ * Attach a DM channel to every recipient's connection snapshot, on this
+ * replica and all others, so the channel's events route to them. Idempotent
+ * (adding a channel that's already in the set is a no-op). Used when a DM is
+ * opened and before each DM message fan-out (see routes/messages.ts).
+ */
+export function dmSubscribeRecipients(args: { channelId: bigint; recipientIds: bigint[] }): void {
+  for (const userId of args.recipientIds) {
+    registry.addDMToUser(userId, args.channelId);
+  }
+  publishMembershipRemote(
+    {
+      op: 'dm_add',
+      userIds: args.recipientIds.map((id) => id.toString()),
+      channelId: args.channelId.toString(),
+    },
+    { kind: 'users', userIds: args.recipientIds },
+  );
 }
 
 /** A 1:1 DM's messaging streak changed — push the new value to both
@@ -675,6 +710,10 @@ export function dmChannelClosedForUser(args: {
   userId: bigint;
 }): void {
   registry.removeDMFromUser(args.userId, args.channelId);
+  publishMembershipRemote(
+    { op: 'dm_remove', userId: args.userId.toString(), channelId: args.channelId.toString() },
+    { kind: 'user', userId: args.userId },
+  );
   publish(GatewayEvent.CHANNEL_DELETE, args.channelDTO, { kind: 'user', userId: args.userId });
 }
 
@@ -735,6 +774,12 @@ export function guildDeletedBroadcast(args: { guildId: bigint; memberIds: bigint
   for (const userId of args.memberIds) {
     registry.removeGuildFromUser(userId, args.guildId);
   }
+  // Other replicas drop the guild from every connection they hold in it — no
+  // member list on the wire, their per-guild index already knows who that is.
+  publishMembershipRemote(
+    { op: 'guild_drop', guildId: args.guildId.toString() },
+    { kind: 'guild', guildId: args.guildId },
+  );
 }
 
 /**
@@ -1191,13 +1236,74 @@ export function forceDisconnectUser(userId: bigint): void {
   });
 }
 
+/**
+ * Cross-node membership-snapshot signal. Guild join/leave/kick/ban, guild
+ * delete and DM open/close change WHICH guilds and DMs a connection's snapshot
+ * routes, and the user's sockets may be held by any replica — not just the one
+ * that handled the request. Without this, a member kicked on node A keeps
+ * receiving the guild's events on node B (and a member who joined on A
+ * receives nothing on B) until they reconnect. The origin applies the change
+ * locally, then publishes this remote-only (no echo); every other replica
+ * applies it to its own connections. Same `_zk.internal.` plumbing as the
+ * signals above.
+ */
+const INTERNAL_MEMBERSHIP = '_zk.internal.membership';
+
+type MembershipSignal =
+  | { op: 'guild_add'; userId: string; guildId: string; viewableChannelIds?: string[] }
+  | { op: 'guild_remove'; userId: string; guildId: string }
+  | { op: 'guild_drop'; guildId: string }
+  | { op: 'dm_add'; userIds: string[]; channelId: string }
+  | { op: 'dm_remove'; userId: string; channelId: string };
+
+function publishMembershipRemote(d: MembershipSignal, audience: Audience): void {
+  eventBus().publishRemote({ t: INTERNAL_MEMBERSHIP as never, d, audience });
+}
+
+/** Apply a membership signal from another replica to THIS replica's
+ *  connections. Users with no local connection no-op inside the registry. */
+function applyMembershipSignalLocal(d: MembershipSignal): void {
+  switch (d.op) {
+    case 'guild_add':
+      registry.addGuildToUser(
+        BigInt(d.userId),
+        BigInt(d.guildId),
+        d.viewableChannelIds?.map((id) => BigInt(id)),
+      );
+      return;
+    case 'guild_remove':
+      registry.removeGuildFromUser(BigInt(d.userId), BigInt(d.guildId));
+      return;
+    case 'guild_drop': {
+      const guildId = BigInt(d.guildId);
+      for (const userId of registry.connectedUsersInGuild(guildId)) {
+        registry.removeGuildFromUser(userId, guildId);
+      }
+      return;
+    }
+    case 'dm_add': {
+      const channelId = BigInt(d.channelId);
+      for (const userId of d.userIds) registry.addDMToUser(BigInt(userId), channelId);
+      return;
+    }
+    case 'dm_remove':
+      registry.removeDMFromUser(BigInt(d.userId), BigInt(d.channelId));
+      return;
+  }
+}
+
 let internalBusUnsub: (() => void) | null = null;
 
-/** Subscribe (once) to internal cross-node viewability invalidations. Called
- *  from the gateway startup path alongside registry.init(). Idempotent. */
+/** Subscribe (once) to internal cross-node signals (force disconnect,
+ *  membership snapshots, viewability invalidations). Called from the gateway
+ *  startup path alongside registry.init(). Idempotent. */
 export function initInternalDispatchBus(): void {
   if (internalBusUnsub) return;
   internalBusUnsub = eventBus().subscribe((event) => {
+    if (event.t === (INTERNAL_MEMBERSHIP as never)) {
+      applyMembershipSignalLocal(event.d as MembershipSignal);
+      return;
+    }
     if (event.t === (INTERNAL_FORCE_DISCONNECT as never)) {
       const d = event.d as { userId: string };
       forceDisconnectUserLocal(BigInt(d.userId));

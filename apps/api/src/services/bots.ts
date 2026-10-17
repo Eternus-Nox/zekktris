@@ -22,6 +22,7 @@ import { db, schema } from '../db';
 import { errors } from '../errors';
 import { nextSnowflake } from '../snowflake';
 import { encryptField, decryptField } from '../lib/fieldCrypto';
+import { isCurrentlyBanned } from './instanceBans';
 
 const TOKEN_PREFIX = 'zkbot_';
 const TOKEN_BYTES = 32;
@@ -211,14 +212,20 @@ export async function resolveBotByToken(
   // exercising its role grants). Mirrors the owner-status guard on
   // webhook execution in services/webhooks.ts. All failure modes return
   // null so a revoked credential is indistinguishable from a wrong one.
-  if (bot.bannedAt !== null || bot.deletedAt !== null) return null;
+  // isCurrentlyBanned (not raw bannedAt): an EXPIRED timed ban no longer
+  // blocks, matching REST login and the gateway.
+  if (isCurrentlyBanned(bot) || bot.deletedAt !== null) return null;
   if (!bot.botOwnerId) return null;
   const [owner] = await db
-    .select({ bannedAt: schema.users.bannedAt, deletedAt: schema.users.deletedAt })
+    .select({
+      bannedAt: schema.users.bannedAt,
+      bannedUntil: schema.users.bannedUntil,
+      deletedAt: schema.users.deletedAt,
+    })
     .from(schema.users)
     .where(eq(schema.users.id, bot.botOwnerId))
     .limit(1);
-  if (!owner || owner.bannedAt !== null || owner.deletedAt !== null) return null;
+  if (!owner || isCurrentlyBanned(owner) || owner.deletedAt !== null) return null;
   return bot;
 }
 

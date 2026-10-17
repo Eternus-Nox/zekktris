@@ -31,6 +31,7 @@
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
 import { jsonReplacer } from './connection';
+import { log } from '../log';
 import { InMemoryEventBus, type EventBus, type PublishedEvent } from './bus';
 import type { Audience } from './types';
 
@@ -151,6 +152,9 @@ export interface RedisLike {
   quit?(): Promise<unknown> | unknown;
   /** Liveness probe (ioredis exposes this). Optional so fakes need not. */
   ping?(): Promise<unknown> | unknown;
+  /** Connection state (ioredis: 'ready' when commands can be sent). Optional
+   *  so fakes need not; absent is treated as ready. */
+  readonly status?: string;
 }
 
 export interface RedisEventBusOptions {
@@ -165,6 +169,11 @@ export class RedisEventBus implements EventBus {
   private readonly instanceId: string;
   private readonly channel: string;
   private readonly onError?: (err: unknown) => void;
+  /** True while cross-replica publishes are failing / being skipped, so an
+   *  outage is reported once instead of once per event. */
+  private publishDegraded = false;
+  /** Events skipped or failed during the current outage (reported on recovery). */
+  private droppedPublishes = 0;
 
   constructor(
     private readonly pub: RedisLike,
@@ -210,6 +219,16 @@ export class RedisEventBus implements EventBus {
   }
 
   private fanToRedis(event: PublishedEvent): void {
+    // Redis down / reconnecting: skip the cross-replica publish rather than
+    // queue it. The publisher has no offline queue (see createRedisEventBus),
+    // so it would reject anyway; checking first avoids an error per event.
+    // Realtime events are worthless once stale — a reconnecting client
+    // resyncs over REST — so dropping beats buffering an outage's worth of
+    // events in memory and flushing them late in one burst.
+    if (this.pub.status !== undefined && this.pub.status !== 'ready') {
+      this.notePublishFailure(new Error(`redis bus publisher not ready (${this.pub.status})`));
+      return;
+    }
     let raw: string;
     try {
       raw = serializeEvent(this.instanceId, event);
@@ -217,7 +236,29 @@ export class RedisEventBus implements EventBus {
       this.onError?.(e);
       return;
     }
-    Promise.resolve(this.pub.publish(this.channel, raw)).catch((e) => this.onError?.(e));
+    Promise.resolve(this.pub.publish(this.channel, raw)).then(
+      () => this.notePublishSuccess(),
+      (e) => this.notePublishFailure(e),
+    );
+  }
+
+  /** Log the FIRST failure of an outage; count the rest silently. */
+  private notePublishFailure(err: unknown): void {
+    this.droppedPublishes++;
+    if (this.publishDegraded) return;
+    this.publishDegraded = true;
+    log.warn('gateway redis bus: cross-replica publish failing, dropping events until Redis recovers', {
+      err: (err as Error)?.message ?? String(err),
+    });
+  }
+
+  private notePublishSuccess(): void {
+    if (!this.publishDegraded) return;
+    this.publishDegraded = false;
+    log.info('gateway redis bus: cross-replica publish recovered', {
+      dropped: this.droppedPublishes,
+    });
+    this.droppedPublishes = 0;
   }
 
   subscribe(handler: (event: PublishedEvent) => void): () => void {
@@ -257,12 +298,24 @@ export class RedisEventBus implements EventBus {
  * requires a dedicated subscriber connection). Error listeners are attached so
  * a connection blip emits to `onError` instead of crashing the process; ioredis
  * reconnects automatically.
+ *
+ * The publisher matches every other Redis client in the API: no offline queue
+ * and a hard per-command timeout. With ioredis defaults, every publish issued
+ * during an outage (one per message, typing and presence event) would be
+ * buffered in memory without bound and flushed late on reconnect. The
+ * subscriber keeps the defaults: it issues one SUBSCRIBE, which ioredis
+ * replays on reconnect.
  */
 export function createRedisEventBus(
   url: string,
   onError?: (err: unknown) => void,
 ): RedisEventBus {
-  const pub = new Redis(url, { maxRetriesPerRequest: null, lazyConnect: false });
+  const pub = new Redis(url, {
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+    commandTimeout: 1000,
+    lazyConnect: false,
+  });
   const sub = new Redis(url, { maxRetriesPerRequest: null, lazyConnect: false });
   pub.on('error', (e) => onError?.(e));
   sub.on('error', (e) => onError?.(e));
