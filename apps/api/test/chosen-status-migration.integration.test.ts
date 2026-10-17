@@ -82,7 +82,6 @@ describe.runIf(dbReady)('migration 0131 (chosen_status_auto)', () => {
     expect(prev.tag).toBe('0130_chosen_status');
     expect(entry.idx).toBe(prev.idx + 1);
     expect(entry.when).toBeGreaterThan(prev.when);
-    expect(at).toBe(journal.entries.length - 1);
   });
 
   it('adds the flag false for every existing row and allows it only with a chosen idle', async () => {

@@ -310,19 +310,22 @@ export class PresenceEngine {
           .limit(1);
         if (!row) return null;
         const next = effectiveStatus(row.chosenStatus, summary);
-        if (next === row.status) {
+        // A pre-update client's AUTOMATIC away (chosen 'idle' from a PATCH
+        // without the manual marker — see users.chosenStatusAuto) ends when
+        // the user has no device left, as the old server's disconnect →
+        // reconnect did: an old app killed while auto-idle can no longer
+        // un-idle itself, and nothing else would. A picked Away stays. That
+        // includes an automatic idle PATCHed while the row ALREADY reads
+        // offline (an old app whose socket was down): same input, same result.
+        const resetAutoIdle =
+          next === 'offline' && row.chosenStatus === 'idle' && row.chosenStatusAuto;
+        const changed = next !== row.status;
+        if (!changed && !resetAutoIdle) {
           if (opts.broadcast === 'always' && wrote === null) {
             await this.broadcast(userId, next, row.chosenStatus, opts.audience);
           }
           return next;
         }
-        // A pre-update client's AUTOMATIC away (chosen 'idle' from a PATCH
-        // without the manual marker — see users.chosenStatusAuto) ends when
-        // the user's last device leaves, as the old server's disconnect →
-        // reconnect did: an old app killed while auto-idle can no longer
-        // un-idle itself, and nothing else would. A picked Away stays.
-        const resetAutoIdle =
-          next === 'offline' && row.chosenStatus === 'idle' && row.chosenStatusAuto;
         const chosen: ChosenStatus = resetAutoIdle ? 'online' : row.chosenStatus;
         // Compare-and-set on exactly what we read: if another recompute (or a
         // chosen-status PATCH) got in between, this matches nothing and we
@@ -349,10 +352,14 @@ export class PresenceEngine {
         // which covers arriving invisible; leaving invisible → offline (they
         // dropped Invisible while disconnected) was never a visible moment,
         // so it must not stamp either.
-        if ((next === 'offline' && row.status !== 'invisible') || row.status === 'offline') {
+        if (changed && ((next === 'offline' && row.status !== 'invisible') || row.status === 'offline')) {
           await touchLastSeen(userId);
         }
-        await this.broadcast(userId, next, chosen, opts.audience);
+        // Only the chosen status changed (an automatic idle ended while
+        // already offline): others see nothing new, so no frame unless asked.
+        if (changed || opts.broadcast === 'always') {
+          await this.broadcast(userId, next, chosen, opts.audience);
+        }
         // One replica: recomputes are serialized here and every input change
         // queues one of its own, so what we read is what we wrote against.
         if (!this.clustered) return next;
@@ -490,7 +497,7 @@ export class PresenceEngine {
    *   - users whose last recompute here ran on this replica's view alone
    *     because Redis was failing;
    *   - users this replica holds whose row reads 'offline' (e.g. offlined by
-   *     another replica's boot reset while Redis was unreachable) — only when
+   *     the blanket boot reset of a node running without REDIS_URL) — only when
    *     this beat reached Redis. A replica cut off from Redis (but not from
    *     Postgres) can't publish its entries, so the leader's sweep rightly
    *     reads its users as gone and offlines them; healing them back from
@@ -703,8 +710,11 @@ export async function shutdownPresence(): Promise<void> {
  *
  * Cluster: users connected to OTHER replicas are live; a blanket reset would
  * offline them. Run the sweep instead (it only touches users without a fresh
- * entry). If Redis can't be reached the blanket reset still runs — the other
- * replicas' heartbeat heals their own users within one beat.
+ * entry). If Redis can't be reached, reset nothing: a blanket reset would
+ * offline users on the other replicas, and their heartbeats can't heal them
+ * while Redis is down (a beat that can't reach Redis must not heal — see
+ * heartbeat). Rows left by a dead replica stay until Redis is back, when the
+ * leader's sweep (every SWEEP_INTERVAL) offlines them.
  */
 export async function resetPresenceOnBoot(
   eng: PresenceEngine = presence(),
@@ -717,9 +727,10 @@ export async function resetPresenceOnBoot(
       if (n > 0) log.info('gateway: reset stale presence on boot', { count: n, mode: 'cluster' });
       return;
     } catch (err) {
-      log.warn('gateway: cluster presence reset failed, resetting all', {
+      log.warn('gateway: cluster presence reset skipped (Redis unreachable); the sweep will catch up', {
         err: (err as Error).message,
       });
+      return;
     }
   }
   // Like a recompute to 'offline', this ends a legacy client's automatic

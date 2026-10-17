@@ -376,10 +376,17 @@ describe.runIf(redisReady)('presence across replicas (integration, Redis)', () =
     expect(await down.engine.recompute(u)).toBe('idle');
     expect(Date.now() - started).toBeLessThan(3000);
     await expect(down.engine.heartbeat()).resolves.toBeUndefined();
-    // The boot reset falls back to the blanket reset (scoped here).
+    // The boot reset resets nothing: a blanket reset would offline users on
+    // other replicas, which can't heal them while Redis is down. A stale row
+    // waits for the leader's sweep once Redis is back.
     const stranded = await newUser();
     await db.update(schema.users).set({ status: 'online' }).where(eq(schema.users.id, stranded));
     await resetPresenceOnBoot(down.engine, { userIds: [stranded] });
+    expect(await statusOf(stranded)).toBe('online');
+    const back = replica('replica-back', { staleMs: STALE_MS });
+    // A fresh client rejects commands until connected (no offline queue).
+    await back.engine.whenReady();
+    await back.engine.sweep({ userIds: [stranded] });
     expect(await statusOf(stranded)).toBe('offline');
   });
 });

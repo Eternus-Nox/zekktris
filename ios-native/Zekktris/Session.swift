@@ -56,7 +56,13 @@ final class Session: ObservableObject {
     }
     private func cachedUser() -> SelfUser? {
         guard let data = UserDefaults.standard.data(forKey: userCacheKey) else { return nil }
-        return try? JSONDecoder().decode(SelfUser.self, from: data)
+        guard var user = try? JSONDecoder().decode(SelfUser.self, from: data) else { return nil }
+        // The effective status is live state from the previous run (e.g. the
+        // Away the idle Mac gave us while this phone sat in the background),
+        // not something to show again at launch: without it the own dot falls
+        // back to the pick until getMe / the first own PRESENCE_UPDATE.
+        user.effectiveStatus = nil
+        return user
     }
 
     private let keychain = KeychainStore()

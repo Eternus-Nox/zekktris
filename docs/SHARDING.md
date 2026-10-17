@@ -88,15 +88,18 @@ A replica only sees its own sockets, so:
   alone. This also applies to a single replica with `REDIS_URL` set (the
   docker-compose default): after a crash, the dead process's fields keep its
   users present until they are stale and swept (about a minute) unless they
-  reconnect first.
+  reconnect first. If Redis is unreachable at boot, the replica resets
+  nothing: a blanket reset would offline users on the other replicas, whose
+  heartbeats can't heal them while Redis is down. Rows a dead replica left
+  behind then wait for the leader's first sweep after Redis is back.
 - Every Redis failure degrades to the replica's own view (the pre-cluster
   behaviour): a recompute never hangs or throws because of Redis. The
   heartbeat heals what that can leave wrong, within one beat of Redis being
   reachable again: it recomputes users whose last recompute on this replica
   ran on its own view, users whose entry had gone missing (the leader swept
   it as stale and recomputed them without this replica's devices), and users
-  it holds whose row reads `offline` (e.g. Redis was unreachable at another
-  replica's boot, so the blanket reset ran). That last check runs only when
+  it holds whose row reads `offline` (e.g. a node without `REDIS_URL` ran the
+  single-node blanket reset at boot). That last check runs only when
   the beat itself reached Redis: a replica cut off from Redis but not from
   Postgres can't publish, so the leader's sweep reads its users as gone and
   offlines them; re-onlining them from its own view would be undone by the

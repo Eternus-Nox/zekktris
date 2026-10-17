@@ -424,6 +424,33 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     });
   });
 
+  it('an automatic idle PATCHed while the row already reads offline ends at once; a picked Away stays', async () => {
+    // An old app whose socket was down sends its automatic away: nothing is
+    // connected and the row already reads offline (no transition happens).
+    const auto = await createUser();
+    const manual = await createUser();
+    expect((await row(auto)).status).toBe('offline');
+    const res = await patchStatus(await tokenFor(auto), 'idle');
+    expect(((await res.json()) as { user: unknown }).user).toMatchObject({
+      status: 'online',
+      chosenStatus: 'online',
+      effectiveStatus: 'offline',
+    });
+    expect(await row(auto)).toMatchObject({
+      status: 'offline',
+      chosenStatus: 'online',
+      chosenStatusAuto: false,
+      // Only the chosen status changed — no visible moment to stamp.
+      lastSeenAt: null,
+    });
+    await patchStatus(await tokenFor(manual), 'idle', 'manual');
+    expect(await row(manual)).toMatchObject({
+      status: 'offline',
+      chosenStatus: 'idle',
+      chosenStatusAuto: false,
+    });
+  });
+
   it('the single-replica boot reset ends an automatic idle too (the process died with it connected)', async () => {
     const auto = await createUser();
     const manual = await createUser();
