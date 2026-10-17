@@ -4,6 +4,31 @@
     <meta charset="UTF-8" />
 
     <!--
+      Content-Security-Policy (defence in depth: the access token and E2EE
+      DM keys live in localStorage, so injected script must not run).
+        script-src 'self'   only the bundled /assets/*.js — no inline, no eval
+        style-src 'self'    only the bundled stylesheet (React style props go
+                            through the CSSOM, which CSP doesn't restrict)
+        img-src / media-src same-origin /cdn, plus data: (theme icon) and
+                            blob: (upload previews, decrypted E2EE media).
+                            Third-party preview images go through the
+                            same-origin /api/v1/media-proxy.
+        connect-src         'self' covers the API and the same-origin
+                            /gateway and /livekit WebSockets; wss:/https:
+                            allow a server-configured external LiveKit
+                            (LIVEKIT_WS_URL, e.g. LiveKit Cloud), whose URL
+                            this static page can't know.
+        worker-src 'self'   service worker + LiveKit's E2EE worker chunk
+      frame-ancestors can't be set from a meta tag; ops/Caddyfile sends it as
+      a header. Dev (vite serve) strips this tag — Vite injects inline
+      scripts/styles there (see vite.config.ts).
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self' https: wss:; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
+    />
+
+    <!--
       Viewport: viewport-fit=cover so the app paints under the iOS notch
       and home-indicator area; we restore safety via env(safe-area-inset-*)
       in CSS. maximum-scale=1.0 + user-scalable=no prevents the two-finger

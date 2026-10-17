@@ -147,6 +147,9 @@
 		Referrer-Policy "strict-origin-when-cross-origin"
 		# Block clickjacking
 		X-Frame-Options "SAMEORIGIN"
+		# CSP frame-ancestors (modern X-Frame-Options); a meta CSP can't set it.
+		# The page's full CSP is the <meta> in apps/web/index.html.
+		Content-Security-Policy "frame-ancestors 'self'"
 		# Block MIME sniffing
 		X-Content-Type-Options "nosniff"
 		# Permissions-Policy. `(self)` means "the document can use this
