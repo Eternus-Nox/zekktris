@@ -18,9 +18,26 @@
 .DS_Store
 
 # Local env (the operator's secrets shouldn't be baked into the image —
-# compose injects them at runtime via env_file or the shell).
+# compose injects them at runtime via env_file or the shell). The copies
+# install.sh and restore.sh keep carry the same secrets.
 .env
 .env.local
+.env.bak.*
+.env.before-restore-*
+
+# Live data and secrets. On Unraid APPDATA_PATH is the repo itself, so without
+# these every build sent the database, the uploads, Caddy's TLS keys, the
+# backup bundles and the APNs key to the builder as context. No image COPYs
+# any of them.
+/db
+/uploads
+/caddy-data
+/caddy-config
+/desktop-updates
+/backups
+/control
+/secrets
+/.livekit-wan.state
 
 # Logs / runtime data
 *.log

@@ -115,6 +115,22 @@ if [[ "${PENDING_MIGRATIONS:-0}" -gt 0 ]]; then
     git diff --name-only "$CURRENT..$TARGET" -- packages/db/migrations/ | grep '\.sql$' | sed 's/^/      /'
 fi
 
+# Local edits to tracked files — ops/livekit.yaml asks for one, and compose or
+# Caddyfile tweaks are common — survive the update and a rollback, EXCEPT in a
+# file the update itself changes: git would refuse the merge halfway through,
+# so say which files up front instead.
+LOCAL_EDITS="$(git diff --name-only HEAD 2>/dev/null || true)"
+if [[ -n "$LOCAL_EDITS" ]]; then
+    CLASHES="$(comm -12 <(echo "$LOCAL_EDITS" | sort) <(git diff --name-only "$CURRENT" "$TARGET" | sort))"
+    if [[ -n "$CLASHES" ]]; then
+        echo "$CLASHES" | sed 's/^/      /'
+        fail "these files have local edits AND are changed by the update. Save your
+    changes (git diff > ~/zekktris-local.patch), then 'git checkout -- <file>' or
+    'git stash', update, and re-apply them."
+    fi
+    ok "local edits kept across the update: $(echo "$LOCAL_EDITS" | tr '\n' ' ')"
+fi
+
 if [[ "$MODE" == "check" ]]; then
     echo
     ok "Check only. Nothing was changed."
@@ -193,7 +209,11 @@ if [[ "$DEPLOY_ONLY" == "1" ]]; then
 fi
 
 warn "the new build did not come up healthy — rolling the code back to $CURRENT"
-git reset --hard "$CURRENT" >/dev/null
+# --keep, never --hard: it moves only the files the update changed and keeps
+# the operator's uncommitted edits (which the check above guarantees are in
+# other files). --hard silently threw those edits away.
+git reset --keep "$CURRENT" >/dev/null || fail "could not roll the code back (git reset --keep $CURRENT failed).
+    The code is still at $TARGET. Check 'git status', then roll back by hand."
 $COMPOSE build api proxy && $COMPOSE up -d
 echo
 fail "Update failed and was rolled back. Check: $COMPOSE logs api --tail 80

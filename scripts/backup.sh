@@ -25,7 +25,7 @@
 # locking writers.
 #
 # Usage:
-#   ./scripts/backup.sh [output-dir]        full bundle (default ./backups)
+#   ./scripts/backup.sh [output-dir]        full bundle (default $APPDATA_PATH/backups)
 #   ./scripts/backup.sh --no-uploads        database + config only
 #   ./scripts/backup.sh --keep 14           keep the newest 14, delete older
 #
@@ -63,7 +63,6 @@ while [[ $# -gt 0 ]]; do
         *) OUT_DIR="$1"; shift ;;
     esac
 done
-OUT_DIR="${OUT_DIR:-$ROOT/backups}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
@@ -79,6 +78,12 @@ else fail "docker compose not found"; fi
 # path in docker-compose.yml, so read it the same way compose does.
 APPDATA="$(grep -E '^APPDATA_PATH=' .env | cut -d= -f2- | tr -d '"'"'"'' || true)"
 APPDATA="${APPDATA:-/mnt/user/appdata/zekktris}"
+# Bundles go where everything else looks for them: the api's read-only
+# /data/backups mount (Admin → Backup & Maintenance), agent.sh's verify and
+# restore, and doctor.sh's age check all read $APPDATA_PATH/backups. This used
+# to default to <repo>/backups, which is the same folder only on Unraid (repo
+# cloned into appdata) — everywhere else backups were taken and never found.
+OUT_DIR="${OUT_DIR:-$APPDATA/backups}"
 
 step "Backing up instance from ${ROOT}"
 

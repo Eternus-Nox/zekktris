@@ -46,7 +46,9 @@ BUNDLE="${1:-}"
 if [[ -z "$BUNDLE" ]]; then
     APPDATA_FOR_DEFAULT="$(grep -E '^APPDATA_PATH=' .env 2>/dev/null | cut -d= -f2- | tr -d '"'"'"'' || true)"
     APPDATA_FOR_DEFAULT="${APPDATA_FOR_DEFAULT:-/mnt/user/appdata/zekktris}"
-    for dir in "$ROOT/backups" "$APPDATA_FOR_DEFAULT/backups"; do
+    # $APPDATA_PATH/backups is where backup.sh writes; <repo>/backups is where
+    # it wrote before, kept so an older bundle is still found.
+    for dir in "$APPDATA_FOR_DEFAULT/backups" "$ROOT/backups"; do
         CANDIDATE="$(ls -1t "$dir"/zekktris-*.tar.gz 2>/dev/null | head -1)"
         [[ -n "$CANDIDATE" ]] && { BUNDLE="$CANDIDATE"; break; }
     done
@@ -120,15 +122,61 @@ if [[ "$MODE" == "check" ]]; then
     exit 0
 fi
 
-# ── 2. Refuse to overwrite a populated instance ─────────────────────────────
+# ── 2. Work out the configuration the restored instance will run with ───────
+# The bundle's .env, because it holds the field-encryption keys and the
+# database password the dump belongs with. EXCEPT APPDATA_PATH when this host
+# already has one: where the data disk lives is a fact about this machine, not
+# about the backup (an Unraid bundle names /mnt/user/appdata, which a VPS does
+# not have), and the database, the uploads and the restarted stack must all
+# use the SAME path.
+#
+# Everything from here on runs compose against this file. Starting the db under
+# the OLD .env and swapping the file afterwards restored into one volume and
+# then booted the stack on another, with a password the database had never
+# been given.
+# A missing key is an empty value, not an error (set -e + pipefail would
+# otherwise end the script on the first unset key without a word).
+envval() { { grep -E "^$1=" "$2" 2>/dev/null || true; } | tail -1 | cut -d= -f2- | sed -E 's/^"(.*)"$/\1/; s/^'"'"'(.*)'"'"'$/\1/'; }
+FINAL_ENV="$STAGE/env.final"
+cp "$STAGE/env" "$FINAL_ENV"
+if [[ -f .env ]]; then
+    HOST_APPDATA="$(envval APPDATA_PATH .env)"
+    HOST_APPDATA="${HOST_APPDATA:-/mnt/user/appdata/zekktris}"
+    BUNDLE_APPDATA="$(envval APPDATA_PATH "$STAGE/env")"
+    if [[ "${BUNDLE_APPDATA:-/mnt/user/appdata/zekktris}" != "$HOST_APPDATA" ]]; then
+        { grep -vE '^APPDATA_PATH=' "$STAGE/env" || true; echo "APPDATA_PATH=$HOST_APPDATA"; } > "$FINAL_ENV"
+        warn "keeping this host's APPDATA_PATH ($HOST_APPDATA), not the bundle's (${BUNDLE_APPDATA:-<default>})"
+    fi
+fi
+APPDATA="$(envval APPDATA_PATH "$FINAL_ENV")"
+APPDATA="${APPDATA:-/mnt/user/appdata/zekktris}"
+DB_PASSWORD_FINAL="$(envval DB_PASSWORD "$FINAL_ENV")"
+[[ -n "$DB_PASSWORD_FINAL" ]] || fail "the bundle's .env has no DB_PASSWORD — cannot start the database for it"
+RCOMPOSE="$COMPOSE --env-file $FINAL_ENV"
+
+# ── 3. Refuse to overwrite a populated instance ─────────────────────────────
 step "Checking the target instance is empty"
-$COMPOSE up -d db >/dev/null 2>&1 || true
-for _ in $(seq 1 30); do
-    $COMPOSE exec -T db pg_isready -U commune >/dev/null 2>&1 && break
+if ! $RCOMPOSE up -d db >"$STAGE/up.log" 2>&1; then
+    cat "$STAGE/up.log" >&2
+    fail "could not start the database — nothing has been changed"
+fi
+READY=0
+for _ in $(seq 1 60); do
+    if $RCOMPOSE exec -T db pg_isready -U commune >/dev/null 2>&1; then READY=1; break; fi
     sleep 1
 done
-USERS="$($COMPOSE exec -T db psql -U commune -d commune -tAc \
-    "select count(*) from users" 2>/dev/null | tr -d '[:space:]' || echo 0)"
+[[ "$READY" == "1" ]] || fail "the database did not become ready within 60s ($COMPOSE logs db) — nothing has been changed"
+# Ask whether the table exists first, so "fresh volume" and "cannot query the
+# database" are not both read as zero users.
+HAS_USERS="$($RCOMPOSE exec -T db psql -U commune -d commune -tAc \
+    "select to_regclass('public.users') is not null" 2>"$STAGE/psql.err" | tr -d '[:space:]')" \
+    || { cat "$STAGE/psql.err" >&2; fail "could not query the target database — nothing has been changed"; }
+USERS=0
+if [[ "$HAS_USERS" == "t" ]]; then
+    USERS="$($RCOMPOSE exec -T db psql -U commune -d commune -tAc \
+        "select count(*) from users" 2>"$STAGE/psql.err" | tr -d '[:space:]')" \
+        || { cat "$STAGE/psql.err" >&2; fail "could not count the target's users — nothing has been changed"; }
+fi
 if [[ "${USERS:-0}" -gt 0 ]]; then
     if [[ "$MODE" != "force" ]]; then
         echo
@@ -137,7 +185,7 @@ if [[ "${USERS:-0}" -gt 0 ]]; then
     warn "overwriting an instance with ${USERS} existing users (--force)"
 fi
 
-# ── 3. Config and secrets first ─────────────────────────────────────────────
+# ── 4. Config and secrets first ─────────────────────────────────────────────
 # Before the database, because the field-encryption keys live in .env: restoring
 # rows we then cannot decrypt is a worse outcome than stopping here.
 step "Restoring config and secrets"
@@ -145,15 +193,32 @@ if [[ -f .env ]]; then
     cp .env ".env.before-restore-$(date +%Y%m%d-%H%M%S)"
     ok "existing .env preserved alongside"
 fi
-cp "$STAGE/env" .env
+cp "$FINAL_ENV" .env
 chmod 600 .env
-tar -xf "$STAGE/secrets.tar" -C . 2>/dev/null || true
+tar -xf "$STAGE/secrets.tar" -C . || fail "could not unpack secrets/ (APNs key) from the bundle"
 ok "config in place"
 
-APPDATA="$(grep -E '^APPDATA_PATH=' .env | cut -d= -f2- | tr -d '"'"'"'' || true)"
-APPDATA="${APPDATA:-/mnt/user/appdata/zekktris}"
+# The api must not write into the database while it is replaced (and its open
+# connections would hold the locks pg_restore --clean needs to drop tables).
+$COMPOSE stop api >/dev/null 2>&1 || warn "could not stop the api before restoring"
 
-# ── 4. Database ─────────────────────────────────────────────────────────────
+# The role's password is fixed when a volume is first initialised and pg_dump
+# does not carry it. On a volume another .env initialised (a host freshly set up
+# by install.sh, say) it is not the bundle's DB_PASSWORD, and the api would come
+# back unable to log in. Set it to the bundle's. Fed through stdin as a psql
+# variable, so it is neither on a command line nor parsed as SQL.
+if [[ -n "$(envval DATABASE_URL .env)" ]]; then
+    warn "DATABASE_URL is set in .env — not touching database passwords; make sure it matches"
+elif printf '\\set pw '"'"'%s'"'"'\nALTER ROLE commune WITH PASSWORD :'"'"'pw'"'"';\n' \
+        "$(printf '%s' "$DB_PASSWORD_FINAL" | sed -e 's/\\/\\\\/g' -e "s/'/''/g")" \
+        | $COMPOSE exec -T db psql -v ON_ERROR_STOP=1 -q -U commune -d commune >/dev/null 2>"$STAGE/pw.err"; then
+    ok "database password matches the restored .env"
+else
+    cat "$STAGE/pw.err" >&2
+    fail "could not set the database password to the bundle's DB_PASSWORD"
+fi
+
+# ── 5. Database ─────────────────────────────────────────────────────────────
 step "Restoring database"
 # --clean --if-exists drops what is there first, so a --force restore replaces
 # rather than merges. Ordinary object-ownership noise is expected on a fresh
@@ -161,21 +226,27 @@ step "Restoring database"
 # are the real check.
 # Same reason as the verification above: land the archive as a real file inside
 # the container rather than piping it, so pg_restore can seek.
-$COMPOSE exec -T db sh -c 'cat > /tmp/zk-restore.dump' < "$STAGE/db.dump"
-$COMPOSE exec -T db pg_restore -U commune -d commune --clean --if-exists --no-owner /tmp/zk-restore.dump \
-    2>"$STAGE/restore.err" || warn "pg_restore reported issues (often harmless ownership noise)"
+$COMPOSE exec -T db sh -c 'cat > /tmp/zk-restore.dump' < "$STAGE/db.dump" \
+    || fail "could not copy the dump into the db container"
+if ! $COMPOSE exec -T db pg_restore -U commune -d commune --clean --if-exists --no-owner /tmp/zk-restore.dump \
+    2>"$STAGE/restore.err"; then
+    warn "pg_restore reported $(grep -c 'error' "$STAGE/restore.err" || true) issue(s) (often harmless ownership noise); first lines:"
+    sed -n '1,5p' "$STAGE/restore.err" | sed 's/^/      /' >&2
+fi
 $COMPOSE exec -T db rm -f /tmp/zk-restore.dump >/dev/null 2>&1 || true
 RESTORED="$($COMPOSE exec -T db psql -U commune -d commune -tAc "select count(*) from users" 2>/dev/null | tr -d '[:space:]' || echo 0)"
 [[ "${RESTORED:-0}" -gt 0 ]] || { sed -n '1,20p' "$STAGE/restore.err" >&2; fail "restore produced no users — the instance is NOT usable"; }
 ok "${RESTORED} users restored"
 
-# ── 5. Uploads ──────────────────────────────────────────────────────────────
+# ── 6. Uploads ──────────────────────────────────────────────────────────────
 step "Restoring uploads to $APPDATA"
 mkdir -p "$APPDATA"
-tar -xf "$STAGE/uploads.tar" -C "$APPDATA" || warn "some uploads could not be written"
+tar -xf "$STAGE/uploads.tar" -C "$APPDATA" \
+    || fail "could not unpack the uploads into $APPDATA. The database and .env ARE restored;
+    fix the cause above, then run this again with --force (the api is left stopped)."
 ok "attachments in place"
 
-# ── 6. Bring it up and wait for it to actually be ready ─────────────────────
+# ── 7. Bring it up and wait for it to actually be ready ─────────────────────
 step "Starting the stack"
 $COMPOSE up -d
 step "Waiting for api startup checks (up to 90 seconds)"

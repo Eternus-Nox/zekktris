@@ -176,8 +176,18 @@ fi
 # happened twice: first against Cloudflare edge IPs, then, after the fix,
 # against the tunnel connector's Docker gateway (172.19.0.1) — every user on
 # one address, and no error anywhere.
+#
+# Only meaningful with EDGE_PROXY=cloudflare. Without it Caddy trusts no proxy
+# and a Cf-Connecting-Ip header in the log is just something a client sent.
 head2 "Client IP"
-if [[ -n "$COMPOSE" ]] && docker inspect zekktris-proxy >/dev/null 2>&1; then
+EDGE_PROXY="$(grep -E '^EDGE_PROXY=' .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"'' || true)"
+if [[ "${EDGE_PROXY:-none}" != "cloudflare" ]]; then
+    if docker logs --tail 300 zekktris-proxy 2>&1 | grep -q '"Cf-Warp-Tag-Id"'; then
+        warn "requests are arriving through a Cloudflare Tunnel but EDGE_PROXY is not 'cloudflare' — every visitor shares the tunnel's address (set EDGE_PROXY=cloudflare in .env, then: docker compose up -d proxy)"
+    else
+        ok "Caddy is the edge (EDGE_PROXY=${EDGE_PROXY:-none}); visitor addresses come from the connection itself"
+    fi
+elif [[ -n "$COMPOSE" ]] && docker inspect zekktris-proxy >/dev/null 2>&1; then
     LINE="$(docker logs --tail 300 zekktris-proxy 2>&1 | grep '"Cf-Connecting-Ip"' | tail -1)"
     if [[ -z "$LINE" ]]; then
         warn "no Cloudflare-fronted request in the recent proxy log to check"
@@ -247,6 +257,13 @@ fi
 
 # ── Backups ─────────────────────────────────────────────────────────────────
 head2 "Backups"
+# backup.sh wrote to <repo>/backups until it was pointed at the folder
+# everything reads from. Bundles left there are invisible to the admin page,
+# verify and restore.
+if [[ -d "$ROOT/backups" && ! "$ROOT/backups" -ef "$APPDATA/backups" ]]; then
+    LEGACY="$(ls -1 "$ROOT"/backups/zekktris-*.tar.gz 2>/dev/null | wc -l | tr -d ' ')"
+    [[ "$LEGACY" -gt 0 ]] && warn "$LEGACY older bundle(s) in $ROOT/backups — move them to $APPDATA/backups so the admin page, verify and restore can see them"
+fi
 NEWEST="$(ls -1t "$APPDATA"/backups/zekktris-*.tar.gz 2>/dev/null | head -1)"
 if [[ -z "$NEWEST" ]]; then
     if [[ "$FIX" == "1" ]]; then
