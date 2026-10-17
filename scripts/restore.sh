@@ -273,8 +273,7 @@ ok "${RESTORED} users restored"
 
 # ── 6. Uploads ──────────────────────────────────────────────────────────────
 step "Restoring uploads to $APPDATA"
-mkdir -p "$APPDATA"
-tar -xf "$STAGE/uploads.tar" -C "$APPDATA" \
+{ mkdir -p "$APPDATA" && tar -xf "$STAGE/uploads.tar" -C "$APPDATA"; } \
     || fail "could not unpack the uploads into $APPDATA. The database and .env ARE restored;
     fix the cause above, then run this again with --force (the api is left stopped)."
 ok "attachments in place"

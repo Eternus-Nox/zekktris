@@ -659,6 +659,9 @@ if ! wait_for_api 180 "The server is handing its uploads folder to its unprivile
 fi
 $COMPOSE up -d || fail "The server is running, but the rest of Zekktris didn't start. Fix the problem above, then run: $COMPOSE up -d"
 ok "Server is running"
+# This code now runs healthy, which finishes any update.sh run that stopped
+# halfway; left marked, its next run would roll back past it on a failure.
+if GITDIR="$(git rev-parse --absolute-git-dir 2>/dev/null)"; then rm -f "$GITDIR/zekktris-update-unfinished"; fi
 admin_account_create
 
 HTTPS_OK=0
