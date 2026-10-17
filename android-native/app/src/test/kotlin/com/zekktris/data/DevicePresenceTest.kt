@@ -20,6 +20,20 @@ class DevicePresenceTest {
         assertEquals(false, DevicePresence.isActive(false, 0, true))
     }
 
+    @Test fun startingAndStoppingTalkingAreInteractions() {
+        val me = "me"
+        assertEquals(true, DevicePresence.talkingChanged(me, prev = emptySet(), next = setOf(me)))
+        assertEquals(true, DevicePresence.talkingChanged(me, setOf("bob"), setOf("bob", me)))
+        // Stopping counts too: after a 6-minute monologue the idle window
+        // runs from the last word, not the first.
+        assertEquals(true, DevicePresence.talkingChanged(me, setOf(me), emptySet()))
+        assertEquals(true, DevicePresence.talkingChanged(me, setOf(me, "bob"), setOf("bob")))
+        // Only other people talking is not us using the device.
+        assertEquals(false, DevicePresence.talkingChanged(me, setOf("bob"), setOf("bob", "eve")))
+        assertEquals(false, DevicePresence.talkingChanged(me, emptySet(), emptySet()))
+        assertEquals(false, DevicePresence.talkingChanged(null, setOf(me), setOf(me)))
+    }
+
     @Test fun pickerShowsTheChosenStatus() {
         assertEquals("dnd", DevicePresence.pickerStatus(chosen = "dnd", status = "online"))
         // Mac idle → effective Away, but the user picked Online.

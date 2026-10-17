@@ -34,6 +34,15 @@ object DevicePresence {
         foreground && (talking || (msSinceInteraction != null && msSinceInteraction < IDLE_THRESHOLD_MS))
 
     /**
+     * Whether a change in who is speaking in voice is an interaction for
+     * presence: we started talking ([me] in [next]) or just stopped ([me] in
+     * [prev]) — stopping counts too, so the idle threshold runs from the end
+     * of a long monologue rather than its start.
+     */
+    fun talkingChanged(me: String?, prev: Set<String>, next: Set<String>): Boolean =
+        me != null && (me in prev || me in next)
+
+    /**
      * The status the picker shows as selected: what the user CHOSE. An older
      * server sends no `chosenStatus`, and there `status` is the choice.
      * "offline" or nothing (a stale pre-connect snapshot, a fresh account) is

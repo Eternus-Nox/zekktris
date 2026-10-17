@@ -266,10 +266,14 @@ class AppStore(
         // Mirror LiveKit connection / speaking / mute state into the snapshot.
         scope.launch { voice.connState.collect { s -> _state.update { it.copy(voiceConn = s) } } }
         scope.launch {
+            var prev = emptySet<String>()
             voice.speaking.collect { s ->
                 _state.update { it.copy(speakingUserIds = s) }
-                // Talking in voice counts as using the device (presence).
-                if (_state.value.me?.id?.let { it in s } == true) noteInteraction()
+                // Talking in voice counts as using the device (presence): when
+                // we start AND when we stop, so the idle window runs from the
+                // last word, not the first (an unchanged set never re-emits).
+                if (com.zekktris.data.DevicePresence.talkingChanged(_state.value.me?.id, prev, s)) noteInteraction()
+                prev = s
             }
         }
         scope.launch { voice.muted.collect { m -> _state.update { it.copy(selfMuted = m) } } }
@@ -359,8 +363,11 @@ class AppStore(
 
     private fun evaluatePresence() {
         val st = _state.value
+        val now = android.os.SystemClock.elapsedRealtime()
         val talking = st.me?.id?.let { it in st.speakingUserIds } == true
-        val since = lastInteractionAt?.let { android.os.SystemClock.elapsedRealtime() - it }
+        // Still talking is still using it (the tick keeps a long monologue fresh).
+        if (talking) lastInteractionAt = now
+        val since = lastInteractionAt?.let { now - it }
         val active = com.zekktris.data.DevicePresence.isActive(appForeground, since, talking)
         lastReportedActive = active
         gateway.setPresenceActive(active)
@@ -432,10 +439,14 @@ class AppStore(
         }
     }
 
-    fun onAppBackground() {
+    /** [changingConfigurations]: MainActivity is only being recreated
+     *  (rotation, dark mode, locale, font scale) and its replacement starts at
+     *  once — not put away, so no idle report (everyone would see the user
+     *  flash Away, then Online again on the replacement's reconnect). */
+    fun onAppBackground(changingConfigurations: Boolean = false) {
         appForeground = false
         // Put away: this device is idle at once (the socket may live on).
-        evaluatePresence()
+        if (!changingConfigurations) evaluatePresence()
     }
 
     /**

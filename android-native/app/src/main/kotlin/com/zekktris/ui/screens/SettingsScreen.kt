@@ -350,7 +350,8 @@ private fun ProfileSection(store: AppStore, state: AppState) {
                         Modifier.align(Alignment.BottomEnd).offset(x = (-4).dp, y = (-4).dp).size(20.dp).clip(CircleShape).background(p.bg0),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Box(Modifier.size(14.dp).clip(CircleShape).background(statusColor(status)))
+                        // Effective (follows the device in use), not the pick.
+                        Box(Modifier.size(14.dp).clip(CircleShape).background(statusColor(state.presenceOf(me.id))))
                     }
                 }
                 Column(Modifier.padding(start = 12.dp, bottom = 4.dp).weight(1f)) {
