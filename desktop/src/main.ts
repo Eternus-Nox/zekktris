@@ -45,6 +45,7 @@ import {
 } from './config';
 import { findServer, isServerMove, probeServer } from './server';
 import { externalUrl, isSameOrigin, permissionAllowed } from './trust';
+import { IdleTracker, type IdleSample } from './idle';
 
 const PROTOCOL = 'zekktris';
 
@@ -850,36 +851,46 @@ function checkForUpdates(interactive = false): void {
 // (apps/web/src/lib/usePresenceActivity.ts), so the user's presence follows
 // the device in use; against an older server it auto-sets Away / Online
 // instead. Only the native shell can see system-wide idle; a browser tab
-// can't. Threshold: 10 minutes.
+// can't. Threshold: 10 minutes. A locked or sleeping machine stays idle until
+// it is unlocked / resumed, whatever the input idle time says (see idle.ts).
 const IDLE_THRESHOLD_SEC = 600;
 const IDLE_POLL_MS = 30_000;
 let idleState = false;
 let idleTimer: ReturnType<typeof setInterval> | null = null;
+const idleTracker = new IdleTracker(IDLE_THRESHOLD_SEC);
 
-function setIdle(next: boolean): void {
-  if (next === idleState) return;
+function setIdle(next: boolean | null): void {
+  if (next === null || next === idleState) return;
   idleState = next;
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('zk:idle-state', next);
   }
 }
 
+function sampleIdle(): IdleSample | null {
+  try {
+    return {
+      idleSec: powerMonitor.getSystemIdleTime(),
+      // 'locked' on macOS and Windows; other platforms never report it.
+      systemLocked: powerMonitor.getSystemIdleState(IDLE_THRESHOLD_SEC) === 'locked',
+    };
+  } catch {
+    // getSystemIdleTime can throw on some Linux setups — ignore.
+    return null;
+  }
+}
+
 function startIdleWatch(): void {
   if (idleTimer) return;
-  idleTimer = setInterval(() => {
-    try {
-      const idleSec = powerMonitor.getSystemIdleTime();
-      setIdle(idleSec >= IDLE_THRESHOLD_SEC);
-    } catch {
-      // getSystemIdleTime can throw on some Linux setups — ignore.
-    }
-  }, IDLE_POLL_MS);
+  idleTimer = setInterval(() => setIdle(idleTracker.poll(sampleIdle())), IDLE_POLL_MS);
+  // A machine started while locked (login item behind the lock screen).
+  setIdle(idleTracker.poll(sampleIdle()));
 
-  // Lock / suspend → immediately idle; unlock / resume → active.
-  powerMonitor.on('lock-screen', () => setIdle(true));
-  powerMonitor.on('suspend', () => setIdle(true));
-  powerMonitor.on('unlock-screen', () => setIdle(false));
-  powerMonitor.on('resume', () => setIdle(false));
+  // Lock / suspend → idle until unlock / resume.
+  powerMonitor.on('lock-screen', () => setIdle(idleTracker.lockScreen()));
+  powerMonitor.on('suspend', () => setIdle(idleTracker.suspend()));
+  powerMonitor.on('unlock-screen', () => setIdle(idleTracker.unlockScreen(sampleIdle())));
+  powerMonitor.on('resume', () => setIdle(idleTracker.resume(sampleIdle())));
 }
 
 // The renderer asks for the current idle state on load (so it can sync

@@ -29,6 +29,12 @@ the desktop app when you change the web app. On top of the web app it adds:
 - **External links open in your default browser**, not inside the app
   (web and `mailto:` links only — see [Security model](#security-model))
 - **Single-instance lock** — launching again focuses the running window
+- **System idle signal** for presence — the web app's "is this device in
+  use" comes from the shell: idle after 10 minutes without input, and idle
+  the whole time the screen is locked or the machine sleeps, until it is
+  unlocked / resumed (`src/idle.ts`, tested in `test/idle.test.ts`). It is
+  shell code, so an installed app only gets a change here with a shell
+  update; the web app itself updates from the server.
 - **`zekktris://` deep-link protocol**
 - **Screen sharing** — a native source picker (screens + windows) wired
   into `getDisplayMedia`, which Electron requires a handler for
