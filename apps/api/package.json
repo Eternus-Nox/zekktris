@@ -12,7 +12,8 @@
     "lint": "echo 'lint not configured yet'",
     "test": "vitest run",
     "test:watch": "vitest",
-    "reencrypt-fields": "node --import tsx/esm scripts/reencrypt-fields.ts"
+    "reencrypt-fields": "node --import tsx/esm scripts/reencrypt-fields.ts",
+    "create-admin": "node --import tsx/esm scripts/create-admin.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",

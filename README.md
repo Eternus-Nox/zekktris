@@ -232,9 +232,14 @@ HTTPS. Three ways to be reached:
 | `./install.sh --lan` | home network only | none (apps work; browser calls need HTTPS) |
 
 Router ports for `--ip` / `--domain`: TCP 80, 443, 7881 and UDP 443, 7882.
-Register with the admin email you gave the installer and that account is the
-admin straight away. Re-run `./install.sh` any time (it never replaces your
-secrets); `--reconfigure` changes how the server is reached.
+The installer asks for an admin email and password and, once the server is
+up, creates that account itself (already verified, already admin) — sign in
+with it. For scripted installs pass `--admin-email` plus `--admin-password-file`
+(or set `ZEKKTRIS_ADMIN_PASSWORD`). Re-run `./install.sh` any time (it never
+replaces your secrets); `--reconfigure` changes how the server is reached,
+`--admin-email` on an existing install makes that account an admin (creating it
+if needed; an existing account must have verified its address), and a server
+left without an admin by an interrupted install is offered one again.
 
 Then set `ALLOW_REGISTRATION=invite-only` (or `closed`) in `.env` and
 `docker compose up -d` if you want a private server. To drive it manually:
@@ -244,6 +249,8 @@ Then set `ALLOW_REGISTRATION=invite-only` (or `closed`) in `.env` and
 $EDITOR .env                     # PUBLIC_URL, ports, registration mode, …
 docker compose up -d --build
 docker compose logs -f api
+# then create the admin account (asks for its password, hidden):
+docker compose exec -w /app/apps/api api node --import tsx/esm scripts/create-admin.ts --email you@example.com
 ```
 
 ### TLS

@@ -76,21 +76,34 @@ Open it, register an account, and you're in.
 
 ## 3. Make yourself the admin
 
-Register your account in the app first, then promote it:
+(`./install.sh` does this for you — it asks for the admin email and password.)
 
-1. Edit `.env` and set:
-   ```
-   BOOTSTRAP_ADMIN_EMAIL=you@example.com
-   ```
-   (the email you registered with)
-2. Restart the API:
-   ```bash
-   docker compose up -d api
-   ```
+Create the admin account from the server itself:
 
-On boot, if no admin exists yet and a user with that email exists, they're
-promoted. It's a one-time bootstrap — once you're admin, the variable does
-nothing, so you can leave it set.
+```bash
+docker compose exec -w /app/apps/api api \
+  node --import tsx/esm scripts/create-admin.ts --email you@example.com
+```
+
+It asks for the password twice (hidden; nothing lands in your shell history)
+and creates the account already verified and admin. To pipe the password in
+instead, add `-T` and send it on stdin. If an account with that email already
+exists — say you registered in the app first — it's made admin and its
+password is left alone (press Enter at the prompt). Registration may already
+be open, though, so an existing account is only promoted if its address is
+verified (`--promote-unverified` overrides that, if you're sure it's yours),
+and `--create-only` refuses an existing account outright — the installer uses
+that on a fresh install, so someone who registers your address first stops
+the install instead of becoming admin. `--check` just reports whether the
+server has an admin. Re-running `./install.sh` on a server with no admin asks
+for one again.
+
+The older alternative is `BOOTSTRAP_ADMIN_EMAIL=you@example.com` in `.env`:
+while no admin exists, an account with that address is promoted once the
+address is **verified** (at boot, at signup, or when the emailed link is
+clicked). Without SMTP every signup counts as verified, so on a server with
+open registration whoever registers that address first becomes admin — use
+the command above there.
 
 ---
 
@@ -257,7 +270,7 @@ folder back and `docker compose up -d`.
 | Voice channels say "audio not configured" | LiveKit not set — see §5. |
 | Password reset says email isn't enabled | SMTP not configured — see §5. |
 | Federation tab 503s | `FEDERATION_ENABLED=true` **and** a valid `FEDERATION_SIGNING_KEY` both required — see §5. |
-| Forgot to set admin | Set `BOOTSTRAP_ADMIN_EMAIL` to your registered email and `docker compose up -d api`. |
+| No admin account | `docker compose exec -w /app/apps/api api node --import tsx/esm scripts/create-admin.ts --email you@example.com` (see §3). |
 
 Useful commands:
 
