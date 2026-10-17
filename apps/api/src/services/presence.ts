@@ -11,8 +11,10 @@
  *                never gets a clean close (process crash, host reboot): without
  *                it, a user online for three days would read as "last seen
  *                three days ago" the moment the server died.
- *   - disconnect (final connection closed, after the voice-eviction grace) —
- *                the value that actually matters: the moment they went away.
+ *   - disconnect (the effective status turning 'offline' — the final
+ *                connection closed, after the voice-eviction grace; written
+ *                by the presence recompute, gateway/presence.ts) — the
+ *                value that actually matters: the moment they went away.
  *
  * NOT stamped on token refresh. `sessions.lastUsedAt` advances while a phone
  * sits idle in a pocket, so it answers "when did a token last refresh", not

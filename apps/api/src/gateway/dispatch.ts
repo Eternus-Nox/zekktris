@@ -421,15 +421,17 @@ export function presenceUpdate(payload: {
    * DM channel ids the user is part of. Without this, two users who
    * only know each other via DM never see each other's presence
    * change — the guild fan-out below would skip them entirely. The
-   * caller (gateway server's onUserFullyDisconnected hook + IDENTIFY
-   * online-flip) loads these alongside guildIds.
+   * caller (the presence recompute, gateway/presence.ts) loads these
+   * alongside guildIds.
    */
   dmChannelIds?: bigint[];
   /**
    * Accepted-friend user ids. Delivered a single guild_id=null frame each so
    * a friend who shares NO guild and NO DM channel still sees the subject's
    * status change live (the null frame drives usersById + the Friends dot).
-   * The caller loads these via relationships.listAcceptedFriendIds.
+   * The caller loads these via relationships.listAcceptedFriendIds, and adds
+   * the subject's own id so each of their devices learns their effective
+   * status too.
    */
   userIds?: bigint[];
 }): void {

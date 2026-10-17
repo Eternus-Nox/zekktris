@@ -33,7 +33,8 @@ import { RESUME_WINDOW_MS, RESUME_MAX_DETACHED_SESSIONS } from './resume';
 /** Shared empty iterable for index misses — saves an allocation per event. */
 const EMPTY_CONNECTION_SET: ReadonlySet<Connection> = new Set();
 
-class Registry {
+/** Exported for tests that model a second replica; the app uses `registry`. */
+export class Registry {
   /** Authenticated only. Pre-IDENTIFY connections aren't here. */
   private byUser = new Map<bigint, Set<Connection>>();
 
@@ -186,12 +187,24 @@ class Registry {
 
     // The full-disconnect hook fires on the live-count 1→0 transition — i.e.
     // when this detach removed the user's last live socket.
-    if (this.userLiveCount(conn.userId) === 0 && this.onUserFullyDisconnected) {
-      try {
-        this.onUserFullyDisconnected(conn.userId);
-      } catch {
-        // Hook errors mustn't break the lifecycle.
-      }
+    this.fireCloseHooks(conn);
+  }
+
+  /**
+   * After a LIVE connection of `conn.userId` went away: the full-disconnect
+   * hook if it was their last live socket, otherwise the partial-close hook
+   * (their effective presence may change — e.g. the active device left).
+   */
+  private fireCloseHooks(conn: Connection): void {
+    const userId = conn.userId;
+    if (userId === null) return;
+    const hook =
+      this.userLiveCount(userId) === 0 ? this.onUserFullyDisconnected : this.onUserConnectionClosed;
+    if (!hook) return;
+    try {
+      hook(userId, conn);
+    } catch {
+      // Hook errors mustn't break the lifecycle.
     }
   }
 
@@ -301,16 +314,11 @@ class Registry {
         if (set.size === 0) this.byUser.delete(conn.userId);
         // Fire the "user fully disconnected" hook only on the live-count
         // 1→0 transition caused by removing a LIVE connection — same moment
-        // as before. Cleanup logic lives in the gateway server (keeps the
-        // registry free of service-layer imports).
-        if (wasLive && this.userLiveCount(conn.userId) === 0 && this.onUserFullyDisconnected) {
-          try {
-            this.onUserFullyDisconnected(conn.userId);
-          } catch {
-            // Hook errors mustn't take down the connection lifecycle.
-            // The hook itself is responsible for logging.
-          }
-        }
+        // as before — and the partial-close hook for a live connection that
+        // leaves others behind. Cleanup logic lives in the gateway server
+        // (keeps the registry free of service-layer imports). Hook errors
+        // are swallowed; the hook itself is responsible for logging.
+        if (wasLive) this.fireCloseHooks(conn);
       }
       // Tear down the per-guild and per-DM index entries we seeded in
       // index(). Done over the conn's current snapshot — incremental
@@ -353,10 +361,15 @@ class Registry {
 
   /**
    * Optional hook fired when a user's LAST connection closes. The hook
-   * receives the userId and is intentionally fire-and-forget — return
-   * value (or thrown error) is ignored. Install once at startup.
+   * receives the userId (and the connection that closed) and is
+   * intentionally fire-and-forget — return value (or thrown error) is
+   * ignored. Install once at startup.
    */
-  onUserFullyDisconnected: ((userId: bigint) => void) | null = null;
+  onUserFullyDisconnected: ((userId: bigint, conn: Connection) => void) | null = null;
+  /** Fired when one of a user's live connections closes while they still
+      have others — their effective presence may change (the device in use
+      left). Same fire-and-forget contract. */
+  onUserConnectionClosed: ((userId: bigint, conn: Connection) => void) | null = null;
   /** Fired when a user gains a connection — cancels pending grace-period
       voice evictions scheduled by onUserFullyDisconnected. */
   onUserConnected: ((userId: bigint) => void) | null = null;
@@ -438,6 +451,38 @@ class Registry {
     if (!set) return false;
     for (const c of set) if (!c.detached) return true;
     return false;
+  }
+
+  /**
+   * The user's live (non-detached) connections on THIS replica, and how many
+   * of them report their device in use. Input to the presence recompute
+   * (gateway/presence.ts); a detached resume-window ghost is not live.
+   */
+  presenceSummary(userId: bigint): { live: number; active: number } {
+    const set = this.byUser.get(userId);
+    let live = 0;
+    let active = 0;
+    if (set) {
+      for (const c of set) {
+        if (c.detached) continue;
+        live++;
+        if (c.presenceActive) active++;
+      }
+    }
+    return { live, active };
+  }
+
+  /** Users with at least one live connection on this replica (the presence
+   *  heartbeat republishes their summaries). */
+  *liveUserIds(): IterableIterator<bigint> {
+    for (const [userId, set] of this.byUser) {
+      for (const c of set) {
+        if (!c.detached) {
+          yield userId;
+          break;
+        }
+      }
+    }
   }
 
   /** Diagnostic: total open connections (incl. unauthenticated). */

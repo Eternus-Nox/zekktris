@@ -44,6 +44,12 @@ const RENEW_MS = LEASE_MS / 3;
 /** Identifies THIS process in every lease it holds. */
 const instanceId = randomUUID();
 
+/** This process's cluster identity — also the field under which it publishes
+ *  its per-user presence summaries (gateway/presence.ts). */
+export function clusterInstanceId(): string {
+    return instanceId;
+}
+
 let client: Redis | null = null;
 
 function redis(): Redis | null {

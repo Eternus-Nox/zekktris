@@ -259,7 +259,9 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
     update.displayName = body.displayName;
   }
   if (body.bio !== undefined) update.bio = body.bio;
-  if (body.status !== undefined) update.status = body.status;
+  // `status` is the CHOSEN status; the effective one (users.status) is
+  // recomputed below from it and the user's live connections.
+  if (body.status !== undefined) update.chosenStatus = body.status;
   if (body.customStatus !== undefined) update.customStatus = body.customStatus;
   if (body.customStatusEmoji !== undefined) {
     update.customStatusEmoji = body.customStatusEmoji;
@@ -352,7 +354,7 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   );
   let priorAvatarId: bigint | null = null;
   let priorBannerId: bigint | null = null;
-  const user = await db.transaction(async (tx) => {
+  const updated = await db.transaction(async (tx) => {
     if (touchingAvatar || touchingBanner) {
       const [prior] = await tx
         .select({
@@ -384,60 +386,36 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   // happen for the clearing case where new=null, but possible if
   // someone PATCHes with the same URL), skip the delete.
   if (touchingAvatar && priorAvatarId !== null) {
-    const newAvatarId = parseCdnAttachmentId(user.avatarUrl);
+    const newAvatarId = parseCdnAttachmentId(updated.avatarUrl);
     if (newAvatarId !== priorAvatarId) {
       void deleteAttachmentFile(priorAvatarId);
     }
   }
   if (touchingBanner && priorBannerId !== null) {
-    const newBannerId = parseCdnAttachmentId(user.bannerUrl);
+    const newBannerId = parseCdnAttachmentId(updated.bannerUrl);
     if (newBannerId !== priorBannerId) {
       void deleteAttachmentFile(priorBannerId);
     }
   }
 
-  // Broadcast the new status to every guild the user is in so other
-  // members see the dot color change in their MemberList live, and so
-  // the user's own MemberList row updates too. We collect the guild ids
-  // by querying membership; this is a small read but keeps the dispatch
-  // honest (no "they're in 50 guilds and we forgot one" bug). Skipped
-  // entirely if the patch didn't include status — bio/displayName don't
-  // need a presence event.
+  // A chosen-status change: recompute the effective status (e.g. chosen
+  // 'online' while every device is idle reads 'idle'; with no live connection
+  // it stays 'offline') and broadcast it to every guild, DM peer, friend and
+  // the user's own devices — always, as before, so co-members' dots and this
+  // user's other devices confirm the pick even when the effective value is
+  // unchanged. 'invisible' goes out as 'offline'. The response below carries
+  // both: chosenStatus (the pick) and status (effective).
+  let user = updated;
   if (body.status !== undefined) {
-    const memberRows = await db
-      .select({ guildId: schema.guildMembers.guildId })
-      .from(schema.guildMembers)
-      .where(eq(schema.guildMembers.userId, userId));
-    const dmRows = await db
-      .select({ channelId: schema.dmRecipients.channelId })
-      .from(schema.dmRecipients)
-      .where(eq(schema.dmRecipients.userId, userId));
-    // Accepted friends receive the status change too, even when they share no
-    // guild and no DM channel with this user — otherwise a manual status flip
-    // (e.g. Online → Invisible) would never reach a friends-only relationship.
-    const { listAcceptedFriendIds } = await import('../services/relationships');
-    const friendIds = await listAcceptedFriendIds(userId);
-    if (memberRows.length > 0 || dmRows.length > 0 || friendIds.length > 0) {
-      const { presenceUpdate } = await import('../gateway/dispatch');
-      // 'invisible' is a private setting — to other users it appears as
-      // 'offline'. We broadcast offline rather than leaking the
-      // distinction. The user's own client knows the difference (it
-      // sees the actual status from the patchMe response).
-      const broadcastStatus = body.status === 'invisible' ? 'offline' : body.status;
-      presenceUpdate({
-        userId,
-        status: broadcastStatus,
-        guildIds: memberRows.map((r) => r.guildId),
-        dmChannelIds: dmRows.map((r) => r.channelId),
-        userIds: friendIds,
-      });
-    }
+    const { presence } = await import('../gateway/presence');
+    const effective = await presence().recompute(userId, { broadcast: 'always' });
+    if (effective) user = { ...updated, status: effective };
   }
 
   // USER_UPDATE — fire whenever a profile field that's visible to
   // other clients has changed (display name, avatar, bio, custom
-  // status). Status changes are already covered by the dedicated
-  // PRESENCE_UPDATE event above, so we skip the userUpdate emission
+  // status). Status changes are already covered by the PRESENCE_UPDATE
+  // the recompute above broadcast, so we skip the userUpdate emission
   // for status-only patches. Locale is private (server-side personalization
   // hint) and doesn't go on the wire.
   const profileFieldChanged =

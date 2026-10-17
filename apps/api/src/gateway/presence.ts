@@ -1,0 +1,597 @@
+/**
+ * Multi-device presence
+ * ---------------------
+ * A user's EFFECTIVE status (`users.status`, what everyone sees) is derived,
+ * never written by a device directly. Inputs:
+ *
+ *   - chosen status (`users.chosen_status`): what the user picked — online,
+ *     idle ("Away"), dnd or invisible. Only PATCH /users/@me {status} changes it.
+ *   - every live gateway connection's activity (Connection.presenceActive),
+ *     reported by its client in IDENTIFY/RESUME and op 3 PRESENCE_UPDATE. A
+ *     connection that never reports counts as active (legacy clients).
+ *
+ * Rule (effectiveStatus below): no live connection anywhere → 'offline'
+ * ('invisible' stays 'invisible'); chosen invisible / dnd / idle → that;
+ * chosen online → 'online' if ANY live connection is active, else 'idle'.
+ * So the dot follows the device actually in use: the phone in hand reads
+ * online while the Mac sits idle, and once nothing is in use it reads idle —
+ * Zekktris is still open somewhere, nobody is using it.
+ *
+ * recompute() is the ONE runtime writer of users.status (the other is the
+ * boot reset, resetPresenceOnBoot). It is serialized per
+ * user within a process, writes with a compare-and-set on the row it read (a
+ * concurrent recompute on another replica can't regress it — the loser
+ * re-reads and recomputes), stamps lastSeenAt on transitions to/from offline,
+ * and broadcasts PRESENCE_UPDATE ('invisible' masked as 'offline') to the
+ * user's guilds, DM peers, friends AND their own connections.
+ *
+ * Multi-replica (REDIS_URL): a replica only sees its own sockets, so each one
+ * publishes its per-user summary into a Redis hash —
+ * `zekktris:presence:u:<userId>`, field = this replica's cluster instance id,
+ * value = {l: live, a: active, t: timestamp} — on every recompute and from a
+ * heartbeat, and recompute sums the fields that aren't stale. A dead
+ * replica's fields go stale; the leader's sweep recomputes users carrying a
+ * stale field (or none at all) so they don't stay stuck online. Every Redis
+ * failure degrades to this replica's own view — exactly the pre-cluster
+ * behaviour — rather than failing the gateway path. Without REDIS_URL all of
+ * this is skipped and the registry is the whole truth.
+ */
+
+import Redis from 'ioredis';
+import { and, asc, eq, gt, inArray } from 'drizzle-orm';
+import { db, schema } from '../db';
+import { env } from '../env';
+import { log } from '../log';
+import { clusterInstanceId } from '../cluster';
+import { runBounded } from '../lib/concurrency';
+import { touchLastSeen } from '../services/presence';
+import { listAcceptedFriendIds } from '../services/relationships';
+import * as dispatch from './dispatch';
+import { registry } from './registry';
+
+export type ChosenStatus = 'online' | 'idle' | 'dnd' | 'invisible';
+export type EffectiveStatus = ChosenStatus | 'offline';
+
+export interface PresenceSummary {
+  /** Live (non-detached) connections. */
+  live: number;
+  /** Of those, how many report their device in use. */
+  active: number;
+}
+
+/** What the engine needs from a connection registry. */
+export interface PresenceSource {
+  presenceSummary(userId: bigint): PresenceSummary;
+  liveUserIds(): Iterable<bigint>;
+}
+
+/** The pure rule. See the module comment. */
+export function effectiveStatus(chosen: ChosenStatus, summary: PresenceSummary): EffectiveStatus {
+  if (chosen === 'invisible') return 'invisible';
+  if (summary.live === 0) return 'offline';
+  if (chosen === 'online') return summary.active > 0 ? 'online' : 'idle';
+  return chosen;
+}
+
+/** Recipients of a presence broadcast, when the caller already loaded them. */
+export interface PresenceAudience {
+  guildIds: bigint[];
+  dmChannelIds: bigint[];
+  friendIds: bigint[];
+}
+
+export interface RecomputeOptions {
+  /** 'change' (default): broadcast only when the effective status changed.
+   *  'always': also re-broadcast an unchanged one — every connect does this
+   *  to heal peers' drifted views, and a status PATCH to confirm it. */
+  broadcast?: 'change' | 'always';
+  audience?: PresenceAudience;
+}
+
+const KEY_PREFIX = 'zekktris:presence:u:';
+/** An entry not refreshed for this long belongs to a dead replica. Three
+ *  missed heartbeats, so one slow heartbeat or Redis blip never counts. */
+export const PRESENCE_STALE_MS = 45_000;
+/** How often each replica republishes its summaries. */
+export const PRESENCE_HEARTBEAT_MS = 15_000;
+/** How often the leader looks for users stranded by a dead replica. */
+export const PRESENCE_SWEEP_MS = 30_000;
+/** CAS retries before a recompute gives up (each retry re-reads everything). */
+const MAX_ATTEMPTS = 3;
+const SWEEP_PAGE = 500;
+const SWEEP_CONCURRENCY = 8;
+
+const keyFor = (userId: bigint): string => KEY_PREFIX + userId.toString();
+
+interface ClusterEntry {
+  l: number;
+  a: number;
+  t: number;
+}
+
+function parseEntry(raw: string): ClusterEntry | null {
+  try {
+    const e = JSON.parse(raw) as Partial<ClusterEntry>;
+    if (typeof e.l !== 'number' || typeof e.a !== 'number' || typeof e.t !== 'number') return null;
+    return { l: e.l, a: e.a, t: e.t };
+  } catch {
+    return null;
+  }
+}
+
+/** Restricts a sweep / boot reset to these users (tests share a database). */
+export interface PresenceScope {
+  userIds: bigint[];
+}
+
+export interface PresenceEngineOptions {
+  source: PresenceSource;
+  /** Null = single replica: the source is the whole truth. */
+  redis: Redis | null;
+  instanceId: string;
+  staleMs?: number;
+}
+
+export class PresenceEngine {
+  private readonly source: PresenceSource;
+  private readonly redis: Redis | null;
+  private readonly instanceId: string;
+  private readonly staleMs: number;
+  /** Per-user tail of the recompute chain (in-process serialization). */
+  private readonly chains = new Map<bigint, Promise<unknown>>();
+  /**
+   * Users whose last live connection closed and who are inside the gateway's
+   * full-disconnect grace (voice-eviction window), with the activity of that
+   * last connection. They count as one connection until the grace ends, so
+   * no recompute in the meantime flips them offline early — the offline flip
+   * keeps today's timing.
+   */
+  private readonly holds = new Map<bigint, boolean>();
+  /** Users this replica has a field for in Redis (so it can delete them). */
+  private readonly published = new Set<bigint>();
+  private lastRedisWarnAt = 0;
+
+  constructor(opts: PresenceEngineOptions) {
+    this.source = opts.source;
+    this.redis = opts.redis;
+    this.instanceId = opts.instanceId;
+    this.staleMs = opts.staleMs ?? PRESENCE_STALE_MS;
+  }
+
+  /** Whether summaries are aggregated across replicas through Redis. */
+  get clustered(): boolean {
+    return this.redis !== null;
+  }
+
+  /**
+   * Resolves once the Redis client can take commands, or after `timeoutMs`
+   * (callers then run into the usual failure handling). Without an offline
+   * queue ioredis REJECTS anything issued before it has connected, and the
+   * boot reset runs right after the client is created.
+   */
+  async whenReady(timeoutMs = 5000): Promise<void> {
+    const r = this.redis;
+    if (!r || r.status === 'ready') return;
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        r.off('ready', done);
+        resolve();
+      };
+      const timer = setTimeout(done, timeoutMs);
+      r.once('ready', done);
+    });
+  }
+
+  // ── Full-disconnect grace ────────────────────────────────────────────────
+
+  hold(userId: bigint, active: boolean): void {
+    this.holds.set(userId, active);
+  }
+
+  release(userId: bigint): void {
+    this.holds.delete(userId);
+  }
+
+  /** This replica's view of the user, a held user counting as one connection. */
+  localSummary(userId: bigint): PresenceSummary {
+    const s = this.source.presenceSummary(userId);
+    if (s.live > 0) return s;
+    const held = this.holds.get(userId);
+    return held === undefined ? s : { live: 1, active: held ? 1 : 0 };
+  }
+
+  // ── Recompute ────────────────────────────────────────────────────────────
+
+  /**
+   * Recompute the user's effective status, write it if it changed, and
+   * broadcast. Resolves to the effective status, or null if it could not be
+   * determined (user gone, persistent CAS conflict, DB error — logged).
+   * Never rejects: presence is soft state and must not break a gateway or
+   * REST path.
+   */
+  recompute(userId: bigint, opts: RecomputeOptions = {}): Promise<EffectiveStatus | null> {
+    const prev = this.chains.get(userId) ?? Promise.resolve();
+    const run = prev.then(() => this.recomputeNow(userId, opts));
+    this.chains.set(userId, run);
+    void run.then(() => {
+      if (this.chains.get(userId) === run) this.chains.delete(userId);
+    });
+    return run;
+  }
+
+  private async recomputeNow(
+    userId: bigint,
+    opts: RecomputeOptions,
+  ): Promise<EffectiveStatus | null> {
+    try {
+      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        const summary = await this.clusterSummary(userId);
+        const [row] = await db
+          .select({ status: schema.users.status, chosenStatus: schema.users.chosenStatus })
+          .from(schema.users)
+          .where(eq(schema.users.id, userId))
+          .limit(1);
+        if (!row) return null;
+        const next = effectiveStatus(row.chosenStatus, summary);
+        if (next === row.status) {
+          if (opts.broadcast === 'always') await this.broadcast(userId, next, opts.audience);
+          return next;
+        }
+        // Compare-and-set on exactly what we read: if another recompute (or a
+        // chosen-status PATCH) got in between, this matches nothing and we
+        // start over from fresh inputs instead of overwriting newer truth.
+        const updated = await db
+          .update(schema.users)
+          .set({ status: next })
+          .where(
+            and(
+              eq(schema.users.id, userId),
+              eq(schema.users.status, row.status),
+              eq(schema.users.chosenStatus, row.chosenStatus),
+            ),
+          )
+          .returning({ id: schema.users.id });
+        if (updated.length === 0) continue;
+        // "Last online", as before: the moment they came or went VISIBLY. The
+        // stamp is gated on status <> 'invisible' in SQL (services/presence),
+        // which covers arriving invisible; leaving invisible → offline (they
+        // dropped Invisible while disconnected) was never a visible moment,
+        // so it must not stamp either.
+        if ((next === 'offline' && row.status !== 'invisible') || row.status === 'offline') {
+          await touchLastSeen(userId);
+        }
+        await this.broadcast(userId, next, opts.audience);
+        return next;
+      }
+      log.warn('presence: recompute kept losing its compare-and-set', {
+        userId: userId.toString(),
+      });
+      return null;
+    } catch (err) {
+      log.warn('presence: recompute failed', {
+        userId: userId.toString(),
+        err: (err as Error).message,
+      });
+      return null;
+    }
+  }
+
+  private async broadcast(
+    userId: bigint,
+    status: EffectiveStatus,
+    audience?: PresenceAudience,
+  ): Promise<void> {
+    let a = audience;
+    if (!a) {
+      const [memberRows, dmRows, friendIds] = await Promise.all([
+        db
+          .select({ guildId: schema.guildMembers.guildId })
+          .from(schema.guildMembers)
+          .where(eq(schema.guildMembers.userId, userId)),
+        db
+          .select({ channelId: schema.dmRecipients.channelId })
+          .from(schema.dmRecipients)
+          .where(eq(schema.dmRecipients.userId, userId)),
+        listAcceptedFriendIds(userId),
+      ]);
+      a = {
+        guildIds: memberRows.map((r) => r.guildId),
+        dmChannelIds: dmRows.map((r) => r.channelId),
+        friendIds,
+      };
+    }
+    dispatch.presenceUpdate({
+      userId,
+      // 'invisible' is private: everyone else sees plain 'offline'. The
+      // user's own clients know the difference from their chosenStatus.
+      status: status === 'invisible' ? 'offline' : status,
+      guildIds: a.guildIds,
+      dmChannelIds: a.dmChannelIds,
+      // Friends (who may share no guild/DM) + the user's OWN connections, so
+      // each of their devices shows their current effective dot.
+      userIds: a.friendIds.includes(userId) ? a.friendIds : [...a.friendIds, userId],
+    });
+  }
+
+  // ── Cluster aggregation ──────────────────────────────────────────────────
+
+  /**
+   * The user's summary across every replica: publish ours, read everyone's,
+   * sum the fresh ones. Single replica, or Redis failing: ours alone.
+   */
+  async clusterSummary(userId: bigint): Promise<PresenceSummary> {
+    const local = this.localSummary(userId);
+    const r = this.redis;
+    if (!r) return local;
+    try {
+      const key = keyFor(userId);
+      const now = Date.now();
+      const tx = r.multi();
+      if (local.live > 0) {
+        tx.hset(key, this.instanceId, JSON.stringify({ l: local.live, a: local.active, t: now }));
+        tx.pexpire(key, this.staleMs * 2);
+      } else {
+        tx.hdel(key, this.instanceId);
+      }
+      tx.hgetall(key);
+      const res = await tx.exec();
+      if (!res) throw new Error('transaction aborted');
+      for (const [err] of res) if (err) throw err;
+      if (local.live > 0) this.published.add(userId);
+      else this.published.delete(userId);
+      const all = res[res.length - 1]![1] as Record<string, string>;
+      const total = { ...local };
+      for (const [field, raw] of Object.entries(all)) {
+        if (field === this.instanceId) continue;
+        const e = parseEntry(raw);
+        if (!e || now - e.t > this.staleMs) continue;
+        total.live += e.l;
+        total.active += e.a;
+      }
+      return total;
+    } catch (err) {
+      this.warnRedis(err);
+      return local;
+    }
+  }
+
+  /** Close the Redis client (shutdown). */
+  async closeRedis(): Promise<void> {
+    try {
+      await this.redis?.quit();
+    } catch {
+      // closing anyway
+    }
+  }
+
+  private warnRedis(err: unknown): void {
+    const now = Date.now();
+    if (now - this.lastRedisWarnAt < 60_000) return;
+    this.lastRedisWarnAt = now;
+    log.warn('presence: redis unavailable, using this replica only', {
+      err: (err as Error)?.message ?? String(err),
+    });
+  }
+
+  /**
+   * Heartbeat (every replica, cluster mode): refresh this replica's entry for
+   * every user it holds so it doesn't go stale, drop entries for users it no
+   * longer holds, and heal users this replica holds whose row reads
+   * 'offline' (e.g. offlined by another replica's boot reset while Redis was
+   * unreachable).
+   */
+  async heartbeat(): Promise<void> {
+    const r = this.redis;
+    if (!r) return;
+    const users = new Set<bigint>(this.source.liveUserIds());
+    for (const userId of this.holds.keys()) users.add(userId);
+    const now = Date.now();
+    try {
+      const p = r.pipeline();
+      for (const userId of users) {
+        const s = this.localSummary(userId);
+        const key = keyFor(userId);
+        p.hset(key, this.instanceId, JSON.stringify({ l: s.live, a: s.active, t: now }));
+        p.pexpire(key, this.staleMs * 2);
+      }
+      const gone = [...this.published].filter((u) => !users.has(u));
+      for (const userId of gone) p.hdel(keyFor(userId), this.instanceId);
+      if (users.size > 0 || gone.length > 0) {
+        const res = await p.exec();
+        for (const [err] of res ?? []) if (err) throw err;
+      }
+      for (const userId of gone) this.published.delete(userId);
+      for (const userId of users) this.published.add(userId);
+    } catch (err) {
+      this.warnRedis(err);
+    }
+
+    // Heal (one indexed read per 1000 users).
+    const ids = [...this.source.liveUserIds()];
+    for (let i = 0; i < ids.length; i += 1000) {
+      const chunk = ids.slice(i, i + 1000);
+      try {
+        const rows = await db
+          .select({ id: schema.users.id })
+          .from(schema.users)
+          .where(and(inArray(schema.users.id, chunk), eq(schema.users.status, 'offline')));
+        await runBounded(
+          rows.map((row) => async () => {
+            await this.recompute(row.id);
+          }),
+          SWEEP_CONCURRENCY,
+        );
+      } catch (err) {
+        log.warn('presence: heartbeat heal failed', { err: (err as Error).message });
+      }
+    }
+  }
+
+  /**
+   * Graceful shutdown: delete this replica's entries, so the next boot (or
+   * another replica's sweep) doesn't count this process's users for the
+   * staleness window after they're gone. Best-effort. A crash skips this;
+   * its entries then simply age out.
+   */
+  async withdraw(): Promise<void> {
+    const r = this.redis;
+    if (!r) return;
+    const users = new Set<bigint>([...this.published, ...this.source.liveUserIds(), ...this.holds.keys()]);
+    if (users.size === 0) return;
+    try {
+      const p = r.pipeline();
+      for (const userId of users) p.hdel(keyFor(userId), this.instanceId);
+      await p.exec();
+      this.published.clear();
+    } catch (err) {
+      this.warnRedis(err);
+    }
+  }
+
+  /**
+   * Find users shown present (online / idle / dnd) whose Redis entries are
+   * missing or partly stale — their replica died — and recompute them. Drops
+   * the stale fields first, so the recompute (and later sweeps) ignore them.
+   * Run by the leader on an interval, and by every replica once at boot.
+   * Throws when Redis is unreachable (the boot path then falls back).
+   * `scope` limits it to some users (tests sharing a database).
+   */
+  async sweep(scope?: PresenceScope): Promise<number> {
+    const r = this.redis;
+    if (!r) return 0;
+    let recomputed = 0;
+    let after = 0n;
+    for (;;) {
+      const page = await db
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(
+          and(
+            inArray(schema.users.status, ['online', 'idle', 'dnd']),
+            gt(schema.users.id, after),
+            scope ? inArray(schema.users.id, scope.userIds) : undefined,
+          ),
+        )
+        .orderBy(asc(schema.users.id))
+        .limit(SWEEP_PAGE);
+      if (page.length === 0) break;
+      after = page[page.length - 1]!.id;
+
+      const p = r.pipeline();
+      for (const { id } of page) p.hgetall(keyFor(id));
+      const res = await p.exec();
+      if (!res) throw new Error('pipeline aborted');
+      const now = Date.now();
+      const stale = r.pipeline();
+      let staleCount = 0;
+      const toRecompute: bigint[] = [];
+      page.forEach(({ id }, i) => {
+        const [err, value] = res[i]!;
+        if (err) throw err;
+        let fresh = 0;
+        let hasStale = false;
+        for (const [field, raw] of Object.entries(value as Record<string, string>)) {
+          const e = parseEntry(raw);
+          if (e && now - e.t <= this.staleMs) {
+            fresh++;
+            continue;
+          }
+          hasStale = true;
+          stale.hdel(keyFor(id), field);
+          staleCount++;
+        }
+        if (fresh === 0 || hasStale) toRecompute.push(id);
+      });
+      if (staleCount > 0) await stale.exec();
+      await runBounded(
+        toRecompute.map((id) => async () => {
+          await this.recompute(id);
+        }),
+        SWEEP_CONCURRENCY,
+      );
+      recomputed += toRecompute.length;
+      if (page.length < SWEEP_PAGE) break;
+    }
+    return recomputed;
+  }
+}
+
+// ── Process singleton ──────────────────────────────────────────────────────
+
+let engine: PresenceEngine | null = null;
+
+/** The engine the gateway and routes use: this process's registry, plus Redis
+ *  aggregation when REDIS_URL is set. */
+export function presence(): PresenceEngine {
+  if (engine) return engine;
+  let client: Redis | null = null;
+  if (env.REDIS_URL) {
+    // Same posture as the session blacklist / cluster leases: no offline
+    // queue and a hard command timeout, so an outage makes commands REJECT
+    // (→ this replica's own view) instead of hanging a gateway path.
+    client = new Redis(env.REDIS_URL, {
+      maxRetriesPerRequest: 1,
+      enableOfflineQueue: false,
+      commandTimeout: 2000,
+      lazyConnect: false,
+    });
+    client.on('error', () => {});
+  }
+  engine = new PresenceEngine({ source: registry, redis: client, instanceId: clusterInstanceId() });
+  return engine;
+}
+
+/** Shutdown hook (index.ts): withdraw this replica's Redis entries and close
+ *  the client. No-op if the engine was never created or has no Redis. */
+export async function shutdownPresence(): Promise<void> {
+  const eng = engine;
+  if (!eng) return;
+  await eng.withdraw();
+  await eng.closeRedis();
+}
+
+/**
+ * Boot-time reset. Presence is persisted on users.status, and a process that
+ * died never ran its close hooks, so rows still assert "present" for users
+ * with no connection.
+ *
+ * Single replica: there are no connections at boot by definition, so every
+ * online / idle / dnd row is stale — reset them all to 'offline' ('invisible'
+ * is preserved: it already reads as offline and is the user's choice).
+ *
+ * Cluster: users connected to OTHER replicas are live; a blanket reset would
+ * offline them. Run the sweep instead (it only touches users without a fresh
+ * entry). If Redis can't be reached the blanket reset still runs — the other
+ * replicas' heartbeat heals their own users within one beat.
+ */
+export async function resetPresenceOnBoot(
+  eng: PresenceEngine = presence(),
+  scope?: PresenceScope,
+): Promise<void> {
+  if (eng.clustered) {
+    try {
+      await eng.whenReady();
+      const n = await eng.sweep(scope);
+      if (n > 0) log.info('gateway: reset stale presence on boot', { count: n, mode: 'cluster' });
+      return;
+    } catch (err) {
+      log.warn('gateway: cluster presence reset failed, resetting all', {
+        err: (err as Error).message,
+      });
+    }
+  }
+  const reset = await db
+    .update(schema.users)
+    .set({ status: 'offline' })
+    .where(
+      and(
+        inArray(schema.users.status, ['online', 'idle', 'dnd']),
+        scope ? inArray(schema.users.id, scope.userIds) : undefined,
+      ),
+    )
+    .returning({ id: schema.users.id });
+  if (reset.length > 0) {
+    log.info('gateway: reset stale presence on boot', { count: reset.length });
+  }
+}

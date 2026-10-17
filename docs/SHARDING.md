@@ -46,6 +46,45 @@ in-memory versions.
   they hold across replicas.
 - **Sessions** live in the database (`sessions` table): a token issued on
   replica A validates on replica B.
+- **Presence** — see [Presence across replicas](#presence-across-replicas)
+  below.
+
+## Presence across replicas
+
+A user's effective status (`users.status`) is recomputed from their chosen
+status (`users.chosen_status`) and the activity of every live gateway
+connection they hold — on any replica (`apps/api/src/gateway/presence.ts`).
+A replica only sees its own sockets, so:
+
+- Each replica publishes a per-user summary into the Redis hash
+  `zekktris:presence:u:<userId>`: field = the replica's cluster instance id,
+  value = `{l: live connections, a: active connections, t: timestamp}`. It
+  writes it on every recompute (connect, `PRESENCE_UPDATE` op, a socket
+  closing, a status change) and refreshes all of its entries from a heartbeat
+  every 15 s. A user inside the full-disconnect grace (the 45 s voice-eviction
+  window) still counts as one connection, so no replica offlines them early.
+- A recompute sums every field whose timestamp is under 45 s old (three
+  missed heartbeats) and writes the result with a compare-and-set, so
+  concurrent recomputes on two replicas converge instead of regressing.
+- A replica that shuts down gracefully deletes its fields. One that dies
+  leaves fields that go stale. The sweep leader
+  (`leaderInterval`, every 30 s) recomputes users shown online / idle / dnd
+  whose entries are missing or partly stale, deleting the stale fields — so
+  "phone on the dead replica" stops counting and the user reads idle or
+  offline according to what is still connected.
+- At boot, a replica runs that sweep once instead of the single-node blanket
+  "everyone offline" reset, so users connected to other replicas are left
+  alone. This also applies to a single replica with `REDIS_URL` set (the
+  docker-compose default): after a crash, the dead process's fields keep its
+  users present until they are stale and swept (about a minute) unless they
+  reconnect first.
+- Every Redis failure degrades to the replica's own view (the pre-cluster
+  behaviour): a recompute never hangs or throws because of Redis. If Redis is
+  unreachable at boot the blanket reset runs, and each replica's heartbeat
+  heals the users it holds whose row was reset to `offline` within one beat.
+- During a rolling deploy from a version without this, users connected only
+  to old replicas have no entries yet, so a new replica's boot sweep may show
+  them offline until their next reconnect.
 
 ## What stays per-replica
 

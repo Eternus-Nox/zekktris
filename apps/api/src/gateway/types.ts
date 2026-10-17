@@ -115,6 +115,11 @@ export const HEARTBEAT_GRACE_MS = 10_000;
 /** Window for IDENTIFY after connect; close the socket if not received. */
 export const IDENTIFY_TIMEOUT_MS = 15_000;
 
+/** Minimum spacing of applied op-3 PRESENCE_UPDATE changes per connection.
+ *  Faster changes are coalesced (latest wins), never rejected — see
+ *  Connection.reportPresenceActivity. */
+export const PRESENCE_UPDATE_MIN_INTERVAL_MS = 2_000;
+
 // ── Close codes ────────────────────────────────────────────────────────────
 //
 // Custom close codes in the 4000-4999 range. These mirror Discord's

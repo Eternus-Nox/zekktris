@@ -210,6 +210,17 @@ with its access token; the server replies `READY` with a session snapshot
   `RESUME {token, session_id, seq}` and the server replays everything after
   `seq` in order; if the gap is too large or the session is unknown it answers
   `INVALID_SESSION{resumable:false}` and the client does a fresh IDENTIFY.
+- **Multi-device presence.** A user's chosen status (`users.chosen_status`,
+  set by `PATCH /users/@me {status}`) is kept apart from the effective one
+  everyone sees (`users.status`). Each connection reports its device's
+  activity — `presence: {active}` in IDENTIFY/RESUME, then op 3
+  `PRESENCE_UPDATE {active}` on each change (READY advertises
+  `features.presence_activity`) — and the server recomputes: offline with no
+  connection, the chosen dnd / idle / invisible as is, and chosen online reads
+  online if any device is in use, else idle. A client that never reports
+  counts as in use. `PRESENCE_UPDATE` dispatches also reach the user's own
+  devices. Across replicas the per-replica summaries meet in Redis (see
+  `docs/SHARDING.md`). Code: `apps/api/src/gateway/presence.ts`.
 - **Permission-filtered fanout.** Each connection caches its viewable-channel
   set (computed once at IDENTIFY). Channel-scoped events are filtered against
   it; the cache is refreshed live on any visibility-changing mutation, and

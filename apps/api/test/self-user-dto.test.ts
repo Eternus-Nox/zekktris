@@ -42,3 +42,17 @@ describe('toSelfUser — achievementsPublic is carried on the self user', () => 
     expect(toSelfUser(fakeUser({ achievementsPublic: false })).achievementsPublic).toBe(false);
   });
 });
+
+describe('toSelfUser — chosen vs effective status', () => {
+  it('carries the chosen status alongside the effective one', () => {
+    const dto = toSelfUser(fakeUser({ status: 'idle', chosenStatus: 'online' }));
+    expect(dto.status).toBe('idle');
+    expect(dto.chosenStatus).toBe('online');
+  });
+
+  it('shows the self user their own invisible status unmasked', () => {
+    const dto = toSelfUser(fakeUser({ status: 'invisible', chosenStatus: 'invisible' }));
+    expect(dto.status).toBe('invisible');
+    expect(dto.chosenStatus).toBe('invisible');
+  });
+});

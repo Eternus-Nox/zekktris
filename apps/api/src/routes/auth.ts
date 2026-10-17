@@ -1045,15 +1045,15 @@ authRouter.post('/logout', async (c) => {
 // POST /disconnect-beacon
 // ───────────────────────────────────────────────────────────────────────────
 // Called via navigator.sendBeacon() when the user closes the tab/app.
-// Marks the user offline immediately rather than waiting out the
+// Closes that browser's sockets immediately rather than waiting out the
 // 40-second WebSocket heartbeat watchdog. Best-effort: missing
 // cookie or wrong session simply returns 204 with no side-effect.
 //
 // We can't use the regular Bearer auth here because sendBeacon doesn't
 // support custom headers in iOS Safari. Instead we authenticate via the
 // httpOnly refresh-token cookie that's already present, look up the
-// session → user, and mark them offline + broadcast presence to
-// guild + DM audiences. This is the only auth-via-cookie endpoint
+// session → user, and close that session's sockets (presence then
+// follows through the normal disconnect path). This is the only auth-via-cookie endpoint
 // other than /refresh.
 //
 // The beacon is "best-effort" — if it fails (network drop, timing)
@@ -1068,11 +1068,16 @@ authRouter.post('/disconnect-beacon', async (c) => {
     const session = await findActiveSessionByRefreshToken(token);
     if (!session) return c.body(null, 204);
 
-    // Force-close every open gateway connection for this user. The
-    // socket close handlers will naturally fire onUserFullyDisconnected
-    // → users.status = 'offline' → presence broadcast.
+    // Force-close the gateway connections opened with THIS sign-in session
+    // (the closing browser) — not the user's other devices: closing a tab on
+    // the Mac must not knock the phone offline. The socket close handlers
+    // then recompute presence (gateway/presence.ts): 'offline' once nothing
+    // is connected (after the usual grace), or whatever the user's remaining
+    // devices say.
     const { registry } = await import('../gateway/registry');
-    const conns = registry.byUserId(session.userId);
+    const conns = registry
+      .byUserId(session.userId)
+      .filter((conn) => conn.authSessionId === session.id);
     for (const c of conns) {
       try {
         c.close(1000, 'page hide beacon');
@@ -1082,34 +1087,14 @@ authRouter.post('/disconnect-beacon', async (c) => {
     }
 
     // Defensive: if there were no open connections (e.g. the WS was
-    // already torn down by iOS before the beacon fired), still mark
-    // the user offline directly. The presence broadcast covers both
-    // guilds AND DMs so partners and co-members see the dot recolor
-    // immediately.
+    // already torn down by iOS before the beacon fired), recompute anyway
+    // so a row left asserting "present" is corrected and broadcast to
+    // guilds, DM peers and friends. The recompute is the single writer of
+    // users.status: it keeps an invisible user invisible and counts the
+    // user's connections on every replica.
     if (conns.length === 0) {
-      const { db, schema } = await import('../db');
-      const { eq } = await import('drizzle-orm');
-      await db
-        .update(schema.users)
-        .set({ status: 'offline' })
-        .where(eq(schema.users.id, session.userId));
-      const memberRows = await db
-        .select({ guildId: schema.guildMembers.guildId })
-        .from(schema.guildMembers)
-        .where(eq(schema.guildMembers.userId, session.userId));
-      const dmRows = await db
-        .select({ channelId: schema.dmRecipients.channelId })
-        .from(schema.dmRecipients)
-        .where(eq(schema.dmRecipients.userId, session.userId));
-      if (memberRows.length > 0 || dmRows.length > 0) {
-        const { presenceUpdate } = await import('../gateway/dispatch');
-        presenceUpdate({
-          userId: session.userId,
-          status: 'offline',
-          guildIds: memberRows.map((r) => r.guildId),
-          dmChannelIds: dmRows.map((r) => r.channelId),
-        });
-      }
+      const { presence } = await import('../gateway/presence');
+      await presence().recompute(session.userId);
     }
   } catch {
     // sendBeacon ignores response codes; we have to swallow errors
