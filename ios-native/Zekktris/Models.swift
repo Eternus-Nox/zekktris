@@ -148,8 +148,7 @@ struct SelfUser: Codable, Identifiable, Hashable {
     var subscriptionTier: String?
     var subscriptionExpiresAt: String?
     var subscriptionInherited: Bool?
-    /// "gift" | "founder" | "stripe". "stripe" = a subscription bought before
-    /// Zekktris went free; Settings points at web Settings to stop it.
+    /// "gift" (admin-given) | "founder" (grandfathered).
     var subscriptionSource: String?
     /// False for founder (grandfathered) memberships — perks without a title.
     var subscriptionTitled: Bool?

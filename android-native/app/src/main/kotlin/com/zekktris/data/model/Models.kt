@@ -83,8 +83,7 @@ data class SelfUser(
     val showSubscriptionTier: Boolean? = null,
     val subscriptionExpiresAt: String? = null,
     val subscriptionInherited: Boolean? = null,
-    /** "gift" | "founder" | "stripe". "stripe" = a subscription bought before
-     *  Zekktris went free; Settings links to web Settings to stop it. */
+    /** "gift" (admin-given) | "founder" (grandfathered). */
     val subscriptionSource: String? = null,
     /** True when the tier shows a title on the profile; founder/untitled rows
      *  have nothing to hide (gates the "Show my perk tier" toggle). */
