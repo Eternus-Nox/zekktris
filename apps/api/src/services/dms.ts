@@ -559,12 +559,21 @@ export type RegisterPurgeProofResult =
  * The server cannot check that a proof was derived from the DM key (it only
  * knows the public verifier), so this is trust-on-first-use: the first
  * registration wins and is never overwritten. Updated clients register as
- * soon as they hold the key (on unlock, or on opening an unlocked DM whose
- * DTO says `e2eePurgeProofSet: false`), which closes the window in which a
+ * soon as they hold the key (on unlock, on opening an unlocked DM, or, on
+ * the native apps, on loading the DM list, whenever the DTO says
+ * `e2eePurgeProofSet: false`), which closes the window in which a
  * participant without the password could echo the public verifier and purge.
  * A peer who races in first with a bogus proof gains nothing they could not
  * already do in that window (purge with the verifier); at worst the key
- * holders can no longer purge, which loses no data.
+ * holders can no longer turn encryption off (or re-key, which is disable +
+ * enable), which loses no data. There is deliberately no in-app recovery:
+ * the server can't tell a key holder from that peer, so any way out open to
+ * one is open to the other (a verifier-only disable that skips the purge,
+ * say, would let the peer re-enable under its own key and then purge the old
+ * ciphertext with its own proof). A server operator can reset the DM to the
+ * unregistered state with
+ *   UPDATE channels SET e2ee_purge_proof_hash = NULL WHERE id = <channel id>;
+ * and the next key holder to open it registers again.
  *
  * The verifier must match so a stale key from an earlier enable can't
  * register against the current one.

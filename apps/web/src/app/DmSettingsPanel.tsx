@@ -784,8 +784,8 @@ function PickPasswordModal({
           person, etc. — so they can unlock the conversation on their device.
         </p>
         <p className="text-xs text-ink-3 italic">
-          The password never leaves your devices. The server only sees an
-          irreversible verifier hash.
+          The password never leaves your devices. The server only sees
+          irreversible hashes derived from it.
         </p>
         <input
           type="password"
