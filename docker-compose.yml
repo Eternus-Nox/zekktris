@@ -64,6 +64,10 @@ services:
       # public IP (Let's Encrypt IP certificate). See ops/caddy-modes/README.
       TLS_MODE: ${TLS_MODE:-none}
       PUBLIC_IP: ${PUBLIC_IP:-}
+      # Who may tell Caddy the client's IP: "none" (default — Caddy is the
+      # edge, nobody is trusted) or "cloudflare" (only behind Cloudflare
+      # proxied DNS / Tunnel). See ops/caddy-modes/README.
+      EDGE_PROXY: ${EDGE_PROXY:-none}
       # PUBLIC_URL is informational here — the API uses it for outgoing URLs
       # (email links, invite links, CDN URLs). It does NOT control what Caddy
       # listens on; that's SITE_ADDRESS above.
@@ -165,6 +169,7 @@ services:
       # bytes and skip counts, and touches nothing.
       ATTACHMENT_RETENTION_DAYS: ${ATTACHMENT_RETENTION_DAYS:-90}
       ATTACHMENT_RETENTION_DRY_RUN: ${ATTACHMENT_RETENTION_DRY_RUN:-false}
+      ATTACHMENT_RETENTION_REAP_UNTHUMBED: ${ATTACHMENT_RETENTION_REAP_UNTHUMBED:-false}
       # Periodic image-compression sweep (re-encodes stored images at lower
       # quality; needs the `sharp` package, no-ops gracefully without it).
       # QUALITY 1-100 (75 ≈ 30-50% saved on phone-camera output with no
@@ -172,6 +177,17 @@ services:
       IMAGE_COMPRESS_ENABLED: ${IMAGE_COMPRESS_ENABLED:-true}
       IMAGE_COMPRESS_QUALITY: ${IMAGE_COMPRESS_QUALITY:-75}
       IMAGE_COMPRESS_SWEEP_INTERVAL_HOURS: ${IMAGE_COMPRESS_SWEEP_INTERVAL_HOURS:-24}
+      # Account inactivity sweep — HARD-DELETES accounts that have not opened
+      # the app in INACTIVITY_TTL_DAYS days (default 365). 0 turns it off.
+      INACTIVITY_TTL_DAYS: ${INACTIVITY_TTL_DAYS:-365}
+      INACTIVITY_SWEEP_INTERVAL_HOURS: ${INACTIVITY_SWEEP_INTERVAL_HOURS:-24}
+      # Smaller housekeeping sweeps, each on by default (see .env.example).
+      STREAK_WARN_ENABLED: ${STREAK_WARN_ENABLED:-true}
+      STREAK_WARN_HOURS_BEFORE: ${STREAK_WARN_HOURS_BEFORE:-6}
+      INVITE_PRUNE_ENABLED: ${INVITE_PRUNE_ENABLED:-true}
+      INVITE_PRUNE_GRACE_DAYS: ${INVITE_PRUNE_GRACE_DAYS:-7}
+      PARENT_LINK_AGE_CHECK_ENABLED: ${PARENT_LINK_AGE_CHECK_ENABLED:-true}
+      PARENT_LINK_AGE_CHECK_INTERVAL_HOURS: ${PARENT_LINK_AGE_CHECK_INTERVAL_HOURS:-24}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
       # Snowflake worker id. LEFT EMPTY ON PURPOSE — do not restore the old
@@ -206,6 +222,10 @@ services:
       # hex chars or base64: `openssl rand -hex 32`. Unset → those fields are
       # stored UNENCRYPTED and SSO config is refused.
       FIELD_ENCRYPTION_KEY: ${FIELD_ENCRYPTION_KEY:-}
+      # Previous keys, comma-separated, during a key rotation (see
+      # apps/api/scripts/reencrypt-fields.ts). Without this the rotated-out key
+      # never reaches the api and every stored 2FA/bot/SSO secret is unreadable.
+      FIELD_ENCRYPTION_KEYS_OLD: ${FIELD_ENCRYPTION_KEYS_OLD:-}
       TRUST_PROXY: "true"   # we're behind Caddy; X-Forwarded-* are trusted
       # LiveKit (voice/video). The stack ships a self-hosted LiveKit SFU
       # (the `livekit` service below) that runs by default, so voice works
@@ -272,6 +292,8 @@ services:
       #      "true" for TestFlight/App Store).
       # APNS_KEY_ID is only needed if the key file was renamed.
       APNS_KEY_P8_FILE: ${APNS_KEY_P8_FILE:-/keys}
+      # Or the .p8 contents inline (base64 or PEM); wins over the file above.
+      APNS_KEY_P8: ${APNS_KEY_P8:-}
       APNS_KEY_ID: ${APNS_KEY_ID:-}
       APNS_TEAM_ID: ${APNS_TEAM_ID:-}
       APNS_BUNDLE_ID: ${APNS_BUNDLE_ID:-}
@@ -289,7 +311,12 @@ services:
       FCM_PROJECT_ID: ${FCM_PROJECT_ID:-}
       FCM_CLIENT_EMAIL: ${FCM_CLIENT_EMAIL:-}
       FCM_PRIVATE_KEY: ${FCM_PRIVATE_KEY:-}
-      # Defaults baked into the Dockerfile: NODE_ENV, HOST, PORT, UPLOAD_DIR
+      # Deliberately NOT taken from .env: NODE_ENV, HOST, PORT and UPLOAD_DIR
+      # (baked into ops/Dockerfile.api) and BACKUP_DIR / CONTROL_DIR (env.ts
+      # defaults). They are paths and ports INSIDE this container that must
+      # match the mounts below, so they are not operator settings.
+      # apps/api/test/compose-env.test.ts fails if env.ts gains a variable that
+      # is neither listed here nor in that exception list.
     volumes:
       # Attachments. The CDN endpoint streams from this same directory.
       - ${APPDATA_PATH:-/mnt/user/appdata/zekktris}/uploads:/data/uploads
@@ -442,6 +469,10 @@ services:
     logging: *default-logging
     container_name: zekktris-livekit
     restart: unless-stopped
+    # The entrypoint keeps signalling/admin port 7880 off the public interface:
+    # it binds 127.0.0.1 + the docker0 address host.docker.internal resolves
+    # to, which is all Caddy and the api use. See ops/livekit-entrypoint.sh.
+    entrypoint: ["/bin/sh", "/etc/livekit-entrypoint.sh"]
     command: ["--config", "/etc/livekit.yaml"]
     # HOST NETWORKING IS REQUIRED for WebRTC. On the default Docker bridge the
     # SFU only sees its bridge IP (e.g. 192.168.144.2) and advertises THAT as
@@ -453,7 +484,8 @@ services:
     #
     # Consequences of host mode:
     #   - No `ports:` mapping (there's no bridge to map); LiveKit binds
-    #     7880 (signaling), 7881/tcp + 7882/udp (media) directly on the host.
+    #     7880 (signaling, loopback + docker0 only — see entrypoint above),
+    #     7881/tcp + 7882/udp (media) directly on the host.
     #     Open/forward UDP 7882 + TCP 7881 in the firewall/router for clients
     #     that aren't on the LAN.
     #   - The container is NOT on the `zekktris` bridge network, so other
@@ -490,8 +522,12 @@ services:
       # Explicit advertised media IP. Only honored when USE_EXTERNAL_IP is
       # false (livekit#4049). Leave empty for STUN + host-interface detection.
       LIVEKIT_RTC_NODE_IP: ${LIVEKIT_HOST:-}
+      # Where port 7880 listens. Empty = 127.0.0.1 + the docker0 address;
+      # "all" = every interface (the old behaviour); or a list of addresses.
+      LIVEKIT_BIND_ADDRESSES: ${LIVEKIT_BIND_ADDRESSES:-}
     volumes:
       - ./ops/livekit.yaml:/etc/livekit.yaml:ro
+      - ./ops/livekit-entrypoint.sh:/etc/livekit-entrypoint.sh:ro
 
 networks:
   zekktris:

@@ -11,9 +11,10 @@
 #      finicky than it's worth at v1 scale, and tsx's startup cost is ~200ms
 #      which is fine for a long-lived service.
 #
-# The container's CMD is just `node --import tsx/esm apps/api/src/index.ts`
-# (resolved through pnpm). On boot, the API runs all startup checks
-# inline — including database migrations — before binding the HTTP port.
+# The container's CMD is just `node --import tsx/esm src/index.ts` in
+# apps/api, run as the unprivileged `node` user (see ops/api-entrypoint.sh).
+# On boot, the API runs all startup checks inline — including database
+# migrations — before binding the HTTP port.
 
 # ─── Stage 1: dependency install ───────────────────────────────────────────
 FROM node:20-alpine AS deps
@@ -47,8 +48,9 @@ RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
 
 # Tini ensures signals (SIGTERM from `docker compose down`) reach the node
 # process so the API's graceful shutdown handler runs and DB connections
-# close cleanly.
-RUN apk add --no-cache tini
+# close cleanly. setpriv (util-linux) drops from root to `node` in the
+# entrypoint (what gosu/su-exec do in the official postgres and redis images).
+RUN apk add --no-cache tini setpriv
 
 WORKDIR /app
 
@@ -93,9 +95,17 @@ ENV GIT_SHA=$GIT_SHA
 
 EXPOSE 3000
 
-# tini → pnpm → tsx so SIGTERM propagates and shutdown is clean.
-ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["pnpm", "--filter", "@zekktris/api", "start"]
+# tini → entrypoint (hands the writable mounts to `node`, then setpriv) →
+# node, so SIGTERM reaches the API and shutdown is clean. This is the api's
+# `start` script, run directly: going through pnpm as `node` would need
+# corepack's cache, which lives in root's home. No USER line on purpose — the
+# entrypoint needs root for a moment, and `docker compose exec api …` stays
+# root as it always was.
+COPY ops/api-entrypoint.sh /usr/local/bin/zekktris-api-entrypoint
+RUN chmod 755 /usr/local/bin/zekktris-api-entrypoint
+WORKDIR /app/apps/api
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/zekktris-api-entrypoint"]
+CMD ["node", "--import", "tsx/esm", "src/index.ts"]
 
 # Container health is the READINESS probe /health/ready on port 3000 — it
 # exercises the DB (returns 503 when Postgres is unreachable), so `docker ps`

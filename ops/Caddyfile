@@ -28,6 +28,18 @@
 	#   http://hostname   → plain HTTP only
 	#   :5550             → plain HTTP on any host (LAN / behind a tunnel)
 
+	# Caddy's own log (stderr, JSON). A failed proxied request (a 502 while
+	# the api restarts, say) is logged here with its full URI, so the webhook
+	# token is masked the same way as in the access log at the bottom.
+	log default {
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp ^(/api/webhooks/[^/?]+/)[^/?]+ ${1}REDACTED
+			}
+		}
+	}
+
 	# Enable HTTP/3 (QUIC) alongside h1/h2. Only takes effect on the
 	# HTTPS deployment path (h3 is TLS-only and browsers won't negotiate
 	# it over plain http://). Faster connection setup + better behavior
@@ -36,62 +48,23 @@
 	servers {
 		protocols h1 h2 h3
 
-		# ── Real client IP behind Cloudflare ──────────────────────────────
+		# ── Real client IP ────────────────────────────────────────────────
 		#
-		# zekktris.com is proxied by Cloudflare, so the peer that connects to
-		# Caddy is always a Cloudflare edge node, never the user. Until this
-		# block existed, X-Real-IP was set from {remote_host} — the edge — for
-		# EVERY request, and getClientIp() (which trusts X-Real-IP first)
-		# believed it. So everything keyed on the client IP was really keyed on
-		# Cloudflare: per-IP rate limits shared across every user behind the same
-		# edge node, IP bans that would ban a slice of Cloudflare rather than a
-		# person, and the wrong addresses in audit logs and the sessions UI.
+		# Which peers may tell Caddy the client's address (EDGE_PROXY in .env:
+		# none | cloudflare). See ops/caddy-modes/README.
 		#
-		# Cloudflare's published edge ranges (www.cloudflare.com/ips-v4 and
-		# /ips-v6, fetched 2026-09-04). They change rarely, and if Cloudflare
-		# adds one, requests from it are simply untrusted and client_ip falls
-		# back to the edge address — it degrades to the old behaviour rather
-		# than opening a spoofing hole. Re-fetch when that happens.
+		# The default, "none", trusts NOBODY: Caddy is the edge, {client_ip} is
+		# the TCP peer, and X-Real-IP below is set from it — so a client cannot
+		# pick its own address with a forged header. Trusting a whole address
+		# range here is only safe when every request from that range really is
+		# a proxy that overwrites the header; on Docker Desktop, rootless Docker
+		# or IPv6 forwarded by docker-proxy, ALL outside traffic arrives from the
+		# Docker bridge gateway, so trusting 172.16.0.0/12 by default let anyone
+		# send their own Cf-Connecting-Ip and dodge per-IP limits and bans.
 		#
-		# CORRECTION (2026-09-10): production does NOT reach Caddy from a
-		# Cloudflare edge. It arrives through a Cloudflare TUNNEL — cloudflared
-		# runs on the host (not in this compose file) and connects to the
-		# published port, so every request's peer is the Docker bridge gateway
-		# (172.19.0.1 at the time). The Cf-Warp-Tag-Id header in the access log is
-		# the tell. With only the edge ranges below trusted, that peer was
-		# untrusted and client_ip resolved to 172.19.0.1 for EVERY user — one IP
-		# for the whole instance, which is worse than the edge-IP problem this
-		# block was first written to fix.
-		#
-		# So Docker's bridge pool, 172.16.0.0/12, is trusted too. That covers the
-		# tunnel connector wherever Docker places its network, while a LAN client
-		# (192.168.x.x) hitting the published port directly stays untrusted and
-		# cannot forge its address. Other containers on this host could — but they
-		# are already inside the machine. The edge ranges stay, so a later switch
-		# to proxied DNS without the tunnel keeps working.
-		#
-		# Still deliberately NOT `private_ranges`: that would include 192.168/16
-		# and 10/8 and let any machine on the LAN forge its own source address.
-		trusted_proxies static \
- 172.16.0.0/12 \
- 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 \
- 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 \
- 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 \
- 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 \
- 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 \
- 2a06:98c0::/29 2c0f:f248::/32
-		# Read the client from CF-Connecting-IP instead of the default
-		# X-Forwarded-For. Cloudflare OVERWRITES this header with the real
-		# connecting address, so unlike the leftmost X-Forwarded-For entry it
-		# cannot be forged by the client. It is only consulted for requests that
-		# arrived FROM a trusted proxy, so anyone hitting the origin directly
-		# with a handcrafted CF-Connecting-IP is untrusted and Caddy uses their
-		# actual peer address.
-		client_ip_headers Cf-Connecting-Ip
-		# A no-op while the header above carries exactly one address, but if
-		# X-Forwarded-For is ever added back to that list, right-to-left parsing
-		# is what stops the client-controlled leftmost entry being believed.
-		trusted_proxies_strict
+		# "cloudflare" is for an instance behind Cloudflare (proxied DNS or a
+		# Cloudflare Tunnel, as zekktris.com is) — see modes/edge-cloudflare.servers.
+		import /etc/caddy/modes/edge-{$EDGE_PROXY:none}.servers
 	}
 }
 
@@ -334,8 +307,18 @@
 
 	# Compact log line — one per request — written to stdout for
 	# `docker compose logs proxy` visibility on unraid.
+	#
+	# The webhook execute URL (/api/webhooks/<id>/<token>) carries its secret
+	# in the path, Discord-style, so the token segment is masked before the
+	# line is written: anyone who can read the logs could otherwise post as
+	# that webhook. (Caddy already redacts Authorization and Cookie headers.)
 	log {
 		output stdout
-		format console
+		format filter {
+			wrap console
+			fields {
+				request>uri regexp ^(/api/webhooks/[^/?]+/)[^/?]+ ${1}REDACTED
+			}
+		}
 	}
 }

@@ -1,0 +1,2 @@
+# Caddy is the edge (the default): no proxy is trusted, so {client_ip} is the
+# TCP peer and no request header can change it. See README.
