@@ -1428,9 +1428,6 @@ class AppStore(
         }
     }
 
-    suspend fun adminVoiceDiagnostic(): com.zekktris.data.model.LivekitDiagnostic? =
-        runCatching { api.adminVoiceDiagnostic() }.getOrNull()
-
     suspend fun adminActivity(): com.zekktris.data.model.AdminActivity? =
         runCatching { api.adminActivity() }.getOrNull()
 

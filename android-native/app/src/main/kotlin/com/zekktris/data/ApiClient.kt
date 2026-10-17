@@ -2145,11 +2145,6 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
 
     // ---- monetization ---------------------------------------------------------
 
-    /** On-demand LiveKit diagnostic (GET /admin/voice-diagnostic). */
-    suspend fun adminVoiceDiagnostic(): com.zekktris.data.model.LivekitDiagnostic =
-        authorized(HttpMethod.Get, "/admin/voice-diagnostic")
-            .decodeOrThrow<com.zekktris.data.model.DiagnosticWrap>().diagnostic
-
     /** Admin Overview recent-activity feed (GET /admin/activity). */
     suspend fun adminActivity(): com.zekktris.data.model.AdminActivity =
         authorized(HttpMethod.Get, "/admin/activity")
