@@ -743,6 +743,7 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
   // lists loaded for the snapshot above instead of querying them again.
   await presence().recompute(userId, {
     broadcast: 'always',
+    endAutoIdle: presenceActivity(payload.presence) === true,
     audience: {
       guildIds,
       dmChannelIds: dmChannelIdRows.map((r) => r.channelId),
@@ -908,6 +909,7 @@ async function handleResume(conn: Connection, payload: ResumePayload | undefined
   const friendIds = await relationships.listAcceptedFriendIds(userId);
   await presence().recompute(userId, {
     broadcast: 'always',
+    endAutoIdle: resumedActivity === true,
     audience: {
       guildIds: Array.from(conn.guildIds),
       dmChannelIds: Array.from(conn.dmChannelIds),
@@ -939,7 +941,7 @@ function handlePresenceUpdate(conn: Connection, payload: PresenceUpdatePayload |
   if (active === null) return;
   const userId = conn.userId;
   conn.reportPresenceActivity(active, () => {
-    void presence().recompute(userId);
+    void presence().recompute(userId, { endAutoIdle: conn.presenceActive });
   });
 }
 

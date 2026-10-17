@@ -407,6 +407,46 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     await expectStatus(u, 'offline');
   });
 
+  it('an updated device reporting itself in use ends a legacy automatic away; a picked Away stays', async () => {
+    const u = await createUser();
+    const token = await tokenFor(u);
+    // The owner's setup during an upgrade: an old iPhone build plus an
+    // always-on Mac running the updated client, idle for now.
+    const oldPhone = await connect(u);
+    const mac = await connect(u, { active: false });
+    await patchStatus(token, 'idle'); // the old build's automatic away
+    expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
+    // The old app is killed before it can PATCH 'online' back; the Mac stays.
+    await oldPhone.close();
+    await sleep(300);
+    expect(await statusOf(u)).toBe('idle');
+    // The owner comes back to the Mac: the status follows it, not the dead
+    // phone's away — no need to repick Online or for every device to leave.
+    mac.setActive(true);
+    await expectStatus(u, 'online');
+    expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
+
+    // A device connecting in use ends one too.
+    const oldPhone2 = await connect(u);
+    await patchStatus(token, 'idle');
+    await expectStatus(u, 'idle');
+    await oldPhone2.close();
+    const laptop = await connect(u, { active: true });
+    await expectStatus(u, 'online');
+    expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
+
+    // A PICKED Away is never ended by device activity.
+    await patchStatus(token, 'idle', 'manual');
+    await expectStatus(u, 'idle');
+    mac.setActive(false);
+    await sleep(2_300); // op 3 changes apply at most every 2 s per connection
+    mac.setActive(true);
+    await sleep(2_300);
+    expect(await row(u)).toMatchObject({ status: 'idle', chosenStatus: 'idle', chosenStatusAuto: false });
+    await mac.close();
+    await laptop.close();
+  });
+
   it('an automatic idle PATCHed with no device connected that offlines a stale row is reported as already ended', async () => {
     const u = await createUser();
     // A row still reading online although nothing is connected (stale).

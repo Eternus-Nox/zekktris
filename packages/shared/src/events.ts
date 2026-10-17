@@ -342,8 +342,8 @@ export interface ReadyFeatures {
    *  (IDENTIFY/RESUME `presence`, op 3 PRESENCE_UPDATE) and must NOT PATCH
    *  /users/@me {status} automatically; a status the user picks is PATCHed
    *  with `statusSource: 'manual'` (an unmarked 'idle' is treated as a
-   *  pre-update client's automatic away and ends when the user's last device
-   *  disconnects). The self user carries `chosenStatus` (the pick; `status`
+   *  pre-update client's automatic away and ends when an updated device reports
+   *  itself in use, or when the user's last device disconnects). The self user carries `chosenStatus` (the pick; `status`
    *  is the same value, for older clients) and `effectiveStatus` (what others
    *  see, until the first self PRESENCE_UPDATE frame). */
   presence_activity?: true;

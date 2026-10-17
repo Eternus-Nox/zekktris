@@ -106,6 +106,13 @@ export interface RecomputeOptions {
    *  to heal peers' drifted views, and a status PATCH to confirm it. */
   broadcast?: 'change' | 'always';
   audience?: PresenceAudience;
+  /** An UPDATED device just reported itself in use (op 3 {active:true}, or
+   *  presence {active:true} in IDENTIFY/RESUME — legacy clients never send
+   *  either). That ends a legacy client's automatic away (chosen 'idle' with
+   *  users.chosenStatusAuto): the status follows the device in use, and an old
+   *  phone killed while it was auto-idle can't un-idle itself — without this
+   *  an always-connected desktop would keep the user Away until they repick. */
+  endAutoIdle?: boolean;
 }
 
 const KEY_PREFIX = 'zekktris:presence:u:';
@@ -309,16 +316,19 @@ export class PresenceEngine {
           .where(eq(schema.users.id, userId))
           .limit(1);
         if (!row) return null;
-        const next = effectiveStatus(row.chosenStatus, summary);
         // A pre-update client's AUTOMATIC away (chosen 'idle' from a PATCH
-        // without the manual marker — see users.chosenStatusAuto) ends when
+        // without the manual marker — see users.chosenStatusAuto) ends when an
+        // updated device reports itself in use (opts.endAutoIdle), and when
         // the user has no device left, as the old server's disconnect →
         // reconnect did: an old app killed while auto-idle can no longer
-        // un-idle itself, and nothing else would. A picked Away stays. That
-        // includes an automatic idle PATCHed while the row ALREADY reads
-        // offline (an old app whose socket was down): same input, same result.
-        const resetAutoIdle =
-          next === 'offline' && row.chosenStatus === 'idle' && row.chosenStatusAuto;
+        // un-idle itself, and nothing else would. A picked Away stays. The
+        // no-device case includes an automatic idle PATCHed while the row
+        // ALREADY reads offline (an old app whose socket was down).
+        const autoIdle = row.chosenStatus === 'idle' && row.chosenStatusAuto;
+        let chosen: ChosenStatus = autoIdle && opts.endAutoIdle ? 'online' : row.chosenStatus;
+        const next = effectiveStatus(chosen, summary);
+        if (autoIdle && next === 'offline') chosen = 'online';
+        const resetAutoIdle = chosen !== row.chosenStatus;
         const changed = next !== row.status;
         if (!changed && !resetAutoIdle) {
           if (opts.broadcast === 'always' && wrote === null) {
@@ -326,7 +336,6 @@ export class PresenceEngine {
           }
           return next;
         }
-        const chosen: ChosenStatus = resetAutoIdle ? 'online' : row.chosenStatus;
         // Compare-and-set on exactly what we read: if another recompute (or a
         // chosen-status PATCH) got in between, this matches nothing and we
         // start over from fresh inputs instead of overwriting newer truth.
