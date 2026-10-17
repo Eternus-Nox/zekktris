@@ -42,6 +42,7 @@ import com.zekktris.data.model.Message
 import com.zekktris.ui.components.FilledTextField
 import com.zekktris.ui.theme.ZkInk
 import com.zekktris.ui.theme.ZkSans
+import com.zekktris.ui.theme.ZkStatus
 import com.zekktris.ui.theme.ZkTheme
 
 /** Threads under a text channel — tap to open (a thread is a channel). */
@@ -114,6 +115,10 @@ private fun ForumPostDialog(store: AppStore, forumId: String, onDismiss: (Boolea
     var title by remember { mutableStateOf("") }
     var content by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    // The server's reason for a rejected post (timed out, title or body
+    // blocked by automod…). The dialog stays open with the draft so the user
+    // can fix it rather than retype it.
+    var error by remember { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss(false) },
         title = { Text("New post", color = ZkInk.ink1, fontFamily = ZkSans) },
@@ -121,12 +126,16 @@ private fun ForumPostDialog(store: AppStore, forumId: String, onDismiss: (Boolea
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilledTextField(title, { title = it.take(100) }, "Title", Modifier.fillMaxWidth())
                 FilledTextField(content, { content = it.take(4000) }, "Write something…", Modifier.fillMaxWidth().height(120.dp), singleLine = false, minLines = 3)
+                error?.let { Text(it, color = ZkStatus.dangerSoft, fontFamily = ZkSans, fontSize = 12.sp) }
             }
         },
         confirmButton = {
             TextButton(enabled = title.isNotBlank() && content.isNotBlank() && !busy, onClick = {
-                busy = true
-                store.createForumPost(forumId, title, content) { ok -> busy = false; onDismiss(ok) }
+                busy = true; error = null
+                store.createForumPost(forumId, title, content) { err ->
+                    busy = false
+                    if (err == null) onDismiss(true) else error = err
+                }
             }) { Text(if (busy) "Posting…" else "Post", color = p.accent, fontFamily = ZkSans) }
         },
         dismissButton = { TextButton(onClick = { onDismiss(false) }) { Text("Cancel", color = ZkInk.ink2, fontFamily = ZkSans) } },
@@ -140,6 +149,9 @@ fun CreateThreadDialog(store: AppStore, msg: Message, onDismiss: () -> Unit) {
     val p = ZkTheme.palette
     var name by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    // Server's reason on failure (timed out, name blocked by automod…); the
+    // dialog stays open with the typed name.
+    var error by remember { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
         title = { Text("Create thread", color = ZkInk.ink1, fontFamily = ZkSans) },
@@ -147,12 +159,16 @@ fun CreateThreadDialog(store: AppStore, msg: Message, onDismiss: () -> Unit) {
             Column {
                 Text("Start a thread off this message.", color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp))
                 FilledTextField(name, { name = it.take(100) }, "Thread name (optional)", Modifier.fillMaxWidth())
+                error?.let { Text(it, color = ZkStatus.dangerSoft, fontFamily = ZkSans, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)) }
             }
         },
         confirmButton = {
             TextButton(enabled = !busy, onClick = {
-                busy = true
-                store.createThreadFromMessage(msg.channelId, msg.id, name) { onDismiss() }
+                busy = true; error = null
+                store.createThreadFromMessage(msg.channelId, msg.id, name) { err ->
+                    busy = false
+                    if (err == null) onDismiss() else error = err
+                }
             }) { Text(if (busy) "Creating…" else "Create", color = p.accent, fontFamily = ZkSans) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = ZkInk.ink2, fontFamily = ZkSans) } },

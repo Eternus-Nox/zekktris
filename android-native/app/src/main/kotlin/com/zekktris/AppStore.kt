@@ -2523,15 +2523,19 @@ class AppStore(
         }
     }
 
-    fun editMessage(channelId: String, messageId: String, content: String) {
+    /** Edit a message. The server runs the participation gates (onboarding,
+     *  timeout, supervision) and banned words / automod on an edit, so a
+     *  rejection reaches [onError] with the server's reason. */
+    fun editMessage(channelId: String, messageId: String, content: String, onError: (String) -> Unit = {}) {
         // Re-encrypt an edited E2EE message so the edit doesn't land as plaintext.
         val wire: String = if (dmById(channelId)?.isE2EE == true) {
             val key = e2eeKeyFor(channelId) ?: return
             com.zekktris.crypto.E2EE.encrypt(content, key) ?: return
         } else content
         scope.launch {
-            val updated = runCatching { api.editMessage(channelId, messageId, wire) }.getOrNull() ?: return@launch
-            upsertMessage(channelId, updated)
+            runCatching { api.editMessage(channelId, messageId, wire) }
+                .onSuccess { upsertMessage(channelId, it) }
+                .onFailure { onError((it as? com.zekktris.data.ApiException)?.message ?: "Couldn't edit the message.") }
         }
     }
 
@@ -2851,21 +2855,24 @@ class AppStore(
     suspend fun threadsFor(channelId: String): List<Channel> =
         runCatching { api.listThreads(channelId) }.getOrDefault(emptyList())
 
-    /** Start a thread off a message and open it. */
-    fun createThreadFromMessage(channelId: String, messageId: String, name: String?, onDone: (Boolean) -> Unit = {}) {
+    /** Start a thread off a message and open it. [onDone] gets null on
+     *  success, else the server's reason (timed out, name blocked by automod…). */
+    fun createThreadFromMessage(channelId: String, messageId: String, name: String?, onDone: (String?) -> Unit = {}) {
         scope.launch {
-            val t = runCatching { api.createThread(channelId, messageId, name) }.getOrNull()
-            if (t != null) selectChannel(t.id)
-            onDone(t != null)
+            runCatching { api.createThread(channelId, messageId, name) }
+                .onSuccess { selectChannel(it.id); onDone(null) }
+                .onFailure { onDone((it as? com.zekktris.data.ApiException)?.message ?: "Couldn't create the thread.") }
         }
     }
 
-    /** Create a forum post (thread + opening message) and open it. */
-    fun createForumPost(forumChannelId: String, title: String, content: String, onDone: (Boolean) -> Unit = {}) {
+    /** Create a forum post (thread + opening message) and open it. [onDone]
+     *  gets null on success, else the server's reason, so the composer can keep
+     *  the draft open and say why. */
+    fun createForumPost(forumChannelId: String, title: String, content: String, onDone: (String?) -> Unit = {}) {
         scope.launch {
-            val r = runCatching { api.createForumPost(forumChannelId, title, content) }.getOrNull()
-            if (r != null) selectChannel(r.post.id)
-            onDone(r != null)
+            runCatching { api.createForumPost(forumChannelId, title, content) }
+                .onSuccess { selectChannel(it.post.id); onDone(null) }
+                .onFailure { onDone((it as? com.zekktris.data.ApiException)?.message ?: "Couldn't create the post.") }
         }
     }
 
@@ -3841,11 +3848,14 @@ class AppStore(
     }
 
     /** Forward a message into another channel (sends an empty message carrying
-        forwardFromMessageId), then jump there. */
-    fun forwardMessage(message: Message, channelId: String) {
+        forwardFromMessageId), then jump there. A rejected forward (timed out in
+        the destination, snapshot blocked by its automod…) stays put and hands
+        the server's reason to [onError]. */
+    fun forwardMessage(message: Message, channelId: String, onError: (String) -> Unit = {}) {
         scope.launch {
             runCatching { api.sendMessage(channelId, "", java.util.UUID.randomUUID().toString(), null, message.id) }
-            selectChannel(channelId)
+                .onSuccess { selectChannel(channelId) }
+                .onFailure { onError((it as? com.zekktris.data.ApiException)?.message ?: "Couldn't forward the message.") }
         }
     }
 
