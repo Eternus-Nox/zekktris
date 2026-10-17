@@ -219,7 +219,7 @@ with its access token; the server replies `READY` with a session snapshot
   connection, the chosen dnd / idle / invisible as is, and chosen online reads
   online if any device is in use, else idle. A client that never reports
   counts as in use. `PRESENCE_UPDATE` dispatches also reach the user's own
-  devices. Across replicas the per-replica summaries meet in Redis (see
+  devices, whose frame alone carries `chosen_status`. Across replicas the per-replica summaries meet in Redis (see
   `docs/SHARDING.md`). Code: `apps/api/src/gateway/presence.ts`.
 - **Permission-filtered fanout.** Each connection caches its viewable-channel
   set (computed once at IDENTIFY). Channel-scoped events are filtered against

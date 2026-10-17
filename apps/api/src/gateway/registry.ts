@@ -656,8 +656,26 @@ export class Registry {
         if (set) for (const c of set) dmPeers.add(c);
       }
       let nullFrame: string | null = null;
+      // The subject's own connections get their chosen status on this frame
+      // (audience.self) — never anyone else.
+      let selfFrame: string | null = null;
+      const self = audience.self;
       for (const conn of dmPeers) {
         if (!conn.isAuthenticated() || conn.userId === null) continue;
+        if (self && conn.userId === self.userId) {
+          if (selfFrame === null) {
+            selfFrame = JSON.stringify(
+              {
+                op: GatewayOp.DISPATCH,
+                t: event.t,
+                d: { ...base, guild_id: null, chosen_status: self.chosenStatus },
+              },
+              jsonReplacer,
+            );
+          }
+          conn.sendPreparedDispatch(selfFrame);
+          continue;
+        }
         if (nullFrame === null) {
           nullFrame = JSON.stringify(
             { op: GatewayOp.DISPATCH, t: event.t, d: { ...base, guild_id: null } },

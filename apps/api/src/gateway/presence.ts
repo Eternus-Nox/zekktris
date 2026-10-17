@@ -18,18 +18,34 @@
  * Zekktris is still open somewhere, nobody is using it.
  *
  * recompute() is the ONE runtime writer of users.status (the other is the
- * boot reset, resetPresenceOnBoot). It is serialized per
- * user within a process, writes with a compare-and-set on the row it read (a
- * concurrent recompute on another replica can't regress it — the loser
- * re-reads and recomputes), stamps lastSeenAt on transitions to/from offline,
- * and broadcasts PRESENCE_UPDATE ('invisible' masked as 'offline') to the
- * user's guilds, DM peers, friends AND their own connections.
+ * boot reset, resetPresenceOnBoot). It is serialized per user within a
+ * process, writes with a compare-and-set on the row it read (a concurrent
+ * PATCH or recompute that got in first makes it start over), stamps
+ * lastSeenAt on transitions to/from offline, and broadcasts PRESENCE_UPDATE
+ * ('invisible' masked as 'offline') to the user's guilds, DM peers, friends
+ * AND their own connections (whose frame alone also carries chosen_status).
+ * Across replicas the compare-and-set is not enough — a recompute holding an
+ * older Redis snapshot can still win it after a newer one wrote — so in
+ * cluster mode every successful write is re-validated against a snapshot
+ * taken after it, and rewritten if that disagrees: the last writer always
+ * checks inputs at least as new as everyone else's, so replicas converge.
+ *
+ * Full-disconnect grace: when a user's last socket on a replica closes, that
+ * replica HOLDS the device as connected until the voice-eviction grace ends,
+ * so the offline flip keeps today's timing. For the first few seconds (the
+ * close grace) the held device still counts with its last activity, so a
+ * reconnect blip doesn't flap anyone's dot; after that it is SETTLED: it
+ * still keeps the user from reading offline, but its activity only counts
+ * when nothing else is connected anywhere — a phone that left while the Mac
+ * sits idle on another replica reads idle after the close grace, not online
+ * for the whole voice grace.
  *
  * Multi-replica (REDIS_URL): a replica only sees its own sockets, so each one
  * publishes its per-user summary into a Redis hash —
  * `zekktris:presence:u:<userId>`, field = this replica's cluster instance id,
- * value = {l: live, a: active, t: timestamp} — on every recompute and from a
- * heartbeat, and recompute sums the fields that aren't stale. A dead
+ * value = {l: live, a: active, t: timestamp, + h/ha for a held device} — on
+ * every recompute and from a heartbeat, and recompute sums the fields that
+ * aren't stale. A dead
  * replica's fields go stale; the leader's sweep recomputes users carrying a
  * stale field (or none at all) so they don't stay stuck online. Every Redis
  * failure degrades to this replica's own view — exactly the pre-cluster
@@ -96,27 +112,56 @@ export const PRESENCE_STALE_MS = 45_000;
 export const PRESENCE_HEARTBEAT_MS = 15_000;
 /** How often the leader looks for users stranded by a dead replica. */
 export const PRESENCE_SWEEP_MS = 30_000;
-/** CAS retries before a recompute gives up (each retry re-reads everything). */
-const MAX_ATTEMPTS = 3;
+/** Read-compute-write rounds before a recompute gives up: CAS retries plus,
+ *  in cluster mode, the re-validation round after each write. */
+const MAX_ATTEMPTS = 4;
 const SWEEP_PAGE = 500;
 const SWEEP_CONCURRENCY = 8;
 
 const keyFor = (userId: bigint): string => KEY_PREFIX + userId.toString();
 
-interface ClusterEntry {
+/**
+ * One replica's contribution to a user's presence (the Redis entry, plus `t`).
+ * `l` counts live connections AND held devices; `a` the active ones among
+ * them, settled holds excluded; `h` settled holds and `ha` how many of those
+ * were active when they left. See the module comment.
+ */
+interface Tally {
   l: number;
   a: number;
+  h: number;
+  ha: number;
+}
+
+interface ClusterEntry extends Tally {
   t: number;
 }
+
+const EMPTY_TALLY: Tally = { l: 0, a: 0, h: 0, ha: 0 };
 
 function parseEntry(raw: string): ClusterEntry | null {
   try {
     const e = JSON.parse(raw) as Partial<ClusterEntry>;
     if (typeof e.l !== 'number' || typeof e.a !== 'number' || typeof e.t !== 'number') return null;
-    return { l: e.l, a: e.a, t: e.t };
+    // h / ha are absent from entries written before holds settled.
+    const h = typeof e.h === 'number' ? e.h : 0;
+    const ha = typeof e.ha === 'number' ? e.ha : 0;
+    return { l: e.l, a: e.a, h, ha, t: e.t };
   } catch {
     return null;
   }
+}
+
+function serializeEntry(t: Tally, now: number): string {
+  return JSON.stringify(
+    t.h > 0 ? { l: t.l, a: t.a, h: t.h, ha: t.ha, t: now } : { l: t.l, a: t.a, t: now },
+  );
+}
+
+/** A settled hold's activity only counts when held devices are all there is
+ *  (the single-device disconnect keeps reading as before until offline). */
+function reduceTally(t: Tally): PresenceSummary {
+  return { live: t.l, active: t.l > t.h ? t.a : t.ha };
 }
 
 /** Restricts a sweep / boot reset to these users (tests share a database). */
@@ -142,13 +187,18 @@ export class PresenceEngine {
   /**
    * Users whose last live connection closed and who are inside the gateway's
    * full-disconnect grace (voice-eviction window), with the activity of that
-   * last connection. They count as one connection until the grace ends, so
-   * no recompute in the meantime flips them offline early — the offline flip
-   * keeps today's timing.
+   * last connection and whether its close grace has passed (settled). They
+   * count as one connection until the grace ends, so no recompute in the
+   * meantime flips them offline early — the offline flip keeps today's
+   * timing. See the module comment for what settling changes.
    */
-  private readonly holds = new Map<bigint, boolean>();
+  private readonly holds = new Map<bigint, { active: boolean; settled: boolean }>();
   /** Users this replica has a field for in Redis (so it can delete them). */
   private readonly published = new Set<bigint>();
+  /** Users whose last recompute here fell back to this replica's own view
+   *  (Redis failing): recomputed again by the next heartbeat that reaches
+   *  Redis, since that view may have missed other replicas' devices. */
+  private readonly degraded = new Set<bigint>();
   private lastRedisWarnAt = 0;
 
   constructor(opts: PresenceEngineOptions) {
@@ -186,19 +236,35 @@ export class PresenceEngine {
   // ── Full-disconnect grace ────────────────────────────────────────────────
 
   hold(userId: bigint, active: boolean): void {
-    this.holds.set(userId, active);
+    this.holds.set(userId, { active, settled: false });
+  }
+
+  /** The held device's close grace has passed (see the module comment).
+   *  Returns whether the user was held. */
+  settleHold(userId: bigint): boolean {
+    const held = this.holds.get(userId);
+    if (!held) return false;
+    held.settled = true;
+    return true;
   }
 
   release(userId: bigint): void {
     this.holds.delete(userId);
   }
 
+  /** This replica's contribution, a held user counting as one connection. */
+  private localTally(userId: bigint): Tally {
+    const s = this.source.presenceSummary(userId);
+    if (s.live > 0) return { l: s.live, a: s.active, h: 0, ha: 0 };
+    const held = this.holds.get(userId);
+    if (!held) return EMPTY_TALLY;
+    const active = held.active ? 1 : 0;
+    return held.settled ? { l: 1, a: 0, h: 1, ha: active } : { l: 1, a: active, h: 0, ha: 0 };
+  }
+
   /** This replica's view of the user, a held user counting as one connection. */
   localSummary(userId: bigint): PresenceSummary {
-    const s = this.source.presenceSummary(userId);
-    if (s.live > 0) return s;
-    const held = this.holds.get(userId);
-    return held === undefined ? s : { live: 1, active: held ? 1 : 0 };
+    return reduceTally(this.localTally(userId));
   }
 
   // ── Recompute ────────────────────────────────────────────────────────────
@@ -225,6 +291,8 @@ export class PresenceEngine {
     opts: RecomputeOptions,
   ): Promise<EffectiveStatus | null> {
     try {
+      /** What this call last wrote (and broadcast), if anything. */
+      let wrote: EffectiveStatus | null = null;
       for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
         const summary = await this.clusterSummary(userId);
         const [row] = await db
@@ -235,7 +303,9 @@ export class PresenceEngine {
         if (!row) return null;
         const next = effectiveStatus(row.chosenStatus, summary);
         if (next === row.status) {
-          if (opts.broadcast === 'always') await this.broadcast(userId, next, opts.audience);
+          if (opts.broadcast === 'always' && wrote === null) {
+            await this.broadcast(userId, next, row.chosenStatus, opts.audience);
+          }
           return next;
         }
         // Compare-and-set on exactly what we read: if another recompute (or a
@@ -261,13 +331,18 @@ export class PresenceEngine {
         if ((next === 'offline' && row.status !== 'invisible') || row.status === 'offline') {
           await touchLastSeen(userId);
         }
-        await this.broadcast(userId, next, opts.audience);
-        return next;
+        await this.broadcast(userId, next, row.chosenStatus, opts.audience);
+        // One replica: recomputes are serialized here and every input change
+        // queues one of its own, so what we read is what we wrote against.
+        if (!this.clustered) return next;
+        // Cluster: re-validate against a snapshot taken AFTER the write (next
+        // round). Another replica may have written between our snapshot and
+        // our compare-and-set from newer inputs; if so this round sees them
+        // and writes the status they give.
+        wrote = next;
       }
-      log.warn('presence: recompute kept losing its compare-and-set', {
-        userId: userId.toString(),
-      });
-      return null;
+      log.warn('presence: recompute did not settle', { userId: userId.toString() });
+      return wrote;
     } catch (err) {
       log.warn('presence: recompute failed', {
         userId: userId.toString(),
@@ -280,6 +355,7 @@ export class PresenceEngine {
   private async broadcast(
     userId: bigint,
     status: EffectiveStatus,
+    chosen: ChosenStatus,
     audience?: PresenceAudience,
   ): Promise<void> {
     let a = audience;
@@ -309,8 +385,12 @@ export class PresenceEngine {
       guildIds: a.guildIds,
       dmChannelIds: a.dmChannelIds,
       // Friends (who may share no guild/DM) + the user's OWN connections, so
-      // each of their devices shows their current effective dot.
+      // each of their devices shows their current effective dot…
       userIds: a.friendIds.includes(userId) ? a.friendIds : [...a.friendIds, userId],
+      // …and, on their frame only, what they picked: a pick made on one
+      // device (Invisible arrives as plain 'offline') reaches the pickers of
+      // the others.
+      self: { userId, chosenStatus: chosen },
     });
   }
 
@@ -321,15 +401,15 @@ export class PresenceEngine {
    * sum the fresh ones. Single replica, or Redis failing: ours alone.
    */
   async clusterSummary(userId: bigint): Promise<PresenceSummary> {
-    const local = this.localSummary(userId);
+    const local = this.localTally(userId);
     const r = this.redis;
-    if (!r) return local;
+    if (!r) return reduceTally(local);
     try {
       const key = keyFor(userId);
       const now = Date.now();
       const tx = r.multi();
-      if (local.live > 0) {
-        tx.hset(key, this.instanceId, JSON.stringify({ l: local.live, a: local.active, t: now }));
+      if (local.l > 0) {
+        tx.hset(key, this.instanceId, serializeEntry(local, now));
         tx.pexpire(key, this.staleMs * 2);
       } else {
         tx.hdel(key, this.instanceId);
@@ -338,21 +418,25 @@ export class PresenceEngine {
       const res = await tx.exec();
       if (!res) throw new Error('transaction aborted');
       for (const [err] of res) if (err) throw err;
-      if (local.live > 0) this.published.add(userId);
+      if (local.l > 0) this.published.add(userId);
       else this.published.delete(userId);
+      this.degraded.delete(userId);
       const all = res[res.length - 1]![1] as Record<string, string>;
       const total = { ...local };
       for (const [field, raw] of Object.entries(all)) {
         if (field === this.instanceId) continue;
         const e = parseEntry(raw);
         if (!e || now - e.t > this.staleMs) continue;
-        total.live += e.l;
-        total.active += e.a;
+        total.l += e.l;
+        total.a += e.a;
+        total.h += e.h;
+        total.ha += e.ha;
       }
-      return total;
+      return reduceTally(total);
     } catch (err) {
       this.warnRedis(err);
-      return local;
+      this.degraded.add(userId);
+      return reduceTally(local);
     }
   }
 
@@ -377,34 +461,54 @@ export class PresenceEngine {
   /**
    * Heartbeat (every replica, cluster mode): refresh this replica's entry for
    * every user it holds so it doesn't go stale, drop entries for users it no
-   * longer holds, and heal users this replica holds whose row reads
-   * 'offline' (e.g. offlined by another replica's boot reset while Redis was
-   * unreachable).
+   * longer holds, and heal what other replicas may have computed without
+   * this one's devices:
+   *   - users whose entry had gone missing (the HSET created the field) —
+   *     e.g. this replica couldn't reach Redis long enough for the leader's
+   *     sweep to drop it as stale and recompute them without it;
+   *   - users whose last recompute here ran on this replica's view alone
+   *     because Redis was failing;
+   *   - users this replica holds whose row reads 'offline' (e.g. offlined by
+   *     another replica's boot reset while Redis was unreachable).
    */
   async heartbeat(): Promise<void> {
     const r = this.redis;
     if (!r) return;
-    const users = new Set<bigint>(this.source.liveUserIds());
-    for (const userId of this.holds.keys()) users.add(userId);
+    const users = [...new Set<bigint>([...this.source.liveUserIds(), ...this.holds.keys()])];
+    const heal = new Set<bigint>();
     const now = Date.now();
     try {
       const p = r.pipeline();
       for (const userId of users) {
-        const s = this.localSummary(userId);
         const key = keyFor(userId);
-        p.hset(key, this.instanceId, JSON.stringify({ l: s.live, a: s.active, t: now }));
+        p.hset(key, this.instanceId, serializeEntry(this.localTally(userId), now));
         p.pexpire(key, this.staleMs * 2);
       }
-      const gone = [...this.published].filter((u) => !users.has(u));
+      const userSet = new Set(users);
+      const gone = [...this.published].filter((u) => !userSet.has(u));
       for (const userId of gone) p.hdel(keyFor(userId), this.instanceId);
-      if (users.size > 0 || gone.length > 0) {
-        const res = await p.exec();
-        for (const [err] of res ?? []) if (err) throw err;
+      if (users.length > 0 || gone.length > 0) {
+        const res = (await p.exec()) ?? [];
+        for (const [err] of res) if (err) throw err;
+        // HSET replies with the number of fields it CREATED (1 = was missing).
+        users.forEach((userId, i) => {
+          if (res[i * 2]?.[1] === 1) heal.add(userId);
+        });
       }
       for (const userId of gone) this.published.delete(userId);
       for (const userId of users) this.published.add(userId);
+      for (const userId of this.degraded) heal.add(userId);
+      this.degraded.clear();
     } catch (err) {
       this.warnRedis(err);
+    }
+    if (heal.size > 0) {
+      await runBounded(
+        [...heal].map((userId) => async () => {
+          await this.recompute(userId);
+        }),
+        SWEEP_CONCURRENCY,
+      );
     }
 
     // Heal (one indexed read per 1000 users).
@@ -437,7 +541,11 @@ export class PresenceEngine {
   async withdraw(): Promise<void> {
     const r = this.redis;
     if (!r) return;
-    const users = new Set<bigint>([...this.published, ...this.source.liveUserIds(), ...this.holds.keys()]);
+    const users = new Set<bigint>([
+      ...this.published,
+      ...this.source.liveUserIds(),
+      ...this.holds.keys(),
+    ]);
     if (users.size === 0) return;
     try {
       const p = r.pipeline();

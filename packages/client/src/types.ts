@@ -138,7 +138,9 @@ export interface SelfUser extends PublicUser {
       what the status picker shows and edits via `updateMe({ status })`.
       `status` is the EFFECTIVE presence everyone sees, derived by the server
       from this and the activity of each connected device, and kept current
-      by PRESENCE_UPDATE frames for the user's own id. Absent from servers
+      by PRESENCE_UPDATE frames for the user's own id; the guild_id=null one
+      of those also carries `chosen_status`, which keeps this field in sync
+      when the pick is made on another device. Absent from servers
       that predate multi-device presence (READY features.presence_activity),
       where `status` is both. */
   chosenStatus?: 'online' | 'idle' | 'dnd' | 'invisible';

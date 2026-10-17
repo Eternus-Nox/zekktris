@@ -146,18 +146,26 @@ export function attachGateway(httpServer: HttpServer, opts: GatewayOptions = {})
     gatewayTimers.push(beat, sweep);
   }
 
-  // One of several live connections closed: recompute after a short grace
-  // (the device that left may have been the one in use). Debounced per user.
+  // A live connection closed: recompute after a short grace (the device that
+  // left may have been the one in use). Debounced per user. For the user's
+  // last socket on this replica the device is held through the voice grace
+  // (below); the close grace then only SETTLES the hold — it keeps them from
+  // reading offline but no longer counts as in use while another device,
+  // e.g. on another replica, is connected (gateway/presence.ts).
   const presenceCloseGraceMs = opts.presenceCloseGraceMs ?? PRESENCE_CLOSE_GRACE_MS;
-  registry.onUserConnectionClosed = (userId: bigint) => {
+  function scheduleCloseGraceRecompute(userId: bigint): void {
     const prior = pendingPresenceRecomputes.get(userId);
     if (prior) clearTimeout(prior);
     const t = setTimeout(() => {
       pendingPresenceRecomputes.delete(userId);
+      presenceEngine.settleHold(userId);
       void presenceEngine.recompute(userId);
     }, presenceCloseGraceMs);
     (t as { unref?: () => void }).unref?.();
     pendingPresenceRecomputes.set(userId, t);
+  }
+  registry.onUserConnectionClosed = (userId: bigint) => {
+    scheduleCloseGraceRecompute(userId);
   };
 
   // Pending voice-eviction timers keyed by userId (see grace period in
@@ -182,9 +190,11 @@ export function attachGateway(httpServer: HttpServer, opts: GatewayOptions = {})
   // free of async machinery.
   registry.onUserFullyDisconnected = (userId: bigint, conn: Connection) => {
     // Until the grace below ends the user still counts as connected (with
-    // the last device's activity), so no other recompute flips them offline
-    // early — the offline flip keeps the voice grace's timing.
+    // the last device's activity until the close grace settles it), so no
+    // other recompute flips them offline early — the offline flip keeps the
+    // voice grace's timing.
     presenceEngine.hold(userId, conn.presenceActive);
+    scheduleCloseGraceRecompute(userId);
     // GRACE PERIOD before evicting from voice. A gateway WebSocket blip
     // (WiFi->LTE handoff, brief network loss — likelier under the load
     // of video/screen share) is NOT the same as leaving the call: the

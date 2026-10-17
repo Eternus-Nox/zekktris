@@ -434,6 +434,14 @@ export function presenceUpdate(payload: {
    * status too.
    */
   userIds?: bigint[];
+  /**
+   * The subject's CHOSEN status, for their own connections only: their
+   * guild_id=null frame carries it as `chosen_status`, so a pick made on one
+   * device reaches the status pickers of the others. Never sent to anyone
+   * else (it rides in the audience, not in `d`). Their own connections must
+   * be in `userIds` (or reachable via `dmChannelIds`) to get that frame.
+   */
+  self?: { userId: bigint; chosenStatus: 'online' | 'idle' | 'dnd' | 'invisible' };
 }): void {
   // ONE bus publish carrying the user's full membership footprint. The
   // registry expands it at delivery into the exact frames the previous
@@ -458,7 +466,13 @@ export function presenceUpdate(payload: {
       user_id: payload.userId.toString(),
       status: payload.status,
     },
-    { kind: 'presence', guildIds, dmChannelIds, userIds },
+    {
+      kind: 'presence',
+      guildIds,
+      dmChannelIds,
+      userIds,
+      ...(payload.self ? { self: payload.self } : {}),
+    },
   );
 }
 

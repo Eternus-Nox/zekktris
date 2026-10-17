@@ -58,14 +58,25 @@ A replica only sees its own sockets, so:
 
 - Each replica publishes a per-user summary into the Redis hash
   `zekktris:presence:u:<userId>`: field = the replica's cluster instance id,
-  value = `{l: live connections, a: active connections, t: timestamp}`. It
-  writes it on every recompute (connect, `PRESENCE_UPDATE` op, a socket
-  closing, a status change) and refreshes all of its entries from a heartbeat
-  every 15 s. A user inside the full-disconnect grace (the 45 s voice-eviction
-  window) still counts as one connection, so no replica offlines them early.
+  value = `{l: live connections, a: active connections, t: timestamp}` (plus
+  `h` / `ha` for a held device, below). It writes it on every recompute
+  (connect, `PRESENCE_UPDATE` op, a socket closing, a status change) and
+  refreshes all of its entries from a heartbeat every 15 s.
+- When a user's last socket on a replica closes, that replica holds the
+  device as connected through the full-disconnect grace (the 45 s
+  voice-eviction window), so no replica offlines them early. For the first
+  5 s (the close grace) the held device still counts with its last activity;
+  after that it is settled (`h`: settled holds, `ha`: how many were active):
+  it keeps the user from reading offline, but counts as in use only when held
+  devices are all that is left anywhere. So the phone leaving while the Mac
+  sits idle on another replica reads idle after 5 s, as on one replica.
 - A recompute sums every field whose timestamp is under 45 s old (three
-  missed heartbeats) and writes the result with a compare-and-set, so
-  concurrent recomputes on two replicas converge instead of regressing.
+  missed heartbeats) and writes the result with a compare-and-set. The
+  compare-and-set alone can't order two replicas — one holding an older
+  snapshot can still win it after the other wrote — so after every write the
+  recompute takes a fresh snapshot and rewrites if it disagrees. The last
+  writer has always checked inputs at least as new as anyone else's, so
+  concurrent recomputes converge.
 - A replica that shuts down gracefully deletes its fields. One that dies
   leaves fields that go stale. The sweep leader
   (`leaderInterval`, every 30 s) recomputes users shown online / idle / dnd
@@ -79,9 +90,13 @@ A replica only sees its own sockets, so:
   users present until they are stale and swept (about a minute) unless they
   reconnect first.
 - Every Redis failure degrades to the replica's own view (the pre-cluster
-  behaviour): a recompute never hangs or throws because of Redis. If Redis is
-  unreachable at boot the blanket reset runs, and each replica's heartbeat
-  heals the users it holds whose row was reset to `offline` within one beat.
+  behaviour): a recompute never hangs or throws because of Redis. The
+  heartbeat heals what that can leave wrong, within one beat of Redis being
+  reachable again: it recomputes users whose last recompute on this replica
+  ran on its own view, users whose entry had gone missing (the leader swept
+  it as stale and recomputed them without this replica's devices), and users
+  it holds whose row reads `offline` (e.g. Redis was unreachable at another
+  replica's boot, so the blanket reset ran).
 - During a rolling deploy from a version without this, users connected only
   to old replicas have no entries yet, so a new replica's boot sweep may show
   them offline until their next reconnect.

@@ -98,7 +98,11 @@ export const GatewayEvent = {
   // presence, 'invisible' masked as 'offline'. One frame per shared guild
   // (guild_id set) plus one guild_id=null frame for DM peers, friends and,
   // on a server with features.presence_activity, the user's OWN connections
-  // (so each of their devices shows their current effective dot).
+  // (so each of their devices shows their current effective dot). That
+  // frame to the user's own connections (guild_id=null) also carries
+  // `chosen_status` — what they picked, unmasked — so a pick made on one
+  // device reaches the status pickers of the others. No one else ever gets
+  // `chosen_status`.
   PRESENCE_UPDATE: 'PRESENCE_UPDATE',
 
   // Poke / nudge — an EPHEMERAL notification (no stored message, no history).

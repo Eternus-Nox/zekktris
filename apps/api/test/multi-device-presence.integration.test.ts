@@ -81,7 +81,11 @@ class Device {
   }
 }
 
-async function waitFor(check: () => boolean | Promise<boolean>, what: string, ms = 4000): Promise<void> {
+async function waitFor(
+  check: () => boolean | Promise<boolean>,
+  what: string,
+  ms = 4000,
+): Promise<void> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     if (await check()) return;
@@ -135,7 +139,11 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
   });
 
   async function signIn(userId: bigint): Promise<{ token: string; refreshToken: string }> {
-    const { session, refreshToken } = await createSession({ userId, userAgent: 'vitest', ipAddress: null });
+    const { session, refreshToken } = await createSession({
+      userId,
+      userAgent: 'vitest',
+      ipAddress: null,
+    });
     return { token: await signAccessToken({ userId, sessionId: session.id }), refreshToken };
   }
 
@@ -186,12 +194,18 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     const phone = await connect(u, { active: true });
     await expectStatus(u, 'online');
     // Each device hears the user's own effective status.
-    await waitFor(() => mac.presenceOf(u).includes('online'), 'self PRESENCE_UPDATE online on the Mac');
+    await waitFor(
+      () => mac.presenceOf(u).includes('online'),
+      'self PRESENCE_UPDATE online on the Mac',
+    );
 
     // 3. B goes idle/background (A still connected, still idle) → idle, NOT online.
     phone.setActive(false);
     await expectStatus(u, 'idle');
-    await waitFor(() => mac.presenceOf(u).at(-1) === 'idle', 'self PRESENCE_UPDATE idle on the Mac');
+    await waitFor(
+      () => mac.presenceOf(u).at(-1) === 'idle',
+      'self PRESENCE_UPDATE idle on the Mac',
+    );
 
     // B in use again → online; then B disconnects.
     await sleep(2100); // past op 3's per-connection 2 s spacing
@@ -261,7 +275,10 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     await addMember(g, watcher);
     await addRelationship(u, watcher, 'friend');
     await addRelationship(watcher, u, 'friend');
-    await db.update(schema.users).set({ chosenStatus: 'invisible', status: 'invisible' }).where(eq(schema.users.id, u));
+    await db
+      .update(schema.users)
+      .set({ chosenStatus: 'invisible', status: 'invisible' })
+      .where(eq(schema.users.id, u));
     const frozenLastSeen = (await row(u)).lastSeenAt;
     const w = await connect(watcher, { active: true });
 
@@ -336,6 +353,48 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
       chosenStatus: 'invisible',
     });
     await dev.close();
+  });
+
+  it("a status pick reaches the user's other devices (chosen_status on their own frame only)", async () => {
+    const u = await createUser();
+    const watcher = await createUser();
+    const g = await createGuild(u);
+    await addMember(g, u);
+    await addMember(g, watcher);
+    await addRelationship(u, watcher, 'friend');
+    await addRelationship(watcher, u, 'friend');
+    const w = await connect(watcher, { active: true });
+    const mac = await connect(u, { active: true });
+    const phone = await connect(u, { active: true });
+    await expectStatus(u, 'online');
+
+    // Picked on the phone: the Mac learns the pick, not just the masked dot.
+    const res = await patchStatus(await tokenFor(u), 'invisible');
+    expect(res.status).toBe(200);
+    const selfFrame = (d: Device) =>
+      d.frames.find(
+        (f) =>
+          f.t === 'PRESENCE_UPDATE' &&
+          f.d?.user_id === u.toString() &&
+          f.d?.chosen_status === 'invisible',
+      );
+    await waitFor(() => selfFrame(mac) !== undefined, "chosen_status on the Mac's self frame");
+    expect(selfFrame(mac)!.d).toMatchObject({
+      status: 'offline',
+      guild_id: null,
+      chosen_status: 'invisible',
+    });
+    await waitFor(() => selfFrame(phone) !== undefined, "chosen_status on the phone's self frame");
+
+    // Everyone else sees plain 'offline' and never the chosen status.
+    await waitFor(() => w.presenceOf(u).includes('offline'), 'the watcher sees offline');
+    const watcherFrames = w.frames.filter(
+      (f) => f.t === 'PRESENCE_UPDATE' && f.d?.user_id === u.toString(),
+    );
+    expect(watcherFrames.length).toBeGreaterThan(0);
+    for (const f of watcherFrames) expect(f.d).not.toHaveProperty('chosen_status');
+
+    await Promise.all([w.close(), mac.close(), phone.close()]);
   });
 
   it("the page-hide beacon closes only that browser's sockets, not the user's other devices", async () => {
@@ -427,7 +486,12 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     ws.on('error', () => {});
     const next = new Device(ws);
     await waitFor(() => next.frames.some((f) => f.op === GatewayOp.HELLO), 'HELLO');
-    next.send(GatewayOp.RESUME, { token, session_id: sessionId, seq: lastSeq, presence: { active: false } });
+    next.send(GatewayOp.RESUME, {
+      token,
+      session_id: sessionId,
+      seq: lastSeq,
+      presence: { active: false },
+    });
     await waitFor(() => next.frames.some((f) => f.t === 'RESUMED'), 'RESUMED');
     await expectStatus(u, 'idle');
     await next.close();
