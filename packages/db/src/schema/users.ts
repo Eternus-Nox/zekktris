@@ -69,6 +69,14 @@ export const users = pgTable(
       .$type<'online' | 'idle' | 'dnd' | 'invisible'>()
       .notNull()
       .default('online'),
+    /** True when chosenStatus is an 'idle' set by a status PATCH without the
+     *  `statusSource: 'manual'` marker — a pre-update client's automatic
+     *  away. The presence recompute resets such an 'idle' to 'online' when
+     *  the user's effective status next turns 'offline' (their last device
+     *  left), as the old server's disconnect/reconnect did; a manual pick
+     *  persists. Only ever true with chosenStatus 'idle'
+     *  (CHECK users_chosen_status_auto_idle_only). Migration 0131. */
+    chosenStatusAuto: boolean('chosen_status_auto').notNull().default(false),
     customStatus: text('custom_status'),
     /**
      * "Last online" — the last moment we OBSERVED this user holding a live

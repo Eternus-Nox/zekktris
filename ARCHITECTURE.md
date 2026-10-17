@@ -221,6 +221,14 @@ with its access token; the server replies `READY` with a session snapshot
   counts as in use. `PRESENCE_UPDATE` dispatches also reach the user's own
   devices, whose frame alone carries `chosen_status`. Across replicas the per-replica summaries meet in Redis (see
   `docs/SHARDING.md`). Code: `apps/api/src/gateway/presence.ts`.
+  The self user (READY `user`, `/users/@me`) carries the pick as both
+  `status` (its meaning for older native builds, which read their own
+  `status` as their pick) and `chosenStatus`, and the effective value as
+  `effectiveStatus`; public user DTOs keep `status` = effective (invisible
+  masked). Updated clients send `statusSource: 'manual'` with a status the
+  user picks; an unmarked `idle` (an older client's automatic away) is
+  flagged (`users.chosen_status_auto`) and reset to `online` when the user's
+  last device disconnects, as the old server's disconnect/reconnect did.
 - **Permission-filtered fanout.** Each connection caches its viewable-channel
   set (computed once at IDENTIFY). Channel-scoped events are filtered against
   it; the cache is refreshed live on any visibility-changing mutation, and

@@ -44,15 +44,26 @@ describe('toSelfUser — achievementsPublic is carried on the self user', () => 
 });
 
 describe('toSelfUser — chosen vs effective status', () => {
-  it('carries the chosen status alongside the effective one', () => {
+  it('carries the chosen status (as `status`, for older native builds, and as chosenStatus) alongside the effective one', () => {
+    // Chosen Online while every device is idle: an old iOS / Android build
+    // reads `status` as its pick, so it must say Online, not Away.
     const dto = toSelfUser(fakeUser({ status: 'idle', chosenStatus: 'online' }));
-    expect(dto.status).toBe('idle');
+    expect(dto.status).toBe('online');
     expect(dto.chosenStatus).toBe('online');
+    expect(dto.effectiveStatus).toBe('idle');
+  });
+
+  it('never reports the pick as offline, even with no device connected', () => {
+    const dto = toSelfUser(fakeUser({ status: 'offline', chosenStatus: 'dnd' }));
+    expect(dto.status).toBe('dnd');
+    expect(dto.chosenStatus).toBe('dnd');
+    expect(dto.effectiveStatus).toBe('offline');
   });
 
   it('shows the self user their own invisible status unmasked', () => {
     const dto = toSelfUser(fakeUser({ status: 'invisible', chosenStatus: 'invisible' }));
     expect(dto.status).toBe('invisible');
     expect(dto.chosenStatus).toBe('invisible');
+    expect(dto.effectiveStatus).toBe('invisible');
   });
 });

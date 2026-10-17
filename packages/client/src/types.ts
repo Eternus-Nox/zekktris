@@ -134,16 +134,29 @@ export interface GuildCommand {
 
 export interface SelfUser extends PublicUser {
   email: string;
+  /** On the self user this is the status the user PICKED — the same value
+      as `chosenStatus` (never 'offline') — NOT the effective presence that
+      PublicUser.status carries: older native builds read their own `status`
+      as their pick, so the server keeps that meaning here. Servers that
+      predate multi-device presence send their single status column, which
+      can read 'offline' before the gateway identifies. */
+  status: PublicUser['status'];
   /** The status the user PICKED (online / idle = "Away" / dnd / invisible) —
-      what the status picker shows and edits via `updateMe({ status })`.
-      `status` is the EFFECTIVE presence everyone sees, derived by the server
-      from this and the activity of each connected device, and kept current
-      by PRESENCE_UPDATE frames for the user's own id; the guild_id=null one
-      of those also carries `chosen_status`, which keeps this field in sync
-      when the pick is made on another device. Absent from servers
-      that predate multi-device presence (READY features.presence_activity),
-      where `status` is both. */
+      what the status picker shows and edits via `patchMe({ status })`
+      (which marks the PATCH as a manual pick). Status picker:
+      `chosenStatus ?? status`. The guild_id=null PRESENCE_UPDATE frame for
+      the user's own id carries `chosen_status`, which keeps this in sync
+      when the pick is made on another device. Absent from servers that
+      predate multi-device presence (READY features.presence_activity). */
   chosenStatus?: 'online' | 'idle' | 'dnd' | 'invisible';
+  /** The EFFECTIVE presence everyone sees (unmasked: 'invisible' here reads
+      'offline' to others), derived by the server from chosenStatus and the
+      activity of each connected device. A snapshot as of this response:
+      the user's own dot is kept current by PRESENCE_UPDATE frames for their
+      own id; before the first one, show `effectiveStatus ?? status`. Absent
+      from servers that predate it (older multi-device servers sent the
+      effective value in `status`; pre-multi-device servers have one value). */
+  effectiveStatus?: 'online' | 'idle' | 'dnd' | 'offline' | 'invisible';
   /** Whether the account's email has been confirmed. Drives the
       verify-email gate when the deployment requires verification. */
   emailVerified: boolean;

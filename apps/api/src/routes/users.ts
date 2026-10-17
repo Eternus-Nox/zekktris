@@ -169,6 +169,15 @@ const patchMeSchema = z
     displayName: displayNameSchema.optional(),
     bio: bioSchema.optional(),
     status: settableStatusSchema.optional(),
+    /** Who set `status`. Updated clients send 'manual' with every pick made
+        in their status picker (packages/client patchMe does it). Absent (a
+        pre-update client) or 'auto': an 'idle' is that client's AUTOMATIC
+        away and is flagged (users.chosen_status_auto), so it goes back to
+        'online' once the user's last device disconnects instead of pinning
+        them Away — the old server's disconnect/reconnect behaviour. A
+        'manual' pick (or any status other than 'idle') clears the flag.
+        Ignored without `status`. Servers before this field strip it. */
+    statusSource: z.enum(['manual', 'auto']).optional(),
     customStatus: customStatusSchema.optional(),
     /** Optional emoji alongside the custom status text. Either or
         both may be set. Pass null to clear. */
@@ -260,8 +269,12 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   }
   if (body.bio !== undefined) update.bio = body.bio;
   // `status` is the CHOSEN status; the effective one (users.status) is
-  // recomputed below from it and the user's live connections.
-  if (body.status !== undefined) update.chosenStatus = body.status;
+  // recomputed below from it and the user's live connections. An unmarked
+  // 'idle' is a legacy client's automatic away: flag it (see statusSource).
+  if (body.status !== undefined) {
+    update.chosenStatus = body.status;
+    update.chosenStatusAuto = body.status === 'idle' && body.statusSource !== 'manual';
+  }
   if (body.customStatus !== undefined) update.customStatus = body.customStatus;
   if (body.customStatusEmoji !== undefined) {
     update.customStatusEmoji = body.customStatusEmoji;
@@ -404,12 +417,25 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   // the user's own devices — always, as before, so co-members' dots and this
   // user's other devices confirm the pick even when the effective value is
   // unchanged. 'invisible' goes out as 'offline'. The response below carries
-  // both: chosenStatus (the pick) and status (effective).
+  // both: status / chosenStatus (the pick) and effectiveStatus.
   let user = updated;
   if (body.status !== undefined) {
     const { presence } = await import('../gateway/presence');
     const effective = await presence().recompute(userId, { broadcast: 'always' });
     if (effective) user = { ...updated, status: effective };
+    // The recompute may have ended an automatic away it just offlined
+    // (no device connected), so report the chosen status as stored now.
+    if (effective === 'offline' && updated.chosenStatusAuto) {
+      const [now] = await db
+        .select({
+          chosenStatus: schema.users.chosenStatus,
+          chosenStatusAuto: schema.users.chosenStatusAuto,
+        })
+        .from(schema.users)
+        .where(eq(schema.users.id, userId))
+        .limit(1);
+      if (now) user = { ...user, ...now };
+    }
   }
 
   // USER_UPDATE — fire whenever a profile field that's visible to
