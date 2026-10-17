@@ -18,8 +18,8 @@ One `docker compose` stack:
 | `cache` | Redis 7 |
 | `livekit` | voice/video SFU (bundled, on by default) |
 
-All your data lives in one folder on the host (`APPDATA_PATH`), so backups are
-just that folder.
+All your data lives in one folder on the host (`APPDATA_PATH`), and
+`./scripts/backup.sh` turns it into a single restorable bundle (§7).
 
 ---
 
@@ -29,10 +29,10 @@ just that folder.
   ```bash
   docker --version && docker compose version
   ```
-  If missing, install Docker's convenience script:
-  ```bash
-  curl -fsSL https://get.docker.com | sh
-  ```
+  If missing, install it from your distribution's packages or
+  [docs.docker.com/engine/install](https://docs.docker.com/engine/install/).
+  (`./install.sh` can also run Docker's convenience script for you, but only
+  if you say yes — it runs a downloaded script as root.)
 - **openssl** (almost always preinstalled): `command -v openssl`
 - Optional but recommended: a **domain name** (e.g. `chat.example.com`) with a
   DNS **A record** pointing at the server's public IP, and ports **80** + **443**
@@ -42,35 +42,33 @@ just that folder.
 
 ## 1. Get the code onto the server
 
-Copy the release zip (e.g. `zekktris-v2_87.zip`) to your server and unzip it:
-
 ```bash
-unzip zekktris-v2_87.zip
+git clone https://github.com/Eternus-Nox/zekktris.git
 cd zekktris
 ```
+
+(A git checkout is what `./scripts/update.sh` updates later.)
 
 ---
 
 ## 2. First run (one command)
 
 ```bash
-./scripts/setup.sh
+./install.sh            # or: --domain chat.example.com | --ip | --lan
 ```
 
-This script:
+The installer:
+- asks how people will reach the server (a domain, just your public IP, or
+  your home network only) and works out the network side (LAN address, public
+  IP, carrier-grade NAT, UPnP port forwarding, ufw/firewalld),
 - creates `.env` from the template and **fills in fresh random secrets**
-  (database password, JWT keys, and the Web-Push keys),
-- makes sure the data directory exists,
-- runs `docker compose up -d`,
-- waits for the API's health checks and prints the URL.
+  (database password, JWT and field-encryption keys, LiveKit and Web-Push keys),
+- creates the data folder (`APPDATA_PATH` — `<repo>/data` by default,
+  `/mnt/user/appdata/zekktris` on Unraid),
+- builds and starts the stack and waits for the API's health checks and HTTPS.
 
-When it finishes you'll have a working instance on **http://SERVER-IP:5550**.
-Open it, register an account, and you're in.
-
-> By default the data folder is the unraid path `/mnt/user/appdata/zekktris`.
-> On a normal server, set `APPDATA_PATH` in `.env` to something like
-> `/opt/zekktris-data` (or `./data`) **before** the first `up`, then run
-> `./scripts/setup.sh` again.
+Re-running it never replaces your secrets; `--reconfigure` changes how the
+server is reached. (`./scripts/setup.sh` still works — it runs the installer.)
 
 ---
 
@@ -96,8 +94,8 @@ nothing, so you can leave it set.
 
 ## 4. Put it on your domain with HTTPS
 
-Edit `.env` and set these four (Caddy will fetch a Let's Encrypt cert
-automatically):
+`./install.sh --domain chat.example.com` does all of this. By hand, edit `.env`
+and set these (Caddy will fetch a Let's Encrypt cert automatically):
 
 ```
 PUBLIC_URL=https://chat.example.com
@@ -127,6 +125,13 @@ a few seconds).
 > Behind an edge proxy that already does TLS (Cloudflare Tunnel, nginx, …)?
 > Leave `SITE_ADDRESS=:5550` and point the edge proxy at `SERVER-IP:5550`; still
 > set `PUBLIC_URL=https://…` and `COOKIE_SECURE=true`.
+>
+> **Behind Cloudflare** (orange-cloud DNS or a Cloudflare Tunnel) also set
+> `EDGE_PROXY=cloudflare` and run `docker compose up -d proxy`, or every visitor
+> appears to come from Cloudflare/the tunnel, so per-IP rate limits and bans
+> hit everyone at once. Leave it at the default `none` everywhere else: it is
+> what stops visitors choosing their own address with a forged header. See
+> `ops/caddy-modes/README`.
 
 ---
 
@@ -141,12 +146,15 @@ Voice/video is **bundled and self-hosted by default** — the `livekit` service
 in `docker-compose.yml` comes up with the rest of the stack, so a standalone
 instance hosts its own SFU with no external account.
 
-- `setup.sh` generates a `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` for you (and
+- `install.sh` generates a `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` for you (and
   leaves `LIVEKIT_WS_URL` empty). If you fill `.env` by hand, set any key plus a
   32+ char secret — the api and the `livekit` container must share the same pair.
 - **Signaling** rides your own origin: the api hands clients a same-origin
   `wss://<your host>/livekit` URL that Caddy reverse-proxies to the SFU, so it
-  uses your existing host + TLS cert. No extra port to expose for signaling.
+  uses your existing host + TLS cert. No extra port to expose for signaling —
+  the SFU's port 7880 listens only on 127.0.0.1 and the Docker bridge address
+  Caddy and the api reach it through (`LIVEKIT_BIND_ADDRESSES` overrides it;
+  see `ops/livekit-entrypoint.sh`).
 - **Host networking is required.** The SFU runs with `network_mode: host` so it
   can advertise the host's real LAN IP as an ICE candidate. On the default
   Docker bridge it would only see its bridge IP (e.g. `192.168.144.2`) and
@@ -165,8 +173,9 @@ instance hosts its own SFU with no external account.
   the bridge; the api and Caddy reach it via `host.docker.internal` (declared
   under `extra_hosts`). This needs Docker 20.10+ (unraid has it). To confirm
   what the SFU advertised, check `docker logs zekktris-livekit` at startup.
-- The bundled server image tracks the `v1.9` line so it speaks the client's
-  signaling protocol; override with `LIVEKIT_IMAGE_TAG` to pin a patch.
+- The bundled server image is pinned to an exact `v1.9.x` patch so it speaks
+  the client's signaling protocol; change it deliberately with
+  `LIVEKIT_IMAGE_TAG`.
 
 Prefer a managed SFU? Set `LIVEKIT_WS_URL=wss://<project>.livekit.cloud` plus
 its `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET`; the bundled container then goes
@@ -191,59 +200,52 @@ everything else works.
 
 ### Push notifications
 
-The setup script already generated `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` for
+The installer already generated `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` for
 you, so push works out of the box. (Don't regenerate them once people have
 subscribed — it invalidates their subscriptions.)
-
-### Federation (let others host guilds on your instance)
-
-Turn your instance into a **backbone** that other operators can attach guild
-nodes to:
-
-```
-FEDERATION_ENABLED=true
-```
-plus a signing key — generate one with:
-```bash
-openssl genpkey -algorithm ed25519 -outform DER 2>/dev/null | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '='
-```
-```
-FEDERATION_SIGNING_KEY=<the value above>
-```
-Apply with `docker compose up -d api`, then verify:
-```bash
-curl -s https://chat.example.com/api/v1/federation/info   # → "enabled": true
-```
-Enroll and moderate nodes from **admin → Federation**. To hand someone a ready
-node deployment, see the node hosting bundle (`node-host/` / `scripts/package-node.sh`).
 
 ---
 
 ## 6. Updating
 
 ```bash
-# unzip the new release over the same folder (your .env + data are untouched),
-# then:
-docker compose build && docker compose up -d
+./scripts/update.sh --check   # what an update would bring (new migrations called out)
+./scripts/update.sh           # back up, pull, rebuild, health-gate, roll back on failure
 ```
 
-Migrations run automatically on API boot.
+Migrations run automatically on API boot and are **not** undone by a rollback —
+that is what the pre-update backup is for. Local edits to tracked files (an
+`ops/livekit.yaml` interface filter, a compose tweak) are kept across the update
+and a rollback; if the update itself changes one of those files, the script
+stops before touching anything and tells you which.
 
 ---
 
 ## 7. Backups
 
-Everything is under `APPDATA_PATH`:
-
 ```bash
-# stop, copy the data folder, restart
-docker compose down
-tar czf zekktris-backup-$(date +%F).tar.gz -C "$(grep '^APPDATA_PATH=' .env | cut -d= -f2-)" .
-docker compose up -d
+./scripts/backup.sh               # full bundle: database, uploads, .env, secrets/
+./scripts/backup.sh --no-uploads  # database + config only (seconds)
+./scripts/restore.sh --check      # prove the newest bundle would restore
 ```
 
-Back up `.env` too — it holds your secrets. Restoring is the reverse: drop the
-folder back and `docker compose up -d`.
+Bundles are written to `$APPDATA_PATH/backups/` — the folder **Admin → Backup &
+Maintenance**, the admin's verify/restore buttons and `./scripts/doctor.sh` all
+read. (Before this was unified, `backup.sh` wrote to `<repo>/backups/`; move any
+bundles left there.) The admin page can also schedule a nightly database-only
+and a weekly full backup once the host agent is installed
+(`./scripts/doctor.sh --fix`). **Copy bundles off the machine** — a backup on the
+disk that died is not a backup.
+
+A bundle holds the whole database, `.env` (with the field-encryption keys) and
+the APNs key: treat a copy of it as a copy of the server. Bundles are `0600`,
+and `backups/`, `control/` and the `.env.*` copies are git- and docker-ignored.
+
+To move to a new machine, set it up with `./install.sh`, copy the bundle over,
+and run `./scripts/restore.sh --force <bundle>`. The restore applies the
+bundle's `.env` (keeping this machine's `APPDATA_PATH`) **before** it starts the
+database, sets the database password to the bundle's, and stops with an error
+rather than reporting success on a half-restored instance.
 
 ---
 
@@ -256,16 +258,40 @@ folder back and `docker compose up -d`.
 | API won't start | Check `docker compose logs api` — usually a bad `.env` value (e.g. equal JWT secrets, or a missing required var). |
 | Voice channels say "audio not configured" | LiveKit not set — see §5. |
 | Password reset says email isn't enabled | SMTP not configured — see §5. |
-| Federation tab 503s | `FEDERATION_ENABLED=true` **and** a valid `FEDERATION_SIGNING_KEY` both required — see §5. |
+| Everyone shares one IP in the sessions list / rate limits hit everyone | Behind Cloudflare without `EDGE_PROXY=cloudflare` — see §4. |
 | Forgot to set admin | Set `BOOTSTRAP_ADMIN_EMAIL` to your registered email and `docker compose up -d api`. |
 
 Useful commands:
 
 ```bash
+./scripts/doctor.sh               # health check; --fix repairs what it safely can
 docker compose ps                 # what's running
 docker compose logs -f api        # follow the server log
 docker compose restart api        # restart just the API
 docker compose down               # stop everything (data persists)
 ```
 
-That's it — a single host, one command to start, and one folder to back up.
+---
+
+## 9. Security notes for operators
+
+- **The api runs as an unprivileged user** (`node`, uid 1000). On the first
+  boot after updating, its entrypoint hands `uploads/` and `control/` (written
+  by root until then) to that user; if it cannot (an NFS export with
+  root_squash, say) it keeps running as root and says so in
+  `docker compose logs api`. Caddy keeps running as root (it owns the
+  certificate store from earlier installs); Postgres and Redis drop privileges
+  inside their official images.
+- **Client IPs** are only taken from a proxy when you say one is in front
+  (`EDGE_PROXY`, §4).
+- **Webhook tokens** are masked in Caddy's logs (`/api/webhooks/<id>/REDACTED`).
+- **LiveKit Cloud credential in the git history.** Early versions of the setup
+  script committed a LiveKit Cloud API key/secret pair (key id
+  `APIAMD7Sj5psuK4`). This repository is public, so that pair must be treated
+  as known to everyone. Zekktris refuses to start with it and `install.sh`
+  replaces it, but **that does not revoke it**: whoever owns that LiveKit Cloud
+  project must delete that key on the project's API-keys page in the LiveKit
+  Cloud dashboard. Until then anyone can mint tokens for that project's
+  rooms. Self-hosters who never used LiveKit Cloud have nothing to do.
+
+That's it — a single host, one command to start, and one bundle to back up.

@@ -99,10 +99,14 @@ zekktris/
 ├── ops/
 │   ├── Dockerfile.api      # multi-stage: pnpm install → tsx runtime
 │   ├── Dockerfile.web      # multi-stage: vite build → Caddy with SPA baked in
-│   └── Caddyfile           # reverse proxy + SPA host + /livekit proxy
+│   ├── Caddyfile           # reverse proxy + SPA host + /livekit proxy
+│   └── caddy-modes/        # TLS_MODE / EDGE_PROXY variants imported by the Caddyfile
 ├── scripts/
-│   ├── setup.sh            # one-shot: secrets → build → up → wait healthy
+│   ├── backup.sh / restore.sh  # restorable bundles in $APPDATA_PATH/backups
+│   ├── update.sh           # back up → pull → rebuild → health-gate → roll back
+│   ├── doctor.sh / agent.sh    # health check; host runner for admin buttons
 │   └── generate-secrets.sh # writes .env with fresh JWT/DB/LiveKit secrets
+├── install.sh             # guided installer (domain, bare IP, or LAN)
 ├── docker-compose.yml     # 5 services: proxy, api, db, cache, livekit
 ├── .env.example
 └── ARCHITECTURE.md
@@ -198,7 +202,9 @@ The repo ships a 5-service `docker-compose.yml`:
 | `livekit` | `livekit/livekit-server` | host network | Bundled SFU for voice/video (or point at LiveKit Cloud) |
 
 Only `proxy` exposes ports to the host. The `livekit` service uses host
-networking so WebRTC media can reach it directly.
+networking so WebRTC media (7881/tcp, 7882/udp) can reach it directly; its
+signalling/admin port 7880 listens only on loopback and the Docker bridge
+address Caddy and the api use.
 
 ### Quick start (any Linux box)
 
@@ -285,10 +291,12 @@ that exists — `./data` inside the repo is a sensible choice.
 
 ### Operational notes
 
-- **Backups**: snapshot `${APPDATA_PATH}/db` (Postgres) and
-  `${APPDATA_PATH}/uploads` (attachments) — both are stateful and
-  irreplaceable. Migrations are forward-only and auto-apply on boot, so **back
-  up before updating**. Caddy's cert directory re-provisions itself on restore.
+- **Backups**: `./scripts/backup.sh` writes a restorable bundle (database,
+  uploads, `.env`, `secrets/`) to `${APPDATA_PATH}/backups`, where the admin
+  page and `./scripts/doctor.sh` find it; `./scripts/restore.sh --check`
+  verifies one. Migrations are forward-only and auto-apply on boot, so **back
+  up before updating** (`update.sh` does). Caddy's cert directory
+  re-provisions itself on restore.
 - **Logs**: `docker compose logs -f api` (structured JSON at `LOG_LEVEL=info`);
   `docker compose logs -f proxy` for Caddy access logs.
 - **Updates**: `./scripts/update.sh` — backs up, pulls, rebuilds, and rolls
@@ -297,12 +305,15 @@ that exists — `./data` inside the repo is a sensible choice.
 - **Phone push notifications**: the official iOS/Android apps receive push only
   from servers holding the app's APNs/FCM keys; on other servers everything else
   works and browsers use web push.
-- **Multi-node**: supported when `REDIS_URL` is set (it is, by default, pointing
-  at the `cache` service): the gateway event bus and session-revocation
-  blacklist fan out through Redis so multiple API replicas stay consistent.
-  Caveat — **gateway RESUME needs sticky sessions**: the replay buffer is
-  per-process, so a load balancer must route a reconnecting socket back to the
-  same replica (or the client harmlessly falls back to a full IDENTIFY).
+- **Multi-node**: one api replica is the supported, well-exercised setup. The
+  groundwork for more is there — with `REDIS_URL` set (compose points it at the
+  `cache` service) the gateway event bus, session revocation, rate limits and
+  snowflake worker ids are shared through Redis, and periodic sweeps run on one
+  elected replica — but per-connection gateway state (membership snapshots,
+  the RESUME replay buffer) lives in the replica holding the socket, so not
+  every change is guaranteed to reach sockets on other replicas yet. Running
+  several also needs your own load balancer with **sticky sessions** (the stock
+  compose file runs a single `api`). See [docs/SHARDING.md](./docs/SHARDING.md).
 
 ## License
 
