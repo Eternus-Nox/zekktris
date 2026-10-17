@@ -139,16 +139,16 @@
 	import /etc/caddy/modes/{$TLS_MODE:none}.site
 	encode zstd gzip
 
-	# Security headers — modest defaults that don't break anything. CSP
-	# is intentionally NOT set here because the SPA bundle uses inline
-	# styles via Tailwind/Vite; tightening it is a follow-up.
+	# Security headers — modest defaults that don't break anything. The
+	# page's Content-Security-Policy is the <meta> in apps/web/index.html;
+	# only frame-ancestors, which a meta tag can't set, is sent from here.
+	# Don't add a second full CSP header: browsers enforce both policies.
 	header {
 		# Don't leak referrer to third parties
 		Referrer-Policy "strict-origin-when-cross-origin"
 		# Block clickjacking
 		X-Frame-Options "SAMEORIGIN"
-		# CSP frame-ancestors (modern X-Frame-Options); a meta CSP can't set it.
-		# The page's full CSP is the <meta> in apps/web/index.html.
+		# CSP frame-ancestors (modern X-Frame-Options); see the note above.
 		Content-Security-Policy "frame-ancestors 'self'"
 		# Block MIME sniffing
 		X-Content-Type-Options "nosniff"

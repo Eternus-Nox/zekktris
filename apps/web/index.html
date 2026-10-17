@@ -9,15 +9,26 @@
         script-src 'self'   only the bundled /assets/*.js — no inline, no eval
         style-src 'self'    only the bundled stylesheet (React style props go
                             through the CSSOM, which CSP doesn't restrict)
-        img-src / media-src same-origin /cdn, plus data: (theme icon) and
-                            blob: (upload previews, decrypted E2EE media).
-                            Third-party preview images go through the
-                            same-origin /api/v1/media-proxy.
+        img-src             same-origin /cdn, data: (theme icon), blob:
+                            (upload previews, decrypted E2EE media), and any
+                            http(s) host: webhook persona avatars and event
+                            cover images are arbitrary external URLs. Keeping
+                            viewers off third-party hosts is the server's
+                            job (embed images come via /api/v1/media-proxy);
+                            a tighter img-src would only break the rest, and
+                            buys no exfiltration protection while
+                            connect-src is open.
+        media-src           same-origin /cdn plus blob: (decrypted media).
         connect-src         'self' covers the API and the same-origin
-                            /gateway and /livekit WebSockets; wss:/https:
-                            allow a server-configured external LiveKit
-                            (LIVEKIT_WS_URL, e.g. LiveKit Cloud), whose URL
-                            this static page can't know.
+                            /gateway and /livekit WebSockets. The LiveKit
+                            URL is server-configured (LIVEKIT_WS_URL, e.g.
+                            LiveKit Cloud, or ws(s)://<PUBLIC_URL host>
+                            /livekit, which needn't be the host the page
+                            was opened on) and this static page can't know
+                            it, so wss:/ws: are allowed, and https:/http:
+                            for LiveKit's HEAD probe of the same URL on
+                            reconnect. A trade-off: connect-src does not
+                            stop exfiltration; script-src is the lock.
         worker-src 'self'   service worker + LiveKit's E2EE worker chunk
       frame-ancestors can't be set from a meta tag; ops/Caddyfile sends it as
       a header. Dev (vite serve) strips this tag — Vite injects inline
@@ -25,7 +36,7 @@
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self' https: wss:; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https: http:; media-src 'self' blob:; font-src 'self'; connect-src 'self' https: wss: http: ws:; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
     />
 
     <!--
