@@ -11,7 +11,9 @@ package com.zekktris.data
  * activity in IDENTIFY/RESUME and with PRESENCE_UPDATE (op 3) on each change
  * ([Gateway.setPresenceActive]), and never PATCHes /users/@me {status} on its
  * own. Older servers ignore the reports; Android never had an automatic
- * away, so nothing else changes there.
+ * away, so nothing else changes there. Every status it PATCHes is a pick in
+ * the status picker, sent with `statusSource: "manual"`
+ * ([com.zekktris.data.model.ProfilePatch.statusPick]).
  *
  * Pure logic, no Android types. Mirrors ios-native DevicePresence.swift.
  */
@@ -57,23 +59,28 @@ object DevicePresence {
      * The user's own avatar dot.
      *
      *  - [chosen]: what the picker shows ([pickerStatus]).
-     *  - [effective]: `SelfUser.status` — on a new server the effective status,
-     *    unmasked, kept current by our own PRESENCE_UPDATEs ([selfFields]).
+     *  - [live]: the presence map's entry for our own id — the latest
+     *    PRESENCE_UPDATE about us (or a REST seed), masked like everyone
+     *    else's ("invisible" arrives as "offline"). null before any.
+     *  - [effective]: the self user's `effectiveStatus ?: status` — the
+     *    effective status from REST (unmasked), also kept current by our own
+     *    PRESENCE_UPDATEs ([selfFields]); shown until the first live value.
+     *    (`status` is the pick on current servers; it only stands in for a
+     *    server that sends no `effectiveStatus`.)
      *  - [serverDerives]: the server derives presence from device activity
      *    (the self user carries `chosenStatus`).
      *
      * Older server: the chosen status IS the presence. New server: chosen
-     * Invisible shows Invisible; otherwise the effective status, so a phone in
-     * use shows Online even while the idle Mac would say Away, and the phone
-     * shows Away once nobody is using any device. "offline" for ourselves is
-     * only ever a stale value while we're in the app, so it falls back to the
-     * choice.
+     * Invisible shows Invisible; otherwise the live effective status, else the
+     * REST one, so a phone in use shows Online even while the idle Mac would
+     * say Away, and the phone shows Away once nobody is using any device.
+     * "offline" for ourselves is only ever a stale value while we're in the
+     * app, so it falls back to the choice.
      */
-    fun selfStatus(chosen: String, effective: String?, serverDerives: Boolean): String {
+    fun selfStatus(chosen: String, live: String?, effective: String?, serverDerives: Boolean): String {
         if (!serverDerives) return chosen
         if (chosen == "invisible") return "invisible"
-        if (effective != null && effective != "offline" && effective != "invisible") return effective
-        return chosen
+        return listOf(live, effective).firstOrNull { it != null && it != "offline" && it != "invisible" } ?: chosen
     }
 
     /** What a PRESENCE_UPDATE about ourselves says about our own status. */

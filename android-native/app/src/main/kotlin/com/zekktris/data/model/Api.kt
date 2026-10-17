@@ -516,7 +516,8 @@ data class MyEventItem(
 // ── Profile edit (PATCH /users/@me) — nulls omitted (explicitNulls=false) ─────
 // Only changed fields are sent; unset fields stay null and are dropped from
 // the JSON body, so this doubles as the account-settings patch for the
-// Notifications / Privacy / Appearance toggles.
+// Notifications / Privacy / Appearance toggles. A status goes through
+// [ProfilePatch.statusPick] only.
 @Serializable
 data class ProfilePatch(
     val displayName: String? = null,
@@ -532,4 +533,15 @@ data class ProfilePatch(
     // privacy
     val achievementsPublic: Boolean? = null,
     val showSubscriptionTier: Boolean? = null,
-)
+    /** Who set [status]: "manual" for a pick in the status picker. Without it
+     *  a server with multi-device presence reads an "idle" as an older
+     *  client's AUTOMATIC away and puts it back to online once the user's last
+     *  device disconnects. Android has no automatic away, so every status it
+     *  sends is a pick. Servers that predate the field drop it. */
+    val statusSource: String? = null,
+) {
+    companion object {
+        /** The PATCH for a status the user picked: marked manual. */
+        fun statusPick(status: String) = ProfilePatch(status = status, statusSource = "manual")
+    }
+}

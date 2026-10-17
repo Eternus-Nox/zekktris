@@ -384,12 +384,12 @@ private fun ProfileSection(store: AppStore, state: AppState) {
             Spacer(Modifier.height(4.dp))
             SectionLabel("STATUS")
             Spacer(Modifier.height(8.dp))
-            StatusRow("Online", "online", status) { store.updateProfile(status = "online") }
+            StatusRow("Online", "online", status) { store.setStatus("online") }
             // Label only — the wire/DB value stays "idle" (renaming it would
             // break every already-shipped client against the live server).
-            StatusRow("Away", "idle", status) { store.updateProfile(status = "idle") }
-            StatusRow("Do Not Disturb", "dnd", status) { store.updateProfile(status = "dnd") }
-            StatusRow("Invisible", "invisible", status) { store.updateProfile(status = "invisible") }
+            StatusRow("Away", "idle", status) { store.setStatus("idle") }
+            StatusRow("Do Not Disturb", "dnd", status) { store.setStatus("dnd") }
+            StatusRow("Invisible", "invisible", status) { store.setStatus("invisible") }
 
             Spacer(Modifier.height(20.dp))
             SectionLabel("DISPLAY NAME")
