@@ -17,6 +17,7 @@ import javax.crypto.spec.SecretKeySpec
  *   • Key:       PBKDF2-HMAC-SHA256(UTF8(password), salt, 250 000 iters) → 32 bytes
  *   • Salt:      16 random bytes, standard base64
  *   • Verifier:  base64( SHA-256( key ‖ UTF8("zkE2EE/verify-v2") ) )
+ *   • PurgeProof: base64( SHA-256( key ‖ UTF8("zkE2EE/purge-v1") ) )
  *   • Cipher:    AES-256-GCM, 12-byte random IV, 16-byte tag
  *   • Wire:      "zkE2EE/3:" + base64( iv(12) ‖ ciphertext ‖ tag(16) )
  *   • Base64:    standard (RFC 4648) with padding
@@ -35,6 +36,7 @@ object E2EE {
     private const val SALT_BYTES = 16
     private const val PBKDF2_ITERS = 250_000
     private const val VERIFIER_TAG = "zkE2EE/verify-v2"
+    private const val PURGE_PROOF_TAG = "zkE2EE/purge-v1"
 
     private val rng = SecureRandom()
 
@@ -63,6 +65,21 @@ object E2EE {
         val md = MessageDigest.getInstance("SHA-256")
         md.update(key)
         md.update(VERIFIER_TAG.toByteArray(Charsets.UTF_8))
+        return Base64.encodeToString(md.digest(), Base64.NO_WRAP)
+    }
+
+    /**
+     * base64( SHA-256( key ‖ "zkE2EE/purge-v1" ) ) — [verifier] with its own tag.
+     * Sent on enable (the server keeps only its hash) and on disable; unlike the
+     * verifier the server never hands it out, so only a key holder can purge the
+     * history. Golden vector (shared with apps/web/test/e2eePurgeProof.test.ts and
+     * ios-native/ZekktrisTests): key YimdlwXN5XtC7BY6H+EsKc8JTSMycfv9Cl2dBSNg2wo=
+     * → rH+DBSWbET5wJGN0x8XwSqpgiPhCc4wJtxgKv+fbaQI=
+     */
+    fun purgeProof(key: ByteArray): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        md.update(key)
+        md.update(PURGE_PROOF_TAG.toByteArray(Charsets.UTF_8))
         return Base64.encodeToString(md.digest(), Base64.NO_WRAP)
     }
 

@@ -1843,6 +1843,7 @@ final class AppStore: ObservableObject {
         // for the password rather than silently failing to decrypt. BEFORE the
         // seed decrypt below, so a stale key never decrypts the seeded rows.
         purgeStaleE2EEKey(channel)
+        registerE2EEPurgeProofIfNeeded(channel)
         // Re-derive plaintext for any seeded rows immediately — synchronously,
         // see decryptVisible — so a cached E2EE convo is never shown as
         // undecryptable, not even for a frame (selectedChannel is set above).
@@ -2050,6 +2051,9 @@ final class AppStore: ObservableObject {
             dms = fetched.sorted {
                 snowflakeGreater($0.lastMessageId ?? $0.id, than: $1.lastMessageId ?? $1.id)
             }
+            // Every legacy encrypted DM we already hold the key for, not just
+            // the open one (a cold start can select a DM before this loads).
+            for dm in dms { registerE2EEPurgeProofIfNeeded(dm) }
             // A caller's hangup may have arrived before `dms` loaded on a cold
             // VoIP launch — now that DMs are here, dismiss those CallKit rings.
             if !pendingCallerCancels.isEmpty {
@@ -3268,6 +3272,7 @@ final class AppStore: ObservableObject {
             // A re-key (new salt/verifier) invalidates any cached key. (When it
             // does, relockE2EE bumps e2eeUnlockVersion itself.)
             purgeStaleE2EEKey(updated)
+            registerE2EEPurgeProofIfNeeded(updated)
             // If we still hold a valid key, decrypt anything already loaded.
             decryptVisible()
             // Re-evaluate the lock gate when E2EE was just turned on/off or
@@ -6275,8 +6280,30 @@ final class AppStore: ObservableObject {
         }
         storeKey(key, for: channel.id)
         decryptVisible()
+        registerE2EEPurgeProofIfNeeded(channel)
         return true
     }
+
+    /// A DM encrypted before purge proofs existed (or by an older client) has
+    /// none on the server (`e2eePurgeProofSet == false`), and until one is
+    /// registered the server still purges it on the public verifier alone.
+    /// Register ours (first registration wins) as soon as we hold the CURRENT
+    /// key: on DM select, unlock, every DM list load and a CHANNEL_UPDATE of
+    /// the open DM. Once per channel+verifier per session: a refusal (409, a different
+    /// proof already registered) is final, and a network error is retried
+    /// next launch. The server's CHANNEL_UPDATE flips the flag on success.
+    func registerE2EEPurgeProofIfNeeded(_ channel: Channel) {
+        guard channel.isE2EE, channel.e2eePurgeProofSet == false,
+              let verifier = channel.e2eeVerifier,
+              let key = e2eeKey(for: channel) else { return }
+        guard purgeProofAttempts.insert("\(channel.id):\(verifier)").inserted else { return }
+        let proof = E2EE.purgeProof(forKey: key)
+        let channelId = channel.id
+        Task {
+            try? await api.registerDmE2EEPurgeProof(channelId: channelId, verifier: verifier, purgeProof: proof)
+        }
+    }
+    private var purgeProofAttempts: Set<String> = []
 
     /// PBKDF2 on a background task — see unlockE2EE.
     nonisolated private static func deriveKeyOffMain(
@@ -6297,8 +6324,9 @@ final class AppStore: ObservableObject {
             return false
         }
         let verifier = E2EE.verifier(forKey: key)
+        let purgeProof = E2EE.purgeProof(forKey: key)
         do {
-            try await api.enableDmE2EE(channelId: channel.id, salt: salt, verifier: verifier)
+            try await api.enableDmE2EE(channelId: channel.id, salt: salt, verifier: verifier, purgeProof: purgeProof)
             storeKey(key, for: channel.id)
             applyE2EEState(channelId: channel.id, enabled: true, salt: salt, verifier: verifier)
             return true
@@ -6312,8 +6340,9 @@ final class AppStore: ObservableObject {
     /// broadcasts CHANNEL_UPDATE; we drop the local key and clear decrypted
     /// plaintext immediately so nothing lingers in memory.
     ///
-    /// The server now requires proof we know the passphrase: we send the
-    /// verifier derived from the cached key. If this device is locked (no
+    /// The server requires proof we hold the key: we send the verifier and
+    /// the purge proof derived from the cached key (the verifier alone is
+    /// public, so the proof is what counts). If this device is locked (no
     /// key), we can't prove it — abort and surface an error so the user
     /// unlocks first rather than silently failing.
     func disableE2EE(_ channel: Channel) async {
@@ -6323,7 +6352,11 @@ final class AppStore: ObservableObject {
         }
         e2eeError = nil
         do {
-            try await api.disableDmE2EE(channelId: channel.id, verifier: E2EE.verifier(forKey: key))
+            try await api.disableDmE2EE(
+                channelId: channel.id,
+                verifier: E2EE.verifier(forKey: key),
+                purgeProof: E2EE.purgeProof(forKey: key)
+            )
         } catch {
             e2eeError = (error as? APIError)?.message ?? "Could not disable encryption."
             return

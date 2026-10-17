@@ -141,13 +141,21 @@ export const channels = pgTable(
      * boolean is redundant with the not-null check but provides a
      * clear schema intent and a cheap WHERE filter.
      *
-     * Disabling clears all three columns AND triggers a server-side
+     * e2eePurgeProofHash — hex SHA-256 of the client's purgeProof
+     * (base64 SHA-256(key || "zkE2EE/purge-v1")). Unlike the verifier
+     * it is NEVER sent to clients, so only a key holder can produce
+     * the proof that gates the purge. NULL on DMs encrypted before
+     * migration 0128 (or by an old client) until a key holder
+     * registers one — see services/dms.ts.
+     *
+     * Disabling clears all four columns AND triggers a server-side
      * purge of every zkE2EE/* message in the channel. Re-enabling
      * generates a new salt; the previous password is dead.
      */
     e2eeEnabled: boolean('e2ee_enabled').notNull().default(false),
     e2eeSalt: text('e2ee_salt'),
     e2eeVerifier: text('e2ee_verifier'),
+    e2eePurgeProofHash: text('e2ee_purge_proof_hash'),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

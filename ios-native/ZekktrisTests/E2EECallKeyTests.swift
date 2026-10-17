@@ -25,6 +25,9 @@ final class E2EECallKeyTests: XCTestCase {
     private let saltB64 = "BwcHBwcHBwcHBwcHBwcHBw=="   // 16 bytes of 0x07
     private let keyB64 = "YimdlwXN5XtC7BY6H+EsKc8JTSMycfv9Cl2dBSNg2wo="
     private let verifierB64 = "FagWYpIz64/IzDGxoQ/uBvRKIrzc+VthN0p/st8h790="
+    // base64( SHA-256( key ‖ "zkE2EE/purge-v1" ) ) — same vector as
+    // apps/web/test/e2eePurgeProof.test.ts.
+    private let purgeProofB64 = "rH+DBSWbET5wJGN0x8XwSqpgiPhCc4wJtxgKv+fbaQI="
 
     func testDerivesDMKeyToGoldenVector() throws {
         let key = try XCTUnwrap(E2EE.deriveKey(password: password, saltBase64: saltB64))
@@ -35,6 +38,15 @@ final class E2EECallKeyTests: XCTestCase {
     func testVerifierMatchesGoldenVector() throws {
         let key = try XCTUnwrap(E2EE.deriveKey(password: password, saltBase64: saltB64))
         XCTAssertEqual(E2EE.verifier(forKey: key), verifierB64)
+    }
+
+    /// The purge proof gates the server-side purge on disable; it must match
+    /// the web client byte for byte or a DM enabled on one platform could
+    /// never be turned off from the other.
+    func testPurgeProofMatchesGoldenVector() throws {
+        let key = try XCTUnwrap(Data(base64Encoded: keyB64))
+        XCTAssertEqual(E2EE.purgeProof(forKey: key), purgeProofB64)
+        XCTAssertNotEqual(E2EE.purgeProof(forKey: key), E2EE.verifier(forKey: key))
     }
 
     /// The exact string `Voice.connect` feeds LiveKit's shared-key provider is

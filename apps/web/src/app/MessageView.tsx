@@ -17,6 +17,7 @@
 
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
+import { ensurePurgeProofRegistered } from '../lib/e2eePurgeProof';
 import type { Channel, Message, PokeHistoryEntry, PublicUser } from '@zekktris/client';
 import { ApiError } from '@zekktris/client';
 import { POKE_TYPES, POKE_VARIANTS, type PokeType } from '../lib/poke';
@@ -523,6 +524,12 @@ export function MessageView({
   // Reactive E2EE key availability so the locked-DM banner appears/disappears
   // live the moment the conversation is unlocked (mirrors MessageItem).
   const keyVersion = useSyncExternalStore(subscribeToKeyChanges, getKeyVersion, getKeyVersion);
+  // A DM encrypted before purge proofs existed (or by an older client) has
+  // none on the server; register ours as soon as this device holds the key.
+  useEffect(() => {
+    void ensurePurgeProofRegistered(rest, channel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rest, channel.id, channel.e2eeEnabled, channel.e2eeVerifier, channel.e2eePurgeProofSet, keyVersion]);
   // Ref to the cog button so the DmSettingsPanel's click-outside
   // listener can ignore clicks on the toggle itself. Without this,
   // clicking the cog while the panel is open fires the panel's

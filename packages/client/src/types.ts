@@ -362,6 +362,12 @@ export interface Channel {
    *   e2eeVerifier — base64 SHA-256 of the derived key. Lets the
    *                  client confirm the user typed the right
    *                  password without exposing the key.
+   *   e2eePurgeProofSet — whether the server holds a purge-proof
+   *                  hash for this DM (the hash is never sent).
+   *                  `false` on an encrypted DM: a client holding
+   *                  the key should register one
+   *                  (`registerDmE2eePurgeProof`). Absent on older
+   *                  servers.
    *
    * When enabled is false, salt + verifier are null. Disabling
    * purges all encrypted messages in the conversation.
@@ -369,6 +375,7 @@ export interface Channel {
   e2eeEnabled?: boolean;
   e2eeSalt?: string | null;
   e2eeVerifier?: string | null;
+  e2eePurgeProofSet?: boolean;
 }
 
 export interface Attachment {

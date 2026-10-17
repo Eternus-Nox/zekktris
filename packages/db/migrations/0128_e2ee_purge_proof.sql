@@ -1,0 +1,11 @@
+-- E2EE purge proof (DMs). Disabling E2EE hard-deletes the encrypted history,
+-- and it used to be gated only by e2ee_verifier — which every DM participant
+-- receives in the channel DTO, so anyone in the DM could echo it back and wipe
+-- the conversation without knowing the passphrase.
+--
+-- Clients now also derive purgeProof = base64(SHA-256(key || "zkE2EE/purge-v1"))
+-- and send it on enable; the server keeps only SHA-256(purgeProof) (hex) here
+-- and never hands it out. A purge must present the matching proof. NULL means a
+-- DM encrypted before this column existed (or by an old client) — see
+-- services/dms.ts for how those are handled.
+ALTER TABLE "channels" ADD COLUMN IF NOT EXISTS "e2ee_purge_proof_hash" text;

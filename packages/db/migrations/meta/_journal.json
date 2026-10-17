@@ -890,6 +890,13 @@
       "when": 1784859530000,
       "tag": "0127_reaction_roles_creator_set_null",
       "breakpoints": true
+    },
+    {
+      "idx": 127,
+      "version": "7",
+      "when": 1784945930000,
+      "tag": "0128_e2ee_purge_proof",
+      "breakpoints": true
     }
   ]
 }
