@@ -618,26 +618,43 @@ export function userLeftGuild(args: { userId: bigint; guildId: bigint }): void {
 }
 
 /**
- * A 1:1 DM channel was just opened (or re-opened) between two users. Both
- * recipients get CHANNEL_CREATE to bootstrap UI, and we attach the channel
- * to each of their connection snapshots so future messages route there.
+ * A DM channel DTO built for ONE recipient. A DM DTO is viewer-relative —
+ * its `recipients` are the viewer's peers (never the viewer) — so a DM event
+ * can't send one shared frame to the whole channel audience: the peer would
+ * receive the actor's DTO, whose `recipients` is the peer themself, and every
+ * client swaps it in wholesale (the DM then reads as a chat with yourself).
+ */
+export type DMChannelDTOForRecipient = { userId: bigint; channelDTO: unknown };
+
+/** Send each DM recipient its own DTO, on a per-user audience (the bus
+ *  carries it to whichever replica holds that user's sockets). */
+function publishDMChannelPerRecipient(
+  t: typeof GatewayEvent[keyof typeof GatewayEvent],
+  dtos: DMChannelDTOForRecipient[],
+): void {
+  for (const { userId, channelDTO } of dtos) {
+    publish(t, channelDTO, { kind: 'user', userId });
+  }
+}
+
+/**
+ * A 1:1 DM channel was just opened (or re-opened) between two users. Each
+ * recipient gets CHANNEL_CREATE with its own DTO to bootstrap UI, and we
+ * attach the channel to each of their connection snapshots so future
+ * messages route there.
  *
  * Idempotent at the snapshot level — adding a channel that's already in
  * the set is a no-op.
  */
 export function dmChannelCreated(args: {
-  channelDTO: unknown;
   channelId: bigint;
-  recipientIds: bigint[];
+  dtos: DMChannelDTOForRecipient[];
 }): void {
-  dmSubscribeRecipients({ channelId: args.channelId, recipientIds: args.recipientIds });
-  // One 'users'-audience publish — the CHANNEL_CREATE frame is identical for
-  // every recipient, so the generic path serializes it once instead of N times
-  // (and one Redis round-trip instead of N under the multi-node bus).
-  publish(GatewayEvent.CHANNEL_CREATE, args.channelDTO, {
-    kind: 'users',
-    userIds: args.recipientIds,
+  dmSubscribeRecipients({
+    channelId: args.channelId,
+    recipientIds: args.dtos.map((d) => d.userId),
   });
+  publishDMChannelPerRecipient(GatewayEvent.CHANNEL_CREATE, args.dtos);
 }
 
 /**
@@ -742,21 +759,14 @@ export function dmSettingsUpdated(args: {
 }
 
 /**
- * A DM channel's properties changed (currently used for per-DM E2EE
- * key uploads/clears). Fires CHANNEL_UPDATE with the full re-fetched
- * channel DTO so the receiving client can replace its cached channel
- * record. Audience: anyone subscribed to the channel — which for a
- * 1:1 DM means both recipients.
+ * A DM channel's properties changed (currently the per-DM E2EE enable,
+ * purge-proof registration and disable). Fires CHANNEL_UPDATE with the full
+ * re-fetched channel DTO so the receiving client can replace its cached
+ * channel record. Each recipient gets its OWN DTO (see
+ * DMChannelDTOForRecipient) — never one channel-audience frame.
  */
-export function dmChannelUpdated(args: {
-  channelId: bigint;
-  channelDTO: unknown;
-}): void {
-  publish(
-    GatewayEvent.CHANNEL_UPDATE,
-    args.channelDTO,
-    { kind: 'channel', channelId: args.channelId, guildId: null },
-  );
+export function dmChannelUpdated(args: { dtos: DMChannelDTOForRecipient[] }): void {
+  publishDMChannelPerRecipient(GatewayEvent.CHANNEL_UPDATE, args.dtos);
 }
 
 /**

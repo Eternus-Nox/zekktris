@@ -398,6 +398,22 @@ export async function loadOtherRecipients(
 }
 
 /**
+ * Load EVERY recipient of a DM channel (self included) as public User rows.
+ * Used to build one channel DTO per recipient — each from that recipient's
+ * own point of view — for gateway fan-out (see routes/dms.ts).
+ */
+export async function loadAllRecipientUsers(
+  channelId: bigint,
+): Promise<typeof schema.users.$inferSelect[]> {
+  const r = await db
+    .select({ user: PUBLIC_USER_COLS })
+    .from(schema.dmRecipients)
+    .innerJoin(schema.users, eq(schema.users.id, schema.dmRecipients.userId))
+    .where(eq(schema.dmRecipients.channelId, channelId));
+  return r.map((row) => row.user) as unknown as typeof schema.users.$inferSelect[];
+}
+
+/**
  * Bulk variant of `loadOtherRecipients` — for a list of channel ids,
  * returns a map of channelId → recipients (excluding `selfId`). Used
  * by the DM-list route to avoid N+1 queries when the user has many
