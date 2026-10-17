@@ -59,13 +59,21 @@ data class SelfUser(
     val avatarDecoration: String? = null,
     val bannerUrl: String? = null,
     val bio: String? = null,
-    /** EFFECTIVE status, unmasked (can be "invisible"). On a server without
-     *  multi-device presence ([chosenStatus] absent) it is also the choice. */
+    /** What the user picked. A server with multi-device presence sends the
+     *  same value as [chosenStatus] here (the meaning older builds of this app
+     *  read it with); an older server's status is the choice as well. Read
+     *  the pick as `chosenStatus ?: status` and the own dot from
+     *  `effectiveStatus ?: status` (data/DevicePresence.kt). */
     val status: String? = null,
     /** What the user picked: online | idle | dnd | invisible. Only servers
      *  with multi-device presence send it; the status picker shows and edits
      *  it (data/DevicePresence.kt). */
     val chosenStatus: String? = null,
+    /** EFFECTIVE status, unmasked (can be "invisible"): derived from
+     *  [chosenStatus] and the activity of every connected device. Only servers
+     *  with multi-device presence send it; the own dot until our own first
+     *  PRESENCE_UPDATE arrives (those frames then keep it current). */
+    val effectiveStatus: String? = null,
     val customStatus: String? = null,
     val customStatusEmoji: String? = null,
     val customStatusExpiresAt: String? = null,

@@ -112,24 +112,56 @@ final class DevicePresenceTests: XCTestCase {
 
     /// Phone in use while the Mac sits idle: the server says online.
     func testOwnDotFollowsTheLiveEffectiveStatus() {
-        XCTAssertEqual(DevicePresence.selfStatus(chosen: "online", live: "online", serverDerives: true), "online")
+        XCTAssertEqual(DevicePresence.selfStatus(chosen: "online", live: "online", effective: "idle", serverDerives: true), "online")
         // No device in use anywhere → Away, though the choice is Online.
-        XCTAssertEqual(DevicePresence.selfStatus(chosen: "online", live: "idle", serverDerives: true), "idle")
+        XCTAssertEqual(DevicePresence.selfStatus(chosen: "online", live: "idle", effective: "online", serverDerives: true), "idle")
     }
 
     func testOwnDotShowsInvisibleAlthoughFramesSayOffline() {
-        XCTAssertEqual(DevicePresence.selfStatus(chosen: "invisible", live: "offline", serverDerives: true), "invisible")
+        XCTAssertEqual(DevicePresence.selfStatus(chosen: "invisible", live: "offline", effective: "invisible", serverDerives: true), "invisible")
+        // Picked Invisible: an effective value from before the pick doesn't leak.
+        XCTAssertEqual(DevicePresence.selfStatus(chosen: "invisible", live: nil, effective: "online", serverDerives: true), "invisible")
     }
 
-    func testOwnDotFallsBackToTheChoiceBeforeAnyLiveFrame() {
-        XCTAssertEqual(DevicePresence.selfStatus(chosen: "online", live: nil, serverDerives: true), "online")
-        XCTAssertEqual(DevicePresence.selfStatus(chosen: "dnd", live: "offline", serverDerives: true), "dnd")
+    /// Before the first own frame the self user's effectiveStatus is the dot:
+    /// its `status` is the pick (Online) while the idle Mac makes it Away.
+    func testOwnDotUsesTheRestEffectiveStatusBeforeAnyLiveFrame() {
+        XCTAssertEqual(DevicePresence.selfStatus(chosen: "online", live: nil, effective: "idle", serverDerives: true), "idle")
+        // A stale "offline" live entry (a REST seed from before we
+        // connected) defers to it too.
+        XCTAssertEqual(DevicePresence.selfStatus(chosen: "online", live: "offline", effective: "idle", serverDerives: true), "idle")
+    }
+
+    func testOwnDotFallsBackToTheChoiceWithNothingUsable() {
+        XCTAssertEqual(DevicePresence.selfStatus(chosen: "online", live: nil, effective: nil, serverDerives: true), "online")
+        // "offline" for ourselves while connected is stale (getMe before IDENTIFY).
+        XCTAssertEqual(DevicePresence.selfStatus(chosen: "dnd", live: "offline", effective: "offline", serverDerives: true), "dnd")
     }
 
     /// Older server: the chosen status is the presence (legacy auto-away).
     func testOwnDotOnAnOlderServerIsTheChoice() {
-        XCTAssertEqual(DevicePresence.selfStatus(chosen: "online", live: "idle", serverDerives: false), "online")
-        XCTAssertEqual(DevicePresence.selfStatus(chosen: "idle", live: nil, serverDerives: false), "idle")
+        XCTAssertEqual(DevicePresence.selfStatus(chosen: "online", live: "idle", effective: "idle", serverDerives: false), "online")
+        XCTAssertEqual(DevicePresence.selfStatus(chosen: "idle", live: nil, effective: nil, serverDerives: false), "idle")
+    }
+
+    // MARK: Status PATCH
+
+    /// A picked status carries the manual marker, so the server keeps a
+    /// chosen Away past the last device disconnecting.
+    func testPickedStatusIsMarkedManual() {
+        let body = DevicePresence.statusPatch("idle", manual: true)
+        XCTAssertEqual(body["status"] as? String, "idle")
+        XCTAssertEqual(body["statusSource"] as? String, "manual")
+        XCTAssertEqual(body.count, 2)
+    }
+
+    /// The legacy auto-away push stays unmarked: the server treats its idle
+    /// as automatic and ends it when the user's last device disconnects.
+    func testAutomaticStatusIsUnmarked() {
+        let body = DevicePresence.statusPatch("idle", manual: false)
+        XCTAssertEqual(body["status"] as? String, "idle")
+        XCTAssertNil(body["statusSource"])
+        XCTAssertEqual(body.count, 1)
     }
 
     // MARK: Own PRESENCE_UPDATE

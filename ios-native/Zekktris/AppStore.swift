@@ -1003,8 +1003,9 @@ final class AppStore: ObservableObject {
     // status is read via `currentChosenStatus`. AFK voice-channel relocation
     // is a separate, already-built server sweep (guilds.afkChannelId).
     static let autoIdleThresholdSeconds: TimeInterval = DevicePresence.idleThresholdSeconds
-    /// Pushes an effective status to the server (set by the app to Session.setStatus).
-    /// Legacy servers only; never called when `serverDerivesPresence`.
+    /// Pushes an automatic status to the server (set by the app to
+    /// Session.setStatus with `manual: false`, so no `statusSource: "manual"`
+    /// marker). Legacy servers only; never called when `serverDerivesPresence`.
     var autoStatusPush: ((String) async -> Void)?
     /// Reads the user's current chosen status (set by the app to
     /// Session.currentUser's chosenStatus, or its status on an older server).
@@ -1999,20 +2000,24 @@ final class AppStore: ObservableObject {
             // The SELF user. On a server with multi-device presence our own
             // PRESENCE_UPDATEs reach us and `presence` holds the effective
             // status (online while any of our devices is in use, else away);
-            // chosen Invisible shows Invisible (those frames say offline). An
-            // older server never echoes our own presence back, and
-            // currentUser.status is a stale pre-connect snapshot (often
-            // "offline" because getMe ran before the gateway identified) —
-            // there, while we're in the app we are online, so report "online"
-            // unless a deliberate status (idle/dnd/invisible) was chosen in
-            // Settings. See DevicePresence.selfStatus.
+            // before the first one, the self user's `effectiveStatus` (an
+            // older multi-device server sent it as `status`). Chosen Invisible
+            // shows Invisible (those frames say offline). An older server
+            // never echoes our own presence back, and there the chosen status
+            // is the presence; a stale pre-connect "offline" (getMe ran before
+            // the gateway identified) means nothing — while we're in the app
+            // we are online, so report "online" unless a deliberate status
+            // (idle/dnd/invisible) was chosen in Settings. See
+            // DevicePresence.selfStatus.
             if userId == currentUserId {
                 let chosen = DevicePresence.pickerStatus(
                     chosen: currentChosenStatus?() ?? currentUser?.chosenStatus,
                     status: currentUser?.status
                 )
                 return DevicePresence.selfStatus(
-                    chosen: chosen, live: presence[userId], serverDerives: serverDerivesPresence
+                    chosen: chosen, live: presence[userId],
+                    effective: currentUser?.effectiveStatus ?? currentUser?.status,
+                    serverDerives: serverDerivesPresence
                 )
             }
             if let s = presence[userId] { return s }
@@ -2022,12 +2027,14 @@ final class AppStore: ObservableObject {
 
     /// Our own status as the server pushed it (READY, or the PRESENCE_UPDATE
     /// to our own connections): patch our copy of the self user and
-    /// Session's, which the Settings picker reads. `effective` nil = leave
-    /// `status` alone.
+    /// Session's, which the Settings picker reads. The pick goes to both
+    /// `chosenStatus` and `status` (which carries the pick too); `effective`
+    /// nil = leave `effectiveStatus` alone.
     private func noteSelfStatus(chosen: String, effective: String?) {
         if var u = currentUser {
             u.chosenStatus = chosen
-            if let effective { u.status = effective }
+            u.status = chosen
+            if let effective { u.effectiveStatus = effective }
             if u != currentUser { currentUser = u }
         }
         applySelfStatus?(chosen, effective)
@@ -3630,7 +3637,7 @@ final class AppStore: ObservableObject {
         guard let u = currentUser else { return nil }
         return PublicUser(
             id: u.id, username: u.username, displayName: u.displayName,
-            avatarUrl: u.avatarUrl, status: u.status, isBot: false,
+            avatarUrl: u.avatarUrl, status: u.effectiveStatus ?? u.status, isBot: false,
             customStatus: u.customStatus, customStatusEmoji: u.customStatusEmoji,
             avatarDecoration: u.avatarDecoration
         )
@@ -5758,7 +5765,7 @@ final class AppStore: ObservableObject {
             // consumes voice_states here too (VOICE_STATES_SET).
             applyReadyVoiceStates(data)
             // Our chosen status may have been changed on another device while
-            // this one was away. (Only the choice: READY's effective `status`
+            // this one was away. (Only the choice: READY's `effectiveStatus`
             // can predate this connection's own recompute, whose
             // PRESENCE_UPDATE follows right behind.)
             if let d = jsonDict(data), let u = d["user"] as? [String: Any],

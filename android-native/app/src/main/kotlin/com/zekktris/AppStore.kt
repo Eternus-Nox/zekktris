@@ -1931,10 +1931,23 @@ class AppStore(
 
     // ---- profile edit -------------------------------------------------------
 
-    fun updateProfile(displayName: String? = null, bio: String? = null, status: String? = null) {
+    fun updateProfile(displayName: String? = null, bio: String? = null) {
         scope.launch {
             val updated = runCatching {
-                api.updateProfile(com.zekktris.data.model.ProfilePatch(displayName, bio, status))
+                api.updateProfile(com.zekktris.data.model.ProfilePatch(displayName, bio))
+            }.getOrNull()
+            if (updated != null) _state.update { it.copy(me = updated) }
+        }
+    }
+
+    /** Set the status the user picked in the status picker. Marked manual
+     *  ([com.zekktris.data.model.ProfilePatch.statusPick]) so a server with
+     *  multi-device presence keeps a picked Away after the last device
+     *  disconnects instead of treating it as an automatic away. */
+    fun setStatus(status: String) {
+        scope.launch {
+            val updated = runCatching {
+                api.updateProfile(com.zekktris.data.model.ProfilePatch.statusPick(status))
             }.getOrNull()
             if (updated != null) _state.update { it.copy(me = updated) }
         }
@@ -4308,11 +4321,13 @@ class AppStore(
                 _state.update { st ->
                     val next = st.copy(presence = st.presence + (uid to status))
                     // Our own: on a server with multi-device presence these
-                    // frames carry our EFFECTIVE status (the own dot), and the
-                    // guild_id=null one to our own connections also carries
-                    // chosen_status, so a pick made on another device reaches
-                    // the Settings picker. Older servers' frames leave `me`
-                    // alone (there its status is the choice).
+                    // frames carry our EFFECTIVE status (the own dot, also via
+                    // `presence` above), and the guild_id=null one to our own
+                    // connections also carries chosen_status, so a pick made
+                    // on another device reaches the Settings picker. The pick
+                    // goes to both chosenStatus and status (which carries the
+                    // pick too). Older servers' frames leave `me` alone (there
+                    // its status is the choice).
                     val me = st.me
                     if (me == null || me.id != uid) return@update next
                     val own = com.zekktris.data.DevicePresence.selfFields(
@@ -4320,7 +4335,7 @@ class AppStore(
                         frameChosen = obj["chosen_status"]?.jsonPrimitive?.contentOrNull,
                         knownChosen = me.chosenStatus,
                     ) ?: return@update next
-                    next.copy(me = me.copy(chosenStatus = own.chosen, status = own.effective))
+                    next.copy(me = me.copy(chosenStatus = own.chosen, status = own.chosen, effectiveStatus = own.effective))
                 }
             }
             "USER_UPDATE" -> onUserUpdate(d.data)
@@ -4590,14 +4605,15 @@ class AppStore(
         }
         val obj = d?.jsonObject ?: return
         // Our chosen status may have been changed on another device while this
-        // one was away. Only the choice: READY's effective `status` can predate
+        // one was away. Only the choice: READY's `effectiveStatus` can predate
         // this connection's own recompute, whose PRESENCE_UPDATE follows.
         (obj["user"] as? kotlinx.serialization.json.JsonObject)?.get("chosenStatus")
             ?.let { (it as? JsonPrimitive)?.contentOrNull }
             ?.let { chosen ->
                 _state.update { st ->
                     val me = st.me ?: return@update st
-                    if (me.chosenStatus == chosen) st else st.copy(me = me.copy(chosenStatus = chosen))
+                    if (me.chosenStatus == chosen && me.status == chosen) st
+                    else st.copy(me = me.copy(chosenStatus = chosen, status = chosen))
                 }
             }
         obj["read_state"]?.let { arr ->

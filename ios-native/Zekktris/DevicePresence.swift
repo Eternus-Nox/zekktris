@@ -40,25 +40,43 @@ enum DevicePresence {
     /// - `live`: the latest PRESENCE_UPDATE for our own id — the server's
     ///   effective status, masked like everyone else's ("invisible" arrives as
     ///   "offline"). nil before the first one.
+    /// - `effective`: the self user's `effectiveStatus ?? status` — the
+    ///   effective status from REST/READY (unmasked), shown until the first
+    ///   live frame. (`status` is the pick on current servers; it only stands
+    ///   in for a server that sends no `effectiveStatus`.)
     /// - `serverDerives`: the server derives presence from device activity.
     ///
     /// Older server: the chosen status IS the presence (auto-away PATCHes it).
     /// New server: chosen Invisible shows Invisible (the frames say offline);
-    /// otherwise the live effective status, so a phone in use shows Online
-    /// even while the idle Mac would say Away, and the Mac shows Away once
-    /// nobody is using any device. "offline" for ourselves is only ever a
-    /// stale value while we are connected, so it falls back to the choice.
-    static func selfStatus(chosen: String, live: String?, serverDerives: Bool) -> String {
+    /// otherwise the live effective status, else the REST one, so a phone in
+    /// use shows Online even while the idle Mac would say Away, and the Mac
+    /// shows Away once nobody is using any device. "offline" for ourselves is
+    /// only ever a stale value while we are connected, so it falls back to the
+    /// choice.
+    static func selfStatus(chosen: String, live: String?, effective: String?, serverDerives: Bool) -> String {
         guard serverDerives else { return chosen }
         if chosen == "invisible" { return "invisible" }
-        if let live, live != "offline", live != "invisible" { return live }
+        for s in [live, effective] {
+            if let s, s != "offline", s != "invisible" { return s }
+        }
         return chosen
+    }
+
+    /// The PATCH /users/@me body that sets the chosen status. `manual`: the
+    /// user picked it in the status picker, sent as `statusSource: "manual"`.
+    /// Without the marker a server with multi-device presence reads an "idle"
+    /// as an older client's AUTOMATIC away and puts it back to online once
+    /// the user's last device disconnects, so a deliberate Away would not
+    /// stick. The legacy auto-away push (older servers only) is automatic and
+    /// sends no marker. Servers that predate the field drop it.
+    static func statusPatch(_ status: String, manual: Bool) -> [String: Any] {
+        manual ? ["status": status, "statusSource": "manual"] : ["status": status]
     }
 
     /// The own-status fields carried by a PRESENCE_UPDATE about ourselves: the
     /// guild_id=null frame to our own connections adds `chosen_status`
-    /// (unmasked). nil for any other frame. The effective status for
-    /// SelfUser.status is unmasked: "offline" there means Invisible.
+    /// (unmasked). nil for any other frame. The effective status (for
+    /// SelfUser.effectiveStatus) is unmasked: "offline" there means Invisible.
     static func selfFields(fromPresenceUpdate d: [String: Any], selfId: String) -> (chosen: String, effective: String)? {
         guard d["user_id"] as? String == selfId,
               let chosen = d["chosen_status"] as? String,

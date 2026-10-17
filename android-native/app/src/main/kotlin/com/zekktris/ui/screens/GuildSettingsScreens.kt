@@ -115,16 +115,22 @@ fun AppState.canSeeReports(guildId: String): Boolean = canKickMembers(guildId) |
 fun AppState.presenceOf(userId: String?): String {
     if (userId == null) return "offline"
     // Ourselves: on a server with multi-device presence (the self user carries
-    // chosenStatus) `me.status` is the EFFECTIVE status, kept current by our
-    // own PRESENCE_UPDATEs: online while any of our devices is in use, else
-    // away; chosen Invisible shows Invisible. On an older server the status is
-    // the choice. Either way a stale pre-connect "offline" (getMe runs BEFORE
-    // the gateway identifies) falls back to the choice — we are demonstrably in
+    // chosenStatus) our own PRESENCE_UPDATEs keep `presence` at the EFFECTIVE
+    // status: online while any of our devices is in use, else away; before the
+    // first one, the self user's `effectiveStatus` (`me.status` is the pick).
+    // Chosen Invisible shows Invisible. On an older server the status is the
+    // choice. Either way a stale pre-connect "offline" (getMe runs BEFORE the
+    // gateway identifies) falls back to the choice — we are demonstrably in
     // the app. Mirrors iOS status(for:) / DevicePresence.selfStatus.
     val self = me
     if (self != null && userId == self.id) {
         val chosen = com.zekktris.data.DevicePresence.pickerStatus(self.chosenStatus, self.status)
-        return com.zekktris.data.DevicePresence.selfStatus(chosen, self.status, serverDerives = self.chosenStatus != null)
+        return com.zekktris.data.DevicePresence.selfStatus(
+            chosen,
+            live = presence[userId],
+            effective = self.effectiveStatus ?: self.status,
+            serverDerives = self.chosenStatus != null,
+        )
     }
     return presence[userId] ?: "offline"
 }

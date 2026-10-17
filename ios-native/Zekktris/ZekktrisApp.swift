@@ -138,10 +138,11 @@ struct RootView: View {
             switch phase {
             case .signedIn:
                 if let token = session.token { store.start(token: token, user: session.currentUser) }
-                // Auto-presence: reuse Session.setStatus to push the effective
-                // status (older servers only), and read the chosen status from
-                // the live user — `chosenStatus`, or `status` on an older server.
-                store.autoStatusPush = { [weak session] status in await session?.setStatus(status) }
+                // Auto-presence: reuse Session.setStatus to push the automatic
+                // status (older servers only; not a manual pick, so no
+                // statusSource marker), and read the chosen status from the
+                // live user — `chosenStatus`, or `status` on an older server.
+                store.autoStatusPush = { [weak session] status in await session?.setStatus(status, manual: false) }
                 store.currentChosenStatus = { [weak session] in
                     let u = session?.currentUser
                     return u?.chosenStatus ?? u?.status ?? "online"
@@ -152,7 +153,8 @@ struct RootView: View {
                 store.applySelfStatus = { [weak session] chosen, effective in
                     guard let session, var u = session.currentUser else { return }
                     u.chosenStatus = chosen
-                    if let effective { u.status = effective }
+                    u.status = chosen
+                    if let effective { u.effectiveStatus = effective }
                     if u != session.currentUser { session.currentUser = u }
                 }
                 PushManager.shared.requestAuthorizationAndRegister()

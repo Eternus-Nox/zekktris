@@ -45,20 +45,31 @@ class DevicePresenceTest {
         assertEquals("online", DevicePresence.pickerStatus(null, null))
     }
 
-    @Test fun ownDotFollowsTheEffectiveStatus() {
+    @Test fun ownDotFollowsTheLiveEffectiveStatus() {
         // Phone put away, Mac open but idle → Away although Online was picked.
-        assertEquals("idle", DevicePresence.selfStatus(chosen = "online", effective = "idle", serverDerives = true))
-        assertEquals("online", DevicePresence.selfStatus("online", "online", true))
-        assertEquals("dnd", DevicePresence.selfStatus("dnd", "dnd", true))
-        assertEquals("invisible", DevicePresence.selfStatus("invisible", "offline", true))
+        assertEquals("idle", DevicePresence.selfStatus(chosen = "online", live = "idle", effective = "online", serverDerives = true))
+        // Phone in use while the Mac sits idle: the live frame wins.
+        assertEquals("online", DevicePresence.selfStatus("online", "online", "idle", true))
+        assertEquals("dnd", DevicePresence.selfStatus("dnd", "dnd", "dnd", true))
+        assertEquals("invisible", DevicePresence.selfStatus("invisible", "offline", "invisible", true))
         // Picked Invisible: an effective value from before the pick doesn't leak.
-        assertEquals("invisible", DevicePresence.selfStatus("invisible", "online", true))
-        // A stale "offline" (or nothing yet) while we're in the app → the choice.
-        assertEquals("dnd", DevicePresence.selfStatus("dnd", "offline", true))
-        assertEquals("online", DevicePresence.selfStatus("online", null, true))
+        assertEquals("invisible", DevicePresence.selfStatus("invisible", "online", "online", true))
         // Older server: the choice is the presence, as before.
-        assertEquals("online", DevicePresence.selfStatus("online", "idle", false))
-        assertEquals("idle", DevicePresence.selfStatus("idle", "offline", false))
+        assertEquals("online", DevicePresence.selfStatus("online", "idle", "idle", false))
+        assertEquals("idle", DevicePresence.selfStatus("idle", "offline", null, false))
+    }
+
+    @Test fun ownDotUsesTheRestEffectiveStatusBeforeAnyLiveFrame() {
+        // `status` is the pick (Online); effectiveStatus says the idle Mac
+        // makes us Away until our own first frame.
+        assertEquals("idle", DevicePresence.selfStatus(chosen = "online", live = null, effective = "idle", serverDerives = true))
+        // A stale "offline" live entry (a REST seed from before we connected)
+        // defers to it too.
+        assertEquals("idle", DevicePresence.selfStatus("online", "offline", "idle", true))
+        // Nothing usable (a stale "offline", or nothing yet) while we're in
+        // the app → the choice.
+        assertEquals("dnd", DevicePresence.selfStatus("dnd", "offline", "offline", true))
+        assertEquals("online", DevicePresence.selfStatus("online", null, null, true))
     }
 
     @Test fun ownPresenceUpdateFields() {
