@@ -27,15 +27,19 @@ export interface SelfUserDTO {
   bio: string | null;
   /** Cosmetic avatar decoration id (CSS ring/glow). Null = none. */
   avatarDecoration: string | null;
-  /** The status the user PICKED — the same value as chosenStatus, never
-      'offline'. Kept with its pre-multi-device meaning on purpose: older
-      iOS / Android builds read their own `status` as their pick (status
-      picker checkmark, own dot, auto-away), so serving the effective value
-      here made them show — and act on — another device's idleness. Public
+  /** The stored chosen status (users.chosen_status), never 'offline' — the
+      same value as chosenStatus except during a pre-update client's
+      automatic away, when this reads 'idle' and chosenStatus 'online'. Kept
+      with its pre-multi-device meaning on purpose: older iOS / Android
+      builds read their own `status` as their pick (status picker checkmark,
+      own dot, auto-away), so serving the effective value here made them
+      show — and act on — another device's idleness, and an old app told
+      'online' during its own automatic away would PATCH Away again. Public
       user DTOs keep `status` = effective (masked). */
   status: User['chosenStatus'];
   /** The status the user picked (PATCH /users/@me {status}) — what the
-      status picker shows. Never 'offline'. */
+      status picker shows. Never 'offline'. A pre-update client's automatic
+      away is not a pick: it shows as 'online' (shownChosenStatus). */
   chosenStatus: User['chosenStatus'];
   /** EFFECTIVE presence (users.status, unmasked — this is the user's own
       view): derived from chosenStatus and the activity of their connected
@@ -178,6 +182,20 @@ export interface PublicUserDTO {
   staffGlow?: boolean;
 }
 
+/**
+ * The pick an updated client is shown (SelfUser.chosenStatus, and
+ * chosen_status on the user's own PRESENCE_UPDATE frame). A pre-update
+ * client's automatic away (users.chosen_status_auto, only ever set with
+ * 'idle') is not something the user picked — it only marks the old devices
+ * as not in use (gateway/presence.ts) — so it shows as 'online'.
+ */
+export function shownChosenStatus(
+  chosen: User['chosenStatus'],
+  auto: boolean,
+): User['chosenStatus'] {
+  return auto && chosen === 'idle' ? 'online' : chosen;
+}
+
 export function toSelfUser(
   user: User,
   /** Effective membership, when the route fetched it (GET/PATCH /@me). Pass
@@ -220,7 +238,7 @@ export function toSelfUser(
     bio: user.bio,
     avatarDecoration: user.avatarDecoration ?? null,
     status: user.chosenStatus,
-    chosenStatus: user.chosenStatus,
+    chosenStatus: shownChosenStatus(user.chosenStatus, user.chosenStatusAuto),
     effectiveStatus: user.status,
     customStatus: user.customStatus,
     customStatusEmoji: user.customStatusEmoji ?? null,

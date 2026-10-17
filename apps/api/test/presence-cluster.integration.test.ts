@@ -109,6 +109,22 @@ async function statusOf(userId: bigint): Promise<string> {
   return u!.status;
 }
 
+async function setAutoIdle(userId: bigint): Promise<void> {
+  await db
+    .update(schema.users)
+    .set({ chosenStatus: 'idle', chosenStatusAuto: true })
+    .where(eq(schema.users.id, userId));
+}
+
+async function chosenOf(userId: bigint): Promise<{ chosenStatus: string; auto: boolean }> {
+  const [u] = await db
+    .select({ chosenStatus: schema.users.chosenStatus, auto: schema.users.chosenStatusAuto })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .limit(1);
+  return u!;
+}
+
 describe.runIf(redisReady)('presence across replicas (integration, Redis)', () => {
   let admin: Redis;
   beforeAll(() => {
@@ -154,38 +170,72 @@ describe.runIf(redisReady)('presence across replicas (integration, Redis)', () =
     expect(Object.keys(await admin.hgetall(`zekktris:presence:u:${u}`))).toEqual(['replica-1']);
   });
 
-  it('an updated device in use on another replica ends a legacy automatic away (the `r` count is summed)', async () => {
+  it('a legacy automatic away: updated devices in use and pre-update connections are summed across replicas', async () => {
     const r1 = replica('replica-1');
     const r2 = replica('replica-2');
     const u = await newUser();
-    connect(r1.registry, u, true); // an old phone build: active, never reports
+    const oldPhone = connect(r1.registry, u, true); // an old phone build: active, never reports
     const mac = connect(r2.registry, u, false);
     mac.reportsActivity = true;
     await r2.engine.recompute(u);
     expect(await r1.engine.recompute(u)).toBe('online');
-    // The old phone's automatic away.
-    await db
-      .update(schema.users)
-      .set({ chosenStatus: 'idle', chosenStatusAuto: true })
-      .where(eq(schema.users.id, u));
-    // A legacy device's activity alone doesn't end it.
+    // The old phone's automatic away: the old device no longer counts, and
+    // the Mac on the other replica is idle.
+    await setAutoIdle(u);
     expect(await r1.engine.recompute(u)).toBe('idle');
 
-    // The Mac comes into use; replica 2 publishes that without acting on it…
+    // The Mac comes into use: replica 2 publishes it (r)…
     mac.presenceActive = true;
-    expect(await r2.engine.recompute(u, { keepAutoIdle: true })).toBe('idle');
+    expect(await r2.engine.recompute(u)).toBe('online');
     expect(JSON.parse((await admin.hget(`zekktris:presence:u:${u}`, 'replica-2'))!)).toMatchObject({
       l: 1,
       a: 1,
       r: 1,
     });
-    // …and replica 1, which only sees the old phone, ends it from the sum.
+    // …and the old phone on replica 1 (g) keeps the away standing.
+    expect(JSON.parse((await admin.hget(`zekktris:presence:u:${u}`, 'replica-1'))!)).toMatchObject({
+      l: 1,
+      a: 1,
+      g: 1,
+    });
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'idle', auto: true });
+    // The Mac idles again: the old phone, connected but untouched, doesn't
+    // hold them online.
+    mac.presenceActive = false;
+    expect(await r2.engine.recompute(u)).toBe('idle');
+    mac.presenceActive = true;
+    expect(await r2.engine.recompute(u)).toBe('online');
+
+    // The old phone leaves replica 1; replica 1 sees no old device anywhere
+    // and the Mac in use on replica 2: the away ends.
+    r1.registry.remove(oldPhone);
     expect(await r1.engine.recompute(u)).toBe('online');
-    const [after] = await db
-      .select({ chosenStatus: schema.users.chosenStatus, auto: schema.users.chosenStatusAuto })
-      .from(schema.users)
-      .where(eq(schema.users.id, u));
-    expect(after).toEqual({ chosenStatus: 'online', auto: false });
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'online', auto: false });
+  });
+
+  it('a legacy automatic away: a held device counts as in use only if it was an updated one', async () => {
+    const r1 = replica('replica-1');
+    const r2 = replica('replica-2');
+    const u = await newUser();
+    connect(r1.registry, u, true); // the old phone, auto-idle below
+    await setAutoIdle(u);
+    expect(await r1.engine.recompute(u)).toBe('idle'); // publishes replica 1's entry
+    // The Mac (updated, in use) on replica 2 drops its socket: through the
+    // close grace it still counts as in use — no idle blip on a reconnect.
+    r2.engine.hold(u, true, true);
+    expect(await r2.engine.recompute(u)).toBe('online');
+    // Once settled it stops counting (something else is still connected).
+    r2.engine.settleHold(u);
+    expect(await r2.engine.recompute(u)).toBe('idle');
+    r2.engine.release(u);
+    // A held pre-update device never counts while the away stands.
+    const r3 = replica('replica-3');
+    await r3.engine.whenReady(); // else its first recompute runs on its own view
+    r3.engine.hold(u, true, false);
+    expect(await r3.engine.recompute(u)).toBe('idle');
+    r3.engine.release(u);
+    await r3.engine.recompute(u);
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'idle', auto: true });
   });
 
   it('a replica losing its last socket does not offline a user connected to another replica', async () => {

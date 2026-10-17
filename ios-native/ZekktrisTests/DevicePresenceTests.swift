@@ -156,7 +156,7 @@ final class DevicePresenceTests: XCTestCase {
     }
 
     /// The legacy auto-away push stays unmarked: the server treats its idle
-    /// as automatic and ends it when the user's last device disconnects.
+    /// as automatic (older apps' devices not in use), not as a pick.
     func testAutomaticStatusIsUnmarked() {
         let body = DevicePresence.statusPatch("idle", manual: false)
         XCTAssertEqual(body["status"] as? String, "idle")

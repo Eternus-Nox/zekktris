@@ -66,4 +66,19 @@ describe('toSelfUser — chosen vs effective status', () => {
     expect(dto.chosenStatus).toBe('invisible');
     expect(dto.effectiveStatus).toBe('invisible');
   });
+
+  it("a pre-update client's automatic away: the old app keeps reading idle, updated clients see Online as the pick", () => {
+    const dto = toSelfUser(
+      fakeUser({ status: 'online', chosenStatus: 'idle', chosenStatusAuto: true }),
+    );
+    expect(dto.status).toBe('idle');
+    expect(dto.chosenStatus).toBe('online');
+    expect(dto.effectiveStatus).toBe('online');
+    // A picked Away is shown as Away.
+    const picked = toSelfUser(
+      fakeUser({ status: 'idle', chosenStatus: 'idle', chosenStatusAuto: false }),
+    );
+    expect(picked.status).toBe('idle');
+    expect(picked.chosenStatus).toBe('idle');
+  });
 });

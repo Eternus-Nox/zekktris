@@ -535,8 +535,9 @@ data class ProfilePatch(
     val showSubscriptionTier: Boolean? = null,
     /** Who set [status]: "manual" for a pick in the status picker. Without it
      *  a server with multi-device presence reads an "idle" as an older
-     *  client's AUTOMATIC away and puts it back to online once the user's last
-     *  device disconnects. Android has no automatic away, so every status it
+     *  client's AUTOMATIC away — it only marks older apps' devices as not in
+     *  use, and goes back to online once the user's last device disconnects.
+     *  Android has no automatic away, so every status it
      *  sends is a pick. Servers that predate the field drop it. */
     val statusSource: String? = null,
 ) {

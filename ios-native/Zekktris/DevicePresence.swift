@@ -65,9 +65,10 @@ enum DevicePresence {
     /// The PATCH /users/@me body that sets the chosen status. `manual`: the
     /// user picked it in the status picker, sent as `statusSource: "manual"`.
     /// Without the marker a server with multi-device presence reads an "idle"
-    /// as an older client's AUTOMATIC away and puts it back to online once
-    /// the user's last device disconnects, so a deliberate Away would not
-    /// stick. The legacy auto-away push (older servers only) is automatic and
+    /// as an older client's AUTOMATIC away — it only marks older apps'
+    /// devices as not in use, and goes back to online once the user's last
+    /// device disconnects — so a deliberate Away would not stick. The legacy
+    /// auto-away push (older servers only) is automatic and
     /// sends no marker. Servers that predate the field drop it.
     static func statusPatch(_ status: String, manual: Bool) -> [String: Any] {
         manual ? ["status": status, "statusSource": "manual"] : ["status": status]

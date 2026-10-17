@@ -107,7 +107,8 @@ struct SelfUser: Codable, Identifiable, Hashable {
     var email: String?
     /// The status the user PICKED. A server with multi-device presence (READY
     /// `features.presence_activity`) sends the same value as `chosenStatus`
-    /// here, the meaning older builds of this app read it with; an older
+    /// here (except during an older app's automatic away: "idle" here,
+    /// "online" there), the meaning older builds of this app read it with; an older
     /// server's status is the choice as well. Read the pick as
     /// `chosenStatus ?? status` (DevicePresence.pickerStatus) and the own dot
     /// from `effectiveStatus ?? status` (DevicePresence.selfStatus).

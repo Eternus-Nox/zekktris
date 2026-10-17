@@ -227,11 +227,14 @@ with its access token; the server replies `READY` with a session snapshot
   `effectiveStatus`; public user DTOs keep `status` = effective (invisible
   masked). Updated clients send `statusSource: 'manual'` with a status the
   user picks; an unmarked `idle` (an older client's automatic away) is
-  flagged (`users.chosen_status_auto`) and reset to `online` by any presence
-  recompute (bar the one its own PATCH runs) that finds an updated device in
-  use — one that reports its activity (op 3 or IDENTIFY/RESUME `presence`),
-  on any replica — or when the user's last device disconnects, as the old
-  server's disconnect/reconnect did.
+  flagged (`users.chosen_status_auto`) and read as "the older devices are not
+  in use": while it stands, connections of clients that never report their
+  activity count as idle and the status follows the updated ones (on any
+  replica), and updated clients are shown `chosenStatus` 'online' while the
+  older app keeps reading `status` 'idle'. It resets to `online` when the
+  user's last device disconnects, as the old server's disconnect/reconnect
+  did, or when no older client is connected while an updated device is in
+  use.
 - **Permission-filtered fanout.** Each connection caches its viewable-channel
   set (computed once at IDENTIFY). Channel-scoped events are filtered against
   it; the cache is refreshed live on any visibility-changing mutation, and

@@ -454,26 +454,35 @@ export class Registry {
   }
 
   /**
-   * The user's live (non-detached) connections on THIS replica, and how many
-   * of them report their device in use. Input to the presence recompute
-   * (gateway/presence.ts); a detached resume-window ghost is not live.
+   * The user's live (non-detached) connections on THIS replica, how many of
+   * them report their device in use, how many of those are updated clients
+   * (`reported`) and how many are pre-update ones (`legacy`, which never
+   * report). Input to the presence recompute (gateway/presence.ts); a
+   * detached resume-window ghost is not live.
    */
-  presenceSummary(userId: bigint): { live: number; active: number; reported: number } {
+  presenceSummary(userId: bigint): {
+    live: number;
+    active: number;
+    reported: number;
+    legacy: number;
+  } {
     const set = this.byUser.get(userId);
     let live = 0;
     let active = 0;
     let reported = 0;
+    let legacy = 0;
     if (set) {
       for (const c of set) {
         if (c.detached) continue;
         live++;
+        if (!c.reportsActivity) legacy++;
         if (c.presenceActive) {
           active++;
           if (c.reportsActivity) reported++;
         }
       }
     }
-    return { live, active, reported };
+    return { live, active, reported, legacy };
   }
 
   /** Users with at least one live connection on this replica (the presence

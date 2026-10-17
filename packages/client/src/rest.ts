@@ -556,9 +556,8 @@ export class RestClient {
     > & {
       /** Who set `status`. Defaults to 'manual' whenever `status` is given:
           a status set through here is the user's own pick, so the server
-          never treats an 'idle' as an automatic away (which it ends while
-          an updated device is in use, or when the user's last device
-          disconnects). Pass 'auto' only for an
+          never treats an 'idle' as an automatic away (which only marks
+          pre-update devices as not in use). Pass 'auto' only for an
           automatic status change against a server without
           `features.presence_activity` (which ignores the field anyway). */
       statusSource?: 'manual' | 'auto';

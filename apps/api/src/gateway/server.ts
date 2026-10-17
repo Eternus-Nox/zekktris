@@ -193,7 +193,7 @@ export function attachGateway(httpServer: HttpServer, opts: GatewayOptions = {})
     // the last device's activity until the close grace settles it), so no
     // other recompute flips them offline early — the offline flip keeps the
     // voice grace's timing.
-    presenceEngine.hold(userId, conn.presenceActive);
+    presenceEngine.hold(userId, conn.presenceActive, conn.reportsActivity);
     scheduleCloseGraceRecompute(userId);
     // GRACE PERIOD before evicting from voice. A gateway WebSocket blip
     // (WiFi->LTE handoff, brief network loss — likelier under the load
@@ -744,7 +744,6 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
   // lists loaded for the snapshot above instead of querying them again.
   await presence().recompute(userId, {
     broadcast: 'always',
-    endAutoIdle: presenceActivity(payload.presence) === true,
     audience: {
       guildIds,
       dmChannelIds: dmChannelIdRows.map((r) => r.channelId),
@@ -913,7 +912,6 @@ async function handleResume(conn: Connection, payload: ResumePayload | undefined
   const friendIds = await relationships.listAcceptedFriendIds(userId);
   await presence().recompute(userId, {
     broadcast: 'always',
-    endAutoIdle: resumedActivity === true,
     audience: {
       guildIds: Array.from(conn.guildIds),
       dmChannelIds: Array.from(conn.dmChannelIds),
@@ -946,7 +944,7 @@ function handlePresenceUpdate(conn: Connection, payload: PresenceUpdatePayload |
   conn.reportsActivity = true;
   const userId = conn.userId;
   conn.reportPresenceActivity(active, () => {
-    void presence().recompute(userId, { endAutoIdle: conn.presenceActive });
+    void presence().recompute(userId);
   });
 }
 

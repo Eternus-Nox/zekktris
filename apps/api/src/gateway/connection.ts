@@ -118,7 +118,8 @@ export class Connection {
   presenceActive = true;
   /** This client reports its device's activity (presence in IDENTIFY/RESUME
    *  or an op 3) — an updated client. Legacy clients never do; they count as
-   *  active but can't end a legacy automatic away (presence.ts). */
+   *  active, except while a pre-update client's automatic away stands, when
+   *  only updated clients count (presence.ts). */
   reportsActivity = false;
 
   /** When an op-3 change was last applied (rate limit), and the latest value

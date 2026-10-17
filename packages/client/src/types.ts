@@ -135,11 +135,13 @@ export interface GuildCommand {
 export interface SelfUser extends PublicUser {
   email: string;
   /** On the self user this is the status the user PICKED — the same value
-      as `chosenStatus` (never 'offline') — NOT the effective presence that
-      PublicUser.status carries: older native builds read their own `status`
-      as their pick, so the server keeps that meaning here. Servers that
-      predate multi-device presence send their single status column, which
-      can read 'offline' before the gateway identifies. */
+      as `chosenStatus` (never 'offline'), except during a pre-update
+      client's automatic away, when this reads 'idle' and `chosenStatus`
+      'online' — NOT the effective presence that PublicUser.status carries:
+      older native builds read their own `status` as their pick, so the
+      server keeps that meaning here. Servers that predate multi-device
+      presence send their single status column, which can read 'offline'
+      before the gateway identifies. */
   status: PublicUser['status'];
   /** The status the user PICKED (online / idle = "Away" / dnd / invisible) —
       what the status picker shows and edits via `patchMe({ status })`

@@ -61,7 +61,8 @@ data class SelfUser(
     val bio: String? = null,
     /** What the user picked. A server with multi-device presence sends the
      *  same value as [chosenStatus] here (the meaning older builds of this app
-     *  read it with); an older server's status is the choice as well. Read
+     *  read it with — except during an older app's automatic away: "idle"
+     *  here, "online" there); an older server's status is the choice as well. Read
      *  the pick as `chosenStatus ?: status` and the own dot from
      *  `effectiveStatus ?: status` (data/DevicePresence.kt). */
     val status: String? = null,

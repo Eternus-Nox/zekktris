@@ -3,8 +3,9 @@ import { RestClient } from '@zekktris/client';
 
 // packages/client patchMe marks a status as the user's own pick
 // (statusSource: 'manual'), so the server never treats an Away picked in the
-// status picker as a pre-update client's automatic idle — which it ends when
-// the user's last device disconnects.
+// status picker as a pre-update client's automatic idle — which only marks
+// older apps' devices as not in use, and ends when the user's last device
+// disconnects.
 
 function capture(): { client: RestClient; bodies: unknown[] } {
   const bodies: unknown[] = [];

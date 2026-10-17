@@ -172,10 +172,12 @@ const patchMeSchema = z
     /** Who set `status`. Updated clients send 'manual' with every pick made
         in their status picker (packages/client patchMe does it). Absent (a
         pre-update client) or 'auto': an 'idle' is that client's AUTOMATIC
-        away and is flagged (users.chosen_status_auto), so it goes back to
-        'online' while an updated device is in use or once the user's last
-        device disconnects, instead of pinning them Away — the old server's
-        disconnect/reconnect behaviour. A
+        away and is flagged (users.chosen_status_auto): it marks the old
+        devices as not in use, so the status follows the updated ones, and it
+        goes back to 'online' once the user's last device disconnects (the
+        old server's disconnect/reconnect behaviour) or no pre-update device
+        is left while an updated one is in use — instead of pinning them
+        Away. A
         'manual' pick (or any status other than 'idle') clears the flag.
         Ignored without `status`. Servers before this field strip it. */
     statusSource: z.enum(['manual', 'auto']).optional(),
@@ -422,15 +424,12 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   let user = updated;
   if (body.status !== undefined) {
     const { presence } = await import('../gateway/presence');
-    const effective = await presence().recompute(userId, {
-      broadcast: 'always',
-      // Don't end the automatic away this very PATCH set (see keepAutoIdle).
-      keepAutoIdle: updated.chosenStatusAuto,
-    });
+    const effective = await presence().recompute(userId, { broadcast: 'always' });
     if (effective) user = { ...updated, status: effective };
-    // The recompute may have ended an automatic away it just offlined
-    // (no device connected), so report the chosen status as stored now.
-    if (effective === 'offline' && updated.chosenStatusAuto) {
+    // The recompute may have ended the automatic away this PATCH set (no
+    // pre-update device connected — see gateway/presence.ts), so report the
+    // chosen status as stored now: the old app then knows it reads Online.
+    if (updated.chosenStatusAuto) {
       const [now] = await db
         .select({
           chosenStatus: schema.users.chosenStatus,
