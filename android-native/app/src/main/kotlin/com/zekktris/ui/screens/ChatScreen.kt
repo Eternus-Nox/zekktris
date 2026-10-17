@@ -186,6 +186,7 @@ private fun pokeSentVerb(t: String) = when (t) {
 @Composable
 fun ChatScreen(store: AppStore, state: AppState) {
     val p = ZkTheme.palette
+    val ctx = LocalContext.current
     val channel = state.currentChannel
     val channelId = state.selectedChannelId
     val messages = channelId?.let { state.messagesByChannel[it] } ?: emptyList()
@@ -471,7 +472,14 @@ fun ChatScreen(store: AppStore, state: AppState) {
     forwardFor?.let { msg ->
         ForwardSheet(
             state,
-            onPick = { target -> store.forwardMessage(msg, target); forwardFor = null },
+            onPick = { target ->
+                // A rejected forward stays here; say why instead of jumping to
+                // a channel where nothing was posted.
+                store.forwardMessage(msg, target) { err ->
+                    android.widget.Toast.makeText(ctx, err, android.widget.Toast.LENGTH_LONG).show()
+                }
+                forwardFor = null
+            },
             onDismiss = { forwardFor = null },
         )
     }
@@ -2547,7 +2555,9 @@ private fun Composer(
         val t = text.trim()
         val e = editing
         if (e != null) {
-            if (t.isNotEmpty() && t != e.content) store.editMessage(channelId, e.id, t)
+            if (t.isNotEmpty() && t != e.content) store.editMessage(channelId, e.id, t) { err ->
+                android.widget.Toast.makeText(ctx, err, android.widget.Toast.LENGTH_LONG).show()
+            }
             text = ""
             onSent()
             return

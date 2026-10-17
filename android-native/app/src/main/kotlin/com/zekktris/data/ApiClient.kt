@@ -101,7 +101,6 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 // Result of an attempted login: 2FA is not an error, it's a follow-up prompt.
 sealed class LoginResult {
@@ -110,7 +109,13 @@ sealed class LoginResult {
     data class Failure(val message: String) : LoginResult()
 }
 
-class ApiException(val status: Int, message: String) : Exception(message)
+/**
+ * A non-2xx answer. [message] is the server's own reason from its error
+ * envelope when it sent one ("You have been timed out in this server"), so UI
+ * can show it as-is; [code] is the envelope's machine code (`TIMED_OUT`,
+ * `AUTOMOD_BLOCKED`, ...) for callers that branch on it. See [apiError].
+ */
+class ApiException(val status: Int, message: String, val code: String? = null) : Exception(message)
 
 /**
  * One answer from `/auth/device-login/poll`, classified for the poll loop.
@@ -414,10 +419,25 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
     }
 
     private suspend inline fun <reified T> HttpResponse.decodeOrThrow(): T {
-        if (!status.isSuccess()) {
-            throw ApiException(status.value, "HTTP ${status.value}: ${bodyAsText().take(300)}")
-        }
+        if (!status.isSuccess()) throw apiError()
         return body()
+    }
+
+    /**
+     * The [ApiException] for a non-2xx answer. The server's error envelope
+     * (`{"error":{"code","message","details"}}`, apps/api/src/errors.ts) carries
+     * a readable reason — "You have been timed out in this server", "Message
+     * blocked by server moderation rule" — which callers show as-is. Only a body
+     * that isn't the envelope (a proxy's HTML 502, an empty answer) falls back
+     * to [fallback], or "HTTP <status>" without one.
+     */
+    private suspend fun HttpResponse.apiError(fallback: String? = null): ApiException {
+        val envelope = runCatching {
+            Json.parseToJsonElement(bodyAsText()).jsonObject["error"]?.jsonObject
+        }.getOrNull()
+        fun field(key: String): String? =
+            (envelope?.get(key) as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
+        return ApiException(status.value, field("message") ?: fallback ?: "HTTP ${status.value}", field("code"))
     }
 
     private fun HttpStatusCode.isSuccess() = value in 200..299
@@ -446,11 +466,7 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
             // The server's message is the useful part here — expired token,
             // already used, password too short — so surface it rather than a
             // status code.
-            val detail = runCatching {
-                Json.parseToJsonElement(resp.bodyAsText())
-                    .jsonObject["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content
-            }.getOrNull()
-            throw ApiException(resp.status.value, detail ?: "That reset code didn't work.")
+            throw resp.apiError("That reset code didn't work.")
         }
     }
 
@@ -800,9 +816,7 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
             contentType(ContentType.Application.Json)
             setBody(com.zekktris.data.model.DeviceLoginCodeBody(userCode))
         }
-        if (!resp.status.isSuccess()) {
-            throw ApiException(resp.status.value, "HTTP ${resp.status.value}: ${resp.bodyAsText().take(200)}")
-        }
+        if (!resp.status.isSuccess()) throw resp.apiError()
     }
 
     /** Per-channel full-text search (same endpoint iOS SearchSheet uses). */
@@ -1069,9 +1083,7 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
     // ---- account security ----------------------------------------------------
 
     private suspend fun expectOk(resp: HttpResponse) {
-        if (resp.status.value !in 200..299) {
-            throw ApiException(resp.status.value, "HTTP ${resp.status.value}: ${resp.bodyAsText().take(200)}")
-        }
+        if (resp.status.value !in 200..299) throw resp.apiError()
     }
 
     suspend fun changePassword(currentPassword: String, newPassword: String) {
@@ -1191,9 +1203,7 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
             contentType(ContentType.Application.Json)
             setBody(com.zekktris.data.model.AddFriendBody(username))
         }
-        if (resp.status.value !in 200..299) {
-            throw ApiException(resp.status.value, "HTTP ${resp.status.value}: ${resp.bodyAsText().take(200)}")
-        }
+        if (resp.status.value !in 200..299) throw resp.apiError()
     }
 
     suspend fun acceptFriend(targetId: String) {
@@ -2087,11 +2097,7 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
      */
     private suspend fun HttpResponse.requireOk(): HttpResponse {
         if (status.isSuccess()) return this
-        val detail = runCatching {
-            Json.parseToJsonElement(bodyAsText())
-                .jsonObject["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content
-        }.getOrNull()
-        throw ApiException(status.value, detail ?: "Request failed (HTTP ${status.value}).")
+        throw apiError("Request failed (HTTP ${status.value}).")
     }
 
     suspend fun adminDeleteGuild(guildId: String) {
