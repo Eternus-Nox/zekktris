@@ -349,8 +349,11 @@ final class Session: ObservableObject {
         catch { return message(for: error) }
     }
 
-    func setStatus(_ status: String) async {
-        do { currentUser = try await api.updateProfile(["status": status]) }
+    /// Set the chosen status. `manual`: the user picked it in the status
+    /// picker (sends `statusSource: "manual"`); false for the legacy
+    /// auto-away push, which must stay unmarked. See DevicePresence.statusPatch.
+    func setStatus(_ status: String, manual: Bool) async {
+        do { currentUser = try await api.updateProfile(DevicePresence.statusPatch(status, manual: manual)) }
         catch { authError = message(for: error) }
     }
 

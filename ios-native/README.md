@@ -58,12 +58,15 @@ server*). The remaining gaps are listed under *Not built yet*.
   IDENTIFY/RESUME and as `PRESENCE_UPDATE` (op 3) on each change. The server
   combines every device's report with the status you picked: picked Online
   reads Online while any device is in use and Away once none is. Your own dot
-  shows that effective status (from the `PRESENCE_UPDATE`s about you); the
-  Settings picker shows the status you picked (`chosenStatus`). Logic in
+  shows that effective status (from the `PRESENCE_UPDATE`s about you; before
+  the first one, the self user's `effectiveStatus`); the Settings picker shows
+  the status you picked (`chosenStatus`, or `status`, which carries the pick
+  too). A pick is sent with `statusSource: "manual"` so the server keeps a
+  picked Away after your last device disconnects. Logic in
   `DevicePresence.swift`. A server without multi-device presence (its READY
   has no `features.presence_activity`) gets the old behaviour: the app
   PATCHes your status to idle after 5 minutes without input and back to
-  online on activity.
+  online on activity (unmarked: automatic).
 - **Typing indicators**: typing in the composer pings the channel (throttled to
   once every few seconds), and a "<name> is typing…" line shows above the
   composer when others type, self-expiring after ~8s (`TYPING_START`).

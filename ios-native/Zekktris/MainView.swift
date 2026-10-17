@@ -2422,9 +2422,10 @@ struct SettingsView: View {
                     url: user?.avatarUrl,
                     name: user?.name ?? "?",
                     size: 76,
-                    // Live presence — currentUser.status is a snapshot from
-                    // launch (often 'offline' because getMe ran before the
-                    // gateway identified). The presence map has the truth.
+                    // Live presence — currentUser carries the pick (`status`)
+                    // and a launch snapshot of the effective status (often
+                    // 'offline' because getMe ran before the gateway
+                    // identified). store.status(for:) resolves the own dot.
                     status: store.status(for: user?.id),
                     // Blend the presence dot's ring into the header background.
                     ringColor: Theme.bg1,
@@ -2565,12 +2566,14 @@ struct SettingsView: View {
             sectionTitle("STATUS")
             ForEach(statuses, id: \.1) { label, value, color in
                 Button {
-                    // Sets the CHOSEN status (the field keeps its old name).
-                    // Surrender auto-idle control so the manual pick sticks
-                    // (a manual "idle" must not be auto-bounced to "online"
-                    // by the legacy auto-away on an older server).
+                    // Sets the CHOSEN status (the field keeps its old name),
+                    // marked manual so the server keeps a picked Away past
+                    // the last device disconnecting. Surrender auto-idle
+                    // control so the manual pick sticks (a manual "idle" must
+                    // not be auto-bounced to "online" by the legacy auto-away
+                    // on an older server).
                     store.noteManualStatusChange()
-                    Task { await session.setStatus(value) }
+                    Task { await session.setStatus(value, manual: true) }
                 } label: {
                     HStack(spacing: 10) {
                         Circle().fill(color).frame(width: 10, height: 10)
