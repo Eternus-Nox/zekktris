@@ -163,8 +163,13 @@ final class VoiceClipPlayer: ObservableObject {
         didSet {
             guard playing != oldValue else { return }
             Self.playingCount += playing ? 1 : -1
+            countedAsPlaying = playing
         }
     }
+    /// Mirror of `playing` for deinit, which is nonisolated and so can't read
+    /// the main-actor `playing`. Written only on the main actor; deinit reads
+    /// it once no other reference to the player exists.
+    nonisolated(unsafe) private var countedAsPlaying = false
     @Published var progress: Double = 0   // 0…1
 
     private var player: AVPlayer?
@@ -243,9 +248,10 @@ final class VoiceClipPlayer: ObservableObject {
     }
 
     /// Normally cleanup() has already stopped it; if the player goes away
-    /// still marked playing, keep the app-wide count honest.
+    /// still marked playing, keep the app-wide count honest. The count is
+    /// main-actor state, so the decrement hops there.
     deinit {
-        if playing { Self.playingCount -= 1 }
+        if countedAsPlaying { Task { @MainActor in VoiceClipPlayer.playingCount -= 1 } }
     }
 }
 
