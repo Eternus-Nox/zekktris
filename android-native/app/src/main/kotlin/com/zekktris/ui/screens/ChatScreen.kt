@@ -2347,6 +2347,9 @@ private fun Composer(
     // Restore whatever was half-typed here last time. Keyed on channelId so
     // switching conversations swaps drafts rather than carrying one across.
     var text by remember(channelId) { mutableStateOf(Drafts.load(ctx, channelId)) }
+    // The message being edited NOW, for callbacks that outlive this call (an
+    // edit's server round-trip): the `editing` parameter they capture goes stale.
+    val editingNow by androidx.compose.runtime.rememberUpdatedState(editing)
     // Persist on EVERY change, not on teardown: Android can kill the process
     // from the recents switcher with no lifecycle callback, which is precisely
     // the case a draft exists to survive. One collector per channel rather than
@@ -2566,7 +2569,14 @@ private fun Composer(
             store.editMessage(
                 channelId, e.id, t,
                 onError = { err -> android.widget.Toast.makeText(ctx, err, android.widget.Toast.LENGTH_LONG).show() },
-                onDone = { text = ""; onSent() },
+                onDone = {
+                    // Only if the composer is still on this edit with this text: by
+                    // now the user may have cancelled it and started something else.
+                    if (editingNow?.id == e.id && text.trim() == t) { text = ""; onSent() }
+                    // The draft collector stops when the user leaves the chat; drop
+                    // the applied edit text if that left it saved as their draft.
+                    if (Drafts.load(ctx, channelId).trim() == t) Drafts.save(ctx, channelId, "")
+                },
             )
             return
         }

@@ -105,19 +105,25 @@ restart_stack() {
     warn() { echo "! $*"; }
     # shellcheck source=lib/start-stack.sh
     . "$SCRIPT_DIR/lib/start-stack.sh" || return 1
+    local gitdir
+    gitdir="$(git -C "$ROOT" rev-parse --absolute-git-dir 2>/dev/null)" || gitdir=""
     $COMPOSE build || return 1
     $COMPOSE up -d api || return 1
     if ! wait_for_api 90; then
         echo "the api did not come up healthy — check: $COMPOSE logs api --tail 80"
         return 1
     fi
+    # The checkout's code has now passed the health gate, which finishes any
+    # update.sh run that stopped halfway: from here on it is the code to fall
+    # back to (as update.sh does at the same point), even if the rest of the
+    # stack fails to start below. Left at the commit that update started from,
+    # its next run would roll back past code that already ran healthy.
+    if [[ -n "$gitdir" && -f "$gitdir/zekktris-update-unfinished" ]]; then
+        git -C "$ROOT" rev-parse HEAD > "$gitdir/zekktris-update-unfinished"
+    fi
     $COMPOSE up -d || return 1
-    # The checkout's code now runs healthy, which finishes any update.sh run
-    # that stopped halfway; left marked, its next run would treat the commit
-    # that update started from as the one to roll back to.
-    local gitdir
-    gitdir="$(git -C "$ROOT" rev-parse --absolute-git-dir 2>/dev/null)" || return 0
-    rm -f "$gitdir/zekktris-update-unfinished"
+    [[ -n "$gitdir" ]] && rm -f "$gitdir/zekktris-update-unfinished"
+    return 0
 }
 
 shopt -s nullglob

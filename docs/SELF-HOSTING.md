@@ -240,6 +240,11 @@ after the code moved — the rest of the stack did not start, or the run was
 killed — is picked up again by the next run rather than reported as already up
 to date; if the new code had already passed its health check, that run only
 starts the rest of the stack. **Restart** in the admin UI finishes it too.
+Finish an interrupted update one of those two ways rather than with a manual
+`docker compose up -d --build`: the scripts can't see a manual rebuild, so the
+next update would still treat the commit the interrupted one started from as
+the version to roll back to. If you did rebuild by hand, delete
+`.git/zekktris-update-unfinished`.
 
 ---
 
