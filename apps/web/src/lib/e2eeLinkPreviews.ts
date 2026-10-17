@@ -80,6 +80,32 @@ function extractUrls(text: string): string[] {
   return out;
 }
 
+const UNFURL_CACHE_MAX = 200;
+const unfurlCache = new Map<string, Promise<{ embed: MessageEmbed | null }>>();
+
+/**
+ * One /unfurl per link per page load. A message's preview effect re-runs when
+ * the optimistic copy is replaced by the server's, and rows remount as the
+ * list scrolls; without this each of those re-sends the link. Failures are
+ * dropped so a later render can retry.
+ */
+export function cachedUnfurl(
+  url: string,
+  unfurl: (url: string) => Promise<{ embed: MessageEmbed | null }>,
+): Promise<{ embed: MessageEmbed | null }> {
+  const hit = unfurlCache.get(url);
+  if (hit) return hit;
+  const pending = unfurl(url);
+  unfurlCache.set(url, pending);
+  if (unfurlCache.size > UNFURL_CACHE_MAX) {
+    unfurlCache.delete(unfurlCache.keys().next().value!);
+  }
+  pending.catch(() => {
+    if (unfurlCache.get(url) === pending) unfurlCache.delete(url);
+  });
+  return pending;
+}
+
 /**
  * Client-side link previews for one E2EE message. Returns null when there is
  * nothing to resolve — previews are off on this device, the message isn't

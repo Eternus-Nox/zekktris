@@ -117,3 +117,29 @@ describe('resolveE2eeLinkPreviews', () => {
     expect(unfurl).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('cachedUnfurl', () => {
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it('sends each link to the server once', async () => {
+    const { cachedUnfurl } = await import('../src/lib/e2eeLinkPreviews');
+    const unfurl = vi.fn(async () => ({ embed: null }));
+    await Promise.all([cachedUnfurl('https://a.example/', unfurl), cachedUnfurl('https://a.example/', unfurl)]);
+    await cachedUnfurl('https://a.example/', unfurl);
+    await cachedUnfurl('https://b.example/', unfurl);
+    expect(unfurl.mock.calls.map((c) => c[0])).toEqual(['https://a.example/', 'https://b.example/']);
+  });
+
+  it('retries a link whose unfurl failed', async () => {
+    const { cachedUnfurl } = await import('../src/lib/e2eeLinkPreviews');
+    const unfurl = vi
+      .fn<(u: string) => Promise<{ embed: null }>>()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValue({ embed: null });
+    await expect(cachedUnfurl('https://a.example/', unfurl)).rejects.toThrow('boom');
+    await expect(cachedUnfurl('https://a.example/', unfurl)).resolves.toEqual({ embed: null });
+    expect(unfurl).toHaveBeenCalledTimes(2);
+  });
+});

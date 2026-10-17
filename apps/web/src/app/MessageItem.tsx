@@ -36,7 +36,7 @@ import { AvatarImage } from '../lib/AvatarImage';
 import { AvatarDecoration } from '../lib/avatarDecorations';
 import { useProfileCard } from '../lib/useProfileCard';
 import { Edit, Trash, Pin, CornerUpLeft, Forward as ForwardIcon, MessageSquare, Smile, Phone, Shield, Bookmark } from '../lib/icons';
-import { useE2eeLinkPreviews, resolveE2eeLinkPreviews } from '../lib/e2eeLinkPreviews';
+import { useE2eeLinkPreviews, resolveE2eeLinkPreviews, cachedUnfurl } from '../lib/e2eeLinkPreviews';
 import { e2eeSupported, E2EE_INSECURE_SHORT } from '../lib/e2eeSupport';
 import { decryptForDm, peekDecryptedText, encryptForDm, isEncryptedWireFormat, hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
 import { POKE_VARIANTS, type PokeType } from '../lib/poke';
@@ -392,7 +392,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
         plaintext: decResult.plaintext,
         hasServerEmbeds: !!message.embeds && message.embeds.length > 0,
       },
-      (u) => rest.unfurl(u),
+      (u) => cachedUnfurl(u, (x) => rest.unfurl(x)),
     );
     if (!pending) {
       setE2eeEmbeds([]);
