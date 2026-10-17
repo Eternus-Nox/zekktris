@@ -105,12 +105,8 @@ export interface SelfUserDTO {
       memberships — perks without a title until a tier is chosen. Drives the
       tier badge + the show-tier toggle in Settings. */
   subscriptionTitled?: boolean;
-  /** 'gift' | 'founder' | 'stripe'. The web client shows "Manage
-      subscription" (Stripe portal) only for own stripe memberships. */
+  /** 'gift' (admin-given) | 'founder' (grandfathered). */
   subscriptionSource?: string | null;
-  /** Own stripe membership scheduled to end at subscriptionExpiresAt (the user
-      cancelled). Drives the Settings "Cancels on <date> · Resume" state. */
-  subscriptionCancelAtPeriodEnd?: boolean;
   /** The account's date of birth (YYYY-MM-DD), or null for a legacy account
       that never set one. Self-only (never on the public user DTO). */
   dateOfBirth: string | null;
@@ -177,7 +173,6 @@ export function toSelfUser(
     inherited: boolean;
     titled: boolean;
     source: string;
-    cancelAtPeriodEnd?: boolean;
   } | null,
 ): SelfUserDTO {
   const membershipFields =
@@ -190,7 +185,6 @@ export function toSelfUser(
             subscriptionInherited: false,
             subscriptionTitled: false,
             subscriptionSource: null,
-            subscriptionCancelAtPeriodEnd: false,
           }
         : {
             subscriptionTier: membership.tier as 'scout' | 'guardian' | 'legend',
@@ -198,7 +192,6 @@ export function toSelfUser(
             subscriptionInherited: membership.inherited,
             subscriptionTitled: membership.titled,
             subscriptionSource: membership.source,
-            subscriptionCancelAtPeriodEnd: membership.cancelAtPeriodEnd ?? false,
           };
   return {
     ...membershipFields,

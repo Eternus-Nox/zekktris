@@ -2,14 +2,14 @@ import { pgTable, bigint, boolean, text, timestamp, index } from 'drizzle-orm/pg
 import { users } from './users';
 
 /**
- * Supporter memberships — Scout ($2) / Guardian ($5) / Legend ($10).
+ * Perk tiers — Scout / Guardian / Legend (admin-given; there are no payments).
  *
  * One row per member. `expiresAt` NULL = unlimited/forever; a timed gift sets
- * it N months out. `source` is 'gift' for admin grants (the only grant path
- * until card payments are wired; 'stripe' reserved for later). An ACTIVE row
- * (expiresAt NULL or future) unlocks the Appearance perks and the profile
- * tier title. A supervising parent's membership passes down to supervised
- * children at read time — see services/subscriptions.getEffectiveSubscription.
+ * it N months out. `source` is 'gift' for admin grants (the only grant path)
+ * or 'founder' for the grandfathered rows. An ACTIVE row (expiresAt NULL or
+ * future) unlocks the tier's perks and the profile tier title. A supervising
+ * parent's tier passes down to supervised children at read time — see
+ * services/subscriptions.getEffectiveSubscription.
  */
 export const subscriptions = pgTable(
   'subscriptions',
@@ -19,21 +19,19 @@ export const subscriptions = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     /** 'scout' | 'guardian' | 'legend' (text, not an enum — no migration per tier). */
     tier: text('tier').notNull().default('scout'),
-    /** 'gift' (admin grant) | 'founder' (grandfathered, untitled) | 'stripe' (paid). */
+    /** 'gift' (admin grant) | 'founder' (grandfathered, untitled). */
     source: text('source').notNull().default('gift'),
     giftedBy: bigint('gifted_by', { mode: 'bigint' }).references(() => users.id, {
       onDelete: 'set null',
     }),
-    /** NULL = unlimited/forever. Stripe rows hold current_period_end + 24h
-        grace, pushed forward by invoice.paid — the hourly expiry sweep is the
-        fail-safe if payments stop or a webhook is missed. */
+    /** NULL = unlimited/forever; the expiry sweep deletes lapsed rows. */
     expiresAt: timestamp('expires_at', { withTimezone: true }),
-    /** Stripe linkage (source='stripe' rows only). */
+    /** LEGACY, unused: payments and all Stripe code are gone (migration 0129
+     *  turned the paid rows into forever gifts). Nothing reads or writes these;
+     *  the ids are kept only so an operator can find any subscription still
+     *  billing in the Stripe dashboard. */
     stripeCustomerId: text('stripe_customer_id'),
     stripeSubscriptionId: text('stripe_subscription_id'),
-    /** Stripe rows: scheduled to end at period end (user cancelled in-app or
-     *  via the portal). They keep access until expiresAt; the UI shows a
-     *  "Cancels on <date> · Resume" state. Reset on fresh activation/reactivate. */
     cancelAtPeriodEnd: boolean('cancel_at_period_end').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

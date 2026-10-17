@@ -3140,30 +3140,6 @@ export class RestClient {
     return this.request('GET', `/admin/users/${userId}/dm-peers`);
   }
 
-  // Legacy paid subscriptions (payments were removed 2026-10-02) -----------
-
-  /** Stripe Billing Portal for a subscription bought before payments were
-      removed (cancel / card details); redirect the browser to `url`. */
-  createBillingPortal(): Promise<{ url: string }> {
-    return this.request('POST', '/billing/portal');
-  }
-
-  /** Cancel own leftover paid subscription at period end. */
-  cancelSubscription(): Promise<{ ok: boolean; endsAt: string | null }> {
-    return this.request('POST', '/billing/cancel');
-  }
-
-  /** ADMIN: how many leftover paid subscriptions are still billing. */
-  adminPaidSubscriptions(): Promise<{ active: number }> {
-    return this.request('GET', '/admin/paid-subscriptions');
-  }
-
-  /** ADMIN: turn every leftover paid subscription into a forever tier and
-      cancel its Stripe billing. */
-  adminRetirePaidSubscriptions(): Promise<{ converted: number; cancelFailures: number }> {
-    return this.request('POST', '/admin/paid-subscriptions/retire');
-  }
-
   /** Give (or re-give — overwrites) a perk tier. */
   adminGiftSubscription(
     userId: string,

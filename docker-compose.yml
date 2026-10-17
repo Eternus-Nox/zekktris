@@ -132,11 +132,6 @@ services:
       DB_PREPARED: ${DB_PREPARED:-false}
       REDIS_URL: redis://cache:6379
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:5550}
-      # LEGACY Stripe billing. Payments were removed (2026-10-02); these only
-      # keep subscriptions bought before then in sync until an admin ends them
-      # (Admin → Perks). Leave empty on any new or self-hosted server.
-      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
-      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env (>=32 chars)}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET must be set in .env (>=32 chars, different from JWT_SECRET)}
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-open}

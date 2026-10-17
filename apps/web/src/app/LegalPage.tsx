@@ -15,7 +15,7 @@ import { Link } from 'react-router-dom';
 import { ZekktrisMark } from '../lib/ZekktrisMark';
 import { useSourceCodeUrl } from '../lib/sourceCode';
 
-const LAST_UPDATED = 'October 2, 2026';
+const LAST_UPDATED = 'October 16, 2026';
 const CONTACT_EMAIL = 'support@zekktris.com';
 const PRIVACY_EMAIL = 'privacy@zekktris.com';
 
@@ -138,9 +138,9 @@ export function TermsPage() {
         ends (including when the minor turns 18).
       </p>
       <p>
-        If you bought a membership before Zekktris became free, you keep your tier. You can stop
-        any remaining billing from Settings, and no further charges are taken once it is stopped.
-        Payments already made were processed by{' '}
+        If you bought a membership before Zekktris became free, you keep your tier. If you are still
+        being charged for it, contact us and we will stop the billing. Payments already made were
+        processed by{' '}
         <a href="https://stripe.com/privacy" className="text-accent hover:underline">
           Stripe
         </a>{' '}
@@ -370,8 +370,7 @@ export function PrivacyPage() {
       <H>8. Your rights and choices</H>
       <p>
         You can view and update your profile, change or delete your content, add security like
-        passkeys and two-factor authentication, stop billing for an old membership, and delete your
-        account at any time from Settings. Depending on where you live, you may have additional
+        passkeys and two-factor authentication, and delete your account at any time from Settings. Depending on where you live, you may have additional
         rights to access, correct, or delete your personal information; contact us to exercise them.
       </p>
 

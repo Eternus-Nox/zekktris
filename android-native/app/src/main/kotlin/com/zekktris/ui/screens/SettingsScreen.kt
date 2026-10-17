@@ -41,7 +41,6 @@ import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Email
@@ -51,7 +50,6 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
-import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -127,8 +125,7 @@ private enum class SettingsTab(val label: String) {
 /** Full-screen security sub-pages (all in-app; no web hand-off). */
 private enum class SecurityPage { Password, Username, Email, TwoFactor, Sessions, Passkeys, DeviceLogin, DateOfBirth }
 
-/** Web Settings on the signed-in server — where someone still paying for a
- *  subscription from before Zekktris went free can stop the billing. */
+/** Web Settings on the signed-in server (WebRow's target). */
 private val webSettingsUrl get() = com.zekktris.data.Config.CDN_BASE_URL + "/settings"
 
 @Composable
@@ -1303,8 +1300,6 @@ private fun tierRank(id: String?) = when (id) {
  *  perkTiersSection. */
 @Composable
 private fun PerkTiersSection(store: AppStore, state: AppState) {
-    val p = ZkTheme.palette
-    val ctx = LocalContext.current
     val tier = state.me?.subscriptionTier
     // Load the server's perk settings so the lines are this server's.
     var loaded by remember { mutableStateOf(false) }
@@ -1333,24 +1328,6 @@ private fun PerkTiersSection(store: AppStore, state: AppState) {
                 color = ZkInk.ink3, fontSize = 12.sp,
                 modifier = Modifier.padding(top = 6.dp),
             )
-        }
-        // Someone still paying for a subscription from before Zekktris went
-        // free: send them to web Settings to stop it. They keep the tier.
-        if (state.me?.subscriptionSource == "stripe" && state.me.subscriptionInherited != true) {
-            Spacer(Modifier.height(10.dp))
-            Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(p.bg2)
-                    .clickable { runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(webSettingsUrl))) } }
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Filled.CreditCard, null, tint = p.accent, modifier = Modifier.size(20.dp))
-                Column(Modifier.padding(start = 12.dp).weight(1f)) {
-                    Text("Stop your old subscription", color = ZkInk.ink1, fontFamily = ZkSans, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-                    Text("Zekktris is free now. You keep your tier — stop the billing in web Settings.", color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 12.sp)
-                }
-                Icon(Icons.Filled.OpenInNew, null, tint = ZkInk.ink3, modifier = Modifier.size(18.dp))
-            }
         }
     }
 }

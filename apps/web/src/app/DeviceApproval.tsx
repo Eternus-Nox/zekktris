@@ -267,7 +267,7 @@ export function DeviceApprovalPanel({ initialCode }: { initialCode?: string }) {
             </span>
           </div>
           <p className="text-[13px] text-ink-2 leading-relaxed">
-            Messages, DMs, servers, settings and billing — everything you can do, it can do, until
+            Messages, DMs, servers and settings — everything you can do, it can do, until
             you sign it out. Only approve a device you are holding right now. Zekktris staff will
             never ask you to approve a device or read out a code.
           </p>

@@ -197,12 +197,8 @@ export interface SelfUser extends PublicUser {
   /** Whether the tier TITLE applies. False for founder (grandfathered)
       memberships — perks without a title until a tier is chosen. */
   subscriptionTitled?: boolean;
-  /** 'gift' | 'founder' | 'stripe'. 'stripe' = a subscription bought before
-      payments were removed; Settings offers a way to cancel it. */
+  /** 'gift' (admin-given) | 'founder' (grandfathered). */
   subscriptionSource?: string | null;
-  /** Own leftover paid subscription scheduled to end at subscriptionExpiresAt
-      (the user cancelled). */
-  subscriptionCancelAtPeriodEnd?: boolean;
   createdAt: string;
 }
 

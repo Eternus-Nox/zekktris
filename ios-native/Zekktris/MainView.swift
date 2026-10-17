@@ -2000,12 +2000,6 @@ struct SettingsView: View {
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
-
-    /// Web Settings on the signed-in server — where someone still paying for a
-    /// subscription from before Zekktris went free can stop the billing. The
-    /// app itself never sells anything.
-    private var webSettingsURL: URL? { URL(string: Config.assetOrigin + "/settings") }
 
     @State private var displayName = ""
     @State private var bio = ""
@@ -2136,12 +2130,6 @@ struct SettingsView: View {
                         // Appearance is free for everyone.
                         appearanceSection
                         perkTiersSection
-                        // Only someone still paying for a subscription from
-                        // before Zekktris went free sees this.
-                        if session.currentUser?.subscriptionSource == "stripe",
-                           session.currentUser?.subscriptionInherited != true {
-                            legacyBillingSection
-                        }
                         // Hide clan tags is a per-device VIEWER preference.
                         hideClanTagsSection
                     case .security:
@@ -2687,30 +2675,6 @@ struct SettingsView: View {
                         .foregroundColor(Theme.ink3)
                 }
             }
-        }
-    }
-
-    /// Someone still paying for a subscription bought before Zekktris went
-    /// free: point them at web Settings to stop the billing. They keep the
-    /// tier either way.
-    private var legacyBillingSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button { if let url = webSettingsURL { openURL(url) } } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "creditcard").font(.system(size: 14)).foregroundColor(Theme.accent)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Stop your old subscription").font(.zkSans(15)).foregroundColor(Theme.ink1)
-                        Text("Zekktris is free now. You keep your tier — stop the billing in web Settings.")
-                            .font(.zkSans(11)).foregroundColor(Theme.ink3)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer()
-                    Image(systemName: "arrow.up.right.square").font(.system(size: 13)).foregroundColor(Theme.ink3)
-                }
-                .padding(12)
-                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-            .buttonStyle(.plain)
         }
     }
 

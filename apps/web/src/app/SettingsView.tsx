@@ -1149,7 +1149,6 @@ export function SettingsView() {
         {/* What each perk tier adds, with a "Your tier" badge on the active one
             (mirrors the iOS perk list). */}
         <PerkTiers />
-        <LegacyPaidSubscription />
         {/* Hide clan tags is a per-device VIEWER preference — anyone can
             declutter names. */}
         <section className="rounded-xl border border-line bg-bg-2 p-3">
@@ -2069,95 +2068,6 @@ function PerkTiers() {
             </div>
           );
         })}
-      </div>
-    </section>
-  );
-}
-
-/**
- * A subscription bought before payments were removed (own stripe row only).
- * The tier stays; this lets the subscriber stop the billing — cancel at the
- * period's end, or open the Stripe portal. Renders nothing for everyone else.
- * Admins can also convert every one of these into a forever tier at once
- * (Admin → Perks).
- */
-function LegacyPaidSubscription() {
-  const { user, rest, updateUser } = useAuth();
-  const toasts = useToasts();
-  const [portalBusy, setPortalBusy] = useState(false);
-  const [cancelBusy, setCancelBusy] = useState(false);
-  if (user?.subscriptionSource !== 'stripe' || user.subscriptionInherited) return null;
-
-  const tierLabel = TIER_META[user.subscriptionTier ?? '']?.label ?? 'perk';
-  const endsOn = user.subscriptionExpiresAt
-    ? new Date(user.subscriptionExpiresAt).toLocaleDateString(undefined, {
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-      })
-    : null;
-  const scheduledCancel = user.subscriptionCancelAtPeriodEnd === true;
-
-  const openPortal = () => {
-    setPortalBusy(true);
-    rest
-      .createBillingPortal()
-      .then((r) => {
-        window.location.href = r.url;
-      })
-      .catch((e) => {
-        toasts.push(e instanceof ApiError ? e.message : 'Could not open the portal', 'error');
-        setPortalBusy(false);
-      });
-  };
-
-  const cancel = async () => {
-    if (!window.confirm(`Stop paying for your ${tierLabel} tier? You keep it until the end of this billing period.`)) {
-      return;
-    }
-    setCancelBusy(true);
-    try {
-      await rest.cancelSubscription();
-      try {
-        updateUser((await rest.getMe()).user);
-      } catch {
-        // The next getMe reconciles.
-      }
-      toasts.push('Billing stopped — no more charges.', 'success');
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Could not cancel', 'error');
-    } finally {
-      setCancelBusy(false);
-    }
-  };
-
-  return (
-    <section className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 space-y-2.5">
-      <h2 className="text-xs uppercase tracking-wider text-ink-3">Your old subscription</h2>
-      <p className="text-xs text-ink-2 leading-relaxed">
-        {scheduledCancel
-          ? `Zekktris is free now. Your ${tierLabel} subscription won't renew${endsOn ? ` — it ends on ${endsOn}` : ''}. There's nothing else to do.`
-          : `Zekktris is free now, but your ${tierLabel} subscription from before still renews each month. Stop the billing here — you won't lose anything you use today.`}
-      </p>
-      <div className="flex flex-wrap items-center gap-2">
-        {!scheduledCancel && (
-          <button
-            type="button"
-            disabled={cancelBusy}
-            onClick={() => void cancel()}
-            className="text-sm px-3 py-1.5 rounded-md border border-accent/40 bg-accent/15 text-ink-1 hover:bg-accent/25 disabled:opacity-50 transition-colors"
-          >
-            {cancelBusy ? 'Stopping…' : 'Stop billing'}
-          </button>
-        )}
-        <button
-          type="button"
-          disabled={portalBusy}
-          onClick={openPortal}
-          className="text-sm px-3 py-1.5 rounded-md border border-line bg-bg-3 text-ink-1 hover:bg-bg-1 disabled:opacity-50 transition-colors"
-        >
-          {portalBusy ? 'Opening…' : 'Billing history'}
-        </button>
       </div>
     </section>
   );

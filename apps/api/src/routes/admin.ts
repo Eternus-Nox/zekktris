@@ -1263,29 +1263,6 @@ adminRouter.delete('/users/:id/subscription', validate('param', userIdParam), as
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// Paid subscriptions left over from before payments were removed
-// ───────────────────────────────────────────────────────────────────────────
-// GET reports how many Stripe-billed tiers are still live; POST turns every
-// one into a forever tier at the same level and cancels the Stripe billing so
-// nobody is charged again. Admin only (not on the moderator allowlist).
-adminRouter.get('/paid-subscriptions', async (c) => {
-  const subs = await import('../services/subscriptions');
-  return c.json({ active: await subs.countPaidSubscriptions() });
-});
-
-adminRouter.post('/paid-subscriptions/retire', async (c) => {
-  const subs = await import('../services/subscriptions');
-  const r = await subs.retirePaidSubscriptions(requireUserId(c));
-  await auditStaff(
-    c,
-    'staff_monetization',
-    `Ended ${r.converted} paid subscription(s); kept their tiers forever` +
-      (r.cancelFailures ? ` (${r.cancelFailures} Stripe cancel(s) failed — cancel those in the Stripe dashboard)` : ''),
-  );
-  return c.json(r);
-});
-
-// ───────────────────────────────────────────────────────────────────────────
 // PUT /admin/monetization — what each perk tier unlocks
 // ───────────────────────────────────────────────────────────────────────────
 // ADMIN ONLY: deliberately NOT on the moderator allowlist (fail-safe default)
