@@ -14,6 +14,7 @@
 import { Link, useLocation } from 'react-router-dom';
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
+import { useSelfStatus } from '../lib/selfStatus';
 import { useAppStateSelector } from '../state/AppState';
 import type { Guild, GuildFolder } from '@zekktris/client';
 import { Plus, MessagesSquare, Compass, Folder, Trash, AtSign, Shield, Users } from '../lib/icons';
@@ -46,6 +47,8 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
   const guildIds = useAppStateSelector((v) => v.state.guildIds);
   const guildsById = useAppStateSelector((v) => v.state.guildsById);
   const { user, rest } = useAuth();
+  // Our effective status (follows the device in use), for the avatar dot.
+  const { status: selfStatus } = useSelfStatus();
   const location = useLocation();
   const isDiscoverActive = location.pathname.startsWith('/discover');
   // The new pseudo-areas (mentions, settings, create-server, join-server,
@@ -450,11 +453,11 @@ export function GuildList({ activeGuildId }: { activeGuildId: string | undefined
             <span
               aria-hidden
               className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-bg-1 ${
-                user.status === 'online'
+                selfStatus === 'online'
                   ? 'bg-emerald-500'
-                  : user.status === 'idle'
+                  : selfStatus === 'idle'
                     ? 'bg-amber-500'
-                    : user.status === 'dnd'
+                    : selfStatus === 'dnd'
                       ? 'bg-red-500'
                       : 'bg-ink-3'
               }`}

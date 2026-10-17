@@ -113,9 +113,13 @@ import {
 } from '../lib/voicePrefs';
 import { MicLevelMeter } from '../lib/MicLevelMeter';
 import { useStepUpPassword } from '../lib/StepUpPassword';
+import { recordSelfUser, useSelfStatus } from '../lib/selfStatus';
 
 type Status = 'online' | 'idle' | 'dnd' | 'invisible';
 
+// The CHOSEN status (SelfUser.chosenStatus). On a server with multi-device
+// presence, Online is shown to others as Away while none of the user's
+// devices is in use — the pick itself stays Online.
 const STATUS_OPTIONS: Array<{ value: Status; label: string; dot: string; help: string }> = [
   { value: 'online', label: 'Online', dot: 'bg-emerald-500', help: 'Visible and reachable' },
   // Display label only — the wire/DB value stays the string 'idle' so every
@@ -282,25 +286,21 @@ export function SettingsView() {
 
   const [displayName, setDisplayName] = useState(user?.displayName ?? '');
   const [bio, setBio] = useState(user?.bio ?? '');
-  const [status, setStatus] = useState<Status>(
-    // Show the user's actual stored status, including 'invisible' so
-    // they can see their privacy choice persists across sessions.
-    // 'offline' here would only appear if the user is currently
-    // disconnected which is impossible from the modal POV — but we
-    // map it to 'online' just in case for the radio-display fallback.
-    (user?.status === 'offline' ? 'online' : (user?.status ?? 'online')) as Status,
-  );
+  // The picker shows the status the user CHOSE, including 'invisible' so
+  // they can see their privacy choice persists across sessions — not the
+  // effective one, which follows device activity (chosen Online reads Away
+  // while none of their devices is in use).
+  const { chosenStatus } = useSelfStatus();
+  const [status, setStatus] = useState<Status>(chosenStatus);
 
-  // Re-sync local status state if the auth-context user changes
-  // underneath us — happens when another tab patches the status, or
-  // when we receive a USER_UPDATE from the gateway. Without this the
-  // modal's radio would lag behind reality.
+  // Re-sync local status state if the chosen status changes underneath
+  // us — happens when another device or tab picks a status (the server's
+  // PRESENCE_UPDATE to our own connections carries it).
+  // Without this the radio would lag behind reality.
   useEffect(() => {
-    if (user && user.status !== status) {
-      setStatus((user.status === 'offline' ? 'online' : user.status) as Status);
-    }
+    if (user && chosenStatus !== status) setStatus(chosenStatus);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.status]);
+  }, [chosenStatus]);
   const [pending, setPending] = useState(false);
   // Debounced auto-save plumbing for the profile text fields. `saveRef`
   // always points at the latest `save` closure so the debounce effect
@@ -381,6 +381,7 @@ export function SettingsView() {
     try {
       const r = await rest.patchMe({ status: next });
       updateUser(r.user);
+      recordSelfUser(r.user);
       replaceUser({
         id: r.user.id,
         username: r.user.username,

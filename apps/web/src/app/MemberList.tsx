@@ -104,16 +104,22 @@ export function MemberList({
   // Sort the roster ONCE, keyed on identity (nameSig), not presence — so the
   // O(N log N) sort + per-comparison lowercasing is skipped on presence flips.
   // Precompute lowercased keys once (was two .toLowerCase() allocations per
-  // comparator call).
-  const sortedMembers = useMemo<GuildMember[]>(() => {
+  // comparator call). Only the ORDER (user ids) is memoized: the rows
+  // themselves are read from the current `members` below. Memoizing the
+  // member objects kept the ones from the last rename / join, so a presence
+  // flip — which changes no name — never reached the rows and every dot
+  // stayed at its first-loaded status.
+  const sortedIds = useMemo<string[]>(() => {
     if (!members) return [];
     const key = new Map<string, string>();
     for (const m of members) key.set(m.userId, m.user.displayName.toLowerCase());
-    return [...members].sort((a, b) => {
-      const an = key.get(a.userId)!;
-      const bn = key.get(b.userId)!;
-      return an < bn ? -1 : an > bn ? 1 : 0;
-    });
+    return members
+      .map((m) => m.userId)
+      .sort((a, b) => {
+        const an = key.get(a)!;
+        const bn = key.get(b)!;
+        return an < bn ? -1 : an > bn ? 1 : 0;
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nameSig]);
 
@@ -143,7 +149,11 @@ export function MemberList({
     // A stable partition of a sorted array keeps every bucket sorted-by-name, so
     // the old per-bucket .sort() calls are output-identical and can be dropped —
     // and the whole O(N log N) sort no longer re-runs on a presence flip.
-    for (const m of sortedMembers) {
+    const byId = new Map<string, GuildMember>();
+    for (const m of members) byId.set(m.userId, m);
+    for (const id of sortedIds) {
+      const m = byId.get(id);
+      if (!m) continue;
       // Offline members go to the offline bucket regardless of their
       // hoisted role — Discord's rule. 'invisible' is masked to
       // 'offline' on the wire so we never see it client-side; check
@@ -171,7 +181,7 @@ export function MemberList({
     if (defaultBucket.members.length > 0) out.push(defaultBucket);
     if (offlineBucket.members.length > 0) out.push(offlineBucket);
     return out;
-  }, [members, sortedMembers, guildRoles, guildId]);
+  }, [members, sortedIds, guildRoles, guildId]);
 
   // Flatten the grouped sections into a single ordered list so virtua can
   // virtualize at ROW granularity (a 500-member guild renders ~visible rows,
