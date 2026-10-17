@@ -132,7 +132,14 @@ export function CreateEventModal({
     setBusy(true);
     try {
       if (isEdit && event) {
-        await rest.updateEvent(guild.id, event.id, payload);
+        // event.imageUrl is the display URL (a media-proxy path for a
+        // third-party image), not the stored one: only send a real change.
+        const { imageUrl: nextImage, ...withoutImage } = payload;
+        await rest.updateEvent(
+          guild.id,
+          event.id,
+          nextImage === (event.imageUrl ?? null) ? withoutImage : payload,
+        );
       } else {
         await rest.createEvent(guild.id, payload);
       }

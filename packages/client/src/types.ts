@@ -863,7 +863,11 @@ export interface Webhook {
   channelId: string;
   guildId: string;
   name: string;
+  /** The URL as configured — what the settings form edits. */
   avatarUrl: string | null;
+  /** The URL to load the avatar from (third-party hosts go through the
+      server's media proxy). */
+  avatarDisplayUrl: string | null;
   /**
    * The secret token. The full URL is `${origin}/api/webhooks/${id}/${token}`.
    * Treat as a secret — anyone with the URL can post messages to the

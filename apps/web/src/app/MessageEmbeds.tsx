@@ -9,7 +9,9 @@
  *   - Without image: a tighter single-column card
  *
  * Cards open the URL in a new tab; we don't render any iframe or
- * embedded content — the card is purely a preview.
+ * embedded content — the card is purely a preview. Image and icon URLs
+ * arrive as the server's own /api/v1/media-proxy paths, so rendering a
+ * card never contacts the linked site from the viewer's browser.
  *
  * The component is a thin layout — all content comes from the server-
  * resolved embed (Open Graph / Twitter / fallback). When the message's
@@ -98,7 +100,7 @@ function EmbedCard({ embed }: { embed: MessageEmbed }) {
         )}
         {embed.title && (
           <a
-            href={embed.url}
+            href={safeHref(embed.url)}
             target="_blank"
             rel="noopener noreferrer"
             className="block font-medium text-accent hover:underline line-clamp-2 break-words"
@@ -114,7 +116,7 @@ function EmbedCard({ embed }: { embed: MessageEmbed }) {
             (showImage path can still apply.) */}
         {!embed.title && !embed.description && (
           <a
-            href={embed.url}
+            href={safeHref(embed.url)}
             target="_blank"
             rel="noopener noreferrer"
             className="text-sm text-accent hover:underline break-all"
@@ -132,7 +134,7 @@ function EmbedCard({ embed }: { embed: MessageEmbed }) {
           with the image above the text. */}
       {showImage && embed.imageUrl && (
         <a
-          href={embed.url}
+          href={safeHref(embed.url)}
           target="_blank"
           rel="noopener noreferrer"
           className="hidden sm:block shrink-0 w-32 bg-bg-3"
@@ -157,9 +159,9 @@ function hideOnError(e: SyntheticEvent<HTMLImageElement>) {
   e.currentTarget.style.display = 'none';
 }
 
-/** Only allow http(s) hrefs. The server already scheme-validates webhook embed
- *  urls, but React doesn't sanitize hrefs — guard here too so no untrusted
- *  `javascript:`/`data:` url can ever become a clickable link. */
+/** Only allow http(s) hrefs. The server already scheme-validates link-preview
+ *  and webhook embed urls, but React doesn't sanitize hrefs — guard here too so
+ *  no untrusted `javascript:`/`data:` url can ever become a clickable link. */
 function safeHref(url: string | null): string | undefined {
   return url && /^https?:\/\//i.test(url) ? url : undefined;
 }

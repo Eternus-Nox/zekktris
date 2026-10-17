@@ -9,6 +9,7 @@
 
 import type { User, Session, MessageMetadataJson } from '@zekktris/db';
 import { bigintStr, isoDate } from './json';
+import { proxiedImageUrl } from './mediaProxyUrl';
 
 // ───────────────────────────────────────────────────────────────────────────
 // User DTOs
@@ -945,23 +946,25 @@ export function toMessage(args: {
     embeds: m.embeds === null
       ? null
       : (m.embeds as MessageEmbedJson[]).map(
+          // Image fields become signed media-proxy URLs (lib/mediaProxyUrl.ts)
+          // so viewers never load them from the third-party host.
           (e): MessageEmbedDTO => ({
             url: e.url,
             kind: e.kind,
             title: e.title ?? null,
             description: e.description ?? null,
-            imageUrl: e.imageUrl ?? null,
+            imageUrl: proxiedImageUrl(e.imageUrl),
             siteName: e.siteName ?? null,
-            faviconUrl: e.faviconUrl ?? null,
+            faviconUrl: proxiedImageUrl(e.faviconUrl),
             color: e.color ?? null,
             authorName: e.authorName ?? null,
-            authorIconUrl: e.authorIconUrl ?? null,
-            thumbnailUrl: e.thumbnailUrl ?? null,
+            authorIconUrl: proxiedImageUrl(e.authorIconUrl),
+            thumbnailUrl: proxiedImageUrl(e.thumbnailUrl),
             fields: e.fields
               ? e.fields.map((f) => ({ name: f.name, value: f.value, inline: !!f.inline }))
               : null,
             footerText: e.footerText ?? null,
-            footerIconUrl: e.footerIconUrl ?? null,
+            footerIconUrl: proxiedImageUrl(e.footerIconUrl),
             timestamp: e.timestamp ?? null,
           }),
         ),
@@ -972,7 +975,8 @@ export function toMessage(args: {
     forwardedFrom,
     webhookId: bigintStr(m.webhookId ?? null),
     authorOverrideName: m.authorOverrideName ?? null,
-    authorOverrideAvatar: m.authorOverrideAvatar ?? null,
+    // A webhook's avatar is a sender-chosen URL too; same proxy as embeds.
+    authorOverrideAvatar: proxiedImageUrl(m.authorOverrideAvatar),
     deliveredAt: isoDate(m.deliveredAt),
     viewedAt: isoDate(m.viewedAt),
     metadata: m.metadata ?? null,
@@ -1079,7 +1083,12 @@ export interface WebhookDTO {
   channelId: string;
   guildId: string;
   name: string;
+  /** The URL as configured (what the settings form edits and PATCHes back). */
   avatarUrl: string | null;
+  /** avatarUrl as an <img> should load it: a third-party URL goes through
+      the media proxy (lib/mediaProxyUrl.ts), like the avatar on the
+      webhook's messages. */
+  avatarDisplayUrl: string | null;
   /**
    * The secret token. Currently returned to the creator AND to anyone
    * with MANAGE_WEBHOOKS who lists existing webhooks. The full URL
@@ -1137,6 +1146,7 @@ export function toWebhook(w: WebhookRow): WebhookDTO {
     guildId: w.guildId.toString(),
     name: w.name,
     avatarUrl: w.avatarUrl,
+    avatarDisplayUrl: proxiedImageUrl(w.avatarUrl),
     token: w.token,
     createdBy: bigintStr(w.createdBy),
     createdAt: isoDate(w.createdAt) ?? new Date().toISOString(),
@@ -1365,6 +1375,8 @@ export interface MessageEmbedDTO {
   kind: 'link' | 'image' | 'video' | 'rich';
   title: string | null;
   description: string | null;
+  /** This and the other *Url image fields are same-origin paths — normally a
+      signed /api/v1/media-proxy URL — never the third-party host itself. */
   imageUrl: string | null;
   siteName: string | null;
   faviconUrl: string | null;
@@ -1574,6 +1586,9 @@ export interface ScheduledEventDTO {
   locationChannelId: string | null;
   locationText: string | null;
   status: 'scheduled' | 'active' | 'completed' | 'canceled';
+  /** Same-origin: a /cdn upload, or a third-party URL rewritten to the
+      media proxy (lib/mediaProxyUrl.ts). Not the stored value, so clients
+      send it back only when they mean to change it. */
   imageUrl: string | null;
   /** Optional aggregated RSVP counts. Present in list+detail
    *  responses, omitted in update-broadcast deltas where the
@@ -1608,7 +1623,7 @@ export function toScheduledEvent(
     locationChannelId: bigintStr(ev.locationChannelId),
     locationText: ev.locationText,
     status: ev.status,
-    imageUrl: ev.imageUrl,
+    imageUrl: proxiedImageUrl(ev.imageUrl),
     rsvpCounts: extra?.rsvpCounts,
     myRsvp: extra?.myRsvp,
     createdAt: isoDate(ev.createdAt),
