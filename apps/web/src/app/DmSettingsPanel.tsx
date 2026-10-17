@@ -605,9 +605,9 @@ function E2eeToggle({ channel, selfId }: { channel: Channel; selfId: string }) {
           </p>
           {enabled && (
             <p className="text-xs text-ink-3 mt-1 leading-snug">
-              Link previews are off by default in encrypted chats. If you turn
-              them on in Settings, the link (not the message) is sent to the
-              server to build the preview.
+              Link previews are off by default; when on (Settings → Security),
+              the link — not the message — is sent to your server to build the
+              preview.
             </p>
           )}
         </div>

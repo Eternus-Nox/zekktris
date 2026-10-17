@@ -36,7 +36,7 @@ import { AvatarImage } from '../lib/AvatarImage';
 import { AvatarDecoration } from '../lib/avatarDecorations';
 import { useProfileCard } from '../lib/useProfileCard';
 import { Edit, Trash, Pin, CornerUpLeft, Forward as ForwardIcon, MessageSquare, Smile, Phone, Shield, Bookmark } from '../lib/icons';
-import { useE2eeLinkPreviews } from '../lib/e2eeLinkPreviews';
+import { useE2eeLinkPreviews, resolveE2eeLinkPreviews } from '../lib/e2eeLinkPreviews';
 import { e2eeSupported, E2EE_INSECURE_SHORT } from '../lib/e2eeSupport';
 import { decryptForDm, peekDecryptedText, encryptForDm, isEncryptedWireFormat, hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
 import { POKE_VARIANTS, type PokeType } from '../lib/poke';
@@ -64,25 +64,6 @@ interface Props {
       only). When false / unset, no receipt UI is rendered at all —
       the row is identical to a non-DM render. */
   showDmReceipt?: boolean;
-}
-
-// Extract http(s) URLs from text for client-side link-preview resolution on
-// E2EE messages. Mirrors the server's message extractor (services/embeds.ts):
-// same conservative regex + trailing-punctuation trim, deduped, capped.
-const URL_RE = /https?:\/\/[^\s<>"]+/gi;
-function extractUrls(text: string): string[] {
-  const matches = text.match(URL_RE) ?? [];
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (let m of matches) {
-    while (m.length > 0 && /[.,;!?)]$/.test(m)) m = m.slice(0, -1);
-    if (m && !seen.has(m)) {
-      seen.add(m);
-      out.push(m);
-    }
-    if (out.length >= 5) break;
-  }
-  return out;
 }
 
 // ── Channel mentions ──────────────────────────────────────────────────────
@@ -401,35 +382,26 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   const e2eeLinkPreviews = useE2eeLinkPreviews();
   const [e2eeEmbeds, setE2eeEmbeds] = useState<MessageEmbed[]>([]);
   useEffect(() => {
-    const plain = decResult.plaintext;
     // Only for E2EE messages with no server-resolved embeds and a successful
-    // decryption.
-    if (!e2eeLinkPreviews || !encMeta.isEncrypted || encMeta.noKey || !plain) {
-      setE2eeEmbeds([]);
-      return;
-    }
-    if (message.embeds && message.embeds.length > 0) {
-      setE2eeEmbeds([]);
-      return;
-    }
-    const urls = extractUrls(plain);
-    if (urls.length === 0) {
+    // decryption (resolveE2eeLinkPreviews returns null otherwise).
+    const pending = resolveE2eeLinkPreviews(
+      {
+        previewsEnabled: e2eeLinkPreviews,
+        isEncrypted: encMeta.isEncrypted,
+        noKey: encMeta.noKey,
+        plaintext: decResult.plaintext,
+        hasServerEmbeds: !!message.embeds && message.embeds.length > 0,
+      },
+      (u) => rest.unfurl(u),
+    );
+    if (!pending) {
       setE2eeEmbeds([]);
       return;
     }
     let cancelled = false;
-    void (async () => {
-      const found: MessageEmbed[] = [];
-      for (const u of urls) {
-        try {
-          const { embed } = await rest.unfurl(u);
-          if (embed) found.push(embed);
-        } catch {
-          // best-effort per URL
-        }
-      }
+    void pending.then((found) => {
       if (!cancelled) setE2eeEmbeds(found);
-    })();
+    });
     return () => {
       cancelled = true;
     };

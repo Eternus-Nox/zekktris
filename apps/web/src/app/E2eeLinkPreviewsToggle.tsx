@@ -13,8 +13,8 @@ export function E2eeLinkPreviewsToggle() {
       <div className="min-w-0">
         <p className="text-sm text-ink-1">Link previews in encrypted chats</p>
         <p className="text-xs text-ink-3 leading-relaxed mt-0.5">
-          Off by default. When on, links in end-to-end encrypted chats are sent
-          to the server to build a preview. The message itself stays encrypted.
+          Off by default. When on, the link — not the message — is sent to your
+          server to build the preview.
         </p>
       </div>
       <button
