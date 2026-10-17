@@ -114,7 +114,10 @@
 
 	# Security headers — modest defaults that don't break anything. The
 	# page's Content-Security-Policy is the <meta> in apps/web/index.html;
-	# only frame-ancestors, which a meta tag can't set, is sent from here.
+	# only frame-ancestors, which a meta tag can't set, is sent from here —
+	# and only on responses with no CSP of their own (`?`): this block is
+	# applied as the response is written, so a plain line would replace the
+	# api's stricter policy on /api/v1/media-proxy.
 	# Don't add a second full CSP header: browsers enforce both policies.
 	header {
 		# Don't leak referrer to third parties
@@ -122,7 +125,7 @@
 		# Block clickjacking
 		X-Frame-Options "SAMEORIGIN"
 		# CSP frame-ancestors (modern X-Frame-Options); see the note above.
-		Content-Security-Policy "frame-ancestors 'self'"
+		?Content-Security-Policy "frame-ancestors 'self'"
 		# Block MIME sniffing
 		X-Content-Type-Options "nosniff"
 		# Permissions-Policy. `(self)` means "the document can use this

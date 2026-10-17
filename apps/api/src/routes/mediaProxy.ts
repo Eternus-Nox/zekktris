@@ -19,8 +19,8 @@
  *     /64 for IPv6, which a single host can hold whole) and capped
  *     process-wide (services/mediaProxy.ts MAX_CONCURRENT_FETCHES; 503 over it).
  *   - Only sniffed PNG/JPEG/GIF/WebP/ICO is served, with that sniffed type,
- *     nosniff, and a CSP that forbids everything should a browser ever
- *     navigate to the URL directly.
+ *     nosniff, and a CSP that forbids everything (framing included) should a
+ *     browser ever navigate to the URL directly.
  */
 
 import { Hono } from 'hono';
@@ -99,7 +99,9 @@ mediaProxyRouter.get('/', validate('query', query), async (c) => {
     'content-type': result.contentType,
     'content-length': String(result.body.length),
     'x-content-type-options': 'nosniff',
-    'content-security-policy': "default-src 'none'; sandbox",
+    // Complete on its own: ops/Caddyfile adds its site-wide frame-ancestors
+    // only to responses without a CSP, so framing is ruled out here too.
+    'content-security-policy': "default-src 'none'; sandbox; frame-ancestors 'none'",
     // The URL is fixed per upstream image (deterministic signature), so a
     // week is safe; a changed upstream image shows up once this lapses.
     'cache-control': 'public, max-age=604800',

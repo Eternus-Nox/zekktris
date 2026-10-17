@@ -278,7 +278,11 @@ describe('GET /api/v1/media-proxy', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('image/png'); // sniffed, not octet-stream
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
-    expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
+    // The whole policy, exactly: ops/Caddyfile only adds its site-wide
+    // frame-ancestors to responses that carry no CSP of their own.
+    expect(res.headers.get('content-security-policy')).toBe(
+      "default-src 'none'; sandbox; frame-ancestors 'none'",
+    );
     expect(res.headers.get('cache-control')).toMatch(/max-age=\d{6,}/);
     expect(res.headers.get('set-cookie')).toBeNull();
     expect(Buffer.from(await res.arrayBuffer()).equals(PNG)).toBe(true);

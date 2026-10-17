@@ -31,8 +31,9 @@
                             stop exfiltration; script-src is the lock.
         worker-src 'self'   service worker + LiveKit's E2EE worker chunk
       frame-ancestors can't be set from a meta tag; ops/Caddyfile sends it as
-      a header. Dev (vite serve) strips this tag — Vite injects inline
-      scripts/styles there (see vite.config.ts).
+      a header (on responses that carry no CSP of their own). Dev (vite
+      serve) strips this tag — Vite injects inline scripts/styles there (see
+      vite.config.ts).
     -->
     <meta
       http-equiv="Content-Security-Policy"
