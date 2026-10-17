@@ -9,6 +9,7 @@
 
 import type { User, Session, MessageMetadataJson } from '@zekktris/db';
 import { bigintStr, isoDate } from './json';
+import { proxiedImageUrl } from './mediaProxyUrl';
 
 // ───────────────────────────────────────────────────────────────────────────
 // User DTOs
@@ -945,23 +946,25 @@ export function toMessage(args: {
     embeds: m.embeds === null
       ? null
       : (m.embeds as MessageEmbedJson[]).map(
+          // Image fields become signed media-proxy URLs (lib/mediaProxyUrl.ts)
+          // so viewers never load them from the third-party host.
           (e): MessageEmbedDTO => ({
             url: e.url,
             kind: e.kind,
             title: e.title ?? null,
             description: e.description ?? null,
-            imageUrl: e.imageUrl ?? null,
+            imageUrl: proxiedImageUrl(e.imageUrl),
             siteName: e.siteName ?? null,
-            faviconUrl: e.faviconUrl ?? null,
+            faviconUrl: proxiedImageUrl(e.faviconUrl),
             color: e.color ?? null,
             authorName: e.authorName ?? null,
-            authorIconUrl: e.authorIconUrl ?? null,
-            thumbnailUrl: e.thumbnailUrl ?? null,
+            authorIconUrl: proxiedImageUrl(e.authorIconUrl),
+            thumbnailUrl: proxiedImageUrl(e.thumbnailUrl),
             fields: e.fields
               ? e.fields.map((f) => ({ name: f.name, value: f.value, inline: !!f.inline }))
               : null,
             footerText: e.footerText ?? null,
-            footerIconUrl: e.footerIconUrl ?? null,
+            footerIconUrl: proxiedImageUrl(e.footerIconUrl),
             timestamp: e.timestamp ?? null,
           }),
         ),
@@ -1365,6 +1368,8 @@ export interface MessageEmbedDTO {
   kind: 'link' | 'image' | 'video' | 'rich';
   title: string | null;
   description: string | null;
+  /** This and the other *Url image fields are same-origin paths — normally a
+      signed /api/v1/media-proxy URL — never the third-party host itself. */
   imageUrl: string | null;
   siteName: string | null;
   faviconUrl: string | null;

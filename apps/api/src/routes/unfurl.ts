@@ -21,6 +21,8 @@
  *   - Auth required (so it can't be used as an open SSRF/scraping proxy).
  *   - Per-user rate limit bounds how fast any one account can drive outbound
  *     fetches.
+ *   - Image URLs in the response point at the media proxy
+ *     (lib/mediaProxyUrl.ts), never at the third-party host.
  */
 
 import { Hono } from 'hono';
@@ -31,6 +33,7 @@ import { RateLimiter } from '../lib/rateLimit';
 import { errors } from '../errors';
 import * as embeds from '../services/embeds';
 import { cachedResolveEmbed } from '../services/embedCache';
+import { proxyEmbedImages } from '../lib/mediaProxyUrl';
 
 export const unfurlRouter = new Hono();
 
@@ -60,5 +63,7 @@ unfurlRouter.get('/', validate('query', unfurlQuery), async (c) => {
   // were re-fetched on every render, on every device, forever. The cache also
   // single-flights the concurrent burst a client sends when a channel opens.
   const embed = await cachedResolveEmbed(normalized, embeds.resolveEmbed);
-  return c.json({ embed });
+  // Image URLs go out as signed media-proxy URLs, exactly as in message DTOs,
+  // so the client rendering this card never contacts the image host itself.
+  return c.json({ embed: embed ? proxyEmbedImages(embed) : null });
 });

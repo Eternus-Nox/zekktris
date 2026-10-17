@@ -25,6 +25,8 @@
  *   - Content-Type filter: only text/html (no other media types).
  *   - Redirect following: max 3 redirects, each re-validated for
  *     SSRF.
+ *   - The fetch core (fetchPublic) is shared with the link-preview image
+ *     proxy (services/mediaProxy.ts), so both carry these same defences.
  *
  * Limitations (fine for v1, address if real-world abuse appears):
  *   - We don't honor robots.txt — implicit "can a crawler fetch this?"
@@ -170,6 +172,8 @@ function embeddedIpv4(v6: string): string | null {
  * private (or DNS fails, which the fetcher should treat as "skip").
  */
 async function safeResolve(hostname: string): Promise<{ ip: string; family: 4 | 6 } | null> {
+  const overridden = resolveOverride?.(hostname);
+  if (overridden !== undefined) return overridden;
   try {
     // Get all addresses; prefer IPv4 because many container/edge
     // networks have broken IPv6 (AAAA records advertise reachable
@@ -200,6 +204,16 @@ async function safeResolve(hostname: string): Promise<{ ip: string; family: 4 | 
     });
     return null;
   }
+}
+
+type ResolveOverride = (hostname: string) => { ip: string; family: 4 | 6 } | null | undefined;
+let resolveOverride: ResolveOverride | null = null;
+
+/** Tests only: answer safeResolve for some hostnames (return undefined to
+    fall through to the real, checked lookup; pass null to remove), so a fetch
+    can be pinned to a local test server the private-IP check would refuse. */
+export function __setResolveOverride(fn: ResolveOverride | null): void {
+  resolveOverride = fn;
 }
 
 // ── HTML parsing ───────────────────────────────────────────────────────────
@@ -289,17 +303,39 @@ function htmlFavicon(html: string, baseUrl: URL): string | null {
 
 // ── HTTP fetch with caps ───────────────────────────────────────────────────
 
+/** Per-caller knobs for fetchPublic. */
+export interface PublicFetchOptions {
+  /** The Accept header sent upstream. */
+  accept: string;
+  /** Body byte cap. */
+  maxBytes: number;
+  /** Return false to refuse a 200 by its (lower-cased) Content-Type before
+      any body is read. */
+  acceptContentType: (contentType: string) => boolean;
+  /** true (HTML): a body cut short by the byte cap, the deadline or a stream
+      error is returned as far as it got, because the useful part is the head.
+      false (images): any cut-short body is a failure, and a Content-Length
+      over the cap is refused before reading. */
+  allowPartial: boolean;
+}
+
 /**
- * Fetch a URL and return the body up to MAX_BODY_BYTES, with a total
+ * Fetch a public URL and return the body up to `maxBytes`, with a total
  * deadline of FETCH_TIMEOUT_MS, following at most MAX_REDIRECTS hops
- * — each of which is re-validated against the SSRF allowlist.
+ * — each of which is re-validated against the SSRF allowlist. Shared by
+ * the link-preview fetch below and the image proxy (services/mediaProxy.ts),
+ * so both carry the same SSRF defences. Sends only the fixed headers below:
+ * nothing from the requesting client (cookies, auth, UA) is ever forwarded.
  *
- * Returns null on any failure (DNS miss, private IP, non-200, non-html
+ * Returns null on any failure (DNS miss, private IP, non-200, refused
  * Content-Type, body cap hit, timeout). Logs a debug line for ops
  * visibility but never throws — the caller should treat null as
  * "give up on this URL".
  */
-async function fetchHtml(rawUrl: string): Promise<{ html: string; finalUrl: URL } | null> {
+export async function fetchPublic(
+  rawUrl: string,
+  opts: PublicFetchOptions,
+): Promise<{ body: Buffer; finalUrl: URL; contentType: string } | null> {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -424,7 +460,7 @@ async function fetchHtml(rawUrl: string): Promise<{ html: string; finalUrl: URL 
           // self-identifies for admins who want to block us.
           'user-agent':
             'Mozilla/5.0 (compatible; Zekktris-LinkPreview/1.0; +https://zekktris.com)',
-          accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          accept: opts.accept,
           'accept-language': 'en-US,en;q=0.9',
           // Allow gzip/deflate/br — most sites only serve gzipped HTML
           // and reject uncompressed accept-encoding. undici decompresses
@@ -486,14 +522,21 @@ async function fetchHtml(rawUrl: string): Promise<{ html: string; finalUrl: URL 
       return null;
     }
     const ct = (res.headers.get('content-type') ?? '').toLowerCase();
-    if (!ct.includes('html')) {
-      log.info('embed fetch: non-HTML content type', { url: current.href, contentType: ct });
+    if (!opts.acceptContentType(ct)) {
+      log.info('embed fetch: refused content type', { url: current.href, contentType: ct });
+      try { await res.body?.cancel(); } catch { /* ignore */ }
+      void agent.destroy().catch(() => undefined);
+      return null;
+    }
+    const declaredLength = Number(res.headers.get('content-length') ?? NaN);
+    if (!opts.allowPartial && declaredLength > opts.maxBytes) {
+      log.info('embed fetch: declared body over cap', { url: current.href, bytes: declaredLength });
       try { await res.body?.cancel(); } catch { /* ignore */ }
       void agent.destroy().catch(() => undefined);
       return null;
     }
 
-    // Stream the body up to MAX_BODY_BYTES, then abort.
+    // Stream the body up to opts.maxBytes, then abort.
     if (!res.body) {
       void agent.destroy().catch(() => undefined);
       return null;
@@ -501,13 +544,15 @@ async function fetchHtml(rawUrl: string): Promise<{ html: string; finalUrl: URL 
     const reader = res.body.getReader();
     const chunks: Uint8Array[] = [];
     let total = 0;
+    let cutShort = false;
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         if (value) {
           total += value.length;
-          if (total > MAX_BODY_BYTES) {
+          if (total > opts.maxBytes) {
+            cutShort = true;
             try {
               await reader.cancel();
             } catch {
@@ -518,6 +563,7 @@ async function fetchHtml(rawUrl: string): Promise<{ html: string; finalUrl: URL 
           chunks.push(value);
         }
         if (Date.now() >= deadline) {
+          cutShort = true;
           try {
             await reader.cancel();
           } catch {
@@ -527,7 +573,9 @@ async function fetchHtml(rawUrl: string): Promise<{ html: string; finalUrl: URL 
         }
       }
     } catch (e) {
-      // SALVAGE what we already buffered. og:title / og:description / <title>
+      cutShort = true;
+      // SALVAGE what we already buffered (allowPartial callers only — an image
+      // cut short is useless). og:title / og:description / <title>
       // all live in <head>, i.e. the first bytes of the stream, so a partial
       // read is usually enough for a full card.
       //
@@ -539,7 +587,7 @@ async function fetchHtml(rawUrl: string): Promise<{ html: string; finalUrl: URL 
       // abort win the race in the common case, which would have turned every
       // slow-but-working origin into a null. Keeping the bytes preserves the
       // old behaviour for exactly those sites while still capping the socket.
-      if (chunks.length > 0) {
+      if (chunks.length > 0 && opts.allowPartial) {
         log.debug?.('embed body read interrupted; parsing partial body', {
           url: current.href,
           bytes: total,
@@ -551,17 +599,33 @@ async function fetchHtml(rawUrl: string): Promise<{ html: string; finalUrl: URL 
         return null;
       }
     }
-    const buf = Buffer.concat(chunks.map((c) => Buffer.from(c)));
-    // Best-effort utf-8 decode; the meta-tag matches we run later only
-    // care about ASCII syntax so misdecoded body bytes mostly lose us
-    // non-ASCII title text without breaking the rest of the parse.
-    const html = buf.toString('utf8');
     // Release the connection pool now that the body is fully read.
     // Fire-and-forget — the cleanup doesn't need to complete before
-    // we return the parsed HTML to the caller.
+    // we return the body to the caller.
     void agent.destroy().catch(() => undefined);
-    return { html, finalUrl: current };
+    if (cutShort && !opts.allowPartial) {
+      log.info('embed fetch: body cut short', { url: current.href, bytes: total });
+      return null;
+    }
+    const body = Buffer.concat(chunks.map((c) => Buffer.from(c)));
+    return { body, finalUrl: current, contentType: ct };
   }
+}
+
+/** The link-preview fetch: text/html only, and a cut-short body is parsed
+    as far as it got (the meta tags live in <head>). */
+async function fetchHtml(rawUrl: string): Promise<{ html: string; finalUrl: URL } | null> {
+  const fetched = await fetchPublic(rawUrl, {
+    accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    maxBytes: MAX_BODY_BYTES,
+    acceptContentType: (ct) => ct.includes('html'),
+    allowPartial: true,
+  });
+  if (!fetched) return null;
+  // Best-effort utf-8 decode; the meta-tag matches we run later only
+  // care about ASCII syntax so misdecoded body bytes mostly lose us
+  // non-ASCII title text without breaking the rest of the parse.
+  return { html: fetched.body.toString('utf8'), finalUrl: fetched.finalUrl };
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────

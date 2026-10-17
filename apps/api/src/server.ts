@@ -26,6 +26,7 @@ import { stickersRouter } from './routes/stickers';
 import { stageRouter } from './routes/stage';
 import { discoveryRouter } from './routes/discovery';
 import { unfurlRouter } from './routes/unfurl';
+import { mediaProxyRouter } from './routes/mediaProxy';
 import { adminRouter } from './routes/admin';
 import { instanceRouter } from './routes/instance';
 import { messagesRouter } from './routes/messages';
@@ -144,6 +145,9 @@ export function createApp() {
   // Client-side link-preview resolution for E2EE messages (the server can't
   // unfurl ciphertext). See routes/unfurl.ts.
   v1.route('/unfurl', unfurlRouter);
+  // Link-preview images, fetched by the server so viewers never contact the
+  // sender-chosen host. Signed URLs, no session. See routes/mediaProxy.ts.
+  v1.route('/media-proxy', mediaProxyRouter);
   // Instance-wide read-only config for any signed-in user (monetization
   // paywall matrix) — the admin WRITE side lives under /admin.
   v1.route('/instance', instanceRouter);
