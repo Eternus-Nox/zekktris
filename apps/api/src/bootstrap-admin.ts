@@ -16,9 +16,19 @@
  *   2. No user currently has is_admin=true (the "first admin"
  *      condition).
  *
- * Both true → look up the user by email; if they exist, set
- * is_admin=true. Log the result so the operator sees it in their
- * boot logs.
+ * Both true → look up the user by email; if they exist AND their
+ * address is verified, set is_admin=true. Log the result so the
+ * operator sees it in their boot logs.
+ *
+ * Verification matters: on a server with SMTP the account stays
+ * unverified until the emailed link is clicked, but it still gets a
+ * session — so without the check, anyone who registered (or, via
+ * /change-unverified-email, moved an account to) the configured
+ * address would become admin at the next restart. On a server WITHOUT
+ * SMTP every signup is auto-verified, so this variable then means
+ * "whoever registers this address first". That is why install.sh no
+ * longer sets it and instead creates the admin account directly
+ * (scripts/create-admin.ts → src/admin/createAdmin.ts).
  *
  * Idempotency. Once ANY admin exists (set by this task on a
  * previous boot, or set manually via SQL, or set by another
@@ -32,6 +42,8 @@
  *     operator hasn't registered). We log a hint and exit. The
  *     task will succeed on a subsequent boot after the user
  *     signs up.
+ *   - The user exists but hasn't verified the address. Same: log a
+ *     hint and exit. /verify-email promotes them once they do.
  *   - The configured email matches a banned user. We promote
  *     anyway — bannedAt is a soft-ban marker; an admin can
  *     unban themselves via SQL or another admin. We log this
@@ -77,6 +89,7 @@ export async function runBootstrapAdmin(): Promise<void> {
       id: schema.users.id,
       email: schema.users.email,
       username: schema.users.username,
+      emailVerified: schema.users.emailVerified,
       bannedAt: schema.users.bannedAt,
     })
     .from(schema.users)
@@ -91,10 +104,18 @@ export async function runBootstrapAdmin(): Promise<void> {
     return;
   }
 
+  if (!user.emailVerified) {
+    log.warn('bootstrap admin: BOOTSTRAP_ADMIN_EMAIL user has not verified the address yet', {
+      email: targetEmail,
+      hint: 'Open the verification link sent to this address (that promotes the account), or run scripts/create-admin.ts in the api container.',
+    });
+    return;
+  }
+
   await db
     .update(schema.users)
     .set({ isAdmin: true, updatedAt: new Date() })
-    .where(eq(schema.users.id, user.id));
+    .where(and(eq(schema.users.id, user.id), eq(schema.users.emailVerified, true)));
 
   log.info('bootstrap admin: promoted user to instance admin', {
     userId: user.id.toString(),
@@ -120,7 +141,9 @@ export async function runBootstrapAdmin(): Promise<void> {
  * Called only once the address is VERIFIED — right at signup when the server
  * has no email set up (accounts are auto-verified then), otherwise from
  * /verify-email — so nobody gets admin by registering an address they don't
- * own on a server that can check. Never throws; returns whether it promoted.
+ * own on a server that can check. (Without email nothing CAN check, so on
+ * such a server the first person to register the address wins — see the
+ * header.) Never throws; returns whether it promoted.
  */
 export async function promoteIfBootstrapAdmin(userId: bigint): Promise<boolean> {
   if (!env.BOOTSTRAP_ADMIN_EMAIL) return false;

@@ -69,6 +69,9 @@ COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_module
 # path from import.meta.url.
 COPY apps/api/package.json ./apps/api/package.json
 COPY apps/api/src ./apps/api/src
+# Operator scripts run with `docker compose exec` (install.sh uses
+# scripts/create-admin.ts to make the first admin).
+COPY apps/api/scripts ./apps/api/scripts
 COPY apps/api/tsconfig.json ./apps/api/tsconfig.json
 COPY packages/db ./packages/db
 COPY packages/shared ./packages/shared

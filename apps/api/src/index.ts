@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   await runStartupChecks();
 
   // First-install bootstrap. If BOOTSTRAP_ADMIN_EMAIL is set and no
-  // admin exists yet, promote the matching user. Idempotent once
+  // admin exists yet, promote the matching (verified) user. Idempotent once
   // any admin exists. Failures here are logged and swallowed —
   // server should still come up so the operator can fix things via
   // SQL or another path if needed.

@@ -389,13 +389,15 @@ export const envSchema = z.object({
   FCM_PRIVATE_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
 
   // ── First-install bootstrap ────────────────────────────────────────────
-  // Optional email address. On startup, if no user has is_admin=true yet
-  // AND a user exists with this email, that user is promoted to admin.
-  // Idempotent: once any admin exists, this env var has no effect, so
-  // it's safe to leave set across restarts (e.g. in docker-compose.yml).
-  // Empty/unset → no bootstrap attempt at all. Solves the chicken-and-
-  // egg problem on fresh installs: without this, the operator would
-  // need direct SQL access to make their first admin.
+  // Optional email address. On startup (and at signup / email
+  // verification), if no user has is_admin=true yet AND a user with this
+  // email has VERIFIED it, that user is promoted to admin. Idempotent:
+  // once any admin exists, this env var has no effect, so it's safe to
+  // leave set across restarts (e.g. in docker-compose.yml). Empty/unset →
+  // no bootstrap attempt at all. Without SMTP every signup counts as
+  // verified, so this then means "first to register the address" —
+  // install.sh doesn't set it; it creates the admin directly with
+  // scripts/create-admin.ts (see bootstrap-admin.ts).
   BOOTSTRAP_ADMIN_EMAIL: z.preprocess(
     (v) => (v === '' ? undefined : v),
     z.string().email().optional(),
