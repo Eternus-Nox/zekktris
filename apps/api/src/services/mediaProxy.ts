@@ -14,16 +14,27 @@
  *     images over the dimension caps are refused too.
  *   - Caches in a bounded in-process LRU (bytes and entries), with short-lived
  *     negative entries so a missing favicon isn't re-fetched on every view,
- *     and single-flights concurrent misses for the same URL.
+ *     single-flights concurrent misses for the same URL, and caps how many
+ *     upstream fetches run at once (MAX_CONCURRENT_FETCHES).
  */
 
 import { fetchPublic } from './embeds';
 
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 /** Longest side, and total pixels, a proxied image may declare. Far above any
-    real preview image; stops decompression bombs reaching viewers' decoders. */
+    real preview image; stops decompression bombs reaching viewers' decoders.
+    What's checked is the largest size a decoder would allocate for: the PNG,
+    WebP and JPEG header, a GIF's screen grown to fit every frame, and every
+    ICO entry's own PNG/BMP header (not just its 1-byte directory size). */
 export const MAX_IMAGE_SIDE = 8192;
 export const MAX_IMAGE_PIXELS = 40_000_000;
+
+/** Upstream fetches in flight at once, process-wide. Each may buffer up to
+    MAX_IMAGE_BYTES, and the per-IP limit alone doesn't bound the total (many
+    IPs, or an IPv6 range), so this caps the proxy's transient memory at
+    about MAX_CONCURRENT_FETCHES × MAX_IMAGE_BYTES. Over it, a miss is
+    answered 'busy' (not cached) and the client retries later. */
+export const MAX_CONCURRENT_FETCHES = 16;
 
 const CACHE_MAX_BYTES = 48 * 1024 * 1024;
 const CACHE_MAX_ENTRIES = 2000;
@@ -34,7 +45,7 @@ export type ImageType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' 
 
 export type ProxyResult =
   | { ok: true; body: Buffer; contentType: ImageType }
-  | { ok: false; reason: 'unreachable' | 'not-image' | 'too-large' };
+  | { ok: false; reason: 'unreachable' | 'not-image' | 'too-large' | 'busy' };
 
 // ── Sniffing ───────────────────────────────────────────────────────────────
 
@@ -68,18 +79,79 @@ export function imageDimensions(b: Buffer, type: ImageType): { width: number; he
         if (b.toString('latin1', 12, 16) !== 'IHDR') return null;
         return { width: b.readUInt32BE(16), height: b.readUInt32BE(20) };
       case 'image/gif':
-        return { width: b.readUInt16LE(6), height: b.readUInt16LE(8) };
+        return gifDimensions(b);
       case 'image/webp':
         return webpDimensions(b);
       case 'image/jpeg':
         return jpegDimensions(b);
       case 'image/x-icon':
-        // Each directory entry stores 1..255, with 0 meaning 256 — never large.
-        return b.length >= 8 ? { width: b[6] || 256, height: b[7] || 256 } : null;
+        return icoDimensions(b);
     }
   } catch {
     return null; // a read past the end of a truncated header
   }
+}
+
+/** The logical screen, grown to the furthest edge of any frame: browsers
+    enlarge the canvas for a frame that doesn't fit, so a tiny declared screen
+    proves nothing. Walks the block structure; a truncated tail just ends the
+    walk (what's there is what a browser would draw). */
+function gifDimensions(b: Buffer): { width: number; height: number } {
+  let width = b.readUInt16LE(6);
+  let height = b.readUInt16LE(8);
+  const colorTable = (packed: number) => (packed & 0x80 ? 3 * (1 << ((packed & 7) + 1)) : 0);
+  const skipSubBlocks = (i: number) => {
+    while (i < b.length && b[i] !== 0) i += b[i]! + 1;
+    return i + 1;
+  };
+  let i = 13 + colorTable(b[10]!);
+  while (i < b.length) {
+    const block = b[i]!;
+    if (block === 0x2c) {
+      // Image descriptor: left, top, width, height, packed; then the local
+      // colour table, the LZW minimum code size and the data sub-blocks.
+      if (i + 10 > b.length) break;
+      width = Math.max(width, b.readUInt16LE(i + 1) + b.readUInt16LE(i + 5));
+      height = Math.max(height, b.readUInt16LE(i + 3) + b.readUInt16LE(i + 7));
+      i = skipSubBlocks(i + 10 + colorTable(b[i + 9]!) + 1);
+    } else if (block === 0x21) {
+      i = skipSubBlocks(i + 2); // extension: introducer, label, sub-blocks
+    } else {
+      break; // 0x3b trailer, or garbage a decoder stops at too
+    }
+  }
+  return { width, height };
+}
+
+/** The largest entry, by its embedded image's own header: an entry's PNG or
+    BMP is decoded at the size IT declares, whatever the 1-byte directory size
+    (1..256) says. A directory pointing outside the file is malformed. */
+function icoDimensions(b: Buffer): { width: number; height: number } | null {
+  const count = b.readUInt16LE(4);
+  const dirEnd = 6 + 16 * count;
+  let best: { width: number; height: number } | null = null;
+  for (let e = 6; e < dirEnd; e += 16) {
+    let width = b[e] || 256;
+    let height = b[e + 1] || 256;
+    const offset = b.readUInt32LE(e + 12);
+    if (offset < dirEnd || offset + 24 > b.length) return null;
+    if (b.readUInt32BE(offset) === 0x89504e47 && b.readUInt32BE(offset + 4) === 0x0d0a1a0a) {
+      if (b.toString('latin1', offset + 12, offset + 16) !== 'IHDR') return null;
+      width = Math.max(width, b.readUInt32BE(offset + 16));
+      height = Math.max(height, b.readUInt32BE(offset + 20));
+    } else {
+      // BMP without its file header. Its height covers the XOR and AND
+      // masks, i.e. twice the icon's. BITMAPCOREHEADER (12 bytes) has 16-bit
+      // fields, the later headers signed 32-bit ones.
+      const core = b.readUInt32LE(offset) === 12;
+      const w = core ? b.readUInt16LE(offset + 4) : Math.abs(b.readInt32LE(offset + 4));
+      const h = core ? b.readUInt16LE(offset + 6) : Math.abs(b.readInt32LE(offset + 8));
+      width = Math.max(width, w);
+      height = Math.max(height, Math.ceil(h / 2));
+    }
+    if (!best || width * height > best.width * best.height) best = { width, height };
+  }
+  return best;
 }
 
 function webpDimensions(b: Buffer): { width: number; height: number } | null {
@@ -192,12 +264,15 @@ export function cachedProxyImage(url: string): ProxyResult | null {
   return cacheGet(url);
 }
 
-/** Fetch, validate and cache one upstream image. Never throws. */
+/** Fetch, validate and cache one upstream image. Never throws. A request
+    for a URL already being fetched joins that fetch; a new fetch while
+    MAX_CONCURRENT_FETCHES are running gets { reason: 'busy' }. */
 export async function fetchProxyImage(url: string): Promise<ProxyResult> {
   const hit = cacheGet(url);
   if (hit) return hit;
   const pending = inFlight.get(url);
   if (pending) return pending;
+  if (inFlight.size >= MAX_CONCURRENT_FETCHES) return { ok: false, reason: 'busy' };
   const p = (async (): Promise<ProxyResult> => {
     try {
       const fetched = await fetchPublic(url, {

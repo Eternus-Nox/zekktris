@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Hono } from 'hono';
@@ -6,7 +6,8 @@ import { eq } from 'drizzle-orm';
 import { db, schema } from '../src/db';
 import { env } from '../src/env';
 import { errorHandler } from '../src/middleware';
-import { mediaProxyRouter } from '../src/routes/mediaProxy';
+import { mediaProxyRouter, rateLimitKey } from '../src/routes/mediaProxy';
+import { toScheduledEvent, toWebhook } from '../src/lib/dto';
 import { unfurlRouter } from '../src/routes/unfurl';
 import { messagesRouter } from '../src/routes/messages';
 import { createSession } from '../src/auth/sessions';
@@ -19,6 +20,7 @@ import {
   imageDimensions,
   sniffImageType,
   MAX_IMAGE_BYTES,
+  MAX_CONCURRENT_FETCHES,
 } from '../src/services/mediaProxy';
 import {
   MEDIA_PROXY_PATH,
@@ -51,6 +53,47 @@ function pngHeader(width: number, height: number): Buffer {
   return b;
 }
 
+/** An ICO with one entry: the directory says `dirSize`, the entry's data is
+    `data` (a PNG, or a BMP info header). */
+function ico(dirSize: number, data: Buffer): Buffer {
+  const head = Buffer.alloc(6 + 16);
+  head.writeUInt16LE(1, 2); // type: icon
+  head.writeUInt16LE(1, 4); // one image
+  head[6] = dirSize;
+  head[7] = dirSize;
+  head.writeUInt32LE(data.length, 6 + 8);
+  head.writeUInt32LE(head.length, 6 + 12);
+  return Buffer.concat([head, data]);
+}
+
+/** A BITMAPINFOHEADER for an icon entry: height counts both masks. */
+function bmpInfo(width: number, height: number): Buffer {
+  const b = Buffer.alloc(40 + 64);
+  b.writeUInt32LE(40, 0);
+  b.writeInt32LE(width, 4);
+  b.writeInt32LE(height * 2, 8);
+  return b;
+}
+
+/** A GIF with a `screen`-sized logical screen and one frame at (left, top)
+    of the given size (empty image data). */
+function gif(screen: number, frame: { left: number; top: number; width: number; height: number }): Buffer {
+  const b = Buffer.alloc(13 + 10 + 3 + 1);
+  b.write('GIF89a', 0, 'latin1');
+  b.writeUInt16LE(screen, 6);
+  b.writeUInt16LE(screen, 8);
+  // No global colour table (packed 0).
+  b[13] = 0x2c;
+  b.writeUInt16LE(frame.left, 14);
+  b.writeUInt16LE(frame.top, 16);
+  b.writeUInt16LE(frame.width, 18);
+  b.writeUInt16LE(frame.height, 20);
+  b[23] = 2; // LZW minimum code size, then an empty sub-block run
+  b[24] = 0;
+  b[25] = 0x3b;
+  return b;
+}
+
 const app = new Hono();
 app.onError(errorHandler);
 app.route('/api/v1/media-proxy', mediaProxyRouter);
@@ -62,6 +105,8 @@ app.route('/api/v1/channels', messagesRouter);
 let upstream: Server;
 let port = 0;
 const hits: Record<string, number> = {};
+/** Responses to /slow, held open until the test ends them. */
+const held: Array<import('node:http').ServerResponse> = [];
 
 function routeUpstream(path: string, res: import('node:http').ServerResponse): void {
   switch (path) {
@@ -95,6 +140,9 @@ function routeUpstream(path: string, res: import('node:http').ServerResponse): v
     case '/huge-declared':
       res.writeHead(200, { 'content-type': 'image/png', 'content-length': String(MAX_IMAGE_BYTES + 1) });
       res.end(Buffer.alloc(MAX_IMAGE_BYTES + 1));
+      return;
+    case '/slow':
+      held.push(res);
       return;
     case '/redirect-private':
       res.writeHead(302, { location: `http://127.0.0.1:${port}/ok.png` }).end();
@@ -180,14 +228,37 @@ describe('image sniffing', () => {
       expect(imageDimensions(buf, type as 'image/png')).toEqual({ width: 300, height: 200 });
       expect(checkImage(buf).ok).toBe(true);
     }
-    // ICO: one 32×32 entry.
-    const ico = Buffer.alloc(6 + 16);
-    ico.writeUInt16LE(1, 2);
-    ico.writeUInt16LE(1, 4);
-    ico[6] = 32;
-    ico[7] = 32;
-    expect(sniffImageType(ico)).toBe('image/x-icon');
-    expect(checkImage(ico).ok).toBe(true);
+    // ICO: a 32×32 BMP entry, and a 64×64 PNG one.
+    const bmpIco = ico(32, bmpInfo(32, 32));
+    expect(sniffImageType(bmpIco)).toBe('image/x-icon');
+    expect(imageDimensions(bmpIco, 'image/x-icon')).toEqual({ width: 32, height: 32 });
+    expect(checkImage(bmpIco).ok).toBe(true);
+    const pngIco = ico(64, await base.clone().resize(64, 64).png().toBuffer());
+    expect(imageDimensions(pngIco, 'image/x-icon')).toEqual({ width: 64, height: 64 });
+    expect(checkImage(pngIco).ok).toBe(true);
+  });
+
+  it('measures what a decoder allocates, not just the outer header', () => {
+    // ICO: the 1-byte directory size says 1×1; the entry decodes at its own.
+    expect(checkImage(ico(1, pngHeader(60_000, 60_000)))).toEqual({ ok: false, reason: 'too-large' });
+    expect(checkImage(ico(1, bmpInfo(20_000, 20_000)))).toEqual({ ok: false, reason: 'too-large' });
+    // ICO directory pointing past the end of the file: malformed.
+    const dangling = ico(16, bmpInfo(16, 16)).subarray(0, 6 + 16 + 8);
+    expect(checkImage(dangling)).toEqual({ ok: false, reason: 'not-image' });
+    // GIF: a frame bigger than, or reaching past, the logical screen grows it.
+    expect(checkImage(gif(1, { left: 0, top: 0, width: 20_000, height: 20_000 }))).toEqual({
+      ok: false,
+      reason: 'too-large',
+    });
+    expect(checkImage(gif(100, { left: 8_000, top: 0, width: 500, height: 10 }))).toEqual({
+      ok: false,
+      reason: 'too-large',
+    });
+    expect(imageDimensions(gif(100, { left: 50, top: 60, width: 100, height: 100 }), 'image/gif')).toEqual({
+      width: 150,
+      height: 160,
+    });
+    expect(checkImage(gif(100, { left: 0, top: 0, width: 100, height: 100 })).ok).toBe(true);
   });
 
   it('refuses markup, truncated headers and oversized dimensions', () => {
@@ -275,6 +346,83 @@ describe('GET /api/v1/media-proxy', () => {
     // Another client is unaffected.
     expect((await app.request(proxyPath('http://10.0.0.1/x.png'), {}, from('203.0.113.8'))).status).toBe(502);
   });
+
+  it('keys the IP limit on the /64 for IPv6', () => {
+    expect(rateLimitKey('2001:db8:1:2:aaaa::1')).toBe('2001:db8:1:2::/64');
+    expect(rateLimitKey('2001:0db8:0001:0002:ffff:ffff:ffff:ffff')).toBe('2001:db8:1:2::/64');
+    expect(rateLimitKey('2001:db8::5')).toBe('2001:db8:0:0::/64');
+    expect(rateLimitKey('::1')).toBe('0:0:0:0::/64');
+    expect(rateLimitKey('203.0.113.7')).toBe('203.0.113.7');
+    expect(rateLimitKey('::ffff:203.0.113.7')).toBe('::ffff:203.0.113.7');
+    expect(rateLimitKey(null)).toBe('unknown');
+  });
+
+  it(`runs at most ${MAX_CONCURRENT_FETCHES} upstream fetches at once`, async () => {
+    const from = { incoming: { socket: { remoteAddress: '198.51.100.9' } } };
+    const slow = (i: number) => proxyPath(`http://img.test:${port}/slow?${i}`);
+    const pending = Array.from({ length: MAX_CONCURRENT_FETCHES }, (_, i) => app.request(slow(i), {}, from));
+    await vi.waitFor(() => expect(held.length).toBe(MAX_CONCURRENT_FETCHES));
+
+    // A new URL is turned away, uncached; the same URL joins its fetch.
+    const busy = await app.request(slow(MAX_CONCURRENT_FETCHES), {}, from);
+    expect(busy.status).toBe(503);
+    expect(busy.headers.get('cache-control')).toBe('no-store');
+    expect(busy.headers.get('retry-after')).toBeTruthy();
+    const joined = app.request(slow(0), {}, from);
+
+    for (const res of held.splice(0)) res.writeHead(200, { 'content-type': 'image/png' }).end(PNG);
+    expect((await Promise.all([...pending, joined])).map((r) => r.status)).toEqual(
+      Array(MAX_CONCURRENT_FETCHES + 1).fill(200),
+    );
+    expect(hits['/slow']).toBe(MAX_CONCURRENT_FETCHES);
+    // Capacity is back, and the turned-away URL was not cached as a failure.
+    const retry = app.request(slow(MAX_CONCURRENT_FETCHES), {}, from);
+    await vi.waitFor(() => expect(held.length).toBe(1));
+    held.pop()!.writeHead(200, { 'content-type': 'image/png' }).end(PNG);
+    expect((await retry).status).toBe(200);
+  });
+});
+
+describe('other sender-chosen image URLs', () => {
+  it('event images are proxied in the DTO', () => {
+    const ev = {
+      id: 1n,
+      guildId: 2n,
+      name: 'E',
+      description: null,
+      startAt: new Date(),
+      endAt: null,
+      locationKind: 'external',
+      locationChannelId: null,
+      locationText: 'x',
+      status: 'scheduled',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as unknown as Parameters<typeof toScheduledEvent>[0];
+    expect(toScheduledEvent({ ...ev, imageUrl: 'https://evil.example/banner.png' }, null).imageUrl).toBe(
+      proxiedImageUrl('https://evil.example/banner.png'),
+    );
+    expect(toScheduledEvent({ ...ev, imageUrl: '/cdn/5/banner.png' }, null).imageUrl).toBe('/cdn/5/banner.png');
+    expect(toScheduledEvent({ ...ev, imageUrl: null }, null).imageUrl).toBeNull();
+  });
+
+  it('webhooks keep the configured avatar URL and add a proxied display URL', () => {
+    const wh = {
+      id: 1n,
+      channelId: 2n,
+      guildId: 3n,
+      name: 'Hook',
+      token: 't',
+      createdBy: null,
+      createdAt: new Date(),
+    } as unknown as Parameters<typeof toWebhook>[0];
+    const third = toWebhook({ ...wh, avatarUrl: 'https://avatars.example/u/1.png' });
+    expect(third.avatarUrl).toBe('https://avatars.example/u/1.png');
+    expect(third.avatarDisplayUrl).toBe(proxiedImageUrl('https://avatars.example/u/1.png'));
+    expect(third.avatarDisplayUrl!.startsWith(`${MEDIA_PROXY_PATH}?u=`)).toBe(true);
+    const own = toWebhook({ ...wh, avatarUrl: '/cdn/7/a.png' });
+    expect([own.avatarUrl, own.avatarDisplayUrl]).toEqual(['/cdn/7/a.png', '/cdn/7/a.png']);
+  });
 });
 
 async function tokenFor(userId: bigint): Promise<string> {
@@ -297,6 +445,7 @@ describe.runIf(dbReady)('embed image URLs leave the server proxied (integration)
     await db
       .update(schema.messages)
       .set({
+        authorOverrideAvatar: 'https://avatars.example/u/1.png',
         embeds: [
           {
             url: 'https://site.example',
@@ -349,6 +498,10 @@ describe.runIf(dbReady)('embed image URLs leave the server proxied (integration)
     expect(rich.imageUrl).toBe('/cdn/9/own.png');
     // The link itself is untouched.
     expect(link.url).toBe('https://site.example');
+    // A webhook's per-message avatar is a sender-chosen URL too.
+    expect((msg as unknown as { authorOverrideAvatar: string }).authorOverrideAvatar).toBe(
+      proxiedImageUrl('https://avatars.example/u/1.png'),
+    );
 
     // The row keeps the raw URLs; only the wire form is rewritten.
     const [row] = await db.select().from(schema.messages).where(eq(schema.messages.id, messageId));

@@ -1,10 +1,11 @@
 /**
  * Link-preview image proxy URLs
  * -----------------------------
- * Embed images (og:image, favicon, webhook author/footer icons, thumbnails)
- * point at whatever host the sender's page or webhook named. Rendering them
+ * Embed images (og:image, favicon, webhook author/footer icons, thumbnails),
+ * webhook avatars and scheduled-event images point at whatever host the
+ * sender's page, webhook or API call named. Rendering them
  * straight from there would hand every VIEWER's IP and User-Agent to that
- * host (and http ones are mixed content). So every embed image URL leaves the
+ * host (and http ones are mixed content). So every such URL leaves the
  * server rewritten to the server's own image proxy (routes/mediaProxy.ts):
  *
  *   /api/v1/media-proxy?u=<encoded upstream url>&s=<signature>
@@ -17,10 +18,11 @@
  * another name (LAN IP, mDNS, a tunnel) than PUBLIC_URL says.
  *
  * <img> can't carry a bearer token, so the proxy is authorised by an HMAC over
- * the upstream URL instead: it only fetches URLs the server itself put into an
- * embed. The signature is deterministic (no expiry) so a given image keeps one
+ * the upstream URL instead: it only fetches URLs the server itself put into a
+ * response. The signature is deterministic (no expiry) so a given image keeps one
  * URL, which is what lets browsers, CachedImage and Coil cache it. Rewriting
- * happens at serialization time (lib/dto.ts toMessage, the /unfurl response),
+ * happens at serialization time (lib/dto.ts toMessage, toWebhook's
+ * avatarDisplayUrl, toScheduledEvent; the /unfurl response),
  * not on the stored row, so existing messages are covered and rotating the key
  * only costs clients one re-fetch.
  *

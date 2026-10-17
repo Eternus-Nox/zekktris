@@ -607,7 +607,7 @@ export async function fetchPublic(
       log.info('embed fetch: body cut short', { url: current.href, bytes: total });
       return null;
     }
-    const body = Buffer.concat(chunks.map((c) => Buffer.from(c)));
+    const body = Buffer.concat(chunks);
     return { body, finalUrl: current, contentType: ct };
   }
 }
