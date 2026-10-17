@@ -571,7 +571,7 @@ const DECRYPTED_MEDIA_MAX_COUNT = 256;
 const decryptedMediaInFlight = new Map<string, Promise<string | null>>();
 
 function decryptedMediaCacheKey(channelId: string, url: string): string {
-  return `${channelId} ${url}`;
+  return `${channelId}\u0000${url}`;
 }
 
 function revokeDecryptedMedia(key: string): void {

@@ -466,7 +466,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
         const found = list.find((c) => c.id === id);
         if (!found) continue;
         value[id] = { channel: found, guildId: gid };
-        sig += `${id} ${gid} ${found.name ?? ''}`;
+        sig += `${id}\u0000${gid}\u0000${found.name ?? ''}\u0001`;
         break;
       }
     }
