@@ -21,9 +21,12 @@ import UniformTypeIdentifiers
 /// switch to Zekktris.
 ///
 /// The conversation comes from the donated `INSendMessageIntent`: when the user
-/// taps a suggested person in the share sheet, iOS puts that intent on the
+/// taps a suggested conversation in the share sheet, iOS puts that intent on the
 /// extension context, and its `conversationIdentifier` is the Zekktris channel
-/// id we donated in `ShareSuggestions`.
+/// id we donated — a DM in `ShareSuggestions`, or any conversation that
+/// notified (DM, group DM or guild channel) in the Notification Service
+/// extension. The app opens whichever it is, and falls back to its
+/// conversation picker when it can't.
 final class ShareViewController: UIViewController {
     // Keep in step with AppGroupConfig.identifier and AppStore.consumeStagedShare.
     private let appGroup = "group.com.zekktris.native"

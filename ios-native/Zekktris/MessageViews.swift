@@ -2261,8 +2261,9 @@ struct MessageListView: View {
     /// Put what the Share Extension staged (AppStore.consumeStagedShare) into
     /// this composer: its text joins the draft, its files become pending
     /// attachments, and the user presses send — never sent on its own. Only
-    /// in the conversation it was shared to, or, when none was picked in the
-    /// share sheet, the one the user opens from the DM list. (In an encrypted
+    /// in the conversation it was shared to (a DM or a guild channel), or, when
+    /// none was picked in the share sheet or it couldn't be opened, the one the
+    /// user opens from the DM list. (In an encrypted
     /// chat that is still locked it waits in the hidden composer until unlock,
     /// and is encrypted at send like anything else.)
     ///

@@ -114,8 +114,10 @@ server*). The remaining gaps are listed under *Not built yet*.
   (`.zke`), with an encrypted thumbnail, and decrypted for display — the
   server only ever stores ciphertext. Files shared from other apps through the
   **Share Extension** are picked up when you next open Zekktris: a suggested
-  conversation tapped in the share sheet opens with them in its composer;
-  otherwise the DM list asks you to pick one. Nothing is sent automatically.
+  conversation tapped in the share sheet (a DM, group DM or server channel)
+  opens with them in its composer; otherwise, or if that conversation can't be
+  opened any more, the DM list asks you to pick one. Nothing is sent
+  automatically.
 - **Link previews in E2EE DMs** are **off by default**. With *Settings →
   Security → Link previews in encrypted chats* on, the app sends the link (not
   the message) to your server's `/unfurl` to build the preview.
