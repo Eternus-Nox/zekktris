@@ -31,7 +31,6 @@ import { instanceRouter } from './routes/instance';
 import { messagesRouter } from './routes/messages';
 import { webhooksAdminRouter, webhooksExecuteRouter } from './routes/webhooks';
 import { familyRouter } from './routes/family';
-import { billingRouter } from './routes/billing';
 import { dmsRouter } from './routes/dms';
 import { cdnRouter } from './routes/cdn';
 import { voiceRouter } from './routes/voice';
@@ -53,7 +52,7 @@ export function createApp() {
   //   • multipart/form-data → the upload ceiling (per-file cap × max files,
   //     plus framing overhead). Per-file / per-message caps are still
   //     enforced downstream in the upload service; this is the outer bound.
-  //   • everything else (JSON / urlencoded / text / Stripe webhook) → 8 MB,
+  //   • everything else (JSON / urlencoded / text) → 8 MB,
   //     comfortably above the largest legit JSON body (a guild-backup import:
   //     ≤1000 roles + channels, low single-digit MB) while rejecting bombs.
   // bodyLimit measures ACTUAL streamed bytes, so a spoofed/absent
@@ -155,10 +154,6 @@ export function createApp() {
   // Parental controls — linking + supervision summary. Defines its own
   // /family/* paths so it mounts at the v1 root.
   v1.route('/', familyRouter);
-  // Legacy Stripe wind-down (portal/cancel/webhook; no checkout). The webhook
-  // (/api/v1/billing/webhook) is unauthenticated by design — authenticity
-  // comes from Stripe's signature over the raw body.
-  v1.route('/billing', billingRouter);
   app.route('/api/v1', v1);
 
   // Public webhook execute — outside /api/v1 so the auth middleware

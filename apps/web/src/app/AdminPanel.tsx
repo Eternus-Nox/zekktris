@@ -2146,73 +2146,6 @@ function MonetizeTierRow({
   );
 }
 
-/**
- * Subscriptions bought before payments were removed. Shows only while some are
- * still billing; one button turns each into a forever tier at the same level
- * and cancels its Stripe billing so nobody is charged again.
- */
-function LegacyPaidSubscriptions() {
-  const { rest } = useAuth();
-  const toasts = useToasts();
-  const [active, setActive] = useState<number | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    rest
-      .adminPaidSubscriptions()
-      .then((r) => !cancelled && setActive(r.active))
-      .catch(() => !cancelled && setActive(0));
-    return () => {
-      cancelled = true;
-    };
-  }, [rest]);
-
-  if (!active) return null;
-
-  async function retire() {
-    if (
-      !window.confirm(
-        `End billing for ${active} paid subscription${active === 1 ? '' : 's'}? Each person keeps their tier forever and is never charged again. This can't be undone.`,
-      )
-    ) {
-      return;
-    }
-    setBusy(true);
-    try {
-      const r = await rest.adminRetirePaidSubscriptions();
-      setActive(0);
-      toasts.push(
-        r.cancelFailures
-          ? `Converted ${r.converted}. ${r.cancelFailures} couldn't be canceled at Stripe — cancel those in the Stripe dashboard.`
-          : `Converted ${r.converted} to forever tiers. Billing stopped.`,
-        r.cancelFailures ? 'error' : 'success',
-      );
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Could not end billing', 'error');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <section className="border border-amber-500/40 bg-amber-500/5 rounded-md p-4 space-y-2">
-      <h3 className="text-sm font-semibold text-ink-1">Paid subscriptions still billing</h3>
-      <p className="text-xs text-ink-3 leading-relaxed">
-        {active} {active === 1 ? 'person is' : 'people are'} still being charged for a tier bought
-        before Zekktris went free. End their billing and they keep that tier forever.
-      </p>
-      <button
-        onClick={() => void retire()}
-        disabled={busy}
-        className="px-3 py-1.5 rounded-md text-sm font-medium bg-bg-2 text-ink-1 border border-amber-500/50 hover:border-amber-400 transition-colors disabled:opacity-50"
-      >
-        {busy ? 'Ending billing…' : 'End all billing, keep tiers'}
-      </button>
-    </section>
-  );
-}
-
 function MonetizationTab() {
   const { rest } = useAuth();
   const toasts = useToasts();
@@ -2290,8 +2223,6 @@ function MonetizationTab() {
         title="Perks"
         subtitle="Everything is free, cosmetics included. Scout, Guardian and Legend are tiers you give people from their Account Info page; choose here what each tier adds. Apps pick up changes at their next sign-in or refresh."
       />
-
-      <LegacyPaidSubscriptions />
 
       <section className="border border-line rounded-md p-4 space-y-3">
         <h3 className="text-sm font-semibold text-ink-1">Screen streaming</h3>

@@ -81,12 +81,6 @@ export const envSchema = z.object({
     z.string().url().optional(),
   ).transform((v) => v ?? 'https://github.com/Eternus-Nox/zekktris'),
 
-  // ── Stripe billing — LEGACY (payments removed 2026-10-02) ──────────────
-  // Only needed while subscriptions bought before then are still live (see
-  // services/billing). Leave both unset on any new or self-hosted server.
-  STRIPE_SECRET_KEY: emptyAsUndefined(z.string().startsWith('sk_').optional()),
-  STRIPE_WEBHOOK_SECRET: emptyAsUndefined(z.string().startsWith('whsec_').optional()),
-
   // ── Auth ───────────────────────────────────────────────────────────────
   /** HS256 signing key for short-lived access tokens. Min 32 bytes. */
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),

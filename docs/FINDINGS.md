@@ -770,9 +770,9 @@ Full write-ups with failure scenarios + fixes live in the Obsidian vault:
 - Poll voting bypasses timeout (and onboarding/supervision) enforcement that send/react enforce — `apps/api/src/routes/messages.ts`
 - Message edit bypasses automod, banned-words, and spam checks — `apps/api/src/routes/messages.ts`
 - E2EE suppression for supervised DMs is a client-only hint; server never rejects zkE2EE ciphertext, defeating parental monitoring — `apps/api/src/routes/dms.ts`
-- customer.subscription.updated blindly extends expiry regardless of subscription status (past_due / unpaid entitlement) — `apps/api/src/services/billing.ts`
-- No webhook event de-duplication + userId-PK upsert lets a second Checkout orphan the first paid Stripe subscription (double-billing) — `apps/api/src/services/subscriptions.ts`
-- Gift/founder forever membership silently downgraded to paid monthly on a completed Stripe checkout — `apps/api/src/services/subscriptions.ts`
+- customer.subscription.updated blindly extends expiry regardless of subscription status (past_due / unpaid entitlement) — `apps/api/src/services/billing.ts` — **gone: all Stripe code removed (2026-10-16)**
+- No webhook event de-duplication + userId-PK upsert lets a second Checkout orphan the first paid Stripe subscription (double-billing) — `apps/api/src/services/subscriptions.ts` — **gone: all Stripe code removed (2026-10-16)**
+- Gift/founder forever membership silently downgraded to paid monthly on a completed Stripe checkout — `apps/api/src/services/subscriptions.ts` — **gone: all Stripe code removed (2026-10-16)**
 - addMemberRole TOCTOU: concurrent kick/leave leaves an orphaned member_roles row that restores the role on rejoin — `apps/api/src/services/members.ts`
 - Deleting a category leaves grandchild threads orphaned (soft-delete leak) — `apps/api/src/services/channels.ts`
 - Pin/unpin broadcasts leak the moderator's poll votes and reaction highlights to the whole channel — `apps/api/src/routes/messages.ts`

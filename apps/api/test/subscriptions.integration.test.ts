@@ -1,16 +1,12 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, afterAll } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, schema } from '../src/db';
 import {
-  activateStripeSubscription,
-  countPaidSubscriptions,
-  endStripeSubscription,
   getEffectiveSubscription,
   giftSubscription,
   hasMembership,
   removeSubscription,
-  renewStripeSubscription,
-  retirePaidSubscriptions,
   sweepExpiredSubscriptions,
 } from '../src/services/subscriptions';
 import { createUser, cleanupAll } from './seed';
@@ -58,7 +54,7 @@ describe.runIf(dbReady)('perk tiers (integration)', () => {
 
     await giftSubscription(admin, user, 'guardian', 'forever');
     const eff = await getEffectiveSubscription(user);
-    expect(eff).toEqual({ tier: 'guardian', expiresAt: null, inherited: false, titled: true, source: 'gift', cancelAtPeriodEnd: false });
+    expect(eff).toEqual({ tier: 'guardian', expiresAt: null, inherited: false, titled: true, source: 'gift' });
   });
 
   it('timed gift sets an expiry; re-gifting overwrites tier + duration', async () => {
@@ -71,7 +67,7 @@ describe.runIf(dbReady)('perk tiers (integration)', () => {
 
     await giftSubscription(admin, user, 'legend', 'forever');
     const second = await getEffectiveSubscription(user);
-    expect(second).toEqual({ tier: 'legend', expiresAt: null, inherited: false, titled: true, source: 'gift', cancelAtPeriodEnd: false });
+    expect(second).toEqual({ tier: 'legend', expiresAt: null, inherited: false, titled: true, source: 'gift' });
   });
 
   it("a supervising parent's membership passes down (highest tier wins)", async () => {
@@ -109,7 +105,7 @@ describe.runIf(dbReady)('perk tiers (integration)', () => {
     expect(await hasMembership(founder)).toBe(true); // perks work
     expect(eff!.titled).toBe(false); // …but no title
 
-    // Choosing a tier (admin gift here; a paid sub later) titles them.
+    // Choosing a tier (an admin gift) titles them.
     await giftSubscription(admin, founder, 'guardian', 'forever');
     const regifted = await getEffectiveSubscription(founder);
     expect(regifted!.titled).toBe(true);
@@ -132,146 +128,80 @@ describe.runIf(dbReady)('perk tiers (integration)', () => {
     expect(cosmetics.tagLabel).toBe('ZKT');
   });
 
-  it('legacy stripe lifecycle: activate → titled; renew extends; delete ends the tier', async () => {
-    const user = await createUser();
-    const periodEnd = new Date(Date.now() + 30 * 86_400_000);
-    await activateStripeSubscription({
-      userId: user,
-      tier: 'guardian',
-      stripeCustomerId: 'cus_test1',
-      stripeSubscriptionId: 'sub_test1',
-      currentPeriodEnd: periodEnd,
-    });
-    const eff = await getEffectiveSubscription(user);
-    expect(eff!.tier).toBe('guardian');
-    expect(eff!.titled).toBe(true);
-    expect(eff!.source).toBe('stripe');
-    // 24h grace beyond the period end.
-    expect(eff!.expiresAt!.getTime()).toBe(periodEnd.getTime() + 24 * 3_600_000);
-
-    // A fresh activation is auto-renewing (not scheduled to cancel).
-    expect(eff!.cancelAtPeriodEnd).toBe(false);
-
-    // Renewal pushes the expiry forward (and can retier on plan change).
-    const nextEnd = new Date(Date.now() + 60 * 86_400_000);
-    expect(await renewStripeSubscription('sub_test1', nextEnd, 'legend')).toBe(true);
-    const renewed = await getEffectiveSubscription(user);
-    expect(renewed!.tier).toBe('legend');
-    expect(renewed!.expiresAt!.getTime()).toBe(nextEnd.getTime() + 24 * 3_600_000);
-
-    // A cancel (cancel_at_period_end) is reflected in the entitlement read so
-    // Settings can show "Cancels on <date> · Resume".
-    expect(await renewStripeSubscription('sub_test1', nextEnd, undefined, true)).toBe(true);
-    expect((await getEffectiveSubscription(user))!.cancelAtPeriodEnd).toBe(true);
-    // Reactivate clears it.
-    expect(await renewStripeSubscription('sub_test1', nextEnd, undefined, false)).toBe(true);
-    expect((await getEffectiveSubscription(user))!.cancelAtPeriodEnd).toBe(false);
-
-    // Stripe-side deletion ends the tier; the cosmetics stay (they're free).
-    await db
-      .update(schema.users)
-      .set({ avatarDecoration: 'ocean', tagLabel: 'PAID' })
-      .where(eq(schema.users.id, user));
-    expect(await endStripeSubscription('sub_test1')).toBe(true);
-    expect(await hasMembership(user)).toBe(false);
-    const cosmetics = await userCosmetics(user);
-    expect(cosmetics.avatarDecoration).toBe('ocean');
-    expect(cosmetics.tagLabel).toBe('PAID');
-    // Unknown subscription id → no-op.
-    expect(await endStripeSubscription('sub_missing')).toBe(false);
-  });
-
-  it('giving a tier over a live paid row replaces it, and a late Stripe delete cannot touch it', async () => {
-    const user = await createUser();
-    await activateStripeSubscription({
-      userId: user,
-      tier: 'scout',
-      stripeCustomerId: 'cus_over',
-      stripeSubscriptionId: 'sub_over',
-      currentPeriodEnd: new Date(Date.now() + 30 * 86_400_000),
-    });
-    const admin = await createUser();
-    await giftSubscription(admin, user, 'legend', 'forever');
-    expect(await getEffectiveSubscription(user)).toMatchObject({ tier: 'legend', source: 'gift', expiresAt: null });
-    expect(await endStripeSubscription('sub_over')).toBe(false);
-    expect((await getEffectiveSubscription(user))!.tier).toBe('legend');
-  });
-
-  it('retiring paid subscriptions keeps each tier forever and drops the Stripe link', async () => {
+  it('migration 0129 turns live paid rows into forever gifts and drops lapsed ones', async () => {
     const admin = await createUser();
     const paid = await createUser();
-    await activateStripeSubscription({
-      userId: paid,
-      tier: 'guardian',
-      stripeCustomerId: 'cus_retire',
-      stripeSubscriptionId: 'sub_retire',
-      currentPeriodEnd: new Date(Date.now() + 30 * 86_400_000),
-    });
+    const lapsed = await createUser();
     const gifted = await createUser();
+    const founder = await createUser();
+    // Rows as the removed Stripe webhook left them.
+    await db.insert(schema.subscriptions).values([
+      {
+        userId: paid,
+        tier: 'guardian',
+        source: 'stripe',
+        expiresAt: new Date(Date.now() + 30 * 86_400_000),
+        stripeCustomerId: 'cus_live',
+        stripeSubscriptionId: 'sub_live',
+        cancelAtPeriodEnd: true,
+      },
+      {
+        userId: lapsed,
+        tier: 'scout',
+        source: 'stripe',
+        expiresAt: new Date(Date.now() - 1000),
+        stripeCustomerId: 'cus_lapsed',
+        stripeSubscriptionId: 'sub_lapsed',
+      },
+      { userId: founder, tier: 'scout', source: 'founder', expiresAt: null },
+    ]);
     await giftSubscription(admin, gifted, 'scout', '1m');
+    const giftedBefore = await getEffectiveSubscription(gifted);
 
-    expect(await countPaidSubscriptions()).toBeGreaterThanOrEqual(1);
-    const r = await retirePaidSubscriptions(admin);
-    expect(r.converted).toBeGreaterThanOrEqual(1);
-    // No Stripe key in tests, so the remote cancel is reported, not faked.
-    expect(r.cancelFailures).toBe(r.converted);
+    const file = new URL('../../../packages/db/migrations/0129_retire_stripe_rows.sql', import.meta.url);
+    const statements = readFileSync(file, 'utf8').split('--> statement-breakpoint');
+    // Twice: the migration must be idempotent.
+    for (let i = 0; i < 2; i++) {
+      for (const stmt of statements) await db.execute(sql.raw(stmt));
+    }
 
+    // Same tier, now forever, titled, and not scheduled to end.
     expect(await getEffectiveSubscription(paid)).toEqual({
       tier: 'guardian',
       expiresAt: null,
       inherited: false,
       titled: true,
       source: 'gift',
-      cancelAtPeriodEnd: false,
     });
     const [row] = await db
       .select()
       .from(schema.subscriptions)
       .where(eq(schema.subscriptions.userId, paid))
       .limit(1);
-    expect(row!.stripeSubscriptionId).toBeNull();
-    expect(row!.giftedBy).toBe(admin);
-    // A late webhook for the old subscription can't end the converted row.
-    expect(await endStripeSubscription('sub_retire')).toBe(false);
-    // Gifts that were never paid are untouched.
-    expect((await getEffectiveSubscription(gifted))!.expiresAt).not.toBeNull();
-    expect(await countPaidSubscriptions()).toBe(0);
-  });
+    expect(row!.cancelAtPeriodEnd).toBe(false);
+    expect(row!.giftedBy).toBeNull();
+    // The Stripe ids stay so an operator can still find it in the dashboard.
+    expect(row!.stripeSubscriptionId).toBe('sub_live');
+    // The expiry sweep then leaves it alone.
+    await sweepExpiredSubscriptions();
+    expect(await hasMembership(paid)).toBe(true);
 
-  it('activating a DIFFERENT stripe sub for the same user reports the superseded id', async () => {
-    const user = await createUser();
-    const periodEnd = new Date(Date.now() + 30 * 86_400_000);
-    const first = await activateStripeSubscription({
-      userId: user,
-      tier: 'scout',
-      stripeCustomerId: 'cus_dup',
-      stripeSubscriptionId: 'sub_A',
-      currentPeriodEnd: periodEnd,
-    });
-    // First activation supersedes nothing.
-    expect(first.supersededSubscriptionId).toBeNull();
+    // A paid row that had already lapsed is gone, as the sweep would do.
+    const [lapsedRow] = await db
+      .select()
+      .from(schema.subscriptions)
+      .where(eq(schema.subscriptions.userId, lapsed))
+      .limit(1);
+    expect(lapsedRow).toBeUndefined();
 
-    // A second checkout (race) completes with a different subscription id →
-    // the old one is reported so the caller cancels it at Stripe (no orphan).
-    const second = await activateStripeSubscription({
-      userId: user,
-      tier: 'guardian',
-      stripeCustomerId: 'cus_dup',
-      stripeSubscriptionId: 'sub_B',
-      currentPeriodEnd: periodEnd,
-    });
-    expect(second.supersededSubscriptionId).toBe('sub_A');
-
-    // Re-activating the SAME subscription id (idempotent webhook redelivery)
-    // supersedes nothing.
-    const again = await activateStripeSubscription({
-      userId: user,
-      tier: 'guardian',
-      stripeCustomerId: 'cus_dup',
-      stripeSubscriptionId: 'sub_B',
-      currentPeriodEnd: periodEnd,
-    });
-    expect(again.supersededSubscriptionId).toBeNull();
+    // Gifts and founder rows are untouched.
+    expect(await getEffectiveSubscription(gifted)).toEqual(giftedBefore);
+    expect((await getEffectiveSubscription(founder))!.source).toBe('founder');
+    const leftover = await db
+      .select({ userId: schema.subscriptions.userId })
+      .from(schema.subscriptions)
+      .where(and(eq(schema.subscriptions.source, 'stripe'), inArray(schema.subscriptions.userId, [paid, lapsed])));
+    expect(leftover).toEqual([]);
   });
 
   it('expired rows grant nothing and the sweep deletes them (cosmetics stay)', async () => {

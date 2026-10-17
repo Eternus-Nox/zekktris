@@ -469,8 +469,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Premium-streaming entitlement: push the signed-in tier into the voice
   // lib, and fetch the instance's admin-configured monetization matrix
   // (which resolutions need which tier). This is the single chokepoint
-  // every user change funnels through — login, getMe refresh, billing
-  // success poll, admin gift — so the publish-time clamp in voice.ts
+  // every user change funnels through — login, getMe refresh, admin
+  // gift — so the publish-time clamp in voice.ts
   // always reflects the current tier. Signed-out (null user) resets to
   // rank 0 (free) — fail closed.
   //
