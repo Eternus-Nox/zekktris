@@ -54,8 +54,21 @@ export const users = pgTable(
     /** Cosmetic avatar decoration id (a CSS ring/glow overlay rendered by the
      *  client from a preset registry). NULL / 'none' = no decoration. */
     avatarDecoration: text('avatar_decoration'),
-    /** Last status the user actively set; what others see when online. */
+    /** EFFECTIVE presence — what everyone sees (masked 'invisible' → 'offline'
+     *  for others). Written only by the gateway's presence recompute
+     *  (apps/api/src/gateway/presence.ts) from chosenStatus + the activity of
+     *  every live connection: 'offline' with no live connection, else the
+     *  chosen status, except that chosen 'online' reads 'idle' while no
+     *  connected device is in use. */
     status: userStatusEnum('status').notNull().default('offline'),
+    /** What the user PICKED (PATCH /users/@me {status}); never 'offline'
+     *  (CHECK users_chosen_status_not_offline). Survives disconnects, so a
+     *  chosen Do Not Disturb is still there on the next connect. Migration
+     *  0130. */
+    chosenStatus: userStatusEnum('chosen_status')
+      .$type<'online' | 'idle' | 'dnd' | 'invisible'>()
+      .notNull()
+      .default('online'),
     customStatus: text('custom_status'),
     /**
      * "Last online" — the last moment we OBSERVED this user holding a live
