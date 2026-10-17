@@ -329,6 +329,49 @@ describe.runIf(dbReady)('send gates on every guild send path', () => {
     });
   });
 
+  // The scheduled create route checked only SEND_MESSAGES, so a message
+  // could be queued into a forum (or link channel) the live send refuses,
+  // and the worker inserted it there as an invisible row.
+  describe('POST /channels/:id/scheduled-messages', () => {
+    const later = () => new Date(Date.now() + 3600_000).toISOString();
+
+    it('refuses forum and link channels with the live send\'s 400s', async () => {
+      const { g, member, forum } = await fixture();
+      const link = nextSnowflake();
+      await db.insert(schema.channels).values({
+        id: link,
+        type: 'guild_link',
+        guildId: g,
+        name: 'docs',
+        linkUrl: 'https://example.com',
+      });
+      for (const ch of [forum, link]) {
+        const live = await req('POST', `/channels/${ch}/messages`, member, { content: 'hi' });
+        const scheduled = await req('POST', `/channels/${ch}/scheduled-messages`, member, {
+          content: 'hi',
+          scheduledFor: later(),
+        });
+        expect(live).toMatchObject({ status: 400, code: 'BAD_REQUEST' });
+        expect(scheduled).toMatchObject({ status: 400, code: 'BAD_REQUEST' });
+        expect(scheduled.json).toEqual(live.json);
+      }
+      const queued = await db
+        .select()
+        .from(schema.scheduledMessages)
+        .where(eq(schema.scheduledMessages.authorId, member));
+      expect(queued).toHaveLength(0);
+    });
+
+    it('still queues into a text channel', async () => {
+      const { member, text } = await fixture();
+      const res = await req('POST', `/channels/${text}/scheduled-messages`, member, {
+        content: 'hi',
+        scheduledFor: later(),
+      });
+      expect(res.status).toBe(200);
+    });
+  });
+
   // repeat_message compares against the author's stored messages. A title,
   // thread name or poll text is not stored as one, so restating a message
   // there must not count as a repeat (under block_and_timeout it also timed

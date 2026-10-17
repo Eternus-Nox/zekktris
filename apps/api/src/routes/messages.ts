@@ -32,6 +32,7 @@ import * as supervision from '../services/supervision';
 import { assertNotInstanceMuted } from '../services/instanceMutes';
 import {
   E2EE_CIPHERTEXT_RE,
+  assertChannelAcceptsMessages,
   enforceGuildContentModeration,
   enforceGuildParticipationGates,
   enforceGuildSendGates,
@@ -558,17 +559,9 @@ messagesRouter.post(
       // directly to a forum channel would be invisible to viewers
       // while still consuming DB rows. The proper path is the
       // forum-post route which creates a new thread + its first
-      // message.
-      if (ctx.channel.type === 'guild_forum') {
-        throw errors.badRequest(
-          'Forum channels only accept posts — use POST /channels/:forumId/posts',
-        );
-      }
-      if (ctx.channel.type === 'guild_link') {
-        throw errors.badRequest(
-          'Link channels are bookmarks — they don\'t carry messages',
-        );
-      }
+      // message. Link channels carry no messages at all. Shared with
+      // the scheduled-message create route and fire gates.
+      assertChannelAcceptsMessages(ctx.channel);
       // Archived-thread lock, SEND_MESSAGES / ATTACH_FILES, onboarding,
       // timeout, supervision, slowmode, spam, banned words + automod. One
       // shared helper so the scheduled-message worker applies the exact same
@@ -3167,9 +3160,11 @@ messagesRouter.post(
 // for later either. Slowmode is intentionally NOT enforced — a
 // scheduled message firing past the slowmode window is fine and
 // is the whole point of the feature; preventing it would force
-// users to do math. Every other live-send gate (timeout, onboarding,
-// supervision, spam, banned words / automod, DM blocks) re-runs when
-// the message FIRES — see scheduledMessages.fireScheduled.
+// users to do math. The live send's channel-type refusal (forum /
+// link channels) applies here and again at fire time. Every other
+// live-send gate (timeout, onboarding, supervision, spam, banned
+// words / automod, DM blocks) re-runs when the message FIRES — see
+// scheduledMessages.fireScheduled.
 //
 // Attachments are NOT supported in v1 of scheduling — the simpler
 // surface ships first. Attachments would need to upload-and-pin
@@ -3198,7 +3193,10 @@ messagesRouter.post(
     // loadChannelContext only verifies VIEW_CHANNEL — gate SEND_MESSAGES
     // explicitly. Without this, a member who can read but not post could
     // queue a message that fires later, bypassing the send permission.
+    // Forum / link channels are refused with the live send's 400s first:
+    // the worker would otherwise insert an invisible row into them.
     if (!ctx.isDM && ctx.channelPerms !== null) {
+      assertChannelAcceptsMessages(ctx.channel);
       if (!hasPermission(ctx.channelPerms, Permissions.SEND_MESSAGES)) {
         throw errors.missingPermissions(['SEND_MESSAGES']);
       }

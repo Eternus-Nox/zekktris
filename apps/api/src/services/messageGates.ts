@@ -26,6 +26,24 @@ import type { schema } from '../db';
 export const E2EE_CIPHERTEXT_RE = /^zkE2EE\/\d+:/;
 
 /**
+ * Request-shape check for every path that creates a message row directly in
+ * a GUILD channel (live send, scheduled create and fire): forums hold posts
+ * (threads), not messages of their own, and link channels hold nothing. A
+ * row in either would be invisible (no message stream renders there) while
+ * still moving the channel's lastMessageId / unread state. Kept separate from
+ * enforceGuildSendGates because the forum-post route runs those gates against
+ * the forum itself.
+ */
+export function assertChannelAcceptsMessages(channel: Pick<schema.Channel, 'type'>): void {
+  if (channel.type === 'guild_forum') {
+    throw errors.badRequest('Forum channels only accept posts — use POST /channels/:forumId/posts');
+  }
+  if (channel.type === 'guild_link') {
+    throw errors.badRequest('Link channels are bookmarks — they don\'t carry messages');
+  }
+}
+
+/**
  * Participation gates shared by the send, reaction, and poll-vote paths for a
  * GUILD channel: a pending (un-onboarded) member, a timed-out member, or a
  * supervision-restricted minor may not participate. No-op for DMs (no guild
@@ -154,8 +172,8 @@ export async function enforceGuildContentModeration(args: {
  * message carries files) → participation (pending / timeout / supervision) →
  * slowmode (unless skipped; MANAGE_MESSAGES bypasses it) → instance spam
  * throttle → banned words + automod over `content`, then over `extraText`.
- * Request-shape checks (forum / link channels) and instance mute stay with
- * the caller.
+ * Request-shape checks (assertChannelAcceptsMessages for paths that create a
+ * message row in `channel`) and instance mute stay with the caller.
  */
 export async function enforceGuildSendGates(args: {
   channel: schema.Channel;
@@ -252,6 +270,9 @@ export async function enforceScheduledFireGates(args: {
     throw new Error('No permission to send in this channel');
   }
   if (channel.guildId !== null) {
+    // The live send's request-shape check: a row queued before the create
+    // route refused forums / link channels must not post into one now.
+    assertChannelAcceptsMessages(channel);
     await enforceGuildSendGates({
       channel,
       channelPerms: perms,
