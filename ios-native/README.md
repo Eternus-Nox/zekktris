@@ -52,8 +52,9 @@ server*). The remaining gaps are listed under *Not built yet*.
   authors, your own), seeded from the DTOs and updated live from
   `PRESENCE_UPDATE` gateway events. Your status follows the device you are
   actually using: the phone reports its own activity to the gateway — active
-  while the app is in the foreground and was touched within 5 minutes (or
-  you're talking in voice), idle the moment it goes to the background — in
+  while the app is in the foreground and was touched or typed in within 5
+  minutes (or you're talking in voice), idle the moment it goes to the
+  background or when it is woken in the background for a call — in
   IDENTIFY/RESUME and as `PRESENCE_UPDATE` (op 3) on each change. The server
   combines every device's report with the status you picked: picked Online
   reads Online while any device is in use and Away once none is. Your own dot

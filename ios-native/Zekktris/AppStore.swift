@@ -1602,8 +1602,10 @@ final class AppStore: ObservableObject {
     /// only, compute the legacy auto status and push it if it differs from the
     /// current chosen status.
     func evaluateAutoPresence() {
-        guard let uid = currentUserId else { return }
-        let talking = voice.speakingUserIds.contains(uid)
+        // Report even without a self id: a cold background VoIP launch starts
+        // with `user: nil`, and its IDENTIFY must still carry `active:false`
+        // (a connection that never reports counts as active server-side).
+        let talking = currentUserId.map { voice.speakingUserIds.contains($0) } ?? false
         let secs = Date().timeIntervalSince(lastInteractionAt)
         let active = DevicePresence.isActive(
             foreground: !appInBackground, secondsSinceInteraction: secs, talking: talking
@@ -1612,7 +1614,7 @@ final class AppStore: ObservableObject {
         // Always: it rides in IDENTIFY/RESUME (ignored by older servers) and
         // goes out as op 3 only on a change, only where it's supported.
         gateway.setPresenceActive(active)
-        guard !serverDerivesPresence else { return }
+        guard currentUserId != nil, !serverDerivesPresence else { return }
         let chosen = currentChosenStatus?() ?? "online"
         guard let desired = Self.desiredAutoStatus(
             chosen: chosen, autoSetIdle: autoSetIdle, appActive: appActive,
@@ -4287,6 +4289,10 @@ final class AppStore: ObservableObject {
     // MARK: Typing
 
     func triggerTyping() {
+        // The software keyboard lives in its own window, out of reach of the
+        // app-window touch watcher — typing must keep this device active.
+        // (Already throttled by the composer.)
+        noteInteraction(evaluate: false)
         guard let channel = selectedChannel else { return }
         Task { await api.triggerTyping(channelId: channel.id) }
     }
