@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { DeviceActivity } from './presenceActivity';
 import { subscribeSpeakers } from './voice';
+import { currentSelfStatus, recordSelfUser } from './selfStatus';
 
 /**
  * Report whether this device is in use, so the user's presence follows the
@@ -39,9 +40,11 @@ export function usePresenceActivity(): void {
   const { rest, gateway, user, updateUser } = useAuth();
   const userId = user?.id ?? null;
 
-  // Legacy auto-away reads the latest status without re-subscribing.
-  const statusRef = useRef(user?.status);
-  statusRef.current = user?.status;
+  // Legacy auto-away reads the latest status when it fires, without
+  // re-subscribing (or re-rendering the shell on every status change).
+  const userRef = useRef(user);
+  userRef.current = user;
+  const currentStatus = () => (userRef.current ? currentSelfStatus(userRef.current).status : undefined);
 
   useEffect(() => {
     if (!userId) return;
@@ -74,15 +77,17 @@ export function usePresenceActivity(): void {
         if (!serverKnown || gateway.supportsPresenceActivity()) return;
         try {
           if (idle) {
-            if (statusRef.current === 'online') {
+            if (currentStatus() === 'online') {
               autoSet = true;
               const r = await rest.patchMe({ status: 'idle' });
               updateUser(r.user);
+              recordSelfUser(r.user);
             }
-          } else if (autoSet && statusRef.current === 'idle') {
+          } else if (autoSet && currentStatus() === 'idle') {
             autoSet = false;
             const r = await rest.patchMe({ status: 'online' });
             updateUser(r.user);
+            recordSelfUser(r.user);
           } else {
             // User changed status manually while away, or we never set
             // it — don't touch anything.

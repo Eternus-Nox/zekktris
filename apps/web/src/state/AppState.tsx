@@ -68,7 +68,8 @@ import { hydrateVoicePrefs, setVoicePrefsSyncer, getVoicePrefs } from '../lib/vo
 import { playMessagePing } from '../lib/sounds';
 import { showDesktopNotification } from '../lib/desktopNotify';
 import { getNotifyPrefs } from '../lib/notifyPrefs';
-import { selfPresencePatch, type PresenceUpdateFrame } from '../lib/presenceActivity';
+import { selfStatusFromFrame, type PresenceUpdateFrame } from '../lib/presenceActivity';
+import { selfStatusStore } from '../lib/selfStatus';
 
 // ── Shape ──────────────────────────────────────────────────────────────────
 
@@ -2193,7 +2194,7 @@ function clearChannelNotifications(channelId: string): void {
 }
 
 export function AppStateProvider({ children }: { children: ReactNode }) {
-  const { rest, gateway, token, user, updateUser } = useAuth();
+  const { rest, gateway, token, user } = useAuth();
   const toasts = useToasts();
   const [state, dispatch] = useReducer(reducer, initialState);
 
@@ -3787,8 +3788,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       //
       // Our OWN effective status arrives the same way (multi-device presence:
       // it follows whichever of our devices is in use), and the guild_id=null
-      // frame of it also carries our chosen status — mirror both into the
-      // auth user, which drives our own avatar dot and the status picker.
+      // frame of it also carries our chosen status. Both go to the self-status
+      // store, which drives our own avatar dot and the status picker — NOT
+      // into the auth user, whose every replacement reruns the effects keyed
+      // on it (see SelfStatusStore).
       gateway.on<PresenceUpdateFrame>(GatewayEvent.PRESENCE_UPDATE, (d) => {
         dispatch({
           type: 'PRESENCE_PATCH',
@@ -3796,10 +3799,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           userId: d.user_id,
           status: d.status,
         });
-        if (user && d.user_id === selfId) {
-          const patch = selfPresencePatch(user, d);
-          if (patch) updateUser(patch);
-        }
+        const self = selfStatusFromFrame(selfId, d);
+        if (self) selfStatusStore.set(self);
       }),
 
       // USER_UPDATE — fired when a user's profile (display name, avatar,
@@ -4095,7 +4096,6 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       toasts.push,
       rest,
       resyncChannelWindow,
-      updateUser,
     ],
   );
 

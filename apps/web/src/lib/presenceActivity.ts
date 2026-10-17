@@ -162,7 +162,7 @@ export class DeviceActivity {
 // ── Self status ───────────────────────────────────────────────────────────
 
 export type ChosenStatus = 'online' | 'idle' | 'dnd' | 'invisible';
-type EffectiveStatus = ChosenStatus | 'offline';
+export type EffectiveStatus = ChosenStatus | 'offline';
 
 interface SelfStatusFields {
   status: EffectiveStatus;
@@ -188,25 +188,80 @@ export interface PresenceUpdateFrame {
   chosen_status?: ChosenStatus;
 }
 
+/** Our own status as the server last told this device. */
+export interface SelfStatus {
+  userId: string;
+  /** Effective, UNMASKED: a chosen Invisible reads 'invisible', not 'offline'. */
+  status: EffectiveStatus;
+  chosenStatus: ChosenStatus;
+}
+
 /**
- * The SelfUser patch for a PRESENCE_UPDATE about the signed-in user, or null
- * when it changes nothing. Only the guild_id=null frame is used: the server
- * sends one per shared guild plus that one, and they all say the same thing.
- * `status` there is masked ('invisible' reads 'offline'), so a user who chose
- * Invisible keeps seeing their own dot as invisible.
+ * Our own status from a PRESENCE_UPDATE, or null when the frame isn't the one
+ * that says it. The server sends one frame per shared guild plus a
+ * guild_id=null one, and only that last one — to our own connections — carries
+ * chosen_status; a server without multi-device presence never sends it, so
+ * there the auth user's fields stay the source. `status` in it is masked
+ * ('invisible' reads 'offline'); a user who chose Invisible keeps seeing their
+ * own dot as invisible.
  */
-export function selfPresencePatch(
-  user: { id: string } & SelfStatusFields,
-  d: PresenceUpdateFrame,
-): Partial<SelfStatusFields> | null {
-  if (d.user_id !== user.id || d.guild_id != null) return null;
-  const chosen = d.chosen_status ?? user.chosenStatus;
+export function selfStatusFromFrame(selfId: string, d: PresenceUpdateFrame): SelfStatus | null {
+  if (!selfId || d.user_id !== selfId || d.guild_id != null || !d.chosen_status) return null;
   const status: EffectiveStatus =
-    chosen === 'invisible' && d.status === 'offline' ? 'invisible' : d.status;
-  const patch: Partial<SelfStatusFields> = {};
-  if (status !== user.status) patch.status = status;
-  if (d.chosen_status && d.chosen_status !== user.chosenStatus) {
-    patch.chosenStatus = d.chosen_status;
+    d.chosen_status === 'invisible' && d.status === 'offline' ? 'invisible' : d.status;
+  return { userId: selfId, status, chosenStatus: d.chosen_status };
+}
+
+/**
+ * Holds the latest SelfStatus — deliberately OUTSIDE the auth user. The
+ * effective status now changes on every tab hide / show and input lapse, on
+ * every device; the auth user object is a dependency of the app's bootstrap,
+ * gateway-subscription and typing effects, so replacing it that often
+ * refetched guilds, DMs, read states (… 8 REST calls) and wiped typing
+ * indicators each time. Only the components that draw our status subscribe
+ * here. A REST snapshot of the user (boot hydration, READY) can't overwrite
+ * it either: those are taken before this device's own connect recomputes the
+ * status, so they can land after — and be older than — the frame.
+ */
+export class SelfStatusStore {
+  private value: SelfStatus | null = null;
+  private readonly listeners = new Set<() => void>();
+
+  get = (): SelfStatus | null => this.value;
+
+  set(next: SelfStatus): void {
+    const v = this.value;
+    if (
+      v &&
+      v.userId === next.userId &&
+      v.status === next.status &&
+      v.chosenStatus === next.chosenStatus
+    ) {
+      return;
+    }
+    this.value = next;
+    for (const l of this.listeners) l();
   }
-  return Object.keys(patch).length > 0 ? patch : null;
+
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  };
+}
+
+/**
+ * The status our own dot shows and the one the picker shows: the server's
+ * latest word for this user when we have it, else the auth user's snapshot
+ * (an older server, or before the first frame after connecting).
+ */
+export function resolveSelfStatus(
+  user: { id: string } & SelfStatusFields,
+  live: SelfStatus | null,
+): { status: EffectiveStatus; chosenStatus: ChosenStatus } {
+  if (live && live.userId === user.id) {
+    return { status: live.status, chosenStatus: live.chosenStatus };
+  }
+  return { status: user.status, chosenStatus: chosenStatusOf(user) };
 }

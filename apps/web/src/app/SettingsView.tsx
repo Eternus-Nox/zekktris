@@ -113,7 +113,7 @@ import {
 } from '../lib/voicePrefs';
 import { MicLevelMeter } from '../lib/MicLevelMeter';
 import { useStepUpPassword } from '../lib/StepUpPassword';
-import { chosenStatusOf } from '../lib/presenceActivity';
+import { recordSelfUser, useSelfStatus } from '../lib/selfStatus';
 
 type Status = 'online' | 'idle' | 'dnd' | 'invisible';
 
@@ -290,12 +290,12 @@ export function SettingsView() {
   // they can see their privacy choice persists across sessions — not the
   // effective one, which follows device activity (chosen Online reads Away
   // while none of their devices is in use).
-  const chosenStatus = user ? chosenStatusOf(user) : 'online';
+  const { chosenStatus } = useSelfStatus();
   const [status, setStatus] = useState<Status>(chosenStatus);
 
-  // Re-sync local status state if the auth-context user changes
-  // underneath us — happens when another device or tab picks a status
-  // (the server's PRESENCE_UPDATE to our own connections carries it).
+  // Re-sync local status state if the chosen status changes underneath
+  // us — happens when another device or tab picks a status (the server's
+  // PRESENCE_UPDATE to our own connections carries it).
   // Without this the radio would lag behind reality.
   useEffect(() => {
     if (user && chosenStatus !== status) setStatus(chosenStatus);
@@ -381,6 +381,7 @@ export function SettingsView() {
     try {
       const r = await rest.patchMe({ status: next });
       updateUser(r.user);
+      recordSelfUser(r.user);
       replaceUser({
         id: r.user.id,
         username: r.user.username,

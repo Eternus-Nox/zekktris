@@ -4,7 +4,9 @@ import {
   IDLE_AFTER_MS,
   INPUT_THROTTLE_MS,
   chosenStatusOf,
-  selfPresencePatch,
+  SelfStatusStore,
+  resolveSelfStatus,
+  selfStatusFromFrame,
   type ActivityClock,
   type ActivityMode,
 } from '../src/lib/presenceActivity';
@@ -207,42 +209,89 @@ describe('chosenStatusOf', () => {
   });
 });
 
-describe('selfPresencePatch', () => {
-  const me = { id: '1', status: 'online' as const, chosenStatus: 'online' as const };
-
-  it('takes the effective status from our own guild_id=null frame', () => {
-    expect(selfPresencePatch(me, { user_id: '1', status: 'idle', guild_id: null })).toEqual({
-      status: 'idle',
-    });
-  });
-
-  it('ignores per-guild copies and other users', () => {
-    expect(selfPresencePatch(me, { user_id: '1', status: 'idle', guild_id: '9' })).toBeNull();
-    expect(selfPresencePatch(me, { user_id: '2', status: 'idle', guild_id: null })).toBeNull();
-  });
-
-  it('returns null when nothing changes', () => {
+describe('selfStatusFromFrame', () => {
+  it('takes our status and chosen status from our own guild_id=null frame', () => {
     expect(
-      selfPresencePatch(me, { user_id: '1', status: 'online', guild_id: null, chosen_status: 'online' }),
-    ).toBeNull();
+      selfStatusFromFrame('1', { user_id: '1', status: 'idle', guild_id: null, chosen_status: 'online' }),
+    ).toEqual({ userId: '1', status: 'idle', chosenStatus: 'online' });
   });
 
-  it('syncs a status picked on another device', () => {
-    expect(
-      selfPresencePatch(me, { user_id: '1', status: 'dnd', guild_id: null, chosen_status: 'dnd' }),
-    ).toEqual({ status: 'dnd', chosenStatus: 'dnd' });
+  it('ignores per-guild copies, other users, and frames from a server without chosen_status', () => {
+    const d = { status: 'idle', chosen_status: 'online' } as const;
+    expect(selfStatusFromFrame('1', { ...d, user_id: '1', guild_id: '9' })).toBeNull();
+    expect(selfStatusFromFrame('1', { ...d, user_id: '2', guild_id: null })).toBeNull();
+    expect(selfStatusFromFrame('', { ...d, user_id: '', guild_id: null })).toBeNull();
+    expect(selfStatusFromFrame('1', { user_id: '1', status: 'idle', guild_id: null })).toBeNull();
   });
 
   it('unmasks invisible for our own dot', () => {
     expect(
-      selfPresencePatch(me, {
-        user_id: '1',
-        status: 'offline',
-        guild_id: null,
-        chosen_status: 'invisible',
-      }),
-    ).toEqual({ status: 'invisible', chosenStatus: 'invisible' });
-    const invisible = { id: '1', status: 'invisible' as const, chosenStatus: 'invisible' as const };
-    expect(selfPresencePatch(invisible, { user_id: '1', status: 'offline', guild_id: null })).toBeNull();
+      selfStatusFromFrame('1', { user_id: '1', status: 'offline', guild_id: null, chosen_status: 'invisible' }),
+    ).toEqual({ userId: '1', status: 'invisible', chosenStatus: 'invisible' });
+  });
+});
+
+describe('SelfStatusStore', () => {
+  const frame = (status: 'online' | 'idle' | 'dnd', chosen: 'online' | 'dnd' = 'online') =>
+    selfStatusFromFrame('1', { user_id: '1', status, guild_id: null, chosen_status: chosen })!;
+
+  it('notifies only on a change', () => {
+    const store = new SelfStatusStore();
+    let calls = 0;
+    const off = store.subscribe(() => calls++);
+    store.set(frame('online'));
+    store.set(frame('online'));
+    expect(calls).toBe(1);
+    store.set(frame('dnd', 'dnd'));
+    expect(calls).toBe(2);
+    off();
+    store.set(frame('idle'));
+    expect(calls).toBe(2);
+  });
+
+  it('follows back-to-back frames in order, including a flip back (A → B → A)', () => {
+    // Each frame is applied as-is, never diffed against a render-time copy of
+    // the user — two frames before a re-render must still end on the second.
+    const store = new SelfStatusStore();
+    store.set(frame('idle'));
+    store.set(frame('online'));
+    store.set(frame('idle'));
+    expect(store.get()?.status).toBe('idle');
+  });
+});
+
+describe('resolveSelfStatus', () => {
+  const user = { id: '1', status: 'idle' as const, chosenStatus: 'online' as const };
+
+  it('uses the auth user until the server has sent us our status', () => {
+    expect(resolveSelfStatus(user, null)).toEqual({ status: 'idle', chosenStatus: 'online' });
+    // Older server: no chosenStatus — status is the pick.
+    expect(resolveSelfStatus({ id: '1', status: 'dnd' }, null)).toEqual({
+      status: 'dnd',
+      chosenStatus: 'dnd',
+    });
+  });
+
+  it('prefers the latest frame over a user snapshot that arrives after it', () => {
+    // Boot hydration / READY are snapshotted before this device's own connect
+    // recomputes the status; they can land after the frame and still say
+    // 'idle'. The frame wins.
+    const live = selfStatusFromFrame('1', {
+      user_id: '1',
+      status: 'online',
+      guild_id: null,
+      chosen_status: 'online',
+    });
+    expect(resolveSelfStatus(user, live)).toEqual({ status: 'online', chosenStatus: 'online' });
+  });
+
+  it('ignores a frame for another account (signed out and back in as someone else)', () => {
+    const live = selfStatusFromFrame('2', {
+      user_id: '2',
+      status: 'dnd',
+      guild_id: null,
+      chosen_status: 'dnd',
+    });
+    expect(resolveSelfStatus(user, live)).toEqual({ status: 'idle', chosenStatus: 'online' });
   });
 });
