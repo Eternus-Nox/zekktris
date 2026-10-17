@@ -3,7 +3,8 @@
  * ------------------
  * The checks a message has to pass before it is created, shared by every
  * path that creates or rewrites one on a user's behalf: the live send route,
- * the edit route, reactions / poll votes (participation only), and the
+ * forum posts, message-anchored thread creation, bot command invokes, the
+ * edit route, reactions / poll votes (participation only), and the
  * scheduled-message worker at FIRE time. They live here, not in the route,
  * so the worker cannot drift from the live send: a scheduled message used to
  * re-check only SEND_MESSAGES, which let a timed-out member, or text automod
@@ -17,6 +18,7 @@ import * as dispatch from '../gateway/dispatch';
 import { toGuildMember } from '../lib/dto';
 import { Permissions, hasPermission, computeMemberChannelPermissions } from './permissions';
 import { assertNotInstanceMuted } from './instanceMutes';
+import { isCurrentlyBanned } from './instanceBans';
 import type { schema } from '../db';
 
 /** Our E2EE wire format: `zkE2EE/<version>:<base64>`. Used server-side only to
@@ -64,6 +66,11 @@ export async function enforceGuildParticipationGates(guildId: bigint, userId: bi
  * exemptions apply, repeat_message is skipped (see automod.checkMessage),
  * and a block_and_timeout rule only blocks — it must not time out whoever
  * happened to create the webhook.
+ *
+ * Pass `skipRepeatMessage` when `content` is not stored as message content
+ * (a title, thread name, poll text, forward snapshot or bot command
+ * arguments): repeat_message compares against the author's stored messages,
+ * so restating one of them there is not a flood.
  */
 export async function enforceGuildContentModeration(args: {
   guildId: bigint;
@@ -71,8 +78,9 @@ export async function enforceGuildContentModeration(args: {
   userId: bigint;
   content: string;
   webhookId?: bigint;
+  skipRepeatMessage?: boolean;
 }): Promise<void> {
-  const { guildId, channelId, userId, content, webhookId } = args;
+  const { guildId, channelId, userId, content, webhookId, skipRepeatMessage } = args;
   const security = await import('./security');
   await security.checkBannedWords({ userId, guildId, channelId, content });
 
@@ -85,6 +93,7 @@ export async function enforceGuildContentModeration(args: {
     content,
     memberRoleIds: roleIds,
     webhookId,
+    skipRepeatMessage,
   });
   if (!violation) return;
 
@@ -144,8 +153,9 @@ export async function enforceGuildContentModeration(args: {
  * order: archived-thread lock → SEND_MESSAGES → ATTACH_FILES (when the
  * message carries files) → participation (pending / timeout / supervision) →
  * slowmode (unless skipped; MANAGE_MESSAGES bypasses it) → instance spam
- * throttle → banned words + automod. Request-shape checks (forum / link
- * channels) and instance mute stay with the caller.
+ * throttle → banned words + automod over `content`, then over `extraText`.
+ * Request-shape checks (forum / link channels) and instance mute stay with
+ * the caller.
  */
 export async function enforceGuildSendGates(args: {
   channel: schema.Channel;
@@ -153,13 +163,23 @@ export async function enforceGuildSendGates(args: {
   channelPerms: bigint;
   userId: bigint;
   content: string;
+  /** Other user-visible text that is not stored as message content (a
+   *  forum post's title, a poll's question + answers, a thread name, a bot
+   *  command's arguments). Moderated as its own text after `content`, with
+   *  repeat_message skipped: only `content` is compared against, and later
+   *  stored as, the author's message history. */
+  extraText?: string;
   hasFiles?: boolean;
-  /** False for scheduled fires: the author can't respond to a slowmode
-   *  rejection at fire time, and the 60 s minimum schedule delay already
-   *  bounds the rate. */
-  enforceSlowmode: boolean;
+  /** Which per-user slowmode applies. `true` (live send): time since the
+   *  author's last message in `channel`. `'forum_post'` (new forum post):
+   *  time since their last post under the forum, which holds no messages of
+   *  its own. `false` for scheduled fires (the author can't respond to a
+   *  slowmode rejection at fire time, and the 60 s minimum schedule delay
+   *  already bounds the rate), thread creation and bot command invokes
+   *  (neither posts a message of the caller's). */
+  enforceSlowmode: boolean | 'forum_post';
 }): Promise<void> {
-  const { channel, channelPerms, userId, content } = args;
+  const { channel, channelPerms, userId, content, extraText } = args;
   const guildId = channel.guildId;
   if (guildId === null) return;
   // Archived threads are read-only. To send to an archived thread, a
@@ -179,29 +199,51 @@ export async function enforceGuildSendGates(args: {
   // MANAGE_MESSAGES (a timed-out mod stays timed out).
   await enforceGuildParticipationGates(guildId, userId);
   if (args.enforceSlowmode && !hasPermission(channelPerms, Permissions.MANAGE_MESSAGES)) {
-    const { enforceSlowmode } = await import('./messages');
-    await enforceSlowmode(channel.id, userId, channel.rateLimitPerUser);
+    const messagesSvc = await import('./messages');
+    if (args.enforceSlowmode === 'forum_post') {
+      await messagesSvc.enforceForumPostSlowmode(channel.id, userId, channel.rateLimitPerUser);
+    } else {
+      await messagesSvc.enforceSlowmode(channel.id, userId, channel.rateLimitPerUser);
+    }
   }
   // Instance security (Admin → Security): spam throttle, then banned words +
   // automod. Guild plaintext only — E2EE/DMs are exempt by design.
   const security = await import('./security');
   await security.checkSpam({ userId, guildId, channelId: channel.id });
   await enforceGuildContentModeration({ guildId, channelId: channel.id, userId, content });
+  if (extraText) {
+    await enforceGuildContentModeration({
+      guildId,
+      channelId: channel.id,
+      userId,
+      content: extraText,
+      skipRepeatMessage: true,
+    });
+  }
 }
 
 /**
  * Fire-time gates for a scheduled message: the same checks a live send of
  * `content` by `authorId` into `channel` would face right now, because the
- * author may have been muted, timed out, kicked, blocked or put under
- * supervision since scheduling. Slowmode is skipped (see enforceGuildSendGates).
- * Throws on any failure; the worker records the message as the row's lastError.
+ * author may have been banned, deleted, muted, timed out, kicked, blocked or
+ * put under supervision since scheduling. Slowmode is skipped (see
+ * enforceGuildSendGates). Throws on any failure; the worker records the
+ * message as the row's lastError.
  */
 export async function enforceScheduledFireGates(args: {
   channel: schema.Channel;
   authorId: bigint;
+  /** The author's user row (null if it no longer exists). */
+  author: Pick<schema.User, 'bannedAt' | 'bannedUntil' | 'deletedAt'> | null;
   content: string;
 }): Promise<void> {
-  const { channel, authorId, content } = args;
+  const { channel, authorId, author, content } = args;
+  // requireAuth refuses every live send from a banned or deleted account; the
+  // worker has no request, so apply the same predicate here. An expired timed
+  // ban is not a ban (isCurrentlyBanned), so its queued messages still post.
+  if (!author || isCurrentlyBanned(author) || author.deletedAt !== null) {
+    throw new Error('Account unavailable');
+  }
   await assertNotInstanceMuted(authorId);
   // computeMemberChannelPermissions fails closed (0n) for non-members and
   // non-recipients, so one check covers kicked members and DMs alike.

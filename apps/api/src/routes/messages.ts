@@ -572,12 +572,16 @@ messagesRouter.post(
       // Archived-thread lock, SEND_MESSAGES / ATTACH_FILES, onboarding,
       // timeout, supervision, slowmode, spam, banned words + automod. One
       // shared helper so the scheduled-message worker applies the exact same
-      // gates at fire time.
+      // gates at fire time. A poll's question and answers are shown like the
+      // body, so they face the same banned-words + automod check.
       await enforceGuildSendGates({
         channel: ctx.channel,
         channelPerms: ctx.channelPerms,
         userId,
         content: payload.content,
+        extraText: payload.poll
+          ? [payload.poll.question, ...payload.poll.options].join('\n')
+          : undefined,
         hasFiles: files.length > 0,
         enforceSlowmode: true,
       });
@@ -701,6 +705,26 @@ messagesRouter.post(
       // Freezing it also stops edits to the source rewriting history inside
       // every forward of it, which is what WhatsApp and Slack do.
       forwardSnapshot = await messages.snapshotForwardSource(sourceId);
+      // The snapshot is re-posted here under the caller's name, so in a guild
+      // it faces this guild's banned words + automod like text they typed:
+      // otherwise a forward could carry text in from a server (or a time)
+      // whose rules allowed it. Ciphertext from an encrypted DM is opaque.
+      if (
+        ctx.channel.guildId !== null &&
+        forwardSnapshot &&
+        !E2EE_CIPHERTEXT_RE.test(forwardSnapshot.content)
+      ) {
+        // repeat_message is skipped: the snapshot is not stored as this
+        // message's content, and forwarding your own recent message
+        // elsewhere is not a flood.
+        await enforceGuildContentModeration({
+          guildId: ctx.channel.guildId,
+          channelId,
+          userId,
+          content: forwardSnapshot.content,
+          skipRepeatMessage: true,
+        });
+      }
     }
 
     // ── Sticker validation ──────────────────────────────────────────────
@@ -1887,12 +1911,12 @@ messagesRouter.patch(
     ) {
       throw errors.forbidden('Messages can only be edited within a minute of posting');
     }
-    // Timeout enforcement — a timed-out user could otherwise edit an
-    // old message into new content, bypassing the send-message gate.
-    // Same check as send/react. Bypassed for DMs (no guild context).
+    // Participation gates (onboarding, timeout, supervision) — a timed-out
+    // or messaging-restricted user could otherwise edit an old message into
+    // new content, bypassing the send-message gate. Same check as
+    // send/react. Bypassed for DMs (no guild context).
     if (ctx.channel.guildId) {
-      const until = await membersSvc.getActiveTimeout(ctx.channel.guildId, userId);
-      if (until !== null) throw errors.timedOut(until);
+      await enforceGuildParticipationGates(ctx.channel.guildId, userId);
       // Content moderation — same banned-words + automod gate as send, so an
       // edit can't slip banned/blocked content past the filter within the
       // mutate window. (Guild plaintext only; DMs/E2EE are never inspected.)
@@ -2750,7 +2774,9 @@ const createThreadSchema = z.object({
  *
  * Permissions: requires VIEW_CHANNEL + SEND_MESSAGES on the parent channel
  * (anyone who can post here can spawn a thread). MANAGE_THREADS is not a
- * separate permission in v1 — keeping the model small.
+ * separate permission in v1 — keeping the model small. Starting a thread is
+ * a send for moderation purposes: the same participation gates, spam
+ * throttle, and banned words + automod (over a user-supplied name) apply.
  *
  * Idempotent: a second call with the same parentMessageId returns the
  * existing thread row instead of creating a duplicate.
@@ -2781,9 +2807,24 @@ messagesRouter.post(
     if (!hasPermission(ctx.channelPerms, Permissions.VIEW_CHANNEL)) {
       throw errors.notFound('Channel');
     }
-    if (!hasPermission(ctx.channelPerms, Permissions.SEND_MESSAGES)) {
-      throw errors.missingPermissions(['SEND_MESSAGES']);
-    }
+    const body = c.req.valid('json');
+    // SEND_MESSAGES, onboarding, timeout, supervision, spam, and banned
+    // words + automod over the name the caller typed — the same gates, in
+    // the same order, as a live send. No slowmode: it measures time since
+    // the caller's last message here, and starting a thread posts none (at
+    // most one thread per message, so messages already bound the rate). The
+    // fallback name below is the anchor message's own text, which passed
+    // its author's send gates; it isn't the caller's words to moderate. The
+    // name goes in as extraText, not content: it is not stored as a message,
+    // so it must not trip repeat_message by echoing one of the caller's.
+    await enforceGuildSendGates({
+      channel: ctx.channel,
+      channelPerms: ctx.channelPerms,
+      userId: callerId,
+      content: '',
+      extraText: body.name,
+      enforceSlowmode: false,
+    });
 
     // Verify the anchor message exists and lives in this channel.
     const m = await messages.getMessage(channelId, messageId);
@@ -2792,7 +2833,6 @@ messagesRouter.post(
     // Default thread name: first ~50 chars of the message content,
     // collapsed whitespace. If the message was attachments-only, fall
     // back to a generic label.
-    const body = c.req.valid('json');
     const fallback =
       m.content
         .replace(/\s+/g, ' ')
@@ -2828,7 +2868,9 @@ messagesRouter.post(
  *
  * Permissions: VIEW_CHANNEL + SEND_MESSAGES on the forum channel. Same
  * gates as posting a regular message — if you can post in the forum,
- * you can start a post.
+ * you can start a post — including onboarding, timeout, supervision, the
+ * spam throttle, and banned words + automod over the title and content.
+ * JSON only: a post carries no files, so ATTACH_FILES never applies.
  *
  * Body: { title, content }. Both required and trimmed; empty title is
  * rejected since posts need a label. Empty content is allowed only if
@@ -2870,23 +2912,23 @@ messagesRouter.post(
     if (!hasPermission(ctx.channelPerms, Permissions.VIEW_CHANNEL)) {
       throw errors.notFound('Channel');
     }
-    if (!hasPermission(ctx.channelPerms, Permissions.SEND_MESSAGES)) {
-      throw errors.missingPermissions(['SEND_MESSAGES']);
-    }
-    // Slow-mode on the forum channel — limits how often each user
-    // can create a new post. Bypassed for MANAGE_MESSAGES (mods).
-    // Uses the forum-specific variant because regular slowmode
-    // keys on (channelId, authorId) for the forum row, which is
-    // always empty (forums don't hold direct messages).
-    if (!hasPermission(ctx.channelPerms, Permissions.MANAGE_MESSAGES)) {
-      await messages.enforceForumPostSlowmode(
-        channelId,
-        callerId,
-        ctx.channel.rateLimitPerUser,
-      );
-    }
-
     const { title, content, autoArchiveMinutes } = c.req.valid('json');
+    // The live send's gates, in its order: SEND_MESSAGES, onboarding,
+    // timeout, supervision, slowmode, spam, banned words + automod (over the
+    // body, then the title, which is shown as the post's name). Slow-mode
+    // limits how often each user can create a new post (MANAGE_MESSAGES
+    // bypasses it) and uses the forum-specific variant, because regular
+    // slowmode keys on (channelId, authorId) for the forum row, which is
+    // always empty (forums don't hold direct messages).
+    await enforceGuildSendGates({
+      channel: ctx.channel,
+      channelPerms: ctx.channelPerms,
+      userId: callerId,
+      content,
+      extraText: title,
+      enforceSlowmode: 'forum_post',
+    });
+
     // 1. Create the post (thread row).
     const post = await threads.createForumPost({
       forumChannelId: channelId,

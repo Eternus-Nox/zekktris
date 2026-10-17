@@ -68,6 +68,8 @@ import {
   hasPermission,
 } from '../services/permissions';
 import * as botsSvc from '../services/bots';
+import { assertNotInstanceMuted } from '../services/instanceMutes';
+import { enforceGuildSendGates } from '../services/messageGates';
 
 export const guildsRouter = new Hono();
 
@@ -1807,8 +1809,9 @@ guildsRouter.get(
 //   command whose bot is a member, guild-scoped OR global). Members only — it
 //   feeds the composer's slash picker.
 // POST /:guildId/commands/invoke  → run `/<name> <args>`. Member-gated; the
-//   invoker must be able to VIEW_CHANNEL on the target channel. The service
-//   then delivers an interaction.create event to the bot's callback (the bot
+//   invoker must be able to VIEW_CHANNEL on the target channel and pass the
+//   gates a live send there faces (see the handler). The service then
+//   delivers an interaction.create event to the bot's callback (the bot
 //   replies via REST). 404 if no such command resolves; 400 if the bot has no
 //   callback configured.
 
@@ -1841,19 +1844,34 @@ guildsRouter.post(
     const body = c.req.valid('json');
     const channelId = BigInt(body.channelId);
     await ensureMember(guildId, userId);
+    await assertNotInstanceMuted(userId);
 
     // The channel must belong to this guild, and the invoker must be able to
     // see it — you can't fire a command into a channel you can't view.
     const [ch] = await db
-      .select({ guildId: schema.channels.guildId })
+      .select()
       .from(schema.channels)
       .where(and(eq(schema.channels.id, channelId), isNull(schema.channels.deletedAt)))
       .limit(1);
     if (!ch || ch.guildId !== guildId) throw errors.notFound('Channel');
-    const perms = await computeMemberChannelPermissions(channelId, userId);
+    const perms = await computeMemberChannelPermissions(channelId, userId, ch);
     if (!hasPermission(perms, Permissions.VIEW_CHANNEL)) {
       throw errors.missingPermissions(['VIEW_CHANNEL']);
     }
+    // A command makes the bot post into the channel on the invoker's behalf,
+    // often echoing argText, so it faces a live send's gates: SEND_MESSAGES,
+    // onboarding, timeout, supervision, spam, and banned words + automod over
+    // argText (as extraText: it is not stored as the invoker's message). No
+    // slowmode: it measures the invoker's own messages, and an invoke posts
+    // none of theirs.
+    await enforceGuildSendGates({
+      channel: ch,
+      channelPerms: perms,
+      userId,
+      content: '',
+      extraText: body.argText,
+      enforceSlowmode: false,
+    });
 
     const result = await botsSvc.invokeBotCommand({
       invokerId: userId,

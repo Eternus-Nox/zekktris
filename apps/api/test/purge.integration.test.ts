@@ -163,4 +163,25 @@ describe.runIf(dbReady)('purge', () => {
       .where(eq(schema.guildMembers.userId, member));
     expect(rows).toHaveLength(0);
   });
+
+  it('drops the account\'s queued scheduled messages', async () => {
+    const uid = await createUser();
+    const peer = await createUser();
+    const dm = await createDmChannel([uid, peer]);
+    await db.insert(schema.scheduledMessages).values({
+      id: nextSnowflake(),
+      authorId: uid,
+      channelId: dm,
+      content: 'later',
+      scheduledFor: new Date(Date.now() + 3600_000),
+    });
+
+    await purgeAccount(uid);
+
+    const rows = await db
+      .select({ id: schema.scheduledMessages.id })
+      .from(schema.scheduledMessages)
+      .where(eq(schema.scheduledMessages.authorId, uid));
+    expect(rows).toHaveLength(0);
+  });
 });
