@@ -154,7 +154,8 @@ for req in "$REQ_DIR"/*.json; do
             ;;
         update)
             # update.sh takes its own pre-update backup and rolls the code back
-            # if the new build fails its health checks.
+            # if the new build fails to build or its health checks; one that
+            # stopped halfway is finished by the next update request.
             "$SCRIPT_DIR/update.sh" > "$LOG" 2>&1
             RC=$?
             ;;

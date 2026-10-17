@@ -20,7 +20,9 @@
 #
 # The safety net is the health gate. If the new build fails its startup checks
 # the previous image is put back automatically, because an instance that is
-# down after an update is far worse than one that is merely out of date.
+# down after an update is far worse than one that is merely out of date. A
+# build that fails puts the previous code back without restarting anything,
+# and an update that stopped halfway is picked up again by the next run.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -44,7 +46,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --check) MODE="check"; shift ;;
         --no-backup) DO_BACKUP=0; shift ;;
-        -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) fail "unknown argument: $1" ;;
     esac
 done
@@ -73,6 +75,9 @@ if ! git rev-parse HEAD >/dev/null 2>&1; then
     fail "not a usable git repository: $ROOT"
 fi
 CURRENT="$(git rev-parse HEAD)"
+# Where an update that moved the code started from, until it ends healthy or
+# rolled back. Inside .git, so it is neither tracked nor a local edit.
+UNFINISHED="$(git rev-parse --git-path zekktris-update-unfinished)"
 
 # TWO TOPOLOGIES, and this box is the second one.
 #
@@ -103,6 +108,16 @@ if [[ "$DEPLOY_ONLY" == "1" ]]; then
     fi
 else
     TARGET="$(git rev-parse origin/master)"
+    # An update that stopped after the code moved (the rest of the stack did
+    # not start, or the run was killed) left the checkout at its target, which
+    # would read as "already up to date" from then on while the containers ran
+    # something else. Start from where that update started instead, so this
+    # run finishes it and can still roll back to there.
+    PREV="$(cat "$UNFINISHED" 2>/dev/null || true)"
+    if [[ -n "$PREV" && "$PREV" != "$CURRENT" ]] && git merge-base --is-ancestor "$PREV" HEAD 2>/dev/null; then
+        CURRENT="$(git rev-parse "$PREV")"
+        warn "the update from $(git rev-parse --short "$CURRENT") did not finish — $([[ "$MODE" == check ]] && echo "the next update picks it up again" || echo "picking it up again")"
+    fi
     if [[ "$CURRENT" == "$TARGET" ]]; then
         ok "already up to date ($(git rev-parse --short HEAD))"
         exit 0
@@ -188,11 +203,32 @@ fi
 # ── Update ──────────────────────────────────────────────────────────────────
 if [[ "$DEPLOY_ONLY" == "0" ]]; then
     step "Pulling $TARGET"
+    echo "$CURRENT" > "$UNFINISHED"
     git merge --ff-only origin/master || fail "cannot fast-forward — the working tree has diverged; resolve it by hand"
 fi
 
 step "Rebuilding"
-$COMPOSE build api proxy
+if ! $COMPOSE build api proxy; then
+    # Nothing has been restarted, so the previous build is still what runs.
+    echo
+    if [[ "$DEPLOY_ONLY" == "1" ]]; then
+        fail "The build failed. Nothing was restarted and the code is unchanged.
+    Fix the error above, then run this again."
+    fi
+    # The code goes back too: left at $TARGET, every later run would find it
+    # already up to date and never build it again.
+    git reset --keep "$CURRENT" >/dev/null || fail "The build failed, and the code could not be rolled back (git reset --keep $CURRENT failed).
+    Nothing was restarted. Check 'git status'; the next update run tries again."
+    rm -f "$UNFINISHED"
+    # A service that finished building before the failure is already tagged
+    # with the new code, and the next plain `up -d` would start it. Build the
+    # previous code again (from cache, mostly) so the tags match what runs.
+    $COMPOSE build api proxy >/dev/null 2>&1 \
+        || warn "could not rebuild the previous images; do not run '$COMPOSE up -d' by hand before the next update"
+    fail "Update failed: the build did not complete. Nothing was restarted and the code is back
+    at $(git rev-parse --short HEAD). Fix the error above (a network failure, a full disk, or a
+    setting the new docker-compose.yml requires in .env), then run the update again."
+fi
 
 # The api alone first (scripts/lib/start-stack.sh says why); the proxy and the
 # rest follow once it is healthy. A failure here is not fatal: the wait below
@@ -207,8 +243,10 @@ if [[ "$API_STARTED" == "1" ]] && wait_for_api 90; then HEALTHY=1; fi
 
 if [[ "$HEALTHY" == "1" ]]; then
     step "Starting the rest of the stack"
+    # The update stays marked unfinished here, so running it again finishes it.
     $COMPOSE up -d || fail "the api is healthy on the new code, but the rest of the stack did not start.
-    Fix the error above, then run: $COMPOSE up -d"
+    Fix the error above, then run: $COMPOSE up -d (or run the update again)"
+    rm -f "$UNFINISHED"
     echo
     ok "${BOLD}Updated to $(git rev-parse --short HEAD) and healthy.${RESET}"
     [[ -z "$EDGE_WARNING" ]] || warn "$EDGE_WARNING"
@@ -236,6 +274,7 @@ warn "the new build did not come up healthy — rolling the code back to $CURREN
 # other files). --hard silently threw those edits away.
 git reset --keep "$CURRENT" >/dev/null || fail "could not roll the code back (git reset --keep $CURRENT failed).
     The code is still at $TARGET. Check 'git status', then roll back by hand."
+rm -f "$UNFINISHED"
 if ! { $COMPOSE build api proxy && $COMPOSE up -d api && wait_for_api 90 && $COMPOSE up -d; }; then
     echo
     fail "Update failed. The code is back at $(git rev-parse --short HEAD), but the previous build did not come up
