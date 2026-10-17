@@ -36,6 +36,8 @@ import { AvatarImage } from '../lib/AvatarImage';
 import { AvatarDecoration } from '../lib/avatarDecorations';
 import { useProfileCard } from '../lib/useProfileCard';
 import { Edit, Trash, Pin, CornerUpLeft, Forward as ForwardIcon, MessageSquare, Smile, Phone, Shield, Bookmark } from '../lib/icons';
+import { useE2eeLinkPreviews, resolveE2eeLinkPreviews } from '../lib/e2eeLinkPreviews';
+import { e2eeSupported, E2EE_INSECURE_SHORT } from '../lib/e2eeSupport';
 import { decryptForDm, peekDecryptedText, encryptForDm, isEncryptedWireFormat, hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
 import { POKE_VARIANTS, type PokeType } from '../lib/poke';
 import { ForwardModal } from './ForwardModal';
@@ -62,25 +64,6 @@ interface Props {
       only). When false / unset, no receipt UI is rendered at all —
       the row is identical to a non-DM render. */
   showDmReceipt?: boolean;
-}
-
-// Extract http(s) URLs from text for client-side link-preview resolution on
-// E2EE messages. Mirrors the server's message extractor (services/embeds.ts):
-// same conservative regex + trailing-punctuation trim, deduped, capped.
-const URL_RE = /https?:\/\/[^\s<>"]+/gi;
-function extractUrls(text: string): string[] {
-  const matches = text.match(URL_RE) ?? [];
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (let m of matches) {
-    while (m.length > 0 && /[.,;!?)]$/.test(m)) m = m.slice(0, -1);
-    if (m && !seen.has(m)) {
-      seen.add(m);
-      out.push(m);
-    }
-    if (out.length >= 5) break;
-  }
-  return out;
 }
 
 // ── Channel mentions ──────────────────────────────────────────────────────
@@ -155,7 +138,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   // fixes (#11a/#11b) ensure no-op events don't flip slice references
   // unnecessarily, so this migration's payoff is real.
   const retrySendMessage = useAppStateSelector((v) => v.retrySendMessage);
-  const restForChannel = useAppStateSelector((v) => v.restForChannel);
+  const rest = useAppStateSelector((v) => v.rest);
   const discardFailedMessage = useAppStateSelector((v) => v.discardFailedMessage);
   const membersByGuild = useAppStateSelector((v) => v.state.membersByGuild);
   const rolesByGuild = useAppStateSelector((v) => v.state.rolesByGuild);
@@ -394,47 +377,36 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   // Client-side link previews for E2EE messages. The server can't unfurl
   // ciphertext, so an E2EE message arrives with embeds: []; once we have the
   // decrypted plaintext we extract URLs and resolve previews via /unfurl.
+  // That sends each link to the server, so it only happens when the user
+  // opted in on this device ("Link previews in encrypted chats", default off).
+  const e2eeLinkPreviews = useE2eeLinkPreviews();
   const [e2eeEmbeds, setE2eeEmbeds] = useState<MessageEmbed[]>([]);
   useEffect(() => {
-    const plain = decResult.plaintext;
     // Only for E2EE messages with no server-resolved embeds and a successful
-    // decryption.
-    if (!encMeta.isEncrypted || encMeta.noKey || !plain) {
-      setE2eeEmbeds([]);
-      return;
-    }
-    if (message.embeds && message.embeds.length > 0) {
-      setE2eeEmbeds([]);
-      return;
-    }
-    const urls = extractUrls(plain);
-    if (urls.length === 0) {
+    // decryption (resolveE2eeLinkPreviews returns null otherwise).
+    const pending = resolveE2eeLinkPreviews(
+      {
+        previewsEnabled: e2eeLinkPreviews,
+        isEncrypted: encMeta.isEncrypted,
+        noKey: encMeta.noKey,
+        plaintext: decResult.plaintext,
+        hasServerEmbeds: !!message.embeds && message.embeds.length > 0,
+      },
+      (u) => rest.unfurl(u),
+    );
+    if (!pending) {
       setE2eeEmbeds([]);
       return;
     }
     let cancelled = false;
-    void (async () => {
-      try {
-        const rest = await restForChannel(message.channelId);
-        const found: MessageEmbed[] = [];
-        for (const u of urls) {
-          try {
-            const { embed } = await rest.unfurl(u);
-            if (embed) found.push(embed);
-          } catch {
-            // best-effort per URL
-          }
-        }
-        if (!cancelled) setE2eeEmbeds(found);
-      } catch {
-        // couldn't get a rest client — leave previews empty
-      }
-    })();
+    void pending.then((found) => {
+      if (!cancelled) setE2eeEmbeds(found);
+    });
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [decResult.plaintext, encMeta.isEncrypted, encMeta.noKey, message.embeds, message.channelId]);
+  }, [e2eeLinkPreviews, decResult.plaintext, encMeta.isEncrypted, encMeta.noKey, message.embeds, message.channelId]);
 
   // Combined view in the original shape the rest of the component consumes.
   const decryption: {
@@ -603,7 +575,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
       outgoing = encrypted;
     }
     try {
-      await (await restForChannel(message.channelId)).editMessage(message.channelId, message.id, outgoing);
+      await rest.editMessage(message.channelId, message.id, outgoing);
       setEditing(false);
     } catch (e) {
       setEditErr(e instanceof ApiError ? e.message : 'Edit failed');
@@ -617,7 +589,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
     // modal in the polish pass.
     if (!confirm('Delete this message?')) return;
     try {
-      await (await restForChannel(message.channelId)).deleteMessage(message.channelId, message.id);
+      await rest.deleteMessage(message.channelId, message.id);
     } catch (e) {
       // No state to roll back; the gateway will deliver the delete event.
       // If REST failed, the event won't come, and the message stays —
@@ -636,9 +608,9 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   async function togglePin() {
     try {
       if (message.pinned) {
-        await (await restForChannel(message.channelId)).unpinMessage(message.channelId, message.id);
+        await rest.unpinMessage(message.channelId, message.id);
       } else {
-        await (await restForChannel(message.channelId)).pinMessage(message.channelId, message.id);
+        await rest.pinMessage(message.channelId, message.id);
       }
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Pin/unpin failed', 'error');
@@ -1036,9 +1008,11 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
           <div className="text-ink-3 italic text-sm whitespace-pre-wrap break-words flex items-center gap-1.5">
             <Shield size={11} className="text-ink-3 shrink-0" />
             <span>
-              {decryption.noKey
-                ? 'Encrypted — enter the password (banner above the message box) to read.'
-                : "Couldn't decrypt this message — the password may have changed."}
+              {!e2eeSupported()
+                ? E2EE_INSECURE_SHORT
+                : decryption.noKey
+                  ? 'Encrypted — enter the password (banner above the message box) to read.'
+                  : "Couldn't decrypt this message — the password may have changed."}
             </span>
           </div>
         ) : (
@@ -1270,7 +1244,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
           guildId={guildIdForChannel ?? undefined}
           onSelect={(emoji) => {
             setReactPickerOpen(false);
-            void restForChannel(message.channelId).then((api) => api.addReaction(message.channelId, message.id, emoji)).catch(() => {
+            void rest.addReaction(message.channelId, message.id, emoji).catch(() => {
               // Reactions component shows surfaced errors via toasts;
               // we deliberately drop here since this is the hover-
               // strip variant and the user just sees nothing happen

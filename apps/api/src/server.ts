@@ -36,6 +36,7 @@ import { billingRouter } from './routes/billing';
 import { dmsRouter } from './routes/dms';
 import { cdnRouter } from './routes/cdn';
 import { voiceRouter } from './routes/voice';
+import { callDeclineRouter } from './routes/callDecline';
 import { requestId, accessLog, errorHandler } from './middleware';
 import { env, isDev } from './env';
 
@@ -140,6 +141,9 @@ export function createApp() {
   v1.route('/channels', messagesRouter);
   v1.route('/channels', voiceRouter);
   v1.route('/channels', stageRouter);
+  // Push-notification "Decline" (service worker, no bearer token) — a signed
+  // per-call capability instead. Not under /channels; see routes/callDecline.ts.
+  v1.route('/call-decline', callDeclineRouter);
   v1.route('/', discoveryRouter);
   v1.route('/invites', invitesRouter);
   // Client-side link-preview resolution for E2EE messages (the server can't

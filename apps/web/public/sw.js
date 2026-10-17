@@ -277,64 +277,31 @@ self.addEventListener('notificationclick', (event) => {
   const isCall = data.kind === 'call';
   const action = event.action; // empty string when the body was tapped
 
-  // Decline path: close the notification + tell any open client to
-  // POST a decline (best-effort — if no client is open we just
-  // drop the ring on the caller's end via normal timeout). No
-  // window is opened, since the user said "no" to the call.
+  // Decline path: end the ring on the caller's side. No window is
+  // opened, since the user said "no" to the call.
+  //
+  // The SW has no bearer token (it lives in the page) and the API
+  // doesn't accept cookies on normal routes, so the ring push carries
+  // `declineToken`: a short-lived signed capability that can decline
+  // only THIS call, as this user (api auth/callDeclineToken.ts). We
+  // send it to POST /call-decline directly — whether or not a tab is
+  // open — and the server removes the caller from voice, which also
+  // clears any open tab's incoming-call UI via the gateway. Idempotent:
+  // a call that already ended or was answered is a no-op.
   if (isCall && action === 'decline-call') {
-    event.waitUntil(
-      (async () => {
-        const channelId = data.channelId;
-        let notifiedOpenClient = false;
-        try {
-          const allClients = await self.clients.matchAll({
-            type: 'window',
-            includeUncontrolled: true,
-          });
-          for (const client of allClients) {
-            try {
-              client.postMessage({
-                type: 'DECLINE_CALL',
-                channelId,
-              });
-              notifiedOpenClient = true;
-            } catch {
-              // No-op — a single client failing to receive the
-              // postMessage doesn't change the outcome.
-            }
-          }
-        } catch {
-          // matchAll failure — fall through to the direct fetch
-          // below as a backstop.
-        }
-        // Fallback: if no client was reachable (the app is fully
-        // closed, which is the common case for a ring received
-        // overnight), fire the decline directly from the SW. The
-        // session cookie is on the same origin so credentials:
-        // 'include' attaches it; the SW is authenticated as the
-        // user without needing any token threading.
-        //
-        // We hit POST /voice/decline (NOT DELETE /voice). The DELETE
-        // endpoint removes the AUTHENTICATED USER from voice — but
-        // the recipient isn't in voice when declining (they haven't
-        // accepted yet). The decline endpoint removes the OTHER
-        // party (the caller) from voice, which is what actually
-        // ends the ring on their side. Idempotent — a duplicate
-        // fire just hits a no-op (200) on the server.
-        if (!notifiedOpenClient && typeof channelId === 'string') {
-          try {
-            await fetch(
-              `/api/v1/channels/${encodeURIComponent(channelId)}/voice/decline`,
-              { method: 'POST', credentials: 'include' },
-            );
-          } catch {
-            // Network failure or auth expired — drop silently;
-            // the caller's own ringing-out timeout is the final
-            // backstop.
-          }
-        }
-      })(),
-    );
+    const declineToken = data.declineToken;
+    if (typeof declineToken === 'string') {
+      event.waitUntil(
+        fetch('/api/v1/call-decline', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ token: declineToken }),
+        }).catch(() => {
+          // Network failure — drop silently; the caller's own
+          // ringing-out timeout is the final backstop.
+        }),
+      );
+    }
     return;
   }
 

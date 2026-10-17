@@ -33,7 +33,7 @@ export function Reactions({ message, guildId }: { message: Message; guildId?: st
   // re-render on unrelated dispatches (typing, presence, other channels'
   // messages).
   const emojisByGuild = useAppStateSelector((v) => v.state.emojisByGuild);
-  const restForChannel = useAppStateSelector((v) => v.restForChannel);
+  const rest = useAppStateSelector((v) => v.rest);
   const toasts = useToasts();
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -46,11 +46,10 @@ export function Reactions({ message, guildId }: { message: Message; guildId?: st
 
   async function toggle(emoji: string, currentlyMine: boolean) {
     try {
-      const api = await restForChannel(message.channelId);
       if (currentlyMine) {
-        await api.removeReaction(message.channelId, message.id, emoji);
+        await rest.removeReaction(message.channelId, message.id, emoji);
       } else {
-        await api.addReaction(message.channelId, message.id, emoji);
+        await rest.addReaction(message.channelId, message.id, emoji);
       }
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Reaction failed', 'error');

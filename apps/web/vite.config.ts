@@ -63,8 +63,24 @@ function swVersionPlugin(): Plugin {
   };
 }
 
+/**
+ * Dev-only: drop the Content-Security-Policy meta from index.html. The
+ * production policy (script-src/style-src 'self') would block the inline
+ * React-refresh preamble and the <style> tags Vite's dev server injects for
+ * CSS/HMR. `vite build` and `vite preview` keep it.
+ */
+function stripCspInDevPlugin(): Plugin {
+  return {
+    name: 'zekktris-strip-csp-in-dev',
+    apply: 'serve',
+    transformIndexHtml(html) {
+      return html.replace(/<meta\s+http-equiv="Content-Security-Policy"[\s\S]*?\/>/, '');
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), swVersionPlugin(), ...analyzerPlugins()],
+  plugins: [react(), swVersionPlugin(), stripCspInDevPlugin(), ...analyzerPlugins()],
   server: {
     port: 5173,
     proxy: {

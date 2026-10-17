@@ -420,7 +420,6 @@ type Action =
   | { type: 'POKE_PILL_SET'; channelId: string; emoji: string }
   | { type: 'POKE_PILL_CLEAR'; channelId: string }
   | { type: 'READ_STATES_SET'; readStates: ReadState[] }
-  | { type: 'READ_STATES_MERGE'; readStates: ReadState[] }
   | { type: 'READ_STATE_UPSERT'; readState: ReadState }
   | { type: 'MENTION_INCREMENT'; channelId: string }
   | { type: 'VOICE_STATES_SET'; voiceStates: VoiceState[] }
@@ -1604,15 +1603,6 @@ function reducer(state: State, action: Action): State {
       return { ...state, readStateByChannel: map, loadedReadStates: true };
     }
 
-    case 'READ_STATES_MERGE': {
-      // Merge a batch (e.g. a node's read-states for remote guilds) into the
-      // existing map without clobbering backbone entries. Used so remote
-      // guilds contribute to per-channel unread + the total mention count.
-      if (action.readStates.length === 0) return state;
-      const map = { ...state.readStateByChannel };
-      for (const rs of action.readStates) map[rs.channelId] = rs;
-      return { ...state, readStateByChannel: map };
-    }
     case 'READ_STATE_UPSERT': {
       const existing = state.readStateByChannel[action.readState.channelId];
       // Same monotonicity guard as the server: refuse backwards moves on
@@ -1969,12 +1959,10 @@ interface AppStateValue {
   /** Load a guild's channels into state. Idempotent. */
   loadChannels: (guildId: string) => Promise<void>;
   /**
-   * Resolve the REST client for a guild or channel. There's a single backbone
-   * client, so these return it directly; kept as async accessors so call sites
-   * that `await restForGuild(id)` stay unchanged.
+   * The REST client (same instance as useAuth().rest). Exposed here so
+   * memoized rows can select it without subscribing to auth-context changes.
    */
-  restForGuild: (guildId: string) => Promise<RestClient>;
-  restForChannel: (channelId: string) => Promise<RestClient>;
+  rest: RestClient;
   /**
    * Apply a drag-reorder result locally. Caller should fire AFTER
    * the REST request to PATCH /guilds/:id/channels/positions has
@@ -2255,22 +2243,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'GUILDS_SET', guilds: r.guilds });
   }, [rest]);
 
-  // All guilds are local; these resolve to the one backbone REST client.
-  // Kept as async (guildId) shims so existing call sites stay unchanged.
-  const restForGuild = useCallback(
-    async (_guildId: string): Promise<RestClient> => rest,
-    [rest],
-  );
-
-  const restForChannel = useCallback(
-    async (_channelId: string): Promise<RestClient> => rest,
-    [rest],
-  );
-
   const loadChannels = useCallback(
     async (guildId: string) => {
-      const api = await restForGuild(guildId);
-      const r = await api.listGuildChannels(guildId);
+      const r = await rest.listGuildChannels(guildId);
       dispatch({ type: 'CHANNELS_SET', guildId, channels: r.channels });
       // Hydrate emoji index for this guild on first channel-load. Soft
       // failure: a 403 here means the user isn't actually a member
@@ -2278,7 +2253,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       // tokens as plain text is a graceful degradation. Other
       // failures we just swallow — no user-facing toast since the
       // emoji feature is supplementary, not critical-path.
-      void api
+      void rest
         .listGuildEmojis(guildId)
         .then((er) => {
           dispatch({ type: 'EMOJIS_SET', guildId, emojis: er.emojis });
@@ -2286,14 +2261,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         .catch(() => undefined);
       // Same lifecycle for stickers — hydrate on first channel-load
       // for the guild, soft-failure on permission errors.
-      void api
+      void rest
         .listGuildStickers(guildId)
         .then((sr) => {
           dispatch({ type: 'STICKERS_SET', guildId, stickers: sr.stickers });
         })
         .catch(() => undefined);
     },
-    [restForGuild],
+    [rest],
   );
 
   /**
@@ -2338,16 +2313,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
 
   const loadMessages = useCallback(
     async (channelId: string) => {
-      const api = await restForChannel(channelId);
-      const r = await api.listMessages(channelId, { limit: 50 });
+      const r = await rest.listMessages(channelId, { limit: 50 });
       // REST returns newest-first; reverse for chronological render.
       const ordered = [...r.messages].reverse();
       dispatch({ type: 'MESSAGES_SET', channelId, messages: ordered });
       // Hydrate the saved-message set for these ids so the bookmark
       // icon renders correctly. Fire-and-forget — purely decorative
-      // and fine to land a beat after the message bodies. Saved messages
-      // are a backbone concept, so this stays on the backbone `rest`
-      // (node message ids simply won't match — harmless).
+      // and fine to land a beat after the message bodies.
       const ids = ordered.map((m) => m.id).filter((id) => !id.startsWith('local-'));
       if (ids.length > 0) {
         void rest
@@ -2360,7 +2332,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           .catch(() => undefined);
       }
     },
-    [rest, restForChannel],
+    [rest],
   );
 
   const loadMessagesAround = useCallback(
@@ -2372,7 +2344,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       if (existing?.some((m) => m.id === messageId)) {
         return { found: true };
       }
-      const r = await (await restForChannel(channelId)).listMessages(channelId, {
+      const r = await rest.listMessages(channelId, {
         around: messageId,
         limit: 50,
       });
@@ -2391,7 +2363,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       const found = r.messages.some((m) => m.id === messageId);
       return { found };
     },
-    [rest, restForChannel],
+    [rest],
   );
 
   /**
@@ -2430,7 +2402,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         await loadMessages(channelId);
         return;
       }
-      const r = await (await restForChannel(channelId)).listMessages(channelId, {
+      const r = await rest.listMessages(channelId, {
         after,
         limit: 50,
       });
@@ -2439,7 +2411,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'MESSAGE_APPEND', channelId, message: m });
       }
     },
-    [loadMessages, restForChannel],
+    [loadMessages, rest],
   );
 
   /**
@@ -2460,12 +2432,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         await loadMessages(channelId);
         return;
       }
-      const r = await (await restForChannel(channelId)).listMessages(channelId, { limit: 50 });
+      const r = await rest.listMessages(channelId, { limit: 50 });
       for (const m of [...r.messages].reverse()) {
         dispatch({ type: 'MESSAGE_APPEND', channelId, message: m });
       }
     },
-    [loadMessages, restForChannel],
+    [loadMessages, rest],
   );
 
   /**
@@ -2514,7 +2486,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         }
       }
       if (!anchor) return; // only optimistic rows — nothing server-side to heal
-      const r = await (await restForChannel(channelId)).listMessages(channelId, {
+      const r = await rest.listMessages(channelId, {
         around: anchor,
         limit: 50,
       });
@@ -2528,7 +2500,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       const merged = pending.length > 0 ? [...r.messages, ...pending] : r.messages;
       dispatch({ type: 'MESSAGES_SET', channelId, messages: merged });
     },
-    [restForChannel],
+    [rest],
   );
 
   /**
@@ -2559,7 +2531,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       dispatch({ type: 'LOADING_OLDER_BEGIN', channelId });
       try {
         const PAGE = 50;
-        const r = await (await restForChannel(channelId)).listMessages(channelId, {
+        const r = await rest.listMessages(channelId, {
           before: oldestId,
           limit: PAGE,
         });
@@ -2577,24 +2549,24 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'LOADING_OLDER_END', channelId });
       }
     },
-    [restForChannel],
+    [rest],
   );
 
   const loadMembers = useCallback(
     async (guildId: string) => {
-      const r = await (await restForGuild(guildId)).listMembers(guildId, { limit: 200 });
+      const r = await rest.listMembers(guildId, { limit: 200 });
       dispatch({ type: 'MEMBERS_SET', guildId, members: r.members });
     },
-    [restForGuild],
+    [rest],
   );
 
   const loadRoles = useCallback(
     async (guildId: string): Promise<Role[]> => {
-      const r = await (await restForGuild(guildId)).listRoles(guildId);
+      const r = await rest.listRoles(guildId);
       dispatch({ type: 'ROLES_SET', guildId, roles: r.roles });
       return r.roles;
     },
-    [restForGuild],
+    [rest],
   );
 
   const loadGuildEvents = useCallback(
@@ -2843,7 +2815,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         readState: { channelId, lastMessageId: messageId, mentionCount: 0 },
       });
       try {
-        await (await restForChannel(channelId)).ack(channelId, messageId);
+        await rest.ack(channelId, messageId);
       } catch {
         // Silent — the gateway is the source of truth for read-state
         // reconciliation. Logging to console for the operator's benefit.
@@ -2853,7 +2825,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         console.warn('[ack] failed for channel', channelId);
       }
     },
-    [restForChannel],
+    [rest],
   );
 
   // ── Optimistic message sending ────────────────────────────────────────
@@ -3079,7 +3051,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
 
       // Fire the actual REST call in the background.
       try {
-        const r = await (await restForChannel(channelId)).sendMessage(channelId, {
+        const r = await rest.sendMessage(channelId, {
           content: input.content,
           replyToId: input.replyToId,
           files: uploadFiles,
@@ -3176,7 +3148,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       }
 
       try {
-        const r = await (await restForChannel(channelId)).sendMessage(channelId, {
+        const r = await rest.sendMessage(channelId, {
           content: input.content,
           replyToId: input.replyToId,
           files,
@@ -3335,15 +3307,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   // ── Gateway → state ──────────────────────────────────────────────────
   // Subscriptions are scoped to the lifetime of the auth session.
 
-  // Register all gateway→state handlers on a given gateway client and return
-  // the unsubscribe list. Used for BOTH the backbone gateway and per-node
-  // gateways (remote guilds). The parameter is named `gateway` so the handler
-  // bodies below — which all reference `gateway.on(...)` — bind to whichever
-  // client is passed, with zero changes. `isNode` skips the session-level
-  // READY bootstrap (guild/DM/relationship refetch + bulk voice replace),
-  // which is a backbone concern and must not re-run for a node connection.
+  // Register all gateway→state handlers on the gateway client and return
+  // the unsubscribe list.
   const subscribeGateway = useCallback(
-    (gateway: GatewayClient, isNode = false) => {
+    (gateway: GatewayClient) => {
       const selfId = user?.id ?? '';
       const unsubs: Array<() => void> = [];
 
@@ -3705,7 +3672,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
             onClick: () => {
               void (async () => {
                 try {
-                  await (await restForChannel(d.channel_id)).poke(d.channel_id, d.poke_type);
+                  await rest.poke(d.channel_id, d.poke_type);
                 } catch {
                   /* best-effort poke-back */
                 }
@@ -3992,7 +3959,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
               // clear would otherwise wipe it) and before the REST call, so
               // the server's echo of THIS join isn't read as a second drag.
               voiceMod.claimVoiceChannel(newChannelId);
-              const r = await (await restForChannel(newChannelId)).joinVoice(newChannelId);
+              const r = await rest.joinVoice(newChannelId);
               if (r?.token && r.wsUrl) {
                 await voiceMod.connectToVoice({
                   token: r.token,
@@ -4032,11 +3999,6 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       // is already running the bootstrap in parallel; doing it twice
       // would just thrash. We skip with the readyOnceRef flag.
       gateway.on<{ voice_states?: VoiceState[] }>('READY', (payload) => {
-        // A node gateway's READY is just connection establishment — the
-        // session bootstrap (guilds/DMs/relationships) and the bulk voice
-        // replace are backbone concerns. The node's live per-event handlers
-        // still flow.
-        if (isNode) return;
         if (payload?.voice_states) {
           dispatch({ type: 'VOICE_STATES_SET', voiceStates: payload.voice_states });
         }
@@ -4125,12 +4087,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       loadDmNicknames,
       loadSupervision,
       toasts.push,
-      restForChannel,
+      rest,
       resyncChannelWindow,
     ],
   );
 
-  // Backbone gateway: subscribe for the auth session (unchanged behavior).
+  // Gateway: subscribe for the auth session.
   //
   // NOTE: we deliberately do NOT reset readyOnceRef here. This effect re-runs
   // on every `token` refresh (~15 min) and on every self-user object churn
@@ -4185,8 +4147,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       reconcileGuildVoice,
       refreshGuilds,
       loadChannels,
-      restForGuild,
-      restForChannel,
+      rest,
       applyChannelReorder,
       loadMessages,
       loadMessagesAround,
@@ -4219,8 +4180,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       state,
       refreshGuilds,
       loadChannels,
-      restForGuild,
-      restForChannel,
+      rest,
       applyChannelReorder,
       loadMessages,
       loadMessagesAround,

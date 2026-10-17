@@ -33,8 +33,8 @@ interface Props {
 }
 
 export function ForwardModal({ message, onClose }: Props) {
-  const { user } = useAuth();
-  const { state, restForChannel } = useAppState();
+  const { user, rest } = useAuth();
+  const { state } = useAppState();
   const toasts = useToasts();
 
   const [query, setQuery] = useState('');
@@ -100,26 +100,12 @@ export function ForwardModal({ message, onClose }: Props) {
     if (!destId || sending) return;
     setSending(true);
     try {
-      const srcApi = await restForChannel(message.channelId);
-      const destApi = await restForChannel(destId);
-      if (srcApi === destApi) {
-        // Same server: it can resolve the source message id, so use the
-        // native forward (which renders a proper forwarded-message embed).
-        await destApi.sendMessage(destId, {
-          content: comment.trim(),
-          forwardFromMessageId: message.id,
-        });
-      } else {
-        // Cross-server (backbone ↔ node, or node ↔ node): the destination
-        // can't resolve a message id that lives on another server, so copy
-        // the content into a new message instead. Attachments aren't re-
-        // uploaded across servers — text is carried; if there was only an
-        // attachment, we note that.
-        const original = (message.content ?? '').trim();
-        const fallback = original || '(forwarded message — open the original to see its attachment)';
-        const body = [comment.trim(), fallback].filter(Boolean).join('\n\n');
-        await destApi.sendMessage(destId, { content: body });
-      }
+      // Native forward — the server resolves the source message id and
+      // renders a proper forwarded-message embed.
+      await rest.sendMessage(destId, {
+        content: comment.trim(),
+        forwardFromMessageId: message.id,
+      });
       toasts.push('Forwarded', 'success');
       onClose();
     } catch (e) {

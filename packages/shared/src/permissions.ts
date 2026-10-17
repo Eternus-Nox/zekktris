@@ -24,8 +24,10 @@
  *   6. Per-role channel overrides (folded together: deny then allow)
  *   7. Per-member channel override (deny then allow)
  *
- * Both the API (source of truth) and the web client (UI gating only) use this
- * file. Never branch the algorithm.
+ * The API (source of truth) uses this file. Never branch the algorithm. The
+ * web client keeps its own display catalog of the same bits in
+ * apps/web/src/lib/permissions.ts (apps/web/test/permissionsCatalog.test.ts
+ * fails if the two drift), so add any new bit there too.
  */
 
 export const Permissions = {
