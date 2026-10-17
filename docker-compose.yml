@@ -227,6 +227,12 @@ services:
       # never reaches the api and every stored 2FA/bot/SSO secret is unreadable.
       FIELD_ENCRYPTION_KEYS_OLD: ${FIELD_ENCRYPTION_KEYS_OLD:-}
       TRUST_PROXY: "true"   # we're behind Caddy; X-Forwarded-* are trusted
+      # Gateway abuse limits: new WebSocket connections per client IP per
+      # minute, and IDENTIFY/RESUME attempts per user per minute. Generous on
+      # purpose (a phone waking or many open tabs reconnect in a burst); 0
+      # disables either one.
+      GATEWAY_CONNECTS_PER_MINUTE_PER_IP: ${GATEWAY_CONNECTS_PER_MINUTE_PER_IP:-120}
+      GATEWAY_IDENTIFIES_PER_MINUTE_PER_USER: ${GATEWAY_IDENTIFIES_PER_MINUTE_PER_USER:-60}
       # LiveKit (voice/video). The stack ships a self-hosted LiveKit SFU
       # (the `livekit` service below) that runs by default, so voice works
       # out of the box. install.sh generates a unique key/secret on first run;
