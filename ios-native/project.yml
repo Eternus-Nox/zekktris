@@ -594,6 +594,8 @@ targets:
       - path: Zekktris/WidgetShared.swift
       - path: Zekktris/AppGroupConfig.swift
       - path: Zekktris/Keychain.swift
+      # Multi-device presence: device activity, gateway reporting, own dot.
+      - path: Zekktris/DevicePresence.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zekktris.native.tests

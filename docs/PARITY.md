@@ -51,7 +51,7 @@ The genuine parity story is therefore **not** "web is far behind." It's:
 | Register + password-strength meter | AuthViews.swift:281, :393 | Full | AuthScreens.tsx:283, :328 | — | Identical 4-segment meter. |
 | Forgot / reset password | AuthViews.swift:199 | Full | AuthScreens.tsx:475, :565 | — | Web supports `?token` deep link. |
 | Email verification gate / landing | Unverified | Full | VerifyEmail.tsx, ConfirmEmailPage.tsx | — | Native gate not located; verify whether native enforces it. |
-| Status (online/idle/dnd/invisible) | MainView.swift:1579 | Full | SettingsView.tsx:614 | — | |
+| Status (online/idle/dnd/invisible) | MainView.swift:1579 | Full | SettingsView.tsx:614 | — | Picker sets the CHOSEN status; the dot follows the device in use (iOS reports activity over the gateway: DevicePresence.swift). |
 | Display name / bio / gender edit | MainView.swift:1604 | Full | SettingsView.tsx:555–606 | — | Native bio/gender field not located — Unverified on native. |
 | Custom status (emoji + text) | MainView.swift:1633 | Full | CustomStatusModal.tsx | — | **Web-ahead:** web adds an expiry dropdown; native has none. |
 | Avatar / banner / avatar-decoration upload | MainView.swift:1500–1763 | Full | SettingsView.tsx:536–777 | — | |

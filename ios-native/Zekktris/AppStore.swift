@@ -981,22 +981,49 @@ final class AppStore: ObservableObject {
 
     // MARK: Automatic presence (online ↔ idle)
     //
-    // "Online" is an AUTOMATIC mode: while the chosen status is online the app
-    // flips to idle (5+ min without UI interaction and not talking) and back to
-    // online on activity. A MANUALLY chosen idle, dnd, and invisible are all
-    // manual and untouched (tracked via `autoSetIdle` so a user-set idle is
-    // never auto-bounced to online). Offline is handled by the gateway
-    // disconnect (background/close). Pushes go through `autoStatusPush`
-    // (wired to Session.setStatus) so it reuses the normal status path; the
-    // chosen status is read via `currentChosenStatus`. AFK voice-channel
-    // relocation is a separate, already-built server sweep (guilds.afkChannelId).
-    static let autoIdleThresholdSeconds: TimeInterval = 300
+    // This device is "in use" while the app is in the foreground and was
+    // touched within 5 minutes (or we're talking in voice); backgrounded is
+    // idle at once (DevicePresence.isActive). Every evaluation reports that to
+    // the gateway (Gateway.setPresenceActive), which sends it only on a change.
+    //
+    // A server with multi-device presence (READY features.presence_activity,
+    // or a self user carrying chosenStatus) derives the status everyone sees
+    // from the chosen status plus EVERY device's activity: the phone in use
+    // reads online even while the idle Mac would say away. The app then never
+    // writes the status itself — only the status picker does.
+    //
+    // Older servers keep the legacy auto-away below: "Online" is an AUTOMATIC
+    // mode there — while the chosen status is online the app flips to idle (5+
+    // min without UI interaction and not talking) and back to online on
+    // activity. A MANUALLY chosen idle, dnd, and invisible are all manual and
+    // untouched (tracked via `autoSetIdle` so a user-set idle is never
+    // auto-bounced to online). Offline is handled by the gateway disconnect
+    // (background/close). Pushes go through `autoStatusPush` (wired to
+    // Session.setStatus) so it reuses the normal status path; the chosen
+    // status is read via `currentChosenStatus`. AFK voice-channel relocation
+    // is a separate, already-built server sweep (guilds.afkChannelId).
+    static let autoIdleThresholdSeconds: TimeInterval = DevicePresence.idleThresholdSeconds
     /// Pushes an effective status to the server (set by the app to Session.setStatus).
+    /// Legacy servers only; never called when `serverDerivesPresence`.
     var autoStatusPush: ((String) async -> Void)?
-    /// Reads the user's current chosen status (set by the app to Session.currentUser.status).
+    /// Reads the user's current chosen status (set by the app to
+    /// Session.currentUser's chosenStatus, or its status on an older server).
     var currentChosenStatus: (() -> String)?
+    /// Writes the own status the server pushed (chosen, effective) into
+    /// Session.currentUser (set by the app), so the Settings picker follows a
+    /// pick made on another device.
+    var applySelfStatus: ((_ chosen: String, _ effective: String?) -> Void)?
     private var lastInteractionAt = Date()
     private var appActive = true
+    /// True while the app is in the background (scenePhase .background) —
+    /// this device then reports idle at once. `.inactive` (Control Center,
+    /// the app switcher, a notification pulled down) is still foreground, so
+    /// a glance at a banner doesn't flap the user's dot.
+    private var appInBackground = false
+    /// The activity last reported to the gateway (nil before the first
+    /// evaluation). Lets a touch after an idle report re-evaluate at once
+    /// instead of on the next 60s tick.
+    private var lastReportedActive: Bool?
     /// True only when the auto-presence machine itself moved the user to
     /// "idle" (online → idle on inactivity). Mirrors the web client's
     /// `autoSetRef`: it lets us restore idle → online when the user becomes
@@ -1066,6 +1093,14 @@ final class AppStore: ObservableObject {
         gateway.onEvent = { [weak self] name, data in
             self?.handleEvent(name, data)
         }
+        // Talking in voice counts as using the device (auto-presence).
+        voice.onSpeakingChanged = { [weak self] ids in
+            guard let self, let uid = self.currentUserId, ids.contains(uid) else { return }
+            self.noteInteraction(evaluate: false)
+        }
+        // Decide this device's activity BEFORE the socket opens, so the first
+        // IDENTIFY carries it (a background VoIP launch must not read active).
+        startAutoPresence()
         gateway.connect(token: token)
         Task { await loadGuilds() }
         Task { await loadDMs() }
@@ -1094,7 +1129,6 @@ final class AppStore: ObservableObject {
             didLandInitialScreen = true
             showDMs()
         }
-        startAutoPresence()
         startOpenChannelPolling()
     }
 
@@ -1209,14 +1243,20 @@ final class AppStore: ObservableObject {
     /// timestamp (this fires constantly during scroll), letting the 60s tick
     /// handle transitions. Discrete actions (send, open channel) use the
     /// default `true` for a prompt re-evaluate (e.g. idle→online immediately).
+    /// Exception: after this device reported idle, the first touch
+    /// re-evaluates at once so the user's dot turns active without waiting
+    /// for the tick (one evaluation — it reports active and the guard closes).
     func noteInteraction(evaluate: Bool = true) {
         lastInteractionAt = Date()
-        if evaluate { evaluateAutoPresence() }
+        if evaluate || lastReportedActive == false { evaluateAutoPresence() }
     }
 
-    /// Foreground/background transitions feed the state machine.
-    func setAppActive(_ active: Bool) {
+    /// Foreground/background transitions feed the state machine. `active` is
+    /// scenePhase .active (open-channel polling, legacy auto-away);
+    /// `background` is scenePhase .background (device activity → idle).
+    func setAppActive(_ active: Bool, background: Bool) {
         appActive = active
+        appInBackground = background
         if active { lastInteractionAt = Date() }
         if active { startOpenChannelPolling() } else { stopOpenChannelPolling() }
         evaluateAutoPresence()
@@ -1235,6 +1275,9 @@ final class AppStore: ObservableObject {
 
     private func startAutoPresence() {
         appActive = true
+        // start() also runs from a background VoIP launch (ensureGatewayConnected):
+        // a ring must not mark the user as using this phone.
+        appInBackground = UIApplication.shared.applicationState == .background
         lastInteractionAt = Date()
         autoPresenceTimer?.invalidate()
         // Re-check periodically so the idle transition fires without a UI event
@@ -1545,13 +1588,32 @@ final class AppStore: ObservableObject {
         }
     }
 
-    /// Compute the desired auto status and push it if it differs from the
-    /// current chosen status. No-op when auto shouldn't act.
+    /// Whether the server derives the user's status from device activity, so
+    /// this app must never write it automatically. The READY flag is the
+    /// signal; a self user carrying `chosenStatus` (only such servers send
+    /// it) also counts, so an auto-away PATCH can't slip out before the first
+    /// READY — or while the socket can't connect — and pin the user's CHOSEN
+    /// status to Away.
+    var serverDerivesPresence: Bool {
+        gateway.supportsPresenceActivity || currentUser?.chosenStatus != nil
+    }
+
+    /// Report this device's activity to the gateway and, on an older server
+    /// only, compute the legacy auto status and push it if it differs from the
+    /// current chosen status.
     func evaluateAutoPresence() {
         guard let uid = currentUserId else { return }
-        let chosen = currentChosenStatus?() ?? "online"
         let talking = voice.speakingUserIds.contains(uid)
         let secs = Date().timeIntervalSince(lastInteractionAt)
+        let active = DevicePresence.isActive(
+            foreground: !appInBackground, secondsSinceInteraction: secs, talking: talking
+        )
+        lastReportedActive = active
+        // Always: it rides in IDENTIFY/RESUME (ignored by older servers) and
+        // goes out as op 3 only on a change, only where it's supported.
+        gateway.setPresenceActive(active)
+        guard !serverDerivesPresence else { return }
+        let chosen = currentChosenStatus?() ?? "online"
         guard let desired = Self.desiredAutoStatus(
             chosen: chosen, autoSetIdle: autoSetIdle, appActive: appActive,
             secondsSinceInteraction: secs, talking: talking
@@ -1583,6 +1645,8 @@ final class AppStore: ObservableObject {
         discardPendingShare()
         currentUserId = nil
         currentUser = nil
+        voice.onSpeakingChanged = nil
+        lastReportedActive = nil
         didInitialReady = false
         didLandInitialScreen = false
         readStates = [:]
@@ -1930,18 +1994,41 @@ final class AppStore: ObservableObject {
     /// `seedPresence`.
     func status(for userId: String?) -> String {
         if let userId {
-            // The SELF user: the server never echoes our own presence back to
-            // us, and currentUser.status is a stale pre-connect snapshot (often
-            // "offline" because getMe ran before the gateway identified). While
-            // we're in the app we are online — so report "online" unless a
-            // deliberate status (idle/dnd/invisible) was chosen in Settings.
+            // The SELF user. On a server with multi-device presence our own
+            // PRESENCE_UPDATEs reach us and `presence` holds the effective
+            // status (online while any of our devices is in use, else away);
+            // chosen Invisible shows Invisible (those frames say offline). An
+            // older server never echoes our own presence back, and
+            // currentUser.status is a stale pre-connect snapshot (often
+            // "offline" because getMe ran before the gateway identified) —
+            // there, while we're in the app we are online, so report "online"
+            // unless a deliberate status (idle/dnd/invisible) was chosen in
+            // Settings. See DevicePresence.selfStatus.
             if userId == currentUserId {
-                let chosen = currentUser?.status ?? "offline"
-                return chosen == "offline" ? "online" : chosen
+                let chosen = DevicePresence.pickerStatus(
+                    chosen: currentChosenStatus?() ?? currentUser?.chosenStatus,
+                    status: currentUser?.status
+                )
+                return DevicePresence.selfStatus(
+                    chosen: chosen, live: presence[userId], serverDerives: serverDerivesPresence
+                )
             }
             if let s = presence[userId] { return s }
         }
         return "offline"
+    }
+
+    /// Our own status as the server pushed it (READY, or the PRESENCE_UPDATE
+    /// to our own connections): patch our copy of the self user and
+    /// Session's, which the Settings picker reads. `effective` nil = leave
+    /// `status` alone.
+    private func noteSelfStatus(chosen: String, effective: String?) {
+        if var u = currentUser {
+            u.chosenStatus = chosen
+            if let effective { u.status = effective }
+            if u != currentUser { currentUser = u }
+        }
+        applySelfStatus?(chosen, effective)
     }
 
     /// Snapshot of `presence` to hand to `seedPresence` — take it immediately
@@ -5664,6 +5751,14 @@ final class AppStore: ObservableObject {
             // snapshot on a fresh IDENTIFY — was thrown away. The web client
             // consumes voice_states here too (VOICE_STATES_SET).
             applyReadyVoiceStates(data)
+            // Our chosen status may have been changed on another device while
+            // this one was away. (Only the choice: READY's effective `status`
+            // can predate this connection's own recompute, whose
+            // PRESENCE_UPDATE follows right behind.)
+            if let d = jsonDict(data), let u = d["user"] as? [String: Any],
+               let chosen = u["chosenStatus"] as? String {
+                noteSelfStatus(chosen: chosen, effective: nil)
+            }
             if didInitialReady {
                 // A READY after the first one means we reconnected following a
                 // drop. Re-sync state, since dispatch events were missed while
@@ -5843,6 +5938,13 @@ final class AppStore: ObservableObject {
                let status = obj["status"] as? String {
                 pendingPresence[uid] = status
                 schedulePresenceFlush()
+                // Our own: the frame to our own connections also carries our
+                // chosen status, so a pick made on another device reaches the
+                // Settings picker here (multi-device presence servers only).
+                if let me = currentUserId,
+                   let own = DevicePresence.selfFields(fromPresenceUpdate: obj, selfId: me) {
+                    noteSelfStatus(chosen: own.chosen, effective: own.effective)
+                }
             }
         case "TYPING_START":
             // Server payload is snake_case: { channel_id, user_id }.

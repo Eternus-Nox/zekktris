@@ -122,9 +122,11 @@ struct RootView: View {
                 // the background (it can't open the app itself).
                 if session.phase == .signedIn { store.consumeStagedShare() }
             }
-            // Feed foreground/background into the auto-presence state machine
-            // (foreground+activity → online; background → offline via disconnect).
-            store.setAppActive(newPhase == .active)
+            // Feed foreground/background into the auto-presence state machine:
+            // this device reports idle the moment it goes to the background
+            // (multi-device presence); on an older server, foreground+activity
+            // → online and background → offline via disconnect.
+            store.setAppActive(newPhase == .active, background: newPhase == .background)
             // Leaving the foreground is our last reliable chance to persist the
             // refresh cookie before the OS may kill the app — snapshot it so the
             // session survives the next cold launch.
@@ -137,9 +139,22 @@ struct RootView: View {
             case .signedIn:
                 if let token = session.token { store.start(token: token, user: session.currentUser) }
                 // Auto-presence: reuse Session.setStatus to push the effective
-                // status, and read the chosen status from the live user.
+                // status (older servers only), and read the chosen status from
+                // the live user — `chosenStatus`, or `status` on an older server.
                 store.autoStatusPush = { [weak session] status in await session?.setStatus(status) }
-                store.currentChosenStatus = { [weak session] in session?.currentUser?.status ?? "online" }
+                store.currentChosenStatus = { [weak session] in
+                    let u = session?.currentUser
+                    return u?.chosenStatus ?? u?.status ?? "online"
+                }
+                // Own status pushed by the server (READY / our own
+                // PRESENCE_UPDATE) → the user Settings reads, so its picker
+                // follows a pick made on another device.
+                store.applySelfStatus = { [weak session] chosen, effective in
+                    guard let session, var u = session.currentUser else { return }
+                    u.chosenStatus = chosen
+                    if let effective { u.status = effective }
+                    if u != session.currentUser { session.currentUser = u }
+                }
                 PushManager.shared.requestAuthorizationAndRegister()
                 PushManager.shared.registerWithServerIfPossible()
                 VoipPushHandler.shared.registerWithServerIfPossible()
