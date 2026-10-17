@@ -22,8 +22,11 @@
  *   - 'voice' bits are voice-channel-scoped specifically.
  *
  * The override editor filters to scope === 'channel' | 'voice' and
- * further filters voice bits when the channel isn't a voice channel.
+ * further filters voice bits when the channel isn't a voice channel
+ * (see channelOverridePermissions below).
  */
+
+import { ApiError, type Channel } from '@zekktris/client';
 
 export type PermissionScope = 'guild' | 'channel' | 'voice';
 
@@ -210,13 +213,15 @@ export const PERMISSIONS: PermissionDef[] = [
     scope: 'channel',
   },
   {
-    // Checked server-wide (not per channel) by the thread routes.
+    // Checked per channel by the thread archive/resolve routes: a thread
+    // inherits its parent channel's overrides (and that channel's
+    // category's), as in Discord. Deleting a thread needs MANAGE_CHANNELS.
     bit: 33,
     key: 'MANAGE_THREADS',
     label: 'Manage Threads',
-    description: 'Archive, resolve, and delete any thread or forum post, not just your own.',
+    description: 'Archive and resolve any thread or forum post, not just your own.',
     group: 'text',
-    scope: 'guild',
+    scope: 'channel',
   },
   {
     bit: 9,
@@ -327,6 +332,17 @@ export const PERMISSIONS: PermissionDef[] = [
     scope: 'guild',
   },
 ];
+
+/**
+ * The bits the per-channel override editor offers for a channel of the
+ * given type: every 'channel'-scoped bit, plus the 'voice'-scoped bits
+ * on voice channels. 'guild'-scoped bits are role-level only.
+ */
+export function channelOverridePermissions(channelType: Channel['type']): PermissionDef[] {
+  return PERMISSIONS.filter(
+    (p) => p.scope === 'channel' || (p.scope === 'voice' && channelType === 'guild_voice'),
+  );
+}
 
 export const PERMISSION_GROUPS: Array<{ id: PermissionDef['group']; label: string }> = [
   { id: 'general', label: 'General' },
@@ -506,4 +522,18 @@ export function memberIsAdmin(
   // ALL_PERMISSIONS when set, so checking any specific bit also
   // works — but the bit-0 check is the canonical predicate.
   return hasPermissionBit(perms, 0);
+}
+
+/**
+ * Toast text for a failed thread archive/resolve. The web client can't
+ * resolve per-channel overrides, so it may show those buttons to someone a
+ * channel override denies MANAGE_THREADS; the server's 403 then gets a
+ * message that says what's missing instead of a generic one.
+ */
+export function threadToggleErrorMessage(e: unknown, fallback: string): string {
+  if (!(e instanceof ApiError)) return fallback;
+  if (e.code === 'MISSING_PERMISSIONS') {
+    return 'You need Manage Threads in this channel to change a thread you didn’t start.';
+  }
+  return e.message;
 }

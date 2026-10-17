@@ -331,7 +331,8 @@ export async function archiveThread(
  * Mark a thread as resolved (or clear the resolved state). Soft
  * signal — the thread stays open and accepting replies, just gets
  * a checkmark + "Resolved" badge in the UI. Authorization is
- * handled at the route layer (creator OR MANAGE_THREADS).
+ * handled at the route layer (creator OR MANAGE_THREADS in the
+ * thread's channel).
  */
 export async function setThreadResolved(
   threadId: bigint,

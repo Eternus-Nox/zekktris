@@ -2773,10 +2773,11 @@ const createThreadSchema = z.object({
  * pointing at the originating message.
  *
  * Permissions: requires VIEW_CHANNEL + SEND_MESSAGES on the parent channel
- * (anyone who can post here can spawn a thread). MANAGE_THREADS is not a
- * separate permission in v1 — keeping the model small. Starting a thread is
- * a send for moderation purposes: the same participation gates, spam
- * throttle, and banned words + automod (over a user-supplied name) apply.
+ * (anyone who can post here can spawn a thread). MANAGE_THREADS isn't
+ * needed to create one; it gates archiving/resolving other people's
+ * threads (see assertCanToggleThreadState in routes/channels.ts). Starting
+ * a thread is a send for moderation purposes: the same participation gates,
+ * spam throttle, and banned words + automod (over a user-supplied name) apply.
  *
  * Idempotent: a second call with the same parentMessageId returns the
  * existing thread row instead of creating a duplicate.

@@ -1246,9 +1246,10 @@ export class RestClient {
    * stream switches to a banner-only view; new messages get rejected
    * server-side.
    *
-   * Authorization: MANAGE_THREADS on the guild, OR being the post
-   * creator (creator-self-cleanup affordance). Server enforces; the
-   * client doesn't pre-check.
+   * Authorization: MANAGE_THREADS in the thread's channel (the parent's
+   * and its category's overrides apply), OR being the post creator
+   * (creator-self-cleanup affordance). Server enforces; the client
+   * doesn't pre-check.
    *
    * Idempotent: archiving an already-archived thread is a no-op
    * server-side and returns the current channel state.

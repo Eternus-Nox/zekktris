@@ -811,8 +811,9 @@ async function handleArchiveTransition(
     throw errors.forbidden('Threads only exist in guild channels');
   }
 
-  // Authorization: MANAGE_THREADS lets you archive any thread.
-  // Without it, only the post creator can archive their own.
+  // Authorization: MANAGE_THREADS in the thread's channel lets you
+  // archive any thread. Without it, only the post creator can archive
+  // their own.
   await assertCanToggleThreadState(thread, userId);
 
   // Idempotent: if state already matches request, return success
@@ -856,8 +857,9 @@ channelsRouter.post(
 // POST /channels/:id/resolve   → mark thread resolved (sets thread_resolved_at = now)
 // POST /channels/:id/unresolve → clear resolved state
 //
-// Authorization mirrors archive:
-//   - MANAGE_THREADS lets you toggle any thread's resolved state
+// Authorization mirrors archive (assertCanToggleThreadState):
+//   - MANAGE_THREADS in the thread's channel (parent overrides apply)
+//     lets you toggle any thread's resolved state
 //   - Without MANAGE_THREADS, the thread creator can toggle their own
 // Idempotent: posting the same state twice is a no-op success.
 

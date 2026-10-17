@@ -18,6 +18,8 @@ import {
   createUser,
   createGuild,
   addMember,
+  createRole,
+  assignRole,
   createChannel,
   createMessage,
   addOverride,
@@ -182,6 +184,47 @@ describe.runIf(dbReady)('authorization parity between parallel paths', () => {
       expect((await req('POST', `/channels/${thread}/unresolve`, await tokenFor(member))).status).toBe(403);
       const ok = await req('POST', `/channels/${thread}/unarchive`, await tokenFor(owner));
       expect(ok.status).toBe(200);
+    });
+
+    it('checks MANAGE_THREADS per channel, with parent and category overrides', async () => {
+      const { g, parentCh, thread } = await threadFixture();
+
+      // A guild-level grant is revoked by a deny on the thread's parent.
+      const modRole = await createRole(g, P.MANAGE_THREADS);
+      const mod = await createUser();
+      await addMember(g, mod);
+      await assignRole(g, mod, modRole);
+      await addOverride(parentCh, 'role', modRole, 0n, P.MANAGE_THREADS);
+      const modTok = await tokenFor(mod);
+      expect((await req('POST', `/channels/${thread}/archive`, modTok)).status).toBe(403);
+      expect((await req('POST', `/channels/${thread}/resolve`, modTok)).status).toBe(403);
+
+      // A channel-only allow on the parent is enough without the guild bit.
+      const helper = await createUser();
+      await addMember(g, helper);
+      await addOverride(parentCh, 'member', helper, P.MANAGE_THREADS, 0n);
+      const resolved = await req('POST', `/channels/${thread}/resolve`, await tokenFor(helper));
+      expect(resolved.status).toBe(200);
+      const [row] = await db.select().from(schema.channels).where(eq(schema.channels.id, thread));
+      expect(row!.threadResolvedAt).not.toBeNull();
+
+      // An allow on the parent's category cascades down to its threads.
+      const cat = await createChannel(g, { type: 'guild_category' });
+      const catChild = await createChannel(g, { parentId: cat });
+      const catThread = nextSnowflake();
+      await db.insert(schema.channels).values({
+        id: catThread,
+        type: 'public_thread',
+        guildId: g,
+        parentId: catChild,
+        name: 'category thread',
+      });
+      const catMod = await createUser();
+      await addMember(g, catMod);
+      const catTok = await tokenFor(catMod);
+      expect((await req('POST', `/channels/${catThread}/archive`, catTok)).status).toBe(403);
+      await addOverride(cat, 'member', catMod, P.MANAGE_THREADS, 0n);
+      expect((await req('POST', `/channels/${catThread}/archive`, catTok)).status).toBe(200);
     });
   });
 
