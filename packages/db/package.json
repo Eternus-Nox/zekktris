@@ -13,10 +13,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc",
-    "generate": "drizzle-kit generate",
     "migrate": "tsx src/migrate.ts",
-    "studio": "drizzle-kit studio",
-    "push": "drizzle-kit push"
+    "studio": "drizzle-kit studio"
   },
   "dependencies": {
     "@zekktris/shared": "workspace:*",

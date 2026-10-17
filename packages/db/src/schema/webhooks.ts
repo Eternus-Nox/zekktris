@@ -56,11 +56,10 @@ export const webhooks = pgTable(
         execute body can override per-message via `avatar_url` field. */
     avatarUrl: text('avatar_url'),
     /** Secret token. Rotation = delete + create new. Stored in plaintext
-        because the server needs to compare verbatim on each execute, and
-        adding a hashing dance would just rate-limit attackers without
-        meaningfully improving security against db compromise. The token
-        is generated as 32 random urlsafe-base64 chars, ~190 bits of
-        entropy. */
+        (unlike bot tokens, which are shown once and kept as a hash) because
+        list/get re-return it to MANAGE_WEBHOOKS holders, as Discord does,
+        which a one-way hash can't serve. The token is generated as 32
+        random urlsafe-base64 chars, ~190 bits of entropy. */
     token: text('token').notNull(),
     /** Whoever created the webhook. Used for audit + as the
         message.authorId on executed messages. SET NULL on user delete so

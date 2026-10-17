@@ -1,14 +1,14 @@
 /**
  * Permissions
  * -----------
- * Discord-identical bitfield permission system.
+ * Discord-style bitfield permission system.
  *
  * Stored as a 64-bit bigint. Each flag is a power of two. Permissions can be
  * OR'd together for "has any of", AND'd to test, and combined with the
  * channel-override allow/deny pair for per-channel resolution.
  *
- * The resolver in `computePermissions()` is the canonical authorization
- * algorithm and must match Discord's order:
+ * The resolver (`computeBasePermissions()` + `computeChannelPermissions()`)
+ * is the canonical authorization algorithm and follows Discord's order:
  *   1. Owner short-circuit
  *   2. @everyone role base
  *   3. OR in additional roles
@@ -16,6 +16,14 @@
  *   5. @everyone channel override (deny then allow)
  *   6. Per-role channel overrides (folded together: deny then allow)
  *   7. Per-member channel override (deny then allow)
+ *
+ * One deliberate difference: Discord copies ("syncs") a category's overrides
+ * onto its channels, while here a channel inherits them at resolve time.
+ * computeChannelPermissions applies steps 5-7 for the parent CATEGORY, then
+ * again for the channel itself, so ANY channel-level override beats ANY
+ * category-level one — a channel @everyone allow re-opens a category member
+ * deny. (On Discord an unsynced channel ignores the category entirely, so
+ * this exposes nothing extra.)
  *
  * Both the API (source of truth) and the web client (UI gating only) use this
  * file. Never branch the algorithm.
