@@ -135,6 +135,23 @@ describe.runIf(dbReady)('scheduled message fire-time gates', () => {
     expect(await messagesIn(ch)).toHaveLength(0);
   });
 
+  // A row queued before the create route refused these, into a forum or a
+  // link channel, must not be inserted there at fire time.
+  it('refuses a forum or link channel, like the live send', async () => {
+    const u = await createUser();
+    const { g } = await guildWith(u);
+    const forum = nextSnowflake();
+    const link = nextSnowflake();
+    await db.insert(schema.channels).values([
+      { id: forum, type: 'guild_forum', guildId: g, name: 'forum' },
+      { id: link, type: 'guild_link', guildId: g, name: 'docs', linkUrl: 'https://example.com' },
+    ]);
+    await expect(fire(u, forum, 'scheduled into forum')).rejects.toThrow(/Forum channels only accept posts/);
+    await expect(fire(u, link, 'scheduled into link')).rejects.toThrow(/Link channels are bookmarks/);
+    expect(await messagesIn(forum)).toHaveLength(0);
+    expect(await messagesIn(link)).toHaveLength(0);
+  });
+
   it('still refuses ciphertext in a supervised DM', async () => {
     const pal = await createUser({ dateOfBirth: dobForAge(30) });
     await addRelationship(child, pal, 'friend');

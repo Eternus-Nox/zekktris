@@ -17,7 +17,15 @@ import {
   registerBotCommand,
   setBotEventConfig,
 } from '../src/services/bots';
-import { createUser, createGuild, addMember, createChannel, createMessage, cleanupAll } from './seed';
+import {
+  createUser,
+  createGuild,
+  addMember,
+  createChannel,
+  createMessage,
+  createDmChannel,
+  cleanupAll,
+} from './seed';
 import { probeDb, closeDb } from './db-available';
 
 const dbReady = await probeDb();
@@ -315,6 +323,47 @@ describe.runIf(dbReady)('send gates on every guild send path', () => {
       expect(await messagesIn(text)).toHaveLength(0);
     });
 
+    // The forward gate used to skip moderation for any snapshot starting with
+    // the E2EE wire prefix. Plaintext DMs are never moderated, so prefixing a
+    // blocked word in an ordinary DM and forwarding it carried it into the
+    // guild past automod and the instance banned words.
+    it('moderates forwarded DM text that merely starts with the E2EE prefix', async () => {
+      const { member, text } = await fixture();
+      const friend = await createUser();
+      const dm = await createDmChannel([member, friend]);
+      for (const [word, code] of [
+        [AUTOMOD, 'AUTOMOD_BLOCKED'],
+        [BANNED, 'BAD_REQUEST'],
+      ] as const) {
+        const sent = await req('POST', `/channels/${dm}/messages`, member, {
+          content: `zkE2EE/3: ${word}, visible in the guild`,
+        });
+        expect(sent.status).toBe(201);
+        const sourceId = (sent.json as unknown as { message: { id: string } }).message.id;
+        const res = await req('POST', `/channels/${text}/messages`, member, {
+          forwardFromMessageId: sourceId,
+        });
+        expect(res).toMatchObject({ status: 400, code });
+      }
+      expect(await messagesIn(text)).toHaveLength(0);
+    });
+
+    it('still forwards real E2EE ciphertext into a guild', async () => {
+      const { member, text } = await fixture();
+      const friend = await createUser();
+      const dm = await createDmChannel([member, friend]);
+      await db.update(schema.channels).set({ e2eeEnabled: true }).where(eq(schema.channels.id, dm));
+      const source = await createMessage(dm, {
+        authorId: friend,
+        content: 'zkE2EE/1:q83vEjRWeJA0Vh8mPq1xYk9ZbLw2c3RlcmFuZG9tYnl0ZXM=',
+      });
+      const res = await req('POST', `/channels/${text}/messages`, member, {
+        forwardFromMessageId: source.toString(),
+      });
+      expect(res.status).toBe(201);
+      expect(await messagesIn(text)).toHaveLength(1);
+    });
+
     it('refuses an edit by a supervision-restricted member', async () => {
       const { g, text } = await fixture();
       const minor = await createUser({ dateOfBirth: dobForAge(15) });
@@ -326,6 +375,49 @@ describe.runIf(dbReady)('send gates on every guild send path', () => {
       expect(res).toMatchObject({ status: 403, code: 'FORBIDDEN' });
       const [row] = await db.select().from(schema.messages).where(eq(schema.messages.id, mid));
       expect(row!.content).toBe('before');
+    });
+  });
+
+  // The scheduled create route checked only SEND_MESSAGES, so a message
+  // could be queued into a forum (or link channel) the live send refuses,
+  // and the worker inserted it there as an invisible row.
+  describe('POST /channels/:id/scheduled-messages', () => {
+    const later = () => new Date(Date.now() + 3600_000).toISOString();
+
+    it('refuses forum and link channels with the live send\'s 400s', async () => {
+      const { g, member, forum } = await fixture();
+      const link = nextSnowflake();
+      await db.insert(schema.channels).values({
+        id: link,
+        type: 'guild_link',
+        guildId: g,
+        name: 'docs',
+        linkUrl: 'https://example.com',
+      });
+      for (const ch of [forum, link]) {
+        const live = await req('POST', `/channels/${ch}/messages`, member, { content: 'hi' });
+        const scheduled = await req('POST', `/channels/${ch}/scheduled-messages`, member, {
+          content: 'hi',
+          scheduledFor: later(),
+        });
+        expect(live).toMatchObject({ status: 400, code: 'BAD_REQUEST' });
+        expect(scheduled).toMatchObject({ status: 400, code: 'BAD_REQUEST' });
+        expect(scheduled.json).toEqual(live.json);
+      }
+      const queued = await db
+        .select()
+        .from(schema.scheduledMessages)
+        .where(eq(schema.scheduledMessages.authorId, member));
+      expect(queued).toHaveLength(0);
+    });
+
+    it('still queues into a text channel', async () => {
+      const { member, text } = await fixture();
+      const res = await req('POST', `/channels/${text}/scheduled-messages`, member, {
+        content: 'hi',
+        scheduledFor: later(),
+      });
+      expect(res.status).toBe(200);
     });
   });
 
