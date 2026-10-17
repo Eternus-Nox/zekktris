@@ -485,7 +485,6 @@ async function main(): Promise<void> {
     void (async () => {
       try {
         const scheduledSvc = await import('./services/scheduledMessages');
-        const messagesSvc = await import('./services/messages');
         // Atomically CLAIM due rows (FOR UPDATE SKIP LOCKED + claimed_at) so an
         // overlapping tick or a second replica can't re-send the same rows.
         const due = await scheduledSvc.claimDue();
@@ -501,8 +500,6 @@ async function main(): Promise<void> {
         // simple.
         const { db, schema } = await import('./db');
         const { inArray } = await import('drizzle-orm');
-        const dispatch = await import('./gateway/dispatch');
-        const { toMessage } = await import('./lib/dto');
 
         // Batch-load channels + authors for the whole due-batch up front
         // (was a per-row SELECT each — up to 2×BATCH extra round-trips/tick).
@@ -527,80 +524,16 @@ async function main(): Promise<void> {
             if (!channel) {
               throw new Error('Channel no longer exists');
             }
-            // Re-verify the author can still post here at fire time —
-            // they may have been kicked/banned, lost SEND_MESSAGES, or
-            // (for DMs) stopped being a recipient since scheduling.
-            // computeMemberChannelPermissions fails closed (0n) for
-            // non-members and non-recipients, so one check covers both
-            // guild channels and DMs. A failure here lands in the
-            // catch below: attempts bump + lastError surfaces to the
-            // user's scheduled-messages list.
-            const { computeMemberChannelPermissions, hasPermission, Permissions } =
-              await import('./services/permissions');
-            const perms = await computeMemberChannelPermissions(
-              row.channelId,
-              row.authorId,
-            );
-            if (!hasPermission(perms, Permissions.SEND_MESSAGES)) {
-              throw new Error('No permission to send in this channel');
-            }
-            // DM-only gates the interactive send enforces must be re-checked at
-            // fire time — a scheduled DM must NOT defeat a block, a guardian's
-            // DM policy, or the supervised-pair plaintext invariant that was set
-            // AFTER the message was scheduled (SEND_MESSAGES alone doesn't cover
-            // these; a block only mutates relationships, not dm_recipients).
-            if (channel.type === 'dm') {
-              const [dmsSvc, relationships, supervision] = await Promise.all([
-                import('./services/dms'),
-                import('./services/relationships'),
-                import('./services/supervision'),
-              ]);
-              const other = await dmsSvc.getOtherRecipient(row.channelId, row.authorId);
-              if (other !== null) {
-                if (await relationships.isBlockedEitherWay(row.authorId, other)) {
-                  throw new Error('Recipient is unavailable');
-                }
-                if (await supervision.dmBlockedBySupervision(row.authorId, other)) {
-                  throw new Error('Direct messages are restricted');
-                }
-                if (
-                  /^zkE2EE\/\d+:/.test(row.content) &&
-                  !(await supervision.isE2eeAllowedBetween(row.authorId, other))
-                ) {
-                  throw new Error('Encrypted messages are unavailable while supervised');
-                }
-              }
-            }
-            // Scheduled messages can NEVER @everyone — even if the
-            // user has the permission. A message firing at 3am to
-            // ping the whole guild is a footgun; require it to be
-            // a manual send.
-            const created = await messagesSvc.createMessage({
-              channelId: row.channelId,
-              authorId: row.authorId,
-              content: row.content,
-              replyToId: row.replyToMessageId ?? null,
-              guildId: channel.guildId ?? null,
-              attachments: [],
-              allowEveryoneMention: false,
+            // Re-runs every live-send gate at fire time (the author may
+            // have been kicked, muted, timed out or blocked since
+            // scheduling), then creates + broadcasts the message. A
+            // failure lands in the catch below: attempts bump + lastError
+            // surfaces to the user's scheduled-messages list.
+            await scheduledSvc.fireScheduled({
+              row,
+              channel,
+              author: authorById.get(row.authorId.toString()) ?? null,
             });
-
-            // Dispatch the messageCreate over the gateway so live clients
-            // pick it up. Author comes from the pre-batched map.
-            const author = authorById.get(row.authorId.toString());
-            if (author) {
-              const dto = toMessage({
-                message: created.message,
-                author,
-                attachments: [],
-                reactions: [],
-              });
-              dispatch.messageCreate({
-                messageDTO: dto,
-                guildId: channel.guildId ?? null,
-                channelId: row.channelId,
-              });
-            }
 
             await scheduledSvc.completeScheduled(row.id);
             sent++;

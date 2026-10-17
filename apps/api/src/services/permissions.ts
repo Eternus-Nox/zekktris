@@ -285,10 +285,15 @@ export async function computeMemberChannelPermissions(
  * Cost: 2 queries (channels + overrides) per guild. Loaded once at IDENTIFY
  * and refreshed by the maintenance hooks below — never on the hot dispatch
  * path.
+ *
+ * `alsoRequire` narrows the set to channels where the member ALSO holds
+ * those bits (e.g. READ_MESSAGE_HISTORY for guild-wide search, matching the
+ * per-channel history gate). Threads follow their parent either way.
  */
 export async function listViewableGuildChannelIds(
   guildId: bigint,
   userId: bigint,
+  opts?: { alsoRequire?: bigint },
 ): Promise<bigint[]> {
   const m = await loadMember(guildId, userId);
   if (!m) return [];
@@ -403,7 +408,12 @@ export async function listViewableGuildChannelIds(
       categoryRoleOverrides: parent?.roleOverrides ?? [],
       categoryMemberOverride: parent?.memberOverride ?? null,
     });
-    if (hasPermission(perms, Permissions.VIEW_CHANNEL)) out.push(c.id);
+    if (
+      hasPermission(perms, Permissions.VIEW_CHANNEL) &&
+      (opts?.alsoRequire === undefined || hasPermission(perms, opts.alsoRequire))
+    ) {
+      out.push(c.id);
+    }
   }
   // Second pass: a thread is viewable iff its parent channel is viewable.
   const outSet = new Set(out);
