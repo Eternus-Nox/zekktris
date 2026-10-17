@@ -1313,9 +1313,9 @@ struct PermissionDef: Identifiable {
     var id: String { key }
 }
 
-/// Permission bitfield catalog + helpers. Bits go up to 32 (MANAGE_EVENTS),
+/// Permission bitfield catalog + helpers. Bits go up to 33 (MANAGE_THREADS),
 /// so the bitfield is a UInt64. Wire format is a decimal string. Mirrors
-/// apps/web/src/lib/permissions.ts.
+/// packages/shared/src/permissions.ts (and apps/web/src/lib/permissions.ts).
 enum Permissions {
     static let ADMINISTRATOR = 0
     static let VIEW_CHANNEL = 1
@@ -1331,6 +1331,7 @@ enum Permissions {
     static let MANAGE_EMOJIS = 21
     static let MANAGE_INVITES = 22
     static let MANAGE_EVENTS = 32
+    static let MANAGE_THREADS = 33
 
     static let all: [PermissionDef] = [
         .init(bit: 0,  key: "ADMINISTRATOR", label: "Administrator", group: "General"),
@@ -1365,6 +1366,7 @@ enum Permissions {
         .init(bit: 20, key: "MANAGE_WEBHOOKS", label: "Manage Webhooks", group: "Advanced"),
         .init(bit: 21, key: "MANAGE_EMOJIS", label: "Manage Emoji", group: "Advanced"),
         .init(bit: 32, key: "MANAGE_EVENTS", label: "Manage Events", group: "Advanced"),
+        .init(bit: 33, key: "MANAGE_THREADS", label: "Manage Threads", group: "Advanced"),
     ]
     static let groupOrder = ["General", "Membership", "Text", "Voice", "Advanced"]
 

@@ -118,6 +118,9 @@ struct RootView: View {
                 // ring of a backgrounded VoIP relaunch.
                 PushManager.shared.registerWithServerIfPossible()
                 VoipPushHandler.shared.registerWithServerIfPossible()
+                // Pick up anything the Share Extension staged while we were in
+                // the background (it can't open the app itself).
+                if session.phase == .signedIn { store.consumeStagedShare() }
             }
             // Feed foreground/background into the auto-presence state machine
             // (foreground+activity → online; background → offline via disconnect).
@@ -140,6 +143,9 @@ struct RootView: View {
                 PushManager.shared.requestAuthorizationAndRegister()
                 PushManager.shared.registerWithServerIfPossible()
                 VoipPushHandler.shared.registerWithServerIfPossible()
+                // A cold launch from the share sheet becomes active before the
+                // session is restored; consume the staged share now instead.
+                store.consumeStagedShare()
             case .signedOut:
                 // Push-token unregister now happens inside Session.logout()
                 // BEFORE session revocation (so the DELETEs are still

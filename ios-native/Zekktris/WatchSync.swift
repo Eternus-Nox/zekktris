@@ -11,8 +11,10 @@ private struct WatchPokeTarget: Codable {
     /// even when we couldn't relay a key.
     var e2ee: Bool
     /// base64 of the 32-byte E2EE channel key (only for E2EE DMs we hold a key
-    /// for) so the watch can encrypt/decrypt on its own. Held in memory on the
-    /// watch like the auth token (relayed via applicationContext).
+    /// for) so the watch can encrypt/decrypt on its own. Stored on the watch
+    /// like the auth token: the system persists the applicationContext it rides
+    /// in, and the watch app writes each key to its app-group keychain
+    /// (WatchWidgetBridge.publishKeys) so the Siri extensions can encrypt.
     var e2eeKeyBase64: String?
     /// The peer's @username and the name on their linked Contacts card, so Siri
     /// on the WATCH can match a spoken name exactly the way the phone does.
@@ -41,7 +43,10 @@ typealias WatchTargetTuple = (
 ///     watch never sends/pokes on a stale or missing token when the phone is
 ///     reachable. This is what fixes the "watch won't send / can't load" misses.
 ///
-/// The token is held only in memory on the watch.
+/// The token is NOT memory-only on the watch: applicationContext is persisted
+/// by the system, and the watch app stores the token (and the per-DM E2EE keys)
+/// in its app-group keychain so the complications and Siri extensions can act
+/// without the app running. See WatchWidgetBridge on the watch side.
 @MainActor
 final class WatchSync: NSObject {
     static let shared = WatchSync()

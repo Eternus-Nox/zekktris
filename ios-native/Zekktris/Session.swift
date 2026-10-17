@@ -60,7 +60,7 @@ final class Session: ObservableObject {
     }
 
     private let keychain = KeychainStore()
-    private let tokenKey = "accessToken"
+    private let tokenKey = StoredCredentials.accessTokenKey
     let api = APIClient.shared
 
     var token: String? { api.token }
@@ -72,15 +72,8 @@ final class Session: ObservableObject {
         // cookie jar doesn't survive an app kill, so without this the (expired)
         // access token below can't be renewed and we'd fall back to the login
         // screen — the "doesn't stay logged in" bug.
-        RefreshCookieStore.restore()
-        // Persist rotated access tokens (the APIClient auto-refreshes expired
-        // ones via the /auth/refresh cookie) so the NEXT cold launch starts
-        // from the newest token instead of an already-expired one. The refresh
-        // also rotates the cookie, so re-snapshot it for the next launch.
-        api.onTokenRefresh = { [keychain, tokenKey] newToken in
-            keychain.set(newToken, for: tokenKey)
-            RefreshCookieStore.capture()
-        }
+        // Also persists rotated access tokens + cookie (StoredCredentials).
+        StoredCredentials.prepare(api)
         // The ONLY path that may end the session. APIClient calls this when
         // /auth/refresh itself answered 401/403 — the refresh token is revoked
         // or expired and no retry will bring it back. Everything else (offline,
@@ -776,6 +769,29 @@ enum Biometrics {
             return "\(label) isn't available. Tap Try again and use your device passcode."
         default:
             return "Couldn't unlock. Tap Try again."
+        }
+    }
+}
+
+/// What a fresh process needs before its first authenticated call. Shared by
+/// `Session.bootstrap()` and the background notification reply (QuickReply),
+/// which iOS can run before bootstrap ever has.
+enum StoredCredentials {
+    /// Keychain account of the persisted access token.
+    static let accessTokenKey = "accessToken"
+
+    /// Restore the refresh cookie into the jar (it doesn't survive an app
+    /// kill), and persist rotated access tokens (the APIClient auto-refreshes
+    /// expired ones via the /auth/refresh cookie) so the NEXT cold launch
+    /// starts from the newest token instead of an already-expired one. The
+    /// refresh also rotates the cookie, so re-snapshot it too — otherwise the
+    /// next launch restores a superseded refresh token, which the server
+    /// treats as a replay and revokes the session.
+    static func prepare(_ api: APIClient) {
+        RefreshCookieStore.restore()
+        api.onTokenRefresh = { newToken in
+            KeychainStore().set(newToken, for: accessTokenKey)
+            RefreshCookieStore.capture()
         }
     }
 }

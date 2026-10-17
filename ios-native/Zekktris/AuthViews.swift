@@ -505,14 +505,42 @@ enum ServerProbe {
         throw firstError ?? Failure(message: "Couldn't reach that server.")
     }
 
-    /// Private/link-local IPv4, loopback, *.local — never resolves DNS.
+    /// A home-network address, judged from the text alone — never resolves
+    /// DNS. Only IP literals in private ranges (IPv4 10/8, 172.16/12,
+    /// 192.168/16, 169.254/16, 127/8, 100.64/10; IPv6 fc00::/7, fe80::/10,
+    /// ::1), `*.local` (Bonjour) and single-label names like "nas" or
+    /// "localhost". A DNS name that merely looks like an address
+    /// ("fdserver.example.com") is not local.
     static func isLocal(_ host: String) -> Bool {
-        let h = host.lowercased()
-        if h == "localhost" || h.hasSuffix(".local") || h == "::1" || h.hasPrefix("fd") || h.hasPrefix("fe80") { return true }
-        let p = h.split(separator: ".").compactMap { Int($0) }
-        guard p.count == 4 else { return false }
-        return p[0] == 10 || p[0] == 127 || (p[0] == 172 && (16...31).contains(p[1]))
-            || (p[0] == 192 && p[1] == 168) || (p[0] == 169 && p[1] == 254)
+        var h = host.lowercased()
+        if h.hasPrefix("["), h.hasSuffix("]") { h = String(h.dropFirst().dropLast()) }
+        // A link-local literal may carry a zone ("fe80::1%en0"); inet_pton
+        // doesn't take one.
+        if let zone = h.firstIndex(of: "%") { h = String(h[..<zone]) }
+        var v4 = in_addr()
+        if inet_pton(AF_INET, h, &v4) == 1 {
+            return isLocalIPv4(withUnsafeBytes(of: v4) { Array($0) })
+        }
+        var v6 = in6_addr()
+        if inet_pton(AF_INET6, h, &v6) == 1 {
+            let b = withUnsafeBytes(of: v6) { Array($0) }
+            // IPv4-mapped (::ffff:a.b.c.d) is judged by its IPv4 part.
+            if b[0..<10].allSatisfy({ $0 == 0 }) && b[10] == 0xff && b[11] == 0xff {
+                return isLocalIPv4(Array(b[12...]))
+            }
+            return (b[0] & 0xfe) == 0xfc                          // fc00::/7
+                || (b[0] == 0xfe && (b[1] & 0xc0) == 0x80)        // fe80::/10
+                || (b[0..<15].allSatisfy { $0 == 0 } && b[15] == 1) // ::1
+        }
+        if h.contains(":") { return false }
+        return h.hasSuffix(".local") || !h.contains(".")
+    }
+
+    /// `b` is the four address bytes in network order.
+    private static func isLocalIPv4(_ b: [UInt8]) -> Bool {
+        b[0] == 10 || b[0] == 127 || (b[0] == 172 && (16...31).contains(b[1]))
+            || (b[0] == 192 && b[1] == 168) || (b[0] == 169 && b[1] == 254)
+            || (b[0] == 100 && (64...127).contains(b[1]))
     }
 
     static func check(_ origin: String) async throws {

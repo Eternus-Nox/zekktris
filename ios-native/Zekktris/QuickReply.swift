@@ -8,8 +8,9 @@ import UIKit
 ///
 /// Deliberately self-contained: iOS may launch the app into the background just
 /// to handle the reply, before the normal UI / `Session.bootstrap()` has run.
-/// So this restores the access token straight from the Keychain and posts
-/// through `APIClient` rather than relying on `AppStore` being set up. The sent
+/// So this restores the access token and refresh cookie itself (the same
+/// `StoredCredentials` setup bootstrap does) and posts through `APIClient`
+/// rather than relying on `AppStore` being set up. The sent
 /// message arrives back via the gateway when the app is (or next becomes)
 /// running, so there's no optimistic UI to manage here.
 enum QuickReply {
@@ -50,11 +51,13 @@ enum QuickReply {
 
         let api = APIClient.shared
         if api.token == nil {
-            // Background launch: APIClient wasn't bootstrapped. Session persists
-            // the access token under "accessToken"; APIClient refreshes it via
-            // the /auth/refresh cookie on a 401, so a slightly stale token here
-            // is fine.
-            api.token = KeychainStore().get("accessToken")
+            // Background launch: APIClient wasn't bootstrapped. APIClient
+            // refreshes a stale access token via the /auth/refresh cookie on a
+            // 401, so restore that cookie first and persist whatever the
+            // refresh rotates — exactly as Session.bootstrap() does — or the
+            // next cold launch restores a superseded refresh token.
+            StoredCredentials.prepare(api)
+            api.token = KeychainStore().get(StoredCredentials.accessTokenKey)
         }
         guard api.token?.isEmpty == false else {
             return .needsApp("Open Zekktris to reply.")

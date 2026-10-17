@@ -1395,6 +1395,12 @@ struct DMListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // A share from another app that didn't name a conversation
+            // (AppStore.consumeStagedShare brought us here): say why, and let
+            // the user drop it.
+            if let share = store.pendingShare, share.channelId == nil, !share.isExpired {
+                pendingShareBanner
+            }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     quickRow("person.2.fill", "Friends") { showFriends = true }
@@ -1458,6 +1464,29 @@ struct DMListView: View {
         .sheet(isPresented: $showDMSearch) {
             DMSearchSheet()
         }
+    }
+
+    private var pendingShareBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "square.and.arrow.down")
+                .font(.system(size: 14))
+                .foregroundColor(Theme.accent)
+            Text("Pick a conversation for your share")
+                .font(.zkSans(13, weight: .semibold))
+                .foregroundColor(Theme.ink2)
+            Spacer(minLength: 0)
+            Button { store.discardPendingShare() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Theme.ink3)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Discard share")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Theme.accent.opacity(0.12))
     }
 
     /// Web quick-switcher row: icon 16 ink-3 + 14pt ink-2 label.
@@ -2034,6 +2063,8 @@ struct SettingsView: View {
     @State private var imageUploading = false
     @AppStorage("zk.showFamily") private var showFamilyButton = false
     @AppStorage("zk.hideClanTags") private var hideClanTags = false
+    // Same key as AppStore.e2eeLinkPreviewsKey. Off unless the user opts in.
+    @AppStorage("zk.e2eeLinkPreviews") private var e2eeLinkPreviews = false
     @AppStorage("zk.notifyMessages") private var notifyMessages = true
     @AppStorage("zk.notifyCalls") private var notifyCalls = true
     @AppStorage("zk.cameraQuality") private var cameraQuality = "high"
@@ -3325,6 +3356,21 @@ struct SettingsView: View {
                 .padding(.horizontal, 12).padding(.vertical, 10)
                 .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
             }
+
+            // Device-local, off by default: a preview means sending the link
+            // from a decrypted message to the server (AppStore.resolveE2EEEmbeds).
+            Toggle(isOn: $e2eeLinkPreviews) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Link previews in encrypted chats")
+                        .font(.zkSans(15)).foregroundColor(Theme.ink1)
+                    Text("Off by default. When on, the link — not the message — is sent to your server to build the preview.")
+                        .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                }
+            }
+            .tint(Theme.accent)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 10))
+            .onChange(of: e2eeLinkPreviews) { _, _ in store.e2eeLinkPreviewsChanged() }
 
             // Passkeys are bound to zekktris.com (associated domains), so
             // they're only offered there.
