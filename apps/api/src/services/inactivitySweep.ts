@@ -24,6 +24,8 @@
  *     with a tombstoned author so channel scrollback doesn't gap
  *   - guilds.ownerId: ON DELETE SET NULL — orphaned guilds remain
  *     until a server admin/operator transfers or deletes them
+ *   - reaction_roles.createdBy: ON DELETE SET NULL (migration 0127;
+ *     was NO ACTION and failed every chunk holding such a creator)
  *
  * Operator override: setting INACTIVITY_TTL_DAYS=0 in env disables the
  * sweep entirely (no rows are touched). Setting a smaller value (e.g.
@@ -90,6 +92,10 @@ export async function sweepInactiveAccounts(): Promise<SweepResult> {
   //     (500 ids). One inactive owner shouldn't block 499 other
   //     eligible deletes. The FK remains the real protection; this
   //     filter just avoids the noisy batch failure.
+  //   - bot accounts. A bot never has a session (it authenticates with a
+  //     static token), so the createdAt fallback would delete every bot a
+  //     year after creation however busy it is. Bots go with their owner
+  //     instead (users.bot_owner_id ON DELETE CASCADE).
   const candidates = await db
     .select({ id: schema.users.id })
     .from(schema.users)
@@ -98,6 +104,7 @@ export async function sweepInactiveAccounts(): Promise<SweepResult> {
       and(
         isNull(schema.users.deletedAt),
         eq(schema.users.isAdmin, false),
+        eq(schema.users.isBot, false),
         sql`${schema.users.id} NOT IN (SELECT ${schema.guilds.ownerId} FROM ${schema.guilds})`,
       ),
     )
@@ -115,16 +122,40 @@ export async function sweepInactiveAccounts(): Promise<SweepResult> {
   // because each statement is already its own transaction.
   // Chunk size is conservative — 500 ids at a time keeps the IN list
   // manageable and avoids long-held locks on the users table.
+  //
+  // A chunk that fails (one user still referenced by a RESTRICT / NO ACTION
+  // FK rolls back the whole statement) is retried one user at a time, so
+  // the bad row only skips itself: before, the throw aborted the whole run,
+  // every day, and nobody after that chunk was ever deleted.
   const ids = candidates.map((r) => r.id);
   let deleted = 0;
+  let skipped = 0;
   const CHUNK = 500;
-  for (let i = 0; i < ids.length; i += CHUNK) {
-    const chunk = ids.slice(i, i + CHUNK);
+  const deleteIds = async (chunk: bigint[]): Promise<number> => {
     const r = await db
       .delete(schema.users)
       .where(sql`${schema.users.id} IN (${sql.join(chunk, sql`, `)})`)
       .returning({ id: schema.users.id });
-    deleted += r.length;
+    return r.length;
+  };
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    try {
+      deleted += await deleteIds(chunk);
+    } catch (chunkErr) {
+      log.warn('inactivity sweep: chunk delete failed, retrying per user', {
+        size: chunk.length,
+        err: chunkErr,
+      });
+      for (const id of chunk) {
+        try {
+          deleted += await deleteIds([id]);
+        } catch (err) {
+          skipped++;
+          log.warn('inactivity sweep: could not delete user', { userId: id.toString(), err });
+        }
+      }
+    }
   }
 
   const durationMs = Date.now() - start;
@@ -133,6 +164,7 @@ export async function sweepInactiveAccounts(): Promise<SweepResult> {
     cutoff: cutoff.toISOString(),
     candidates: candidates.length,
     deleted,
+    skipped,
     durationMs,
   });
 
