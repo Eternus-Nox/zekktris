@@ -1010,6 +1010,11 @@ final class AppStore: ObservableObject {
     /// Reads the user's current chosen status (set by the app to
     /// Session.currentUser's chosenStatus, or its status on an older server).
     var currentChosenStatus: (() -> String)?
+    /// Whether Session.currentUser carries `chosenStatus` (set by the app).
+    /// Session keeps it fresh from getMe and PATCH responses, while this
+    /// store's `currentUser` can still be the cached copy an older build of
+    /// the app wrote, without the field, until the first READY.
+    var sessionUserCarriesChosenStatus: (() -> Bool)?
     /// Writes the own status the server pushed (chosen, effective) into
     /// Session.currentUser (set by the app), so the Settings picker follows a
     /// pick made on another device.
@@ -1592,11 +1597,14 @@ final class AppStore: ObservableObject {
     /// Whether the server derives the user's status from device activity, so
     /// this app must never write it automatically. The READY flag is the
     /// signal; a self user carrying `chosenStatus` (only such servers send
-    /// it) also counts, so an auto-away PATCH can't slip out before the first
-    /// READY — or while the socket can't connect — and pin the user's CHOSEN
-    /// status to Away.
+    /// it) also counts — this store's or the one Session holds, refreshed by
+    /// getMe — so an auto-away PATCH can't slip out before the first READY,
+    /// or while the socket can't connect, and loop: the server shows such an
+    /// automatic away to updated clients as 'online', which would read as
+    /// "still online, go Away" every minute.
     var serverDerivesPresence: Bool {
         gateway.supportsPresenceActivity || currentUser?.chosenStatus != nil
+            || sessionUserCarriesChosenStatus?() == true
     }
 
     /// Report this device's activity to the gateway and, on an older server

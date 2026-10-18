@@ -44,6 +44,7 @@ import { log } from '../log';
 import { Connection } from './connection';
 import { initInternalDispatchBus } from './dispatch';
 import { registry } from './registry';
+import { RESUME_WINDOW_MS } from './resume';
 import {
   CloseCode,
   dispatchFrame,
@@ -85,6 +86,8 @@ export interface GatewayOptions {
   /** Default true. Tests sharing a database with other test files turn the
    *  boot reset off — it would offline those files' users mid-test. */
   resetPresenceOnBoot?: boolean;
+  /** Default RESUME_WINDOW_MS (gateway/resume.ts). */
+  resumeWindowMs?: number;
 }
 
 let wss: WebSocketServer | null = null;
@@ -167,6 +170,12 @@ export function attachGateway(httpServer: HttpServer, opts: GatewayOptions = {})
   registry.onUserConnectionClosed = (userId: bigint) => {
     scheduleCloseGraceRecompute(userId);
   };
+  // A pre-update device gone for good (its resume window ran out) can end
+  // an automatic away it set.
+  registry.onLegacyGhostEvicted = (userId: bigint) => {
+    void presenceEngine.recompute(userId);
+  };
+  if (opts.resumeWindowMs !== undefined) registry.resumeWindowMs = opts.resumeWindowMs;
 
   // Pending voice-eviction timers keyed by userId (see grace period in
   // onUserFullyDisconnected below).
@@ -444,6 +453,8 @@ export function detachGateway(): void {
   for (const t of pendingPresenceRecomputes.values()) clearTimeout(t);
   pendingPresenceRecomputes = new Map();
   registry.onUserConnectionClosed = null;
+  registry.onLegacyGhostEvicted = null;
+  registry.resumeWindowMs = RESUME_WINDOW_MS;
   registry.shutdown();
   wss.close();
   wss = null;
@@ -730,8 +741,9 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
 
   // Recompute the user's effective presence now that this device counts:
   // offline → online (or idle, if this device connected idle and no other is
-  // in use). The chosen status is never touched, so a Do Not Disturb or
-  // Invisible picked before a disconnect is still in force — Discord parity.
+  // in use). The chosen status is never touched (bar a pre-update client's
+  // automatic away — gateway/presence.ts), so a Do Not Disturb or Invisible
+  // picked before a disconnect is still in force — Discord parity.
   //
   // CRITICAL: we broadcast on EVERY successful IDENTIFY, not just on
   // transitions ('always'). Reason — when a user reconnects (flaky mobile,
@@ -744,6 +756,7 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
   // lists loaded for the snapshot above instead of querying them again.
   await presence().recompute(userId, {
     broadcast: 'always',
+    legacyIdentified: !conn.reportsActivity,
     audience: {
       guildIds,
       dmChannelIds: dmChannelIdRows.map((r) => r.channelId),

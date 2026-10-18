@@ -165,7 +165,7 @@ export class Registry {
       return;
     }
     conn.detached = true;
-    const timer = setTimeout(() => this.evictDetached(conn), RESUME_WINDOW_MS);
+    const timer = setTimeout(() => this.evictDetached(conn), this.resumeWindowMs);
     // Don't keep the event loop alive just to expire a buffer.
     (timer as { unref?: () => void }).unref?.();
     // If this sessionId was already retained by a DIFFERENT connection (e.g. a
@@ -213,6 +213,15 @@ export class Registry {
     const entry = this.detachedSessions.get(conn.sessionId);
     if (!entry || entry.conn !== conn) return;
     this.remove(conn);
+    // A pre-update device's ghost counted as that device still about (see
+    // presenceSummary); now it isn't.
+    if (!conn.reportsActivity && conn.userId !== null && this.onLegacyGhostEvicted) {
+      try {
+        this.onLegacyGhostEvicted(conn.userId);
+      } catch {
+        // Hook errors mustn't break the lifecycle.
+      }
+    }
   }
 
   /** Look up a retained session for RESUME. Null if unknown/expired. */
@@ -373,6 +382,13 @@ export class Registry {
   /** Fired when a user gains a connection — cancels pending grace-period
       voice evictions scheduled by onUserFullyDisconnected. */
   onUserConnected: ((userId: bigint) => void) | null = null;
+  /** Fired when a pre-update client's resume-window ghost expires (its
+      device is gone for good, which can end an automatic away — see
+      gateway/presence.ts). Same fire-and-forget contract. */
+  onLegacyGhostEvicted: ((userId: bigint) => void) | null = null;
+  /** How long a closed authenticated connection is kept for RESUME. A test
+      seam (attachGateway's resumeWindowMs); production keeps the default. */
+  resumeWindowMs = RESUME_WINDOW_MS;
 
   // ── Membership snapshot mutations ────────────────────────────────────────
   //
@@ -456,9 +472,10 @@ export class Registry {
   /**
    * The user's live (non-detached) connections on THIS replica, how many of
    * them report their device in use, how many of those are updated clients
-   * (`reported`) and how many are pre-update ones (`legacy`, which never
-   * report). Input to the presence recompute (gateway/presence.ts); a
-   * detached resume-window ghost is not live.
+   * (`reported`), and how many pre-update clients (which never report) are
+   * here (`legacy`). Input to the presence recompute (gateway/presence.ts); a
+   * detached resume-window ghost is not live, but a pre-update one still
+   * counts in `legacy`: that device is only reconnecting.
    */
   presenceSummary(userId: bigint): {
     live: number;
@@ -473,9 +490,9 @@ export class Registry {
     let legacy = 0;
     if (set) {
       for (const c of set) {
+        if (!c.reportsActivity) legacy++;
         if (c.detached) continue;
         live++;
-        if (!c.reportsActivity) legacy++;
         if (c.presenceActive) {
           active++;
           if (c.reportsActivity) reported++;

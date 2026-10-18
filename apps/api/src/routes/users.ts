@@ -172,14 +172,14 @@ const patchMeSchema = z
     /** Who set `status`. Updated clients send 'manual' with every pick made
         in their status picker (packages/client patchMe does it). Absent (a
         pre-update client) or 'auto': an 'idle' is that client's AUTOMATIC
-        away and is flagged (users.chosen_status_auto): it marks the old
-        devices as not in use, so the status follows the updated ones, and it
-        goes back to 'online' once the user's last device disconnects (the
-        old server's disconnect/reconnect behaviour) or no pre-update device
-        is left while an updated one is in use — instead of pinning them
-        Away. A
-        'manual' pick (or any status other than 'idle') clears the flag.
-        Ignored without `status`. Servers before this field strip it. */
+        away — unless sent by an old Android build (no automatic away there)
+        or over a pick other than Online — and is flagged
+        (users.chosen_status_auto). That marks the old devices as not in use,
+        so the status follows the updated ones, instead of pinning the user
+        Away; gateway/presence.ts says when it ends. A 'manual' 'online'
+        leaves a standing automatic away alone (updated pickers already show
+        it as Online); any other status clears the flag. Ignored without
+        `status`. Servers before this field strip it. */
     statusSource: z.enum(['manual', 'auto']).optional(),
     customStatus: customStatusSchema.optional(),
     /** Optional emoji alongside the custom status text. Either or
@@ -255,6 +255,13 @@ const patchMeSchema = z
     message: 'At least one field is required',
   });
 
+/** An old Android build: its REST client sends no User-Agent of its own, so
+ *  OkHttp's default goes out. (Updated builds mark every pick manual, and the
+ *  question only arises for unmarked PATCHes.) */
+function fromOldAndroid(c: { req: { header(name: string): string | undefined } }): boolean {
+  return /^okhttp\//i.test(c.req.header('user-agent') ?? '');
+}
+
 usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c) => {
   const userId = requireUserId(c);
   const body = c.req.valid('json');
@@ -272,11 +279,27 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   }
   if (body.bio !== undefined) update.bio = body.bio;
   // `status` is the CHOSEN status; the effective one (users.status) is
-  // recomputed below from it and the user's live connections. An unmarked
-  // 'idle' is a legacy client's automatic away: flag it (see statusSource).
+  // recomputed below from it and the user's live connections.
   if (body.status !== undefined) {
-    update.chosenStatus = body.status;
-    update.chosenStatusAuto = body.status === 'idle' && body.statusSource !== 'manual';
+    const u = schema.users;
+    if (body.status === 'online' && body.statusSource === 'manual') {
+      // Updated pickers show a pre-update client's automatic away as Online
+      // (shownChosenStatus), so picking Online there leaves it standing: the
+      // old device is still not in use. Anything else replaces it.
+      update.chosenStatus = sql`CASE WHEN ${u.chosenStatusAuto} THEN ${u.chosenStatus} ELSE 'online'::user_status END`;
+    } else {
+      update.chosenStatus = body.status;
+      // An unmarked 'idle' is a pre-update client's automatic away (see
+      // statusSource) — unless it can't be: old Android builds have none
+      // (and send OkHttp's own User-Agent), and an old app only auto-aways
+      // from what it believes is Online, so after any other pick (made on
+      // another device, which the old app never hears of) it's a pick. The
+      // condition reads the row as it was before this update.
+      update.chosenStatusAuto =
+        body.status === 'idle' && body.statusSource !== 'manual' && !fromOldAndroid(c)
+          ? sql`(${u.chosenStatus} = 'online' OR ${u.chosenStatusAuto})`
+          : false;
+    }
   }
   if (body.customStatus !== undefined) update.customStatus = body.customStatus;
   if (body.customStatusEmoji !== undefined) {
@@ -420,26 +443,19 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
   // the user's own devices — always, as before, so co-members' dots and this
   // user's other devices confirm the pick even when the effective value is
   // unchanged. 'invisible' goes out as 'offline'. The response below carries
-  // both: status / chosenStatus (the pick) and effectiveStatus.
+  // status = the chosen status as this PATCH wrote it (what older native
+  // builds read as their pick), chosenStatus = the pick as updated clients
+  // are shown it (shownChosenStatus) and effectiveStatus.
+  //
+  // As this PATCH WROTE it, even if the recompute has just ended the
+  // automatic away it set (no device connected, say): an old app told
+  // 'online' after it auto-awayed would send Away again on its next 60 s
+  // tick, and again, for as long as its socket stays down.
   let user = updated;
   if (body.status !== undefined) {
     const { presence } = await import('../gateway/presence');
     const effective = await presence().recompute(userId, { broadcast: 'always' });
     if (effective) user = { ...updated, status: effective };
-    // The recompute may have ended the automatic away this PATCH set (no
-    // pre-update device connected — see gateway/presence.ts), so report the
-    // chosen status as stored now: the old app then knows it reads Online.
-    if (updated.chosenStatusAuto) {
-      const [now] = await db
-        .select({
-          chosenStatus: schema.users.chosenStatus,
-          chosenStatusAuto: schema.users.chosenStatusAuto,
-        })
-        .from(schema.users)
-        .where(eq(schema.users.id, userId))
-        .limit(1);
-      if (now) user = { ...user, ...now };
-    }
   }
 
   // USER_UPDATE — fire whenever a profile field that's visible to

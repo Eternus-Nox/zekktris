@@ -147,6 +147,9 @@ struct RootView: View {
                     let u = session?.currentUser
                     return u?.chosenStatus ?? u?.status ?? "online"
                 }
+                store.sessionUserCarriesChosenStatus = { [weak session] in
+                    session?.currentUser?.chosenStatus != nil
+                }
                 // Own status pushed by the server (READY / our own
                 // PRESENCE_UPDATE) → the user Settings reads, so its picker
                 // follows a pick made on another device.

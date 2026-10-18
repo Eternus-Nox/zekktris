@@ -452,6 +452,23 @@ describe.runIf(redisReady)('presence across replicas (integration, Redis)', () =
     expect(await statusOf(u)).toBe('online');
   });
 
+  it("Redis unreachable: a replica's own view never ends a legacy automatic away", async () => {
+    // The old phone is on another replica this one can't see.
+    const down = replica('replica-down', { url: 'redis://127.0.0.1:1/0' });
+    const u = await newUser();
+    await setAutoIdle(u);
+    // Its own view: an updated device in use and no old device — it reads
+    // online, but can't know the old phone is gone, so the away stands.
+    const mac = connect(down.registry, u, true);
+    mac.reportsActivity = true;
+    expect(await down.engine.recompute(u)).toBe('online');
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'idle', auto: true });
+    // Nor does a view with no device at all.
+    down.registry.remove(mac);
+    expect(await down.engine.recompute(u)).toBe('offline');
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'idle', auto: true });
+  });
+
   it("Redis unreachable: falls back to this replica's own view (never hangs, never throws)", async () => {
     const down = replica('replica-down', { url: 'redis://127.0.0.1:1/0' });
     const u = await newUser();

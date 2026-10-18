@@ -7,9 +7,9 @@
  *   - chosen status (`users.chosen_status`): what the user picked — online,
  *     idle ("Away"), dnd or invisible. Only PATCH /users/@me {status} sets
  *     it. One exception: an 'idle' PATCHed WITHOUT the `statusSource:
- *     'manual'` marker (`users.chosen_status_auto`) is a pre-update client's
- *     AUTOMATIC away, which really says "this old device is not in use" —
- *     see below.
+ *     'manual'` marker (`users.chosen_status_auto`; routes/users.ts says
+ *     which ones count) is a pre-update client's AUTOMATIC away, which
+ *     really says "this old device is not in use" — see below.
  *   - every live gateway connection's activity (Connection.presenceActive),
  *     reported by its client in IDENTIFY/RESUME and op 3 PRESENCE_UPDATE. A
  *     connection that never reports counts as active (legacy clients).
@@ -28,11 +28,10 @@
  * stays 'idle' for the old app — it reads its own `status` as its pick and,
  * told 'online', would PATCH Away again — while updated clients are shown
  * the pick as 'online' (lib/dto.ts shownChosenStatus): the user picked
- * nothing. It ends (chosen back to 'online') when the user goes offline, as
- * the old server's disconnect did, when no pre-update connection is left
- * while an updated device is in use (so the old app, opened again, reads
- * Online), and with any status PATCH, e.g. the old app's own return to
- * 'online' when it is touched again.
+ * nothing. recomputeNow lists when it ends; any status PATCH but an updated
+ * picker's Online also replaces it, e.g. the old app's own return to
+ * 'online' when it is touched again. An Away picked in an old iOS build's
+ * own picker looks the same and is read the same way.
  *
  * recompute() is the ONE runtime writer of users.status (the other is the
  * boot reset, resetPresenceOnBoot). It is serialized per user within a
@@ -96,8 +95,12 @@ export interface PresenceSummary {
    *  activity (legacy connections count as active but never report): what
    *  counts while a pre-update client's automatic away stands. Absent = 0. */
   reported?: number;
-  /** Live connections of pre-update clients (never report). Absent = 0. */
+  /** Pre-update clients (never report) connected, or only reconnecting
+   *  (a detached resume-window ghost). Absent = 0. */
   legacy?: number;
+  /** Built from this replica's view alone because Redis failed: other
+   *  replicas' devices may be missing. */
+  partial?: boolean;
 }
 
 /** What the engine needs from a connection registry. */
@@ -127,6 +130,10 @@ export interface RecomputeOptions {
    *  to heal peers' drifted views, and a status PATCH to confirm it. */
   broadcast?: 'change' | 'always';
   audience?: PresenceAudience;
+  /** A pre-update client just IDENTIFYed (a fresh connection, not a
+   *  RESUME). If it is the only pre-update device about, it ends an
+   *  automatic away — see recomputeNow. */
+  legacyIdentified?: boolean;
 }
 
 const KEY_PREFIX = 'zekktris:presence:u:';
@@ -303,16 +310,16 @@ export class PresenceEngine {
   /** This replica's contribution, a held user counting as one connection. */
   private localTally(userId: bigint): Tally {
     const s = this.source.presenceSummary(userId);
-    if (s.live > 0) {
-      return { ...EMPTY_TALLY, l: s.live, a: s.active, r: s.reported ?? 0, g: s.legacy ?? 0 };
-    }
+    // g also counts a pre-update device's resume-window ghost.
+    const g = s.legacy ?? 0;
+    if (s.live > 0) return { ...EMPTY_TALLY, l: s.live, a: s.active, r: s.reported ?? 0, g };
     const held = this.holds.get(userId);
     if (!held) return EMPTY_TALLY;
     const active = held.active ? 1 : 0;
     const reported = held.active && held.reported ? 1 : 0;
     return held.settled
-      ? { ...EMPTY_TALLY, l: 1, h: 1, ha: active, hr: reported }
-      : { ...EMPTY_TALLY, l: 1, a: active, r: reported };
+      ? { ...EMPTY_TALLY, l: 1, h: 1, ha: active, hr: reported, g }
+      : { ...EMPTY_TALLY, l: 1, a: active, r: reported, g };
   }
 
   /** This replica's view of the user, a held user counting as one connection. */
@@ -366,22 +373,35 @@ export class PresenceEngine {
         // untouched can't hold the user Away while they type on the Mac, nor
         // leave them online once the Mac goes idle too. A picked Away stays.
         //
-        // It ends (chosen back to 'online', in this same write) when nothing
-        // is left: no device at all, as the old server's disconnect →
-        // reconnect did — an old app killed while auto-idle can't un-idle
-        // itself, and the case includes an automatic idle PATCHed while the
-        // row ALREADY reads offline (an old app whose socket was down); or no
-        // pre-update connection while an updated device is in use, so the
-        // old app reads Online when it's opened again. Both read the same
-        // effective status either way.
+        // It ends (chosen back to 'online', in this same write) when:
+        //   - nothing is left: no device at all, as the old server's
+        //     disconnect → reconnect did — an old app killed while auto-idle
+        //     can't un-idle itself; this includes an automatic idle PATCHed
+        //     while the row ALREADY reads offline (an old app whose socket
+        //     was down);
+        //   - no pre-update device is about (not even reconnecting) while an
+        //     updated one is in use, so the old app reads Online when it's
+        //     opened again;
+        //   - a pre-update client connects afresh as the only one: an old app
+        //     launched again doesn't know it was auto-idle (that lived in its
+        //     memory) and, used, would otherwise never count.
+        // The first two read the same effective status either way. Never on a
+        // partial view (Redis failing): another replica's old device may be
+        // missing from it, and the end can't be undone.
         const autoIdle = row.chosenStatus === 'idle' && row.chosenStatusAuto;
-        const next = autoIdle
-          ? effectiveStatus('online', { live: summary.live, active: summary.reported ?? 0 })
-          : effectiveStatus(row.chosenStatus, summary);
+        const legacy = summary.legacy ?? 0;
+        const reported = summary.reported ?? 0;
         const autoIdleOver =
           autoIdle &&
-          (next === 'offline' || ((summary.legacy ?? 0) === 0 && (summary.reported ?? 0) > 0));
+          !summary.partial &&
+          (summary.live === 0 ||
+            (legacy === 0 && reported > 0) ||
+            (opts.legacyIdentified === true && legacy <= 1));
         const chosen: ChosenStatus = autoIdleOver ? 'online' : row.chosenStatus;
+        const next =
+          autoIdle && !autoIdleOver
+            ? effectiveStatus('online', { live: summary.live, active: reported })
+            : effectiveStatus(chosen, summary);
         const resetAutoIdle = chosen !== row.chosenStatus;
         const changed = next !== row.status;
         if (!changed && !resetAutoIdle) {
@@ -534,7 +554,7 @@ export class PresenceEngine {
     } catch (err) {
       this.warnRedis(err);
       this.degraded.add(userId);
-      return reduceTally(local);
+      return { ...reduceTally(local), partial: true };
     }
   }
 

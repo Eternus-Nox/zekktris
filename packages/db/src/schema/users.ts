@@ -59,7 +59,9 @@ export const users = pgTable(
      *  (apps/api/src/gateway/presence.ts) from chosenStatus + the activity of
      *  every live connection: 'offline' with no live connection, else the
      *  chosen status, except that chosen 'online' reads 'idle' while no
-     *  connected device is in use. */
+     *  connected device is in use — and during a pre-update client's
+     *  automatic away (chosenStatusAuto) 'online' if an updated device is in
+     *  use, else 'idle'. */
     status: userStatusEnum('status').notNull().default('offline'),
     /** What the user PICKED (PATCH /users/@me {status}); never 'offline'
      *  (CHECK users_chosen_status_not_offline). Survives disconnects, so a
@@ -70,15 +72,16 @@ export const users = pgTable(
       .notNull()
       .default('online'),
     /** True when chosenStatus is an 'idle' set by a status PATCH without the
-     *  `statusSource: 'manual'` marker — a pre-update client's automatic
-     *  away, which marks pre-update devices as not in use: while it stands
-     *  the status follows the updated devices (apps/api/src/gateway/
-     *  presence.ts), and updated clients are shown the pick as 'online'.
-     *  The presence recompute resets it to 'online' when the user's
-     *  effective status next turns 'offline' (their last device left), as
-     *  the old server's disconnect/reconnect did, or when no pre-update
-     *  device is connected while an updated one is in use; a manual pick
-     *  persists. Only ever true with chosenStatus 'idle'
+     *  `statusSource: 'manual'` marker (bar the exceptions in
+     *  apps/api/src/routes/users.ts) — a pre-update client's automatic away,
+     *  which marks pre-update devices as not in use: while it stands the
+     *  status follows the updated devices, and updated clients are shown the
+     *  pick as 'online'. The presence recompute
+     *  (apps/api/src/gateway/presence.ts) resets it to 'online' when the
+     *  user's last device leaves, as the old server's disconnect/reconnect
+     *  did, when no pre-update device is about while an updated one is in
+     *  use, or when an old app connects afresh as the only one; a manual
+     *  pick persists. Only ever true with chosenStatus 'idle'
      *  (CHECK users_chosen_status_auto_idle_only). Migration 0131. */
     chosenStatusAuto: boolean('chosen_status_auto').notNull().default(false),
     customStatus: text('custom_status'),

@@ -166,9 +166,11 @@ export type EffectiveStatus = ChosenStatus | 'offline';
 
 /** The status fields of a SelfUser (REST / READY snapshot). */
 export interface SelfStatusFields {
-  /** The PICK on a current server (== chosenStatus). On a server from before
-   *  `effectiveStatus` existed it was the effective status; on a server
-   *  without multi-device presence, the single status column. */
+  /** The stored pick on a current server: == chosenStatus, except during a
+   *  pre-update client's automatic away ('idle' here, chosenStatus 'online'),
+   *  so read chosenStatus first. On a server from before `effectiveStatus`
+   *  existed it was the effective status; on a server without multi-device
+   *  presence, the single status column. */
   status: EffectiveStatus;
   chosenStatus?: ChosenStatus;
   effectiveStatus?: EffectiveStatus;

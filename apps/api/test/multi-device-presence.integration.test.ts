@@ -34,6 +34,9 @@ if (!dbReady) {
 
 const CLOSE_GRACE_MS = 300;
 const VOICE_GRACE_MS = 700;
+/** How long a closed socket is kept for RESUME (a pre-update one still counts
+ *  as that old device being about until then). */
+const RESUME_WINDOW_MS = 1_500;
 
 const app = new Hono();
 app.onError(errorHandler);
@@ -127,6 +130,7 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
       presenceCloseGraceMs: CLOSE_GRACE_MS,
       voiceEvictGraceMs: VOICE_GRACE_MS,
       resetPresenceOnBoot: false,
+      resumeWindowMs: RESUME_WINDOW_MS,
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/gateway`;
@@ -168,10 +172,19 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
 
   /** PATCH a status. `source` omitted = a pre-update client (no marker);
    *  'manual' = an updated client's status picker (packages/client patchMe). */
-  function patchStatus(token: string, status: string, source?: 'manual' | 'auto') {
+  function patchStatus(
+    token: string,
+    status: string,
+    source?: 'manual' | 'auto',
+    userAgent?: string,
+  ) {
     return app.request('/users/@me', {
       method: 'PATCH',
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        ...(userAgent ? { 'user-agent': userAgent } : {}),
+      },
       body: JSON.stringify(source ? { status, statusSource: source } : { status }),
     });
   }
@@ -429,12 +442,18 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
       chosenStatus: 'idle',
       chosenStatusAuto: true,
     });
-    // The owner comes back to the Mac: the status follows it, and with no
-    // old device left the away ends, so the old app reads Online when opened
-    // again — no need to repick Online or for every device to leave.
+    // The owner comes back to the Mac: the status follows it at once, and
+    // with no old device left — its resume window over, so it isn't just
+    // reconnecting — the away ends, so the old app reads Online when opened
+    // again: no need to repick Online or for every device to leave.
     mac.setActive(true);
     await expectStatus(u, 'online');
-    expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
+    await waitFor(async () => !(await row(u)).chosenStatusAuto, 'away ended', 5_000);
+    expect(await row(u)).toMatchObject({
+      status: 'online',
+      chosenStatus: 'online',
+      chosenStatusAuto: false,
+    });
 
     // A device connecting in use ends one too. (The Mac is swapped for an
     // idle one first, so nothing updated is in use when the away lands.)
@@ -453,6 +472,7 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     });
     const laptop = await connect(u, { active: true });
     await expectStatus(u, 'online');
+    await waitFor(async () => !(await row(u)).chosenStatusAuto, 'away ended', 5_000);
     expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
 
     // A PICKED Away is never ended by device activity.
@@ -478,6 +498,11 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     const mac = await connect(u, { active: true });
     const oldPhone = await connect(u);
     await expectStatus(u, 'online');
+    const selfFrames = () =>
+      mac.frames.filter(
+        (f) => f.t === 'PRESENCE_UPDATE' && f.d?.user_id === u.toString() && f.d?.guild_id == null,
+      );
+    const framesBefore = selfFrames().length;
     // The old build's automatic away. The user is typing on the Mac, so they
     // stay online — and the old app is still told 'idle', its own pick.
     const res = await patchStatus(token, 'idle');
@@ -492,11 +517,7 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
       chosenStatusAuto: true,
     });
     // The Mac's picker shows Online (the self frame), not an Away nobody chose.
-    const selfFrames = () =>
-      mac.frames.filter(
-        (f) => f.t === 'PRESENCE_UPDATE' && f.d?.user_id === u.toString() && f.d?.guild_id == null,
-      );
-    await waitFor(() => selfFrames().length > 0, 'self frame');
+    await waitFor(() => selfFrames().length > framesBefore, 'self frame');
     expect(selfFrames().at(-1)!.d).toMatchObject({ status: 'online', chosen_status: 'online' });
     const me = await app.request('/users/@me', { headers: { authorization: `Bearer ${token}` } });
     expect(((await me.json()) as { user: unknown }).user).toMatchObject({
@@ -509,16 +530,23 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     // though connected, no longer counts — so they read idle…
     mac.setActive(false);
     await expectStatus(u, 'idle');
+    // (Still showing Online as the pick on the frame that says so.)
+    await waitFor(() => selfFrames().at(-1)?.d?.status === 'idle', 'idle self frame');
+    expect(selfFrames().at(-1)!.d).toMatchObject({ status: 'idle', chosen_status: 'online' });
     // …and online again as soon as the Mac is used.
     await sleep(2_300); // op 3 changes apply at most every 2 s per connection
     mac.setActive(true);
     await expectStatus(u, 'online');
     expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
 
-    // The old app is killed while auto-idle: with no old device left and the
-    // Mac in use, the away ends (the old app reads Online when opened again).
+    // The old app's socket closes: until its resume window is over it may
+    // only be reconnecting, so the away stands…
     await oldPhone.close();
-    await waitFor(async () => (await row(u)).chosenStatusAuto === false, 'away ended');
+    await sleep(CLOSE_GRACE_MS + 300);
+    expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
+    // …then, with no old device left and the Mac in use, it ends (the old app
+    // reads Online when opened again).
+    await waitFor(async () => !(await row(u)).chosenStatusAuto, 'away ended', 5_000);
     expect(await row(u)).toMatchObject({
       status: 'online',
       chosenStatus: 'online',
@@ -528,13 +556,119 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     await expectStatus(u, 'offline');
   });
 
-  it('an automatic idle PATCHed with no device connected that offlines a stale row is reported as already ended', async () => {
+  it("an old app's out-of-date automatic away over a status picked elsewhere is a pick, not an automatic away", async () => {
+    const u = await createUser();
+    const token = await tokenFor(u);
+    const mac = await connect(u, { active: true });
+    const oldPhone = await connect(u); // launched while the pick was Online
+    await expectStatus(u, 'online');
+    // Away picked on the Mac. The old app never hears of it…
+    await patchStatus(token, 'idle', 'manual');
+    await expectStatus(u, 'idle');
+    // …and, untouched, sends its automatic away on its next tick. It can't
+    // be one (an old app only auto-aways from Online): it stays a pick.
+    await patchStatus(token, 'idle');
+    expect(await row(u)).toMatchObject({
+      status: 'idle',
+      chosenStatus: 'idle',
+      chosenStatusAuto: false,
+    });
+    // The old app leaving doesn't erase it either.
+    await oldPhone.close();
+    await sleep(RESUME_WINDOW_MS + 500);
+    expect(await row(u)).toMatchObject({
+      status: 'idle',
+      chosenStatus: 'idle',
+      chosenStatusAuto: false,
+    });
+    // Over Do Not Disturb, as on the old server, it replaces the pick.
+    await patchStatus(token, 'dnd', 'manual');
+    await patchStatus(token, 'idle');
+    expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: false });
+    await mac.close();
+  });
+
+  it('an unmarked idle from an old Android build is a pick (it has no automatic away)', async () => {
+    const u = await createUser();
+    const token = await tokenFor(u);
+    const mac = await connect(u, { active: true });
+    const oldAndroid = await connect(u);
+    await expectStatus(u, 'online');
+    await patchStatus(token, 'idle', undefined, 'okhttp/4.12.0');
+    expect(await row(u)).toMatchObject({
+      status: 'idle',
+      chosenStatus: 'idle',
+      chosenStatusAuto: false,
+    });
+    await oldAndroid.close();
+    await mac.close();
+  });
+
+  it("picking Online on an updated device leaves an old app's automatic away standing; the old app's own return ends it", async () => {
+    const u = await createUser();
+    const token = await tokenFor(u);
+    const mac = await connect(u, { active: true });
+    const oldPhone = await connect(u);
+    await patchStatus(token, 'idle'); // the old phone's automatic away
+    expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
+    // The Mac's picker already shows Online; tapping it changes nothing.
+    const res = await patchStatus(token, 'online', 'manual');
+    expect(((await res.json()) as { user: unknown }).user).toMatchObject({
+      chosenStatus: 'online',
+      effectiveStatus: 'online',
+    });
+    expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
+    // The old phone is touched: it PATCHes 'online' (unmarked) and counts
+    // as in use again.
+    await patchStatus(token, 'online');
+    expect(await row(u)).toMatchObject({
+      status: 'online',
+      chosenStatus: 'online',
+      chosenStatusAuto: false,
+    });
+    await oldPhone.close();
+    await mac.close();
+  });
+
+  it('an old app connecting afresh as the only one ends its automatic away; one only reconnecting does not', async () => {
+    const u = await createUser();
+    const token = await tokenFor(u);
+    const mac = await connect(u, { active: false });
+    const oldPhone = await connect(u);
+    await patchStatus(token, 'idle'); // its automatic away
+    await expectStatus(u, 'idle');
+    // It reconnects (a new socket while the old one is still in its resume
+    // window): the same old app, still auto-idle — the away stands.
+    await oldPhone.close();
+    const sameApp = await connect(u);
+    await sleep(CLOSE_GRACE_MS + 300);
+    expect(await row(u)).toMatchObject({
+      status: 'idle',
+      chosenStatus: 'idle',
+      chosenStatusAuto: true,
+    });
+    // It's killed, and nothing updated is in use: the away stands…
+    await sameApp.close();
+    await sleep(RESUME_WINDOW_MS + 500);
+    expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
+    // …until it's launched again. It no longer knows it was auto-idle, so,
+    // used, it would otherwise never count: the away ends.
+    const relaunched = await connect(u);
+    await expectStatus(u, 'online');
+    expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
+    await relaunched.close();
+    await mac.close();
+  });
+
+  it('an automatic idle PATCHed with no device connected that offlines a stale row ends at once; the old app is told what it sent', async () => {
     const u = await createUser();
     // A row still reading online although nothing is connected (stale).
     await db.update(schema.users).set({ status: 'online' }).where(eq(schema.users.id, u));
     const res = await patchStatus(await tokenFor(u), 'idle');
+    // 'idle', as it sent: told 'online', an old app whose socket is down
+    // would PATCH Away again every minute.
     expect(((await res.json()) as { user: unknown }).user).toMatchObject({
-      status: 'online',
+      status: 'idle',
       chosenStatus: 'online',
       effectiveStatus: 'offline',
     });
@@ -553,7 +687,7 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     expect((await row(auto)).status).toBe('offline');
     const res = await patchStatus(await tokenFor(auto), 'idle');
     expect(((await res.json()) as { user: unknown }).user).toMatchObject({
-      status: 'online',
+      status: 'idle',
       chosenStatus: 'online',
       effectiveStatus: 'offline',
     });
