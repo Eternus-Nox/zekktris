@@ -234,9 +234,9 @@ with its access token; the server replies `READY` with a session snapshot
   older app keeps reading `status` 'idle'. It resets to `online` when the
   user's last device disconnects, as the old server's disconnect/reconnect
   did, when no older client is about while an updated device is in use, or
-  when an older app connects afresh as the only one. An unmarked `idle` from
-  an old Android build (which has no automatic away) or over a pick other
-  than `online` is a plain pick.
+  when an older app starts a new session (launched again). An unmarked
+  `idle` from a client that never set Away by itself (old Android, a browser
+  tab) or over a pick other than `online` is a plain pick.
 - **Permission-filtered fanout.** Each connection caches its viewable-channel
   set (computed once at IDENTIFY). Channel-scoped events are filtered against
   it; the cache is refreshed live on any visibility-changing mutation, and

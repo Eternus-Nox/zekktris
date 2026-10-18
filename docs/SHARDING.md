@@ -63,7 +63,8 @@ A replica only sees its own sockets, so:
   updated clients only, which report their activity; and `g`, connections of
   pre-update clients, counting one still in its resume window — a
   pre-update client's automatic away makes only the updated devices count,
-  and ends once no pre-update device is about while one is in use). If Redis
+  and ends once no pre-update device is about while one is in use, or when an
+  old app starts a new session). If Redis
   fails, a replica never ends such an away from its own view alone. It
   writes it on every recompute
   (connect, `PRESENCE_UPDATE` op, a socket closing, a status change) and

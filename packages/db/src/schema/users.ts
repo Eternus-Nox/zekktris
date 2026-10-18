@@ -80,7 +80,7 @@ export const users = pgTable(
      *  (apps/api/src/gateway/presence.ts) resets it to 'online' when the
      *  user's last device leaves, as the old server's disconnect/reconnect
      *  did, when no pre-update device is about while an updated one is in
-     *  use, or when an old app connects afresh as the only one; a manual
+     *  use, or when an old app starts a new session; a manual
      *  pick persists. Only ever true with chosenStatus 'idle'
      *  (CHECK users_chosen_status_auto_idle_only). Migration 0131. */
     chosenStatusAuto: boolean('chosen_status_auto').notNull().default(false),

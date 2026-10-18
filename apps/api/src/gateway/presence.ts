@@ -60,7 +60,8 @@
  * publishes its per-user summary into a Redis hash —
  * `zekktris:presence:u:<userId>`, field = this replica's cluster instance id,
  * value = {l: live, a: active, t: timestamp, + h/ha for a held device, r/hr
- * for updated devices in use, g for live pre-update connections} — on every
+ * for updated devices in use, g for pre-update connections, counting one
+ * still in its resume window} — on every
  * recompute and from a heartbeat, and recompute sums the fields that aren't
  * stale. A dead
  * replica's fields go stale; the leader's sweep recomputes users carrying a
@@ -130,8 +131,8 @@ export interface RecomputeOptions {
    *  to heal peers' drifted views, and a status PATCH to confirm it. */
   broadcast?: 'change' | 'always';
   audience?: PresenceAudience;
-  /** A pre-update client just IDENTIFYed (a fresh connection, not a
-   *  RESUME). If it is the only pre-update device about, it ends an
+  /** A pre-update client just IDENTIFYed: a new session (an old app
+   *  launched or signed in — its automatic reconnects RESUME). Ends an
    *  automatic away — see recomputeNow. */
   legacyIdentified?: boolean;
 }
@@ -157,8 +158,10 @@ const keyFor = (userId: bigint): string => KEY_PREFIX + userId.toString();
  * `l` counts live connections AND held devices; `a` the active ones among
  * them, settled holds excluded; `h` settled holds and `ha` how many of those
  * were active when they left. `r` and `hr` are `a` and `ha` counting updated
- * clients (which report their activity) only; `g` counts live connections of
- * pre-update clients, holds excluded. See the module comment.
+ * clients (which report their activity) only; `g` counts pre-update clients
+ * on this replica, live or still in their resume window (a detached ghost).
+ * It rides on a live or held tally; a replica with only a ghost publishes
+ * nothing. See the module comment.
  */
 interface Tally {
   l: number;
@@ -247,6 +250,9 @@ export class PresenceEngine {
     bigint,
     { active: boolean; reported: boolean; settled: boolean }
   >();
+  /** Users for whom a pre-update client started a new session while Redis
+   *  was failing: the automatic away it ends waits for a full view. */
+  private readonly pendingLegacyIdentify = new Set<bigint>();
   /** Users this replica has a field for in Redis (so it can delete them). */
   private readonly published = new Set<bigint>();
   /** Users whose last recompute here fell back to this replica's own view
@@ -382,21 +388,28 @@ export class PresenceEngine {
         //   - no pre-update device is about (not even reconnecting) while an
         //     updated one is in use, so the old app reads Online when it's
         //     opened again;
-        //   - a pre-update client connects afresh as the only one: an old app
-        //     launched again doesn't know it was auto-idle (that lived in its
-        //     memory) and, used, would otherwise never count.
+        //   - a pre-update client starts a new session (IDENTIFY, not RESUME):
+        //     an old app launched again doesn't know it was auto-idle (that
+        //     lived in its memory) and, used, would otherwise never count —
+        //     even if its last socket is still in its resume window.
         // The first two read the same effective status either way. Never on a
         // partial view (Redis failing): another replica's old device may be
-        // missing from it, and the end can't be undone.
+        // missing from it, and the end can't be undone — a new session seen
+        // then still ends it on the next full view (pendingLegacyIdentify).
         const autoIdle = row.chosenStatus === 'idle' && row.chosenStatusAuto;
         const legacy = summary.legacy ?? 0;
         const reported = summary.reported ?? 0;
+        const newLegacySession =
+          opts.legacyIdentified === true || this.pendingLegacyIdentify.has(userId);
+        if (summary.partial) {
+          if (autoIdle && newLegacySession) this.pendingLegacyIdentify.add(userId);
+        } else {
+          this.pendingLegacyIdentify.delete(userId);
+        }
         const autoIdleOver =
           autoIdle &&
           !summary.partial &&
-          (summary.live === 0 ||
-            (legacy === 0 && reported > 0) ||
-            (opts.legacyIdentified === true && legacy <= 1));
+          (summary.live === 0 || (legacy === 0 && reported > 0) || newLegacySession);
         const chosen: ChosenStatus = autoIdleOver ? 'online' : row.chosenStatus;
         const next =
           autoIdle && !autoIdleOver

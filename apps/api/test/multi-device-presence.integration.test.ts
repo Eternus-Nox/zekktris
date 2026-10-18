@@ -464,7 +464,8 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     await patchStatus(token, 'idle');
     expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
     await oldPhone2.close();
-    await sleep(CLOSE_GRACE_MS + 300);
+    // Wait out its resume window: it's gone for good, not reconnecting.
+    await sleep(RESUME_WINDOW_MS + 500);
     expect(await row(u)).toMatchObject({
       status: 'idle',
       chosenStatus: 'idle',
@@ -472,7 +473,6 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     });
     const laptop = await connect(u, { active: true });
     await expectStatus(u, 'online');
-    await waitFor(async () => !(await row(u)).chosenStatusAuto, 'away ended', 5_000);
     expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
 
     // A PICKED Away is never ended by device activity.
@@ -533,6 +533,17 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     // (Still showing Online as the pick on the frame that says so.)
     await waitFor(() => selfFrames().at(-1)?.d?.status === 'idle', 'idle self frame');
     expect(selfFrames().at(-1)!.d).toMatchObject({ status: 'idle', chosen_status: 'online' });
+    // An updated device connecting doesn't end it (only an old app's new
+    // session does), nor does the old app's away arriving again.
+    const laptop = await connect(u, { active: false });
+    await patchStatus(token, 'idle');
+    await sleep(CLOSE_GRACE_MS);
+    expect(await row(u)).toMatchObject({
+      status: 'idle',
+      chosenStatus: 'idle',
+      chosenStatusAuto: true,
+    });
+    await laptop.close();
     // …and online again as soon as the Mac is used.
     await sleep(2_300); // op 3 changes apply at most every 2 s per connection
     mac.setActive(true);
@@ -588,19 +599,36 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     await mac.close();
   });
 
-  it('an unmarked idle from an old Android build is a pick (it has no automatic away)', async () => {
+  it('an unmarked idle from a client that never set Away by itself is a pick', async () => {
     const u = await createUser();
     const token = await tokenFor(u);
     const mac = await connect(u, { active: true });
-    const oldAndroid = await connect(u);
+    const oldDevice = await connect(u);
     await expectStatus(u, 'online');
-    await patchStatus(token, 'idle', undefined, 'okhttp/4.12.0');
-    expect(await row(u)).toMatchObject({
-      status: 'idle',
-      chosenStatus: 'idle',
-      chosenStatusAuto: false,
-    });
-    await oldAndroid.close();
+    // Old Android (Ktor's default User-Agent) and a pre-update web tab in a
+    // browser had no automatic away.
+    for (const ua of [
+      'ktor-client',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+    ]) {
+      await patchStatus(token, 'idle', undefined, ua);
+      expect(await row(u), ua).toMatchObject({
+        status: 'idle',
+        chosenStatus: 'idle',
+        chosenStatusAuto: false,
+      });
+      await patchStatus(token, 'online', 'manual');
+    }
+    // The pre-update desktop app did (Electron's User-Agent), as did old iOS.
+    for (const ua of [
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Zekktris/1.4.0 Chrome/138.0.0.0 Electron/37.2.0 Safari/537.36',
+      'Zekktris/412 CFNetwork/1568.100.1 Darwin/24.0.0',
+    ]) {
+      await patchStatus(token, 'idle', undefined, ua);
+      expect(await row(u), ua).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
+      await patchStatus(token, 'online'); // the old app touched again
+    }
+    await oldDevice.close();
     await mac.close();
   });
 
@@ -630,33 +658,50 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     await mac.close();
   });
 
-  it('an old app connecting afresh as the only one ends its automatic away; one only reconnecting does not', async () => {
+  it("an old app's new session ends its automatic away; its automatic reconnect (RESUME) does not", async () => {
     const u = await createUser();
     const token = await tokenFor(u);
     const mac = await connect(u, { active: false });
     const oldPhone = await connect(u);
     await patchStatus(token, 'idle'); // its automatic away
     await expectStatus(u, 'idle');
-    // It reconnects (a new socket while the old one is still in its resume
-    // window): the same old app, still auto-idle — the away stands.
-    await oldPhone.close();
-    const sameApp = await connect(u);
+    // Its socket drops and it RESUMEs, as old builds do on their own: the
+    // same app, still auto-idle — the away stands.
+    const sessionId = oldPhone.ready()!.d!.session_id as string;
+    const lastSeq = Math.max(...oldPhone.frames.map((f) => (f as { s?: number }).s ?? 0));
+    oldPhone.ws.terminate();
+    await sleep(100);
+    const ws = new WebSocket(url, { headers: { 'x-real-ip': freshIp() } });
+    ws.on('error', () => {});
+    const resumed = new Device(ws);
+    await waitFor(() => resumed.frames.some((f) => f.op === GatewayOp.HELLO), 'HELLO');
+    resumed.send(GatewayOp.RESUME, { token, session_id: sessionId, seq: lastSeq });
+    await waitFor(() => resumed.frames.some((f) => f.t === 'RESUMED'), 'RESUMED');
     await sleep(CLOSE_GRACE_MS + 300);
     expect(await row(u)).toMatchObject({
       status: 'idle',
       chosenStatus: 'idle',
       chosenStatusAuto: true,
     });
-    // It's killed, and nothing updated is in use: the away stands…
-    await sameApp.close();
-    await sleep(RESUME_WINDOW_MS + 500);
-    expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
-    // …until it's launched again. It no longer knows it was auto-idle, so,
-    // used, it would otherwise never count: the away ends.
+    // Killed and launched again at once (its last socket still in its resume
+    // window): the new process no longer knows it was auto-idle, so, used,
+    // it would never count — the away ends.
+    await resumed.close();
     const relaunched = await connect(u);
     await expectStatus(u, 'online');
     expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
+
+    // Killed while nothing updated is in use: the away stands until the next
+    // launch, however long after.
+    await patchStatus(token, 'idle');
+    await expectStatus(u, 'idle');
     await relaunched.close();
+    await sleep(RESUME_WINDOW_MS + 500);
+    expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
+    const again = await connect(u);
+    await expectStatus(u, 'online');
+    expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
+    await again.close();
     await mac.close();
   });
 

@@ -469,6 +469,51 @@ describe.runIf(redisReady)('presence across replicas (integration, Redis)', () =
     expect(await chosenOf(u)).toEqual({ chosenStatus: 'idle', auto: true });
   });
 
+  it('a legacy automatic away: an old device reconnecting on another replica (held, resume-window ghost) still counts', async () => {
+    const r1 = replica('replica-1');
+    const r2 = replica('replica-2');
+    const u = await newUser();
+    await setAutoIdle(u);
+    const mac = connect(r1.registry, u, true);
+    mac.reportsActivity = true;
+    // The old phone's socket on replica 2 just dropped: a detached ghost
+    // waiting for RESUME, and replica 2 holds the user.
+    const ghost = connect(r2.registry, u, true);
+    ghost.detached = true;
+    r2.engine.hold(u, true, false);
+    await r2.engine.recompute(u);
+    expect(JSON.parse((await admin.hget(`zekktris:presence:u:${u}`, 'replica-2'))!)).toMatchObject({
+      l: 1,
+      g: 1,
+    });
+    // The Mac in use on replica 1 doesn't end the away: the old phone may
+    // only be reconnecting.
+    expect(await r1.engine.recompute(u)).toBe('online');
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'idle', auto: true });
+    // Its resume window over, it's gone: the away ends.
+    r2.registry.remove(ghost);
+    r2.engine.release(u);
+    await r2.engine.recompute(u);
+    expect(await r1.engine.recompute(u)).toBe('online');
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'online', auto: false });
+  });
+
+  it("a legacy automatic away: an old app's new session seen while Redis fails ends it once Redis is back", async () => {
+    const r1 = replica('replica-1');
+    await r1.engine.whenReady();
+    const u = await newUser();
+    await setAutoIdle(u);
+    connect(r1.registry, u, true); // the old app, launched again
+    r1.redis.disconnect(); // Redis drops (no offline queue: commands fail)
+    expect(await r1.engine.recompute(u, { legacyIdentified: true })).toBe('idle');
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'idle', auto: true });
+    await r1.redis.connect();
+    await r1.engine.whenReady();
+    // The heal recompute (the heartbeat's, which passes no options) ends it.
+    expect(await r1.engine.recompute(u)).toBe('online');
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'online', auto: false });
+  });
+
   it("Redis unreachable: falls back to this replica's own view (never hangs, never throws)", async () => {
     const down = replica('replica-down', { url: 'redis://127.0.0.1:1/0' });
     const u = await newUser();

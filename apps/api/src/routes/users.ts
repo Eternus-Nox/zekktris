@@ -172,8 +172,9 @@ const patchMeSchema = z
     /** Who set `status`. Updated clients send 'manual' with every pick made
         in their status picker (packages/client patchMe does it). Absent (a
         pre-update client) or 'auto': an 'idle' is that client's AUTOMATIC
-        away — unless sent by an old Android build (no automatic away there)
-        or over a pick other than Online — and is flagged
+        away — unless sent by a client that never set Away by itself (old
+        Android, a browser tab) or over a pick other than Online — and is
+        flagged
         (users.chosen_status_auto). That marks the old devices as not in use,
         so the status follows the updated ones, instead of pinning the user
         Away; gateway/presence.ts says when it ends. A 'manual' 'online'
@@ -255,11 +256,18 @@ const patchMeSchema = z
     message: 'At least one field is required',
   });
 
-/** An old Android build: its REST client sends no User-Agent of its own, so
- *  OkHttp's default goes out. (Updated builds mark every pick manual, and the
- *  question only arises for unmarked PATCHes.) */
-function fromOldAndroid(c: { req: { header(name: string): string | undefined } }): boolean {
-  return /^okhttp\//i.test(c.req.header('user-agent') ?? '');
+/**
+ * A client that never set Away by itself, so an unmarked 'idle' from it is a
+ * pick: old Android builds (their Ktor REST client sends its default
+ * `ktor-client` User-Agent — OkHttp's own only without Ktor) and a web page in
+ * a browser (pre-update web never auto-awayed; the desktop app did, and its
+ * Electron User-Agent says so). Old iOS builds, which did, send their own.
+ * Updated clients mark every pick manual, so only unmarked PATCHes ask.
+ */
+function clientHasNoAutomaticAway(c: { req: { header(name: string): string | undefined } }): boolean {
+  const ua = c.req.header('user-agent') ?? '';
+  if (/^(ktor-client|okhttp\/)/i.test(ua)) return true;
+  return /^Mozilla\//.test(ua) && !/\bElectron\//.test(ua);
 }
 
 usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c) => {
@@ -290,13 +298,13 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
     } else {
       update.chosenStatus = body.status;
       // An unmarked 'idle' is a pre-update client's automatic away (see
-      // statusSource) — unless it can't be: old Android builds have none
-      // (and send OkHttp's own User-Agent), and an old app only auto-aways
-      // from what it believes is Online, so after any other pick (made on
-      // another device, which the old app never hears of) it's a pick. The
-      // condition reads the row as it was before this update.
+      // statusSource) — unless it can't be: from a client that never set Away
+      // by itself it's a pick, and an old app only auto-aways from what it
+      // believes is Online, so after any other pick (made on another device,
+      // which the old app never hears of) it's a pick too. The condition
+      // reads the row as it was before this update.
       update.chosenStatusAuto =
-        body.status === 'idle' && body.statusSource !== 'manual' && !fromOldAndroid(c)
+        body.status === 'idle' && body.statusSource !== 'manual' && !clientHasNoAutomaticAway(c)
           ? sql`(${u.chosenStatus} = 'online' OR ${u.chosenStatusAuto})`
           : false;
     }
