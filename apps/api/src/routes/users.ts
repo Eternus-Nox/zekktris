@@ -36,6 +36,7 @@ import {
   revokeAllUserSessions,
 } from '../auth/sessions';
 import { toSelfUser, toPublicUser, toSession, toReadState } from '../lib/dto';
+import { clientHasNoAutomaticAway } from '../lib/legacyClients';
 import { dateOfBirthSchema } from '../lib/age';
 import * as readStates from '../services/readStates';
 import * as supervision from '../services/supervision';
@@ -256,20 +257,6 @@ const patchMeSchema = z
     message: 'At least one field is required',
   });
 
-/**
- * A client that never set Away by itself, so an unmarked 'idle' from it is a
- * pick: old Android builds (their Ktor REST client sends its default
- * `ktor-client` User-Agent — OkHttp's own only without Ktor) and a web page in
- * a browser (pre-update web never auto-awayed; the desktop app did, and its
- * Electron User-Agent says so). Old iOS builds, which did, send their own.
- * Updated clients mark every pick manual, so only unmarked PATCHes ask.
- */
-function clientHasNoAutomaticAway(c: { req: { header(name: string): string | undefined } }): boolean {
-  const ua = c.req.header('user-agent') ?? '';
-  if (/^(ktor-client|okhttp\/)/i.test(ua)) return true;
-  return /^Mozilla\//.test(ua) && !/\bElectron\//.test(ua);
-}
-
 usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c) => {
   const userId = requireUserId(c);
   const body = c.req.valid('json');
@@ -304,7 +291,9 @@ usersRouter.patch('/@me', requireAuth, validate('json', patchMeSchema), async (c
       // which the old app never hears of) it's a pick too. The condition
       // reads the row as it was before this update.
       update.chosenStatusAuto =
-        body.status === 'idle' && body.statusSource !== 'manual' && !clientHasNoAutomaticAway(c)
+        body.status === 'idle' &&
+        body.statusSource !== 'manual' &&
+        !clientHasNoAutomaticAway(c.req.header('user-agent'))
           ? sql`(${u.chosenStatus} = 'online' OR ${u.chosenStatusAuto})`
           : false;
     }

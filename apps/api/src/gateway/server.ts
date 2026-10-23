@@ -45,6 +45,7 @@ import { Connection } from './connection';
 import { initInternalDispatchBus } from './dispatch';
 import { registry } from './registry';
 import { RESUME_WINDOW_MS } from './resume';
+import { clientHasNoAutomaticAway } from '../lib/legacyClients';
 import {
   CloseCode,
   dispatchFrame,
@@ -202,7 +203,7 @@ export function attachGateway(httpServer: HttpServer, opts: GatewayOptions = {})
     // the last device's activity until the close grace settles it), so no
     // other recompute flips them offline early — the offline flip keeps the
     // voice grace's timing.
-    presenceEngine.hold(userId, conn.presenceActive, conn.reportsActivity);
+    presenceEngine.hold(userId, conn.presenceActive, conn.reportsActivity || !conn.legacyAutoAway);
     scheduleCloseGraceRecompute(userId);
     // GRACE PERIOD before evicting from voice. A gateway WebSocket blip
     // (WiFi->LTE handoff, brief network loss — likelier under the load
@@ -413,6 +414,7 @@ export function attachGateway(httpServer: HttpServer, opts: GatewayOptions = {})
   // ── New connection ─────────────────────────────────────────────────────
   wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     const conn = new Connection(ws);
+    conn.legacyAutoAway = !clientHasNoAutomaticAway(req.headers['user-agent']);
     registry.add(conn);
 
     log.debug('gateway: new connection', { sessionId: conn.id, ip: req.socket.remoteAddress });
@@ -756,7 +758,9 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
   // lists loaded for the snapshot above instead of querying them again.
   await presence().recompute(userId, {
     broadcast: 'always',
-    legacyIdentified: !conn.reportsActivity,
+    // A pre-update app that may have set an automatic away, starting a new
+    // session — not one falling back after its RESUME was refused.
+    legacyIdentified: !conn.reportsActivity && conn.legacyAutoAway && !conn.resumeAttempted,
     audience: {
       guildIds,
       dmChannelIds: dmChannelIdRows.map((r) => r.channelId),
@@ -802,6 +806,7 @@ async function handleResume(conn: Connection, payload: ResumePayload | undefined
     conn.close(CloseCode.ALREADY_AUTHENTICATED, 'already authenticated');
     return;
   }
+  conn.resumeAttempted = true;
   if (
     !payload?.token ||
     typeof payload.token !== 'string' ||

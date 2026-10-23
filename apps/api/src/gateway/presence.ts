@@ -21,10 +21,12 @@
  * online while the Mac sits idle, and once nothing is in use it reads idle —
  * Zekktris is still open somewhere, nobody is using it.
  *
- * A pre-update client's automatic away: while it stands, pre-update
- * connections count as NOT in use and the status follows the updated devices
- * (those that report their activity): 'online' while one is in use, else
- * 'idle', 'offline' with nothing connected. The chosen status underneath
+ * A pre-update client's automatic away: while it stands, connections of
+ * pre-update clients that could have set it (old iOS, the old desktop app —
+ * lib/legacyClients.ts) count as NOT in use, and the status follows the other
+ * devices — updated ones, which report their activity, and old ones that
+ * never set Away by themselves: 'online' while one is in use, else 'idle',
+ * 'offline' with nothing connected. The chosen status underneath
  * stays 'idle' for the old app — it reads its own `status` as its pick and,
  * told 'online', would PATCH Away again — while updated clients are shown
  * the pick as 'online' (lib/dto.ts shownChosenStatus): the user picked
@@ -92,12 +94,13 @@ export interface PresenceSummary {
   live: number;
   /** Of those, how many report their device in use. */
   active: number;
-  /** Of the active ones, how many are UPDATED clients, which report their
-   *  activity (legacy connections count as active but never report): what
-   *  counts while a pre-update client's automatic away stands. Absent = 0. */
+  /** Of the active ones, how many still count while a pre-update client's
+   *  automatic away stands: updated clients (they report their activity)
+   *  and pre-update ones that never set Away by themselves. Absent = 0. */
   reported?: number;
-  /** Pre-update clients (never report) connected, or only reconnecting
-   *  (a detached resume-window ghost). Absent = 0. */
+  /** Pre-update clients that may have set an automatic away (old iOS, the
+   *  old desktop app), connected or only reconnecting (a detached
+   *  resume-window ghost). Absent = 0. */
   legacy?: number;
   /** Built from this replica's view alone because Redis failed: other
    *  replicas' devices may be missing. */
@@ -131,9 +134,10 @@ export interface RecomputeOptions {
    *  to heal peers' drifted views, and a status PATCH to confirm it. */
   broadcast?: 'change' | 'always';
   audience?: PresenceAudience;
-  /** A pre-update client just IDENTIFYed: a new session (an old app
-   *  launched or signed in — its automatic reconnects RESUME). Ends an
-   *  automatic away — see recomputeNow. */
+  /** A pre-update client that may have set an automatic away just started a
+   *  new session: IDENTIFY, not after a RESUME refused on the same socket (an
+   *  old app launched or signed in — its automatic reconnects RESUME). Ends
+   *  an automatic away — see recomputeNow. */
   legacyIdentified?: boolean;
 }
 
@@ -157,9 +161,10 @@ const keyFor = (userId: bigint): string => KEY_PREFIX + userId.toString();
  * One replica's contribution to a user's presence (the Redis entry, plus `t`).
  * `l` counts live connections AND held devices; `a` the active ones among
  * them, settled holds excluded; `h` settled holds and `ha` how many of those
- * were active when they left. `r` and `hr` are `a` and `ha` counting updated
- * clients (which report their activity) only; `g` counts pre-update clients
- * on this replica, live or still in their resume window (a detached ghost).
+ * were active when they left. `r` and `hr` are `a` and `ha` counting only
+ * devices that count during an automatic away (PresenceSummary.reported); `g`
+ * counts pre-update clients that may have set one (PresenceSummary.legacy) on
+ * this replica, live or still in their resume window (a detached ghost).
  * It rides on a live or held tally; a replica with only a ghost publishes
  * nothing. See the module comment.
  */
@@ -295,7 +300,8 @@ export class PresenceEngine {
 
   // ── Full-disconnect grace ────────────────────────────────────────────────
 
-  /** `reported`: the device is an updated client (reports its activity). */
+  /** `reported`: the device still counts during an automatic away (see
+   *  PresenceSummary.reported). */
   hold(userId: bigint, active: boolean, reported = false): void {
     this.holds.set(userId, { active, reported, settled: false });
   }
@@ -359,6 +365,9 @@ export class PresenceEngine {
     try {
       /** What this call last wrote (and broadcast), if anything. */
       let wrote: EffectiveStatus | null = null;
+      // A pre-update app's new session, now or seen while Redis was failing.
+      const newLegacySession =
+        opts.legacyIdentified === true || this.pendingLegacyIdentify.has(userId);
       for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
         const summary = await this.clusterSummary(userId);
         const [row] = await db
@@ -374,8 +383,9 @@ export class PresenceEngine {
         // A pre-update client's AUTOMATIC away (chosen 'idle' from a PATCH
         // without the manual marker — users.chosenStatusAuto) says its device
         // is not in use, not that the user picked Away: while it stands, the
-        // status follows the UPDATED devices alone (`reported`), pre-update
-        // connections counting as not in use. So an old phone left open and
+        // status follows the other devices alone (`reported`), connections
+        // of pre-update apps that could have set it counting as not in use
+        // (`legacy`). So an old phone left open and
         // untouched can't hold the user Away while they type on the Mac, nor
         // leave them online once the Mac goes idle too. A picked Away stays.
         //
@@ -385,13 +395,14 @@ export class PresenceEngine {
         //     can't un-idle itself; this includes an automatic idle PATCHed
         //     while the row ALREADY reads offline (an old app whose socket
         //     was down);
-        //   - no pre-update device is about (not even reconnecting) while an
-        //     updated one is in use, so the old app reads Online when it's
+        //   - no such pre-update device is about (not even reconnecting) while
+        //     another device is in use, so the old app reads Online when it's
         //     opened again;
-        //   - a pre-update client starts a new session (IDENTIFY, not RESUME):
-        //     an old app launched again doesn't know it was auto-idle (that
-        //     lived in its memory) and, used, would otherwise never count —
-        //     even if its last socket is still in its resume window.
+        //   - such a pre-update app starts a new session (IDENTIFY, not after
+        //     a refused RESUME on the same socket): launched again, it doesn't
+        //     know it was auto-idle (that lived in its memory) and, used,
+        //     would otherwise never count — even if its last socket is still
+        //     in its resume window.
         // The first two read the same effective status either way. Never on a
         // partial view (Redis failing): another replica's old device may be
         // missing from it, and the end can't be undone — a new session seen
@@ -399,13 +410,12 @@ export class PresenceEngine {
         const autoIdle = row.chosenStatus === 'idle' && row.chosenStatusAuto;
         const legacy = summary.legacy ?? 0;
         const reported = summary.reported ?? 0;
-        const newLegacySession =
-          opts.legacyIdentified === true || this.pendingLegacyIdentify.has(userId);
-        if (summary.partial) {
-          if (autoIdle && newLegacySession) this.pendingLegacyIdentify.add(userId);
-        } else {
-          this.pendingLegacyIdentify.delete(userId);
-        }
+        // Kept for this call's compare-and-set retries; remembered across a
+        // partial view only while an automatic away stands (one set later is
+        // another away, which that session never saw).
+        if (!autoIdle) this.pendingLegacyIdentify.delete(userId);
+        else if (summary.partial && newLegacySession) this.pendingLegacyIdentify.add(userId);
+        else if (!summary.partial) this.pendingLegacyIdentify.delete(userId);
         const autoIdleOver =
           autoIdle &&
           !summary.partial &&

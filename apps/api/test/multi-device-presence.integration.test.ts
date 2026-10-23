@@ -158,9 +158,15 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
 
   /** Connect a device (its own sign-in session) and IDENTIFY; `presence`
    *  omitted = a legacy client. */
-  async function connect(userId: bigint, presence?: { active: boolean }): Promise<Device> {
+  async function connect(
+    userId: bigint,
+    presence?: { active: boolean },
+    userAgent?: string,
+  ): Promise<Device> {
     const { token, refreshToken } = await signIn(userId);
-    const ws = new WebSocket(url, { headers: { 'x-real-ip': freshIp() } });
+    const ws = new WebSocket(url, {
+      headers: { 'x-real-ip': freshIp(), ...(userAgent ? { 'user-agent': userAgent } : {}) },
+    });
     const dev = new Device(ws);
     dev.refreshToken = refreshToken;
     ws.on('error', () => {});
@@ -534,15 +540,25 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     await waitFor(() => selfFrames().at(-1)?.d?.status === 'idle', 'idle self frame');
     expect(selfFrames().at(-1)!.d).toMatchObject({ status: 'idle', chosen_status: 'online' });
     // An updated device connecting doesn't end it (only an old app's new
-    // session does), nor does the old app's away arriving again.
+    // session does). Its IDENTIFY's recompute has run once its own self
+    // frame arrives.
     const laptop = await connect(u, { active: false });
-    await patchStatus(token, 'idle');
-    await sleep(CLOSE_GRACE_MS);
+    await waitFor(
+      () =>
+        laptop.frames.some(
+          (f) =>
+            f.t === 'PRESENCE_UPDATE' && f.d?.user_id === u.toString() && f.d?.guild_id == null,
+        ),
+      'laptop self frame',
+    );
     expect(await row(u)).toMatchObject({
       status: 'idle',
       chosenStatus: 'idle',
       chosenStatusAuto: true,
     });
+    // Nor does the old app's away arriving again.
+    await patchStatus(token, 'idle');
+    expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
     await laptop.close();
     // …and online again as soon as the Mac is used.
     await sleep(2_300); // op 3 changes apply at most every 2 s per connection
@@ -703,6 +719,69 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
     await again.close();
     await mac.close();
+  });
+
+  it('an old app falling back to IDENTIFY after its RESUME is refused (a restarted server) is not a new session', async () => {
+    const u = await createUser();
+    const token = await tokenFor(u);
+    const mac = await connect(u, { active: false });
+    const oldPhone = await connect(u);
+    await patchStatus(token, 'idle'); // its automatic away
+    await expectStatus(u, 'idle');
+    // Its socket drops; it RESUMEs a session this server doesn't have, is
+    // refused, and IDENTIFYs on the same socket — the same running app,
+    // still auto-idle.
+    oldPhone.ws.terminate();
+    const ws = new WebSocket(url, { headers: { 'x-real-ip': freshIp() } });
+    ws.on('error', () => {});
+    const back = new Device(ws);
+    await waitFor(() => back.frames.some((f) => f.op === GatewayOp.HELLO), 'HELLO');
+    back.send(GatewayOp.RESUME, { token, session_id: 'not-a-session', seq: 0 });
+    await waitFor(
+      () => back.frames.some((f) => f.op === GatewayOp.INVALID_SESSION),
+      'INVALID_SESSION',
+    );
+    back.send(GatewayOp.IDENTIFY, { token });
+    await waitFor(() => back.ready() !== undefined, 'READY');
+    await sleep(CLOSE_GRACE_MS + 300);
+    expect(await row(u)).toMatchObject({
+      status: 'idle',
+      chosenStatus: 'idle',
+      chosenStatusAuto: true,
+    });
+    await back.close();
+    await mac.close();
+  });
+
+  it("an old iPhone's automatic away doesn't make an old Android phone or browser tab in use read idle", async () => {
+    const u = await createUser();
+    const token = await tokenFor(u);
+    const iosUa = 'Zekktris/412 CFNetwork/1568.100.1 Darwin/24.0.0';
+    const oldIphone = await connect(u, undefined, iosUa);
+    // Old Android never set Away by itself: its connection counts as in use.
+    const oldAndroid = await connect(u, undefined, 'ktor-client');
+    await patchStatus(token, 'idle', undefined, iosUa); // the iPhone's automatic away
+    await sleep(CLOSE_GRACE_MS);
+    expect(await row(u)).toMatchObject({
+      status: 'online',
+      chosenStatus: 'idle',
+      chosenStatusAuto: true,
+    });
+    // Its new session doesn't end the iPhone's away either.
+    const tab = await connect(
+      u,
+      undefined,
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+    );
+    await sleep(CLOSE_GRACE_MS);
+    expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
+    // The iPhone gone for good, the away ends: the old Android phone and the
+    // tab in use, no device left that could have set it.
+    await oldIphone.close();
+    await waitFor(async () => !(await row(u)).chosenStatusAuto, 'away ended', 5_000);
+    expect(await row(u)).toMatchObject({ status: 'online', chosenStatus: 'online' });
+    await tab.close();
+    await oldAndroid.close();
   });
 
   it('an automatic idle PATCHed with no device connected that offlines a stale row ends at once; the old app is told what it sent', async () => {

@@ -514,6 +514,29 @@ describe.runIf(redisReady)('presence across replicas (integration, Redis)', () =
     expect(await chosenOf(u)).toEqual({ chosenStatus: 'online', auto: false });
   });
 
+  it('a new old-app session remembered while Redis fails is dropped once that automatic away is replaced', async () => {
+    const r1 = replica('replica-1');
+    await r1.engine.whenReady();
+    const u = await newUser();
+    await setAutoIdle(u);
+    connect(r1.registry, u, true); // the old app, launched again
+    r1.redis.disconnect();
+    expect(await r1.engine.recompute(u, { legacyIdentified: true })).toBe('idle');
+    // The user picks Online (a PATCH replaces the away), still with Redis down…
+    await db
+      .update(schema.users)
+      .set({ chosenStatus: 'online', chosenStatusAuto: false })
+      .where(eq(schema.users.id, u));
+    await r1.engine.recompute(u);
+    // …and later the old app sets another automatic away. The new session
+    // seen back then never saw this one: it stands once Redis is back.
+    await setAutoIdle(u);
+    await r1.redis.connect();
+    await r1.engine.whenReady();
+    expect(await r1.engine.recompute(u)).toBe('idle');
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'idle', auto: true });
+  });
+
   it("Redis unreachable: falls back to this replica's own view (never hangs, never throws)", async () => {
     const down = replica('replica-down', { url: 'redis://127.0.0.1:1/0' });
     const u = await newUser();

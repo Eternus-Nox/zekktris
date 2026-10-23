@@ -215,7 +215,12 @@ export class Registry {
     this.remove(conn);
     // A pre-update device's ghost counted as that device still about (see
     // presenceSummary); now it isn't.
-    if (!conn.reportsActivity && conn.userId !== null && this.onLegacyGhostEvicted) {
+    if (
+      !conn.reportsActivity &&
+      conn.legacyAutoAway &&
+      conn.userId !== null &&
+      this.onLegacyGhostEvicted
+    ) {
       try {
         this.onLegacyGhostEvicted(conn.userId);
       } catch {
@@ -470,12 +475,14 @@ export class Registry {
   }
 
   /**
-   * The user's live (non-detached) connections on THIS replica, how many of
-   * them report their device in use, how many of those are updated clients
-   * (`reported`), and how many pre-update clients (which never report) are
-   * here (`legacy`). Input to the presence recompute (gateway/presence.ts); a
-   * detached resume-window ghost is not live, but a pre-update one still
-   * counts in `legacy`: that device is only reconnecting.
+   * The user's live (non-detached) connections on THIS replica and how many
+   * of them report their device in use; how many of those count while a
+   * pre-update client's automatic away stands (`reported`: updated clients,
+   * and pre-update ones that never set Away by themselves); and how many
+   * pre-update clients that may have set one are here (`legacy`). Input to
+   * the presence recompute (gateway/presence.ts); a detached resume-window
+   * ghost is not live, but still counts in `legacy`: that device is only
+   * reconnecting.
    */
   presenceSummary(userId: bigint): {
     live: number;
@@ -490,12 +497,13 @@ export class Registry {
     let legacy = 0;
     if (set) {
       for (const c of set) {
-        if (!c.reportsActivity) legacy++;
+        const mayAutoAway = !c.reportsActivity && c.legacyAutoAway;
+        if (mayAutoAway) legacy++;
         if (c.detached) continue;
         live++;
         if (c.presenceActive) {
           active++;
-          if (c.reportsActivity) reported++;
+          if (!mayAutoAway) reported++;
         }
       }
     }

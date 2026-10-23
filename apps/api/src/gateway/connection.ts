@@ -118,9 +118,17 @@ export class Connection {
   presenceActive = true;
   /** This client reports its device's activity (presence in IDENTIFY/RESUME
    *  or an op 3) — an updated client. Legacy clients never do; they count as
-   *  active, except while a pre-update client's automatic away stands, when
-   *  only updated clients count (presence.ts). */
+   *  active, except that a pre-update client's automatic away marks the
+   *  devices of those that could have set it as idle (presence.ts). */
   reportsActivity = false;
+  /** For a legacy client: whether it is one that set Away by itself (old
+   *  iOS, the old desktop app), from its User-Agent at connect — see
+   *  lib/legacyClients.ts. */
+  legacyAutoAway = true;
+  /** A RESUME was attempted on this socket. An IDENTIFY after it (the
+   *  RESUME refused — another replica, a restarted server) comes from the
+   *  same running app, not a new session. */
+  resumeAttempted = false;
 
   /** When an op-3 change was last applied (rate limit), and the latest value
    *  that arrived too soon, applied when the window reopens. */

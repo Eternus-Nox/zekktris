@@ -228,15 +228,17 @@ with its access token; the server replies `READY` with a session snapshot
   masked). Updated clients send `statusSource: 'manual'` with a status the
   user picks; an unmarked `idle` (an older client's automatic away) is
   flagged (`users.chosen_status_auto`) and read as "the older devices are not
-  in use": while it stands, connections of clients that never report their
-  activity count as idle and the status follows the updated ones (on any
-  replica), and updated clients are shown `chosenStatus` 'online' while the
-  older app keeps reading `status` 'idle'. It resets to `online` when the
-  user's last device disconnects, as the old server's disconnect/reconnect
-  did, when no older client is about while an updated device is in use, or
-  when an older app starts a new session (launched again). An unmarked
-  `idle` from a client that never set Away by itself (old Android, a browser
-  tab) or over a pick other than `online` is a plain pick.
+  in use": while it stands, connections of older clients that could have set
+  it (old iOS, the old desktop app — told apart by User-Agent,
+  `apps/api/src/lib/legacyClients.ts`) count as idle and the status follows
+  the other devices (on any replica), and updated clients are shown
+  `chosenStatus` 'online' while the older app keeps reading `status` 'idle'.
+  It resets to `online` when the user's last device disconnects, as the old
+  server's disconnect/reconnect did, when no such older client is about
+  while another device is in use, or when such an older app starts a new
+  session (launched again; not a fallback after a refused RESUME). An
+  unmarked `idle` from a client that never set Away by itself (old Android,
+  a browser tab) or over a pick other than `online` is a plain pick.
 - **Permission-filtered fanout.** Each connection caches its viewable-channel
   set (computed once at IDENTIFY). Channel-scoped events are filtered against
   it; the cache is refreshed live on any visibility-changing mutation, and

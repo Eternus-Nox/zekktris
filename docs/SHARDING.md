@@ -59,12 +59,12 @@ A replica only sees its own sockets, so:
 - Each replica publishes a per-user summary into the Redis hash
   `zekktris:presence:u:<userId>`: field = the replica's cluster instance id,
   value = `{l: live connections, a: active connections, t: timestamp}` (plus
-  `h` / `ha` for a held device, below; `r` / `hr`, the same counts for
-  updated clients only, which report their activity; and `g`, connections of
-  pre-update clients, counting one still in its resume window — a
-  pre-update client's automatic away makes only the updated devices count,
-  and ends once no pre-update device is about while one is in use, or when an
-  old app starts a new session). If Redis
+  `h` / `ha` for a held device, below; `r` / `hr`, the same counts leaving
+  out pre-update clients that could have set an automatic away; and `g`,
+  connections of those, counting one still in its resume window — such an
+  away makes only the other devices count, and ends once none of those old
+  clients is about while another device is in use, or when one of them
+  starts a new session). If Redis
   fails, a replica never ends such an away from its own view alone. It
   writes it on every recompute
   (connect, `PRESENCE_UPDATE` op, a socket closing, a status change) and
