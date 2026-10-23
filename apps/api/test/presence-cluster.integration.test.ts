@@ -73,7 +73,14 @@ function replica(
   return {
     registry,
     redis,
-    engine: new PresenceEngine({ source: registry, redis, instanceId: id, staleMs }),
+    // bootGraceMs 0: these engines aren't a restarted process.
+    engine: new PresenceEngine({
+      source: registry,
+      redis,
+      instanceId: id,
+      staleMs,
+      bootGraceMs: 0,
+    }),
   };
 }
 
@@ -170,7 +177,7 @@ describe.runIf(redisReady)('presence across replicas (integration, Redis)', () =
     expect(Object.keys(await admin.hgetall(`zekktris:presence:u:${u}`))).toEqual(['replica-1']);
   });
 
-  it('a legacy automatic away: updated devices in use and pre-update connections are summed across replicas', async () => {
+  it('a legacy automatic away: devices that still count and old clients that could have set it are summed across replicas', async () => {
     const r1 = replica('replica-1');
     const r2 = replica('replica-2');
     const u = await newUser();
@@ -535,6 +542,46 @@ describe.runIf(redisReady)('presence across replicas (integration, Redis)', () =
     await r1.engine.whenReady();
     expect(await r1.engine.recompute(u)).toBe('idle');
     expect(await chosenOf(u)).toEqual({ chosenStatus: 'idle', auto: true });
+  });
+
+  it("a legacy automatic away survives the boot sweep: a server going away isn't the user's devices leaving", async () => {
+    const u = await newUser();
+    // Online with an automatic away before a restart; nothing connected now
+    // and no entry left (the shut-down replica withdrew it).
+    await db
+      .update(schema.users)
+      .set({ status: 'online', chosenStatus: 'idle', chosenStatusAuto: true })
+      .where(eq(schema.users.id, u));
+    const fresh = replica('replica-fresh');
+    await fresh.engine.whenReady();
+    await resetPresenceOnBoot(fresh.engine, { userIds: [u] });
+    expect(await statusOf(u)).toBe('offline');
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'idle', auto: true });
+  });
+
+  it('just after a restart, an updated device back first does not end a legacy automatic away', async () => {
+    const registry = new Registry();
+    const redis = client();
+    clients.push(redis);
+    const engine = new PresenceEngine({
+      source: registry,
+      redis,
+      instanceId: 'replica-restarted',
+      staleMs: NEVER_STALE_MS,
+      bootGraceMs: 600,
+    });
+    await engine.whenReady();
+    const u = await newUser();
+    await setAutoIdle(u);
+    // The Mac reconnects in use before the old phone does.
+    const mac = connect(registry, u, true);
+    mac.reportsActivity = true;
+    expect(await engine.recompute(u)).toBe('online');
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'idle', auto: true });
+    // The grace over, with no old device back, it ends.
+    await sleep(700);
+    expect(await engine.recompute(u)).toBe('online');
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'online', auto: false });
   });
 
   it("Redis unreachable: falls back to this replica's own view (never hangs, never throws)", async () => {

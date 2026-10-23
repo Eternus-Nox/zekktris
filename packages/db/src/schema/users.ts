@@ -60,8 +60,9 @@ export const users = pgTable(
      *  every live connection: 'offline' with no live connection, else the
      *  chosen status, except that chosen 'online' reads 'idle' while no
      *  connected device is in use — and during a pre-update client's
-     *  automatic away (chosenStatusAuto) 'online' if an updated device is in
-     *  use, else 'idle'. */
+     *  automatic away (chosenStatusAuto) 'online' if a device other than the
+     *  old ones that could have set it (old iOS, the old desktop app —
+     *  apps/api/src/lib/legacyClients.ts) is in use, else 'idle'. */
     status: userStatusEnum('status').notNull().default('offline'),
     /** What the user PICKED (PATCH /users/@me {status}); never 'offline'
      *  (CHECK users_chosen_status_not_offline). Survives disconnects, so a
@@ -74,14 +75,14 @@ export const users = pgTable(
     /** True when chosenStatus is an 'idle' set by a status PATCH without the
      *  `statusSource: 'manual'` marker (bar the exceptions in
      *  apps/api/src/routes/users.ts) — a pre-update client's automatic away,
-     *  which marks pre-update devices as not in use: while it stands the
-     *  status follows the updated devices, and updated clients are shown the
-     *  pick as 'online'. The presence recompute
-     *  (apps/api/src/gateway/presence.ts) resets it to 'online' when the
-     *  user's last device leaves, as the old server's disconnect/reconnect
-     *  did, when no pre-update device is about while an updated one is in
-     *  use, or when an old app starts a new session; a manual
-     *  pick persists. Only ever true with chosenStatus 'idle'
+     *  which marks the devices of old clients that could have set it (old
+     *  iOS, the old desktop app) as not in use: while it stands the status
+     *  follows the other devices, and updated clients are shown the pick as
+     *  'online'. The presence recompute (apps/api/src/gateway/presence.ts)
+     *  resets it to 'online' when the user's last device leaves, as the old
+     *  server's disconnect/reconnect did (not when a server restarts), when
+     *  no such old client is about while another device is in use, or when
+     *  such an old app starts a new session; a manual pick persists. Only ever true with chosenStatus 'idle'
      *  (CHECK users_chosen_status_auto_idle_only). Migration 0131. */
     chosenStatusAuto: boolean('chosen_status_auto').notNull().default(false),
     customStatus: text('custom_status'),

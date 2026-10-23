@@ -62,8 +62,9 @@
  * publishes its per-user summary into a Redis hash —
  * `zekktris:presence:u:<userId>`, field = this replica's cluster instance id,
  * value = {l: live, a: active, t: timestamp, + h/ha for a held device, r/hr
- * for updated devices in use, g for pre-update connections, counting one
- * still in its resume window} — on every
+ * for devices in use that still count during an automatic away, g for old
+ * clients that may have set one, counting one still in its resume window} —
+ * on every
  * recompute and from a heartbeat, and recompute sums the fields that aren't
  * stale. A dead
  * replica's fields go stale; the leader's sweep recomputes users carrying a
@@ -74,7 +75,7 @@
  */
 
 import Redis from 'ioredis';
-import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { env } from '../env';
 import { log } from '../log';
@@ -85,6 +86,7 @@ import { touchLastSeen } from '../services/presence';
 import { listAcceptedFriendIds } from '../services/relationships';
 import * as dispatch from './dispatch';
 import { registry } from './registry';
+import { RESUME_WINDOW_MS } from './resume';
 
 export type ChosenStatus = 'online' | 'idle' | 'dnd' | 'invisible';
 export type EffectiveStatus = ChosenStatus | 'offline';
@@ -134,6 +136,11 @@ export interface RecomputeOptions {
    *  to heal peers' drifted views, and a status PATCH to confirm it. */
   broadcast?: 'change' | 'always';
   audience?: PresenceAudience;
+  /** The recompute follows a server going away (the boot sweep, the
+   *  leader's sweep of a dead replica), not the user's devices leaving: an
+   *  old app connected through it will reconnect, still auto-idle, so
+   *  reading nobody connected doesn't end its automatic away. */
+  afterServerLoss?: boolean;
   /** A pre-update client that may have set an automatic away just started a
    *  new session: IDENTIFY, not after a RESUME refused on the same socket (an
    *  old app launched or signed in — its automatic reconnects RESUME). Ends
@@ -234,6 +241,8 @@ export interface PresenceEngineOptions {
   redis: Redis | null;
   instanceId: string;
   staleMs?: number;
+  /** Default RESUME_WINDOW_MS — see PresenceEngine.bootGraceMs. */
+  bootGraceMs?: number;
 }
 
 export class PresenceEngine {
@@ -258,6 +267,14 @@ export class PresenceEngine {
   /** Users for whom a pre-update client started a new session while Redis
    *  was failing: the automatic away it ends waits for a full view. */
   private readonly pendingLegacyIdentify = new Set<bigint>();
+  private readonly startedAt = Date.now();
+  /**
+   * For this long after this process starts, "no pre-update device about"
+   * doesn't end an automatic away: after a restart the old apps are still
+   * reconnecting (still auto-idle), and an updated device may get back
+   * first. Mutable as a test seam (attachGateway's presenceBootGraceMs).
+   */
+  bootGraceMs: number;
   /** Users this replica has a field for in Redis (so it can delete them). */
   private readonly published = new Set<bigint>();
   /** Users whose last recompute here fell back to this replica's own view
@@ -271,6 +288,7 @@ export class PresenceEngine {
     this.redis = opts.redis;
     this.instanceId = opts.instanceId;
     this.staleMs = opts.staleMs ?? PRESENCE_STALE_MS;
+    this.bootGraceMs = opts.bootGraceMs ?? RESUME_WINDOW_MS;
   }
 
   /** Whether summaries are aggregated across replicas through Redis. */
@@ -394,10 +412,12 @@ export class PresenceEngine {
         //     disconnect → reconnect did — an old app killed while auto-idle
         //     can't un-idle itself; this includes an automatic idle PATCHed
         //     while the row ALREADY reads offline (an old app whose socket
-        //     was down);
+        //     was down). Not when a server went away (afterServerLoss): the
+        //     old app is only reconnecting;
         //   - no such pre-update device is about (not even reconnecting) while
         //     another device is in use, so the old app reads Online when it's
-        //     opened again;
+        //     opened again — not in this process's first bootGraceMs, while
+        //     the old apps may still be reconnecting after a restart;
         //   - such a pre-update app starts a new session (IDENTIFY, not after
         //     a refused RESUME on the same socket): launched again, it doesn't
         //     know it was auto-idle (that lived in its memory) and, used,
@@ -419,7 +439,9 @@ export class PresenceEngine {
         const autoIdleOver =
           autoIdle &&
           !summary.partial &&
-          (summary.live === 0 || (legacy === 0 && reported > 0) || newLegacySession);
+          ((summary.live === 0 && !opts.afterServerLoss) ||
+            (legacy === 0 && reported > 0 && Date.now() - this.startedAt >= this.bootGraceMs) ||
+            newLegacySession);
         const chosen: ChosenStatus = autoIdleOver ? 'online' : row.chosenStatus;
         const next =
           autoIdle && !autoIdleOver
@@ -766,7 +788,7 @@ export class PresenceEngine {
       if (staleCount > 0) await stale.exec();
       await runBounded(
         toRecompute.map((id) => async () => {
-          await this.recompute(id);
+          await this.recompute(id, { afterServerLoss: true });
         }),
         SWEEP_CONCURRENCY,
       );
@@ -846,15 +868,12 @@ export async function resetPresenceOnBoot(
       return;
     }
   }
-  // Like a recompute to 'offline', this ends a legacy client's automatic
-  // away (users.chosenStatusAuto — only ever set alongside chosen 'idle').
+  // A pre-update client's automatic away (users.chosenStatusAuto) stands: the
+  // old app is only reconnecting to the restarted server, still auto-idle
+  // (see afterServerLoss).
   const reset = await db
     .update(schema.users)
-    .set({
-      status: 'offline',
-      chosenStatus: sql`CASE WHEN ${schema.users.chosenStatusAuto} THEN 'online'::user_status ELSE ${schema.users.chosenStatus} END`,
-      chosenStatusAuto: false,
-    })
+    .set({ status: 'offline' })
     .where(
       and(
         inArray(schema.users.status, ['online', 'idle', 'dnd']),

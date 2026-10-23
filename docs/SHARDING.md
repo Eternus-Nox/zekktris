@@ -92,7 +92,8 @@ A replica only sees its own sockets, so:
   offline according to what is still connected.
 - At boot, a replica runs that sweep once instead of the single-node blanket
   "everyone offline" reset, so users connected to other replicas are left
-  alone. This also applies to a single replica with `REDIS_URL` set (the
+  alone. Neither these sweeps nor that reset end a pre-update client's
+  automatic away: its old app is only reconnecting, still auto-idle. This also applies to a single replica with `REDIS_URL` set (the
   docker-compose default): after a crash, the dead process's fields keep its
   users present until they are stale and swept (about a minute) unless they
   reconnect first. If Redis is unreachable at boot, the replica resets

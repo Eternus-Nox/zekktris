@@ -89,6 +89,8 @@ export interface GatewayOptions {
   resetPresenceOnBoot?: boolean;
   /** Default RESUME_WINDOW_MS (gateway/resume.ts). */
   resumeWindowMs?: number;
+  /** Default RESUME_WINDOW_MS — see PresenceEngine.bootGraceMs. */
+  presenceBootGraceMs?: number;
 }
 
 let wss: WebSocketServer | null = null;
@@ -177,6 +179,7 @@ export function attachGateway(httpServer: HttpServer, opts: GatewayOptions = {})
     void presenceEngine.recompute(userId);
   };
   if (opts.resumeWindowMs !== undefined) registry.resumeWindowMs = opts.resumeWindowMs;
+  if (opts.presenceBootGraceMs !== undefined) presenceEngine.bootGraceMs = opts.presenceBootGraceMs;
 
   // Pending voice-eviction timers keyed by userId (see grace period in
   // onUserFullyDisconnected below).
@@ -457,6 +460,7 @@ export function detachGateway(): void {
   registry.onUserConnectionClosed = null;
   registry.onLegacyGhostEvicted = null;
   registry.resumeWindowMs = RESUME_WINDOW_MS;
+  presence().bootGraceMs = RESUME_WINDOW_MS;
   registry.shutdown();
   wss.close();
   wss = null;

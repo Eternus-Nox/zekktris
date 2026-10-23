@@ -342,8 +342,9 @@ export interface ReadyFeatures {
    *  (IDENTIFY/RESUME `presence`, op 3 PRESENCE_UPDATE) and must NOT PATCH
    *  /users/@me {status} automatically; a status the user picks is PATCHed
    *  with `statusSource: 'manual'` (an unmarked 'idle' is treated as a
-   *  pre-update client's automatic away: the pre-update devices count as not
-   *  in use, and the status follows the updated ones). The self user carries
+   *  pre-update client's automatic away: the devices of old clients that
+   *  could have set it — old iOS, the old desktop app — count as not in use,
+   *  and the status follows the other devices). The self user carries
    *  `chosenStatus` (the pick; `status` is the same value for older clients,
    *  except that during such an automatic away it reads 'idle' while
    *  `chosenStatus` reads 'online') and `effectiveStatus` (what others see,

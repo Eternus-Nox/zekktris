@@ -60,8 +60,9 @@ server*). The remaining gaps are listed under *Not built yet*.
   reads Online while any device is in use and Away once none is. Your own dot
   shows that effective status (from the `PRESENCE_UPDATE`s about you; before
   the first one, the self user's `effectiveStatus`); the Settings picker shows
-  the status you picked (`chosenStatus`, or `status`, which carries the pick
-  too). A pick is sent with `statusSource: "manual"` so the server keeps a
+  the status you picked (`chosenStatus`; `status` carries the stored pick for
+  older builds, which reads `idle` during an older app's automatic away while
+  `chosenStatus` reads `online`). A pick is sent with `statusSource: "manual"` so the server keeps a
   picked Away after your last device disconnects. Logic in
   `DevicePresence.swift`. A server without multi-device presence (its READY
   has no `features.presence_activity`) gets the old behaviour: the app

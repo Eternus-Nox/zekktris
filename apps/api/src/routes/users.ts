@@ -176,9 +176,10 @@ const patchMeSchema = z
         away — unless sent by a client that never set Away by itself (old
         Android, a browser tab) or over a pick other than Online — and is
         flagged
-        (users.chosen_status_auto). That marks the old devices as not in use,
-        so the status follows the updated ones, instead of pinning the user
-        Away; gateway/presence.ts says when it ends. A 'manual' 'online'
+        (users.chosen_status_auto). That marks the devices of old clients that
+        could have set it (old iOS, the old desktop app) as not in use, so the
+        status follows the other devices, instead of pinning the user Away;
+        gateway/presence.ts says when it ends. A 'manual' 'online'
         leaves a standing automatic away alone (updated pickers already show
         it as Online); any other status clears the flag. Ignored without
         `status`. Servers before this field strip it. */

@@ -131,6 +131,8 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
       voiceEvictGraceMs: VOICE_GRACE_MS,
       resetPresenceOnBoot: false,
       resumeWindowMs: RESUME_WINDOW_MS,
+      // The engine was created moments ago; tests aren't a restart.
+      presenceBootGraceMs: 0,
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/gateway`;
@@ -830,7 +832,7 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     });
   });
 
-  it('the single-replica boot reset ends an automatic idle too (the process died with it connected)', async () => {
+  it('the single-replica boot reset keeps an automatic idle (the old app is only reconnecting); the old app back, it stands', async () => {
     const auto = await createUser();
     const manual = await createUser();
     await db
@@ -846,14 +848,30 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     await resetPresenceOnBoot(presence(), { userIds: [auto, manual] });
     expect(await row(auto)).toMatchObject({
       status: 'offline',
-      chosenStatus: 'online',
-      chosenStatusAuto: false,
+      chosenStatus: 'idle',
+      chosenStatusAuto: true,
     });
     expect(await row(manual)).toMatchObject({
       status: 'offline',
       chosenStatus: 'idle',
       chosenStatusAuto: false,
     });
+    // The old app reconnects to the restarted server: its RESUME is refused
+    // and it IDENTIFYs on the same socket, still auto-idle — the away stands.
+    const token = await tokenFor(auto);
+    const ws = new WebSocket(url, { headers: { 'x-real-ip': freshIp() } });
+    ws.on('error', () => {});
+    const back = new Device(ws);
+    await waitFor(() => back.frames.some((f) => f.op === GatewayOp.HELLO), 'HELLO');
+    back.send(GatewayOp.RESUME, { token, session_id: 'from-before-the-restart', seq: 0 });
+    await waitFor(
+      () => back.frames.some((f) => f.op === GatewayOp.INVALID_SESSION),
+      'INVALID_SESSION',
+    );
+    back.send(GatewayOp.IDENTIFY, { token });
+    await expectStatus(auto, 'idle');
+    expect(await row(auto)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
+    await back.close();
   });
 
   it('a manually picked Away survives a full disconnect and reconnect', async () => {
