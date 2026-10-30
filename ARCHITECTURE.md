@@ -234,9 +234,10 @@ with its access token; the server replies `READY` with a session snapshot
   the other devices (on any replica), and updated clients are shown
   `chosenStatus` 'online' while the older app keeps reading `status` 'idle'.
   It resets to `online` when the user's last device disconnects, as the old
-  server's disconnect/reconnect did, when no such older client is about
-  while another device is in use, or when such an older app starts a new
-  session (launched again; not a fallback after a refused RESUME). An
+  server's disconnect/reconnect did (a server restart doesn't count: the old
+  apps are only reconnecting), when no such older client is about any more,
+  or when such an older app starts a new session (launched again; not a
+  fallback after a refused RESUME). An
   unmarked `idle` from a client that never set Away by itself (old Android,
   a browser tab) or over a pick other than `online` is a plain pick.
 - **Permission-filtered fanout.** Each connection caches its viewable-channel

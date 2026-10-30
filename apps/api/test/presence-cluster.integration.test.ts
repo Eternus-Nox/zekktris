@@ -397,8 +397,10 @@ describe.runIf(redisReady)('presence across replicas (integration, Redis)', () =
     const leaving = replica('replica-leaving');
     const other = replica('replica-staying');
     const u = await newUser();
-    connect(leaving.registry, u, true);
-    connect(other.registry, u, false);
+    // Updated clients (an old app's device would stay counted as
+    // reconnecting — see the next test).
+    connect(leaving.registry, u, true).reportsActivity = true;
+    connect(other.registry, u, false).reportsActivity = true;
     await other.engine.recompute(u);
     expect(await leaving.engine.recompute(u)).toBe('online');
     await leaving.engine.withdraw();
@@ -568,7 +570,7 @@ describe.runIf(redisReady)('presence across replicas (integration, Redis)', () =
       redis,
       instanceId: 'replica-restarted',
       staleMs: NEVER_STALE_MS,
-      bootGraceMs: 600,
+      bootGraceMs: 60_000,
     });
     await engine.whenReady();
     const u = await newUser();
@@ -578,10 +580,88 @@ describe.runIf(redisReady)('presence across replicas (integration, Redis)', () =
     mac.reportsActivity = true;
     expect(await engine.recompute(u)).toBe('online');
     expect(await chosenOf(u)).toEqual({ chosenStatus: 'idle', auto: true });
-    // The grace over, with no old device back, it ends.
-    await sleep(700);
+    // The grace over (the seam stands in for the wait), with no old device
+    // back, it ends.
+    engine.bootGraceMs = 0;
     expect(await engine.recompute(u)).toBe('online');
     expect(await chosenOf(u)).toEqual({ chosenStatus: 'online', auto: false });
+  });
+
+  it("a gracefully stopping replica leaves its old devices counted as reconnecting, so another replica doesn't end their automatic away", async () => {
+    const a = replica('replica-a');
+    const b = replica('replica-b');
+    await b.engine.whenReady();
+    const u = await newUser();
+    await setAutoIdle(u);
+    // Replica A holds the old phone (auto-idle) and the Mac.
+    connect(a.registry, u, true);
+    const macOnA = connect(a.registry, u, false);
+    macOnA.reportsActivity = true;
+    await a.engine.recompute(u);
+    // A stops gracefully (its sockets close first, then it withdraws).
+    for (const c of liveConns.filter((x) => x.registry === a.registry)) a.registry.remove(c.conn);
+    await a.engine.withdraw();
+    expect(JSON.parse((await admin.hget(`zekktris:presence:u:${u}`, 'replica-a'))!)).toMatchObject({
+      l: 0,
+      g: 1,
+    });
+    // The Mac reconnects to B (up for long) in use before the old phone:
+    // the away stands — the old phone is only reconnecting.
+    const mac = connect(b.registry, u, true);
+    mac.reportsActivity = true;
+    expect(await b.engine.recompute(u)).toBe('online');
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'idle', auto: true });
+  });
+
+  it("the sweep doesn't take a stopped replica's entry for old devices reconnecting as a live replica", async () => {
+    const sweeper = replica('replica-sweeper');
+    await sweeper.engine.whenReady();
+    const u = await newUser();
+    await db
+      .update(schema.users)
+      .set({ status: 'online', chosenStatus: 'idle', chosenStatusAuto: true })
+      .where(eq(schema.users.id, u));
+    await admin.hset(
+      `zekktris:presence:u:${u}`,
+      'replica-stopped',
+      JSON.stringify({ l: 0, a: 0, g: 1, t: Date.now() }),
+    );
+    expect(await sweeper.engine.sweep({ userIds: [u] })).toBe(1);
+    expect(await statusOf(u)).toBe('offline');
+    // Offline, but the automatic away stands: the old app is reconnecting.
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'idle', auto: true });
+  });
+
+  it('an automatic away kept through a server going away is checked again once the reconnect window is over', async () => {
+    const registry = new Registry();
+    const redis = client();
+    clients.push(redis);
+    const engine = new PresenceEngine({
+      source: registry,
+      redis,
+      instanceId: 'replica-rechecks',
+      staleMs: NEVER_STALE_MS,
+      bootGraceMs: 0,
+      recheckAfterServerLossMs: 300,
+    });
+    await engine.whenReady();
+    const gone = await newUser(); // its old app was killed during the downtime
+    const back = await newUser(); // its old app reconnects in time
+    for (const u of [gone, back]) {
+      await db
+        .update(schema.users)
+        .set({ status: 'online', chosenStatus: 'idle', chosenStatusAuto: true })
+        .where(eq(schema.users.id, u));
+    }
+    await resetPresenceOnBoot(engine, { userIds: [gone, back] });
+    expect(await chosenOf(gone)).toEqual({ chosenStatus: 'idle', auto: true });
+    connect(registry, back, true);
+    await engine.recompute(back);
+    await sleep(600);
+    // Nothing came back: it ends, so the old app reads Online when launched.
+    expect(await chosenOf(gone)).toEqual({ chosenStatus: 'online', auto: false });
+    // The old app is back, still auto-idle: it stands.
+    expect(await chosenOf(back)).toEqual({ chosenStatus: 'idle', auto: true });
   });
 
   it("Redis unreachable: falls back to this replica's own view (never hangs, never throws)", async () => {

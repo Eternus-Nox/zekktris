@@ -243,6 +243,8 @@ export interface PresenceEngineOptions {
   staleMs?: number;
   /** Default RESUME_WINDOW_MS — see PresenceEngine.bootGraceMs. */
   bootGraceMs?: number;
+  /** Default RESUME_WINDOW_MS — see PresenceEngine.recheckAfterServerLossMs. */
+  recheckAfterServerLossMs?: number;
 }
 
 export class PresenceEngine {
@@ -275,6 +277,16 @@ export class PresenceEngine {
    * first. Mutable as a test seam (attachGateway's presenceBootGraceMs).
    */
   bootGraceMs: number;
+  /**
+   * How long after a server went away (boot reset, sweep) an automatic away
+   * kept through it is checked again, without the afterServerLoss pass: by
+   * then an old app still running has reconnected, and one that hasn't was
+   * killed meanwhile — the away then ends as usual (its next launch reads
+   * Online, not an Away it thinks the user picked). Mutable as a test seam.
+   */
+  recheckAfterServerLossMs: number;
+  /** Pending re-checks (see recheckAfterServerLossMs), one per user. */
+  private readonly autoIdleRechecks = new Map<bigint, ReturnType<typeof setTimeout>>();
   /** Users this replica has a field for in Redis (so it can delete them). */
   private readonly published = new Set<bigint>();
   /** Users whose last recompute here fell back to this replica's own view
@@ -289,6 +301,7 @@ export class PresenceEngine {
     this.instanceId = opts.instanceId;
     this.staleMs = opts.staleMs ?? PRESENCE_STALE_MS;
     this.bootGraceMs = opts.bootGraceMs ?? RESUME_WINDOW_MS;
+    this.recheckAfterServerLossMs = opts.recheckAfterServerLossMs ?? RESUME_WINDOW_MS;
   }
 
   /** Whether summaries are aggregated across replicas through Redis. */
@@ -414,10 +427,10 @@ export class PresenceEngine {
         //     while the row ALREADY reads offline (an old app whose socket
         //     was down). Not when a server went away (afterServerLoss): the
         //     old app is only reconnecting;
-        //   - no such pre-update device is about (not even reconnecting) while
-        //     another device is in use, so the old app reads Online when it's
-        //     opened again — not in this process's first bootGraceMs, while
-        //     the old apps may still be reconnecting after a restart;
+        //   - no such pre-update device is about (not even reconnecting), so
+        //     the old app reads Online when it's opened again — not after a
+        //     server went away, nor in this process's first bootGraceMs:
+        //     the old apps may still be reconnecting;
         //   - such a pre-update app starts a new session (IDENTIFY, not after
         //     a refused RESUME on the same socket): launched again, it doesn't
         //     know it was auto-idle (that lived in its memory) and, used,
@@ -440,8 +453,11 @@ export class PresenceEngine {
           autoIdle &&
           !summary.partial &&
           ((summary.live === 0 && !opts.afterServerLoss) ||
-            (legacy === 0 && reported > 0 && Date.now() - this.startedAt >= this.bootGraceMs) ||
+            (legacy === 0 && !opts.afterServerLoss && Date.now() - this.startedAt >= this.bootGraceMs) ||
             newLegacySession);
+        if (autoIdle && !autoIdleOver && opts.afterServerLoss && summary.live === 0) {
+          this.recheckAutoIdleLater(userId);
+        }
         const chosen: ChosenStatus = autoIdleOver ? 'online' : row.chosenStatus;
         const next =
           autoIdle && !autoIdleOver
@@ -552,6 +568,18 @@ export class PresenceEngine {
       // the others.
       self: { userId, chosenStatus: chosen },
     });
+  }
+
+  /** Check a kept automatic away again once the reconnect window is over
+   *  (see recheckAfterServerLossMs). */
+  recheckAutoIdleLater(userId: bigint): void {
+    if (this.autoIdleRechecks.has(userId)) return;
+    const t = setTimeout(() => {
+      this.autoIdleRechecks.delete(userId);
+      void this.recompute(userId);
+    }, this.recheckAfterServerLossMs);
+    (t as { unref?: () => void }).unref?.();
+    this.autoIdleRechecks.set(userId, t);
   }
 
   // ── Cluster aggregation ──────────────────────────────────────────────────
@@ -722,8 +750,27 @@ export class PresenceEngine {
     ]);
     if (users.size === 0) return;
     try {
+      // An entry that counted pre-update devices that could have set an
+      // automatic away (g) becomes an entry for those alone ({l: 0, g}):
+      // they're only reconnecting, maybe to another replica, and must not
+      // read as gone to it meanwhile (see recomputeNow). It ages out like
+      // any entry. The sockets are already closed here, so the entries as
+      // last published are what's left to go on.
+      const ids = [...users];
+      const read = r.pipeline();
+      for (const userId of ids) read.hget(keyFor(userId), this.instanceId);
+      const res = (await read.exec()) ?? [];
+      const now = Date.now();
       const p = r.pipeline();
-      for (const userId of users) p.hdel(keyFor(userId), this.instanceId);
+      ids.forEach((userId, i) => {
+        const raw = res[i]?.[1];
+        const e = typeof raw === 'string' ? parseEntry(raw) : null;
+        if (e && e.g > 0) {
+          p.hset(keyFor(userId), this.instanceId, serializeEntry({ ...EMPTY_TALLY, g: e.g }, now));
+        } else {
+          p.hdel(keyFor(userId), this.instanceId);
+        }
+      });
       await p.exec();
       this.published.clear();
     } catch (err) {
@@ -776,7 +823,9 @@ export class PresenceEngine {
         for (const [field, raw] of Object.entries(value as Record<string, string>)) {
           const e = parseEntry(raw);
           if (e && now - e.t <= this.staleMs) {
-            fresh++;
+            // A gracefully stopped replica's entry for old devices still
+            // reconnecting (see withdraw) holds no live connection.
+            if (e.l > 0) fresh++;
             continue;
           }
           hasStale = true;
@@ -840,8 +889,10 @@ export async function shutdownPresence(): Promise<void> {
  *
  * Single replica: there are no connections at boot by definition, so every
  * online / idle / dnd row is stale — reset them all to 'offline' ('invisible'
- * is preserved: it already reads as offline and is the user's choice), and
- * end a legacy client's automatic away the way recompute does.
+ * is preserved: it already reads as offline and is the user's choice). A
+ * pre-update client's automatic away (users.chosenStatusAuto) is kept: its
+ * old app is only reconnecting, still auto-idle (see afterServerLoss); it's
+ * checked again once the reconnect window is over.
  *
  * Cluster: users connected to OTHER replicas are live; a blanket reset would
  * offline them. Run the sweep instead (it only touches users without a fresh
@@ -880,7 +931,8 @@ export async function resetPresenceOnBoot(
         scope ? inArray(schema.users.id, scope.userIds) : undefined,
       ),
     )
-    .returning({ id: schema.users.id });
+    .returning({ id: schema.users.id, auto: schema.users.chosenStatusAuto });
+  for (const r of reset) if (r.auto) eng.recheckAutoIdleLater(r.id);
   if (reset.length > 0) {
     log.info('gateway: reset stale presence on boot', { count: reset.length });
   }

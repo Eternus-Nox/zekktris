@@ -63,8 +63,11 @@ A replica only sees its own sockets, so:
   out pre-update clients that could have set an automatic away; and `g`,
   connections of those, counting one still in its resume window — such an
   away makes only the other devices count, and ends once none of those old
-  clients is about while another device is in use, or when one of them
-  starts a new session). If Redis
+  clients is about, or when one of them starts a new session). A replica
+  that stops gracefully leaves an entry counting only those old clients
+  (`{l: 0, g}`), which ages out like any other: they are reconnecting,
+  maybe to another replica, and the sweep doesn't take it for a live one.
+  If Redis
   fails, a replica never ends such an away from its own view alone. It
   writes it on every recompute
   (connect, `PRESENCE_UPDATE` op, a socket closing, a status change) and

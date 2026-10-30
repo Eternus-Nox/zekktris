@@ -430,7 +430,7 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     await expectStatus(u, 'offline');
   });
 
-  it('a legacy automatic away ends once no pre-update device is left and an updated one is in use; a picked Away stays', async () => {
+  it('a legacy automatic away ends once its old device is gone for good, not while it may be reconnecting; a picked Away stays', async () => {
     const u = await createUser();
     const token = await tokenFor(u);
     // The owner's setup during an upgrade: an old iPhone build plus an
@@ -440,9 +440,10 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     await patchStatus(token, 'idle'); // the old build's automatic away
     expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
     await expectStatus(u, 'idle');
-    // The old app is killed before it can PATCH 'online' back; the Mac stays,
-    // idle: nothing in use, so the away stands (wait out the close grace —
-    // the close's recompute runs after it).
+    // The old app's socket closes before it can PATCH 'online' back; the Mac
+    // stays, idle. Until its resume window is over it may only be
+    // reconnecting, so the away stands (wait out the close grace — the
+    // close's recompute runs after it)…
     await oldPhone.close();
     await sleep(CLOSE_GRACE_MS + 300);
     expect(await row(u)).toMatchObject({
@@ -450,12 +451,12 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
       chosenStatus: 'idle',
       chosenStatusAuto: true,
     });
-    // The owner comes back to the Mac: the status follows it at once, and
-    // with no old device left — its resume window over, so it isn't just
-    // reconnecting — the away ends, so the old app reads Online when opened
-    // again: no need to repick Online or for every device to leave.
+    // …and the owner coming back to the Mac reads online at once.
     mac.setActive(true);
     await expectStatus(u, 'online');
+    // Once it's gone for good, the away ends, so the old app reads Online
+    // when opened again: no need to repick Online or for every device to
+    // leave.
     await waitFor(async () => !(await row(u)).chosenStatusAuto, 'away ended', 5_000);
     expect(await row(u)).toMatchObject({
       status: 'online',
@@ -463,8 +464,7 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
       chosenStatusAuto: false,
     });
 
-    // A device connecting in use ends one too. (The Mac is swapped for an
-    // idle one first, so nothing updated is in use when the away lands.)
+    // Again with nothing in use: the Mac is swapped for an idle one.
     const idleMac = await connect(u, { active: false });
     await mac.close();
     await expectStatus(u, 'idle');
@@ -472,16 +472,16 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     await patchStatus(token, 'idle');
     expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
     await oldPhone2.close();
-    // Wait out its resume window: it's gone for good, not reconnecting.
+    // Gone for good with nothing in use, it ends too: the status reads idle
+    // either way.
     await sleep(RESUME_WINDOW_MS + 500);
     expect(await row(u)).toMatchObject({
       status: 'idle',
-      chosenStatus: 'idle',
-      chosenStatusAuto: true,
+      chosenStatus: 'online',
+      chosenStatusAuto: false,
     });
     const laptop = await connect(u, { active: true });
     await expectStatus(u, 'online');
-    expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
 
     // A PICKED Away is never ended by device activity.
     await patchStatus(token, 'idle', 'manual');
@@ -709,13 +709,13 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     await expectStatus(u, 'online');
     expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
 
-    // Killed while nothing updated is in use: the away stands until the next
-    // launch, however long after.
+    // Killed while nothing updated is in use: once its resume window is over
+    // the away ends, so the next launch, however long after, reads Online.
     await patchStatus(token, 'idle');
     await expectStatus(u, 'idle');
     await relaunched.close();
     await sleep(RESUME_WINDOW_MS + 500);
-    expect(await row(u)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
+    expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
     const again = await connect(u);
     await expectStatus(u, 'online');
     expect(await row(u)).toMatchObject({ chosenStatus: 'online', chosenStatusAuto: false });
@@ -845,7 +845,10 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
       .where(eq(schema.users.id, manual));
     const { presence, resetPresenceOnBoot } = await import('../src/gateway/presence');
     expect(presence().clustered).toBe(false);
+    const recheckMs = presence().recheckAfterServerLossMs;
+    presence().recheckAfterServerLossMs = 1_000;
     await resetPresenceOnBoot(presence(), { userIds: [auto, manual] });
+    presence().recheckAfterServerLossMs = recheckMs;
     expect(await row(auto)).toMatchObject({
       status: 'offline',
       chosenStatus: 'idle',
@@ -870,6 +873,10 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     );
     back.send(GatewayOp.IDENTIFY, { token });
     await expectStatus(auto, 'idle');
+    expect(await row(auto)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
+    // Checked again once the reconnect window is over: the old app is back,
+    // so it still stands.
+    await sleep(1_300);
     expect(await row(auto)).toMatchObject({ chosenStatus: 'idle', chosenStatusAuto: true });
     await back.close();
   });
