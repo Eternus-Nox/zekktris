@@ -63,7 +63,8 @@ A replica only sees its own sockets, so:
   out pre-update clients that could have set an automatic away; and `g`,
   connections of those, counting one still in its resume window — such an
   away makes only the other devices count, and ends once none of those old
-  clients is about, or when one of them starts a new session). A replica
+  clients is about while another device is in use, or when one of them
+  starts a new session). A replica
   that stops gracefully leaves an entry counting only those old clients
   (`{l: 0, g}`), which ages out like any other: they are reconnecting,
   maybe to another replica, and the sweep doesn't take it for a live one.
@@ -87,8 +88,9 @@ A replica only sees its own sockets, so:
   recompute takes a fresh snapshot and rewrites if it disagrees. The last
   writer has always checked inputs at least as new as anyone else's, so
   concurrent recomputes converge.
-- A replica that shuts down gracefully deletes its fields. One that dies
-  leaves fields that go stale. The sweep leader
+- A replica that shuts down gracefully deletes its fields (bar the `{l: 0,
+  g}` entry for old clients still reconnecting, above). One that dies leaves
+  fields that go stale. The sweep leader
   (`leaderInterval`, every 30 s) recomputes users shown online / idle / dnd
   whose entries are missing or partly stale, deleting the stale fields — so
   "phone on the dead replica" stops counting and the user reads idle or
@@ -96,7 +98,9 @@ A replica only sees its own sockets, so:
 - At boot, a replica runs that sweep once instead of the single-node blanket
   "everyone offline" reset, so users connected to other replicas are left
   alone. Neither these sweeps nor that reset end a pre-update client's
-  automatic away: its old app is only reconnecting, still auto-idle. This also applies to a single replica with `REDIS_URL` set (the
+  automatic away: its old app is only reconnecting, still auto-idle. Each
+  such away is checked again a minute later (re-armed by every boot); an old
+  app that hasn't come back by then ends it. This also applies to a single replica with `REDIS_URL` set (the
   docker-compose default): after a crash, the dead process's fields keep its
   users present until they are stale and swept (about a minute) unless they
   reconnect first. If Redis is unreachable at boot, the replica resets

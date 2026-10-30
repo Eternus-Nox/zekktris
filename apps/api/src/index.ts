@@ -709,7 +709,8 @@ async function main(): Promise<void> {
     detachGateway();
 
     // Withdraw this replica's presence entries from Redis, so its users stop
-    // counting now rather than after the staleness window (multi-replica).
+    // counting now rather than after the staleness window (multi-replica) —
+    // bar pre-update clients that are only reconnecting (presence.ts).
     try {
       const { shutdownPresence } = await import('./gateway/presence');
       await shutdownPresence();

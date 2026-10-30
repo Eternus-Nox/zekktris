@@ -664,6 +664,55 @@ describe.runIf(redisReady)('presence across replicas (integration, Redis)', () =
     expect(await chosenOf(back)).toEqual({ chosenStatus: 'idle', auto: true });
   });
 
+  it("a dead replica's old device swept while another device is live: checked again, it ends once the window is over", async () => {
+    const registry = new Registry();
+    const redis = client();
+    clients.push(redis);
+    const engine = new PresenceEngine({
+      source: registry,
+      redis,
+      instanceId: 'replica-sweeper',
+      staleMs: NEVER_STALE_MS,
+      bootGraceMs: 0,
+      recheckAfterServerLossMs: 300,
+    });
+    await engine.whenReady();
+    const u = await newUser();
+    await setAutoIdle(u);
+    // The Mac (updated, idle) is live here; the old phone was on a replica
+    // that died — its entry is stale — and was killed meanwhile.
+    const mac = connect(registry, u, false);
+    mac.reportsActivity = true;
+    await engine.recompute(u);
+    await admin.hset(
+      `zekktris:presence:u:${u}`,
+      'replica-dead',
+      JSON.stringify({ l: 1, a: 1, g: 1, t: Date.now() - 2 * NEVER_STALE_MS }),
+    );
+    await db.update(schema.users).set({ status: 'online' }).where(eq(schema.users.id, u));
+    expect(await engine.sweep({ userIds: [u] })).toBe(1);
+    // The sweep keeps it (the old phone may be reconnecting)…
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'idle', auto: true });
+    // …and the re-check, with no old device back, ends it.
+    await sleep(600);
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'online', auto: false });
+  });
+
+  it('a later server loss pushes the re-check out a full window', async () => {
+    const r1 = replica('replica-1');
+    await r1.engine.whenReady();
+    r1.engine.recheckAfterServerLossMs = 400;
+    const u = await newUser();
+    await setAutoIdle(u); // nothing connected: a re-check would end it
+    r1.engine.recheckAutoIdleLater(u);
+    await sleep(250);
+    r1.engine.recheckAutoIdleLater(u); // another server loss
+    await sleep(300); // past the first deadline
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'idle', auto: true });
+    await sleep(400);
+    expect(await chosenOf(u)).toEqual({ chosenStatus: 'online', auto: false });
+  });
+
   it("Redis unreachable: falls back to this replica's own view (never hangs, never throws)", async () => {
     const down = replica('replica-down', { url: 'redis://127.0.0.1:1/0' });
     const u = await newUser();

@@ -68,7 +68,9 @@
  * recompute and from a heartbeat, and recompute sums the fields that aren't
  * stale. A dead
  * replica's fields go stale; the leader's sweep recomputes users carrying a
- * stale field (or none at all) so they don't stay stuck online. Every Redis
+ * stale field (or no field with a live connection) so they don't stay stuck
+ * online. A replica that stops gracefully deletes its fields, bar a {l: 0, g}
+ * field for pre-update clients still reconnecting (withdraw). Every Redis
  * failure degrades to this replica's own view — exactly the pre-cluster
  * behaviour — rather than failing the gateway path. Without REDIS_URL all of
  * this is skipped and the registry is the whole truth.
@@ -139,8 +141,13 @@ export interface RecomputeOptions {
   /** The recompute follows a server going away (the boot sweep, the
    *  leader's sweep of a dead replica), not the user's devices leaving: an
    *  old app connected through it will reconnect, still auto-idle, so
-   *  reading nobody connected doesn't end its automatic away. */
+   *  neither nobody connected nor no old client about ends its automatic
+   *  away — a re-check does, later (recheckAfterServerLossMs). */
   afterServerLoss?: boolean;
+  /** The re-check after a server went away (recheckAutoIdleLater): no
+   *  pre-update client that could have set an automatic away is back, so it
+   *  ends even with nothing else in use. */
+  recheck?: boolean;
   /** A pre-update client that may have set an automatic away just started a
    *  new session: IDENTIFY, not after a RESUME refused on the same socket (an
    *  old app launched or signed in — its automatic reconnects RESUME). Ends
@@ -173,7 +180,8 @@ const keyFor = (userId: bigint): string => KEY_PREFIX + userId.toString();
  * counts pre-update clients that may have set one (PresenceSummary.legacy) on
  * this replica, live or still in their resume window (a detached ghost).
  * It rides on a live or held tally; a replica with only a ghost publishes
- * nothing. See the module comment.
+ * nothing, except the {l: 0, g} entry withdraw() leaves on a graceful stop.
+ * See the module comment.
  */
 interface Tally {
   l: number;
@@ -427,10 +435,15 @@ export class PresenceEngine {
         //     while the row ALREADY reads offline (an old app whose socket
         //     was down). Not when a server went away (afterServerLoss): the
         //     old app is only reconnecting;
-        //   - no such pre-update device is about (not even reconnecting), so
-        //     the old app reads Online when it's opened again — not after a
-        //     server went away, nor in this process's first bootGraceMs:
-        //     the old apps may still be reconnecting;
+        //   - no such pre-update device is about (not even reconnecting) while
+        //     another device is in use, so the old app reads Online when it's
+        //     opened again — not after a server went away, nor in this
+        //     process's first bootGraceMs: the old apps may still be
+        //     reconnecting. With nothing else in use it stands: an old app
+        //     whose network dropped for a while comes back still auto-idle.
+        //     Only the re-check after a server went away (opts.recheck),
+        //     once the old apps have had their window to reconnect, ends it
+        //     then too;
         //   - such a pre-update app starts a new session (IDENTIFY, not after
         //     a refused RESUME on the same socket): launched again, it doesn't
         //     know it was auto-idle (that lived in its memory) and, used,
@@ -453,9 +466,18 @@ export class PresenceEngine {
           autoIdle &&
           !summary.partial &&
           ((summary.live === 0 && !opts.afterServerLoss) ||
-            (legacy === 0 && !opts.afterServerLoss && Date.now() - this.startedAt >= this.bootGraceMs) ||
+            (legacy === 0 &&
+              (reported > 0 || opts.recheck === true) &&
+              !opts.afterServerLoss &&
+              Date.now() - this.startedAt >= this.bootGraceMs) ||
             newLegacySession);
-        if (autoIdle && !autoIdleOver && opts.afterServerLoss && summary.live === 0) {
+        // Kept only because a server went away, or a re-check that couldn't
+        // see everything: look again once the window is over.
+        if (
+          autoIdle &&
+          !autoIdleOver &&
+          (opts.afterServerLoss || (opts.recheck && summary.partial))
+        ) {
           this.recheckAutoIdleLater(userId);
         }
         const chosen: ChosenStatus = autoIdleOver ? 'online' : row.chosenStatus;
@@ -571,12 +593,15 @@ export class PresenceEngine {
   }
 
   /** Check a kept automatic away again once the reconnect window is over
-   *  (see recheckAfterServerLossMs). */
+   *  (see recheckAfterServerLossMs). In memory only: a process that boots
+   *  re-arms one for every standing automatic away (resetPresenceOnBoot). */
   recheckAutoIdleLater(userId: bigint): void {
-    if (this.autoIdleRechecks.has(userId)) return;
+    // A later server loss pushes it out: a full window after the latest.
+    const pending = this.autoIdleRechecks.get(userId);
+    if (pending) clearTimeout(pending);
     const t = setTimeout(() => {
       this.autoIdleRechecks.delete(userId);
-      void this.recompute(userId);
+      void this.recompute(userId, { recheck: true });
     }, this.recheckAfterServerLossMs);
     (t as { unref?: () => void }).unref?.();
     this.autoIdleRechecks.set(userId, t);
@@ -737,8 +762,10 @@ export class PresenceEngine {
   /**
    * Graceful shutdown: delete this replica's entries, so the next boot (or
    * another replica's sweep) doesn't count this process's users for the
-   * staleness window after they're gone. Best-effort. A crash skips this;
-   * its entries then simply age out.
+   * staleness window after they're gone — bar an {l: 0, g} entry for
+   * pre-update clients that could have set an automatic away, which are only
+   * reconnecting (below). Best-effort. A crash skips this; its entries then
+   * simply age out.
    */
   async withdraw(): Promise<void> {
     const r = this.redis;
@@ -911,6 +938,7 @@ export async function resetPresenceOnBoot(
       await eng.whenReady();
       const n = await eng.sweep(scope);
       if (n > 0) log.info('gateway: reset stale presence on boot', { count: n, mode: 'cluster' });
+      await recheckStandingAutoAways(eng, scope);
       return;
     } catch (err) {
       log.warn('gateway: cluster presence reset skipped (Redis unreachable); the sweep will catch up', {
@@ -931,9 +959,32 @@ export async function resetPresenceOnBoot(
         scope ? inArray(schema.users.id, scope.userIds) : undefined,
       ),
     )
-    .returning({ id: schema.users.id, auto: schema.users.chosenStatusAuto });
-  for (const r of reset) if (r.auto) eng.recheckAutoIdleLater(r.id);
+    .returning({ id: schema.users.id });
   if (reset.length > 0) {
     log.info('gateway: reset stale presence on boot', { count: reset.length });
+  }
+  await recheckStandingAutoAways(eng, scope);
+}
+
+/** Arm the re-check (recheckAutoIdleLater) for every standing automatic
+ *  away: re-checks live in memory, so one a previous process armed — even
+ *  for a row that already reads offline — died with it. The flag only
+ *  exists while pre-update apps are around. */
+async function recheckStandingAutoAways(eng: PresenceEngine, scope?: PresenceScope): Promise<void> {
+  try {
+    const rows = await db
+      .select({ id: schema.users.id })
+      .from(schema.users)
+      .where(
+        and(
+          eq(schema.users.chosenStatusAuto, true),
+          scope ? inArray(schema.users.id, scope.userIds) : undefined,
+        ),
+      );
+    for (const r of rows) eng.recheckAutoIdleLater(r.id);
+  } catch (err) {
+    log.warn('presence: re-arming automatic-away re-checks failed', {
+      err: (err as Error).message,
+    });
   }
 }
