@@ -3459,6 +3459,13 @@ final class AppStore: ObservableObject {
         var map: [String: VoiceState] = [:]
         for vs in states where vs.channelId != nil { map[vs.userId] = vs }
         voiceStatesByUser = map
+        // The snapshot is authoritative: listing us in the active channel
+        // settles any own "left" we saw for it before the socket dropped (the
+        // live own state that would have cleared it may be what got lost).
+        if let active = voiceChannelId,
+           states.contains(where: { $0.userId == currentUserId && $0.channelId == active }) {
+            ownLeftChannelId = nil
+        }
 
         // Reconcile our OWN call: if we believe we're in a call but the
         // snapshot doesn't list us there, it ended while we were suspended —
