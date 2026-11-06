@@ -157,7 +157,7 @@ describe('quoteBareDispositionParams', () => {
       { name: 'file', value: file, filename: 'Résumé ✓.bin', type: 'application/octet-stream' },
     ]);
     const boundary = contentType.split('boundary=')[1]!;
-    const out = quoteBareDispositionParams(body, boundary)!;
+    const out = Buffer.concat(quoteBareDispositionParams(body, boundary)!);
     const text = out.toString('latin1');
     expect(text).toContain('Content-Disposition: form-data; name="payload_json"\r\n');
     expect(text).toContain(
@@ -182,7 +182,7 @@ describe('quoteBareDispositionParams', () => {
     const body = Buffer.from(
       `--${boundary}\r\nContent-Disposition: form-data; name=file \t; filename=voilà  \r\n\r\nhi\r\n--${boundary}--\r\n`,
     );
-    const out = quoteBareDispositionParams(body, boundary)!;
+    const out = Buffer.concat(quoteBareDispositionParams(body, boundary)!);
     expect(out.toString()).toContain(
       'Content-Disposition: form-data; name="file"; filename="voilà"\r\n',
     );
@@ -390,6 +390,46 @@ describe.runIf(dbReady)('multipart uploads through createApp()', () => {
 
     expect(res.status).toBe(400);
     expect(performance.now() - started).toBeLessThan(2000);
+  });
+
+  it('a boundary over 70 chars → a quick 400, the body never searched', async () => {
+    const a = await createUser();
+    const token = await tokenFor(a);
+    // Buffer.indexOf for a needle this long in a body of dashes took ~13 s per
+    // 5 MB, in the repair and in Node's own form parser alike.
+    const long = '-b' + '-'.repeat(7998);
+    // Under the 5 MB body limit, so it is the boundary that gets refused.
+    const dashes = Buffer.alloc(4 * 1024 * 1024, '-');
+    const cases = [
+      { contentType: `multipart/form-data; boundary=${long}`, body: dashes },
+      {
+        // boundaryOf() reads `short"` out of the quoted x="…", but the form
+        // parser takes the second, long boundary. The header length cap
+        // refuses this one.
+        contentType: `multipart/form-data; x="; boundary=short"; boundary=${long}`,
+        body: Buffer.concat([
+          Buffer.from(
+            `--${long}\r\nContent-Disposition: form-data; name="file"; filename="a.png"\r\n` +
+              'Content-Type: image/png\r\n\r\n',
+          ),
+          PNG,
+          dashes,
+        ]),
+      },
+    ];
+
+    for (const { contentType, body } of cases) {
+      const started = performance.now();
+      const res = await app.request('/api/v1/users/@me/avatar', {
+        method: 'POST',
+        headers: { authorization: token, 'content-type': contentType },
+        body,
+      });
+
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as any).error.message).toBe('Malformed multipart body');
+      expect(performance.now() - started).toBeLessThan(1000);
+    }
   });
 
   it('Android guild emoji upload (bare `name` and `file` part names) → 201', async () => {
