@@ -3154,7 +3154,7 @@ struct SettingsView: View {
             // transmits while the talk button is held in a call.
             Toggle(isOn: Binding(
                 get: { store.voice.pushToTalkEnabled },
-                set: { store.voice.setPushToTalk($0) }
+                set: { store.setPushToTalk($0) }
             )) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Push to talk")
