@@ -442,6 +442,41 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
 
     private fun HttpStatusCode.isSuccess() = value in 200..299
 
+    // ---- multipart ----------------------------------------------------------
+
+    /**
+     * A multipart field name, pre-quoted. Ktor's formData{} writes
+     * `Content-Disposition: form-data; name=<key>` and only quotes a key that
+     * contains a separator (`files[0]` yes, `payload_json` / `file` / `name`
+     * no), but the server's form parser (undici, under Hono's parseBody) only
+     * accepts `name="…"`: every upload with a bare name was rejected whole,
+     * 500 "Failed to parse body as FormData". Ktor sends an already-quoted
+     * key untouched, so quoting it here is what goes on the wire.
+     */
+    private fun formName(key: String): String = "\"$key\""
+
+    /**
+     * The `filename="…"` half of a file part's Content-Disposition. A `"` in
+     * the name (any picked document can have one) would close the quoted
+     * string early and the server rejects the whole body, and Ktor refuses a
+     * header with CR/LF outright — so those three go out percent-encoded, the
+     * WHATWG form encoding browsers use, which the server's parser decodes
+     * back to the original name.
+     */
+    private fun fileDisposition(filename: String): String {
+        val wire = filename.replace("\"", "%22").replace("\r", "%0D").replace("\n", "%0A")
+        return "filename=\"$wire\""
+    }
+
+    /** Lift a multipart upload out of the client-wide 30 s; see
+     *  [UPLOAD_REQUEST_TIMEOUT_MS]. Connect timeout stays the default. */
+    private fun HttpRequestBuilder.uploadTimeout() {
+        timeout {
+            requestTimeoutMillis = UPLOAD_REQUEST_TIMEOUT_MS
+            socketTimeoutMillis = UPLOAD_SOCKET_TIMEOUT_MS
+        }
+    }
+
     // ---- auth ---------------------------------------------------------------
 
     /** Ask for a reset email. The server answers the same way whether or not
@@ -537,14 +572,15 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
 
     private suspend fun uploadImage(path: String, filename: String, mime: String, bytes: ByteArray): SelfUser =
         authorized(HttpMethod.Post, path) {
+            uploadTimeout()
             setBody(
                 MultiPartFormDataContent(
                     formData {
                         append(
-                            "file", bytes,
+                            formName("file"), bytes,
                             Headers.build {
                                 append(HttpHeaders.ContentType, mime)
-                                append(HttpHeaders.ContentDisposition, "filename=\"$filename\"")
+                                append(HttpHeaders.ContentDisposition, fileDisposition(filename))
                             },
                         )
                     },
@@ -620,15 +656,16 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
     /** Upload a custom guild emoji (MANAGE_EMOJIS). Multipart: name field + file. */
     suspend fun uploadGuildEmoji(guildId: String, name: String, filename: String, mime: String, bytes: ByteArray): com.zekktris.data.model.GuildEmoji =
         authorized(HttpMethod.Post, "/guilds/$guildId/emojis") {
+            uploadTimeout()
             setBody(
                 MultiPartFormDataContent(
                     formData {
-                        append("name", name)
+                        append(formName("name"), name)
                         append(
-                            "file", bytes,
+                            formName("file"), bytes,
                             Headers.build {
                                 append(HttpHeaders.ContentType, mime)
-                                append(HttpHeaders.ContentDisposition, "filename=\"$filename\"")
+                                append(HttpHeaders.ContentDisposition, fileDisposition(filename))
                             },
                         )
                     },
@@ -936,19 +973,20 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
             }
         }
         val resp = authorized(HttpMethod.Post, "/channels/$channelId/messages") {
+            uploadTimeout()
             setBody(
                 MultiPartFormDataContent(
                     formData {
                         append(
-                            "payload_json", payload.toString(),
+                            formName("payload_json"), payload.toString(),
                             Headers.build { append(HttpHeaders.ContentType, "application/json") },
                         )
                         files.forEachIndexed { i, f ->
                             append(
-                                "files[$i]", f.bytes,
+                                formName("files[$i]"), f.bytes,
                                 Headers.build {
                                     append(HttpHeaders.ContentType, f.mime)
-                                    append(HttpHeaders.ContentDisposition, "filename=\"${f.filename}\"")
+                                    append(HttpHeaders.ContentDisposition, fileDisposition(f.filename))
                                 },
                             )
                             // Encrypted small thumbnail for files[i] (E2EE images
@@ -956,7 +994,7 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
                             // via thumbnailUrl. Same iOS wire name: thumb.zke.
                             f.thumbBytes?.let { tb ->
                                 append(
-                                    "thumbs[$i]", tb,
+                                    formName("thumbs[$i]"), tb,
                                     Headers.build {
                                         append(HttpHeaders.ContentType, "application/octet-stream")
                                         append(HttpHeaders.ContentDisposition, "filename=\"thumb.zke\"")
@@ -1490,14 +1528,15 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
 
     private suspend fun uploadGuildImage(guildId: String, kind: String, filename: String, mime: String, bytes: ByteArray): Guild =
         authorized(HttpMethod.Post, "/guilds/$guildId/$kind") {
+            uploadTimeout()
             setBody(
                 MultiPartFormDataContent(
                     formData {
                         append(
-                            "file", bytes,
+                            formName("file"), bytes,
                             Headers.build {
                                 append(HttpHeaders.ContentType, mime)
-                                append(HttpHeaders.ContentDisposition, "filename=\"$filename\"")
+                                append(HttpHeaders.ContentDisposition, fileDisposition(filename))
                             },
                         )
                     },
@@ -2227,6 +2266,16 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
 
         /** Per-attempt timeout for `/auth/refresh` (client-wide default: 30 s). */
         const val REFRESH_TIMEOUT_MS = 10_000L
+
+        /**
+         * Whole-request limit for a multipart upload (client-wide default:
+         * 30 s). Ktor's request timeout spans sending the body, so at 30 s a
+         * ~19 MB video on a 5 Mbps uplink was cut off mid-upload while the
+         * server accepts 100 MB per file. [UPLOAD_SOCKET_TIMEOUT_MS] still
+         * fails a connection on which nothing has moved for a minute.
+         */
+        const val UPLOAD_REQUEST_TIMEOUT_MS = 15 * 60_000L
+        const val UPLOAD_SOCKET_TIMEOUT_MS = 60_000L
 
         /** How long a queued caller inherits a just-finished TRANSIENT answer
          *  instead of walking its own ladder. */
