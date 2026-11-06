@@ -2498,6 +2498,15 @@ class AppStore(
         is java.net.ConnectException,
         is java.net.UnknownHostException ->
             "Couldn't reach the server. Check your connection and try again."
+        // Our own guard against plain http to an internet host. Its message is
+        // already a readable sentence.
+        is com.zekktris.data.CleartextPolicy.Refused -> e.message ?: "Upload failed."
+        // The connection broke after it opened: a network switch, a proxy reset,
+        // the server closing the socket mid-body, or a TLS failure. OkHttp's text
+        // here is developer text ("Broken pipe", "unexpected end of stream on
+        // https://<host>/...", "Write error: ssl=0x…"), and Ktor passes it through.
+        is java.io.IOException ->
+            "The connection to the server was lost. Check your connection and try again."
         else -> e.message ?: "Upload failed."
     }
 
