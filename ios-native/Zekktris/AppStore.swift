@@ -525,8 +525,23 @@ final class AppStore: ObservableObject {
             // the old value and the mic ended up wherever the race left it.
             // The server only hears about a real change.
             Task {
-                guard await self.voice.setMuted(muted), let id = self.voiceChannelId else { return }
-                await self.api.updateVoiceState(channelId: id, selfMute: self.voice.isMuted, selfDeaf: nil)
+                if await self.voice.setMuted(muted) {
+                    guard let id = self.voiceChannelId else { return }
+                    await self.api.updateVoiceState(channelId: id, selfMute: self.voice.isMuted, selfDeaf: nil)
+                } else if self.voice.isMuted != muted, VoiceManager.callAudioActive,
+                          let id = self.voiceChannelId {
+                    // Refused (an unmute while deafened) or LiveKit failed it.
+                    // CallManager has already recorded CallKit's new state, so
+                    // without this the lock screen / AirPods and the app would
+                    // disagree until the next real change: push the app's
+                    // actual state back to CallKit (its echo is filtered;
+                    // push-to-talk is left alone, as in reportMuteToCallKit).
+                    // Only with a live session (connecting, connected or
+                    // reconnecting): before the Room exists the refusal is not
+                    // a "no", and performConnect starts the call muted from
+                    // CallKit's state instead.
+                    self.reportMuteToCallKit(channelId: id)
+                }
             }
         }
         CallManager.shared.onAudioActivated = { [weak self] in
@@ -539,18 +554,22 @@ final class AppStore: ObservableObject {
         voice.onConnectionLost = { [weak self] takenOver in
             guard let self, self.voiceChannelId != nil else { return }
             callLog.info("LiveKit ended the call itself (takenOver=\(takenOver)); hanging up")
-            // LiveKit gave up (reconnects exhausted, removed by the server,
-            // signalling ping timed out). Hang up properly instead of leaving a
-            // silent "Joining…" call: this ends the CallKit call and tells the
-            // server, so the peer's 1:1 auto-end fires too. When another of our
-            // devices took the call over, only tear down locally: the server's
-            // voice state is that device's now, and a leave would drop it.
-            Task { await self.leaveCurrentVoice(notifyServer: !takenOver) }
+            // LiveKit gave up (reconnects exhausted, signalling ping timed
+            // out), or the server removed us and no gateway update followed
+            // (see VoiceManager.room(_:didDisconnectWithError:); a move or a
+            // kick is otherwise left to VOICE_STATE_UPDATE). Hang up properly
+            // instead of leaving a dead call on screen: this ends the CallKit
+            // call and tells the server, so the peer's 1:1 auto-end fires too.
+            // When another of our devices took the call over, only tear down
+            // locally: the server's voice state is that device's now, and a
+            // leave would drop it.
+            Task { await self.leaveCurrentVoice(notifyServer: !takenOver, hangupCue: false) }
         }
-        voice.onForcedMuteChanged = { [weak self] muted in
-            // A failed mic publish muted us, or a retry recovered it. Mirror it
-            // into the server's selfMute so the peer's mute icon tells the
-            // truth (the join always records us unmuted).
+        voice.onMuteChangedInternally = { [weak self] muted in
+            // A failed mic publish muted us, a retry recovered it, or the call
+            // started muted for a CallKit mute pressed while it was joining.
+            // Mirror it into the server's selfMute so the peer's mute icon
+            // tells the truth (the join always records us unmuted).
             guard let self, let id = self.voiceChannelId else { return }
             Task { await self.api.updateVoiceState(channelId: id, selfMute: muted, selfDeaf: nil) }
         }
@@ -2950,7 +2969,9 @@ final class AppStore: ObservableObject {
     /// `notifyServer` is false only when another of our devices took the call
     /// over (see VoiceManager.onConnectionLost): the server's leave is
     /// per-user, so it would remove that device's voice state instead of ours.
-    func leaveCurrentVoice(notifyServer: Bool = true) async {
+    /// `hangupCue` is false only when LiveKit itself lost the call (see the
+    /// cue below).
+    func leaveCurrentVoice(notifyServer: Bool = true, hangupCue: Bool = true) async {
         // Collapse the many overlapping teardown triggers (red button, CallKit
         // End, the 1:1 auto-end Task, READY reconciliation, self-evict) into a
         // single teardown. Without this, two leaveCurrentVoice runs raced into
@@ -2982,7 +3003,15 @@ final class AppStore: ObservableObject {
         // (`isLeavingVoice` above collapses the overlapping triggers, so it can't
         // double-fire.) Played BEFORE voice.disconnect(): the call still owns the
         // audio session, so the cue never has to touch session configuration.
-        if id != nil { VoiceSounds.play(.hangup) }
+        // Except when LiveKit itself lost the call (onConnectionLost): it has
+        // already stopped its engine and released the session (the call is
+        // .failed, so callAudioActive is false), and the cue would claim the
+        // session for itself (VoiceSounds' no-call branch: .playback +
+        // setActive) right while CallKit ends its call and this teardown flips
+        // the engine gate: the concurrent reconfiguration this flow exists to
+        // avoid, leaving a non-mixable session active that keeps other apps'
+        // audio from resuming. A dropped call ends silently instead.
+        if id != nil, hangupCue { VoiceSounds.play(.hangup) }
         await voice.disconnect()
         if let id, notifyServer { await api.leaveVoice(channelId: id) }
     }
@@ -3128,10 +3157,15 @@ final class AppStore: ObservableObject {
     }
 
     func toggleVoiceMute() async {
+        // Unmuting while deafened undeafens too (VoiceManager.toggleMute), and
+        // the server's selfDeaf has to follow then.
+        let wasDeafened = voice.isDeafened
         await voice.toggleMute()
         if let id = voiceChannelId {
             reportMuteToCallKit(channelId: id)
-            await api.updateVoiceState(channelId: id, selfMute: voice.isMuted, selfDeaf: nil)
+            let deafChanged = voice.isDeafened != wasDeafened
+            await api.updateVoiceState(channelId: id, selfMute: voice.isMuted,
+                                       selfDeaf: deafChanged ? voice.isDeafened : nil)
         }
     }
 

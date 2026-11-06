@@ -64,6 +64,22 @@ final class CallManager: NSObject, ObservableObject {
     /// would take the first echo for a user change.
     private var ownMuteActions: Set<UUID> = []
 
+    /// A CallKit call has been answered and hasn't ended, so the audio session
+    /// is CallKit's. VoiceManager checks this whenever a Room goes away: while
+    /// it holds, the mic stays on .inputMixer and the engine gate is left to
+    /// didActivate, because the Room going away is not this call's (typically
+    /// guild voice being swapped out for a call just answered from the lock
+    /// screen) and resetting either would undo the answer handler's setup.
+    /// The call's own teardown always runs after forget(), so it still gets
+    /// the resting state back.
+    var hasAnsweredCall: Bool { !audioActivated.isEmpty }
+
+    /// CallKit holds the answered call muted. A mute pressed on the system call
+    /// screen before the call's Room exists has nothing to apply to yet, so
+    /// VoiceManager.performConnect starts the call muted from this instead of
+    /// publishing a live mic under CallKit's muted button.
+    var isAnsweredCallMuted: Bool { audioActivated.contains { mutedByUUID[$0] == true } }
+
     override private init() {
         let config = CXProviderConfiguration()
         config.supportsVideo = false
@@ -359,7 +375,9 @@ extension CallManager: CXProviderDelegate {
         // indicator stays on while muted. Switched here, with the engine gated
         // off and stopped, so it is pure bookkeeping in LiveKit's audio device
         // rather than a change to a running engine.
-        // VoiceManager.performDisconnect restores .voiceProcessing.
+        // VoiceManager keeps it for as long as the call is answered
+        // (hasAnsweredCall), even across a Room teardown, and restores
+        // .voiceProcessing once the call is gone.
         try? AudioManager.shared.set(microphoneMuteMode: .inputMixer)
         // Match LiveKit's playAndRecordSpeaker config (.videoChat + these
         // options) so the engine's later re-config in didActivate is a no-op,
