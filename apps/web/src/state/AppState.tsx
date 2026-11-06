@@ -3938,6 +3938,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         // Voice mod is imported dynamically to avoid circular reference
         // between AppState and the voice module.
         //
+        // Only states the server marks `moved` (POST /voice/move, the AFK
+        // sweep). Any other own state naming another channel is another of
+        // our devices joining it, e.g. answering a DM call on the phone:
+        // following it took the call from that device (same LiveKit
+        // identity). Shell's session-id takeover watcher ends this device's
+        // call instead.
+        //
         // getConnectedChannelId() reports INTENT, not just settled state:
         // every join site stakes a claim on its target before calling
         // rest.joinVoice, because the server fans this very event out over
@@ -3947,7 +3954,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         // races a duplicate join against the one in flight. A REAL drag
         // has no local claim, so `connected` is the old room and the
         // mismatch below still fires.
-        if (selfId && v.userId === selfId && v.channelId) {
+        if (selfId && v.userId === selfId && v.channelId && v.moved === true) {
           const newChannelId = v.channelId;
           void (async () => {
             const voiceMod = await import('../lib/voice');

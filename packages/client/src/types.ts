@@ -674,6 +674,10 @@ export interface VoiceState {
   sessionId: string | null;
   selfMute: boolean;
   selfDeaf: boolean;
+  /** Only on the broadcast of a server-side move (POST /voice/move, the AFK
+   *  sweep). Lets this user's clients tell a real move from another of their
+   *  own devices joining that channel, which only that device should follow. */
+  moved?: true;
 }
 
 export interface ReadState {

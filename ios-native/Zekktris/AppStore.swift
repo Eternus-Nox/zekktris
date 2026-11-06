@@ -527,7 +527,7 @@ final class AppStore: ObservableObject {
             Task {
                 if await self.voice.setMuted(muted) {
                     guard let id = self.voiceChannelId else { return }
-                    await self.api.updateVoiceState(channelId: id, selfMute: self.voice.isMuted, selfDeaf: nil)
+                    await self.api.updateVoiceState(channelId: id, selfMute: self.serverSelfMute, selfDeaf: nil)
                 } else if self.voice.isMuted != muted, VoiceManager.callAudioActive,
                           let id = self.voiceChannelId {
                     // Refused (an unmute while deafened) or LiveKit failed it.
@@ -574,6 +574,17 @@ final class AppStore: ObservableObject {
                 guard self.voiceChannelId == lostChannelId else { return }
                 await self.leaveCurrentVoice(notifyServer: !takenOver, hangupCue: false)
             }
+        }
+        voice.onRemovedByServer = { [weak self] removedChannelId in
+            // The server removed us from the channel we're in. If our state
+            // already names another channel, that move's broadcast landed
+            // first and, lacking `moved` (a server older than the flag), was
+            // skipped: follow it now. A `moved` one was followed on arrival,
+            // and its removal can still land before that rejoin disconnects.
+            guard let self, let removedChannelId, self.voiceChannelId == removedChannelId,
+                  let me = self.currentUserId, let vs = self.voiceStatesByUser[me],
+                  vs.moved != true else { return }
+            self.handleVoiceSelfMove(vs)
         }
         voice.onMuteChangedInternally = { [weak self] muted in
             // A failed mic publish muted us, a retry recovered it, or the call
@@ -3205,8 +3216,17 @@ final class AppStore: ObservableObject {
         await voice.toggleDeafen()
         if let id = voiceChannelId {
             reportMuteToCallKit(channelId: id)
-            await api.updateVoiceState(channelId: id, selfMute: voice.isMuted, selfDeaf: voice.isDeafened)
+            await api.updateVoiceState(channelId: id, selfMute: serverSelfMute, selfDeaf: voice.isDeafened)
         }
+    }
+
+    /// The selfMute to report. In push-to-talk `isMuted` is only the talk
+    /// button at rest, and a push-to-talk member is reported unmuted (the
+    /// join, setPushToTalk, the web), so there only a deafen mutes them.
+    /// Otherwise an undeafen re-sent the at-rest mute: peers saw a muted icon
+    /// on someone talking, and the AFK sweep moved them.
+    private var serverSelfMute: Bool {
+        voice.pushToTalkEnabled ? voice.isDeafened : voice.isMuted
     }
 
     func setPushToTalk(_ on: Bool) {
@@ -3364,16 +3384,19 @@ final class AppStore: ObservableObject {
     /// channel isn't in the loaded set (a cross-guild move) we skip rather than
     /// guess, leaving the user to rejoin manually.
     /// Only for states the server marks `moved` (a moderator move or the AFK
-    /// sweep). Any other own state naming another channel is one of our other
-    /// devices joining it (or a late echo of our own earlier join): rejoining
-    /// would take that device's call. The old channel's "left" event, handled
-    /// in applyVoiceState, ends this device's call instead.
+    /// sweep), or, from a server older than that flag, once it has also
+    /// removed us from the connected channel's Room (whichever of the two
+    /// lands second calls this; see voice.onRemovedByServer). Any other own
+    /// state naming another channel is one of our other devices joining it
+    /// (or a late echo of our own earlier join), which leaves our Room alone:
+    /// rejoining would take that device's call. The old channel's "left"
+    /// event, handled in applyVoiceState, ends this device's call instead.
     private func handleVoiceSelfMove(_ vs: VoiceState) {
         guard vs.userId == currentUserId,
-              vs.moved == true,
               let newId = vs.channelId,
               let connected = voiceChannelId,
               connected != newId,
+              vs.moved == true || voice.removedByServerTag == connected,
               let target = channels.first(where: { $0.id == newId })
                 ?? dms.first(where: { $0.id == newId })
         else { return }

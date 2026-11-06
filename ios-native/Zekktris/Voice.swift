@@ -133,6 +133,11 @@ final class VoiceManager: ObservableObject {
     /// is the tag the dead Room was connected with (nil for stage), so the
     /// store hangs up that channel and not one a newer join has claimed.
     var onConnectionLost: ((_ takenOver: Bool, _ channelId: String?) -> Void)?
+    /// Our server removed us from a connected Room (participantRemoved or
+    /// roomDeleted), with that Room's tag. Fires at once, unlike the late
+    /// onConnectionLost fallback, so the store can follow a move whose
+    /// broadcast landed first (see AppStore.handleVoiceSelfMove).
+    var onRemovedByServer: ((_ channelId: String?) -> Void)?
     /// The mic's mute changed without the store asking for it: a failed
     /// initial publish forces a mute, a later successful retry lifts it, and a
     /// CallKit mute pressed before the Room existed is applied as the call
@@ -170,6 +175,11 @@ final class VoiceManager: ObservableObject {
     /// The channel `room` was connected for (connect's `tag`). Set together
     /// with `room` in performConnect, so it always describes that Room.
     private var roomTag: String?
+    /// roomTag of the Room our server removed us from (participantRemoved or
+    /// roomDeleted). Cleared when that Room is torn down, so it only names a
+    /// channel we still sit in, dead, until we follow a move or hang up. The
+    /// store follows a move a server without the `moved` flag sent on this.
+    private(set) var removedByServerTag: String?
     /// True while disconnect() is tearing the room down. Concurrent mic/track
     /// operations bail on this so they can't run against a Room whose WebRTC
     /// transport is being closed. (The call-end EXC_BAD_ACCESS once blamed on
@@ -1009,6 +1019,9 @@ final class VoiceManager: ObservableObject {
     }
 
     private func performDisconnect() async {
+        // Whatever Room the server removed us from is going now (this also
+        // runs first in every connect).
+        removedByServerTag = nil
         // Single-shot, and clear the room ref + reset published state
         // SYNCHRONOUSLY before awaiting the SDK disconnect. Niling `room` first
         // closes the re-entrancy window: any concurrent disconnect()/toggleMute/
@@ -1160,8 +1173,13 @@ extension VoiceManager: RoomDelegate {
                 // reconciliation covers a missed one). Hang up ourselves only
                 // if, well after any broadcast, nothing has replaced or torn
                 // down this dead Room.
+                // A server without the `moved` flag tells a move from another
+                // of our devices joining elsewhere only by this removal, and
+                // its broadcast may have landed first: record it, tell the store.
                 self.lastError = "Disconnected by the server"
                 self.state = .failed
+                self.removedByServerTag = self.roomTag
+                self.onRemovedByServer?(self.roomTag)
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
                 guard room === self.room, !self.isTearingDown else { return }
                 self.onConnectionLost?(false, self.roomTag)
