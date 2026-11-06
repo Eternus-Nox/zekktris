@@ -655,7 +655,10 @@ export function toChannel(
             e2eeSalt: null,
             e2eeVerifier: null,
             e2eePurgeProofSet: false,
-            e2eeSuppressed: true,
+            // Only while the stored DM is still encrypted: once it has really
+            // been turned off (and purged), clients must relock as for any
+            // disable, supervised or not.
+            ...(c.e2eeEnabled === true ? { e2eeSuppressed: true } : {}),
           }
         : {
             e2eeEnabled: c.e2eeEnabled === true,
