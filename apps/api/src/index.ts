@@ -29,6 +29,10 @@ import { refreshDiscoverableMemberCounts } from './services/discovery';
 import { initClusterIdentity, startLeaderElection, releaseCluster } from './cluster';
 import { leaderInterval, leaderTimeout } from './lib/leaderTimers';
 
+/** node:http requestTimeout: how long one request may take to arrive in
+ *  full, body included. See the serve() call below. */
+const UPLOAD_REQUEST_TIMEOUT_MS = 15 * 60_000;
+
 async function main(): Promise<void> {
   // FIRST: settle this process's snowflake worker id. Must precede
   // runStartupChecks(), which generates a batch of ids to verify monotonicity
@@ -70,6 +74,16 @@ async function main(): Promise<void> {
     fetch: app.fetch,
     hostname: env.HOST,
     port: env.PORT,
+    // node:http answers 408 and destroys the socket for any request whose
+    // body is still arriving 300 s after it started (Node 18+'s default
+    // requestTimeout). That capped one upload at about 5 minutes whatever
+    // MAX_UPLOAD_SIZE_MB allows — a 100 MB video below ~2.8 Mbps up never
+    // landed — and the client usually saw a broken pipe, not a timeout.
+    // The apps give a multipart upload 15 minutes (Android
+    // UPLOAD_REQUEST_TIMEOUT_MS, iOS timeoutIntervalForResource), so the
+    // server allows the same. Dribbled headers are still cut at
+    // headersTimeout (60 s).
+    serverOptions: { requestTimeout: UPLOAD_REQUEST_TIMEOUT_MS },
   });
 
   // Gateway event bus. Default is in-process (correct for a single instance).

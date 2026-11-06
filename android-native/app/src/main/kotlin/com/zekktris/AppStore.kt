@@ -2489,6 +2489,15 @@ class AppStore(
         is io.ktor.client.plugins.HttpRequestTimeoutException,
         is java.net.SocketTimeoutException ->
             "The upload timed out. Try a smaller file or a stronger connection."
+        // Never got a connection: offline, DNS failure, refused, or the 15 s
+        // connect timeout — Ktor's ConnectTimeoutException is a
+        // ConnectException, NOT a SocketTimeoutException, so the branch above
+        // misses it. Their own messages are developer text carrying the API
+        // URL ("Connect timeout has expired [url=…]"), and "try a smaller
+        // file" is the wrong advice when no byte left the phone.
+        is java.net.ConnectException,
+        is java.net.UnknownHostException ->
+            "Couldn't reach the server. Check your connection and try again."
         else -> e.message ?: "Upload failed."
     }
 
