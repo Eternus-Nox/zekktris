@@ -2282,14 +2282,17 @@ final class AppStore: ObservableObject {
                 fetched[i].e2eeSalt = held.e2eeSalt
                 fetched[i].e2eeVerifier = held.e2eeVerifier
                 fetched[i].e2eePurgeProofSet = held.e2eePurgeProofSet
+                fetched[i].e2eeSuppressed = held.e2eeSuppressed
             }
             // Encryption turned off while this device couldn't hear the
             // CHANNEL_UPDATE (socket down past the server's resume window, or
             // the app not running): this list is the only notice, so drop the
             // key as handleChannelUpdate does. After the loop above, so an E2EE
-            // change applied during the fetch keeps its key.
+            // change applied during the fetch keeps its key. Not for a DM shown
+            // unencrypted only because it's supervised: its encrypted history
+            // is still there and reads with this key.
             let keyed = e2eeKeyedChannelIds()
-            for dm in fetched where !dm.isE2EE && keyed.contains(dm.id)
+            for dm in fetched where !dm.isE2EE && dm.e2eeSuppressed != true && keyed.contains(dm.id)
                 && (e2eeChangedAt[dm.id] ?? Int.min) < e2eeSeqAtStart {
                 relockE2EE(dm.id)
             }
@@ -3596,8 +3599,10 @@ final class AppStore: ObservableObject {
         // history, so drop the key, decrypted text and media and opened-file
         // copies here too; purgeStaleE2EEKey below only runs for the open
         // chat. Read before `dms` / selectedChannel take the update, and
-        // relock before decryptVisible below can use the old key.
-        if liveCopy(of: updated).isE2EE && !updated.isE2EE {
+        // relock before decryptVisible below can use the old key. Not when
+        // the DM only reads unencrypted because it's now supervised: nothing
+        // was purged, and the key still reads its history.
+        if liveCopy(of: updated).isE2EE && !updated.isE2EE && updated.e2eeSuppressed != true {
             relockE2EE(updated.id)
         }
         // Also for a DM `dms` doesn't list yet, so a DM list load in flight
@@ -6678,10 +6683,16 @@ final class AppStore: ObservableObject {
         // the server purged that history, so the key goes. Decided from the
         // live copy, not `channel`: openChannel passes the route's snapshot,
         // which can predate turning encryption on and so drop a key the user
-        // just unlocked.
-        if channel.isDM, !liveCopy(of: channel).isE2EE {
-            if e2eeKey(for: channel.id) != nil { relockE2EE(channel.id) }
-            return
+        // just unlocked. A DM shown unencrypted only because it's supervised
+        // keeps its key: its encrypted history is still there.
+        if channel.isDM {
+            let live = liveCopy(of: channel)
+            if !live.isE2EE {
+                if live.e2eeSuppressed != true, e2eeKey(for: channel.id) != nil {
+                    relockE2EE(channel.id)
+                }
+                return
+            }
         }
         guard channel.isE2EE, let key = e2eeKey(for: channel.id),
               let expected = channel.e2eeVerifier,

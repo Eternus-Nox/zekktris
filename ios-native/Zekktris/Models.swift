@@ -218,6 +218,10 @@ struct Channel: Codable, Identifiable, Hashable {
     /// never sent). `false` on an encrypted DM: register ours once we hold
     /// the key (AppStore.registerE2EEPurgeProofIfNeeded). nil on older servers.
     var e2eePurgeProofSet: Bool?
+    /// True when the server reports this DM as unencrypted only because the
+    /// pair is supervised: nothing was disabled or purged, so the key stays.
+    /// nil otherwise, and on older servers.
+    var e2eeSuppressed: Bool?
     /// Link channels (type == guild_link): the external URL they open.
     var linkUrl: String?
     /// True when permission overrides hide this channel from @everyone —

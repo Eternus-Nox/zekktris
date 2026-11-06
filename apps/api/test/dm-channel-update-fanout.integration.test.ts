@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterEach, afterAll } from 'vitest';
 import { Hono } from 'hono';
 import type { WebSocket } from 'ws';
 import { enableE2ee } from '../src/services/dms';
+import { db, schema } from '../src/db';
 import { dmsRouter } from '../src/routes/dms';
 import { errorHandler } from '../src/middleware';
 import { createSession } from '../src/auth/sessions';
@@ -140,6 +141,60 @@ describe.runIf(dbReady)('DM CHANNEL_UPDATE / CHANNEL_CREATE are per-recipient (i
     expect(recipientsOf(bSent, 'CHANNEL_UPDATE', dm)).toEqual([[a.toString()], [a.toString()]]);
     expect(recipientsOf(aSent, 'CHANNEL_UPDATE', dm)).toEqual([[b.toString()], [b.toString()]]);
     expect(lastOf(bSent, 'CHANNEL_UPDATE', dm)?.e2eeEnabled).toBe(false);
+  });
+
+  it('a supervised pair\'s encrypted DM is flagged e2eeSuppressed on the list and on CHANNEL_UPDATE', async () => {
+    const parent = await createUser();
+    const child = await createUser();
+    const peer = await createUser();
+    const dm = await createDmChannel([child, peer]);
+    // Encrypted before the guardian link (legacy enable, no purge proof).
+    await enableE2ee(dm, SALT, VERIFIER);
+    await db.insert(schema.parentChildLinks).values({
+      parentId: parent,
+      childId: child,
+      status: 'active',
+      initiatedBy: 'parent',
+    });
+    const childSent = connect(child, [dm]);
+    const peerSent = connect(peer, [dm]);
+
+    // Reported unencrypted, but marked as suppressed rather than disabled, so
+    // clients keep the key that still reads the encrypted history.
+    for (const viewer of [child, peer]) {
+      const res = await call('GET', '/users/@me/channels', await tokenFor(viewer));
+      expect(res.status).toBe(200);
+      const { channels } = (await res.json()) as { channels: Array<Record<string, unknown>> };
+      const entry = channels.find((ch) => ch.id === dm.toString());
+      expect(entry?.e2eeEnabled).toBe(false);
+      expect(entry?.e2eeSalt).toBeNull();
+      expect(entry?.e2eeSuppressed).toBe(true);
+    }
+
+    // Any DM CHANNEL_UPDATE goes through the same per-recipient DTOs.
+    const res = await call('PUT', `/users/@me/channels/${dm}/e2ee-purge-proof`, await tokenFor(peer), {
+      verifier: VERIFIER,
+      purgeProof: PROOF,
+    });
+    expect(res.status).toBe(200);
+    for (const sent of [childSent, peerSent]) {
+      const update = lastOf(sent, 'CHANNEL_UPDATE', dm);
+      expect(update?.e2eeEnabled).toBe(false);
+      expect(update?.e2eeSuppressed).toBe(true);
+    }
+  });
+
+  it('an unsupervised DM carries no e2eeSuppressed flag', async () => {
+    const a = await createUser();
+    const b = await createUser();
+    const dm = await createDmChannel([a, b]);
+    await enableE2ee(dm, SALT, VERIFIER);
+    const res = await call('GET', '/users/@me/channels', await tokenFor(a));
+    expect(res.status).toBe(200);
+    const { channels } = (await res.json()) as { channels: Array<Record<string, unknown>> };
+    const entry = channels.find((ch) => ch.id === dm.toString());
+    expect(entry?.e2eeEnabled).toBe(true);
+    expect(entry).not.toHaveProperty('e2eeSuppressed');
   });
 
   it('a peer who closed the DM gets no CHANNEL_UPDATE for it', async () => {
