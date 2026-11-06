@@ -16,7 +16,11 @@ import { DEFAULT_EVERYONE_PERMISSIONS } from '@zekktris/shared/permissions';
 import { createApp } from '../src/server';
 import { messagesRouter } from '../src/routes/messages';
 import { errorHandler } from '../src/middleware';
-import { quoteBareDispositionParams } from '../src/middleware/multipartCompat';
+import {
+  multipartCompat,
+  parseFormBody,
+  quoteBareDispositionParams,
+} from '../src/middleware/multipartCompat';
 import { createSession } from '../src/auth/sessions';
 import { signAccessToken } from '../src/auth/tokens';
 import {
@@ -106,6 +110,43 @@ const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
   'base64',
 );
+
+/** A valid first part opened with `boundary`, then `fill` with no delimiter
+ *  after it, so the parser searches all of `fill` for the next one. */
+function openPart(boundary: string, fill: Buffer): Buffer {
+  return Buffer.concat([
+    Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.png"\r\n` +
+        'Content-Type: image/png\r\n\r\n',
+      'utf8',
+    ),
+    PNG,
+    fill,
+  ]);
+}
+
+/**
+ * Content-Types of 256 chars that hand the form parser a boundary of over 400
+ * bytes, one boundaryOf() doesn't see: hidden behind a quoted parameter, or
+ * after a space (where boundaryOf() stops). Padded with U+00FF, which is how
+ * Node reads a 0xFF header byte: one char of the header, but two bytes of the
+ * UTF-8 the parser encodes its boundary in.
+ */
+const WIDE_BOUNDARIES = [
+  wideBoundary('multipart/form-data; x="; boundary=short"; boundary=', '\u00ffb'),
+  wideBoundary('multipart/form-data; boundary=', '\u00ff \u00ffb'),
+];
+
+function wideBoundary(params: string, start: string) {
+  const contentType = (params + start).padEnd(256, '\u00ff');
+  return { contentType, boundary: contentType.slice(params.length) };
+}
+
+/** `ÿ` in UTF-8 (C3 BF) over and over: every position looks like the start
+ *  of a wide boundary, so the search can't skip ahead. */
+function wideFill(size: number): Buffer {
+  return Buffer.alloc(size, '\u00ff', 'utf8');
+}
 
 async function postRaw(
   path: string,
@@ -207,6 +248,35 @@ describe('quoteBareDispositionParams', () => {
       `--${boundary}\r\nContent-Disposition: form-data; name=file\r\nX-Pad: ${'p'.repeat(9000)}\r\n\r\nhi\r\n--${boundary}--\r\n`,
     );
     expect(quoteBareDispositionParams(body, boundary)).toBeNull();
+  });
+});
+
+describe('multipartCompat', () => {
+  it('refuses a 256-char Content-Type whose boundary is over 250 UTF-8 bytes, before reading the body', async () => {
+    const bare = new Hono();
+    bare.onError(errorHandler);
+    bare.use(multipartCompat);
+    bare.post('/', async (c) => c.json(await parseFormBody(c)));
+    // Counted in chars, these headers passed, and Buffer.indexOf for a
+    // boundary this long held the event loop for ~1.9 s per 20 MB.
+    const fill = wideFill(20 * 1024 * 1024);
+
+    for (const { contentType, boundary } of WIDE_BOUNDARIES) {
+      expect(contentType).toHaveLength(256);
+      expect(Buffer.byteLength(`--${boundary}`)).toBeGreaterThan(400);
+      const body = openPart(boundary, fill);
+
+      const started = performance.now();
+      const res = await bare.request('/', {
+        method: 'POST',
+        headers: { 'content-type': contentType },
+        body,
+      });
+
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as any).error.message).toBe('Malformed multipart body');
+      expect(performance.now() - started).toBeLessThan(500);
+    }
   });
 });
 
@@ -407,15 +477,13 @@ describe.runIf(dbReady)('multipart uploads through createApp()', () => {
         // parser takes the second, long boundary. The header length cap
         // refuses this one.
         contentType: `multipart/form-data; x="; boundary=short"; boundary=${long}`,
-        body: Buffer.concat([
-          Buffer.from(
-            `--${long}\r\nContent-Disposition: form-data; name="file"; filename="a.png"\r\n` +
-              'Content-Type: image/png\r\n\r\n',
-          ),
-          PNG,
-          dashes,
-        ]),
+        body: openPart(long, dashes),
       },
+      // 256 chars, but over 256 bytes once the parser encodes them as UTF-8.
+      ...WIDE_BOUNDARIES.map(({ contentType, boundary }) => ({
+        contentType,
+        body: openPart(boundary, wideFill(dashes.length)),
+      })),
     ];
 
     for (const { contentType, body } of cases) {
