@@ -175,6 +175,39 @@ describe('quoteBareDispositionParams', () => {
     );
     expect(quoteBareDispositionParams(body, boundary)).toBeNull();
   });
+
+  it('trims only the spaces and tabs after a bare value', () => {
+    const boundary = 'b'.repeat(30);
+    // 'voilà' ends in the byte 0xA0, which latin1 reads as a no-break space.
+    const body = Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name=file \t; filename=voilà  \r\n\r\nhi\r\n--${boundary}--\r\n`,
+    );
+    const out = quoteBareDispositionParams(body, boundary)!;
+    expect(out.toString()).toContain(
+      'Content-Disposition: form-data; name="file"; filename="voilà"\r\n',
+    );
+  });
+
+  it('stays fast on a long run of blanks inside a header', () => {
+    // A bare value, then a long run of blanks the value can't end on (a `"`
+    // follows it). The old pattern took ~90 ms per block like this, and the
+    // repair runs on the event loop.
+    const boundary = 'b'.repeat(30);
+    const part = `--${boundary}\r\nContent-Disposition: form-data; name=a${' '.repeat(8000)}"\r\n\r\nx\r\n`;
+    const body = Buffer.from(part.repeat(50) + `--${boundary}--\r\n`);
+
+    const started = performance.now();
+    expect(quoteBareDispositionParams(body, boundary)).toBeNull();
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  it('leaves a part header block over the size cap alone', () => {
+    const boundary = 'b'.repeat(30);
+    const body = Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name=file\r\nX-Pad: ${'p'.repeat(9000)}\r\n\r\nhi\r\n--${boundary}--\r\n`,
+    );
+    expect(quoteBareDispositionParams(body, boundary)).toBeNull();
+  });
 });
 
 describe.runIf(dbReady)('multipart uploads through createApp()', () => {
@@ -330,6 +363,33 @@ describe.runIf(dbReady)('multipart uploads through createApp()', () => {
 
     expect(r.status).toBe(200);
     expect(r.json.guild.iconUrl).toMatch(/^\/cdn\//);
+  });
+
+  it('a bare name followed by a long run of blanks → a quick 400', async () => {
+    const a = await createUser();
+    const token = await tokenFor(a);
+    const boundary = ktorBoundary();
+    const body = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name=file${' '.repeat(100_000)}"\r\n` +
+          'Content-Type: image/png\r\n\r\n',
+      ),
+      PNG,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+
+    const started = performance.now();
+    const res = await app.request('/api/v1/users/@me/avatar', {
+      method: 'POST',
+      headers: {
+        authorization: token,
+        'content-type': `multipart/form-data; boundary=${boundary}`,
+      },
+      body,
+    });
+
+    expect(res.status).toBe(400);
+    expect(performance.now() - started).toBeLessThan(2000);
   });
 
   it('Android guild emoji upload (bare `name` and `file` part names) → 201', async () => {

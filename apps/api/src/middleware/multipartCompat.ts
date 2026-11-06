@@ -121,6 +121,12 @@ function boundaryOf(contentType: string): string | null {
 
 const CLOSING_DASHES = Buffer.from('--');
 const HEADERS_END = Buffer.from('\r\n\r\n');
+// Far more than a real part's headers: Ktor writes a few hundred bytes for a
+// file part. A bigger block is left alone; if it needed quoting, the body still
+// won't parse and the request gets the 400. The repair runs on the event loop
+// for any signed-in user, so this keeps its work per block small whatever the
+// body holds.
+const MAX_PART_HEADERS = 8 * 1024;
 
 /**
  * Quote bare `name=` / `filename=` values in each part's Content-Disposition
@@ -132,7 +138,8 @@ const HEADERS_END = Buffer.from('\r\n\r\n');
  * boundary can't occur inside a part's content (that is what makes it a
  * boundary), so finding the next delimiter can't land inside a file. Header
  * blocks are decoded as latin1, which maps every byte to one char and back, so
- * any non-ASCII bytes in them survive the round trip unchanged.
+ * any non-ASCII bytes in them survive the round trip unchanged. A header block
+ * over MAX_PART_HEADERS is copied through as it is.
  */
 export function quoteBareDispositionParams(body: Uint8Array, boundary: string): Buffer | null {
   const buf = Buffer.from(body.buffer, body.byteOffset, body.byteLength);
@@ -146,11 +153,13 @@ export function quoteBareDispositionParams(body: Uint8Array, boundary: string): 
     if (buf.subarray(headersStart, headersStart + 2).equals(CLOSING_DASHES)) break;
     const headersEnd = buf.indexOf(HEADERS_END, headersStart);
     if (headersEnd === -1) break;
-    const headers = buf.toString('latin1', headersStart, headersEnd);
-    const quoted = quoteHeaderBlock(headers);
-    if (quoted !== headers) {
-      pieces.push(buf.subarray(copiedTo, headersStart), Buffer.from(quoted, 'latin1'));
-      copiedTo = headersEnd;
+    if (headersEnd - headersStart <= MAX_PART_HEADERS) {
+      const headers = buf.toString('latin1', headersStart, headersEnd);
+      const quoted = quoteHeaderBlock(headers);
+      if (quoted !== headers) {
+        pieces.push(buf.subarray(copiedTo, headersStart), Buffer.from(quoted, 'latin1'));
+        copiedTo = headersEnd;
+      }
     }
     at = buf.indexOf(delimiter, headersEnd + HEADERS_END.length);
   }
@@ -163,8 +172,12 @@ export function quoteBareDispositionParams(body: Uint8Array, boundary: string): 
 // alone) or `; name=value` / `; filename=value` with the value bare. Ktor only
 // leaves a value bare when it has no separators in it, so "up to the next `;`
 // or the end of the line" is the whole value.
-const DISPOSITION_PARAM =
-  /"[^"]*"|;[ \t]*(name|filename)[ \t]*=[ \t]*([^"\s;][^";]*?)[ \t]*(?=;|$)/gi;
+//
+// The value is matched greedily and its trailing blanks trimmed in code. With a
+// lazy value followed by `[ \t]*`, both could take the same run of blanks, and a
+// long run followed by a `"` made the match quadratic: one 100 KB header block
+// held the event loop for 15 seconds.
+const DISPOSITION_PARAM = /"[^"]*"|;[ \t]*(name|filename)[ \t]*=[ \t]*([^"\s;][^";]*)(?=;|$)/gi;
 
 function quoteHeaderBlock(headers: string): string {
   // `.` stops at CR, so each match is one header line without its line break.
@@ -175,7 +188,19 @@ function quoteHeaderBlock(headers: string): string {
       value.replace(
         DISPOSITION_PARAM,
         (match, key: string | undefined, bare: string | undefined) =>
-          key === undefined ? match : `; ${key.toLowerCase()}="${bare}"`,
+          key === undefined ? match : `; ${key.toLowerCase()}="${trimBlanksEnd(bare!)}"`,
       ),
   );
+}
+
+/**
+ * Drops trailing spaces and tabs. Not trimEnd(): that also drops U+00A0, which
+ * here is a latin1-decoded 0xA0 byte, and in a UTF-8 filename that byte can end
+ * a character (`à` is C3 A0). Not `/[ \t]+$/` either: on a value with a long
+ * run of blanks in the middle, that is quadratic too.
+ */
+function trimBlanksEnd(s: string): string {
+  let end = s.length;
+  while (end > 0 && (s[end - 1] === ' ' || s[end - 1] === '\t')) end--;
+  return s.slice(0, end);
 }
