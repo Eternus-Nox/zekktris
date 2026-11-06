@@ -184,6 +184,43 @@ describe.runIf(dbReady)('DM CHANNEL_UPDATE / CHANNEL_CREATE are per-recipient (i
     }
   });
 
+  it('a supervised pair\'s DM whose encryption was really turned off is not flagged e2eeSuppressed', async () => {
+    const parent = await createUser();
+    const child = await createUser();
+    const peer = await createUser();
+    const dm = await createDmChannel([child, peer]);
+    await enableE2ee(dm, SALT, VERIFIER, PROOF);
+    await db.insert(schema.parentChildLinks).values({
+      parentId: parent,
+      childId: child,
+      status: 'active',
+      initiatedBy: 'parent',
+    });
+    const childSent = connect(child, [dm]);
+    const peerSent = connect(peer, [dm]);
+
+    // A peer client still showing the DM as encrypted turns it off: the
+    // history is purged, so clients must treat it as a disable and drop the key.
+    const res = await call('DELETE', `/users/@me/channels/${dm}/e2ee-disable`, await tokenFor(peer), {
+      verifier: VERIFIER,
+      purgeProof: PROOF,
+    });
+    expect(res.status).toBe(200);
+    for (const sent of [childSent, peerSent]) {
+      const update = lastOf(sent, 'CHANNEL_UPDATE', dm);
+      expect(update?.e2eeEnabled).toBe(false);
+      expect(update).not.toHaveProperty('e2eeSuppressed');
+    }
+    for (const viewer of [child, peer]) {
+      const list = await call('GET', '/users/@me/channels', await tokenFor(viewer));
+      expect(list.status).toBe(200);
+      const { channels } = (await list.json()) as { channels: Array<Record<string, unknown>> };
+      const entry = channels.find((ch) => ch.id === dm.toString());
+      expect(entry?.e2eeEnabled).toBe(false);
+      expect(entry).not.toHaveProperty('e2eeSuppressed');
+    }
+  });
+
   it('an unsupervised DM carries no e2eeSuppressed flag', async () => {
     const a = await createUser();
     const b = await createUser();

@@ -3614,8 +3614,11 @@ final class AppStore: ObservableObject {
         // chat. Read before `dms` / selectedChannel take the update, and
         // relock before decryptVisible below can use the old key. Not when
         // the DM only reads unencrypted because it's now supervised: nothing
-        // was purged, and the key still reads its history.
-        if liveCopy(of: updated).isE2EE && !updated.isE2EE && updated.e2eeSuppressed != true {
+        // was purged, and the key still reads its history. But a supervised
+        // DM that loses the flag was really turned off, so that relocks too.
+        let prev = liveCopy(of: updated)
+        if (prev.isE2EE || prev.e2eeSuppressed == true) && !updated.isE2EE
+            && updated.e2eeSuppressed != true {
             relockE2EE(updated.id)
         }
         // Also for a DM `dms` doesn't list yet, so a DM list load in flight
