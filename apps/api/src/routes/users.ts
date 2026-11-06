@@ -13,6 +13,7 @@
 import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { validate } from '../lib/validate';
+import { parseFormBody } from '../middleware/multipartCompat';
 import { RateLimiter } from '../lib/rateLimit';
 import { z } from 'zod';
 import { and, eq, inArray, isNull, isNotNull, sql } from 'drizzle-orm';
@@ -1971,9 +1972,9 @@ async function assertImageUploadWithinLimits(
 usersRouter.post('/@me/avatar', requireAuth, async (c) => {
   const userId = requireUserId(c);
 
-  // Hono's req.parseBody handles multipart for us. We expect a single
-  // 'file' part containing the image. Reject anything else.
-  const form = await c.req.parseBody();
+  // parseFormBody (Hono's req.parseBody) handles multipart for us. We expect
+  // a single 'file' part containing the image. Reject anything else.
+  const form = await parseFormBody(c);
   const file = form.file;
   if (!(file instanceof File)) {
     throw errors.badRequest('Missing file (expected multipart field "file")');
@@ -2080,7 +2081,7 @@ usersRouter.post('/@me/avatar', requireAuth, async (c) => {
 
 usersRouter.post('/@me/banner', requireAuth, async (c) => {
   const userId = requireUserId(c);
-  const form = await c.req.parseBody();
+  const form = await parseFormBody(c);
   const file = form.file;
   if (!(file instanceof File)) {
     throw errors.badRequest('Missing file (expected multipart field "file")');

@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { errors } from '../errors';
 import { requireAuth, requireUserId } from '../auth/middleware';
 import { validate } from '../lib/validate';
+import { parseFormBody } from '../middleware/multipartCompat';
 import { snowflakeSchema, webhookUsernameSchema } from '../lib/validation';
 import { toWebhook } from '../lib/dto';
 import { RateLimiter } from '../lib/rateLimit';
@@ -141,7 +142,7 @@ webhooksAdminRouter.post(
   async (c) => {
     const actorId = requireUserId(c);
     const { webhookId } = c.req.valid('param');
-    const form = await c.req.parseBody();
+    const form = await parseFormBody(c);
     const file = form.file;
     if (!(file instanceof File)) {
       throw errors.badRequest('Missing file (expected multipart field "file")');

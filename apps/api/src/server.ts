@@ -37,6 +37,7 @@ import { cdnRouter } from './routes/cdn';
 import { voiceRouter } from './routes/voice';
 import { callDeclineRouter } from './routes/callDecline';
 import { requestId, accessLog, errorHandler } from './middleware';
+import { multipartCompat } from './middleware/multipartCompat';
 import { env, isDev } from './env';
 
 export function createApp() {
@@ -74,6 +75,12 @@ export function createApp() {
       ? uploadBodyLimit(c, next)
       : jsonBodyLimit(c, next);
   });
+
+  // Multipart bodies from installed Android builds (bare `name=payload_json`
+  // part names, which Node's form parser rejects) and a 400 instead of a 500
+  // for a body that can't be parsed. After the body limit so the bytes it
+  // reads are still counted. See middleware/multipartCompat.ts.
+  app.use('*', multipartCompat);
 
   // CORS: relaxed in dev (Vite at :5173); locked down in prod via reverse proxy.
   // The proxy serves the SPA from the same origin as /api, so CORS isn't

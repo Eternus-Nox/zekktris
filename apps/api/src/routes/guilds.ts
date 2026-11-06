@@ -17,6 +17,7 @@ import { errors, AppError } from '../errors';
 import { log } from '../log';
 import { requireAuth, requireUserId } from '../auth/middleware';
 import { validate } from '../lib/validate';
+import { parseFormBody } from '../middleware/multipartCompat';
 import { RateLimiter } from '../lib/rateLimit';
 import {
   snowflakeSchema,
@@ -735,7 +736,7 @@ guildsRouter.post(
     const guildId = BigInt(c.req.valid('param').guildId);
     await assertGuildPermission(guildId, userId, Permissions.MANAGE_GUILD);
 
-    const form = await c.req.parseBody();
+    const form = await parseFormBody(c);
     const file = form.file;
     if (!(file instanceof File)) {
       throw errors.badRequest('Missing file (expected multipart field "file")');
@@ -802,7 +803,7 @@ guildsRouter.post(
     const guildId = BigInt(c.req.valid('param').guildId);
     await assertGuildPermission(guildId, userId, Permissions.MANAGE_GUILD);
 
-    const form = await c.req.parseBody();
+    const form = await parseFormBody(c);
     const file = form.file;
     if (!(file instanceof File)) {
       throw errors.badRequest('Missing file (expected multipart field "file")');
@@ -2736,7 +2737,7 @@ guildsRouter.post(
     const guildId = BigInt(c.req.valid('param').guildId);
     await assertGuildPermission(guildId, userId, Permissions.MANAGE_EVENTS);
 
-    const form = await c.req.parseBody();
+    const form = await parseFormBody(c);
     const file = form.file;
     if (!(file instanceof File)) {
       throw errors.badRequest('Missing file (expected multipart field "file")');
@@ -2763,7 +2764,7 @@ guildsRouter.post(
     const eventId = BigInt(eid);
     await assertGuildPermission(guildId, userId, Permissions.MANAGE_EVENTS);
 
-    const form = await c.req.parseBody();
+    const form = await parseFormBody(c);
     const file = form.file;
     if (!(file instanceof File)) {
       throw errors.badRequest('Missing file (expected multipart field "file")');
