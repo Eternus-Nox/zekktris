@@ -2339,42 +2339,70 @@ struct MessageListView: View {
     /// Add documents picked with the attach menu's "File" entry.
     ///
     /// Same ten-per-message cap as every other way in (the server's
-    /// MAX_FILES_PER_MESSAGE), plus PickedFileReader's per-file size cap. The
-    /// reads run off the main actor — a 100 MB read there would freeze the
-    /// composer — and whatever is left out is said out loud rather than
-    /// silently dropped.
+    /// MAX_FILES_PER_MESSAGE), plus PickedFileReader's per-file and
+    /// per-message size caps. The reads run off the main actor — a 100 MB read
+    /// there would freeze the composer — and whatever is left out is said out
+    /// loud rather than silently dropped.
     private func addPickedFiles(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         // Only read what can still fit: no point pulling ten 100 MB files into
         // memory to keep two of them.
         let wanted = Array(urls.prefix(max(0, 10 - pendingAttachments.count)))
         let overCount = urls.count - wanted.count
+        let pendingBytes = pendingAttachments.reduce(0) { $0 + $1.data.count }
         Task {
-            let outcomes = await Task.detached(priority: .userInitiated) {
-                wanted.map { PickedFileReader.read($0) }
+            let outcomes = await Task.detached(priority: .userInitiated) { () -> [PickedFileReader.Outcome] in
+                // One running budget across the batch, so a file that won't
+                // fit is turned away from its size alone, before it is read.
+                var budget = PickedFileReader.maxTotalBytes - pendingBytes
+                var out: [PickedFileReader.Outcome] = []
+                for url in wanted {
+                    let outcome = PickedFileReader.read(url, budget: budget)
+                    if case .added(let att) = outcome { budget -= att.data.count }
+                    out.append(outcome)
+                }
+                return out
             }.value
             await MainActor.run {
                 var added: [PendingAttachment] = []
                 var tooBig: [String] = []
+                var overTotal: [String] = []
                 var unreadable: [String] = []
                 for outcome in outcomes {
                     switch outcome {
                     case .added(let att): added.append(att)
                     case .tooBig(let name): tooBig.append(name)
+                    case .overTotal(let name): overTotal.append(name)
                     case .unreadable(let name): unreadable.append(name)
                     }
                 }
-                // Re-check the room: a photo-picker load may have landed while
-                // these were being read.
-                let room = max(0, 10 - pendingAttachments.count)
-                pendingAttachments.append(contentsOf: added.prefix(room))
-                let leftOut = overCount + max(0, added.count - room)
+                // Re-check the room and the total: a photo-picker load may have
+                // landed while these were being read.
+                var room = max(0, 10 - pendingAttachments.count)
+                var total = pendingAttachments.reduce(0) { $0 + $1.data.count }
+                var leftOut = overCount
+                for att in added {
+                    if room == 0 {
+                        leftOut += 1
+                    } else if total + att.data.count > PickedFileReader.maxTotalBytes {
+                        overTotal.append(att.filename)
+                    } else {
+                        pendingAttachments.append(att)
+                        room -= 1
+                        total += att.data.count
+                    }
+                }
 
                 var notes: [String] = []
                 if tooBig.count == 1 {
                     notes.append("\(tooBig[0]) is over 100 MB, so it wasn't added.")
                 } else if tooBig.count > 1 {
                     notes.append("\(tooBig.count) files are over 100 MB, so they weren't added.")
+                }
+                if overTotal.count == 1 {
+                    notes.append("\(overTotal[0]) wasn't added: a message's attachments can total at most 100 MB.")
+                } else if overTotal.count > 1 {
+                    notes.append("\(overTotal.count) files weren't added: a message's attachments can total at most 100 MB.")
                 }
                 if unreadable.count == 1 {
                     notes.append("Couldn't read \(unreadable[0]).")
@@ -4173,13 +4201,31 @@ private enum PickedFileReader {
     /// video never pulls it into memory only for the server to refuse it.
     static let maxBytes = 100 * 1024 * 1024
 
+    /// Cap on ALL of one message's attachments together, counting what is
+    /// already in the composer. Two reasons, one number. zekktris.com is
+    /// reached through a Cloudflare Tunnel, which turns away any request body
+    /// over 100 MB with its own 413 before the server sees it. And every
+    /// pending file sits in memory, is copied again into the request body
+    /// (and once more, encrypted, in an E2EE DM): ten files at the per-file
+    /// cap would be 2-3 GB at peak, past what iOS lets a foreground app use —
+    /// the app would be killed mid-send.
+    static let maxTotalBytes = 100 * 1024 * 1024
+
+    /// The everyday photo formats: what the photo picker sends, and what
+    /// MediaPrep is there to shrink. Only these go up as images (see read).
+    private static let photoTypes: [UTType] = [.jpeg, .png, .gif, .webP, .heic, .heif]
+
     enum Outcome {
         case added(PendingAttachment)
         case tooBig(String)
+        /// Under the per-file cap, but more than what `maxTotalBytes` has left.
+        case overTotal(String)
         case unreadable(String)
     }
 
-    static func read(_ url: URL) -> Outcome {
+    /// `budget` is how many bytes this message can still take (maxTotalBytes
+    /// minus everything already pending or added).
+    static func read(_ url: URL, budget: Int) -> Outcome {
         let name = url.lastPathComponent.isEmpty ? "file" : url.lastPathComponent
         // The picker's URLs point outside the sandbox (iCloud Drive, another
         // app's File Provider) and are only readable inside a security-scoped
@@ -4187,7 +4233,10 @@ private enum PickedFileReader {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
-        if let size = values?.fileSize, size > maxBytes { return .tooBig(name) }
+        if let size = values?.fileSize {
+            if size > maxBytes { return .tooBig(name) }
+            if size > budget { return .overTotal(name) }
+        }
         // A coordinated read, so a cloud document that is only a placeholder on
         // this device is fetched by its File Provider first instead of reading
         // as missing.
@@ -4198,23 +4247,35 @@ private enum PickedFileReader {
         }
         guard let bytes = contents else { return .unreadable(name) }
         // The metadata size can be missing or stale (a placeholder reports its
-        // stub), so the cap is checked again on the real bytes.
+        // stub), so the caps are checked again on the real bytes.
         guard bytes.count <= maxBytes else { return .tooBig(name) }
+        guard bytes.count <= budget else { return .overTotal(name) }
 
         let type = values?.contentType ?? UTType(filenameExtension: url.pathExtension)
         var mime = type?.preferredMIMEType ?? "application/octet-stream"
         var preview: UIImage?
         if mime.hasPrefix("image/") {
-            // Only an image this device can DECODE goes up as an image.
-            // MediaPrep re-encodes `image/*`, and in an encrypted DM the send
+            // Only an everyday PHOTO format goes up as an image. MediaPrep
+            // re-encodes any single-frame `image/*` it can decode to a 1920 px
+            // WebP/JPEG and renames it: right for a photo, data loss for a
+            // file someone chose to send AS a file. ImageIO decodes PSD, TIFF,
+            // camera RAW, BMP and more, so design.psd would have arrived as a
+            // lossy design.webp. (Web leaves those alone too: compressImage.ts
+            // only touches jpeg/png/webp.)
+            //
+            // And only one this device can DECODE: in an encrypted DM the send
             // refuses an image it can't build the mandatory thumbnail for (see
-            // AppStore.sendAttachments). An SVG, a truncated JPEG or a RAW
-            // format iOS can't read is still a perfectly good FILE, so it goes
-            // as one: `application/octet-stream` passes through MediaPrep
-            // untouched and needs no thumbnail, encrypted or not. Decoded the
-            // same way MediaPrep builds its preview, so "decodes here" means
-            // "gets a thumbnail there".
-            preview = ImageDownsampler.decode(bytes, maxPixels: 168)
+            // AppStore.sendAttachments), and a truncated JPEG is still a
+            // perfectly good FILE. Decoded the same way MediaPrep builds its
+            // preview, so "decodes here" means "gets a thumbnail there".
+            //
+            // Everything else goes as `application/octet-stream`, which
+            // MediaPrep passes through untouched and which needs no thumbnail,
+            // encrypted or not. The server keys the stored type off the
+            // extension anyway.
+            if let type, photoTypes.contains(where: { type.conforms(to: $0) }) {
+                preview = ImageDownsampler.decode(bytes, maxPixels: 168)
+            }
             if preview == nil { mime = "application/octet-stream" }
         }
         return .added(PendingAttachment(
@@ -7046,6 +7107,9 @@ private struct AttachmentFileChip: View {
     let channel: Channel
     @State private var loading = false
     @State private var failed = false
+    /// An encrypted file in a conversation this device holds no key for.
+    /// Kept apart from `failed`: retrying can't fix it, unlocking can.
+    @State private var locked = false
     /// The temporary copy Quick Look is showing; nil while it isn't presented.
     @State private var previewURL: URL?
 
@@ -7060,8 +7124,7 @@ private struct AttachmentFileChip: View {
     }
 
     private var subtitle: String? {
-        // One message for both kinds of failure: decryptedAttachmentData
-        // can't tell a dropped download from a locked conversation.
+        if locked { return "Unlock this conversation to open" }
         if failed { return "Couldn't open. Tap to try again." }
         if loading { return isEncrypted ? "Decrypting…" : "Downloading…" }
         if isEncrypted && !attachment.blobExpired { return "Encrypted file" }
@@ -7071,8 +7134,10 @@ private struct AttachmentFileChip: View {
     var body: some View {
         Button(action: openFile) {
             HStack(spacing: 8) {
-                Image(systemName: attachment.blobExpired ? "clock" : (isEncrypted ? "lock.doc" : "doc.fill"))
-                    .foregroundColor(isEncrypted && !attachment.blobExpired ? Theme.accent : Theme.ink3)
+                Image(systemName: attachment.blobExpired ? "clock"
+                      : (locked ? "lock.slash" : (isEncrypted ? "lock.doc" : "doc.fill")))
+                    .foregroundColor(attachment.blobExpired ? Theme.ink3
+                                     : (locked ? Theme.dangerSoft : (isEncrypted ? Theme.accent : Theme.ink3)))
                 VStack(alignment: .leading, spacing: 1) {
                     Text(displayName)
                         .font(.zkSans(13, weight: .medium))
@@ -7081,7 +7146,7 @@ private struct AttachmentFileChip: View {
                     if let sub = subtitle {
                         Text(sub)
                             .font(.zkSans(11))
-                            .foregroundColor(failed ? Theme.dangerSoft : Theme.ink3)
+                            .foregroundColor(failed || locked ? Theme.dangerSoft : Theme.ink3)
                     }
                 }
                 if loading {
@@ -7108,12 +7173,25 @@ private struct AttachmentFileChip: View {
 
     private func openFile() {
         guard !loading, !attachment.blobExpired else { return }
-        loading = true
         failed = false
+        // No key for this conversation on this device: nothing to decrypt
+        // with, so say what will help instead of downloading a blob that can't
+        // be opened. Checked on every tap, so it opens once unlocked.
+        locked = isEncrypted && !store.hasE2EEKey(for: channel)
+        guard !locked else { return }
+        loading = true
         Task { @MainActor in
             let url = await fetchTempCopy()
             loading = false
-            if let url { previewURL = url } else { failed = true }
+            if let url {
+                previewURL = url
+            } else if isEncrypted && !store.hasE2EEKey(for: channel) {
+                // Relocked while it downloaded: decryptedAttachmentData's nil
+                // means that here, not a failed download.
+                locked = true
+            } else {
+                failed = true
+            }
         }
     }
 
@@ -7212,16 +7290,22 @@ struct EncryptedAttachmentView: View {
         return ["mp4", "mov", "m4v", "qt", "webm", "avi", "mkv"].contains(ext)
     }
 
-    /// Neither a video nor an image by its inner name — the same image list
-    /// the row uses to keep it out of the media grid (`encryptedInnerIsImage`)
-    /// — so a document. It renders as a tap-to-open AttachmentFileChip and is
-    /// NOT fetched on appear: the image path below would download and decrypt
-    /// the whole blob (no thumbnail exists for a document) the moment the row
-    /// came near, only to find it isn't a picture.
+    /// Neither a video nor an image by its inner name, so a document. It
+    /// renders as a tap-to-open AttachmentFileChip and is NOT fetched on
+    /// appear: the image path below would download and decrypt the whole blob
+    /// (no thumbnail exists for a document) the moment the row came near, only
+    /// to find it isn't a picture.
+    ///
+    /// "Image" is decided by TYPE, not by the row's short extension list
+    /// (`encryptedInnerIsImage`, which only picks what joins the media grid):
+    /// an .avif, .jfif or .tif — web keeps the original name of an image it
+    /// doesn't re-encode — is still drawn inline here, as it always was. An
+    /// image type this device can't draw (an SVG) still ends up on the chip,
+    /// through the decode-failure fallback in `body`.
     private var isFile: Bool {
         guard !isVideo else { return false }
         let ext = (displayName as NSString).pathExtension.lowercased()
-        return !["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tiff"].contains(ext)
+        return !(UTType(filenameExtension: ext)?.conforms(to: .image) ?? false)
     }
 
     /// Slot to reserve from the (plaintext) image dims so the row doesn't reflow

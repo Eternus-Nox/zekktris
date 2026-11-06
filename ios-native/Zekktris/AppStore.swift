@@ -3514,6 +3514,26 @@ final class AppStore: ObservableObject {
 
     // MARK: Sending
 
+    /// The freshest copy this store holds of `channel`, for deciding HOW to
+    /// send to it: encrypted or not, and with which key.
+    ///
+    /// The send functions are handed the conversation the composer displays,
+    /// and that `Channel` is the one its navigation route was pushed with — a
+    /// snapshot nothing updates afterwards. An E2EE flip lands only in
+    /// `selectedChannel` and `dms` (applyE2EEState, handleChannelUpdate). So
+    /// deciding from the snapshot sent in PLAINTEXT right after the user turned
+    /// encryption on from DM settings, or the peer turned it on while the chat
+    /// was open — and after a re-key or a disable, encrypted under a stale
+    /// verifier or refused. WHERE to send (the id) is still the caller's; only
+    /// the state comes from here, falling back to the snapshot for a channel
+    /// this store doesn't list.
+    private func liveCopy(of channel: Channel) -> Channel {
+        if let selected = selectedChannel, selected.id == channel.id { return selected }
+        return dms.first(where: { $0.id == channel.id })
+            ?? channels.first(where: { $0.id == channel.id })
+            ?? channel
+    }
+
     func send(_ raw: String, in channel: Channel) async {
         let content = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         // Target the channel the composer is displaying — NOT selectedChannel,
@@ -3526,10 +3546,13 @@ final class AppStore: ObservableObject {
         let nonce = UUID().uuidString
 
         // For E2EE DMs, encrypt before sending; remember the plaintext so the
-        // optimistic echo renders decrypted immediately.
+        // optimistic echo renders decrypted immediately. Encrypted or not is
+        // the conversation's CURRENT state, not the caller's snapshot (see
+        // liveCopy).
+        let live = liveCopy(of: channel)
         var wire = content
-        if channel.isE2EE {
-            guard let key = e2eeKey(for: channel) else {
+        if live.isE2EE {
+            guard let key = e2eeKey(for: live) else {
                 e2eeError = "Unlock this conversation to send."
                 return
             }
@@ -3917,8 +3940,12 @@ final class AppStore: ObservableObject {
         do {
             var files: [UploadFile] = []
             var wireCaption = caption
-            if channel.isE2EE {
-                guard let key = e2eeKey(for: channel) else {
+            // Encrypt or not by the conversation's state NOW — after the prep
+            // above, which can take a while for a video — and never by the
+            // route's snapshot in `channel` (see liveCopy).
+            let live = liveCopy(of: channel)
+            if live.isE2EE {
+                guard let key = e2eeKey(for: live) else {
                     e2eeError = "Unlock this conversation to send."
                     return false
                 }
@@ -3983,7 +4010,7 @@ final class AppStore: ObservableObject {
             // selection momentarily unknown (nil) while its chat is on screen.
             if selectedChannel == nil || channel.id == selectedChannel?.id {
                 upsert(message)
-                if channel.isE2EE, !caption.isEmpty { decrypted[message.id] = caption }
+                if live.isE2EE, !caption.isEmpty { decrypted[message.id] = caption }
                 replyingTo = nil
             }
             return true
@@ -4105,8 +4132,11 @@ final class AppStore: ObservableObject {
             var sendData = data
             var sendName = "voice-message.m4a"
             var sendType = "audio/mp4"
-            if channel.isE2EE {
-                guard let key = e2eeKey(for: channel), let enc = E2EE.encryptData(data, key: key) else {
+            // The conversation's current E2EE state, not the snapshot (see
+            // liveCopy).
+            let live = liveCopy(of: channel)
+            if live.isE2EE {
+                guard let key = e2eeKey(for: live), let enc = E2EE.encryptData(data, key: key) else {
                     e2eeError = "Unlock this conversation to send."
                     return
                 }

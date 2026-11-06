@@ -723,8 +723,24 @@ final class APIClient {
         return out
     }
 
-    /// Run a finished multipart request on `uploadSession`, with the same two
-    /// transparent replays `send()` makes. `req` already carries the whole
+    /// Counts the request-body bytes a task has handed to the network, so a
+    /// failed upload can tell "never left the device" from "may have arrived".
+    /// The callbacks come in on the session's delegate queue while the caller
+    /// is suspended in `data(for:delegate:)`, hence the lock.
+    private final class BodyBytesSentProbe: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        private let lock = NSLock()
+        private var sent: Int64 = 0
+        var totalSent: Int64 { lock.withLock { sent } }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                        totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+            lock.withLock { sent = max(sent, totalBytesSent) }
+        }
+    }
+
+    /// Run a finished multipart request on `uploadSession`, with the two
+    /// transparent replays `send()` makes (the stale-socket one narrowed to an
+    /// upload that never started — see below). `req` already carries the whole
     /// body, so a replay re-sends those bytes rather than rebuilding them, and
     /// the Authorization header is set here so a replay picks up a rotated
     /// token. Non-2xx answers are returned, not thrown: each caller words its
@@ -732,16 +748,24 @@ final class APIClient {
     private func performUpload(_ req: URLRequest, path: String, isRetry: Bool = false) async throws -> (Data, HTTPURLResponse) {
         var req = req
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        let probe = BodyBytesSentProbe()
         let data: Data
         let resp: URLResponse
         do {
-            (data, resp) = try await uploadSession.data(for: req)
-        } catch let err as URLError where !isRetry && Self.isStaleConnection(err.code) {
-            // A socket that went stale across app suspension throws before any
-            // bytes are sent — one transparent replay on a fresh connection (the
+            (data, resp) = try await uploadSession.data(for: req, delegate: probe)
+        } catch let err as URLError where !isRetry && Self.isStaleConnection(err.code) && probe.totalSent == 0 {
+            // A socket that went stale across app suspension fails before the
+            // body goes out — one transparent replay on a fresh connection (the
             // same replay send() does) so a resume-then-upload (e.g. a voice
             // message, whose temp file is deleted after the send) isn't lost.
-            // The message send is nonce-deduplicated server-side regardless.
+            //
+            // Only while NOT ONE body byte has been sent. The same
+            // `.networkConnectionLost` is what a link that drops mid-upload (a
+            // cellular handoff during a long video) or after the server has
+            // read the body raises, and the server does NOT deduplicate message
+            // sends by nonce: replaying then could post the message, with every
+            // attachment, twice. Once bytes are out the error goes to the
+            // caller instead, and the composer puts the picks back for a retry.
             return try await performUpload(req, path: path, isRetry: true)
         } catch let err as URLError where err.code == .timedOut {
             // The system wording ("The request timed out.") says nothing about
