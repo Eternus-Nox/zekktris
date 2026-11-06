@@ -572,7 +572,13 @@ final class AppStore: ObservableObject {
             Task {
                 // A join replacing the dead Room may have claimed the slot since.
                 guard self.voiceChannelId == lostChannelId else { return }
-                await self.leaveCurrentVoice(notifyServer: !takenOver, hangupCue: false)
+                // An own "left" for this channel means the server already dropped our row
+                // there (kick, decline, channel delete). The leave is per user, so sending
+                // one now could only remove a state another of our devices has created
+                // since. A move we couldn't follow sends no such "left" and still needs the
+                // leave for its new row.
+                let notify = !takenOver && self.ownLeftChannelId != lostChannelId
+                await self.leaveCurrentVoice(notifyServer: notify, hangupCue: false)
             }
         }
         voice.onRemovedByServer = { [weak self] removedChannelId in
