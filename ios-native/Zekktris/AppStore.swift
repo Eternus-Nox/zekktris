@@ -3514,6 +3514,26 @@ final class AppStore: ObservableObject {
 
     // MARK: Sending
 
+    /// The freshest copy this store holds of `channel`, for deciding HOW to
+    /// send to it: encrypted or not, and with which key.
+    ///
+    /// The send functions are handed the conversation the composer displays,
+    /// and that `Channel` is the one its navigation route was pushed with — a
+    /// snapshot nothing updates afterwards. An E2EE flip lands only in
+    /// `selectedChannel` and `dms` (applyE2EEState, handleChannelUpdate). So
+    /// deciding from the snapshot sent in PLAINTEXT right after the user turned
+    /// encryption on from DM settings, or the peer turned it on while the chat
+    /// was open — and after a re-key or a disable, encrypted under a stale
+    /// verifier or refused. WHERE to send (the id) is still the caller's; only
+    /// the state comes from here, falling back to the snapshot for a channel
+    /// this store doesn't list.
+    private func liveCopy(of channel: Channel) -> Channel {
+        if let selected = selectedChannel, selected.id == channel.id { return selected }
+        return dms.first(where: { $0.id == channel.id })
+            ?? channels.first(where: { $0.id == channel.id })
+            ?? channel
+    }
+
     func send(_ raw: String, in channel: Channel) async {
         let content = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         // Target the channel the composer is displaying — NOT selectedChannel,
@@ -3526,10 +3546,13 @@ final class AppStore: ObservableObject {
         let nonce = UUID().uuidString
 
         // For E2EE DMs, encrypt before sending; remember the plaintext so the
-        // optimistic echo renders decrypted immediately.
+        // optimistic echo renders decrypted immediately. Encrypted or not is
+        // the conversation's CURRENT state, not the caller's snapshot (see
+        // liveCopy).
+        let live = liveCopy(of: channel)
         var wire = content
-        if channel.isE2EE {
-            guard let key = e2eeKey(for: channel) else {
+        if live.isE2EE {
+            guard let key = e2eeKey(for: live) else {
                 e2eeError = "Unlock this conversation to send."
                 return
             }
@@ -3869,12 +3892,19 @@ final class AppStore: ObservableObject {
     /// Returns true on a successful send. The composer uses this to restore
     /// the picked attachments if the upload fails, so the user can retry
     /// without re-selecting everything.
+    ///
+    /// `channel` is the conversation the composer is DISPLAYING, exactly as in
+    /// `send(_:in:)`. This used to read `selectedChannel`, which can be nil
+    /// while a chat is still on screen (a foreground reselect — see the note
+    /// in send(_:in:)). The send then returned false with no error, so the
+    /// composer quietly put the picks back and nothing was uploaded — while
+    /// text in the same chat still sent.
     @discardableResult
     func sendAttachments(
         _ attachments: [(data: Data, filename: String, contentType: String)],
-        caption: String
+        caption: String,
+        in channel: Channel
     ) async -> Bool {
-        guard let channel = selectedChannel else { return false }
         guard !attachments.isEmpty else { return false }
         let nonce = UUID().uuidString
         uploading = true
@@ -3910,8 +3940,12 @@ final class AppStore: ObservableObject {
         do {
             var files: [UploadFile] = []
             var wireCaption = caption
-            if channel.isE2EE {
-                guard let key = e2eeKey(for: channel) else {
+            // Encrypt or not by the conversation's state NOW — after the prep
+            // above, which can take a while for a video — and never by the
+            // route's snapshot in `channel` (see liveCopy).
+            let live = liveCopy(of: channel)
+            if live.isE2EE {
+                guard let key = e2eeKey(for: live) else {
                     e2eeError = "Unlock this conversation to send."
                     return false
                 }
@@ -3972,9 +4006,11 @@ final class AppStore: ObservableObject {
             let message = try await api.sendMessageMultipart(
                 channelId: channel.id, content: wireCaption, nonce: nonce, files: files, replyToId: replyingTo?.id
             )
-            if channel.id == selectedChannel?.id {
+            // Same landing rule as send(_:in:): still viewing this channel, or
+            // selection momentarily unknown (nil) while its chat is on screen.
+            if selectedChannel == nil || channel.id == selectedChannel?.id {
                 upsert(message)
-                if channel.isE2EE, !caption.isEmpty { decrypted[message.id] = caption }
+                if live.isE2EE, !caption.isEmpty { decrypted[message.id] = caption }
                 replyingTo = nil
             }
             return true
@@ -4082,11 +4118,12 @@ final class AppStore: ObservableObject {
     /// waveform. In E2EE DMs the audio is encrypted (.zke) like any other
     /// attachment; the duration + waveform stay plaintext metadata (no
     /// content leak) so the player can draw the bars before decrypting.
-    func sendVoiceMessage(fileURL: URL, duration: Int, waveform: String) async {
+    /// `channel` is the conversation on screen — see sendAttachments for why
+    /// not `selectedChannel` (a nil selection silently dropped the recording).
+    func sendVoiceMessage(fileURL: URL, duration: Int, waveform: String, in channel: Channel) async {
         // The recording is a temp file from VoiceRecorder — remove it once we've
         // read + uploaded it (on every path) so recordings don't pile up in tmp.
         defer { try? FileManager.default.removeItem(at: fileURL) }
-        guard let channel = selectedChannel else { return }
         guard let data = try? Data(contentsOf: fileURL) else { errorText = "Couldn't read recording."; return }
         let nonce = UUID().uuidString
         uploading = true
@@ -4095,8 +4132,11 @@ final class AppStore: ObservableObject {
             var sendData = data
             var sendName = "voice-message.m4a"
             var sendType = "audio/mp4"
-            if channel.isE2EE {
-                guard let key = e2eeKey(for: channel), let enc = E2EE.encryptData(data, key: key) else {
+            // The conversation's current E2EE state, not the snapshot (see
+            // liveCopy).
+            let live = liveCopy(of: channel)
+            if live.isE2EE {
+                guard let key = e2eeKey(for: live), let enc = E2EE.encryptData(data, key: key) else {
                     e2eeError = "Unlock this conversation to send."
                     return
                 }
@@ -4110,7 +4150,7 @@ final class AppStore: ObservableObject {
                 replyToId: replyingTo?.id,
                 voiceMessage: ["durationSeconds": duration, "waveform": waveform]
             )
-            if channel.id == selectedChannel?.id {
+            if selectedChannel == nil || channel.id == selectedChannel?.id {
                 upsert(message)
                 replyingTo = nil
             }

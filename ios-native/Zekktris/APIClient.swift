@@ -96,6 +96,26 @@ final class APIClient {
         cfg.waitsForConnectivity = false
         return URLSession(configuration: cfg)
     }()
+    /// Multipart uploads (attachments, voice messages, avatars, emoji) get
+    /// their own session. The one above caps a WHOLE request at 60 s
+    /// (`timeoutIntervalForResource`): right for a JSON call, fatal for an
+    /// upload whose body can't go up and be answered inside a minute — about
+    /// 40 MB at a 5 Mbps uplink, i.e. most videos and any big batch on
+    /// cellular. Those always failed with "The request timed out." and the
+    /// picks bounced back into the composer. A per-request `timeoutInterval`
+    /// can't lift that cap (it only sets the idle timeout), hence a separate
+    /// session.
+    private let uploadSession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        // Idle timeout: no bytes moving in either direction for this long
+        // means a dead socket. Longer than the 20 s above because the server
+        // only answers once it has stored the files and made thumbnails.
+        cfg.timeoutIntervalForRequest = 60
+        // The whole upload, body plus response.
+        cfg.timeoutIntervalForResource = 15 * 60
+        cfg.waitsForConnectivity = false
+        return URLSession(configuration: cfg)
+    }()
     private let decoder = JSONDecoder()
 
     /// In-flight refresh, shared so concurrent 401s trigger ONE /auth/refresh
@@ -678,11 +698,95 @@ final class APIClient {
         try await sendVoid("DELETE", "/guilds/\(guildId)/members/@me/roles/\(roleId)")
     }
 
+    // ── Multipart plumbing (shared by every upload below) ────────────────────
+
+    /// A filename as it may appear inside a multipart `filename="…"` header.
+    /// A raw `"` ends the quoted string early and a CR or LF ends the header
+    /// line; either breaks the framing, and the server's parser then rejects
+    /// the whole body (500 "Failed to parse body as FormData.") — reproduced
+    /// with `My "draft".pdf`. Percent-encoding exactly those three is what
+    /// browsers send (WHATWG multipart/form-data) and what the server's undici
+    /// parser decodes back, so the name is stored as the user saw it. Walked
+    /// by Unicode scalar rather than with `replacingOccurrences`, because a
+    /// CR LF pair is ONE Character in Swift and a per-character search can
+    /// step over it.
+    private static func multipartFilename(_ name: String) -> String {
+        var out = ""
+        for scalar in name.unicodeScalars {
+            switch scalar {
+            case "\"": out += "%22"
+            case "\r": out += "%0D"
+            case "\n": out += "%0A"
+            default: out.unicodeScalars.append(scalar)
+            }
+        }
+        return out
+    }
+
+    /// Counts the request-body bytes a task has handed to the network, so a
+    /// failed upload can tell "never left the device" from "may have arrived".
+    /// The callbacks come in on the session's delegate queue while the caller
+    /// is suspended in `data(for:delegate:)`, hence the lock.
+    private final class BodyBytesSentProbe: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        private let lock = NSLock()
+        private var sent: Int64 = 0
+        var totalSent: Int64 { lock.withLock { sent } }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                        totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+            lock.withLock { sent = max(sent, totalBytesSent) }
+        }
+    }
+
+    /// Run a finished multipart request on `uploadSession`, with the two
+    /// transparent replays `send()` makes (the stale-socket one narrowed to an
+    /// upload that never started — see below). `req` already carries the whole
+    /// body, so a replay re-sends those bytes rather than rebuilding them, and
+    /// the Authorization header is set here so a replay picks up a rotated
+    /// token. Non-2xx answers are returned, not thrown: each caller words its
+    /// own failure.
+    private func performUpload(_ req: URLRequest, path: String, isRetry: Bool = false) async throws -> (Data, HTTPURLResponse) {
+        var req = req
+        if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        let probe = BodyBytesSentProbe()
+        let data: Data
+        let resp: URLResponse
+        do {
+            (data, resp) = try await uploadSession.data(for: req, delegate: probe)
+        } catch let err as URLError where !isRetry && Self.isStaleConnection(err.code) && probe.totalSent == 0 {
+            // A socket that went stale across app suspension fails before the
+            // body goes out — one transparent replay on a fresh connection (the
+            // same replay send() does) so a resume-then-upload (e.g. a voice
+            // message, whose temp file is deleted after the send) isn't lost.
+            //
+            // Only while NOT ONE body byte has been sent. The same
+            // `.networkConnectionLost` is what a link that drops mid-upload (a
+            // cellular handoff during a long video) or after the server has
+            // read the body raises, and the server does NOT deduplicate message
+            // sends by nonce: replaying then could post the message, with every
+            // attachment, twice. Once bytes are out the error goes to the
+            // caller instead, and the composer puts the picks back for a retry.
+            return try await performUpload(req, path: path, isRetry: true)
+        } catch let err as URLError where err.code == .timedOut {
+            // The system wording ("The request timed out.") says nothing about
+            // what to do; the two things that help are a better connection and
+            // a smaller body.
+            throw APIError(status: 0, message: "The upload timed out. Check your connection, or try fewer or smaller files.")
+        }
+        guard let http = resp as? HTTPURLResponse else { throw APIError(status: 0, message: "No HTTP response") }
+        // Access tokens are short-lived (15 min) and a big upload can outlive
+        // one: refresh via the cookie and replay once, exactly like send().
+        if http.statusCode == 401, canRetryAfterRefresh(path, authorized: true, isRetry: isRetry),
+           await refreshAccessToken().isSuccess {
+            return try await performUpload(req, path: path, isRetry: true)
+        }
+        return (data, http)
+    }
+
     // ── Generic multipart upload (name/description + single file) ──────────────
     private func uploadMultipart<T: Decodable>(
         _ path: String, fields: [String: String], fileField: String,
-        filename: String, contentType: String, fileData: Data, _ type: T.Type,
-        isRetry: Bool = false
+        filename: String, contentType: String, fileData: Data, _ type: T.Type
     ) async throws -> T {
         guard let url = URL(string: Config.apiBaseURL + path) else { throw APIError(status: 0, message: "Bad URL") }
         let boundary = "ZkBoundary-\(UUID().uuidString)"
@@ -695,7 +799,7 @@ final class APIClient {
             append("\r\n")
         }
         append("--\(boundary)\r\n")
-        append("Content-Disposition: form-data; name=\"\(fileField)\"; filename=\"\(filename)\"\r\n")
+        append("Content-Disposition: form-data; name=\"\(fileField)\"; filename=\"\(Self.multipartFilename(filename))\"\r\n")
         append("Content-Type: \(contentType)\r\n\r\n")
         body.append(fileData)
         append("\r\n")
@@ -705,29 +809,9 @@ final class APIClient {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         req.httpBody = body
 
-        let data: Data
-        let resp: URLResponse
-        do {
-            (data, resp) = try await session.data(for: req)
-        } catch let err as URLError where !isRetry && Self.isStaleConnection(err.code) {
-            // A socket that went stale across app suspension throws before any
-            // bytes are sent — one transparent replay on a fresh connection (the
-            // same replay send() does) so a resume-then-upload (e.g. a voice
-            // message, whose temp file is deleted after this call) isn't lost.
-            return try await uploadMultipart(path, fields: fields, fileField: fileField,
-                                             filename: filename, contentType: contentType,
-                                             fileData: fileData, type, isRetry: true)
-        }
-        guard let http = resp as? HTTPURLResponse else { throw APIError(status: 0, message: "No HTTP response") }
-        if http.statusCode == 401, canRetryAfterRefresh(path, authorized: true, isRetry: isRetry),
-           await refreshAccessToken().isSuccess {
-            return try await uploadMultipart(path, fields: fields, fileField: fileField,
-                                             filename: filename, contentType: contentType,
-                                             fileData: fileData, type, isRetry: true)
-        }
+        let (data, http) = try await performUpload(req, path: path)
         guard (200..<300).contains(http.statusCode) else {
             throw APIError(status: http.statusCode, message: Self.extractError(data) ?? "Upload failed (\(http.statusCode))")
         }
@@ -1155,7 +1239,8 @@ final class APIClient {
     /// Send a message with file attachments. Mirrors the web contract:
     /// a `payload_json` text field + `files[N]` file parts.
     func sendMessageMultipart(channelId: String, content: String, nonce: String, files: [UploadFile], replyToId: String? = nil, voiceMessage: [String: Any]? = nil) async throws -> Message {
-        guard let url = URL(string: Config.apiBaseURL + "/channels/\(channelId)/messages") else {
+        let path = "/channels/\(channelId)/messages"
+        guard let url = URL(string: Config.apiBaseURL + path) else {
             throw APIError(status: 0, message: "Bad URL")
         }
         let boundary = "ZkBoundary-\(UUID().uuidString)"
@@ -1185,7 +1270,7 @@ final class APIClient {
         append("\r\n")
         for (i, file) in files.enumerated() {
             append("--\(boundary)\r\n")
-            append("Content-Disposition: form-data; name=\"files[\(i)]\"; filename=\"\(file.filename)\"\r\n")
+            append("Content-Disposition: form-data; name=\"files[\(i)]\"; filename=\"\(Self.multipartFilename(file.filename))\"\r\n")
             append("Content-Type: \(file.contentType)\r\n\r\n")
             body.append(file.data)
             append("\r\n")
@@ -1204,22 +1289,11 @@ final class APIClient {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         req.httpBody = body
 
-        let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw APIError(status: 0, message: "No HTTP response") }
-        if http.statusCode == 401, await refreshAccessToken().isSuccess, let fresh = token {
-            // One replay with the rotated token (mirrors send()'s retry).
-            req.setValue("Bearer \(fresh)", forHTTPHeaderField: "Authorization")
-            let (data2, resp2) = try await session.data(for: req)
-            guard let http2 = resp2 as? HTTPURLResponse, (200..<300).contains(http2.statusCode) else {
-                let code = (resp2 as? HTTPURLResponse)?.statusCode ?? 0
-                throw APIError(status: code, message: Self.extractError(data2) ?? "Upload failed (\(code))")
-            }
-            let wrap2: MessageWrap = try decoder.decode(MessageWrap.self, from: data2)
-            return wrap2.message
-        }
+        // On the upload session (no 60 s whole-request cap), with the
+        // stale-socket replay and the 401 refresh-and-replay — see performUpload.
+        let (data, http) = try await performUpload(req, path: path)
         guard (200..<300).contains(http.statusCode) else {
             throw APIError(status: http.statusCode, message: Self.extractError(data) ?? "Upload failed (\(http.statusCode))")
         }
