@@ -7139,6 +7139,45 @@ private struct ImageShareItem: Identifiable {
 
 // MARK: - File attachments (tap to open)
 
+/// Temporary copies of attachments in tmp, which iOS never purges for us. In
+/// an encrypted DM they hold DECRYPTED plaintext. Each view deletes its own
+/// when it is done, which a crash or kill skips, so they are also swept by
+/// name:
+///
+/// - Opened attachments (AttachmentFileChip): one directory per open, named
+///   `prefix` + the conversation's id. A chip can't always delete its own:
+///   the app killed while Quick Look is open, or the row removed under it (a
+///   purge when encryption is turned off). Swept at launch and sign-out, and
+///   a conversation's own at its relock.
+/// - Encrypted videos and voice notes decrypted for playback
+///   (EncryptedAttachmentView, VoiceMessageView) as soon as their row comes
+///   near the screen, named `playbackPrefix`. Swept at launch and sign-out
+///   only: at a relock, rows of a chat that is still unlocked may be playing
+///   one.
+enum OpenedFileCopies {
+    static let prefix = "zk-open-"
+    static let playbackPrefix = "zk-plain-"
+
+    /// A fresh directory for one opened copy of a file from `channelId`.
+    static func directory(for channelId: String) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent(prefix + channelId + "-" + UUID().uuidString, isDirectory: true)
+    }
+
+    /// Remove the opened copies of `channelId`'s files (every conversation's
+    /// when nil), and the playback files too when `includingPlayback`.
+    static func sweep(channelId: String? = nil, includingPlayback: Bool = false) {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory
+        // The "-" closes the id, so channel 12's sweep can't reach channel 123's.
+        let opened = prefix + (channelId.map { $0 + "-" } ?? "")
+        guard let names = try? fm.contentsOfDirectory(atPath: tmp.path) else { return }
+        for name in names where name.hasPrefix(opened) || (includingPlayback && name.hasPrefix(playbackPrefix)) {
+            try? fm.removeItem(at: tmp.appendingPathComponent(name))
+        }
+    }
+}
+
 /// A non-media attachment (PDF, zip, audio, a document…) as a tappable chip.
 ///
 /// The chip used to be inert: a received document showed its name and size
@@ -7148,24 +7187,6 @@ private struct ImageShareItem: Identifiable {
 /// use — writes them to a temporary file under the file's REAL name (so Quick
 /// Look, and any app it is shared to, recognises the type) and opens it in
 /// Quick Look, whose share button reaches Save to Files / Open in….
-/// Temporary copies of opened attachments (AttachmentFileChip). For an
-/// encrypted DM they hold DECRYPTED plaintext, and a chip can't always delete
-/// its own: the app killed while Quick Look is open, or the row removed under
-/// it (a purge when encryption is turned off). Swept wholesale at launch,
-/// relock and sign-out.
-enum OpenedFileCopies {
-    static let prefix = "zk-open-"
-
-    static func sweep() {
-        let fm = FileManager.default
-        let tmp = fm.temporaryDirectory
-        guard let names = try? fm.contentsOfDirectory(atPath: tmp.path) else { return }
-        for name in names where name.hasPrefix(prefix) {
-            try? fm.removeItem(at: tmp.appendingPathComponent(name, isDirectory: true))
-        }
-    }
-}
-
 private struct AttachmentFileChip: View {
     let store: AppStore
     let attachment: Attachment
@@ -7277,8 +7298,7 @@ private struct AttachmentFileChip: View {
     /// the original, or nil when they couldn't be had. Each open gets its own
     /// directory, so the real filename can be used as-is without colliding.
     private func fetchTempCopy() async -> URL? {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent(OpenedFileCopies.prefix + UUID().uuidString, isDirectory: true)
+        let dir = OpenedFileCopies.directory(for: channel.id)
         let dest = dir.appendingPathComponent(Self.safeFileName(displayName))
         guard (try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)) != nil else {
             return nil
@@ -7563,7 +7583,7 @@ struct EncryptedAttachmentView: View {
                 }
                 let ext = (displayName as NSString).pathExtension.lowercased()
                 let tmp = FileManager.default.temporaryDirectory
-                    .appendingPathComponent(UUID().uuidString + "." + (ext.isEmpty ? "mp4" : ext))
+                    .appendingPathComponent(OpenedFileCopies.playbackPrefix + UUID().uuidString + "." + (ext.isEmpty ? "mp4" : ext))
                 if (try? data.write(to: tmp)) != nil {
                     videoURL = tmp
                     loading = false

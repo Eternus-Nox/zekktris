@@ -349,7 +349,7 @@ struct VoiceMessageView: View {
             guard mediaNear, !ready, attachment.filename?.hasSuffix(".zke") == true else { return }
             if let data = await store.decryptedAttachmentData(attachment, in: channel) {
                 let tmp = FileManager.default.temporaryDirectory
-                    .appendingPathComponent(UUID().uuidString + ".m4a")
+                    .appendingPathComponent(OpenedFileCopies.playbackPrefix + UUID().uuidString + ".m4a")
                 if (try? data.write(to: tmp)) != nil {
                     tempAudioURL = tmp
                     player.setSource(tmp)
