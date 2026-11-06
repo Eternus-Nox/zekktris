@@ -615,7 +615,9 @@ struct MessageListView: View {
             header
 
             if isLocked {
-                UnlockPanel(channel: channel)
+                // The live copy: it has the salt and verifier to unlock with,
+                // which the route's snapshot lacks after a peer enables E2EE.
+                UnlockPanel(channel: store.liveCopy(of: channel))
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -1573,9 +1575,14 @@ struct MessageListView: View {
     }
 
     /// Encrypted DM with no key on this device → show the unlock panel.
+    /// Decided from the store's live copy, not the route's `channel`, which
+    /// nothing updates: when the peer turned encryption on while this chat
+    /// was open, the composer stayed up and every send was refused with the
+    /// error shown nowhere (the typed text or recording thrown away).
     private var isLocked: Bool {
         _ = store.e2eeUnlockVersion
-        return channel.isE2EE && !store.hasE2EEKey(for: channel)
+        let live = store.liveCopy(of: channel)
+        return live.isE2EE && !store.hasE2EEKey(for: live)
     }
 
     private let bottomAnchor = "bottom-anchor"
@@ -1919,7 +1926,7 @@ struct MessageListView: View {
                     }
 
                     Button(action: send) {
-                        if store.uploading {
+                        if store.uploading && !textOnlyReady {
                             ProgressView().frame(width: 26, height: 26)
                         } else {
                             Image(systemName: "arrow.up.circle.fill")
@@ -1927,7 +1934,10 @@ struct MessageListView: View {
                                 .foregroundColor(canSend ? Theme.accent : Theme.ink4)
                         }
                     }
-                    .disabled(!canSend || store.uploading)
+                    // An upload in flight (one store-wide `uploading` flag, and
+                    // a big one can now run for minutes) blocks a second
+                    // attachment send, never a plain text send.
+                    .disabled(!canSend || (store.uploading && !pendingAttachments.isEmpty))
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
@@ -2026,6 +2036,11 @@ struct MessageListView: View {
 
     private var canSend: Bool {
         !pendingAttachments.isEmpty || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Text and no picks: sendable even while an upload is running.
+    private var textOnlyReady: Bool {
+        pendingAttachments.isEmpty && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var composerPlaceholder: String {
@@ -7112,6 +7127,8 @@ private struct AttachmentFileChip: View {
     @State private var locked = false
     /// The temporary copy Quick Look is showing; nil while it isn't presented.
     @State private var previewURL: URL?
+    /// The open in flight, cancelled if the chip goes away before it lands.
+    @State private var openTask: Task<Void, Never>?
 
     private var isEncrypted: Bool {
         channel.isE2EE && (attachment.filename?.hasSuffix(".zke") == true)
@@ -7169,6 +7186,10 @@ private struct AttachmentFileChip: View {
             // has served its purpose.
             if now == nil, let shown { Self.removeTempCopy(shown) }
         }
+        .onDisappear {
+            openTask?.cancel()
+            openTask = nil
+        }
     }
 
     private func openFile() {
@@ -7180,9 +7201,16 @@ private struct AttachmentFileChip: View {
         locked = isEncrypted && !store.hasE2EEKey(for: channel)
         guard !locked else { return }
         loading = true
-        Task { @MainActor in
+        openTask = Task { @MainActor in
             let url = await fetchTempCopy()
             loading = false
+            // The chip went away mid-open (Back, or its row scrolled off):
+            // nothing will present or later delete this copy, plaintext for
+            // an encrypted file, so delete it now.
+            if Task.isCancelled {
+                if let url { Self.removeTempCopy(url) }
+                return
+            }
             if let url {
                 previewURL = url
             } else if isEncrypted && !store.hasE2EEKey(for: channel) {
