@@ -2272,6 +2272,16 @@ final class AppStore: ObservableObject {
                 fetched[i].e2eeVerifier = held.e2eeVerifier
                 fetched[i].e2eePurgeProofSet = held.e2eePurgeProofSet
             }
+            // Encryption turned off while this device couldn't hear the
+            // CHANNEL_UPDATE (socket down past the server's resume window, or
+            // the app not running): this list is the only notice, so drop the
+            // key as handleChannelUpdate does. After the loop above, so an E2EE
+            // change applied during the fetch keeps its key.
+            let keyed = e2eeKeyedChannelIds()
+            for dm in fetched where !dm.isE2EE && keyed.contains(dm.id)
+                && (e2eeChangedAt[dm.id] ?? Int.min) < e2eeSeqAtStart {
+                relockE2EE(dm.id)
+            }
             // Most-recently-active first. Numeric snowflake comparison — plain
             // string > is wrong across id-length boundaries ("99" > "100").
             // Channels with no messages fall back to their own id (creation).
@@ -3561,14 +3571,16 @@ final class AppStore: ObservableObject {
         // Encryption turned off by the other person or on another of our
         // devices (our own disableE2EE relocks itself): the server purged the
         // history, so drop the key, decrypted text and media and opened-file
-        // copies here too; purgeStaleE2EEKey below only covers a re-key. Read
-        // before `dms` / selectedChannel take the update, and relock before
-        // decryptVisible below can use the old key.
+        // copies here too; purgeStaleE2EEKey below only runs for the open
+        // chat. Read before `dms` / selectedChannel take the update, and
+        // relock before decryptVisible below can use the old key.
         if liveCopy(of: updated).isE2EE && !updated.isE2EE {
             relockE2EE(updated.id)
         }
+        // Also for a DM `dms` doesn't list yet, so a DM list load in flight
+        // can't relock a key unlocked after this update (performLoadDMs).
+        if updated.isDM { noteE2EEChange(updated.id) }
         if let i = dms.firstIndex(where: { $0.id == updated.id }) {
-            noteE2EEChange(updated.id)
             // The gateway Channel DTO never carries `streak` (it's only
             // attached on the REST DM list), so a wholesale replace here
             // would WIPE a loaded streak on any unrelated CHANNEL_UPDATE
@@ -6635,9 +6647,19 @@ final class AppStore: ObservableObject {
     func hasE2EEKey(for channel: Channel) -> Bool { e2eeKey(for: channel) != nil }
 
     /// Forget a cached key that no longer matches the channel's verifier (e.g.
-    /// the DM was disabled + re-enabled with a new password). Safe to call from
-    /// actions; bumps the unlock version so the UI re-evaluates the lock state.
+    /// the DM was disabled + re-enabled with a new password), or that a DM no
+    /// longer encrypted still holds. Safe to call from actions; bumps the
+    /// unlock version so the UI re-evaluates the lock state.
     func purgeStaleE2EEKey(_ channel: Channel) {
+        // Encryption turned off while this device missed the CHANNEL_UPDATE:
+        // the server purged that history, so the key goes. Decided from the
+        // live copy, not `channel`: openChannel passes the route's snapshot,
+        // which can predate turning encryption on and so drop a key the user
+        // just unlocked.
+        if channel.isDM, !liveCopy(of: channel).isE2EE {
+            if e2eeKey(for: channel.id) != nil { relockE2EE(channel.id) }
+            return
+        }
         guard channel.isE2EE, let key = e2eeKey(for: channel.id),
               let expected = channel.e2eeVerifier,
               E2EE.verifier(forKey: key) != expected else { return }
@@ -6769,10 +6791,16 @@ final class AppStore: ObservableObject {
         for m in messages where m.channelId == channelId {
             decrypted.removeValue(forKey: m.id)
         }
+        // Keep the open chat's link previews when another DM is relocked: they
+        // are resolved only when a message is first decrypted, and its
+        // `decrypted` entries survive, so they would not come back until reopen.
+        let keptIds = Set(messages.lazy.filter { $0.channelId != channelId }.map(\.id))
+        let keptEmbeds = e2eeEmbeds.filter { keptIds.contains($0.key) }
         // Drop any decrypted attachment plaintext too — relocking must not leave
         // viewable media behind. (Clear all: the cache is keyed by attachment id,
         // not channel, and decrypted bytes are cheap to re-derive while unlocked.)
         clearDecryptedMedia()
+        e2eeEmbeds = keptEmbeds
         e2eeUnlockVersion += 1
     }
 
@@ -6819,6 +6847,18 @@ final class AppStore: ObservableObject {
     private func e2eeKeychainDelete(_ account: String) {
         e2eeKeychain.delete(account)
         keychain.delete(account)
+    }
+
+    /// Channels this account holds a key for: the session cache plus both
+    /// stores, one query each rather than a lookup per channel (a DM list
+    /// load checks every DM).
+    private func e2eeKeyedChannelIds() -> Set<String> {
+        let prefix = e2eeKeychainKey("")
+        var ids = Set(e2eeKeyCache.keys)
+        for (account, _) in e2eeKeychain.allValues(prefix: prefix) + keychain.allValues(prefix: prefix) {
+            ids.insert(String(account.dropFirst(prefix.count)))
+        }
+        return ids
     }
 
     /// One-time sweep copying legacy default-group E2EE keys into the app-group
