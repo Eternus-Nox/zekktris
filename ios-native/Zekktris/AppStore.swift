@@ -3602,11 +3602,18 @@ final class AppStore: ObservableObject {
     /// verifier or refused. WHERE to send (the id) is still the caller's; only
     /// the state comes from here, falling back to the snapshot for a channel
     /// this store doesn't list.
-    private func liveCopy(of channel: Channel) -> Channel {
+    ///
+    /// `dms` is checked BEFORE `selectedChannel`: both take the gateway events,
+    /// but only `dms` is replaced by a REST reload (loadDMs on a reconnect's
+    /// READY or a foreground), which is how an E2EE change missed while the
+    /// socket was down arrives. `selectedChannel` never sees that, so trusting
+    /// it first sent in PLAINTEXT to a DM the peer encrypted while this app was
+    /// suspended. It stays the fallback for a DM not listed yet; `channels`
+    /// covers guild channels. The chat screen's lock gate reads this too.
+    func liveCopy(of channel: Channel) -> Channel {
+        if let dm = dms.first(where: { $0.id == channel.id }) { return dm }
         if let selected = selectedChannel, selected.id == channel.id { return selected }
-        return dms.first(where: { $0.id == channel.id })
-            ?? channels.first(where: { $0.id == channel.id })
-            ?? channel
+        return channels.first(where: { $0.id == channel.id }) ?? channel
     }
 
     func send(_ raw: String, in channel: Channel) async {
@@ -3982,6 +3989,10 @@ final class AppStore: ObservableObject {
     ) async -> Bool {
         guard !attachments.isEmpty else { return false }
         let nonce = UUID().uuidString
+        // The reply showing when Send was tapped. Text can be sent while this
+        // upload runs, and that send takes (and clears) `replyingTo` or the
+        // user picks a new one for it, so don't read it again later.
+        let sentReplyId = replyingTo?.id
         uploading = true
         defer { uploading = false }
 
@@ -4079,14 +4090,15 @@ final class AppStore: ObservableObject {
                 }
             }
             let message = try await api.sendMessageMultipart(
-                channelId: channel.id, content: wireCaption, nonce: nonce, files: files, replyToId: replyingTo?.id
+                channelId: channel.id, content: wireCaption, nonce: nonce, files: files, replyToId: sentReplyId
             )
             // Same landing rule as send(_:in:): still viewing this channel, or
             // selection momentarily unknown (nil) while its chat is on screen.
             if selectedChannel == nil || channel.id == selectedChannel?.id {
                 upsert(message)
                 if live.isE2EE, !caption.isEmpty { decrypted[message.id] = caption }
-                replyingTo = nil
+                // Only the reply this send carried: not one picked meanwhile.
+                if replyingTo?.id == sentReplyId { replyingTo = nil }
             }
             return true
         } catch {
@@ -4201,6 +4213,8 @@ final class AppStore: ObservableObject {
         defer { try? FileManager.default.removeItem(at: fileURL) }
         guard let data = try? Data(contentsOf: fileURL) else { errorText = "Couldn't read recording."; return }
         let nonce = UUID().uuidString
+        // Read once, as in sendAttachments: text can be sent during the upload.
+        let sentReplyId = replyingTo?.id
         uploading = true
         defer { uploading = false }
         do {
@@ -4222,12 +4236,12 @@ final class AppStore: ObservableObject {
             let file = UploadFile(data: sendData, filename: sendName, contentType: sendType)
             let message = try await api.sendMessageMultipart(
                 channelId: channel.id, content: "", nonce: nonce, files: [file],
-                replyToId: replyingTo?.id,
+                replyToId: sentReplyId,
                 voiceMessage: ["durationSeconds": duration, "waveform": waveform]
             )
             if selectedChannel == nil || channel.id == selectedChannel?.id {
                 upsert(message)
-                replyingTo = nil
+                if replyingTo?.id == sentReplyId { replyingTo = nil }
             }
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
