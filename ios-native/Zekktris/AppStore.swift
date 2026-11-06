@@ -3869,12 +3869,19 @@ final class AppStore: ObservableObject {
     /// Returns true on a successful send. The composer uses this to restore
     /// the picked attachments if the upload fails, so the user can retry
     /// without re-selecting everything.
+    ///
+    /// `channel` is the conversation the composer is DISPLAYING, exactly as in
+    /// `send(_:in:)`. This used to read `selectedChannel`, which can be nil
+    /// while a chat is still on screen (a foreground reselect — see the note
+    /// in send(_:in:)). The send then returned false with no error, so the
+    /// composer quietly put the picks back and nothing was uploaded — while
+    /// text in the same chat still sent.
     @discardableResult
     func sendAttachments(
         _ attachments: [(data: Data, filename: String, contentType: String)],
-        caption: String
+        caption: String,
+        in channel: Channel
     ) async -> Bool {
-        guard let channel = selectedChannel else { return false }
         guard !attachments.isEmpty else { return false }
         let nonce = UUID().uuidString
         uploading = true
@@ -3972,7 +3979,9 @@ final class AppStore: ObservableObject {
             let message = try await api.sendMessageMultipart(
                 channelId: channel.id, content: wireCaption, nonce: nonce, files: files, replyToId: replyingTo?.id
             )
-            if channel.id == selectedChannel?.id {
+            // Same landing rule as send(_:in:): still viewing this channel, or
+            // selection momentarily unknown (nil) while its chat is on screen.
+            if selectedChannel == nil || channel.id == selectedChannel?.id {
                 upsert(message)
                 if channel.isE2EE, !caption.isEmpty { decrypted[message.id] = caption }
                 replyingTo = nil
@@ -4082,11 +4091,12 @@ final class AppStore: ObservableObject {
     /// waveform. In E2EE DMs the audio is encrypted (.zke) like any other
     /// attachment; the duration + waveform stay plaintext metadata (no
     /// content leak) so the player can draw the bars before decrypting.
-    func sendVoiceMessage(fileURL: URL, duration: Int, waveform: String) async {
+    /// `channel` is the conversation on screen — see sendAttachments for why
+    /// not `selectedChannel` (a nil selection silently dropped the recording).
+    func sendVoiceMessage(fileURL: URL, duration: Int, waveform: String, in channel: Channel) async {
         // The recording is a temp file from VoiceRecorder — remove it once we've
         // read + uploaded it (on every path) so recordings don't pile up in tmp.
         defer { try? FileManager.default.removeItem(at: fileURL) }
-        guard let channel = selectedChannel else { return }
         guard let data = try? Data(contentsOf: fileURL) else { errorText = "Couldn't read recording."; return }
         let nonce = UUID().uuidString
         uploading = true
@@ -4110,7 +4120,7 @@ final class AppStore: ObservableObject {
                 replyToId: replyingTo?.id,
                 voiceMessage: ["durationSeconds": duration, "waveform": waveform]
             )
-            if channel.id == selectedChannel?.id {
+            if selectedChannel == nil || channel.id == selectedChannel?.id {
                 upsert(message)
                 replyingTo = nil
             }
