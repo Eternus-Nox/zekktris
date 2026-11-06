@@ -883,6 +883,11 @@ final class AppStore: ObservableObject {
     /// must run exactly once per teardown (concurrent Room teardowns crashed
     /// the LiveKit audio worker). Not @Published — internal serialization only.
     private var isLeavingVoice = false
+    /// The connected channel an own "left" (channelId nil) arrived for, until an own
+    /// state naming that channel again. Non-move removals and another device joining
+    /// elsewhere send one; an old server's move never does. The late "left" for the
+    /// channel we just switched from is followed by our own state for the new one.
+    private var ownLeftChannelId: String?
     @Published var stageParticipants: [StageParticipant] = []
     @Published var stageChannelId: String?
     @Published var stageConnecting = false
@@ -2983,6 +2988,7 @@ final class AppStore: ObservableObject {
             // reference it while the join is in flight — without this, an End
             // pressed mid-join saw voiceChannelId == nil and failed to hang up.
             voiceChannelId = channel.id
+            ownLeftChannelId = nil
             let res = try await api.joinVoice(channelId: channel.id)
             // Abort if a leave/hangup raced the in-flight join (voiceChannelId
             // was cleared/changed) — otherwise we'd connect a room nobody's in.
@@ -3280,6 +3286,10 @@ final class AppStore: ObservableObject {
             voiceStatesByUser[vs.userId] = vs
         }
         guard let active = voiceChannelId else { return }
+        if vs.userId == currentUserId {
+            if vs.channelId == nil { ownLeftChannelId = active }
+            else if vs.channelId == active { ownLeftChannelId = nil }
+        }
         // Stable join order: update IN PLACE (planetary seating — first-in
         // stays closest; remove+append used to shuffle a user to the
         // outermost orbit on every mute toggle). Removals compact the
@@ -3399,7 +3409,9 @@ final class AppStore: ObservableObject {
     /// Only for states the server marks `moved` (a moderator move or the AFK
     /// sweep), or, from a server older than that flag, once it has also
     /// removed us from the connected channel's Room (whichever of the two
-    /// lands second calls this; see voice.onRemovedByServer). Any other own
+    /// lands second calls this; see voice.onRemovedByServer) without an own
+    /// "left" for that channel: a kick or decline sends one, and after it
+    /// another device's join elsewhere would look like that move. Any other own
     /// state naming another channel is one of our other devices joining it
     /// (or a late echo of our own earlier join), which leaves our Room alone:
     /// rejoining would take that device's call. The old channel's "left"
@@ -3409,7 +3421,8 @@ final class AppStore: ObservableObject {
               let newId = vs.channelId,
               let connected = voiceChannelId,
               connected != newId,
-              vs.moved == true || voice.removedByServerTag == connected,
+              vs.moved == true
+                || (voice.removedByServerTag == connected && ownLeftChannelId != connected),
               let target = channels.first(where: { $0.id == newId })
                 ?? dms.first(where: { $0.id == newId })
         else { return }
