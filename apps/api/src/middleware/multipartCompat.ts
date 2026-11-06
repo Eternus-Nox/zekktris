@@ -87,16 +87,25 @@ export async function parseFormBody<O extends Partial<ParseBodyOptions> = {}>(
 // length: an 8,000-char boundary over 5 MB held the event loop for 13 s. Node's
 // parser takes a boundary of any length, so the cap is enforced here.
 const MAX_BOUNDARY = 70;
-// The cap on the whole header also covers a second `boundary=` hidden behind a
-// quoted parameter (`x="; boundary=a"; boundary=…`), which boundaryOf() misses
-// but the form parser uses. Within 256 chars that one stays under 250 too.
+// The cap on the whole header also covers a boundary the form parser uses but
+// boundaryOf() misses: a second `boundary=` hidden behind a quoted parameter
+// (`x="; boundary=a"; boundary=…`), or an unquoted value with a space in it
+// (`boundary=a b…`, which boundaryOf() cuts at the space). The parser encodes
+// the boundary as UTF-8, and Node hands header bytes over as latin1, so a
+// 0x80-0xFF byte in the header counts twice there. The cap is therefore on the
+// header's UTF-8 length: within 256 bytes such a boundary stays under about 227
+// bytes, below the ~250-byte point.
 const MAX_CONTENT_TYPE = 256;
 
 async function parseMultipart(req: HonoRequest, contentType: string): Promise<FormData> {
   // Checked before the body is read, so a bad header is refused without
   // buffering the upload.
   const boundary = boundaryOf(contentType);
-  if (contentType.length > MAX_CONTENT_TYPE || !boundary || boundary.length > MAX_BOUNDARY) {
+  if (
+    Buffer.byteLength(contentType, 'utf8') > MAX_CONTENT_TYPE ||
+    !boundary ||
+    boundary.length > MAX_BOUNDARY
+  ) {
     throw errors.badRequest('Malformed multipart body');
   }
   // req.raw is read here, not when the middleware ran, so it is whatever
