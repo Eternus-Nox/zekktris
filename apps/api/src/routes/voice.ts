@@ -378,7 +378,14 @@ voiceRouter.delete(
   validate('param', z.object({ channelId: snowflakeSchema })),
   async (c) => {
     const userId = requireUserId(c);
-    const result = await voice.leaveVoice(userId);
+    // Only the call in THIS channel. A user's voice row is per user, not per
+    // device: unscoped, a leave from a device whose call already ended or moved
+    // (a late hang-up, a stale reconcile, the previous channel of a switch)
+    // deleted the row the user's OTHER device had just joined — ending that
+    // call. A leave for a channel the user isn't in is a no-op.
+    const result = await voice.leaveVoice(userId, {
+      expectedChannelId: BigInt(c.req.valid('param').channelId),
+    });
     if (result.priorState) {
       const leftDto = leftVoiceStateDTO({
         userId,
