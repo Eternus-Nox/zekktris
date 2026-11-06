@@ -17,7 +17,7 @@
  * field returned from `joinVoice` is null with a note — clients can see
  * the participant count update, but no audio flows.
  */
-import { eq, and, inArray, isNull, isNotNull, lt, ne, sql } from 'drizzle-orm';
+import { eq, and, or, inArray, isNull, isNotNull, lt, ne, sql } from 'drizzle-orm';
 import { AccessToken, RoomServiceClient, TrackSource } from 'livekit-server-sdk';
 import { db, schema } from '../db';
 import { env } from '../env';
@@ -203,6 +203,7 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
       sessionId,
       selfMute: false,
       selfDeaf: false,
+      movedFromChannelId: null,
     })
     .onConflictDoUpdate({
       target: schema.voiceStates.userId,
@@ -213,6 +214,9 @@ export async function joinVoice(userId: bigint, channelId: bigint): Promise<Join
         selfMute: false,
         selfDeaf: false,
         joinedAt: new Date(),
+        // The user's own join: their client is in THIS channel now, so a
+        // hang-up naming the channel a move took them out of is stale.
+        movedFromChannelId: null,
       },
     })
     .returning();
@@ -644,20 +648,29 @@ async function recordVoiceJoinStats(
 
 export async function leaveVoice(
   userId: bigint,
-  opts?: { evictFromSfu?: boolean; expectedChannelId?: bigint },
+  opts?: { evictFromSfu?: boolean; expectedChannelId?: bigint; matchMovedFrom?: boolean },
 ): Promise<LeaveVoiceResult> {
   // When `expectedChannelId` is given, only remove the user if they're still in
   // THAT channel — so a forced leave (decline/kick) can't evict them from a
   // different channel they raced into between the caller's check and this call.
+  // `matchMovedFrom` (the user's own hang-up only) also matches the channel a
+  // moderator move / AFK sweep took them out of: a client that didn't follow
+  // the move still names that one, and must still end the call.
+  const expected = opts?.expectedChannelId;
   const [priorState] = await db
     .delete(schema.voiceStates)
     .where(
-      opts?.expectedChannelId !== undefined
-        ? and(
+      expected === undefined
+        ? eq(schema.voiceStates.userId, userId)
+        : and(
             eq(schema.voiceStates.userId, userId),
-            eq(schema.voiceStates.channelId, opts.expectedChannelId),
-          )
-        : eq(schema.voiceStates.userId, userId),
+            opts?.matchMovedFrom
+              ? or(
+                  eq(schema.voiceStates.channelId, expected),
+                  eq(schema.voiceStates.movedFromChannelId, expected),
+                )
+              : eq(schema.voiceStates.channelId, expected),
+          ),
     )
     .returning();
   if (!priorState) {
@@ -1283,6 +1296,10 @@ export async function moveVoiceMember(args: {
     .set({
       channelId: targetChannelId,
       sessionId: newSessionId,
+      // Remember where they were (the first channel, across repeated moves
+      // without a rejoin) so a hang-up from a client that doesn't follow the
+      // move still ends the call — see leaveVoice's matchMovedFrom.
+      movedFromChannelId: sql`coalesce(${schema.voiceStates.movedFromChannelId}, ${schema.voiceStates.channelId})`,
     })
     .where(eq(schema.voiceStates.userId, targetUserId))
     .returning();
@@ -1390,7 +1407,14 @@ export async function sweepAfkMutedMembers(): Promise<AfkAutoMove[]> {
       // so a concurrent leave/move doesn't get clobbered.
       const [moved] = await db
         .update(schema.voiceStates)
-        .set({ channelId: afkChannelId, sessionId: newSessionId, selfMuteAt: null })
+        .set({
+          channelId: afkChannelId,
+          sessionId: newSessionId,
+          selfMuteAt: null,
+          // As in moveVoiceMember: a client that doesn't follow still hangs
+          // up naming the channel it was swept out of.
+          movedFromChannelId: sql`coalesce(${schema.voiceStates.movedFromChannelId}, ${schema.voiceStates.channelId})`,
+        })
         .where(
           and(
             eq(schema.voiceStates.userId, cand.userId),

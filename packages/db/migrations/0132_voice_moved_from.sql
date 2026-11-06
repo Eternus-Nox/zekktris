@@ -1,0 +1,14 @@
+-- Voice leave scoping vs. moves.
+--
+-- DELETE /channels/:id/voice only ends the caller's call in THAT channel, so
+-- a late hang-up from one device can't end the call another device just
+-- joined. But a moderator move or the AFK sweep repoints the row at a new
+-- channel server-side, and a client that doesn't follow the move (older
+-- Android builds) still hangs up naming the OLD channel — which then matched
+-- nothing and stranded the user as a ghost in the channel they were moved to.
+--
+-- moved_from_channel_id records the channel a move took the user out of
+-- (the first one, across several moves without a rejoin), and the leave
+-- route matches it too. Any join clears it. No FK: it is only compared, and
+-- a deleted channel's id is never reused.
+ALTER TABLE "voice_states" ADD COLUMN "moved_from_channel_id" bigint;

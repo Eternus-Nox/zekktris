@@ -338,6 +338,16 @@ export const voiceStates = pgTable(
     /** Self-deafen (also doesn't hear others; implies selfMute=true). */
     selfDeaf: boolean('self_deaf').notNull().default(false),
     joinedAt: timestamp('joined_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * The channel a moderator move or the AFK sweep took the user OUT of,
+     * kept until their own next join. A client that can't follow a move
+     * (it never rejoins) still hangs up naming that channel; the scoped
+     * leave route matches it here so the hang-up ends the call instead of
+     * stranding the row in the channel they were moved to. Across several
+     * moves without a rejoin it keeps the FIRST channel — the one that
+     * client still thinks it's in. Null after any join.
+     */
+    movedFromChannelId: bigint('moved_from_channel_id', { mode: 'bigint' }),
   },
   (t) => ({
     byChannel: index('voice_states_by_channel_idx').on(t.channelId),

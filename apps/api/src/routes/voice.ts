@@ -382,9 +382,13 @@ voiceRouter.delete(
     // device: unscoped, a leave from a device whose call already ended or moved
     // (a late hang-up, a stale reconcile, the previous channel of a switch)
     // deleted the row the user's OTHER device had just joined — ending that
-    // call. A leave for a channel the user isn't in is a no-op.
+    // call. A leave for a channel the user isn't in is a no-op — unless a
+    // moderator move or the AFK sweep took them out of it and they haven't
+    // joined anywhere since: a client that didn't follow the move still hangs
+    // up naming the old channel, and that must end the call.
     const result = await voice.leaveVoice(userId, {
       expectedChannelId: BigInt(c.req.valid('param').channelId),
+      matchMovedFrom: true,
     });
     if (result.priorState) {
       const leftDto = leftVoiceStateDTO({
