@@ -915,7 +915,12 @@ final class AppStore: ObservableObject {
     /// so the "New messages" divider stays put where the user left off.
     @Published var unreadBoundaryId: String?
     @Published var loadingThreads = false
-    @Published var uploading = false
+    /// Attachment / voice-note uploads in flight. A counter, not a flag: a
+    /// voice note finishing while a large attachment upload is still running
+    /// must not clear `uploading` (it re-enabled the attachment send and hid
+    /// the spinner mid-upload).
+    @Published private var activeUploads = 0
+    var uploading: Bool { activeUploads > 0 }
     @Published var searching = false
     @Published var searchResults: [Message] = []
     // Cross-DM search (spans every DM conversation) — separate from the
@@ -1116,6 +1121,9 @@ final class AppStore: ObservableObject {
     func start(token: String, user: SelfUser?) {
         currentUserId = user?.id
         currentUser = user
+        // Opened-attachment copies left by a previous run (killed while Quick
+        // Look was showing one); nothing can be showing one yet.
+        OpenedFileCopies.sweep()
         // Move any pre-app-group E2EE keys into the shared keychain so the
         // Notification Service Extension can decrypt previews (idempotent).
         migrateE2EEKeysToAppGroupIfNeeded()
@@ -1707,6 +1715,8 @@ final class AppStore: ObservableObject {
         WidgetBridge.publish(dms: [], token: nil)
         WidgetCenter.shared.reloadAllTimelines()
         WatchSync.shared.sync(token: nil, targets: [])
+        // Opened attachments, decrypted ones included, belong to this account.
+        OpenedFileCopies.sweep()
         // A share still waiting for a conversation belongs to this account.
         discardPendingShare()
         currentUserId = nil
@@ -2242,6 +2252,9 @@ final class AppStore: ObservableObject {
     private func performLoadDMs() async {
         loadingDMs = true
         defer { loadingDMs = false }
+        // An E2EE change applied while this fetch is in flight (CHANNEL_UPDATE,
+        // enable/disable) is newer than the response; see noteE2EEChange.
+        let e2eeSeqAtStart = e2eeChangeSeq
         // Snapshot presence BEFORE the network call suspends. Any gateway
         // PRESENCE_UPDATE applied while we're awaiting mutates `presence`
         // (same MainActor, so it's serialized, not a data race) — diffing
@@ -2249,7 +2262,15 @@ final class AppStore: ObservableObject {
         // live status mid-fetch.
         let presenceBefore = presenceSnapshot()
         do {
-            let fetched = try await api.listDMs()
+            var fetched = try await api.listDMs()
+            for i in fetched.indices {
+                guard let at = e2eeChangedAt[fetched[i].id], at >= e2eeSeqAtStart,
+                      let held = dms.first(where: { $0.id == fetched[i].id }) else { continue }
+                fetched[i].e2eeEnabled = held.e2eeEnabled
+                fetched[i].e2eeSalt = held.e2eeSalt
+                fetched[i].e2eeVerifier = held.e2eeVerifier
+                fetched[i].e2eePurgeProofSet = held.e2eePurgeProofSet
+            }
             // Most-recently-active first. Numeric snowflake comparison — plain
             // string > is wrong across id-length boundaries ("99" > "100").
             // Channels with no messages fall back to their own id (creation).
@@ -3516,6 +3537,7 @@ final class AppStore: ObservableObject {
     /// a re-keyed conversation re-prompts (and a freshly-enabled one locks).
     private func handleChannelUpdate(_ updated: Channel) {
         if let i = dms.firstIndex(where: { $0.id == updated.id }) {
+            noteE2EEChange(updated.id)
             // The gateway Channel DTO never carries `streak` (it's only
             // attached on the REST DM list), so a wholesale replace here
             // would WIPE a loaded streak on any unrelated CHANNEL_UPDATE
@@ -4029,8 +4051,8 @@ final class AppStore: ObservableObject {
         // upload runs, and that send takes (and clears) `replyingTo` or the
         // user picks a new one for it, so don't read it again later.
         let sentReplyId = replyingTo?.id
-        uploading = true
-        defer { uploading = false }
+        activeUploads += 1
+        defer { activeUploads -= 1 }
 
         // STEP 1 — shrink the media BEFORE anything else touches it, and in
         // particular before encryption. Once a blob is encrypted it is opaque
@@ -4251,8 +4273,8 @@ final class AppStore: ObservableObject {
         let nonce = UUID().uuidString
         // Read once, as in sendAttachments: text can be sent during the upload.
         let sentReplyId = replyingTo?.id
-        uploading = true
-        defer { uploading = false }
+        activeUploads += 1
+        defer { activeUploads -= 1 }
         do {
             var sendData = data
             var sendName = "voice-message.m4a"
@@ -6705,6 +6727,8 @@ final class AppStore: ObservableObject {
     /// Forget the local key (re-locks this device).
     func relockE2EE(_ channelId: String) {
         e2eeKeyCache.removeValue(forKey: channelId)
+        // Decrypted copies of opened files must not outlive the lock.
+        OpenedFileCopies.sweep()
         // The verifier memo is keyed by raw key bytes; relocking must not leave
         // them behind in memory. (It's tiny and cheap to rebuild.)
         verifierMemo = [:]
@@ -6787,7 +6811,11 @@ final class AppStore: ObservableObject {
     // is the only unlock path now, so a key-file bundle is dead weight.
 
     private func decryptVisible() {
-        guard let ch = selectedChannel, let key = e2eeKey(for: ch) else { return }
+        // The live copy: a reconnect refreshes `dms` but never selectedChannel,
+        // so after a re-key while suspended its verifier is stale (see liveCopy).
+        guard let selected = selectedChannel else { return }
+        let ch = liveCopy(of: selected)
+        guard let key = e2eeKey(for: ch) else { return }
         let channelId = ch.id
         // Snapshot the not-yet-decrypted messages. (id, ciphertext) pairs are
         // value types, safe to hand to a detached task.
@@ -6849,9 +6877,9 @@ final class AppStore: ObservableObject {
 
     private func decryptOne(_ message: Message) {
         guard E2EE.isDecryptable(message.text), decrypted[message.id] == nil else { return }
-        let channel = selectedChannel?.id == message.channelId
-            ? selectedChannel
-            : dms.first(where: { $0.id == message.channelId })
+        // Same order as liveCopy: `dms` first, which a reconnect refreshes.
+        let channel = dms.first(where: { $0.id == message.channelId })
+            ?? (selectedChannel?.id == message.channelId ? selectedChannel : nil)
         guard let channel, let key = e2eeKey(for: channel) else { return }
         if let pt = E2EE.decrypt(message.text, key: key) {
             decrypted[message.id] = pt
@@ -6947,7 +6975,21 @@ final class AppStore: ObservableObject {
         return out
     }
 
+    /// Bumped by every live E2EE change to a DM. performLoadDMs replaces `dms`
+    /// wholesale with a REST response, and liveCopy reads `dms` first: a
+    /// response read by the server BEFORE a CHANNEL_UPDATE that turned
+    /// encryption on, but applied after it, would otherwise put "not encrypted"
+    /// back for the rest of the session — no lock gate, plaintext sends.
+    private var e2eeChangeSeq = 0
+    private var e2eeChangedAt: [String: Int] = [:]
+
+    private func noteE2EEChange(_ channelId: String) {
+        e2eeChangedAt[channelId] = e2eeChangeSeq
+        e2eeChangeSeq += 1
+    }
+
     private func applyE2EEState(channelId: String, enabled: Bool, salt: String?, verifier: String?) {
+        noteE2EEChange(channelId)
         if selectedChannel?.id == channelId {
             selectedChannel?.e2eeEnabled = enabled
             selectedChannel?.e2eeSalt = salt

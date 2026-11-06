@@ -408,7 +408,31 @@ enum MediaPrep {
 struct MessageListView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var session: Session
-    let channel: Channel
+    /// The channel as it was when the route was pushed. Nothing refreshes a
+    /// route's copy, so read `channel` below instead.
+    private let routeChannel: Channel
+
+    init(channel: Channel) {
+        self.routeChannel = channel
+    }
+
+    /// The route's channel with the conversation's CURRENT encryption state
+    /// (store.liveCopy). Encryption turned on, off or re-keyed while this chat
+    /// is open — here, by the other person, or while suspended — changes how
+    /// every row draws and decrypts: from the route's snapshot, encrypted
+    /// photos, files and voice notes showed as broken `.zke` files until the
+    /// chat was reopened. Only the E2EE fields are taken from the live copy,
+    /// so rows don't re-render on unrelated updates (a lastMessageId move).
+    private var channel: Channel {
+        let live = store.liveCopy(of: routeChannel)
+        guard live.id == routeChannel.id else { return routeChannel }
+        var c = routeChannel
+        c.e2eeEnabled = live.e2eeEnabled
+        c.e2eeSalt = live.e2eeSalt
+        c.e2eeVerifier = live.e2eeVerifier
+        c.e2eePurgeProofSet = live.e2eePurgeProofSet
+        return c
+    }
 
     @State private var draft = ""
 
@@ -2072,6 +2096,14 @@ struct MessageListView: View {
         // Sending dismisses the keyboard (mirrors iMessage/Discord).
         composerFocused = false
         if !pendingAttachments.isEmpty {
+            // One attachment upload at a time, as the Send button enforces —
+            // the Return key lands here too. Two full uploads at once hold
+            // every pick, its prepared copy and both request bodies in memory.
+            // Keep the picks and caption for when the first one finishes.
+            guard !store.uploading else {
+                store.errorText = "Wait for the current upload to finish."
+                return
+            }
             // All picked photos/videos go out as ONE message (the server
             // accepts up to 10 attachments per message). Clear the composer
             // optimistically for responsiveness, but keep a copy so a failed
@@ -7116,6 +7148,24 @@ private struct ImageShareItem: Identifiable {
 /// use — writes them to a temporary file under the file's REAL name (so Quick
 /// Look, and any app it is shared to, recognises the type) and opens it in
 /// Quick Look, whose share button reaches Save to Files / Open in….
+/// Temporary copies of opened attachments (AttachmentFileChip). For an
+/// encrypted DM they hold DECRYPTED plaintext, and a chip can't always delete
+/// its own: the app killed while Quick Look is open, or the row removed under
+/// it (a purge when encryption is turned off). Swept wholesale at launch,
+/// relock and sign-out.
+enum OpenedFileCopies {
+    static let prefix = "zk-open-"
+
+    static func sweep() {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory
+        guard let names = try? fm.contentsOfDirectory(atPath: tmp.path) else { return }
+        for name in names where name.hasPrefix(prefix) {
+            try? fm.removeItem(at: tmp.appendingPathComponent(name, isDirectory: true))
+        }
+    }
+}
+
 private struct AttachmentFileChip: View {
     let store: AppStore
     let attachment: Attachment
@@ -7228,7 +7278,7 @@ private struct AttachmentFileChip: View {
     /// directory, so the real filename can be used as-is without colliding.
     private func fetchTempCopy() async -> URL? {
         let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("zk-open-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(OpenedFileCopies.prefix + UUID().uuidString, isDirectory: true)
         let dest = dir.appendingPathComponent(Self.safeFileName(displayName))
         guard (try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)) != nil else {
             return nil
