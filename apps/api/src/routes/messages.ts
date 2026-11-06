@@ -18,6 +18,7 @@ import { z } from 'zod';
 import { errors, AppError } from '../errors';
 import { requireAuth, requireUserId } from '../auth/middleware';
 import { validate } from '../lib/validate';
+import { parseFormBody } from '../middleware/multipartCompat';
 import {
   snowflakeSchema,
   messageContentSchema,
@@ -503,7 +504,7 @@ messagesRouter.post(
     let attMeta: ({ width?: number; height?: number; hasThumbnail?: boolean } | null)[] = [];
 
     if (contentType.startsWith('multipart/form-data')) {
-      const body = await c.req.parseBody({ all: true });
+      const body = await parseFormBody(c, { all: true });
       const rawJson = body['payload_json'];
       const jsonStr = Array.isArray(rawJson) ? rawJson[0] : rawJson;
       let parsed: unknown = {};

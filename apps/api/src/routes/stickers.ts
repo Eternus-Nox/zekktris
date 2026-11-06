@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { errors } from '../errors';
 import { requireAuth, requireUserId } from '../auth/middleware';
 import { validate } from '../lib/validate';
+import { parseFormBody } from '../middleware/multipartCompat';
 import { snowflakeSchema } from '../lib/validation';
 import { toSticker } from '../lib/dto';
 import * as stickers from '../services/stickers';
@@ -66,7 +67,7 @@ stickersRouter.post(
     const guildId = BigInt(c.req.valid('param').guildId);
     await assertGuildPermission(guildId, userId, Permissions.MANAGE_EMOJIS);
 
-    const form = await c.req.parseBody();
+    const form = await parseFormBody(c);
     const file = form.file;
     const name = typeof form.name === 'string' ? form.name : '';
     const description =
