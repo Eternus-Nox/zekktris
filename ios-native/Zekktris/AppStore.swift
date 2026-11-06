@@ -1122,8 +1122,9 @@ final class AppStore: ObservableObject {
         currentUserId = user?.id
         currentUser = user
         // Opened-attachment copies left by a previous run (killed while Quick
-        // Look was showing one); nothing can be showing one yet.
-        OpenedFileCopies.sweep()
+        // Look was showing one), and decrypted videos and voice notes left by
+        // a crash or kill in an encrypted chat; nothing can be showing one yet.
+        OpenedFileCopies.sweep(includingPlayback: true)
         // Move any pre-app-group E2EE keys into the shared keychain so the
         // Notification Service Extension can decrypt previews (idempotent).
         migrateE2EEKeysToAppGroupIfNeeded()
@@ -1716,7 +1717,7 @@ final class AppStore: ObservableObject {
         WidgetCenter.shared.reloadAllTimelines()
         WatchSync.shared.sync(token: nil, targets: [])
         // Opened attachments, decrypted ones included, belong to this account.
-        OpenedFileCopies.sweep()
+        OpenedFileCopies.sweep(includingPlayback: true)
         // A share still waiting for a conversation belongs to this account.
         discardPendingShare()
         currentUserId = nil
@@ -3536,6 +3537,15 @@ final class AppStore: ObservableObject {
     /// Merge a CHANNEL_UPDATE into local state. Keeps DM E2EE fields current so
     /// a re-keyed conversation re-prompts (and a freshly-enabled one locks).
     private func handleChannelUpdate(_ updated: Channel) {
+        // Encryption turned off by the other person or on another of our
+        // devices (our own disableE2EE relocks itself): the server purged the
+        // history, so drop the key, decrypted text and media and opened-file
+        // copies here too; purgeStaleE2EEKey below only covers a re-key. Read
+        // before `dms` / selectedChannel take the update, and relock before
+        // decryptVisible below can use the old key.
+        if liveCopy(of: updated).isE2EE && !updated.isE2EE {
+            relockE2EE(updated.id)
+        }
         if let i = dms.firstIndex(where: { $0.id == updated.id }) {
             noteE2EEChange(updated.id)
             // The gateway Channel DTO never carries `streak` (it's only
@@ -6727,8 +6737,10 @@ final class AppStore: ObservableObject {
     /// Forget the local key (re-locks this device).
     func relockE2EE(_ channelId: String) {
         e2eeKeyCache.removeValue(forKey: channelId)
-        // Decrypted copies of opened files must not outlive the lock.
-        OpenedFileCopies.sweep()
+        // Decrypted copies of this chat's opened files must not outlive its
+        // lock. Only this chat's: a CHANNEL_UPDATE relocks a DM that may not
+        // be the open one, and the open chat's file may be in Quick Look.
+        OpenedFileCopies.sweep(channelId: channelId)
         // The verifier memo is keyed by raw key bytes; relocking must not leave
         // them behind in memory. (It's tiny and cheap to rebuild.)
         verifierMemo = [:]
