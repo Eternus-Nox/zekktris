@@ -22,7 +22,8 @@
  * read once (after bodyLimit, so it is still counted) and parsed as it is. Only
  * if that fails are bare `name=` / `filename=` values in the part HEADER blocks
  * quoted, and the body parsed again. Part contents are never touched. A body
- * that still won't parse is a 400 'Malformed multipart body', not a 500.
+ * that still won't parse, or a boundary over 70 chars, is a 400 'Malformed
+ * multipart body', not a 500.
  *
  * The parse is deferred to the route instead of done here up front because
  * routes authenticate and check permissions before they read the body. Parsing
@@ -79,19 +80,44 @@ export async function parseFormBody<O extends Partial<ParseBodyOptions> = {}>(
   }
 }
 
+// RFC 2046 caps a boundary at 70 characters, and the clients stay within it
+// (Ktor's is exactly 70). The form parser and the repair both find the boundary
+// with Buffer.indexOf, which is linear in the body only while the needle is
+// under about 250 bytes. Past that its cost grows with body size times boundary
+// length: an 8,000-char boundary over 5 MB held the event loop for 13 s. Node's
+// parser takes a boundary of any length, so the cap is enforced here.
+const MAX_BOUNDARY = 70;
+// The cap on the whole header also covers a second `boundary=` hidden behind a
+// quoted parameter (`x="; boundary=a"; boundary=…`), which boundaryOf() misses
+// but the form parser uses. Within 256 chars that one stays under 250 too.
+const MAX_CONTENT_TYPE = 256;
+
 async function parseMultipart(req: HonoRequest, contentType: string): Promise<FormData> {
+  // Checked before the body is read, so a bad header is refused without
+  // buffering the upload.
+  const boundary = boundaryOf(contentType);
+  if (contentType.length > MAX_CONTENT_TYPE || !boundary || boundary.length > MAX_BOUNDARY) {
+    throw errors.badRequest('Malformed multipart body');
+  }
   // req.raw is read here, not when the middleware ran, so it is whatever
-  // Request the body limit left in place.
-  const body = new Uint8Array(await req.raw.arrayBuffer());
+  // Request the body limit left in place. The chunks are kept as they came and
+  // handed to the parser, which joins them itself, so a body that parses as it
+  // is costs no more memory than raw.formData() did. (arrayBuffer() would join
+  // them, then copy the result again, and that copy would be held through the
+  // parse.)
+  const chunks = await readChunks(req.raw);
   try {
-    return await toFormData(body, contentType);
+    return await toFormData(chunks, contentType);
   } catch (err) {
     // A TypeError is the parser rejecting the body. Anything else is not ours
     // to reinterpret.
     if (!(err instanceof TypeError)) throw err;
   }
-  const boundary = boundaryOf(contentType);
-  const repaired = boundary ? quoteBareDispositionParams(body, boundary) : null;
+  const body = Buffer.concat(chunks);
+  // The joined copy is all the repair needs; let the chunks go before the
+  // second parse.
+  chunks.length = 0;
+  const repaired = quoteBareDispositionParams(body, boundary);
   if (repaired) {
     try {
       return await toFormData(repaired, contentType);
@@ -102,12 +128,23 @@ async function parseMultipart(req: HonoRequest, contentType: string): Promise<Fo
   throw errors.badRequest('Malformed multipart body');
 }
 
-function toFormData(body: Uint8Array, contentType: string): Promise<FormData> {
-  // Passed as a one-chunk stream: given the bytes directly, Response copies
-  // them first, which is one more full copy of a possibly very large upload.
+async function readChunks(raw: Request): Promise<Uint8Array[]> {
+  const chunks: Uint8Array[] = [];
+  if (!raw.body) return chunks;
+  const reader = raw.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return chunks;
+    chunks.push(value);
+  }
+}
+
+function toFormData(chunks: Uint8Array[], contentType: string): Promise<FormData> {
+  // Passed as a stream: given the bytes directly, Response copies them first,
+  // which is one more full copy of a possibly very large upload.
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(body);
+      for (const chunk of chunks) controller.enqueue(chunk);
       controller.close();
     },
   });
@@ -124,24 +161,27 @@ const HEADERS_END = Buffer.from('\r\n\r\n');
 // Far more than a real part's headers: Ktor writes a few hundred bytes for a
 // file part. A bigger block is left alone; if it needed quoting, the body still
 // won't parse and the request gets the 400. The repair runs on the event loop
-// for any signed-in user, so this keeps its work per block small whatever the
-// body holds.
+// for any signed-in user, so this bounds the work of quoting one block. The
+// delimiter search between blocks is linear only because parseMultipart caps
+// the boundary (MAX_BOUNDARY) first.
 const MAX_PART_HEADERS = 8 * 1024;
 
 /**
  * Quote bare `name=` / `filename=` values in each part's Content-Disposition
- * header. Returns null when nothing needed quoting.
+ * header. Returns the repaired body as pieces to be read in order, or null when
+ * nothing needed quoting. Only the rewritten header blocks are new buffers; the
+ * rest are views into `body`, so the repair doesn't copy the upload.
  *
  * The body is walked delimiter to delimiter, and only the header block of each
  * part (from its delimiter line to the first blank line) is rewritten. The
- * preamble, part contents and epilogue are copied through byte for byte. The
+ * preamble, part contents and epilogue are passed through byte for byte. The
  * boundary can't occur inside a part's content (that is what makes it a
  * boundary), so finding the next delimiter can't land inside a file. Header
  * blocks are decoded as latin1, which maps every byte to one char and back, so
  * any non-ASCII bytes in them survive the round trip unchanged. A header block
- * over MAX_PART_HEADERS is copied through as it is.
+ * over MAX_PART_HEADERS is passed through as it is.
  */
-export function quoteBareDispositionParams(body: Uint8Array, boundary: string): Buffer | null {
+export function quoteBareDispositionParams(body: Uint8Array, boundary: string): Buffer[] | null {
   const buf = Buffer.from(body.buffer, body.byteOffset, body.byteLength);
   const delimiter = Buffer.from(`--${boundary}`, 'utf8');
   const pieces: Buffer[] = [];
@@ -165,7 +205,7 @@ export function quoteBareDispositionParams(body: Uint8Array, boundary: string): 
   }
   if (pieces.length === 0) return null;
   pieces.push(buf.subarray(copiedTo));
-  return Buffer.concat(pieces);
+  return pieces;
 }
 
 // A quoted string (skipped, so a `; name=` inside a quoted filename is left
