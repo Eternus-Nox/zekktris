@@ -593,6 +593,12 @@ export interface ChannelDTO {
    *                  false on an encrypted DM tells a key holder's
    *                  client to register one (PUT .../e2ee-purge-proof).
    *
+   *   e2eeSuppressed — true when the DM reads as unencrypted only because
+   *                  the pair is supervised (see toChannel); absent
+   *                  otherwise. Nothing was disabled or purged, so a
+   *                  client keeps its key instead of treating this as a
+   *                  disable.
+   *
    * When enabled is false, salt + verifier are null. When enabled
    * is true, both are non-null. Disabling triggers a server-side
    * purge of all zkE2EE/* messages in the conversation.
@@ -601,6 +607,7 @@ export interface ChannelDTO {
   e2eeSalt?: string | null;
   e2eeVerifier?: string | null;
   e2eePurgeProofSet?: boolean;
+  e2eeSuppressed?: boolean;
 }
 
 export function toChannel(
@@ -643,7 +650,13 @@ export function toChannel(
     // guild channel with E2EE fields they'll never use.
     ...(c.type === 'dm' || c.type === 'group_dm'
       ? e2eeSuppressed
-        ? { e2eeEnabled: false, e2eeSalt: null, e2eeVerifier: null, e2eePurgeProofSet: false }
+        ? {
+            e2eeEnabled: false,
+            e2eeSalt: null,
+            e2eeVerifier: null,
+            e2eePurgeProofSet: false,
+            e2eeSuppressed: true,
+          }
         : {
             e2eeEnabled: c.e2eeEnabled === true,
             e2eeSalt: c.e2eeSalt ?? null,
