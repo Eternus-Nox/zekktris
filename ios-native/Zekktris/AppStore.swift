@@ -431,7 +431,8 @@ final class AppStore: ObservableObject {
     }
 
     /// CallKit → store: the system call screen's Answer/End/Mute drive the
-    /// same paths as the in-app buttons.
+    /// same paths as the in-app buttons. Also the call-level events VoiceManager
+    /// raises itself (LiveKit dropping the call, a forced mic mute).
     private func wireCallKit() {
         CallManager.shared.onAnswer = { [weak self] channelId in
             guard let self else { return }
@@ -517,8 +518,15 @@ final class AppStore: ObservableObject {
         }
         CallManager.shared.onSetMuted = { [weak self] muted in
             guard let self else { return }
+            callLog.info("CallKit set muted=\(muted)")
+            // SET the state CallKit asked for. This used to compare isMuted
+            // and then TOGGLE, but isMuted only changed after the await, so
+            // two actions in a row (CallKit's echo, an iOS 17+ burst) both saw
+            // the old value and the mic ended up wherever the race left it.
+            // The server only hears about a real change.
             Task {
-                if self.voice.isMuted != muted { await self.toggleVoiceMute() }
+                guard await self.voice.setMuted(muted), let id = self.voiceChannelId else { return }
+                await self.api.updateVoiceState(channelId: id, selfMute: self.voice.isMuted, selfDeaf: nil)
             }
         }
         CallManager.shared.onAudioActivated = { [weak self] in
@@ -527,6 +535,24 @@ final class AppStore: ObservableObject {
             // actually capturing on it (the room connected with the engine
             // gated, so the initial publish may not have started capture).
             Task { await self.voice.ensureMicEnabled() }
+        }
+        voice.onConnectionLost = { [weak self] takenOver in
+            guard let self, self.voiceChannelId != nil else { return }
+            callLog.info("LiveKit ended the call itself (takenOver=\(takenOver)); hanging up")
+            // LiveKit gave up (reconnects exhausted, removed by the server,
+            // signalling ping timed out). Hang up properly instead of leaving a
+            // silent "Joining…" call: this ends the CallKit call and tells the
+            // server, so the peer's 1:1 auto-end fires too. When another of our
+            // devices took the call over, only tear down locally: the server's
+            // voice state is that device's now, and a leave would drop it.
+            Task { await self.leaveCurrentVoice(notifyServer: !takenOver) }
+        }
+        voice.onForcedMuteChanged = { [weak self] muted in
+            // A failed mic publish muted us, or a retry recovered it. Mirror it
+            // into the server's selfMute so the peer's mute icon tells the
+            // truth (the join always records us unmuted).
+            guard let self, let id = self.voiceChannelId else { return }
+            Task { await self.api.updateVoiceState(channelId: id, selfMute: muted, selfDeaf: nil) }
         }
         NotificationDelegate.shared.visibleChannelId = { [weak self] in
             self?.selectedChannel?.id
@@ -2921,7 +2947,10 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func leaveCurrentVoice() async {
+    /// `notifyServer` is false only when another of our devices took the call
+    /// over (see VoiceManager.onConnectionLost): the server's leave is
+    /// per-user, so it would remove that device's voice state instead of ours.
+    func leaveCurrentVoice(notifyServer: Bool = true) async {
         // Collapse the many overlapping teardown triggers (red button, CallKit
         // End, the 1:1 auto-end Task, READY reconciliation, self-evict) into a
         // single teardown. Without this, two leaveCurrentVoice runs raced into
@@ -2955,7 +2984,7 @@ final class AppStore: ObservableObject {
         // audio session, so the cue never has to touch session configuration.
         if id != nil { VoiceSounds.play(.hangup) }
         await voice.disconnect()
-        if let id { await api.leaveVoice(channelId: id) }
+        if let id, notifyServer { await api.leaveVoice(channelId: id) }
     }
 
     /// Remove any voice screens from the navigation stack — hanging up
@@ -3101,6 +3130,7 @@ final class AppStore: ObservableObject {
     func toggleVoiceMute() async {
         await voice.toggleMute()
         if let id = voiceChannelId {
+            reportMuteToCallKit(channelId: id)
             await api.updateVoiceState(channelId: id, selfMute: voice.isMuted, selfDeaf: nil)
         }
     }
@@ -3108,8 +3138,19 @@ final class AppStore: ObservableObject {
     func toggleVoiceDeafen() async {
         await voice.toggleDeafen()
         if let id = voiceChannelId {
+            reportMuteToCallKit(channelId: id)
             await api.updateVoiceState(channelId: id, selfMute: voice.isMuted, selfDeaf: voice.isDeafened)
         }
+    }
+
+    /// Keep a CallKit-owned 1:1 call's mute in step with an in-app change
+    /// (CallManager.reportMuted; a no-op for calls CallKit doesn't own). Not
+    /// in push-to-talk: there `isMuted` is just the talk button at rest, and on
+    /// iOS 17+ a CallKit mute also mutes the input system-wide, which would
+    /// silence the talk button too.
+    private func reportMuteToCallKit(channelId: String) {
+        guard !voice.pushToTalkEnabled else { return }
+        CallManager.shared.reportMuted(channelId: channelId, muted: voice.isMuted)
     }
 
     func toggleVoiceCamera() async {

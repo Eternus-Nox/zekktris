@@ -32,7 +32,11 @@ settings:
 packages:
   LiveKit:
     url: https://github.com/livekit/client-sdk-swift.git
-    from: "2.14.1"
+    # 2.15.1+ carries the WebRTC fix for the call-end crash
+    # (livekit/client-sdk-swift#929); 2.15.3 is the newest 2.15 patch and
+    # stays on WebRTC m144. 2.17+ moves to m150 and swaps out
+    # SwiftProtobuf/UniFFI. Keep Package.resolved in step when this changes.
+    from: "2.15.3"
 
 targets:
   Zekktris:

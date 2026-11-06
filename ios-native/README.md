@@ -26,7 +26,7 @@ server*). The remaining gaps are listed under *Not built yet*.
 > can't receive remote pushes; the registration code just no-ops there.
 >
 > **LiveKit Swift Package dependency**
-> (`https://github.com/livekit/client-sdk-swift`, 2.14.1+). `xcodegen generate`
+> (`https://github.com/livekit/client-sdk-swift`, 2.15.3+). `xcodegen generate`
 > wires the package reference; Xcode resolves it on first open (needs network).
 > For a manual project, add it via File ▸ Add Package Dependencies. Voice needs
 > the microphone permission (already in the generated Info.plist) and is best

@@ -25,11 +25,13 @@ final class CallManager: NSObject, ObservableObject {
     /// user never acted, so the store must clear its own ringing UI and decline
     /// server-side so the caller stops ringing.
     var onRingTimeout: ((String) -> Void)?
-    /// System call-screen mute toggled.
+    /// System call-screen (or headset) mute changed to this value. Already
+    /// de-duplicated: repeats and the echo of our own reportMuted() never get
+    /// here. The store SETS this state; it must never toggle on it.
     var onSetMuted: ((Bool) -> Void)?
-    /// CallKit activated the audio session — the store re-asserts the mic so
-    /// capture starts on the now-active session (the room connected with the
-    /// LiveKit engine gated for CallKit).
+    /// CallKit activated the audio session — the store makes sure the mic is
+    /// live on the now-active session (the room connected with the LiveKit
+    /// engine gated for CallKit).
     var onAudioActivated: (() -> Void)?
 
     private let provider: CXProvider
@@ -49,6 +51,18 @@ final class CallManager: NSObject, ObservableObject {
     /// gateway CANCEL (remoteCancelled) does that; if that's missed, this
     /// bounds the leak so the peer's NEXT call can still ring.
     private var ringTimeouts: [UUID: Task<Void, Never>] = [:]
+    /// The mute state CallKit holds for each live call: whatever it last told
+    /// us (CXSetMutedCallAction) or we last asked it for (reportMuted). Absent
+    /// means unmuted, CallKit's starting state. It lets the provider drop a
+    /// CXSetMutedCallAction that changes nothing — CallKit's echo of our own
+    /// request, and the repeats iOS 17+ is known to send in bursts — instead
+    /// of passing each one on to flip the mic again.
+    private var mutedByUUID: [UUID: Bool] = [:]
+    /// Action ids of the CXSetMutedCallActions we requested ourselves and
+    /// CallKit hasn't performed back yet. Recognises our own echo exactly even
+    /// when two in-app taps overtake each other, where the state check alone
+    /// would take the first echo for a user change.
+    private var ownMuteActions: Set<UUID> = []
 
     override private init() {
         let config = CXProviderConfiguration()
@@ -120,8 +134,11 @@ final class CallManager: NSObject, ObservableObject {
             channelByUUID.removeValue(forKey: u)
             ringing.remove(u)
             ringTimeouts.removeValue(forKey: u)?.cancel()
+            mutedByUUID.removeValue(forKey: u)
             wasAudioActivated = audioActivated.remove(u) != nil
         }
+        // Echo ids aren't keyed by call; once no call is left, none can come.
+        if uuidByChannel.isEmpty { ownMuteActions.removeAll() }
         // Safety net ONLY: restore the resting engine state when this call never
         // had its audio session activated (e.g. the caller cancelled as we
         // answered, or a ring was declined) — there is no room teardown to race
@@ -137,6 +154,8 @@ final class CallManager: NSObject, ObservableObject {
         // the WebRTC worker null-dereffed. For activated calls the restore now
         // happens in provider(_:didDeactivate:) and, authoritatively, at the end
         // of VoiceManager.performDisconnect() once the Room is actually gone.
+        // (The null dereference itself was LiveKit's #929 — see
+        // VoiceManager.sessionChain — but the order above still holds.)
         if !wasAudioActivated {
             try? AudioManager.shared.setEngineAvailability(.default)
         }
@@ -260,6 +279,36 @@ final class CallManager: NSObject, ObservableObject {
         provider.reportCall(with: u, endedAt: nil, reason: remoteEnded ? .remoteEnded : .declinedElsewhere)
         forget(channelId)
     }
+
+    /// The app's own mute changed (in-app mic button, deafen): mirror it into
+    /// CallKit. A CallKit call's mute is also a system-level input mute on
+    /// iOS 17+, so a CallKit "muted" left behind by an in-app unmute kept the
+    /// mic silenced under an unmuted icon — the in-app button never told
+    /// CallKit anything before. No-op for calls CallKit doesn't own (guild
+    /// voice, outgoing calls, calls that rang only in-app because the app was
+    /// frontmost) and while ringing. CallKit performs the request back through
+    /// provider(_:perform: CXSetMutedCallAction), where the bookkeeping
+    /// written here marks it as our own echo.
+    func reportMuted(channelId: String, muted: Bool) {
+        guard let u = uuidByChannel[channelId], !ringing.contains(u),
+              (mutedByUUID[u] ?? false) != muted else { return }
+        let previous = mutedByUUID[u]
+        mutedByUUID[u] = muted
+        let action = CXSetMutedCallAction(call: u, muted: muted)
+        let actionId = action.uuid
+        ownMuteActions.insert(actionId)
+        controller.request(CXTransaction(action: action)) { [weak self] error in
+            guard error != nil else { return }
+            // Refused (e.g. the call ended meanwhile), so CallKit kept its old
+            // state and will never perform it; the bookkeeping must follow,
+            // unless something newer has already overwritten it.
+            Task { @MainActor in
+                guard let self else { return }
+                self.ownMuteActions.remove(actionId)
+                if self.mutedByUUID[u] == muted { self.mutedByUUID[u] = previous }
+            }
+        }
+    }
 }
 
 extension CallManager: CXProviderDelegate {
@@ -275,6 +324,8 @@ extension CallManager: CXProviderDelegate {
             channelByUUID.removeAll()
             ringing.removeAll()
             audioActivated.removeAll()
+            mutedByUUID.removeAll()
+            ownMuteActions.removeAll()
             try? AudioManager.shared.setEngineAvailability(.default)
         }
     }
@@ -297,6 +348,19 @@ extension CallManager: CXProviderDelegate {
         // + the speaker preference match what LiveKit configures, so the later
         // re-config doesn't fight this one.
         try? AudioManager.shared.setEngineAvailability(.none)
+        // While CallKit owns the call, mute the mic at LiveKit's input mixer
+        // instead of through voice processing. LiveKit's default
+        // (.voiceProcessing) sets the system-level voiceProcessingInputMuted on
+        // every mute: iOS plays its mute chime, and on iOS 17+ that system mute
+        // is coupled to the CallKit call's own mute, so each LiveKit mute or
+        // unmute came back to us as a CXSetMutedCallAction. .inputMixer only
+        // zeroes LiveKit's mixer (the track is still disabled and the mute
+        // still signalled to the SFU); the cost is that the orange mic
+        // indicator stays on while muted. Switched here, with the engine gated
+        // off and stopped, so it is pure bookkeeping in LiveKit's audio device
+        // rather than a change to a running engine.
+        // VoiceManager.performDisconnect restores .voiceProcessing.
+        try? AudioManager.shared.set(microphoneMuteMode: .inputMixer)
         // Match LiveKit's playAndRecordSpeaker config (.videoChat + these
         // options) so the engine's later re-config in didActivate is a no-op,
         // not a category change on an already-active CallKit session.
@@ -342,7 +406,17 @@ extension CallManager: CXProviderDelegate {
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
         Task { @MainActor in
-            onSetMuted?(action.isMuted)
+            let u = action.callUUID
+            // Pass on only a real change to a call we own. This used to forward
+            // every action, and the store flipped the mic on each: CallKit's
+            // echo of a mute, plus the true/false bursts iOS 17+ sends, became
+            // the "auto-mutes multiple times" report. Our own request coming
+            // back is skipped outright; reportMuted already wrote its state.
+            if ownMuteActions.remove(action.uuid) == nil,
+               channelByUUID[u] != nil, (mutedByUUID[u] ?? false) != action.isMuted {
+                mutedByUUID[u] = action.isMuted
+                onSetMuted?(action.isMuted)
+            }
             action.fulfill()
         }
     }
@@ -378,6 +452,15 @@ extension CallManager: CXProviderDelegate {
         // CallKit session is gone, or a later guild-voice/next-call session
         // would be silently gated off. .default is the resting state; LiveKit
         // won't start the engine without a pending request.
+        //
+        // Deliberately NOT LiveKit's README pattern (.none here, reopened in
+        // didActivate). That pattern assumes the SDK's automatic AVAudioSession
+        // configuration is off; ours is on, so LiveKit itself deactivates and
+        // reactivates this session around engine restarts. If any of those
+        // reach us here mid-call, closing the gate would stop the engine and
+        // nothing would reopen it — a silent call, or a deactivate/activate
+        // ping-pong. Mid-call the gate is already .default, so this line is a
+        // no-op there.
         try? AudioManager.shared.setEngineAvailability(.default)
     }
 }
