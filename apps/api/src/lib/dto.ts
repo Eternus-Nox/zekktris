@@ -1069,6 +1069,10 @@ export interface VoiceStateDTO {
   sessionId: string | null;
   selfMute: boolean;
   selfDeaf: boolean;
+  /** Only on the broadcast of a server-side move (POST /voice/move, the AFK
+   *  sweep). Lets the moved user's clients tell it apart from one of their
+   *  other devices joining that channel, which only that device should follow. */
+  moved?: true;
 }
 
 export function toVoiceState(r: VoiceStateRow): VoiceStateDTO {

@@ -572,7 +572,7 @@ voiceRouter.post(
     dispatch.voiceStateUpdate({
       guildId: updated.guildId,
       channelId: updated.channelId,
-      voiceState: toVoiceState(updated),
+      voiceState: { ...toVoiceState(updated), moved: true },
     });
     return c.json({ voiceState: toVoiceState(updated) });
   },

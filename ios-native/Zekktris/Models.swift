@@ -636,6 +636,9 @@ struct VoiceState: Codable, Identifiable, Hashable {
     var sessionId: String?
     var selfMute: Bool?
     var selfDeaf: Bool?
+    /// Set only on a server-initiated move (moderator move, AFK sweep), so the
+    /// client can tell it from one of our other devices joining elsewhere.
+    var moved: Bool?
 
     var id: String { userId }
     var isMuted: Bool { selfMute == true }

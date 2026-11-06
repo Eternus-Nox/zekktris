@@ -452,7 +452,7 @@ async function main(): Promise<void> {
             dispatch.voiceStateUpdate({
               guildId: m.guildId,
               channelId: m.voiceState.channelId,
-              voiceState: toVoiceState(m.voiceState),
+              voiceState: { ...toVoiceState(m.voiceState), moved: true },
             });
           } catch (perMoveErr) {
             log.warn('AFK auto-move broadcast failed for one member', {
