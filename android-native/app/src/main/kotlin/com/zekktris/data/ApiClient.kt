@@ -461,10 +461,24 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
      * string early and the server rejects the whole body, and Ktor refuses a
      * header with CR/LF outright — so those three go out percent-encoded, the
      * WHATWG form encoding browsers use, which the server's parser decodes
-     * back to the original name.
+     * back to the original name. Ktor also refuses every other control
+     * character except tab (U+0001, ESC, …), throwing before a byte is sent;
+     * those become `_`, which is what the server's sanitizeFilename makes of
+     * them anyway.
      */
     private fun fileDisposition(filename: String): String {
-        val wire = filename.replace("\"", "%22").replace("\r", "%0D").replace("\n", "%0A")
+        val wire = buildString(filename.length) {
+            for (c in filename) when {
+                c == '"' -> append("%22")
+                c == '\r' -> append("%0D")
+                c == '\n' -> append("%0A")
+                // Ktor's checkHeaderValue throws on any other C0 control except tab,
+                // and the server's parser only decodes %22/%0D/%0A — its
+                // sanitizeFilename turns [\x00-\x1f] into '_' anyway.
+                c < ' ' && c != '\t' -> append('_')
+                else -> append(c)
+            }
+        }
         return "filename=\"$wire\""
     }
 
