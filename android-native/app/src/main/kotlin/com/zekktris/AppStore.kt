@@ -2346,9 +2346,9 @@ class AppStore(
     /** Send with attachments (multipart). Optimistic text bubble immediately;
      *  the attachments render when the server echo replaces it (by nonce).
      *
-     *  [onDone] reports `(ok, error)`; `error` is a user-facing sentence when
-     *  the failure is one the user can act on (a photo we couldn't build a
-     *  preview for), and null otherwise. */
+     *  [onDone] reports `(ok, error)`; on a failure `error` is a user-facing
+     *  sentence saying why — a photo we couldn't build a preview for, the
+     *  server's reason for refusing the upload, a timeout. */
     fun sendMessageWithFiles(
         channelId: String,
         content: String,
@@ -2439,9 +2439,20 @@ class AppStore(
                 onDone(false, prep.error ?: "Encryption failed.")
                 return@launch
             }
-            val sent = runCatching {
+            // The reason travels to the composer's toast: the server's own
+            // sentence (file over the size cap, no Attach Files permission,
+            // slow mode, rate limit) or a timeout. Every one of these used to
+            // end as a bare Failed bubble with the picks restored and nothing
+            // to say why.
+            var uploadError: String? = null
+            val sent = try {
                 api.sendMessageMultipart(channelId, wireCaption, nonce, replyToId, prepared.map { it.part })
-            }.getOrNull()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                uploadError = uploadFailureReason(e)
+                null
+            }
             if (sent != null) {
                 // Seed the in-memory cache with the plaintext we still hold, so
                 // the sender's own encrypted images render instantly with no
@@ -2465,8 +2476,20 @@ class AppStore(
                 // the caption only — matching the optimistic text-only bubble).
                 _state.update { it.copy(failedSendIds = it.failedSendIds + optimistic.id) }
             }
-            onDone(sent != null, null)
+            onDone(sent != null, uploadError)
         }
+    }
+
+    /** What the composer says about a multipart send that didn't go through. */
+    private fun uploadFailureReason(e: Exception): String = when (e) {
+        // Already a readable sentence from the server's error envelope
+        // (`file "clip.mp4" exceeds 100 MB limit`), or "HTTP <status>".
+        is com.zekktris.data.ApiException -> e.message ?: "Upload failed."
+        // The whole-upload limit, or a minute with no bytes moving.
+        is io.ktor.client.plugins.HttpRequestTimeoutException,
+        is java.net.SocketTimeoutException ->
+            "The upload timed out. Try a smaller file or a stronger connection."
+        else -> e.message ?: "Upload failed."
     }
 
     /** One prepared (possibly encrypted) upload part, keeping the plaintext

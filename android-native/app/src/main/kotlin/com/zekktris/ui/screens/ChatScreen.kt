@@ -2589,9 +2589,10 @@ private fun Composer(
             val toSend = pendingFiles
             store.sendMessageWithFiles(channelId, t, replyTo?.id, toSend.map { it.part }) { ok, err ->
                 if (!ok && pendingFiles.isEmpty()) pendingFiles = toSend
-                // A pre-upload failure the user can act on — most often "we
-                // couldn't build the mandatory E2EE preview for this photo".
-                // Restoring the picks silently would look like nothing happened.
+                // Why it failed: a pre-upload problem ("we couldn't build the
+                // mandatory E2EE preview for this photo"), the server's reason
+                // for refusing the upload, or a timeout. Restoring the picks
+                // silently would look like nothing happened.
                 if (!ok && err != null) {
                     android.widget.Toast.makeText(ctx, err, android.widget.Toast.LENGTH_LONG).show()
                 }
