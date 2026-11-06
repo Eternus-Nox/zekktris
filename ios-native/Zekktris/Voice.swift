@@ -121,6 +121,23 @@ final class VoiceManager: ObservableObject {
     /// Called with the new speaker set whenever it changes (AppStore counts
     /// our own talking as using the device, for presence).
     var onSpeakingChanged: ((Set<String>) -> Void)?
+    /// LiveKit ended a connected session on its own: reconnect attempts
+    /// exhausted, or the signalling ping timed out. The store hangs the call
+    /// up properly. Never fires for our own disconnect(), because
+    /// performDisconnect drops `room` before it calls the SDK. A removal by
+    /// our server (a move, the AFK sweep, a kick) only gets here as a late
+    /// fallback; see room(_:didDisconnectWithError:). `takenOver` is true when
+    /// another session joined with our identity (the call was picked up on
+    /// another of our devices): the server's voice state belongs to that
+    /// device now, so the store must not tell the server we left.
+    var onConnectionLost: ((_ takenOver: Bool) -> Void)?
+    /// The mic's mute changed without the store asking for it: a failed
+    /// initial publish forces a mute, a later successful retry lifts it, and a
+    /// CallKit mute pressed before the Room existed is applied as the call
+    /// connects. The store mirrors it into the server's selfMute (the join
+    /// always records us unmuted), so the other side doesn't see a live mic on
+    /// someone it can't hear.
+    var onMuteChangedInternally: ((Bool) -> Void)?
     /// User ids the local user has muted for themselves only (persisted).
     @Published private(set) var mutedForMe: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "zk.mutedForMe") ?? [])
 
@@ -150,9 +167,14 @@ final class VoiceManager: ObservableObject {
     private var room: Room?
     /// True while disconnect() is tearing the room down. Concurrent mic/track
     /// operations bail on this so they can't run against a Room whose WebRTC
-    /// transport is being closed — the race that crashed the LiveKit audio
-    /// worker thread (EXC_BAD_ACCESS) on call-end.
+    /// transport is being closed. (The call-end EXC_BAD_ACCESS once blamed on
+    /// that race was LiveKit's own bug — see `sessionChain`.)
     private var isTearingDown = false
+    /// The initial mic publish in performConnect threw, so the user is sitting
+    /// connected-but-muted through no choice of their own. ensureMicEnabled
+    /// retries the publish once CallKit hands us an activated session (the
+    /// usual reason it failed), and any successful unmute clears it.
+    private var micPublishFailed = false
 
     /// Serializes connect/disconnect so the two can NEVER overlap on the same
     /// Room. `isTearingDown` alone was not enough:
@@ -165,15 +187,22 @@ final class VoiceManager: ObservableObject {
     ///     connect() was still awaiting — concurrent connect + close on one
     ///     transport.
     /// Either way LiveKit reached Room.cleanUpRTC(withError:) -> TransportMode
-    /// .close() while WebRTC was still using the transport, and the WebRTC
-    /// worker thread null-dereffed (EXC_BAD_ACCESS at 0x28). Confirmed from a
-    /// symbolicated device crash: faulting thread "worker_thread" entirely
-    /// inside LiveKitWebRTC, with the CallKit-driven Swift task blocked in
-    /// TransportMode.close(). It reproduced on decline AND hangup because both
-    /// end paths tear down, and it was worst on a VoIP-launched, backgrounded,
-    /// LOCKED device where connect is slow enough for the user to end the call
-    /// mid-connect.
-    /// Every enqueued op runs to completion before the next begins.
+    /// .close() while a connect was still using the transport. Every enqueued
+    /// op runs to completion before the next begins.
+    ///
+    /// This serialization used to be credited with fixing the call-end crash
+    /// (worker_thread, EXC_BAD_ACCESS at 0x28, the CallKit-driven Swift task
+    /// blocked in TransportMode.close()). It can't have: that crash is a bug
+    /// inside LiveKit's audio device module, livekit/client-sdk-swift#929.
+    /// After an earlier audio-engine change fails and rolls back, the module's
+    /// FineAudioBuffer is null, and the next PeerConnection close — a plain
+    /// hang-up from the CallKit screen is enough, no overlap needed — stops
+    /// playout through FineAudioBuffer::ResetPlayout on it; 0x28 is that
+    /// method's `str xzr, [x0, #0x28]` on a null `this`. Fixed upstream by
+    /// webrtc-sdk/webrtc f47af7b (recreate the buffer before use), first
+    /// shipped in client-sdk-swift 2.15.1 — hence the 2.15.3 requirement in
+    /// project.yml. The serialization stays: overlapping connect and close on
+    /// one Room is still wrong, it just wasn't this crash.
     private var sessionChain: Task<Void, Never>?
 
     /// Run `op` after any in-flight connect/disconnect finishes.
@@ -235,7 +264,14 @@ final class VoiceManager: ObservableObject {
         state = .connecting
         // Push-to-talk starts muted regardless of publishMic — the mic only
         // opens while the talk button is held.
-        isMuted = pushToTalkEnabled ? true : !publishMic
+        // So does a call CallKit holds muted: a mute pressed on the system
+        // call screen while the join was still in flight found no Room for
+        // setMuted to apply it to, but CallKit kept it, and publishing a live
+        // mic under its muted button is exactly the drift its bookkeeping is
+        // there to prevent. Read here, with no await between it and `room = r`
+        // below, so every later CallKit mute reaches setMuted instead.
+        let startMutedByCallKit = publishMic && !pushToTalkEnabled && CallManager.shared.isAnsweredCallMuted
+        isMuted = pushToTalkEnabled || !publishMic || startMutedByCallKit
         // Seed the route from the user's SAVED choice — set BEFORE connecting so
         // LiveKit configures the session accordingly when the audio engine
         // starts. (Loudspeaker remains the default for anyone who has never
@@ -294,49 +330,148 @@ final class VoiceManager: ObservableObject {
         // you connected-and-muted, with the reason on screen.
         state = .connected
         // In PTT mode the mic stays off at connect — it opens only on hold.
-        if publishMic && !pushToTalkEnabled {
+        // `isMuted` is re-read rather than assumed false: a CallKit mute or
+        // unmute that landed while connect() was in flight has already set it
+        // (setMuted only records the intent while .connecting), and publishing
+        // over a mute would put a live mic behind a muted icon.
+        if publishMic && !pushToTalkEnabled && !isMuted {
             do {
                 try await r.localParticipant.setMicrophone(enabled: true)
             } catch {
                 isMuted = true
+                micPublishFailed = true
                 lastError = "Microphone unavailable — you're connected but muted. (\(error.localizedDescription))"
+                // The server's join recorded us unmuted, so without this the
+                // other side sees a live mic on someone it can't hear.
+                onMuteChangedInternally?(true)
             }
+        } else if startMutedByCallKit && isMuted {
+            // Started muted for CallKit and still muted. That mute never went
+            // through the store (setMuted refused it, there was no Room), so
+            // the server still has the join's unmuted state.
+            onMuteChangedInternally?(true)
         }
     }
 
-    func toggleMute() async {
-        guard let room, !isTearingDown else { return }
-        let next = !isMuted
+    /// SET (never toggle) the user's mic mute. Idempotent: asking for the state
+    /// we're already in does nothing, which is what lets CallKit's repeated and
+    /// echoed CXSetMutedCallActions land harmlessly. The intent is written
+    /// BEFORE the await, so a second caller arriving while LiveKit is still
+    /// applying the first (its publish queue + the signal round trip) compares
+    /// against where we're going, not where we were. The old toggle read the
+    /// stale value there and flipped the mic straight back.
+    /// Unmuting is refused while deafened (undeafen restores the mic) and in
+    /// push-to-talk (the talk button owns the mic), unless `overridePushToTalk`
+    /// says an explicit in-app tap asked for it (see toggleMute). Returns
+    /// whether the mute state actually changed. Without a Room (the join is
+    /// still in flight) there is nothing to set and it returns false; CallKit
+    /// mutes from that window are picked up by performConnect instead.
+    @discardableResult
+    func setMuted(_ muted: Bool, overridePushToTalk: Bool = false) async -> Bool {
+        guard let room, !isTearingDown, isMuted != muted else { return false }
+        if !muted {
+            if isDeafened { return false }
+            // The override can't open the mic before the call is up:
+            // performConnect never publishes in push-to-talk, so that unmute
+            // would only ever reach the icon.
+            if pushToTalkEnabled && (!overridePushToTalk || state == .connecting) { return false }
+        }
+        isMuted = muted
+        // Still connecting: there is no publication to change yet, and an
+        // unmute would race performConnect's own publish or throw before the
+        // publisher exists (a stale error the connected banner would then
+        // show). The intent is all it takes: performConnect reads `isMuted`
+        // when it decides whether to publish.
+        if state == .connecting { return true }
         do {
-            try await room.localParticipant.setMicrophone(enabled: !next)
-            isMuted = next
+            try await room.localParticipant.setMicrophone(enabled: !muted)
         } catch {
+            // A teardown resets all of this itself; don't write over it.
+            guard !isTearingDown, room === self.room else { return false }
+            // Roll back to what LiveKit actually has rather than to `!muted`:
+            // another setMuted may have queued behind this one meanwhile, and
+            // the publication is the only thing that knows which of us won.
+            isMuted = !room.localParticipant.isMicrophoneEnabled()
             lastError = error.localizedDescription
+            return false
         }
+        // An unmute that went through means the mic works after all.
+        if !muted && micPublishFailed {
+            micPublishFailed = false
+            lastError = nil
+        }
+        return true
     }
 
-    /// Re-assert the mic publication after CallKit activates the audio session.
+    /// The in-app mic button: an explicit tap, so unlike CallKit's set it
+    /// doesn't get refused.
+    ///   - Unmuting while deafened also undeafens (web and Discord do the
+    ///     same; you can't be audible while you can't hear). Refusing it left
+    ///     a mic button that silently did nothing.
+    ///   - In push-to-talk it opens the mic, as it always did: every other
+    ///     surface swaps this for a hold-to-talk button (MicControlButton),
+    ///     but the stage speaker control is a plain toggle and is the only way
+    ///     a push-to-talk speaker can talk while the stage screen is open.
+    func toggleMute() async {
+        if isMuted && isDeafened {
+            await toggleDeafen()
+            // Undeafening reopens the mic itself when it was live before the
+            // deafen; only a mute from before the deafen is left to lift.
+            guard isMuted, !isDeafened else { return }
+        }
+        await setMuted(!isMuted, overridePushToTalk: true)
+    }
+
+    /// Make sure the mic is live once CallKit activates the audio session.
     /// On the CallKit answer path the room connects (and publishes the mic)
-    /// while the LiveKit engine is gated OFF, so capture may not resume when
-    /// CallKit hands us the activated session — the other side hears nothing.
+    /// while the LiveKit engine is gated OFF. Lifting the gate in didActivate
+    /// is what starts capture: LiveKit honours the pending mic request itself
+    /// once availability allows (AudioManager.setEngineAvailability). So this
+    /// only fills real gaps:
+    ///   - the user is NOT muted but the mic publication is missing or muted;
+    ///   - the initial publish failed (micPublishFailed). It is retried here,
+    ///     since an unusable audio session is the usual reason it failed and
+    ///     CallKit has just handed us a usable one.
+    /// It must NEVER cycle the mic off→on to "kick" capture, as it used to.
+    /// Each cycle signalled mute+unmute to the SFU, left a gap in our audio,
+    /// flipped the system voice-processing mute (the iOS mute chime), and on
+    /// iOS 17+ came back from CallKit as CXSetMutedCallActions, which the old
+    /// toggling handler turned into the repeated "auto-mute". didActivate fires
+    /// again after every reactivation, so the cycle repeated within one call.
     /// The session can activate before connect() returns, so wait briefly for
-    /// the room, then force a fresh capture start (toggle off→on). Respects the
-    /// user's mute state and is a no-op outside an active, unmuted call.
+    /// the room first.
     func ensureMicEnabled() async {
         var waited = 0
         while !isConnected && waited < 30 {
             try? await Task.sleep(nanoseconds: 100_000_000) // 0.1s, up to ~3s
             waited += 1
         }
-        guard let room, isConnected, !isMuted, !isTearingDown else { return }
-        _ = try? await room.localParticipant.setMicrophone(enabled: false)
-        // Re-check between awaits: a hangup may have started teardown OR the
-        // user may have muted while the first call was in flight. Re-check
-        // !isMuted (also covers deafen, which forces isMuted=true) so we don't
-        // re-enable the mic against a fresh mute, and re-read self.room so we
-        // target the CURRENT room, not a stale captured reference.
-        guard !isTearingDown, !isMuted, let room = self.room else { return }
-        _ = try? await room.localParticipant.setMicrophone(enabled: true)
+        // Push-to-talk owns the mic through its reconcile loop, and deafen
+        // keeps it shut; neither is ours to open.
+        guard let room, isConnected, !isTearingDown, !pushToTalkEnabled, !isDeafened else { return }
+        if !micPublishFailed {
+            // The user's own mute stands, and a live publication needs nothing
+            // (isMicrophoneEnabled is false while it is missing OR muted). If
+            // the initial publish is still in flight, the call below queues
+            // behind it in LiveKit's publish runner and lands as a no-op unmute.
+            guard !isMuted, !room.localParticipant.isMicrophoneEnabled() else { return }
+        }
+        do {
+            try await room.localParticipant.setMicrophone(enabled: true)
+        } catch {
+            return // still unavailable: the forced mute and its message stand
+        }
+        // Lift the forced mute if the publish recovered: either the retry above,
+        // or this call itself doing the publish after queueing behind an initial
+        // publish that then failed. Re-checked after the await: a hangup, a
+        // deafen, PTT, or the user's own successful unmute (which clears the
+        // flag) may have landed meanwhile, and each of those owns the mic.
+        guard micPublishFailed, !isTearingDown, room === self.room,
+              !pushToTalkEnabled, !isDeafened else { return }
+        micPublishFailed = false
+        lastError = nil
+        isMuted = false
+        onMuteChangedInternally?(false)
     }
 
     // ── Push-to-talk ──────────────────────────────────────────────────────
@@ -861,6 +996,12 @@ final class VoiceManager: ObservableObject {
             // sync the derived flag directly in case state was left non-idle.
             Self.callAudioActive = false
             hasAnnouncedConnect = false
+            // No Room, so no engine to disturb: settle the mic mute mode for
+            // whatever comes next. This is the only restore a CallKit call gets
+            // when it never had a Room (its join or connect failed), and every
+            // connect passes through here first, so a leftover .inputMixer
+            // can't carry into guild voice.
+            if !isTearingDown { syncMicrophoneMuteMode() }
             return
         }
         isTearingDown = true
@@ -872,6 +1013,7 @@ final class VoiceManager: ObservableObject {
         // reconnect, so re-arm the CONNECT cue.
         hasAnnouncedConnect = false
         isMuted = false
+        micPublishFailed = false
         isDeafened = false
         isCameraOn = false
         localVideoTrack = nil
@@ -891,9 +1033,44 @@ final class VoiceManager: ObservableObject {
         // audio engine against a Room that was about to be destroyed. A device
         // crash caught that mid-act: the main thread sat in
         // [AVAudioSession currentRoute] under a LiveKit route-change observer
-        // while this teardown ran, and the WebRTC worker null-dereffed.
-        try? AudioManager.shared.setEngineAvailability(.default)
+        // while this teardown ran, and the WebRTC worker null-dereffed. (That
+        // null dereference itself turned out to be LiveKit's #929, see
+        // `sessionChain`; reopening the gate only once the Room is gone is
+        // still the right order.)
+        //
+        // LiveKit's default mic mute mode comes back first, while the engine is
+        // stopped: CallManager switches it to .inputMixer for the length of a
+        // CallKit call (see its answer handler).
+        //
+        // Neither is reset while a CallKit call is answered and still live
+        // (CallManager.hasAnsweredCall): the mode stays .inputMixer and the
+        // gate is left to CallKit. Then this Room was not that call's:
+        // typically guild voice being torn down because the user answered a
+        // DM call from the lock screen, inside the call's own performConnect.
+        // The answer handler had just closed the gate until CallKit's
+        // didActivate and put the mic on .inputMixer; reopening the gate here
+        // let LiveKit race CallKit's session activation, and restoring
+        // .voiceProcessing put the call back on the system mute iOS couples to
+        // CallKit's. The call's own teardown runs after CallManager has
+        // forgotten it, so it still restores both.
+        syncMicrophoneMuteMode()
+        if !CallManager.shared.hasAnsweredCall {
+            try? AudioManager.shared.setEngineAvailability(.default)
+        }
         isTearingDown = false
+    }
+
+    /// LiveKit's mic mute mode for the call we're in or about to start:
+    /// .inputMixer while CallKit owns an answered call (see CallManager's
+    /// answer handler for why), LiveKit's default .voiceProcessing otherwise —
+    /// guild voice, and 1:1 calls that never went through CallKit. Only call
+    /// it with no Room running, so a change is bookkeeping in LiveKit's audio
+    /// device rather than a reconfiguration of a live engine; and only
+    /// written when it differs.
+    private func syncMicrophoneMuteMode() {
+        let mode: MicrophoneMuteMode = CallManager.shared.hasAnsweredCall ? .inputMixer : .voiceProcessing
+        guard AudioManager.shared.microphoneMuteMode != mode else { return }
+        try? AudioManager.shared.set(microphoneMuteMode: mode)
     }
 }
 
@@ -907,7 +1084,15 @@ extension VoiceManager: RoomDelegate {
             case .connected: self.state = .connected; self.syncRemoteTracks()
             case .connecting: self.state = .connecting
             case .reconnecting: self.state = .reconnecting
-            case .disconnected: if self.state != .failed { self.state = .idle }
+            case .disconnected:
+                // A room we still hold only reaches .disconnected when LiveKit
+                // gave up on it (our own disconnect() drops `room` first), so
+                // this is a failure, never .idle: the call screen renders .idle
+                // as "Joining…", which is how a dead call used to sit there.
+                if self.state != .failed {
+                    self.lastError = self.lastError ?? "Connection lost"
+                    self.state = .failed
+                }
             case .disconnecting: break
             @unknown default: break
             }
@@ -919,6 +1104,47 @@ extension VoiceManager: RoomDelegate {
             guard room === self.room else { return }
             self.lastError = error?.localizedDescription ?? "Connection failed"
             self.state = .failed
+        }
+    }
+
+    /// LiveKit ended a session that HAD connected: reconnect attempts ran out,
+    /// the server removed us or deleted the room, or the signalling ping timed
+    /// out. For a lost connection nothing else will end the call — the gateway
+    /// socket is still up, so the server keeps our voice state, CallKit keeps
+    /// its call, and the peer's 1:1 auto-end never fires — so hand it to the
+    /// store to hang up.
+    nonisolated func room(_ room: Room, didDisconnectWithError error: LiveKitError?) {
+        let errorType = error?.type
+        let reason = error?.localizedDescription
+        Task { @MainActor in
+            // Our own disconnect() never passes this: performDisconnect sets
+            // isTearingDown and drops `room` before it calls the SDK.
+            guard room === self.room, !self.isTearingDown else { return }
+            switch errorType {
+            case .participantRemoved?, .roomDeleted?:
+                // OUR server removed us, and its gateway says why. A moderator
+                // move and the AFK sweep repoint our voice state at the new
+                // channel, then remove us from the old LiveKit room, then
+                // broadcast — so this arrives first. Hanging up here sent the
+                // leave, which the server applies per user: it deleted the
+                // voice state that already pointed at the new channel, and with
+                // voiceChannelId cleared, handleVoiceSelfMove had nothing left
+                // to rejoin from. Leave it to the VOICE_STATE_UPDATE: a move
+                // rejoins the new channel, and a kick, decline or channel
+                // delete comes as channelId nil and hangs up (READY
+                // reconciliation covers a missed one). Hang up ourselves only
+                // if, well after any broadcast, nothing has replaced or torn
+                // down this dead Room.
+                self.lastError = "Disconnected by the server"
+                self.state = .failed
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                guard room === self.room, !self.isTearingDown else { return }
+                self.onConnectionLost?(false)
+            default:
+                self.lastError = reason.map { "Connection lost (\($0))" } ?? "Connection lost"
+                self.state = .failed
+                self.onConnectionLost?(errorType == .duplicateIdentity)
+            }
         }
     }
 
