@@ -129,8 +129,10 @@ final class VoiceManager: ObservableObject {
     /// fallback; see room(_:didDisconnectWithError:). `takenOver` is true when
     /// another session joined with our identity (the call was picked up on
     /// another of our devices): the server's voice state belongs to that
-    /// device now, so the store must not tell the server we left.
-    var onConnectionLost: ((_ takenOver: Bool) -> Void)?
+    /// device now, so the store must not tell the server we left. `channelId`
+    /// is the tag the dead Room was connected with (nil for stage), so the
+    /// store hangs up that channel and not one a newer join has claimed.
+    var onConnectionLost: ((_ takenOver: Bool, _ channelId: String?) -> Void)?
     /// The mic's mute changed without the store asking for it: a failed
     /// initial publish forces a mute, a later successful retry lifts it, and a
     /// CallKit mute pressed before the Room existed is applied as the call
@@ -165,6 +167,9 @@ final class VoiceManager: ObservableObject {
     private var audioPubs: [String: RemoteTrackPublication] = [:]
 
     private var room: Room?
+    /// The channel `room` was connected for (connect's `tag`). Set together
+    /// with `room` in performConnect, so it always describes that Room.
+    private var roomTag: String?
     /// True while disconnect() is tearing the room down. Concurrent mic/track
     /// operations bail on this so they can't run against a Room whose WebRTC
     /// transport is being closed. (The call-end EXC_BAD_ACCESS once blamed on
@@ -218,9 +223,11 @@ final class VoiceManager: ObservableObject {
 
     var isConnected: Bool { state == .connected }
 
-    func connect(url: String, token: String, e2eeKey: Data? = nil, publishMic: Bool = true) async {
+    /// `tag` names the voice channel this Room is for; onConnectionLost hands
+    /// it back so the store hangs up the right call.
+    func connect(url: String, token: String, e2eeKey: Data? = nil, publishMic: Bool = true, tag: String? = nil) async {
         await serialized { [weak self] in
-            await self?.performConnect(url: url, token: token, e2eeKey: e2eeKey, publishMic: publishMic)
+            await self?.performConnect(url: url, token: token, e2eeKey: e2eeKey, publishMic: publishMic, tag: tag)
         }
     }
 
@@ -246,7 +253,7 @@ final class VoiceManager: ObservableObject {
         RoomOptions(dynacast: true, encryptionOptions: encryption)
     }
 
-    private func performConnect(url: String, token: String, e2eeKey: Data?, publishMic: Bool) async {
+    private func performConnect(url: String, token: String, e2eeKey: Data?, publishMic: Bool, tag: String?) async {
         // Already inside the serial chain, so call the raw teardown directly —
         // routing through disconnect() would deadlock waiting on ourselves.
         await performDisconnect()
@@ -304,6 +311,7 @@ final class VoiceManager: ObservableObject {
             r = Room(delegate: self, roomOptions: Self.roomOptions(encryption: nil))
         }
         room = r
+        roomTag = tag
         do {
             try await r.connect(url: url, token: token)
         } catch {
@@ -342,8 +350,15 @@ final class VoiceManager: ObservableObject {
                 micPublishFailed = true
                 lastError = "Microphone unavailable — you're connected but muted. (\(error.localizedDescription))"
                 // The server's join recorded us unmuted, so without this the
-                // other side sees a live mic on someone it can't hear.
-                onMuteChangedInternally?(true)
+                // other side sees a live mic on someone it can't hear. Not for
+                // a token that may not publish at all (voice-disabled channel,
+                // no Speak permission, instance mute): that member is a
+                // listener, not self-muted, and a selfMute=true here would
+                // start the server's AFK sweep, which parks them in the AFK
+                // channel after afkTimeoutSeconds.
+                if (error as? LiveKitError)?.type != .insufficientPermissions {
+                    onMuteChangedInternally?(true)
+                }
             }
         } else if startMutedByCallKit && isMuted {
             // Started muted for CallKit and still muted. That mute never went
@@ -455,6 +470,10 @@ final class VoiceManager: ObservableObject {
             // the initial publish is still in flight, the call below queues
             // behind it in LiveKit's publish runner and lands as a no-op unmute.
             guard !isMuted, !room.localParticipant.isMicrophoneEnabled() else { return }
+        } else if CallManager.shared.isAnsweredCallMuted {
+            // Muted from CallKit/AirPods while force-muted: that mute is the user's
+            // now. CallKit's unmute (setMuted(false)) retries the publish instead.
+            return
         }
         do {
             try await room.localParticipant.setMicrophone(enabled: true)
@@ -470,6 +489,12 @@ final class VoiceManager: ObservableObject {
               !pushToTalkEnabled, !isDeafened else { return }
         micPublishFailed = false
         lastError = nil
+        if CallManager.shared.isAnsweredCallMuted {
+            // A CallKit mute landed during the retry and found us already muted,
+            // so nothing queued a mute behind it: close the mic here.
+            _ = try? await room.localParticipant.setMicrophone(enabled: false)
+            return
+        }
         isMuted = false
         onMuteChangedInternally?(false)
     }
@@ -1139,11 +1164,11 @@ extension VoiceManager: RoomDelegate {
                 self.state = .failed
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
                 guard room === self.room, !self.isTearingDown else { return }
-                self.onConnectionLost?(false)
+                self.onConnectionLost?(false, self.roomTag)
             default:
                 self.lastError = reason.map { "Connection lost (\($0))" } ?? "Connection lost"
                 self.state = .failed
-                self.onConnectionLost?(errorType == .duplicateIdentity)
+                self.onConnectionLost?(errorType == .duplicateIdentity, self.roomTag)
             }
         }
     }

@@ -1199,6 +1199,12 @@ final class APIClient {
         return try await send("POST", "/channels/\(channelId)/voice/join")
     }
 
+    /// Who is in one voice channel right now (GET /channels/:id/voice/states).
+    func channelVoiceStates(channelId: String) async throws -> [VoiceState] {
+        let wrap: VoiceStatesWrap = try await send("GET", "/channels/\(channelId)/voice/states")
+        return wrap.voiceStates
+    }
+
     /// Patch self-mute / self-deaf on the current voice state. Best-effort.
     func updateVoiceState(channelId: String, selfMute: Bool?, selfDeaf: Bool?) async {
         var patch: [String: Bool] = [:]

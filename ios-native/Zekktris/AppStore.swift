@@ -551,8 +551,14 @@ final class AppStore: ObservableObject {
             // gated, so the initial publish may not have started capture).
             Task { await self.voice.ensureMicEnabled() }
         }
-        voice.onConnectionLost = { [weak self] takenOver in
-            guard let self, self.voiceChannelId != nil else { return }
+        voice.onConnectionLost = { [weak self] takenOver, lostChannelId in
+            // Only the channel whose Room died. During a switch joinVoice has
+            // already pointed voiceChannelId at the new channel while the old
+            // Room is still VoiceManager's, and hanging up "whatever is current"
+            // ended the call being joined (e.g. one just answered from the lock
+            // screen while guild voice was reconnecting). Stage Rooms carry no
+            // tag and are ignored, as before.
+            guard let self, let lostChannelId, self.voiceChannelId == lostChannelId else { return }
             callLog.info("LiveKit ended the call itself (takenOver=\(takenOver)); hanging up")
             // LiveKit gave up (reconnects exhausted, signalling ping timed
             // out), or the server removed us and no gateway update followed
@@ -563,7 +569,11 @@ final class AppStore: ObservableObject {
             // When another of our devices took the call over, only tear down
             // locally: the server's voice state is that device's now, and a
             // leave would drop it.
-            Task { await self.leaveCurrentVoice(notifyServer: !takenOver, hangupCue: false) }
+            Task {
+                // A join replacing the dead Room may have claimed the slot since.
+                guard self.voiceChannelId == lostChannelId else { return }
+                await self.leaveCurrentVoice(notifyServer: !takenOver, hangupCue: false)
+            }
         }
         voice.onMuteChangedInternally = { [weak self] muted in
             // A failed mic publish muted us, a retry recovered it, or the call
@@ -2939,7 +2949,7 @@ final class AppStore: ObservableObject {
             // LiveKit keeps full ownership of the audio session.)
             if let token = res.token, let url = res.wsUrl, !token.isEmpty, !url.isEmpty {
                 let key: Data? = channel.isE2EE ? e2eeKey(for: channel) : nil
-                await voice.connect(url: url, token: token, e2eeKey: key)
+                await voice.connect(url: url, token: token, e2eeKey: key, tag: channel.id)
                 // Leave raced the connect — tear the just-connected room back down.
                 guard voiceChannelId == channel.id else { await voice.disconnect(); return }
                 // connect() swallows its own failure (it sets .failed rather than
@@ -3177,6 +3187,15 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func setPushToTalk(_ on: Bool) {
+        voice.setPushToTalk(on)
+        guard let id = voiceChannelId, voice.isConnected else { return }
+        // Push-to-talk never mirrors into CallKit: drop a CallKit mute an earlier
+        // in-app mute left behind (it would silence the talk button on iOS 17+),
+        // and on leaving push-to-talk report where the mic lands.
+        CallManager.shared.reportMuted(channelId: id, muted: on ? false : voice.isDeafened)
+    }
+
     /// Keep a CallKit-owned 1:1 call's mute in step with an in-app change
     /// (CallManager.reportMuted; a no-op for calls CallKit doesn't own). Not
     /// in push-to-talk: there `isMuted` is just the talk button at rest, and on
@@ -3272,8 +3291,25 @@ final class AppStore: ObservableObject {
         // moderator disconnect): our own state going nil while we still
         // think we're connected means hang up locally — otherwise the
         // SFU connection and the call UI linger.
+        // A nil channelId doesn't say WHICH channel we left, and the server also
+        // sends one to the OLD channel when we (or another of our devices) join a
+        // different one, after joinVoice already pointed voiceChannelId at the
+        // new channel. Hang up only if the server no longer has us in `active`.
+        // It has then already removed or moved our state, so no DELETE: that is
+        // per user and would remove a state another of our devices now holds.
         if vs.userId == currentUserId, vs.channelId == nil {
-            Task { await leaveCurrentVoice() }
+            Task { [weak self] in
+                guard let self else { return }
+                let states = try? await self.api.channelVoiceStates(channelId: active)
+                guard self.voiceChannelId == active else { return }
+                if let states {
+                    if states.contains(where: { $0.userId == self.currentUserId }) { return }
+                    await self.leaveCurrentVoice(notifyServer: false)
+                } else {
+                    // GET failed (e.g. a 403 after a kick): hang up as before.
+                    await self.leaveCurrentVoice()
+                }
+            }
         }
     }
 
