@@ -3215,6 +3215,13 @@ final class AppStore: ObservableObject {
         // in-app mute left behind (it would silence the talk button on iOS 17+),
         // and on leaving push-to-talk report where the mic lands.
         CallManager.shared.reportMuted(channelId: id, muted: on ? false : voice.isDeafened)
+        // Either way an earlier in-app mute no longer holds the mic (the talk
+        // button opens it in push-to-talk; leaving push-to-talk opens it), so
+        // clear the server's selfMute too unless deafened. Otherwise peers see
+        // a muted icon on a live mic and the AFK sweep moves a talking member.
+        if !voice.isDeafened {
+            Task { await api.updateVoiceState(channelId: id, selfMute: false, selfDeaf: nil) }
+        }
     }
 
     /// Keep a CallKit-owned 1:1 call's mute in step with an in-app change
@@ -3321,15 +3328,23 @@ final class AppStore: ObservableObject {
         if vs.userId == currentUserId, vs.channelId == nil {
             Task { [weak self] in
                 guard let self else { return }
-                let states = try? await self.api.channelVoiceStates(channelId: active)
-                guard self.voiceChannelId == active else { return }
-                if let states {
-                    if states.contains(where: { $0.userId == self.currentUserId }) { return }
-                    await self.leaveCurrentVoice(notifyServer: false)
-                } else {
-                    // GET failed (e.g. a 403 after a kick): hang up as before.
-                    await self.leaveCurrentVoice()
+                // Only a definitive answer may end the call. A timeout, 5xx or offline
+                // moment says nothing about `active`. A real eviction also removes us from
+                // the SFU, so participantRemoved's fallback and READY reconciliation end
+                // the call if both attempts fail.
+                var states: [VoiceState]?
+                var gone = false
+                for attempt in 0..<2 where states == nil && !gone {
+                    if attempt > 0 { try? await Task.sleep(nanoseconds: 2_000_000_000) }
+                    do {
+                        states = try await self.api.channelVoiceStates(channelId: active)
+                    } catch let e as APIError where e.status == 403 || e.status == 404 {
+                        gone = true // we can no longer see the channel (kicked, deleted)
+                    } catch {}
                 }
+                guard self.voiceChannelId == active else { return }
+                if let states, states.contains(where: { $0.userId == self.currentUserId }) { return }
+                if states != nil || gone { await self.leaveCurrentVoice(notifyServer: false) }
             }
         }
     }
@@ -3347,8 +3362,14 @@ final class AppStore: ObservableObject {
     /// mirroring the web's self-move handling. Best-effort: if the target
     /// channel isn't in the loaded set (a cross-guild move) we skip rather than
     /// guess, leaving the user to rejoin manually.
+    /// Only for states the server marks `moved` (a moderator move or the AFK
+    /// sweep). Any other own state naming another channel is one of our other
+    /// devices joining it (or a late echo of our own earlier join): rejoining
+    /// would take that device's call. The old channel's "left" event, handled
+    /// in applyVoiceState, ends this device's call instead.
     private func handleVoiceSelfMove(_ vs: VoiceState) {
         guard vs.userId == currentUserId,
+              vs.moved == true,
               let newId = vs.channelId,
               let connected = voiceChannelId,
               connected != newId,
