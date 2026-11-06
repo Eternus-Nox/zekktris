@@ -1301,10 +1301,18 @@ export async function moveVoiceMember(args: {
       // move still ends the call — see leaveVoice's matchMovedFrom.
       movedFromChannelId: sql`coalesce(${schema.voiceStates.movedFromChannelId}, ${schema.voiceStates.channelId})`,
     })
-    .where(eq(schema.voiceStates.userId, targetUserId))
+    // Only from the channel checked above (as the AFK sweep does): the target
+    // may have left, or joined a DM call, during the permission checks — and
+    // repointing a DM call's row at a guild channel strands it there.
+    .where(
+      and(
+        eq(schema.voiceStates.userId, targetUserId),
+        eq(schema.voiceStates.channelId, current.channelId),
+      ),
+    )
     .returning();
   if (!updated) {
-    throw errors.internal('Voice state update failed');
+    throw errors.conflict('That member left or changed voice channels');
   }
 
   // 5. Best-effort LiveKit eviction from the OLD room. Same pattern
