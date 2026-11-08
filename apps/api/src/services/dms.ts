@@ -787,9 +787,10 @@ export async function closeDMForUser(input: {
 //     do that moves their read marker past it: a send (a notification quick
 //     reply is just a send) and a timer change (startDisappearingTimersAndNotify
 //     covers all three). A plain message-list fetch does not (it only stamps
-//     viewed_at, for read receipts), and a scheduled message firing doesn't
-//     move the marker past one that is still waiting. Group DMs use "first
-//     reader among the non-authors": one shared clock.
+//     viewed_at, for read receipts), and a send that isn't a read (a
+//     scheduled message firing, a forward, a send flagged notARead) starts
+//     nothing and doesn't move the marker past one that is still waiting.
+//     Group DMs use "first reader among the non-authors": one shared clock.
 //
 //   - At expires_at the message is gone for everyone: every read path
 //     filters it out at once (messages.notExpired), and the sweep below

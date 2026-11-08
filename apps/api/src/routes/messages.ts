@@ -181,6 +181,14 @@ const sendMessageSchema = z.object({
       eliminating the brief duplicate "ghost" bubble when the echo beats
       the REST 201 response. */
   nonce: z.string().max(64).optional(),
+  /** The send isn't the sender reading the conversation: it was composed
+      without the DM on screen (a Siri / Watch / Shortcuts send). Like a
+      forward (always treated so), it starts no disappearing clock and
+      doesn't move the sender's read marker past a message from someone
+      else still waiting for one — so the DM stays unread and their next
+      real open acks it. Omitted (installed apps, the composer, a
+      notification quick reply, where the message was on screen): a read. */
+  notARead: z.boolean().optional(),
   /** Per-attachment client metadata, POSITIONAL to the uploaded files (entry
       k describes files[k]; may be null for files with no meta). Used so E2EE
       (.zke) images — which the server can't measure, since it only sees
@@ -807,6 +815,12 @@ messagesRouter.post(
           )
         : [];
 
+    // Disappearing messages: an interactive send from the conversation is a
+    // read of what's above it. A forward is never one (it is picked from
+    // another chat; web doesn't even open the destination), nor is a send
+    // the client flags `notARead`.
+    const isRead = !payload.notARead && !payload.forwardFromMessageId;
+
     let result;
     try {
       result = await messages.createMessage({
@@ -815,6 +829,7 @@ messagesRouter.post(
         content: payload.content,
         replyToId: payload.replyToId ? BigInt(payload.replyToId) : null,
         guildId: ctx.channel.guildId ?? null,
+        notARead: !isRead,
         // Atomic slowmode re-check inside the create tx (0 = bypass). Only
         // guild channels (channelPerms != null) where the caller isn't a mod;
         // DMs have no slowmode. The enforceSlowmode pre-check above stays for
@@ -1028,13 +1043,17 @@ messagesRouter.post(
     // now covers, as the ack route does. Installed apps' notification quick
     // replies only POST the message, and every client skips the ack while
     // the marker is current — without this, what the sender answered would
-    // never disappear. After the commit and the fan-out; no-op outside DMs.
-    await dms.startDisappearingTimersAndNotify({
-      channelId,
-      channelType: ctx.channel.type,
-      readerId: userId,
-      upToMessageId: result.message.id,
-    });
+    // never disappear. Not for a send that isn't a read: createMessage held
+    // the marker below what's still waiting, and the sender's next open
+    // starts it. After the commit and the fan-out; no-op outside DMs.
+    if (isRead) {
+      await dms.startDisappearingTimersAndNotify({
+        channelId,
+        channelType: ctx.channel.type,
+        readerId: userId,
+        upToMessageId: result.message.id,
+      });
+    }
 
     // Parental controls: scan against any supervised child's watch words
     // (the author, and the other party in a 1:1 DM). Fire-and-forget so

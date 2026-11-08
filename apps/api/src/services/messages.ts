@@ -226,13 +226,15 @@ export interface CreateMessageInput {
   embeds?: MessageEmbedJson[] | null;
   /**
    * The send isn't the author reading the conversation — a scheduled message
-   * firing on its own, possibly while they're asleep. Their read marker still
-   * moves to the new message as for any send, EXCEPT when that would pass a
-   * message from someone else that is waiting for its disappearing clock
-   * (sent with a timer, clock not started, above the marker): a marker past
-   * it means "read", clients then never ack it, and it would never
-   * disappear. The marker (and mention count) then stay put, so the DM stays
-   * unread and the author's next real open acks — and starts — it.
+   * firing on its own, possibly while they're asleep, a forward picked from
+   * another chat, or a send the client flags (Siri / Watch). Their read
+   * marker still moves to the new message as for any send, EXCEPT when that
+   * would pass a message from someone else that is waiting for its
+   * disappearing clock (sent with a timer, clock not started, above the
+   * marker): a marker past it means "read", clients then never ack it, and
+   * it would never disappear. The marker (and mention count) then stay put,
+   * so the DM stays unread and the author's next real open acks — and
+   * starts — it.
    */
   notARead?: boolean;
 }
