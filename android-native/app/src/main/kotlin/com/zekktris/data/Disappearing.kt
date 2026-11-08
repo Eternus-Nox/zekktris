@@ -373,15 +373,36 @@ object Disappearing {
     }
 
     /**
+     * The ids an ack tries, in order, until the server takes one: the later
+     * of [newest], the newest confirmed row loaded, and [pastTail]
+     * ([pastTailAck]), then [newest] when the first was the past-tail id. The
+     * server refuses a marker whose row was hard-deleted (an account purge,
+     * a DM's E2EE purge), and the open must still ack what it shows.
+     */
+    fun ackCandidates(newest: String?, pastTail: String?): List<String> {
+        val first = laterId(newest, pastTail) ?: return emptyList()
+        return if (newest != null && first != newest) listOf(first, newest) else listOf(first)
+    }
+
+    /**
      * A conversation's newest message id once the [removed] rows (deleted,
      * or expired) have left its loaded list, leaving [remaining]. When
      * [lastId] was one of them it moves back to the newest confirmed row
      * still loaded, as the server moves its own: left on a row nobody can
      * load, it would keep an unread dot up that reading can't clear. With
      * nothing older loaded it stays ([pastTailAck] acks past it on open).
+     * It stays too when the loaded rows may not [reachTail] (a cache from
+     * before a reconnect that replayed nothing): messages missed in between
+     * would sit above the newest still loaded, and moving back to it would
+     * hide them as read.
      */
-    fun lastAfterRemoval(lastId: String?, removed: Set<String>, remaining: List<Message>): String? {
-        if (lastId == null || lastId !in removed) return lastId
+    fun lastAfterRemoval(
+        lastId: String?,
+        removed: Set<String>,
+        remaining: List<Message>,
+        reachTail: Boolean = true,
+    ): String? {
+        if (lastId == null || lastId !in removed || !reachTail) return lastId
         return remaining.asSequence().map { it.id }
             .filter { isServerId(it) && compareIds(it, lastId) < 0 }
             .maxWithOrNull(ID_ORDER) ?: lastId

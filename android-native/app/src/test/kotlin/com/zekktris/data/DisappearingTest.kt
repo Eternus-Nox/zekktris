@@ -347,6 +347,30 @@ class DisappearingTest {
         assertNull(Disappearing.lastAfterRemoval(null, setOf("300"), rest))
     }
 
+    @Test fun aCacheThatMayStopShortOfTheTailKeepsTheConversationsNewest() {
+        // Cached from before a reconnect that replayed nothing: messages missed
+        // meanwhile may sit between 200 and 300, so moving back would hide them.
+        val rest = listOf(msg("150"), msg("200"))
+        assertEquals("300", Disappearing.lastAfterRemoval("300", setOf("300"), rest, reachTail = false))
+        assertEquals("200", Disappearing.lastAfterRemoval("300", setOf("300"), rest, reachTail = true))
+        assertEquals("300", Disappearing.lastAfterRemoval("300", setOf("150"), rest, reachTail = false))
+        assertNull(Disappearing.lastAfterRemoval(null, setOf("300"), rest, reachTail = false))
+    }
+
+    @Test fun anAckTheServerRefusesFallsBackToTheNewestLoadedRow() {
+        // Past the loaded rows first (its row may be hard-deleted), then the
+        // newest loaded one.
+        assertEquals(listOf("300", "200"), Disappearing.ackCandidates("200", "300"))
+        assertEquals(listOf("1000", "999"), Disappearing.ackCandidates("999", "1000"))
+        // Nothing past the rows: the newest alone.
+        assertEquals(listOf("200"), Disappearing.ackCandidates("200", null))
+        assertEquals(listOf("200"), Disappearing.ackCandidates("200", "200"))
+        assertEquals(listOf("300"), Disappearing.ackCandidates("300", "200"))
+        // Nothing loaded: the past-tail id alone; neither: no POST.
+        assertEquals(listOf("300"), Disappearing.ackCandidates(null, "300"))
+        assertEquals(emptyList<String>(), Disappearing.ackCandidates(null, null))
+    }
+
     @Test fun settingsPatchCarriesAnExplicitNullForOff() {
         assertEquals("""{"ttlSecondsAfterRead":null}""", Disappearing.settingsPatchBody(null).toString())
         assertEquals("""{"ttlSecondsAfterRead":2419200}""", Disappearing.settingsPatchBody(2_419_200).toString())

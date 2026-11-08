@@ -299,6 +299,12 @@ class AppStore(
      *  ack for a timed message whose countdown never started goes once per id. */
     private val lastAckedId = java.util.concurrent.ConcurrentHashMap<String, String>()
 
+    /** Conversations whose loaded rows may stop short of the server's newest:
+     *  cached before a fresh READY (it replays nothing missed while the socket
+     *  was down), until a latest-window fetch tops them up. A row removed here
+     *  never moves lastMessageId back ([rollBackLastMessage]). */
+    private val tailGapped: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
     init {
         // Fan gateway connection-state + dispatches into the store.
         scope.launch { gateway.state.collect { s -> _state.update { it.copy(gatewayState = s) } } }
@@ -2258,6 +2264,7 @@ class AppStore(
         val page = runCatching { api.listMessages(channelId, limit = 50) }.getOrNull()
         val msgs = dropExpired((page ?: emptyList()).reversed())
         _state.update { it.copy(messagesByChannel = it.messagesByChannel + (channelId to msgs)) }
+        if (page != null) tailGapped -= channelId
         return msgs.takeIf { page != null }
     }
 
@@ -2442,10 +2449,11 @@ class AppStore(
             val gone = cur.mapNotNullTo(HashSet()) { m -> m.id.takeIf { it !in kept } }
             rollBackLastMessage(
                 st.copy(messagesByChannel = st.messagesByChannel + (channelId to pruned)),
-                channelId, gone, pruned + fetched,
+                channelId, gone, pruned + fetched, reachTail = true, // the latest window is in it
             )
         }
         fetched.forEach { upsertMessage(channelId, it) }  // add/overwrite as before
+        tailGapped -= channelId                           // the loaded rows reach the tail again
         reconcilePointer(channelId, latest)               // advance unread pointer + recency
         return fetched
     }
@@ -2458,17 +2466,21 @@ class AppStore(
      * app-lock screen must never mark a message seen. What a skipped ack
      * covered is acked by [onAppForeground] or [onAppLockChanged] if the
      * conversation is still open then. [pastTail]: an id past the loaded rows
-     * to ack instead when it is later ([Disappearing.pastTailAck]).
+     * to ack instead when it is later ([Disappearing.pastTailAck]); when the
+     * server refuses it, the newest loaded row is acked after all
+     * ([Disappearing.ackCandidates]).
      */
     private suspend fun ack(channelId: String, pastTail: String? = null) {
         if (!appForeground || appLocked) return
         // Optimistic rows have no server id to ack.
         val newest = _state.value.messagesByChannel[channelId]?.lastOrNull { !it.id.startsWith("pending-") }?.id
-        val last = Disappearing.laterId(newest, pastTail) ?: return
-        val rs = runCatching { api.ackMessage(channelId, last) }.getOrNull() ?: return
-        lastAckedId[channelId] = last
-        _state.update { it.copy(readStates = it.readStates + (channelId to rs)) }
-        startCountdownsLocally(channelId, last)
+        for (last in Disappearing.ackCandidates(newest, pastTail)) {
+            val rs = runCatching { api.ackMessage(channelId, last) }.getOrNull() ?: continue
+            lastAckedId[channelId] = last
+            _state.update { it.copy(readStates = it.readStates + (channelId to rs)) }
+            startCountdownsLocally(channelId, last)
+            return
+        }
     }
 
     /**
@@ -4863,6 +4875,11 @@ class AppStore(
     }
 
     private fun onReady(d: JsonElement?) {
+        // Every conversation cached so far may have missed messages while the
+        // socket was down. Marked before any later dispatch is handled, so a
+        // live message removed meanwhile can't move lastMessageId back past
+        // them; the open one's refresh below clears its mark.
+        tailGapped += _state.value.messagesByChannel.keys
         // guilds/private_channels in READY are ID-only stubs; refetch the real
         // trees, and reconcile the open channel (a fresh READY replays nothing).
         scope.launch {
@@ -4988,6 +5005,7 @@ class AppStore(
         synchronized(expiryDeadlines) { expiryDeadlines.clear() }
         dmTimerGen.clear()
         lastAckedId.clear()
+        tailGapped.clear()
     }
 
     /** server − device clock: MESSAGE_EXPIRY's precise value, else the last
@@ -5118,11 +5136,19 @@ class AppStore(
      *  rows (deleted, or disappeared) took out the one it pointed at, leaving
      *  [remaining] loaded — the server rolls its own back the same way, but
      *  tells no client. Left on a row nobody can load, the dot it lights would
-     *  outlast every read. Unchanged when it pointed anywhere else. */
-    private fun rollBackLastMessage(st: AppState, channelId: String, removed: Set<String>, remaining: List<Message>): AppState {
+     *  outlast every read. Unchanged when it pointed anywhere else, or when
+     *  [remaining] may not reach the tail ([tailGapped]): the dot then stays
+     *  until the open acks past it or a channel list brings the server's. */
+    private fun rollBackLastMessage(
+        st: AppState,
+        channelId: String,
+        removed: Set<String>,
+        remaining: List<Message>,
+        reachTail: Boolean = channelId !in tailGapped,
+    ): AppState {
         if (removed.isEmpty()) return st
         fun back(c: Channel): Channel {
-            val last = Disappearing.lastAfterRemoval(c.lastMessageId, removed, remaining)
+            val last = Disappearing.lastAfterRemoval(c.lastMessageId, removed, remaining, reachTail)
             return if (last == c.lastMessageId) c else c.copy(lastMessageId = last)
         }
         val di = st.dms.indexOfFirst { it.id == channelId }
