@@ -249,7 +249,8 @@ final class APIClient {
         _ path: String,
         bodyData: Data? = nil,
         authorized: Bool = true,
-        isRetry: Bool = false
+        isRetry: Bool = false,
+        onSuccess: ((HTTPURLResponse) -> Void)? = nil
     ) async throws -> T {
         guard let url = URL(string: Config.apiBaseURL + path) else {
             throw APIError(status: 0, message: "Bad URL: \(path)")
@@ -276,7 +277,7 @@ final class APIClient {
             // safe (and the send endpoint is nonce-deduplicated server-side
             // regardless). This makes the very first post-resume request succeed
             // instead of surfacing a spurious failure.
-            return try await send(method, path, bodyData: bodyData, authorized: authorized, isRetry: true)
+            return try await send(method, path, bodyData: bodyData, authorized: authorized, isRetry: true, onSuccess: onSuccess)
         }
         guard let http = resp as? HTTPURLResponse else {
             throw APIError(status: 0, message: "No HTTP response")
@@ -285,7 +286,7 @@ final class APIClient {
         // "expired" — refresh via the cookie and replay the request once.
         if http.statusCode == 401, canRetryAfterRefresh(path, authorized: authorized, isRetry: isRetry),
            await refreshAccessToken().isSuccess {
-            return try await send(method, path, bodyData: bodyData, authorized: authorized, isRetry: true)
+            return try await send(method, path, bodyData: bodyData, authorized: authorized, isRetry: true, onSuccess: onSuccess)
         }
         guard (200..<300).contains(http.statusCode) else {
             let needs2FA = Self.requires2FA(data)
@@ -297,6 +298,8 @@ final class APIClient {
                 requires2FA: needs2FA
             )
         }
+        // A caller that reads the answer's headers (messages: its Date).
+        onSuccess?(http)
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
@@ -595,8 +598,48 @@ final class APIClient {
         if let before { path += "&before=\(before)" }
         if let after { path += "&after=\(after)" }
         if let around { path += "&around=\(around)" }
-        let wrap: MessagesWrap = try await send("GET", path)
+        let wrap: MessagesWrap = try await send("GET", path, onSuccess: { http in
+            self.recordDateClockOffset(http.value(forHTTPHeaderField: "Date"))
+        })
         return wrap.messages
+    }
+
+    // ── Server clock (disappearing messages) ────────────────────────────────
+    /// server − device clock from the last message page's `Date` header (a
+    /// lower bound, see `clockOffset(fromDateHeader:receivedAt:)`); nil until
+    /// one arrived. Shifts the pages' disappearing deadlines
+    /// (Message.expiresAt) onto the device clock until a MESSAGE_EXPIRY gives
+    /// a precise offset. Written on the concurrent executor and read on the
+    /// main actor, hence the lock.
+    var dateClockOffset: TimeInterval? { dateClockLock.withLock { lastDateClockOffset } }
+    private var lastDateClockOffset: TimeInterval?
+    private let dateClockLock = NSLock()
+
+    private func recordDateClockOffset(_ header: String?) {
+        guard let offset = Self.clockOffset(fromDateHeader: header, receivedAt: Date()) else { return }
+        dateClockLock.withLock { lastDateClockOffset = offset }
+    }
+
+    /// The HTTP `Date` header's format: RFC 1123, always GMT.
+    private static let httpDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(abbreviation: "GMT")
+        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return f
+    }()
+
+    /// server − device from an HTTP `Date` header (whole seconds, RFC 1123),
+    /// read at `receivedAt`, once the response is in. The header truncates to
+    /// the second and was written before the response arrived, so this is a
+    /// LOWER bound of the true offset — a deadline derived from it never
+    /// fires early. A fallback for REST deadlines until MESSAGE_EXPIRY's
+    /// precise `server_now` is known. Mirrors Android's
+    /// Disappearing.offsetFromDateHeader.
+    static func clockOffset(fromDateHeader header: String?, receivedAt: Date) -> TimeInterval? {
+        guard let raw = header?.trimmingCharacters(in: .whitespaces), !raw.isEmpty,
+              let at = httpDateFormatter.date(from: raw) else { return nil }
+        return at.timeIntervalSince(receivedAt)
     }
 
     /// All attachments in a channel, newest-first, for the shared-media gallery.

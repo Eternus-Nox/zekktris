@@ -137,6 +137,13 @@ struct RootView: View {
         .onChange(of: session.phase) { _, phase in
             switch phase {
             case .signedIn:
+                // The app lock, read LIVE: noteBecameActive() sets `locked`
+                // just before setAppActive(true) in the scene-phase handler
+                // above, so a value pushed from onChange(of: session.locked)
+                // would still be stale there. A read under the lock screen
+                // must not start disappearing messages' countdowns. Set
+                // before start() so no read can slip in ahead of it.
+                store.isAppLocked = { [weak session] in session?.locked ?? false }
                 if let token = session.token { store.start(token: token, user: session.currentUser) }
                 // Auto-presence: reuse Session.setStatus to push the automatic
                 // status (older servers only; not a manual pick, so no
@@ -174,6 +181,12 @@ struct RootView: View {
             case .loading:
                 break
             }
+        }
+        .onChange(of: session.locked) { _, locked in
+            // Past the lock screen: the chat it covered is on screen again,
+            // so send the read held back under it. (Sign-out also clears
+            // the lock, but leaves the signed-in phase first.)
+            if !locked, session.phase == .signedIn { store.noteAppUnlocked() }
         }
         // Transient incoming-poke banner — floats above the whole app while
         // foreground. (The watch shows the big-emoji flash; the phone keeps it

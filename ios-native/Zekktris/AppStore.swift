@@ -1101,6 +1101,11 @@ final class AppStore: ObservableObject {
     /// Session.currentUser (set by the app), so the Settings picker follows a
     /// pick made on another device.
     var applySelfStatus: ((_ chosen: String, _ effective: String?) -> Void)?
+    /// Whether the app lock (Face ID) covers the app right now (set by the
+    /// app to Session.locked, read live). The lock screen replaces the chat
+    /// while it stays selected here, so readsCountAsSeen holds reads under it;
+    /// the app calls noteAppUnlocked when it clears.
+    var isAppLocked: (() -> Bool)?
     private var lastInteractionAt = Date()
     private var appActive = true
     /// True while the app is in the background (scenePhase .background) —
@@ -1292,6 +1297,11 @@ final class AppStore: ObservableObject {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             await refreshOpenChannelLatest()
         }
+        // The open DM's disappearing-messages timer: a DM_SETTINGS_UPDATE
+        // sent while the socket was dead is never replayed (past the resume
+        // window the reconnect is a fresh READY), which left the header
+        // badge on the old value until the DM was re-entered.
+        if let c = selectedChannel, c.isDM { Task { await refreshDmTimer(c.id) } }
         // Refresh the watch with the freshest token + targets on foreground.
         syncWatch()
     }
@@ -1354,9 +1364,10 @@ final class AppStore: ObservableObject {
         if active {
             // Disappearing messages: the expiry timer doesn't fire while the
             // app is suspended, so hide what expired meanwhile; then send the
-            // read held back while the app wasn't in use.
+            // read held back while the app wasn't in use, and read what the
+            // open conversation shows now.
             pruneExpired()
-            replayHeldAck()
+            resumeReading()
         }
         evaluateAutoPresence()
         // Re-sync the home-screen badge to true unread on every fg/bg flip (a
@@ -1766,8 +1777,9 @@ final class AppStore: ObservableObject {
         expiryTimer?.invalidate()
         expiryTimer = nil
         expiryDeadlines = [:]
-        serverClockOffset = 0
+        serverClockOffset = nil
         heldAckChannelIds = []
+        lastAckedMarker = [:]
         dmTimers = [:]
         dmTimerRevision = [:]
         dmMaxTtlSeconds = nil
@@ -2669,8 +2681,10 @@ final class AppStore: ObservableObject {
                snowflakeGreater(knownLatest, than: after),
                let newer = try? await api.messages(channelId: channel.id, limit: 50, after: after),
                channel.id == selectedChannel?.id {
+                let shown = Set(messages.map { $0.id })
                 for m in newer.sorted(by: { $0.createdAt < $1.createdAt }) { upsert(m) }
                 decryptVisible()
+                ackCaughtUpRows(channel, shownBefore: shown)
             }
         } catch {
             // Access to the open channel was revoked (made private / deleted)
@@ -2762,13 +2776,17 @@ final class AppStore: ObservableObject {
         // skip optimistic placeholders, whose ids are send nonces the server
         // can't page from. Nothing loaded yet → a normal load instead.
         guard let afterId = messages.last(where: { $0.id.allSatisfy(\.isNumber) })?.id else {
+            let shown = Set(messages.map { $0.id })
             await loadMessages(channel)
+            ackCaughtUpRows(channel, shownBefore: shown)
             return
         }
         do {
             let newer = try await api.messages(channelId: channel.id, limit: 50, after: afterId)
             guard channel.id == selectedChannel?.id, !newer.isEmpty else { return }
+            let shown = Set(messages.map { $0.id })
             for m in newer.sorted(by: { $0.createdAt < $1.createdAt }) { upsert(m) }
+            ackCaughtUpRows(channel, shownBefore: shown)
         } catch {
             // Best-effort background refresh — don't surface a toast.
         }
@@ -2797,7 +2815,9 @@ final class AppStore: ObservableObject {
         if pendingJumpMessageId != nil { return }
         guard let latest = try? await api.messages(channelId: channel.id, limit: 50) else { return }
         guard channel.id == selectedChannel?.id, pendingJumpMessageId == nil else { return }
+        let shown = Set(messages.map { $0.id })
         for m in latest.sorted(by: { $0.createdAt < $1.createdAt }) { upsert(m) }
+        ackCaughtUpRows(channel, shownBefore: shown)
     }
 
     // MARK: Read state / unread
@@ -2817,15 +2837,20 @@ final class AppStore: ObservableObject {
     /// short timer and always sends the NEWEST marker at fire time.
     private var pendingAckTasks: [String: Task<Void, Never>] = [:]
     /// Channels whose read was held back because the app wasn't in use;
-    /// setAppActive(true) replays the open one's (replayHeldAck).
+    /// setAppActive(true) and noteAppUnlocked replay the open one's
+    /// (replayHeldAck).
     private var heldAckChannelIds: Set<String> = []
 
     /// Whether a read may count as SEEN: the app is the active foreground
-    /// app. An ack starts disappearing messages' countdowns (and flips the
-    /// sender's "Read"), so a message that lands while the phone is in a
-    /// pocket — during a call, a background gateway, the app switcher — must
-    /// not count as read until the user is back.
-    private var readsCountAsSeen: Bool { appActive && !appInBackground }
+    /// app and the app lock (Face ID) isn't covering it. An ack starts
+    /// disappearing messages' countdowns (and flips the sender's "Read"), so
+    /// a message that lands while the phone is in a pocket — during a call,
+    /// a background gateway, the app switcher — or while the lock screen
+    /// stands in for the chat (which stays selected under it) must not count
+    /// as read until the user is back.
+    private var readsCountAsSeen: Bool {
+        appActive && !appInBackground && !(isAppLocked?() ?? false)
+    }
 
     /// An encrypted DM this device holds no key for shows the unlock panel
     /// in place of its messages (the same test as the chat screen's lock
@@ -2843,9 +2868,9 @@ final class AppStore: ObservableObject {
     }
 
     /// Mark a channel read up to its newest known message and ack server-side.
-    /// Held (not dropped) while the app isn't active, or while a locked DM's
-    /// read would start disappearing timers; setAppActive(true) and
-    /// unlockE2EE replay it.
+    /// Held (not dropped) while the app isn't active or is under the app
+    /// lock, or while a locked DM's read would start disappearing timers;
+    /// setAppActive(true), noteAppUnlocked and unlockE2EE replay it.
     func markChannelRead(_ channel: Channel) {
         guard readsCountAsSeen, !readWouldStartUnseenTimers(channel) else {
             heldAckChannelIds.insert(channel.id)
@@ -2866,10 +2891,77 @@ final class AppStore: ObservableObject {
             : nil
         let newest = newestConfirmed ?? channel.lastMessageId
         guard let last = newest, !last.isEmpty else { return }
-        if let rs = readStates[channel.id], rs.lastMessageId == last, (rs.mentionCount ?? 0) == 0 { return }
+        if let rs = readStates[channel.id], rs.lastMessageId == last, (rs.mentionCount ?? 0) == 0 {
+            // Nothing new for the marker. But only an ack starts a
+            // disappearing message's countdown (of every row up to the acked
+            // id not counting yet), and the marker can read current without
+            // one: our own reply moves it server-side — from a notification,
+            // too — and that starts nothing, and a catch-up can merge
+            // someone else's row below it. So ack once more while the open
+            // conversation shows a row whose countdown we don't know: once
+            // per marker (an ack of it started every row it covers), and not
+            // while one is pending (it carries this marker anyway).
+            if lastAckedMarker[channel.id] != last, pendingAckTasks[channel.id] == nil,
+               showsUnstartedTimer(channel) {
+                scheduleAck(channel.id)
+            }
+            return
+        }
         readStates[channel.id] = ReadState(channelId: channel.id, lastMessageId: last, mentionCount: 0)
         updateAppBadge()
         scheduleAck(channel.id)
+    }
+
+    /// The marker each channel's last successful ack from this device sent
+    /// (see markChannelRead's current-marker case).
+    private var lastAckedMarker: [String: String] = [:]
+
+    /// Whether the open conversation shows someone else's message sent with
+    /// a disappearing timer whose deadline this device doesn't know — one
+    /// that, as far as we can tell, no read has started yet.
+    private func showsUnstartedTimer(_ channel: Channel) -> Bool {
+        guard channel.id == selectedChannel?.id else { return false }
+        let me = currentUserId
+        return messages.contains { m in
+            guard m.expireAfterSeconds != nil, expiryDeadlines[m.id] == nil,
+                  m.id.allSatisfy(\.isNumber) else { return false }
+            return (m.authorId ?? m.author?.id) != me
+        }
+    }
+
+    /// Disappearing messages: rows a REST catch-up merges into the open
+    /// conversation — after a reconnect, on foreground, from the 3 s poll, a
+    /// push tap or re-entering the open chat — arrive without the
+    /// MESSAGE_CREATE that acks a live one, and only an ack starts their
+    /// countdowns (a GET just stamps viewedAt). Reads the conversation when
+    /// it now shows someone else's message that wasn't in `shownBefore`;
+    /// markChannelRead holds it while the app isn't in use, and acks even a
+    /// marker that already reads current when such a row's countdown isn't
+    /// known.
+    private func ackCaughtUpRows(_ channel: Channel, shownBefore: Set<String>) {
+        guard channel.id == selectedChannel?.id else { return }
+        let me = currentUserId
+        let brought = messages.contains {
+            !shownBefore.contains($0.id) && ($0.authorId ?? $0.author?.id) != me
+        }
+        if brought { markChannelRead(channel) }
+    }
+
+    /// The user can see the open conversation again — the app is back in
+    /// use, or the app lock just cleared: send the read it held back, then
+    /// count what it shows as read (a catch-up may have merged rows while
+    /// reads were held). markChannelRead holds it again if the app still
+    /// isn't in use.
+    private func resumeReading() {
+        replayHeldAck()
+        if let c = selectedChannel, isShowingMessages(of: c) { markChannelRead(c) }
+    }
+
+    /// The app lock (Face ID) just cleared: the chat it covered is on screen
+    /// again, so send the read held back under the lock screen.
+    func noteAppUnlocked() {
+        guard currentUserId != nil else { return }
+        resumeReading()
     }
 
     /// Back in the foreground (or just unlocked): send the read the open
@@ -2907,8 +2999,21 @@ final class AppStore: ObservableObject {
                 self.heldAckChannelIds.insert(channelId)
                 return
             }
-            guard let marker = self.readStates[channelId]?.lastMessageId, !marker.isEmpty else { return }
+            // The open conversation's newest confirmed row when the map reads
+            // older: a read-state refetch (loadReadStates, on reconnect and
+            // foreground, beside the catch-up merges) replaces the whole map
+            // with the server's marker, and one landing inside the debounce
+            // sent that older marker — an ack that starts none of the merged
+            // rows' countdowns.
+            var marker = self.readStates[channelId]?.lastMessageId ?? ""
+            if channelId == self.selectedChannel?.id,
+               let newest = self.messages.last(where: { $0.id.allSatisfy(\.isNumber) })?.id,
+               marker.isEmpty || snowflakeGreater(newest, than: marker) {
+                marker = newest
+            }
+            guard !marker.isEmpty else { return }
             if let rs = try? await self.api.ackChannel(channelId: channelId, messageId: marker) {
+                self.lastAckedMarker[channelId] = marker
                 // Only apply if the server marker is >= the local one — a slow
                 // response for an older ack must not regress a newer marker
                 // (the server itself upserts with GREATEST).
@@ -4585,15 +4690,24 @@ final class AppStore: ObservableObject {
     private var expiryDeadlines: [String: Date] = [:]
     private let expiryRetain: TimeInterval = 10 * 60
     /// Server clock minus this device's clock, from MESSAGE_EXPIRY's
-    /// server_now (0 until one arrives). Delivery latency makes it a slight
+    /// server_now (nil until one arrives). Delivery latency makes it a slight
     /// underestimate, so a skewed device hides a message a little late, never
     /// early.
-    private var serverClockOffset: TimeInterval = 0
+    private var serverClockOffset: TimeInterval?
     /// ONE timer for every countdown, armed for the earliest future deadline.
     private var expiryTimer: Timer?
 
+    /// The server-minus-device offset in force: MESSAGE_EXPIRY's once known,
+    /// else the lower bound the last message page's Date header gave
+    /// (APIClient.dateClockOffset), else none. A page's expiresAt often
+    /// never gets a MESSAGE_EXPIRY — after a cold start, or when another
+    /// device (or the first group-DM reader) started the clock, this read
+    /// starts nothing — and comparing it with a fast device clock hid the
+    /// row early. Mirrors Android's clockOffsetMs().
+    private func clockOffset() -> TimeInterval { serverClockOffset ?? api.dateClockOffset ?? 0 }
+
     /// This device's clock in server time.
-    private func serverNowDate() -> Date { Date().addingTimeInterval(serverClockOffset) }
+    private func serverNowDate() -> Date { Date().addingTimeInterval(clockOffset()) }
 
     /// A server ISO time (with or without fractional seconds).
     private func parseServerTime(_ iso: String) -> Date? {
@@ -4640,12 +4754,6 @@ final class AppStore: ObservableObject {
     /// and on foreground (a suspended app's timer doesn't fire).
     func pruneExpired() {
         let now = serverNowDate()
-        // Forget long-passed deadlines; the server's reads have dropped
-        // those rows by now.
-        let forgetBefore = now.addingTimeInterval(-expiryRetain)
-        if expiryDeadlines.values.contains(where: { $0 < forgetBefore }) {
-            expiryDeadlines = expiryDeadlines.filter { $0.value >= forgetBefore }
-        }
         var gone = Set<String>()
         for (id, at) in expiryDeadlines where at <= now { gone.insert(id) }
         if !gone.isEmpty {
@@ -4663,6 +4771,15 @@ final class AppStore: ObservableObject {
             }
             e2eeEmbedResolving.subtract(gone)
             if let r = replyingTo, gone.contains(r.id) { replyingTo = nil }
+        }
+        // Only now forget long-passed deadlines: their rows are gone from
+        // every copy above, and the server's reads have dropped them. (Done
+        // first, a suspension longer than expiryRetain past a deadline — the
+        // timer doesn't fire meanwhile, and the sweep's MESSAGE_DELETE hit a
+        // dead socket — forgot the deadline and left its row on screen.)
+        let forgetBefore = now.addingTimeInterval(-expiryRetain)
+        if expiryDeadlines.values.contains(where: { $0 < forgetBefore }) {
+            expiryDeadlines = expiryDeadlines.filter { $0.value >= forgetBefore }
         }
         scheduleExpiryTimer()
     }
@@ -4690,7 +4807,9 @@ final class AppStore: ObservableObject {
     private func scheduleExpiryTimer() {
         expiryTimer?.invalidate()
         expiryTimer = nil
-        let now = serverNowDate()
+        // One read, so `now` and the fire date use the same offset.
+        let offset = clockOffset()
+        let now = Date().addingTimeInterval(offset)
         var earliest: Date?
         for at in expiryDeadlines.values where at > now {
             if let e = earliest, e <= at { continue }
@@ -4698,8 +4817,10 @@ final class AppStore: ObservableObject {
         }
         guard let next = earliest else { return }
         // The deadline on this device's clock, a hair late so the re-check
-        // in pruneExpired sees it as passed.
-        let fireAt = next.addingTimeInterval(0.05 - serverClockOffset)
+        // in pruneExpired sees it as passed. A later, smaller offset (a new
+        // page's Date header) can make it fire early: pruneExpired then
+        // finds nothing due and re-arms.
+        let fireAt = next.addingTimeInterval(0.05 - offset)
         let timer = Timer(fire: fireAt, interval: 0, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.pruneExpired() }
         }
@@ -5692,12 +5813,8 @@ final class AppStore: ObservableObject {
         defer { if seq == dmSettingsLoadSeq { loadingDmSettings = false } }
         do {
             let settings = try await api.getDmSettings(channelId: channelId)
-            // Per channel, so it's right whichever DM is open now; skipped
-            // only when an event or a save wrote a newer value meanwhile.
-            if (dmTimerRevision[channelId] ?? 0) == revision {
-                let value = max(0, settings.ttlSecondsAfterRead ?? 0)
-                if dmTimers[channelId] != value { dmTimers[channelId] = value }
-            }
+            // Per channel, so it's right whichever DM is open now.
+            applyFetchedDmTimer(channelId, settings, since: revision)
             if seq == dmSettingsLoadSeq {
                 dmMaxTtlSeconds = settings.maxTtlSeconds
                 dmNotifShowContent = settings.notificationShowContent
@@ -5706,6 +5823,23 @@ final class AppStore: ObservableObject {
             // Keep a known timer: a failed fetch says nothing about it.
             if seq == dmSettingsLoadSeq { dmNotifShowContent = nil }
         }
+    }
+    /// Re-read a DM's timer after a reconnect or on foreground: a
+    /// DM_SETTINGS_UPDATE sent while the socket was down is never replayed
+    /// (the web refetches on wake for the same reason). Only the timer, so
+    /// it can't disturb what the settings sheet shows (loading state, the
+    /// notification-preview choice) or clear it on a failed fetch.
+    func refreshDmTimer(_ channelId: String) async {
+        let revision = dmTimerRevision[channelId] ?? 0
+        guard let settings = try? await api.getDmSettings(channelId: channelId) else { return }
+        applyFetchedDmTimer(channelId, settings, since: revision)
+    }
+    /// A settings fetch's timer, skipped when an event or a save wrote a
+    /// newer value since the fetch started (`revision`).
+    private func applyFetchedDmTimer(_ channelId: String, _ settings: DmSettings, since revision: Int) {
+        guard (dmTimerRevision[channelId] ?? 0) == revision else { return }
+        let value = max(0, settings.ttlSecondsAfterRead ?? 0)
+        if dmTimers[channelId] != value { dmTimers[channelId] = value }
     }
     /// Change the DM's disappearing-messages timer (nil = off). Optimistic;
     /// reverts and sets errorText on failure. Repeating the current value
@@ -6370,11 +6504,20 @@ final class AppStore: ObservableObject {
                     Task {
                         if let g = selectedGuild, !c.isDM { await loadChannels(g) }
                         if c.isDM || channels.contains(where: { $0.id == c.id }) {
+                            // What this reload brings in was missed live, so
+                            // no MESSAGE_CREATE acked it (disappearing
+                            // countdowns start from the ack).
+                            let shown = Set(messages.map { $0.id })
                             await loadMessages(c)
+                            ackCaughtUpRows(c, shownBefore: shown)
                         } else {
                             clearChannel()
                         }
                     }
+                    // A DM_SETTINGS_UPDATE sent while the socket was down is
+                    // never replayed: re-read the open DM's timer (header
+                    // badge, send placeholder).
+                    if c.isDM { Task { await refreshDmTimer(c.id) } }
                 }
                 // Presence deltas missed while suspended are unrecoverable
                 // (no resume/replay) — refetch members so guild status dots
@@ -6400,7 +6543,11 @@ final class AppStore: ObservableObject {
                         bumpChannelLastMessage(cid, mid)
                     }
                     if cid == selectedChannel?.id, let c = selectedChannel {
-                        Task { await loadMessages(c) }
+                        Task {
+                            let shown = Set(messages.map { $0.id })
+                            await loadMessages(c)
+                            ackCaughtUpRows(c, shownBefore: shown)
+                        }
                     }
                 }
                 return

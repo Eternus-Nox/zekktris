@@ -7068,7 +7068,7 @@ struct DmSettingsSheet: View {
                 EnableE2EESheet(channel: liveChannel)
             }
             .sheet(isPresented: $showDisappearing) {
-                DisappearingMessagesView(channel: liveChannel, current: store.dmTimer(channel.id))
+                DisappearingMessagesView(channel: liveChannel)
             }
             .confirmationDialog(
                 "Turn off encryption?",
@@ -7199,19 +7199,29 @@ struct DisappearingMessagesView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
     let channel: Channel
-    /// The pending choice in seconds (nil = Off); committed only by ✓.
-    @State private var draft: Int?
+    /// The user's choice in seconds (.some(nil) = Off) once they make one;
+    /// committed only by ✓. Until then (nil) the screen follows the live
+    /// setting, as on web and Android: a change the other person (or another
+    /// device) makes while this is open moves the check, rather than leaving
+    /// the old row checked with ✓ on — a tap that would undo their change.
+    @State private var picked: Int?? = nil
     @State private var saving = false
     @State private var showCustom = false
     @State private var saveError: String?
 
-    init(channel: Channel, current: Int?) {
-        self.channel = channel
-        _draft = State(initialValue: current)
-    }
-
     /// The live setting (another device may change it while this is open).
     private var current: Int? { store.dmTimer(channel.id) }
+    /// The pending choice in seconds (nil = Off): the user's pick, else the
+    /// live setting.
+    private var draft: Int? {
+        if case .some(let choice) = picked { return choice }
+        return current
+    }
+    /// Custom Time edits the pick through this (seeding it counts as one,
+    /// as opening Custom Time does on web).
+    private var draftBinding: Binding<Int?> {
+        Binding(get: { draft }, set: { picked = .some($0) })
+    }
     private var bounds: ClosedRange<Int> {
         DisappearingTimer.bounds(maxTtlSeconds: store.dmMaxTtlSeconds)
     }
@@ -7283,7 +7293,7 @@ struct DisappearingMessagesView: View {
                 }
             }
             .navigationDestination(isPresented: $showCustom) {
-                DisappearingCustomTimeView(draft: $draft, bounds: bounds)
+                DisappearingCustomTimeView(draft: draftBinding, bounds: bounds)
             }
         }
         .interactiveDismissDisabled(saving)
@@ -7302,7 +7312,7 @@ struct DisappearingMessagesView: View {
 
     private func optionRow(_ label: String, value: Int?) -> some View {
         let selected = draft == value
-        return Button { draft = value } label: {
+        return Button { picked = .some(value) } label: {
             HStack(spacing: 10) {
                 checkmark(selected)
                 Text(label).font(.zkSans(15)).foregroundColor(Theme.ink1)
