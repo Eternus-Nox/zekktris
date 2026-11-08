@@ -24,6 +24,7 @@ import { AvatarImage } from '../lib/AvatarImage';
 import { StaffName, UserTag } from '../lib/UserTag';
 import { Search, X, Calendar, Clock, Users, Bookmark, Lock, Plus } from '../lib/icons';
 import { ChannelMenu } from './ChannelMenu';
+import { useGoneMessages, withoutGone } from '../lib/useGoneMessages';
 
 export function DMList({ activeChannelId }: { activeChannelId: string | undefined }) {
   // Granular subscriptions (was `useAppState()`). Only the DM list + loaded
@@ -161,6 +162,11 @@ function DMSearch({ onClose }: { onClose: () => void }) {
   const [results, setResults] = useState<Message[] | null>(null);
   const [searching, setSearching] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  // A result deleted, or a disappearing message reaching its deadline,
+  // leaves the list when it leaves its DM (lib/useGoneMessages).
+  const gone = useGoneMessages(null, (g) =>
+    setResults((prev) => prev && withoutGone(prev, g, (m) => m.id)),
+  );
 
   // Autofocus on mount so the user can start typing immediately.
   useEffect(() => {
@@ -183,7 +189,7 @@ function DMSearch({ onClose }: { onClose: () => void }) {
       rest
         .searchDirectMessages(trimmed)
         .then((r) => {
-          if (!cancelled) setResults(r.messages);
+          if (!cancelled) setResults(r.messages.filter((m) => !gone.has(m.id)));
         })
         .catch((e: unknown) => {
           if (cancelled) return;
@@ -199,7 +205,7 @@ function DMSearch({ onClose }: { onClose: () => void }) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [query, rest, toasts]);
+  }, [query, rest, toasts, gone]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0">

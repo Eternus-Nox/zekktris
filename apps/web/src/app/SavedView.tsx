@@ -31,6 +31,7 @@ import { useAppStateSelector } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
 import { Bookmark, ChevronLeft } from '../lib/icons';
 import { renderMessageContent } from '../lib/markdown';
+import { useGoneMessages, withoutGone } from '../lib/useGoneMessages';
 
 interface SavedItem {
   savedAt: string;
@@ -86,6 +87,12 @@ export function SavedView() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // Guard against re-entrancy on the bottom-of-list paginator.
   const fetchingMoreRef = useRef(false);
+  // A saved message deleted, or a disappearing one reaching its deadline,
+  // leaves the list when it leaves the chat (lib/useGoneMessages); the
+  // server no longer lists it either.
+  const gone = useGoneMessages(null, (g) =>
+    setItems((prev) => withoutGone(prev, g, (it) => it.message.id)),
+  );
 
   const loadPage = useCallback(
     async (cursor: string | null) => {
@@ -95,7 +102,8 @@ export function SavedView() {
         const r = await rest.listSavedMessages({
           cursor: cursor ?? undefined,
         });
-        setItems((prev) => (cursor ? [...prev, ...r.items] : r.items));
+        const fresh = r.items.filter((it) => !gone.has(it.message.id));
+        setItems((prev) => (cursor ? [...prev, ...fresh] : fresh));
         setNextCursor(r.nextCursor);
         setLoadedOnce(true);
       } catch (e) {
@@ -105,7 +113,7 @@ export function SavedView() {
         fetchingMoreRef.current = false;
       }
     },
-    [rest],
+    [rest, gone],
   );
 
   // Initial load on mount.

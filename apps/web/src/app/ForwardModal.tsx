@@ -101,10 +101,14 @@ export function ForwardModal({ message, onClose }: Props) {
     setSending(true);
     try {
       // Native forward — the server resolves the source message id and
-      // renders a proper forwarded-message embed.
+      // renders a proper forwarded-message embed. The modal closes without
+      // opening the destination, so the send is no read of it: a timed
+      // message waiting there must not start its countdown, and the
+      // destination stays unread until it is actually opened.
       await rest.sendMessage(destId, {
         content: comment.trim(),
         forwardFromMessageId: message.id,
+        notARead: true,
       });
       toasts.push('Forwarded', 'success');
       onClose();

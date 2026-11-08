@@ -34,6 +34,7 @@ import { Search, X } from '../lib/icons';
 import { ModalHeader } from '../lib/ModalHeader';
 import { MessageItem } from './MessageItem';
 import { parseSearchQuery, dateBoundToSnowflake } from '../lib/searchQuery';
+import { useGoneMessages, withoutGone } from '../lib/useGoneMessages';
 
 const DEBOUNCE_MS = 300;
 // Stable empty fallbacks so the selectors' `?? EMPTY` keeps a constant
@@ -93,6 +94,13 @@ export function SearchPanel({
   // 'channel' there.
   const [scope, setScope] = useState<'channel' | 'guild'>('channel');
   const effectiveScope = channel.guildId ? scope : 'channel';
+  // The results are a snapshot the chat beside them doesn't update: a
+  // result deleted, or a disappearing message reaching its deadline, leaves
+  // the list when it leaves the chat (lib/useGoneMessages). Server-wide
+  // results span channels, so any channel's deletes count there.
+  const gone = useGoneMessages(effectiveScope === 'guild' ? null : channel.id, (g) =>
+    setResults((prev) => prev && withoutGone(prev, g, (m) => m.id)),
+  );
 
   // Resolve filters off the parsed query. Memoised so re-renders
   // triggered by surrounding state updates don't reparse on every
@@ -198,7 +206,9 @@ export function SearchPanel({
             });
       req
         .then((r) => {
-          if (!cancelled) setResults(r.messages);
+          // Gone while the request was in flight (the server filters only
+          // what's gone by the time it reads).
+          if (!cancelled) setResults(r.messages.filter((m) => !gone.has(m.id)));
         })
         .catch((e) => {
           if (cancelled) return;

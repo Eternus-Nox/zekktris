@@ -32,7 +32,7 @@ import { SearchPanel } from './SearchPanel';
 import { useNavigate } from 'react-router-dom';
 import { Hash, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronDown, ChevronLeft, ChevronRight, CheckCircle, Lock, Timer, Users as UsersIcon } from '../lib/icons';
 import { formatLong, formatShort, isDisappearingNotice, showsUnstartedTimer } from '../lib/disappearing';
-import { planReadAck } from '../lib/readAck';
+import { newestConfirmedId, planReadAck } from '../lib/readAck';
 import { isNative } from '../lib/native';
 import { SchedulePickerModal } from './SchedulePickerModal';
 import { avatarColor, avatarInitials } from '../lib/avatar';
@@ -339,25 +339,15 @@ export function MessageView({
     if (!messages || messages.length === 0) return;
     const dm = channel.type === 'dm' || channel.type === 'group_dm';
     if (dm && !conversationVisible()) return;
-    // Walk back from the tail to find the most recent message with a
-    // real (server-issued) id. Optimistic placeholders carry a
-    // `local-...` id that's incompatible with bigint snowflake math —
-    // acking with one would crash the read-state reducer's BigInt()
-    // comparison. We just skip pending rows; the gateway echo or REST
-    // 201 will replace them with real ids momentarily, and this effect
-    // re-runs on every messages-array identity change so we'll catch
-    // it then.
-    let last: typeof messages[number] | null = null;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i]!;
-      if (m.pending || m.failed) continue;
-      // Defensive: also filter ids that aren't pure digits. Snowflakes
-      // are decimal strings; anything else (UUIDs, local-prefixed,
-      // empty) shouldn't reach the BigInt path either.
-      if (!/^\d+$/.test(m.id)) continue;
-      last = m;
-      break;
-    }
+    // The newest message with a real (server-issued) id: the numerically
+    // highest, not the last row (lib/readAck newestConfirmedId). Optimistic
+    // placeholders carry a `local-...` id that's incompatible with bigint
+    // snowflake math — acking with one would crash the read-state reducer's
+    // BigInt() comparison. We just skip pending rows; the gateway echo or
+    // REST 201 will replace them with real ids momentarily, and this effect
+    // re-runs on every messages-array identity change so we'll catch it
+    // then.
+    const last = newestConfirmedId(messages);
     if (!last) return;
     const channelId = channel.id;
     // A marker at or past the newest row is "already acked" — except in the
@@ -367,10 +357,10 @@ export function MessageView({
     // at a message that is gone.
     const plan = planReadAck({
       isDm: dm,
-      newest: last.id,
+      newest: last,
       marker: readStateByChannel[channelId]?.lastMessageId,
       lastSent: sentAckRef.current.get(channelId),
-      unstartedTimer: dm && showsUnstartedTimer(messages, expiryDeadlines, user?.id, last.id),
+      unstartedTimer: dm && showsUnstartedTimer(messages, expiryDeadlines, user?.id, last),
       channelLast: channel.lastMessageId,
       lastProbe: tailProbeRef.current.get(channelId),
     });

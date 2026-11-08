@@ -36,6 +36,7 @@ import {
   unitRange,
   withinBounds,
 } from '../src/lib/disappearing';
+import { addGone, onMessagesDeleted, withoutGone } from '../src/lib/useGoneMessages';
 
 // Signal-style disappearing messages: the pure pieces the web client runs on
 // (src/lib/disappearing.ts) — labels, the Custom Time picker math, the notice
@@ -335,6 +336,57 @@ describe('passedDeadlines (views outside AppState, e.g. the media gallery)', () 
   });
 });
 
+describe('gone messages (search, saved and the gallery: lib/useGoneMessages)', () => {
+  it('addGone is sticky and reports only new ids', () => {
+    const gone = new Set<string>();
+    expect(addGone(gone, ['1', '2'])).toBe(true);
+    expect(addGone(gone, ['2'])).toBe(false);
+    expect(addGone(gone, [])).toBe(false);
+    expect(addGone(gone, ['2', '3'])).toBe(true);
+    expect([...gone].sort()).toEqual(['1', '2', '3']);
+  });
+
+  it('withoutGone drops items by their message id; the SAME array when none is gone', () => {
+    const results = [{ id: '1' }, { id: '2' }, { id: '3' }];
+    expect(withoutGone(results, new Set(['9']), (m) => m.id)).toBe(results);
+    expect(withoutGone(results, new Set(['2']), (m) => m.id)).toEqual([{ id: '1' }, { id: '3' }]);
+    const saved = [{ message: { id: '1' } }, { message: { id: '2' } }];
+    expect(withoutGone(saved, new Set(['1']), (it) => it.message.id)).toEqual([{ message: { id: '2' } }]);
+  });
+
+  it('MESSAGE_DELETE / _BULK report their ids for the channel, or any channel for null', () => {
+    const handlers = new Map<string, (d: unknown) => void>();
+    let unsubscribed = 0;
+    const gateway = {
+      on: (event: string, handler: (d: unknown) => void) => {
+        handlers.set(event, handler);
+        return () => {
+          unsubscribed++;
+          handlers.delete(event);
+        };
+      },
+    } as unknown as Parameters<typeof onMessagesDeleted>[0];
+    const fire = (event: string, d: unknown) => handlers.get(event)?.(d);
+
+    const got: string[][] = [];
+    const off = onMessagesDeleted(gateway, 'dm', (ids) => got.push([...ids]));
+    fire('MESSAGE_DELETE', { id: '1', channel_id: 'dm' });
+    fire('MESSAGE_DELETE', { id: '2', channel_id: 'elsewhere' });
+    fire('MESSAGE_DELETE_BULK', { ids: ['3', '4'], channel_id: 'dm' });
+    fire('MESSAGE_DELETE_BULK', { ids: ['5'], channel_id: 'elsewhere' });
+    expect(got).toEqual([['1'], ['3', '4']]);
+    off();
+    expect(unsubscribed).toBe(2);
+    expect(handlers.size).toBe(0);
+
+    const any: string[][] = [];
+    onMessagesDeleted(gateway, null, (ids) => any.push([...ids]));
+    fire('MESSAGE_DELETE', { id: '2', channel_id: 'elsewhere' });
+    fire('MESSAGE_DELETE_BULK', { ids: ['5'], channel_id: 'other' });
+    expect(any).toEqual([['2'], ['5']]);
+  });
+});
+
 describe('showsUnstartedTimer (the DM re-ack, lib/readAck)', () => {
   const me = '100';
   const peer = '200';
@@ -526,6 +578,16 @@ describe('RestClient sendMessage notARead and the gallery’s message ids', () =
     expect(calls[0]!.body).not.toHaveProperty('notARead');
     expect(calls[1]!.body).toMatchObject({ content: 'hi', notARead: true });
     expect(calls[2]!.body).toMatchObject({ content: 'pic', notARead: true });
+  });
+
+  it('a forward that does not open the destination (web’s Forward dialog) carries it beside the source', async () => {
+    const { client, calls } = capture({ message: { id: '1' } });
+    await client.sendMessage('7', { content: '', forwardFromMessageId: '42', notARead: true });
+    await client.sendMessage('7', { content: '', forwardFromMessageId: '42' });
+    expect(calls[0]!.body).toMatchObject({ forwardFromMessageId: '42', notARead: true });
+    // Unflagged, a forward is a read (iOS and Android jump into the DM).
+    expect(calls[1]!.body).toMatchObject({ forwardFromMessageId: '42' });
+    expect(calls[1]!.body).not.toHaveProperty('notARead');
   });
 
   it('channelAttachments keeps each item’s messageId', async () => {

@@ -1,6 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Message } from '@zekktris/client';
-import { appStateReducer, initialAppState, isChannelUnread } from '../src/state/AppState';
+import {
+  appStateReducer,
+  channelMentionCount,
+  initialAppState,
+  isChannelUnread,
+  oldestFirst,
+} from '../src/state/AppState';
+import { newestConfirmedId, planReadAck } from '../src/lib/readAck';
+import { showsUnstartedTimer } from '../src/lib/disappearing';
 
 // Disappearing messages in the AppState reducer: deadlines kept apart from the
 // message objects, rows past their deadline never (re-)ingested, one removal
@@ -308,6 +316,34 @@ describe('AppState — disappearing messages', () => {
       expect(unread(s1, 'g')).toBe(false);
     });
 
+    it('an @mention that disappeared leaves no badge once the server’s CHANNEL_ACK says so', () => {
+      // B's 30 @mentions A; C reads it first, and the sweep removes it. The
+      // rollback clears the dot, but the mention count is the server's: the
+      // sweep zeroes it and sends CHANNEL_ACK at the marker A already has.
+      const s0 = run(
+        initialAppState,
+        { type: 'DMS_SET', channels: [dm('g', '20')] },
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('10', 'g'), msg('20', 'g')] },
+        { type: 'READ_STATE_UPSERT', readState: { channelId: 'g', lastMessageId: '20', mentionCount: 0 } },
+        {
+          type: 'MESSAGE_APPEND',
+          channelId: 'g',
+          message: msg('30', 'g', { authorId: '2', expireAfterSeconds: 3_600, mentionedUserIds: ['9'] }),
+        },
+        { type: 'MENTION_INCREMENT', channelId: 'g' },
+        { type: 'MESSAGE_REMOVE', channelId: 'g', messageId: '30' },
+      );
+      expect(unread(s0, 'g')).toBe(false);
+      expect(channelMentionCount('g', s0.readStateByChannel)).toBe(1);
+      const s1 = run(s0, {
+        type: 'READ_STATE_UPSERT',
+        readState: { channelId: 'g', lastMessageId: '20', mentionCount: 0 },
+      });
+      expect(channelMentionCount('g', s1.readStateByChannel)).toBe(0);
+      expect(s1.readStateByChannel.g!.lastMessageId).toBe('20');
+      expect(unread(s1, 'g')).toBe(false);
+    });
+
     it('a bulk delete falls back to the newest row left', () => {
       const s1 = run(setup(), { type: 'MESSAGES_REMOVE_BULK', channelId: 'g', messageIds: ['20', '30'] });
       expect(lastOf(s1, 'g')).toBe('10');
@@ -352,6 +388,106 @@ describe('AppState — disappearing messages', () => {
       );
       const s1 = run(s0, { type: 'MESSAGE_REMOVE', channelId: 'guildchan', messageId: '2' });
       expect(s1.dmChannels).toBe(s0.dmChannels);
+    });
+  });
+
+  describe('READ_STATE_UPSERT (CHANNEL_ACK): an equal marker carries the count', () => {
+    const rs = (s: State, id: string) => s.readStateByChannel[id];
+
+    it('a marker equal to ours takes the server’s count, lower or higher', () => {
+      const s0 = run(
+        initialAppState,
+        { type: 'READ_STATE_UPSERT', readState: { channelId: 'g', lastMessageId: '20', mentionCount: 0 } },
+        { type: 'MENTION_INCREMENT', channelId: 'g' },
+        { type: 'MENTION_INCREMENT', channelId: 'g' },
+      );
+      expect(rs(s0, 'g')).toEqual({ channelId: 'g', lastMessageId: '20', mentionCount: 2 });
+      const lower = run(s0, { type: 'READ_STATE_UPSERT', readState: { channelId: 'g', lastMessageId: '20', mentionCount: 1 } });
+      expect(rs(lower, 'g')!.mentionCount).toBe(1);
+      const zero = run(lower, { type: 'READ_STATE_UPSERT', readState: { channelId: 'g', lastMessageId: '20', mentionCount: 0 } });
+      expect(rs(zero, 'g')!.mentionCount).toBe(0);
+    });
+
+    it('no marker on either side (a mention in a channel never acked) is equal too', () => {
+      const s0 = run(initialAppState, { type: 'MENTION_INCREMENT', channelId: 'g' });
+      expect(rs(s0, 'g')).toEqual({ channelId: 'g', lastMessageId: null, mentionCount: 1 });
+      const s1 = run(s0, { type: 'READ_STATE_UPSERT', readState: { channelId: 'g', lastMessageId: null, mentionCount: 0 } });
+      expect(rs(s1, 'g')).toEqual({ channelId: 'g', lastMessageId: null, mentionCount: 0 });
+      // Nothing local yet: taken as is.
+      const fresh = run(initialAppState, {
+        type: 'READ_STATE_UPSERT',
+        readState: { channelId: 'h', lastMessageId: null, mentionCount: 3 },
+      });
+      expect(rs(fresh, 'h')!.mentionCount).toBe(3);
+    });
+
+    it('a marker behind ours — or none — changes nothing; a newer one replaces both', () => {
+      const s0 = run(
+        initialAppState,
+        { type: 'READ_STATE_UPSERT', readState: { channelId: 'g', lastMessageId: '20', mentionCount: 0 } },
+        { type: 'MENTION_INCREMENT', channelId: 'g' },
+      );
+      expect(run(s0, { type: 'READ_STATE_UPSERT', readState: { channelId: 'g', lastMessageId: '19', mentionCount: 0 } })).toBe(s0);
+      expect(run(s0, { type: 'READ_STATE_UPSERT', readState: { channelId: 'g', lastMessageId: null, mentionCount: 0 } })).toBe(s0);
+      expect(run(s0, { type: 'READ_STATE_UPSERT', readState: { channelId: 'g', lastMessageId: 'local-1', mentionCount: 0 } })).toBe(s0);
+      const ahead = run(s0, { type: 'READ_STATE_UPSERT', readState: { channelId: 'g', lastMessageId: '21', mentionCount: 0 } });
+      expect(rs(ahead, 'g')).toEqual({ channelId: 'g', lastMessageId: '21', mentionCount: 0 });
+    });
+  });
+
+  describe('a catch-up page lands in order, and the open DM acks the newest row', () => {
+    const SELF = '9';
+    const dm = (id: string, lastMessageId: string) =>
+      ({ id, type: 'dm', lastMessageId }) as unknown as State['dmChannels'][number];
+    const timed = (id: string) => msg(id, 'd', { authorId: '2', expireAfterSeconds: 300 });
+
+    // What MessageView's ack effect plans for the list as it stands.
+    function plan(s: State, lastSent?: string) {
+      const list = s.messagesByChannel.d!;
+      const newest = newestConfirmedId(list)!;
+      return planReadAck({
+        isDm: true,
+        newest,
+        marker: s.readStateByChannel.d?.lastMessageId,
+        lastSent,
+        unstartedTimer: showsUnstartedTimer(list, s.expiryDeadlines, SELF, newest),
+        channelLast: s.dmChannels.find((c) => c.id === 'd')?.lastMessageId,
+        lastProbe: undefined,
+      });
+    }
+
+    function setup(): State {
+      return run(
+        initialAppState,
+        { type: 'DMS_SET', channels: [dm('d', '100')] },
+        { type: 'MESSAGES_SET', channelId: 'd', messages: [msg('90', 'd'), msg('100', 'd')] },
+        { type: 'READ_STATE_UPSERT', readState: { channelId: 'd', lastMessageId: '100', mentionCount: 0 } },
+      );
+    }
+    const append = (s: State, page: Message[]) =>
+      run(s, ...page.map((m): Action => ({ type: 'MESSAGE_APPEND', channelId: 'd', message: m })));
+
+    it('reconcileChannel’s after-page (ascending from the server) appends in order', () => {
+      // GET ?after=100 returns [101, 102]: B's burst while the socket was dead.
+      const s = append(setup(), oldestFirst([timed('101'), timed('102')]));
+      expect(ids(s, 'd')).toEqual(['90', '100', '101', '102']);
+      // The ack covers both, so both countdowns start.
+      expect(plan(s)).toEqual({ ack: '102', probe: null });
+    });
+
+    it('oldestFirst orders by snowflake value whichever way a page came back', () => {
+      expect(oldestFirst([msg('102', 'd'), msg('99', 'd'), msg('101', 'd')]).map((m) => m.id)).toEqual(['99', '101', '102']);
+      const page = [msg('1', 'd'), msg('2', 'd')];
+      expect(oldestFirst(page)).not.toBe(page);
+      expect(oldestFirst([msg('local-x', 'd'), msg('5', 'd'), msg('3', 'd')]).map((m) => m.id)).toEqual(['3', '5', 'local-x']);
+    });
+
+    it('a list that did land out of order still acks the highest row, not the last', () => {
+      // The old reconcile appended the page reversed: [..., 100, 102, 101].
+      const s = append(setup(), [timed('102'), timed('101')]);
+      expect(ids(s, 'd')).toEqual(['90', '100', '102', '101']);
+      expect(newestConfirmedId(s.messagesByChannel.d!)).toBe('102');
+      expect(plan(s)).toEqual({ ack: '102', probe: null });
     });
   });
 

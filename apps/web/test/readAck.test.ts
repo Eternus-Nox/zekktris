@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Message } from '@zekktris/client';
-import { planReadAck, type ReadAckInput } from '../src/lib/readAck';
+import { newestConfirmedId, planReadAck, type ReadAckInput } from '../src/lib/readAck';
 import { showsUnstartedTimer } from '../src/lib/disappearing';
 
 // The open conversation's auto-ack (MessageView) as a pure plan: the plain
@@ -53,6 +53,28 @@ function row(id: string, authorId: string, extra: Partial<Message> = {}): Messag
     ...extra,
   };
 }
+
+describe('newestConfirmedId — the row the ack covers', () => {
+  it('the numerically highest server id, wherever it sits in the list', () => {
+    expect(newestConfirmedId([row('90', PEER), row('100', PEER), row('101', PEER)])).toBe('101');
+    expect(newestConfirmedId([row('90', PEER), row('102', PEER), row('101', PEER)])).toBe('102');
+    // By value, not as strings.
+    expect(newestConfirmedId([row('100', PEER), row('99', PEER)])).toBe('100');
+  });
+
+  it('skips pending and failed rows and anything that is not a snowflake', () => {
+    expect(
+      newestConfirmedId([
+        row('30', PEER),
+        row('local-1', SELF, { pending: true }),
+        row('40', SELF, { pending: true }),
+        row('local-2', SELF, { failed: true }),
+      ]),
+    ).toBe('30');
+    expect(newestConfirmedId([row('local-1', SELF, { pending: true })])).toBeNull();
+    expect(newestConfirmedId([])).toBeNull();
+  });
+});
 
 describe('planReadAck — the plain rule', () => {
   it('acks the newest row while the marker is behind it, or when there is no read state', () => {

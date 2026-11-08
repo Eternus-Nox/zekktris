@@ -2435,8 +2435,9 @@ export class RestClient {
           starts no disappearing-message countdown for it and doesn't move the
           sender's read marker past someone else's message still waiting for
           one, so the DM stays unread and their next real open acks it. Omit
-          it for a send from the open conversation (that IS a read). Forwards
-          don't need it: the server treats every forward as not a read. */
+          it for a send from the open conversation (that IS a read). A
+          forward is a read unless it carries this too: set it when the
+          forward doesn't open the destination (web's Forward dialog). */
       notARead?: boolean;
     },
   ): Promise<{ message: Message }> {

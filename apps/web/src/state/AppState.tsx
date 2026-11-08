@@ -90,6 +90,7 @@ import {
   serverNow,
   serverOffsetFrom,
 } from '../lib/disappearing';
+import { newestConfirmedId } from '../lib/readAck';
 
 // ── Shape ──────────────────────────────────────────────────────────────────
 
@@ -711,6 +712,24 @@ function bumpGuildRecency(
     return { ...channelsByGuild, [gid]: nextList };
   }
   return channelsByGuild;
+}
+
+/**
+ * A page of server rows in snowflake order, oldest first (a new array). For
+ * pages fed to MESSAGE_APPEND, which adds each row at the end: in this order
+ * they land where they belong whichever way the server returned them.
+ */
+export function oldestFirst<T extends { id: string }>(messages: readonly T[]): T[] {
+  const key = (m: T): bigint | null => (/^\d+$/.test(m.id) ? BigInt(m.id) : null);
+  return messages
+    .map((m) => ({ m, k: key(m) }))
+    .sort((a, b) => {
+      // Server rows always carry a snowflake; anything else keeps its place
+      // after them.
+      if (a.k === null || b.k === null) return a.k === null ? (b.k === null ? 0 : 1) : -1;
+      return a.k < b.k ? -1 : a.k > b.k ? 1 : 0;
+    })
+    .map((x) => x.m);
 }
 
 function applyReactionDelta(
@@ -1834,10 +1853,21 @@ function reducer(state: State, action: Action): State {
       // shouldn't reach here because callers filter, but a runtime safety
       // net is cheap and surface-area-bounded — silently drop the update
       // rather than crash the dispatch chain.
+      //
+      // A marker equal to ours is taken whole, count included: the server
+      // lowers mention_count without moving the marker (the sweep removing
+      // an unread @mention that disappeared because another member read it
+      // first, "Clear all mentions") and says so with a CHANNEL_ACK carrying
+      // the marker we already have. That includes no marker at all — a
+      // mention in a channel never acked — which is null on both sides.
       const looksNumeric = (s: string | null | undefined): s is string =>
         typeof s === 'string' && /^\d+$/.test(s);
-      if (!looksNumeric(action.readState.lastMessageId)) return state;
-      if (existing && existing.lastMessageId && looksNumeric(existing.lastMessageId)) {
+      if (action.readState.lastMessageId === null) {
+        // No marker is behind any marker of ours.
+        if (existing?.lastMessageId) return state;
+      } else if (!looksNumeric(action.readState.lastMessageId)) {
+        return state;
+      } else if (existing && existing.lastMessageId && looksNumeric(existing.lastMessageId)) {
         if (BigInt(action.readState.lastMessageId) < BigInt(existing.lastMessageId)) {
           // Backwards — keep existing marker AND existing count.
           // The server (see services/readStates.ts) preserves
@@ -2627,15 +2657,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         await loadMessages(channelId);
         return;
       }
-      // Newest message with a real (server snowflake) id — skip optimistic
-      // `local-` placeholders, which the server cursor wouldn't understand.
-      let after: string | undefined;
-      for (let i = existing.length - 1; i >= 0; i--) {
-        if (/^\d+$/.test(existing[i]!.id)) {
-          after = existing[i]!.id;
-          break;
-        }
-      }
+      // Newest message with a real (server snowflake) id, by value — skip
+      // optimistic `local-` placeholders, which the server cursor wouldn't
+      // understand.
+      const after = newestConfirmedId(existing);
       if (!after) {
         await loadMessages(channelId);
         return;
@@ -2644,8 +2669,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         after,
         limit: 50,
       });
-      // REST returns newest-first; append oldest-first so order is preserved.
-      for (const m of [...r.messages].reverse()) {
+      // An `after`-only page comes back oldest-first (the server's ascending
+      // read); sorted anyway, since MESSAGE_APPEND only appends. Reversed, a
+      // burst would land newest-before-older and the open DM would ack only
+      // the oldest of it — the newer rows on screen would never start their
+      // countdown.
+      for (const m of oldestFirst(r.messages)) {
         dispatch({ type: 'MESSAGE_APPEND', channelId, message: m });
       }
     },

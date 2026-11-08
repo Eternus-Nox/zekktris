@@ -35,10 +35,33 @@ function isSnowflake(id: string | null | undefined): id is string {
   return typeof id === 'string' && SNOWFLAKE.test(id);
 }
 
+/**
+ * The newest loaded row an ack can cover: the numerically highest server id
+ * among rows that aren't pending or failed. The highest, not the last row,
+ * so a list that ever lands out of order can't ack below what's on screen
+ * (only an ack starts a countdown, and only for the rows it covers). Null
+ * when there's none.
+ */
+export function newestConfirmedId(
+  messages: ReadonlyArray<{ id: string; pending?: boolean; failed?: boolean }>,
+): string | null {
+  let best: bigint | null = null;
+  let bestId: string | null = null;
+  for (const m of messages) {
+    if (m.pending || m.failed || !isSnowflake(m.id)) continue;
+    const n = BigInt(m.id);
+    if (best === null || n > best) {
+      best = n;
+      bestId = m.id;
+    }
+  }
+  return bestId;
+}
+
 export interface ReadAckInput {
   /** A 'dm' / 'group_dm' (the only channels with timers). */
   isDm: boolean;
-  /** The newest loaded row with a server id. */
+  /** The newest loaded row with a server id (newestConfirmedId). */
   newest: string;
   /** The local read marker; absent when there's no read state yet. */
   marker: string | null | undefined;

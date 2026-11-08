@@ -15,16 +15,16 @@
  * item whose message is deleted (MESSAGE_DELETE / _BULK, the disappearing-
  * messages sweep included) or reaches its disappearing deadline (the same
  * deadline map and server clock AppState hides the chat row with) leaves
- * the grid, and a lightbox showing it closes. Dropped from `items` rather
- * than filtered per render, so it stays gone after AppState forgets a
- * deadline long past.
+ * the grid, and a lightbox showing it closes (lib/useGoneMessages, shared
+ * with the search and saved views). Dropped from `items` rather than
+ * filtered per render, so it stays gone after AppState forgets a deadline
+ * long past.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { GatewayEvent, type Attachment, type Channel } from '@zekktris/client';
+import { useCallback, useEffect, useState } from 'react';
+import type { Attachment, Channel } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
-import { useAppStateSelector } from '../state/AppState';
-import { effectiveOffset, passedDeadlines, scheduleExpiry, serverNow } from '../lib/disappearing';
+import { useGoneMessages, withoutGone } from '../lib/useGoneMessages';
 import { decryptedMediaURL, getKeyVersion, subscribeToKeyChanges } from '../lib/e2ee';
 import {
   EXPIRED_TITLE,
@@ -53,70 +53,27 @@ function isImageAttachment(a: Attachment): boolean {
 }
 
 export function MediaGalleryModal({ channel, onClose }: { channel: Channel; onClose: () => void }) {
-  const { rest, gateway } = useAuth();
+  const { rest } = useAuth();
   const [items, setItems] = useState<GalleryItem[]>([]);
   const [tab, setTab] = useState<'media' | 'files'>('media');
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [lightbox, setLightbox] = useState<LightboxItem | null>(null);
 
-  // Messages whose items were dropped: an encrypted photo still decrypting
-  // when its message went must not open the lightbox afterwards.
-  const goneRef = useRef(new Set<string>());
-  const drop = useCallback((messageIds: readonly string[]) => {
-    if (messageIds.length === 0) return;
-    const gone = goneRef.current;
-    for (const id of messageIds) gone.add(id);
-    // Same array / same lightbox when nothing shown is affected: no render.
-    setItems((prev) => (prev.some((i) => gone.has(i.messageId)) ? prev.filter((i) => !gone.has(i.messageId)) : prev));
-    setLightbox((l) => (l && gone.has(l.messageId) ? null : l));
-  }, []);
-  const openLightbox = useCallback((x: LightboxItem) => {
-    if (!goneRef.current.has(x.messageId)) setLightbox(x);
-  }, []);
-
-  // Deleted messages, the disappearing-messages sweep included.
-  useEffect(() => {
-    const unsubs = [
-      gateway.on<{ id: string; channel_id: string }>(GatewayEvent.MESSAGE_DELETE, (d) => {
-        if (d.channel_id === channel.id) drop([d.id]);
-      }),
-      gateway.on<{ ids: string[]; channel_id: string }>(GatewayEvent.MESSAGE_DELETE_BULK, (d) => {
-        if (d.channel_id === channel.id) drop(d.ids);
-      }),
-    ];
-    return () => {
-      for (const u of unsubs) u();
-    };
-  }, [gateway, channel.id, drop]);
-
-  // Disappearing messages reaching their deadline: at the moment the chat
-  // row goes (same deadlines, same server clock), before the sweep's
-  // MESSAGE_DELETE — and for a reader whose deadline is known it's the only
-  // signal while the gallery is open. One timer for the earliest deadline,
-  // re-checked when the tab comes back (background tabs throttle timers).
-  const expiryDeadlines = useAppStateSelector((v) => v.state.expiryDeadlines);
-  const clockOffsetMs = useAppStateSelector((v) =>
-    effectiveOffset(v.state.serverClockOffsetMs, v.state.dateClockOffsetMs),
+  // Messages deleted or past their disappearing deadline (lib/
+  // useGoneMessages). Their items leave the grid and a lightbox showing one
+  // closes; an encrypted photo still decrypting when its message went must
+  // not open the lightbox afterwards.
+  const gone = useGoneMessages(channel.id, (g) => {
+    setItems((prev) => withoutGone(prev, g, (i) => i.messageId));
+    setLightbox((l) => (l && g.has(l.messageId) ? null : l));
+  });
+  const openLightbox = useCallback(
+    (x: LightboxItem) => {
+      if (!gone.has(x.messageId)) setLightbox(x);
+    },
+    [gone],
   );
-  useEffect(() => {
-    if (Object.keys(expiryDeadlines).length === 0) return;
-    const scheduler = scheduleExpiry({
-      deadlines: expiryDeadlines,
-      offsetMs: clockOffsetMs,
-      expire: () => drop(passedDeadlines(expiryDeadlines, serverNow(clockOffsetMs))),
-    });
-    const onWake = () => {
-      if (document.visibilityState === 'visible') scheduler.recheck();
-    };
-    document.addEventListener('visibilitychange', onWake);
-    window.addEventListener('focus', onWake);
-    return () => {
-      scheduler.cancel();
-      document.removeEventListener('visibilitychange', onWake);
-      window.removeEventListener('focus', onWake);
-    };
-  }, [expiryDeadlines, clockOffsetMs, drop]);
 
   const loadMore = useCallback(async () => {
     setLoading(true);
@@ -126,7 +83,7 @@ export function MediaGalleryModal({ channel, onClose }: { channel: Channel; onCl
       const seen = new Set(items.map((i) => i.id));
       setItems((prev) => [
         ...prev,
-        ...r.attachments.filter((a) => !seen.has(a.id) && !goneRef.current.has(a.messageId)),
+        ...r.attachments.filter((a) => !seen.has(a.id) && !gone.has(a.messageId)),
       ]);
       setHasMore(r.attachments.length >= 60);
     } catch {
@@ -134,7 +91,7 @@ export function MediaGalleryModal({ channel, onClose }: { channel: Channel; onCl
     } finally {
       setLoading(false);
     }
-  }, [rest, channel.id, items]);
+  }, [rest, channel.id, items, gone]);
 
   // Initial page.
   useEffect(() => {
