@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Message } from '@zekktris/client';
-import { appStateReducer, initialAppState } from '../src/state/AppState';
+import { appStateReducer, initialAppState, isChannelUnread } from '../src/state/AppState';
 
 // Disappearing messages in the AppState reducer: deadlines kept apart from the
 // message objects, rows past their deadline never (re-)ingested, one removal
@@ -262,6 +262,97 @@ describe('AppState — disappearing messages', () => {
     );
     expect(s0.messagesByChannel.c![0]!.expiresAt).toBeUndefined();
     expect(s0.expiryDeadlines).toEqual({ '1': T0 + 5_000 });
+  });
+
+  describe('a removed or expired last row rolls the DM’s lastMessageId back', () => {
+    // The server rolls channels.last_message_id back (rollbackChannelWatermark)
+    // and tells no one; without the same move here the DM reads unread against
+    // a message nobody can load, and opening it acks nothing.
+    const dm = (id: string, lastMessageId: string | null, type = 'group_dm') =>
+      ({ id, type, lastMessageId }) as unknown as State['dmChannels'][number];
+    const lastOf = (s: State, id: string) => s.dmChannels.find((c) => c.id === id)?.lastMessageId;
+    const unread = (s: State, id: string) => isChannelUnread(s.dmChannels.find((c) => c.id === id)!, s.readStateByChannel);
+
+    // C reads up to 20; A's 30 lands (unfocused window: no ack).
+    function setup(): State {
+      return run(
+        initialAppState,
+        { type: 'DMS_SET', channels: [dm('g', '20'), dm('other', '5')] },
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('10', 'g'), msg('20', 'g')] },
+        { type: 'READ_STATE_UPSERT', readState: { channelId: 'g', lastMessageId: '20', mentionCount: 0 } },
+        { type: 'MESSAGE_APPEND', channelId: 'g', message: msg('30', 'g', { authorId: '2', expireAfterSeconds: 30 }) },
+      );
+    }
+
+    it('MESSAGE_DELETE of the newest loaded row (the sweep, after another member read it)', () => {
+      const s0 = setup();
+      expect(lastOf(s0, 'g')).toBe('30');
+      expect(unread(s0, 'g')).toBe(true);
+      const s1 = run(s0, { type: 'MESSAGE_REMOVE', channelId: 'g', messageId: '30' });
+      expect(lastOf(s1, 'g')).toBe('20');
+      expect(unread(s1, 'g')).toBe(false);
+      expect(lastOf(s1, 'other')).toBe('5');
+    });
+
+    it('a local expiry of it does the same', () => {
+      const s0 = run(setup(), {
+        type: 'EXPIRY_STAMP',
+        expiries: [{ id: '30', expires_at: iso(T0 + 1_000) }],
+        serverNow: iso(T0),
+        receivedAt: T0,
+      });
+      vi.setSystemTime(T0 + 1_000);
+      const s1 = run(s0, { type: 'MESSAGES_EXPIRE' });
+      expect(ids(s1, 'g')).toEqual(['10', '20']);
+      expect(lastOf(s1, 'g')).toBe('20');
+      expect(unread(s1, 'g')).toBe(false);
+    });
+
+    it('a bulk delete falls back to the newest row left', () => {
+      const s1 = run(setup(), { type: 'MESSAGES_REMOVE_BULK', channelId: 'g', messageIds: ['20', '30'] });
+      expect(lastOf(s1, 'g')).toBe('10');
+    });
+
+    it('leaves it alone when an older row goes, or the row wasn’t loaded, or no server row is left', () => {
+      const s0 = setup();
+      const older = run(s0, { type: 'MESSAGE_REMOVE', channelId: 'g', messageId: '10' });
+      expect(older.dmChannels).toBe(s0.dmChannels);
+      // lastMessageId names a newer message not loaded yet (a reconnect's
+      // DM refetch): removing the newest LOADED row says nothing about it.
+      const ahead = run(
+        initialAppState,
+        { type: 'DMS_SET', channels: [dm('g', '40')] },
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('10', 'g'), msg('20', 'g'), msg('30', 'g')] },
+        { type: 'MESSAGE_REMOVE', channelId: 'g', messageId: '30' },
+      );
+      expect(lastOf(ahead, 'g')).toBe('40');
+      // Not loaded: nothing to fall back to (MessageView's stale-tail ack
+      // clears that one on open).
+      const unloaded = run(
+        initialAppState,
+        { type: 'DMS_SET', channels: [dm('g', '30')] },
+        { type: 'MESSAGE_REMOVE', channelId: 'g', messageId: '30' },
+      );
+      expect(lastOf(unloaded, 'g')).toBe('30');
+      // Only the removed row was held (a live append into an unopened DM).
+      const alone = run(
+        initialAppState,
+        { type: 'DMS_SET', channels: [dm('g', '20')] },
+        { type: 'MESSAGE_APPEND', channelId: 'g', message: msg('30', 'g') },
+        { type: 'MESSAGE_REMOVE', channelId: 'g', messageId: '30' },
+      );
+      expect(lastOf(alone, 'g')).toBe('30');
+    });
+
+    it('never touches guild channels’ lists', () => {
+      const s0 = run(
+        initialAppState,
+        { type: 'DMS_SET', channels: [dm('g', '20')] },
+        { type: 'MESSAGES_SET', channelId: 'guildchan', messages: [msg('1', 'guildchan'), msg('2', 'guildchan')] },
+      );
+      const s1 = run(s0, { type: 'MESSAGE_REMOVE', channelId: 'guildchan', messageId: '2' });
+      expect(s1.dmChannels).toBe(s0.dmChannels);
+    });
   });
 
   it('DM_TIMER_SET tracks each DM’s timer without churn; closing the DM forgets it', () => {

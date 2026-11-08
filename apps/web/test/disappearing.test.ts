@@ -24,11 +24,13 @@ import {
   nextDateOffset,
   nextDeadline,
   noticeText,
+  passedDeadlines,
   presetsWithin,
   pruneDeadlines,
   scheduleExpiry,
   serverNow,
   serverOffsetFrom,
+  showsUnstartedTimer,
   timeoutUntil,
   timerBoundsFor,
   unitRange,
@@ -325,6 +327,47 @@ describe('local deadlines', () => {
   });
 });
 
+describe('passedDeadlines (views outside AppState, e.g. the media gallery)', () => {
+  it('lists the message ids at or past their deadline', () => {
+    const T0 = Date.parse('2026-11-08T12:00:00.000Z');
+    expect(passedDeadlines({}, T0)).toEqual([]);
+    expect(passedDeadlines({ a: T0 - 1, b: T0, c: T0 + 1 }, T0).sort()).toEqual(['a', 'b']);
+  });
+});
+
+describe('showsUnstartedTimer (the DM re-ack, lib/readAck)', () => {
+  const me = '100';
+  const peer = '200';
+  const row = (id: string, authorId: string | null, expireAfterSeconds: number | null = null, author: { id: string } | null = null) => ({
+    id,
+    authorId,
+    author,
+    expireAfterSeconds,
+  });
+
+  it('true for someone else’s timed row whose deadline is unknown', () => {
+    expect(showsUnstartedTimer([row('1', peer), row('2', peer, 30), row('3', me)], {}, me, '3')).toBe(true);
+  });
+
+  it('false once its deadline is known, or for our own rows, or rows without a timer', () => {
+    expect(showsUnstartedTimer([row('2', peer, 30)], { '2': 1 }, me, '2')).toBe(false);
+    expect(showsUnstartedTimer([row('2', me, 30)], {}, me, '2')).toBe(false);
+    expect(showsUnstartedTimer([row('2', null, 30, { id: me })], {}, me, '2')).toBe(false);
+    expect(showsUnstartedTimer([row('2', peer, null), row('3', peer, 0)], {}, me, '3')).toBe(false);
+  });
+
+  it('only rows up to the id that would be acked, and only server ids', () => {
+    expect(showsUnstartedTimer([row('2', me), row('9', peer, 30)], {}, me, '2')).toBe(false);
+    expect(showsUnstartedTimer([row('local-1', peer, 30)], {}, me, '5')).toBe(false);
+    // Numeric, not string, order.
+    expect(showsUnstartedTimer([row('99', peer, 30)], {}, me, '100')).toBe(true);
+  });
+
+  it('false without knowing who we are', () => {
+    expect(showsUnstartedTimer([row('2', peer, 30)], {}, undefined, '2')).toBe(false);
+  });
+});
+
 describe('scheduleExpiry', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -442,6 +485,55 @@ describe('RestClient DM settings (the key installed apps depend on)', () => {
     expect(timerBoundsFor(r.maxTtlSeconds)).toEqual(TIMER_BOUNDS);
     const old = capture({ ttlSecondsAfterRead: 30, notificationShowContent: null });
     expect(timerBoundsFor((await old.client.getDmSettings('42')).maxTtlSeconds)).toEqual(LEGACY_TIMER_BOUNDS);
+  });
+});
+
+describe('RestClient sendMessage notARead and the gallery’s message ids', () => {
+  function capture(response: unknown) {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const client = new RestClient({
+      baseUrl: 'https://example.test/api',
+      getToken: () => 't',
+      fetch: (async (url: string, init?: RequestInit) => {
+        const raw = init?.body;
+        calls.push({
+          url,
+          body:
+            raw instanceof FormData
+              ? JSON.parse(String(raw.get('payload_json')))
+              : raw
+                ? JSON.parse(raw as string)
+                : undefined,
+        });
+        return new Response(JSON.stringify(response), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as typeof fetch,
+    } as ConstructorParameters<typeof RestClient>[0]);
+    return { client, calls };
+  }
+
+  it('sends notARead only when set, in the JSON and the multipart body', async () => {
+    const { client, calls } = capture({ message: { id: '1' } });
+    await client.sendMessage('7', { content: 'hi' });
+    await client.sendMessage('7', { content: 'hi', notARead: true });
+    await client.sendMessage('7', {
+      content: 'pic',
+      files: [new File(['x'], 'a.png', { type: 'image/png' })],
+      notARead: true,
+    });
+    expect(calls[0]!.body).not.toHaveProperty('notARead');
+    expect(calls[1]!.body).toMatchObject({ content: 'hi', notARead: true });
+    expect(calls[2]!.body).toMatchObject({ content: 'pic', notARead: true });
+  });
+
+  it('channelAttachments keeps each item’s messageId', async () => {
+    const { client } = capture({
+      attachments: [{ id: '5', filename: 'a.png', messageId: '42', authorId: '9', createdAt: '2026-11-08T12:00:00.000Z' }],
+    });
+    const r = await client.channelAttachments('7');
+    expect(r.attachments[0]!.messageId).toBe('42');
   });
 });
 

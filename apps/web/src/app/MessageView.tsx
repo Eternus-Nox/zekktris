@@ -31,7 +31,8 @@ import { PinPanel } from './PinPanel';
 import { SearchPanel } from './SearchPanel';
 import { useNavigate } from 'react-router-dom';
 import { Hash, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronDown, ChevronLeft, ChevronRight, CheckCircle, Lock, Timer, Users as UsersIcon } from '../lib/icons';
-import { formatLong, formatShort, isDisappearingNotice } from '../lib/disappearing';
+import { formatLong, formatShort, isDisappearingNotice, showsUnstartedTimer } from '../lib/disappearing';
+import { planReadAck } from '../lib/readAck';
 import { isNative } from '../lib/native';
 import { SchedulePickerModal } from './SchedulePickerModal';
 import { avatarColor, avatarInitials } from '../lib/avatar';
@@ -326,9 +327,18 @@ export function MessageView({
     };
   }, []);
 
+  // What the ack below sends beyond "the newest row, while the marker is
+  // behind it" (lib/readAck): per channel, the id this view's last ack sent
+  // (a DM re-acks a marker that reads current at most once per marker) and
+  // the last stale-tail probe. Refs, not state: they only gate the next ack.
+  const sentAckRef = useRef(new Map<string, string>());
+  const tailProbeRef = useRef(new Map<string, string>());
+  const expiryDeadlines = useAppStateSelector((v) => v.state.expiryDeadlines);
+
   useEffect(() => {
     if (!messages || messages.length === 0) return;
-    if ((channel.type === 'dm' || channel.type === 'group_dm') && !conversationVisible()) return;
+    const dm = channel.type === 'dm' || channel.type === 'group_dm';
+    if (dm && !conversationVisible()) return;
     // Walk back from the tail to find the most recent message with a
     // real (server-issued) id. Optimistic placeholders carry a
     // `local-...` id that's incompatible with bigint snowflake math —
@@ -349,13 +359,42 @@ export function MessageView({
       break;
     }
     if (!last) return;
-    const rs = readStateByChannel[channel.id];
-    if (rs?.lastMessageId === last.id) return; // already acked
-    void ackChannel(channel.id, last.id);
+    const channelId = channel.id;
+    // A marker at or past the newest row is "already acked" — except in the
+    // two DM cases lib/readAck describes: a marker our own message's echo
+    // moved past someone else's still-waiting timed row (a scheduled message
+    // or the streak warning is no read), and a lastMessageId left pointing
+    // at a message that is gone.
+    const plan = planReadAck({
+      isDm: dm,
+      newest: last.id,
+      marker: readStateByChannel[channelId]?.lastMessageId,
+      lastSent: sentAckRef.current.get(channelId),
+      unstartedTimer: dm && showsUnstartedTimer(messages, expiryDeadlines, user?.id, last.id),
+      channelLast: channel.lastMessageId,
+      lastProbe: tailProbeRef.current.get(channelId),
+    });
+    const ack = (id: string) => {
+      sentAckRef.current.set(channelId, id);
+      void ackChannel(channelId, id);
+    };
+    if (plan.ack) ack(plan.ack);
+    if (plan.probe) {
+      const { after, tail, key } = plan.probe;
+      tailProbeRef.current.set(channelId, key);
+      // Nothing newer than the loaded tail is left to load, so `tail` is a
+      // tombstone: acking it covers nothing unseen.
+      void rest.listMessages(channelId, { after, limit: 1 }).then(
+        (r) => {
+          if (r.messages.length === 0) ack(tail);
+        },
+        () => undefined,
+      );
+    }
     // We intentionally only depend on the channel id, the messages array
-    // identity and `wake`, not on the read-state map — the inner equality
-    // guard above handles the "already acked" case without retriggering on
-    // every state update elsewhere in the tree.
+    // identity and `wake`, not on the read-state or deadline maps — the plan
+    // above handles the "already acked" case without retriggering on every
+    // state update elsewhere in the tree.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channel.id, messages, wake]);
 

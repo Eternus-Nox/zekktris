@@ -2430,6 +2430,14 @@ export class RestClient {
       /** Per-file ENCRYPTED thumbnail, POSITIONAL to `files` (null when none).
           Uploaded as a sparse `thumbs[k]` part for E2EE images. */
       thumbs?: (File | null)[];
+      /** The send isn't the sender reading the conversation: it was composed
+          without the DM on screen (a share sheet, a shortcut). The server then
+          starts no disappearing-message countdown for it and doesn't move the
+          sender's read marker past someone else's message still waiting for
+          one, so the DM stays unread and their next real open acks it. Omit
+          it for a send from the open conversation (that IS a read). Forwards
+          don't need it: the server treats every forward as not a read. */
+      notARead?: boolean;
     },
   ): Promise<{ message: Message }> {
     const files = input.files ?? [];
@@ -2441,6 +2449,7 @@ export class RestClient {
         ...(input.forwardFromMessageId ? { forwardFromMessageId: input.forwardFromMessageId } : {}),
         ...(input.stickerId ? { stickerId: input.stickerId } : {}),
         ...(input.nonce ? { nonce: input.nonce } : {}),
+        ...(input.notARead ? { notARead: true } : {}),
       });
     }
     const fd = new FormData();
@@ -2454,6 +2463,7 @@ export class RestClient {
         ...(input.stickerId ? { stickerId: input.stickerId } : {}),
         ...(input.voiceMessage ? { voiceMessage: input.voiceMessage } : {}),
         ...(input.nonce ? { nonce: input.nonce } : {}),
+        ...(input.notARead ? { notARead: true } : {}),
         ...(input.attachmentsMeta ? { attachments: input.attachmentsMeta } : {}),
       }),
     );
@@ -3102,11 +3112,14 @@ export class RestClient {
   /** A channel's attachments newest-first for the shared-media gallery,
       paginated by attachment id (`before` cursor). Fetched unfiltered; the
       caller buckets Media vs Files (so E2EE `.zke` items classify by their
-      inner filename). */
+      inner filename). Each item names the message it belongs to, so a
+      gallery can drop it when that message is deleted or disappears. */
   channelAttachments(
     channelId: string,
     before?: string,
-  ): Promise<{ attachments: Attachment[] }> {
+  ): Promise<{
+    attachments: Array<Attachment & { messageId: string; authorId: string | null; createdAt: string }>;
+  }> {
     const q = new URLSearchParams({ limit: '60' });
     if (before) q.set('before', before);
     return this.request('GET', `/channels/${channelId}/attachments?${q.toString()}`);

@@ -401,6 +401,48 @@ export function dropExpired<T extends { id: string }>(
   });
 }
 
+/** The message ids whose deadline has passed — for views that hold things
+    belonging to a message outside AppState (the media gallery). */
+export function passedDeadlines(deadlines: Readonly<Record<string, number>>, nowMs: number): string[] {
+  const out: string[] = [];
+  for (const id in deadlines) {
+    if (deadlines[id]! <= nowMs) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * Whether the loaded rows (up to `upToId`) include someone else's message
+ * sent with a timer whose deadline this client doesn't know — one that, as
+ * far as we can tell, no read has started yet. The read ack starts it (and
+ * its MESSAGE_EXPIRY then fills the deadline in); see lib/readAck. Our own
+ * rows never count: only a reader starts a countdown. False without a
+ * `selfId` (own rows can't be told apart).
+ */
+export function showsUnstartedTimer(
+  messages: ReadonlyArray<{
+    id: string;
+    authorId: string | null;
+    author?: { id: string } | null;
+    expireAfterSeconds?: number | null;
+  }>,
+  deadlines: Readonly<Record<string, number>>,
+  selfId: string | null | undefined,
+  upToId: string,
+): boolean {
+  if (!selfId || !/^\d+$/.test(upToId)) return false;
+  const upTo = BigInt(upToId);
+  return messages.some(
+    (m) =>
+      typeof m.expireAfterSeconds === 'number' &&
+      m.expireAfterSeconds > 0 &&
+      deadlines[m.id] === undefined &&
+      /^\d+$/.test(m.id) &&
+      BigInt(m.id) <= upTo &&
+      (m.authorId ?? m.author?.id ?? null) !== selfId,
+  );
+}
+
 /**
  * The local expiry scheduler: ONE timer for every countdown, armed for the
  * earliest future deadline. Each run calls `expire` (which removes whatever

@@ -641,6 +641,47 @@ function bumpDmRecency(
 }
 
 /**
+ * The one move back bumpDmRecency never makes: when the row a DM's
+ * `lastMessageId` points at leaves the loaded list (deleted, or past its
+ * disappearing deadline), fall back to the newest row still loaded — what
+ * the server's own rollback (rollbackChannelWatermark) stores, which nothing
+ * tells clients about. Otherwise the DM reads unread against a message no
+ * one can load, and opening it acks nothing (the newest row is already
+ * read). In a group DM with a timer that's every member who wasn't the
+ * first reader. Only when that row WAS loaded: then the list holds the tail,
+ * so its newest remaining row is the new one; otherwise (or with no server
+ * row left) the id stays, and MessageView's stale-tail ack clears it on
+ * open (lib/readAck). Same array reference when nothing changes.
+ */
+function rollbackDmRecency(
+  channels: Channel[],
+  channelId: string,
+  before: Message[],
+  after: Message[],
+): Channel[] {
+  const idx = channels.findIndex((c) => c.id === channelId);
+  if (idx === -1) return channels;
+  const ch = channels[idx]!;
+  const gone = ch.lastMessageId;
+  if (!gone || !/^\d+$/.test(gone)) return channels;
+  if (!before.some((m) => m.id === gone) || after.some((m) => m.id === gone)) return channels;
+  let newest: bigint | null = null;
+  let newestId: string | null = null;
+  for (const m of after) {
+    if (!/^\d+$/.test(m.id)) continue;
+    const n = BigInt(m.id);
+    if (newest === null || n > newest) {
+      newest = n;
+      newestId = m.id;
+    }
+  }
+  if (newest === null || newestId === null || newest >= BigInt(gone)) return channels;
+  const next = channels.slice();
+  next[idx] = { ...ch, lastMessageId: newestId };
+  return next;
+}
+
+/**
  * Same forward-only lastMessageId bump for GUILD channels. Without this, a
  * guild channel's lastMessageId was a point-in-time snapshot from the last
  * channels fetch: the unread dot neither appeared live when a message arrived
@@ -1249,12 +1290,14 @@ function reducer(state: State, action: Action): State {
       // locally at its deadline still gets the sweep's MESSAGE_DELETE a few
       // seconds later, which would otherwise re-render the whole channel.
       if (!existing.some((m) => m.id === action.messageId)) return state;
+      const kept = existing.filter((m) => m.id !== action.messageId);
       return {
         ...state,
         messagesByChannel: {
           ...state.messagesByChannel,
-          [action.channelId]: existing.filter((m) => m.id !== action.messageId),
+          [action.channelId]: kept,
         },
+        dmChannels: rollbackDmRecency(state.dmChannels, action.channelId, existing, kept),
       };
     }
     case 'MESSAGES_REMOVE_BULK': {
@@ -1271,6 +1314,7 @@ function reducer(state: State, action: Action): State {
           ...state.messagesByChannel,
           [action.channelId]: next,
         },
+        dmChannels: rollbackDmRecency(state.dmChannels, action.channelId, existing, next),
       };
     }
     case 'MESSAGE_RECEIPT_STAMP': {
@@ -1746,17 +1790,19 @@ function reducer(state: State, action: Action): State {
       if (Object.keys(deadlines).length === 0) return state;
       const now = serverNow(clockOffsetOf(state));
       let messagesByChannel = state.messagesByChannel;
+      let dmChannels = state.dmChannels;
       for (const cid in state.messagesByChannel) {
         const list = state.messagesByChannel[cid]!;
         const kept = dropExpired(list, deadlines, now);
         if (kept !== list) {
           if (messagesByChannel === state.messagesByChannel) messagesByChannel = { ...messagesByChannel };
           messagesByChannel[cid] = kept;
+          dmChannels = rollbackDmRecency(dmChannels, cid, list, kept);
         }
       }
       const expiryDeadlines = pruneDeadlines(deadlines, now);
       if (messagesByChannel === state.messagesByChannel && expiryDeadlines === deadlines) return state;
-      return { ...state, messagesByChannel, expiryDeadlines };
+      return { ...state, messagesByChannel, expiryDeadlines, dmChannels };
     }
 
     case 'POKE_PILL_SET':
@@ -3627,7 +3673,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           // dot in DMList/ChannelList until the channel is opened. Advance
           // our read marker locally; the READ_STATE_UPSERT reducer's
           // monotonic + numeric-id guards make this safe (optimistic
-          // `local-` ids are dropped). The server also advances it on create.
+          // `local-` ids are dropped). The server also advances it on create,
+          // except for a row that isn't a read (a scheduled message firing,
+          // the streak warning) while someone else's timed message still
+          // waits for one; MessageView re-acks that case (lib/readAck).
           if (m.authorId === selfId && /^\d+$/.test(m.id)) {
             dispatch({
               type: 'READ_STATE_UPSERT',
