@@ -220,6 +220,86 @@ export async function markGuildRead(
   return updated;
 }
 
+/**
+ * One user's stored read state for a channel, as a CHANNEL_ACK carries it: a
+ * NULL marker and no mentions when they have no row yet (nothing acked).
+ */
+export async function getOne(userId: bigint, channelId: bigint): Promise<ReadStateRow> {
+  const [row] = await db
+    .select({
+      channelId: schema.readStates.channelId,
+      lastMessageId: schema.readStates.lastMessageId,
+      mentionCount: schema.readStates.mentionCount,
+    })
+    .from(schema.readStates)
+    .where(and(eq(schema.readStates.userId, userId), eq(schema.readStates.channelId, channelId)))
+    .limit(1);
+  return row ?? { channelId, lastMessageId: null, mentionCount: 0 };
+}
+
+/**
+ * Disappearing messages: after the sweep rolled these DMs' watermarks back,
+ * zero the mention badge of every recipient whose marker is now at (or past)
+ * the tail — or of everyone when nothing is left. The mention that disappeared
+ * was above their marker, so it counts; nothing above it remains to read, so
+ * no client acks it again, and an ack at the marker wouldn't clear it anyway
+ * (ack() only resets the count when the marker moves). Returns the touched
+ * rows so the sweep can send each user a CHANNEL_ACK.
+ *
+ * Driven from dm_recipients (read_states has no channel index). Rows are
+ * locked first, skipping any another writer holds: a send that mentions the
+ * user bumps the watermark before their count in the same transaction, so a
+ * locked row is re-read with that send either committed (watermark ahead,
+ * not cleared) or waiting on this lock (its +1 lands after the reset). The
+ * update then touches only rows already held, so it never waits on — or
+ * deadlocks with — a send.
+ */
+export async function clearMentionsAtTail(
+  channelIds: bigint[],
+): Promise<Array<{ userId: bigint } & ReadStateRow>> {
+  if (channelIds.length === 0) return [];
+  const chList = sql.join(channelIds.map((id) => sql`${id}`), sql`, `);
+  return db.transaction(async (tx) => {
+    type Key = { user_id: string; channel_id: string };
+    const lockedRes = await tx.execute<Key>(sql`
+      SELECT rs.user_id, rs.channel_id
+        FROM dm_recipients r
+        JOIN read_states rs ON rs.user_id = r.user_id AND rs.channel_id = r.channel_id
+       WHERE r.channel_id IN (${chList}) AND rs.mention_count > 0
+       FOR UPDATE OF rs SKIP LOCKED
+    `);
+    const locked = rowsOf<Key>(lockedRes);
+    if (locked.length === 0) return [];
+    const keys = sql.join(
+      locked.map((k) => sql`(${BigInt(k.user_id)}::bigint, ${BigInt(k.channel_id)}::bigint)`),
+      sql`, `,
+    );
+    type Cleared = Key & { last_message_id: string | null; mention_count: number };
+    const updatedRes = await tx.execute<Cleared>(sql`
+      UPDATE read_states rs
+         SET mention_count = 0, updated_at = now()
+        FROM channels c
+       WHERE c.id = rs.channel_id
+         AND (rs.user_id, rs.channel_id) IN (${keys})
+         AND rs.mention_count > 0
+         AND (c.last_message_id IS NULL OR rs.last_message_id >= c.last_message_id)
+      RETURNING rs.user_id, rs.channel_id, rs.last_message_id, rs.mention_count
+    `);
+    return rowsOf<Cleared>(updatedRes).map((r) => ({
+      userId: BigInt(r.user_id),
+      channelId: BigInt(r.channel_id),
+      lastMessageId: r.last_message_id === null ? null : BigInt(r.last_message_id),
+      mentionCount: Number(r.mention_count),
+    }));
+  });
+}
+
+/** The drizzle execute() shape varies by adapter — node-postgres returns an
+ *  object with a `rows` array, postgres-js the array directly. */
+function rowsOf<T>(res: unknown): T[] {
+  return Array.isArray(res) ? (res as T[]) : ((res as { rows?: T[] }).rows ?? []);
+}
+
 /** All read states for a user. Used by READY hydration. */
 export async function listMy(userId: bigint): Promise<ReadStateRow[]> {
   const rows = await db

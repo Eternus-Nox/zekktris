@@ -129,6 +129,42 @@ describe.runIf(dbReady)('purge', () => {
     expect(tomb!.deletedAt).not.toBeNull();
   });
 
+  it("rolls back a channel's watermark that named a purged message", async () => {
+    const leaver = await createUser();
+    const friend = await createUser();
+    const guildId = await createGuild(friend);
+    await addMember(guildId, leaver);
+    const general = await createChannel(guildId);
+    const kept = await createMessage(general, { authorId: friend, content: 'before the spam' });
+    await createMessage(general, { authorId: leaver, content: 'older spam' });
+    const spam = await createMessage(general, { authorId: leaver, content: '@everyone spam' });
+    // A channel only they wrote in, and one where their message isn't the newest.
+    const theirs = await createChannel(guildId);
+    const alone = await createMessage(theirs, { authorId: leaver, content: 'alone' });
+    const busy = await createChannel(guildId);
+    await createMessage(busy, { authorId: leaver, content: 'mid-history' });
+    const newest = await createMessage(busy, { authorId: friend, content: 'newest' });
+    const setWatermark = (ch: bigint, id: bigint) =>
+      db.update(schema.channels).set({ lastMessageId: id }).where(eq(schema.channels.id, ch));
+    await setWatermark(general, spam);
+    await setWatermark(theirs, alone);
+    await setWatermark(busy, newest);
+
+    await purgeAccount(leaver);
+
+    const watermark = async (ch: bigint) => {
+      const [r] = await db
+        .select({ w: schema.channels.lastMessageId })
+        .from(schema.channels)
+        .where(eq(schema.channels.id, ch));
+      return r!.w;
+    };
+    expect(await messageExists(spam)).toBe(false);
+    expect(await watermark(general)).toBe(kept);
+    expect(await watermark(theirs)).toBeNull();
+    expect(await watermark(busy)).toBe(newest);
+  });
+
   it('scrubs the account down to the name', async () => {
     const uid = await createUser();
     await db

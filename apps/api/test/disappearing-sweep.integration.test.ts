@@ -139,6 +139,68 @@ describe.runIf(dbReady)('disappearing-messages sweep (integration)', () => {
     expect(await watermark(third)).toBe(newest);
   });
 
+  it('zeroes the mention badge of a recipient the rollback leaves at the tail, and tells them', async () => {
+    // Group DM: A read up to P and is then @mentioned in M. C reads M first,
+    // which starts the shared clock; at the deadline M goes and the watermark
+    // rolls back to P — A's marker. Nothing is left for A to open and ack.
+    const a = await createUser();
+    const b = await createUser();
+    const c = await createUser();
+    const d = await createUser();
+    const gdm = await createDmChannel([a, b, c, d], 'group_dm');
+    const early = await createMessage(gdm, { authorId: b, content: 'early' });
+    const p = await createMessage(gdm, { authorId: b, content: 'P' });
+    const m = await createMessage(gdm, { authorId: b, content: '@A grab the keys', expireAfterSeconds: 3600, expiresAt: ago(1_000) });
+    await setWatermark(gdm, m);
+    // A channel the sweep empties: the mention badge has nothing left to read.
+    const e = await createUser();
+    const solo = await createDmChannel([b, e]);
+    const only = await createMessage(solo, { authorId: b, content: '@E', expireAfterSeconds: 5, expiresAt: ago(1_000) });
+    await setWatermark(solo, only);
+    await db.insert(schema.readStates).values([
+      { userId: a, channelId: gdm, lastMessageId: p, mentionCount: 1 },
+      // C read M (that started the clock): no badge, nothing to do.
+      { userId: c, channelId: gdm, lastMessageId: m, mentionCount: 0 },
+      // D hasn't read P yet: still unread, so the badge waits for D's ack.
+      { userId: d, channelId: gdm, lastMessageId: early, mentionCount: 1 },
+      { userId: e, channelId: solo, lastMessageId: null, mentionCount: 1 },
+    ]);
+    const aSent = connect(a, [gdm]);
+    const cSent = connect(c, [gdm]);
+    const dSent = connect(d, [gdm]);
+    const eSent = connect(e, [solo]);
+
+    await sweepExpiredDmMessages();
+    expect(await watermark(gdm)).toBe(p);
+    expect(await watermark(solo)).toBeNull();
+
+    const counts = await db
+      .select({ u: schema.readStates.userId, ch: schema.readStates.channelId, last: schema.readStates.lastMessageId, n: schema.readStates.mentionCount })
+      .from(schema.readStates)
+      .where(inArray(schema.readStates.userId, [a, c, d, e]));
+    const of = (u: bigint) => counts.find((r) => r.u === u)!;
+    expect(of(a)).toMatchObject({ last: p, n: 0 });
+    expect(of(c)).toMatchObject({ last: m, n: 0 });
+    expect(of(d)).toMatchObject({ last: early, n: 1 });
+    expect(of(e)).toMatchObject({ last: null, n: 0 });
+
+    const acksFor = (sent: Frame[], ch: bigint) =>
+      sent.filter((f) => f.t === 'CHANNEL_ACK' && f.d?.channelId === ch.toString()).map((f) => f.d);
+    // A's devices get the marker as it stands with no mentions, after the
+    // MESSAGE_DELETE that rolls their copy of the DM back.
+    expect(acksFor(aSent, gdm)).toEqual([{ channelId: gdm.toString(), lastMessageId: p.toString(), mentionCount: 0 }]);
+    expect(aSent.findIndex((f) => f.t === 'CHANNEL_ACK')).toBeGreaterThan(
+      aSent.findIndex((f) => f.t === 'MESSAGE_DELETE' && f.d?.id === m.toString()),
+    );
+    expect(acksFor(cSent, gdm)).toEqual([]);
+    expect(acksFor(dSent, gdm)).toEqual([]);
+    expect(acksFor(eSent, solo)).toEqual([{ channelId: solo.toString(), lastMessageId: null, mentionCount: 0 }]);
+
+    // Idempotent: a later sweep finds nothing more to clear.
+    await sweepExpiredDmMessages();
+    expect(acksFor(aSent, gdm).length).toBe(1);
+  });
+
   it('drains more than one batch per call', async () => {
     const a = await createUser();
     const b = await createUser();

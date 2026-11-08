@@ -42,6 +42,7 @@ import { and, eq, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors } from '../errors';
 import { log } from '../log';
+import { rollbackChannelWatermarks } from './messages';
 import { deleteAttachmentFile, parseCdnAttachmentId } from './uploads';
 
 /** Messages are deleted in batches so one huge account or server can't hold a
@@ -165,7 +166,7 @@ async function purgeServerMessages(userId: bigint): Promise<PurgeResult> {
 
   for (;;) {
     const rows = await db
-      .select({ id: schema.messages.id })
+      .select({ id: schema.messages.id, channelId: schema.messages.channelId })
       .from(schema.messages)
       .innerJoin(schema.channels, eq(schema.channels.id, schema.messages.channelId))
       .where(and(eq(schema.messages.authorId, userId), isNotNull(schema.channels.guildId)))
@@ -181,6 +182,14 @@ async function purgeServerMessages(userId: bigint): Promise<PurgeResult> {
 
     await db.delete(schema.messages).where(inArray(schema.messages.id, ids));
     messages += ids.length;
+    // A channel whose newest message was theirs keeps a watermark naming a
+    // row that is gone: unread forever, and an ack of it 404s. Move it back
+    // to what is left, as a delete does. Best-effort: never fail the purge.
+    try {
+      await rollbackChannelWatermarks([...new Set(rows.map((r) => r.channelId))], ids);
+    } catch (err) {
+      log.warn('purge: channel watermark rollback failed', { err });
+    }
     if (rows.length < BATCH) break;
   }
 

@@ -182,12 +182,13 @@ const sendMessageSchema = z.object({
       the REST 201 response. */
   nonce: z.string().max(64).optional(),
   /** The send isn't the sender reading the conversation: it was composed
-      without the DM on screen (a Siri / Watch / Shortcuts send). Like a
-      forward (always treated so), it starts no disappearing clock and
-      doesn't move the sender's read marker past a message from someone
-      else still waiting for one — so the DM stays unread and their next
-      real open acks it. Omitted (installed apps, the composer, a
-      notification quick reply, where the message was on screen): a read. */
+      without the DM on screen (a Siri / Watch / Shortcuts send, or a
+      forward from web's Forward modal, which doesn't open the
+      destination). It starts no disappearing clock and doesn't move the
+      sender's read marker past a message from someone else still waiting
+      for one — so the DM stays unread and their next real open acks it.
+      Omitted (installed apps, the composer, a notification quick reply,
+      an iOS / Android forward, which jumps into the DM): a read. */
   notARead: z.boolean().optional(),
   /** Per-attachment client metadata, POSITIONAL to the uploaded files (entry
       k describes files[k]; may be null for files with no meta). Used so E2EE
@@ -815,11 +816,12 @@ messagesRouter.post(
           )
         : [];
 
-    // Disappearing messages: an interactive send from the conversation is a
-    // read of what's above it. A forward is never one (it is picked from
-    // another chat; web doesn't even open the destination), nor is a send
-    // the client flags `notARead`.
-    const isRead = !payload.notARead && !payload.forwardFromMessageId;
+    // Disappearing messages: a send is a read of what's above it unless the
+    // client flags it `notARead`. A forward is one too: iOS and Android
+    // (installed builds included) open the destination DM right after it,
+    // so the sender is shown what waits there; web's Forward modal, which
+    // stays put, sends the flag.
+    const isRead = !payload.notARead;
 
     let result;
     try {
@@ -1045,7 +1047,9 @@ messagesRouter.post(
     // the marker is current — without this, what the sender answered would
     // never disappear. Not for a send that isn't a read: createMessage held
     // the marker below what's still waiting, and the sender's next open
-    // starts it. After the commit and the fan-out; no-op outside DMs.
+    // starts it — once their devices know: the echo above moved each one's
+    // local marker to this message, so send the held one back after it.
+    // After the commit and the fan-out; no-op outside DMs.
     if (isRead) {
       await dms.startDisappearingTimersAndNotify({
         channelId,
@@ -1053,6 +1057,8 @@ messagesRouter.post(
         readerId: userId,
         upToMessageId: result.message.id,
       });
+    } else if (result.authorMarkerHeld) {
+      await dms.notifyHeldReadMarker({ userId, channelId });
     }
 
     // Parental controls: scan against any supervised child's watch words

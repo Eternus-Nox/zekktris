@@ -139,6 +139,45 @@ describe.runIf(dbReady)('E2EE disable requires the passphrase verifier (integrat
     expect(await messageExists(enc)).toBe(false);
     expect(await messageExists(plain)).toBe(true);
   });
+
+  it('rolls the watermark back off purged ciphertext, to the newest plaintext or NULL', async () => {
+    const a = await createUser();
+    const b = await createUser();
+    const watermark = async (ch: bigint) => {
+      const [r] = await db
+        .select({ w: schema.channels.lastMessageId })
+        .from(schema.channels)
+        .where(eq(schema.channels.id, ch));
+      return r!.w;
+    };
+    const setWatermark = (ch: bigint, id: bigint) =>
+      db.update(schema.channels).set({ lastMessageId: id }).where(eq(schema.channels.id, ch));
+
+    const dm = await createDmChannel([a, b]);
+    const plain = await createMessage(dm, { authorId: a, content: 'hello (plaintext)' });
+    await enableE2ee(dm, SALT, CORRECT);
+    const enc = await createMessage(dm, { authorId: b, content: 'zkE2EE/3:ciphertext' });
+    await setWatermark(dm, enc);
+    expect((await disableE2eeAndPurge(dm, CORRECT)).status).toBe('disabled');
+    expect(await messageExists(enc)).toBe(false);
+    expect(await watermark(dm)).toBe(plain);
+
+    // Nothing but ciphertext: no watermark left.
+    const dm2 = await createDmChannel([a, b]);
+    await enableE2ee(dm2, SALT, CORRECT);
+    const only = await createMessage(dm2, { authorId: a, content: 'zkE2EE/3:only' });
+    await setWatermark(dm2, only);
+    expect((await disableE2eeAndPurge(dm2, CORRECT)).status).toBe('disabled');
+    expect(await watermark(dm2)).toBeNull();
+
+    // A refused disable purges nothing and leaves the watermark alone.
+    const dm3 = await createDmChannel([a, b]);
+    await enableE2ee(dm3, SALT, CORRECT);
+    const kept = await createMessage(dm3, { authorId: a, content: 'zkE2EE/3:kept' });
+    await setWatermark(dm3, kept);
+    expect((await disableE2eeAndPurge(dm3, WRONG)).status).toBe('verifier_mismatch');
+    expect(await watermark(dm3)).toBe(kept);
+  });
 });
 
 describe.runIf(dbReady)('E2EE purge requires the undisclosed purge proof (integration)', () => {

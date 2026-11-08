@@ -23,7 +23,9 @@ import {
   DISAPPEARING_MIN_SECONDS,
   disappearingNoticeText,
 } from '../lib/disappearing';
+import { toReadState } from '../lib/dto';
 import { createSystemMessage, rollbackChannelWatermarks, type DbHandle } from './messages';
+import * as readStates from './readStates';
 
 /**
  * Find an existing 1:1 DM channel between two users, or create one.
@@ -727,6 +729,10 @@ export async function disableE2eeAndPurge(
       await tx
         .delete(schema.messages)
         .where(inArray(schema.messages.id, purgedMessageIds));
+      // The newest message was most likely ciphertext: move the unread
+      // watermark back to what is left, as a delete does, so it never names
+      // a row nobody can load (or ack). The route's CHANNEL_UPDATE carries it.
+      await rollbackChannelWatermarks([channelId], purgedMessageIds, tx as DbHandle);
     }
     // Clear the E2EE state. enabled→false, salt+verifier+proof hash→null.
     await tx
@@ -788,8 +794,9 @@ export async function closeDMForUser(input: {
 //     reply is just a send) and a timer change (startDisappearingTimersAndNotify
 //     covers all three). A plain message-list fetch does not (it only stamps
 //     viewed_at, for read receipts), and a send that isn't a read (a
-//     scheduled message firing, a forward, a send flagged notARead) starts
-//     nothing and doesn't move the marker past one that is still waiting.
+//     scheduled message firing, a send flagged notARead — Siri / Watch, a
+//     forward from web) starts nothing and doesn't move the marker past one
+//     that is still waiting (notifyHeldReadMarker tells the sender's devices).
 //     Group DMs use "first reader among the non-authors": one shared clock.
 //
 //   - At expires_at the message is gone for everyone: every read path
@@ -1284,6 +1291,31 @@ export async function startDisappearingTimersAndNotify(input: {
 }
 
 /**
+ * A send that isn't a read held `userId`'s read marker in a DM below someone
+ * else's message still waiting for its clock (createMessage's
+ * `authorMarkerHeld`). Every client moves its local marker to its own message
+ * when the MESSAGE_CREATE echo arrives, so the DM reads as read there and its
+ * next open acks nothing — installed iOS builds then never start the clock of
+ * what they show. Send the stored state to the user's devices as a CHANNEL_ACK
+ * (iOS and Android apply it as is) to put the marker back. Call it after the
+ * MESSAGE_CREATE: one bus, so it arrives after the echo. Never throws.
+ */
+export async function notifyHeldReadMarker(input: {
+  userId: bigint;
+  channelId: bigint;
+}): Promise<void> {
+  try {
+    const rs = await readStates.getOne(input.userId, input.channelId);
+    dispatch.channelAck({ userId: input.userId, readState: toReadState(rs) });
+  } catch (err) {
+    log.warn?.('held read marker notify failed', {
+      channelId: input.channelId.toString(),
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
  * Stamp `delivered_at = now()` on a freshly-created DM message if
  * the column is still NULL.
  *
@@ -1341,7 +1373,10 @@ const SWEEP_MAX_BATCHES = 10;
  * stays bounded; the next tick picks up the rest. For each batch: one
  * MESSAGE_DELETE per row (installed apps predate MESSAGE_DELETE_BULK), and
  * each affected channel's last_message_id rolled back like deleteMessage
- * does, so an unread dot never points at a message nobody can load.
+ * does, so an unread dot never points at a message nobody can load. A
+ * recipient that rollback leaves at the tail with a mention count (a group-DM
+ * @mention another member read first) gets it zeroed and a CHANNEL_ACK:
+ * nothing is left to open and ack, so the badge would otherwise stay.
  *
  * Returns the number of messages soft-deleted.
  */
@@ -1382,6 +1417,12 @@ export async function sweepExpiredDmMessages(): Promise<number> {
       // Best-effort: the rows are already gone; a stale watermark only
       // leaves an unread dot until the next message.
     }
+    let cleared: Awaited<ReturnType<typeof readStates.clearMentionsAtTail>> = [];
+    try {
+      cleared = await readStates.clearMentionsAtTail(channelIds);
+    } catch {
+      // Best-effort, like the rollback: a stale badge until the next message.
+    }
     for (const r of affected) {
       // DMs have no guild, so the audience is the channel's dm_recipients.
       // Per-row try/catch: one failed publish must not skip the rest — those
@@ -1395,6 +1436,14 @@ export async function sweepExpiredDmMessages(): Promise<number> {
       } catch {
         // Best-effort. The DB delete already committed; clients will
         // catch up on next listMessages.
+      }
+    }
+    // After the deletes, so a client has already rolled its copy back.
+    for (const rs of cleared) {
+      try {
+        dispatch.channelAck({ userId: rs.userId, readState: toReadState(rs) });
+      } catch {
+        // Best-effort: the count is already zero; READY carries it.
       }
     }
     if (affected.length < SWEEP_BATCH) break;

@@ -226,15 +226,16 @@ export interface CreateMessageInput {
   embeds?: MessageEmbedJson[] | null;
   /**
    * The send isn't the author reading the conversation — a scheduled message
-   * firing on its own, possibly while they're asleep, a forward picked from
-   * another chat, or a send the client flags (Siri / Watch). Their read
-   * marker still moves to the new message as for any send, EXCEPT when that
-   * would pass a message from someone else that is waiting for its
-   * disappearing clock (sent with a timer, clock not started, above the
-   * marker): a marker past it means "read", clients then never ack it, and
-   * it would never disappear. The marker (and mention count) then stay put,
-   * so the DM stays unread and the author's next real open acks — and
-   * starts — it.
+   * firing on its own, possibly while they're asleep, or a send the client
+   * flags (a Siri / Watch send, a forward from web's Forward modal, which
+   * doesn't open the destination). Their read marker still moves to the new
+   * message as for any send, EXCEPT when that would pass a message from
+   * someone else that is waiting for its disappearing clock (sent with a
+   * timer, clock not started, above the marker): a marker past it means
+   * "read", clients then never ack it, and it would never disappear. The
+   * marker (and mention count) then stay put, so the DM stays unread and the
+   * author's next real open acks — and starts — it. The result's
+   * `authorMarkerHeld` says when that happened.
    */
   notARead?: boolean;
 }
@@ -276,7 +277,19 @@ export interface MessageWithMentions {
   mentionsEveryone: boolean;
 }
 
-export async function createMessage(input: CreateMessageInput): Promise<MessageWithMentions> {
+/** Result of a create: as an edit's, plus what happened to the author's marker. */
+export interface CreatedMessage extends MessageWithMentions {
+  /**
+   * True when the send wasn't a read (`notARead`) and the author's read
+   * marker was left below someone else's message still waiting for its
+   * disappearing clock. Their clients move their local marker to their own
+   * message on its MESSAGE_CREATE echo, so the caller sends the stored one
+   * back after it (dms.notifyHeldReadMarker).
+   */
+  authorMarkerHeld: boolean;
+}
+
+export async function createMessage(input: CreateMessageInput): Promise<CreatedMessage> {
   // Sanity check: empty message with no attachments is rejected. (The DB
   // would happily store it, but it's not useful.) An attached poll
   // counts as content for this purpose — the poll IS the message.
@@ -304,6 +317,7 @@ export async function createMessage(input: CreateMessageInput): Promise<MessageW
 
   const messageId = nextSnowflake();
 
+  let authorMarkerHeld = false;
   const message = await db.transaction(async (tx) => {
     // Slowmode (atomic): serialize concurrent sends from this (channel,user)
     // with a transaction-scoped advisory lock, then re-check the window
@@ -461,7 +475,10 @@ export async function createMessage(input: CreateMessageInput): Promise<MessageW
             sql`${schema.messages.authorId} IS DISTINCT FROM ${input.authorId}`,
           ),
         );
-      if ((pending?.n ?? 0) > 0) advanceAuthorMarker = false;
+      if ((pending?.n ?? 0) > 0) {
+        advanceAuthorMarker = false;
+        authorMarkerHeld = true;
+      }
     }
     if (advanceAuthorMarker) {
       await tx
@@ -523,6 +540,7 @@ export async function createMessage(input: CreateMessageInput): Promise<MessageW
     mentionedUserIds: resolved.userIds,
     mentionedRoleIds: resolved.roleIds,
     mentionsEveryone: parsed.everyone,
+    authorMarkerHeld,
   };
 }
 
@@ -1023,19 +1041,23 @@ async function rollbackChannelWatermark(channelId: bigint, deletedId: bigint): P
 }
 
 /**
- * Batch form of rollbackChannelWatermark for the disappearing-messages sweep:
- * every channel in `channelIds` whose watermark is one of `deletedIds` moves
- * back to its newest message that is neither deleted nor already past its
- * deadline (or NULL when none is left). One statement per sweep batch.
+ * Batch form of rollbackChannelWatermark for the disappearing-messages sweep
+ * and the hard-delete purges (an account's server messages, a DM's ciphertext
+ * when E2EE is turned off): every channel in `channelIds` whose watermark is
+ * one of `deletedIds` moves back to its newest message that is neither
+ * deleted nor already past its deadline (or NULL when none is left). A
+ * hard-deleted id works as well as a tombstone (the subquery can't see it).
+ * One statement per batch; pass `exec` to run it inside a transaction.
  */
 export async function rollbackChannelWatermarks(
   channelIds: bigint[],
   deletedIds: bigint[],
+  exec: DbHandle = db,
 ): Promise<void> {
   if (channelIds.length === 0 || deletedIds.length === 0) return;
   const chList = sql.join(channelIds.map((id) => sql`${id}`), sql`, `);
   const delList = sql.join(deletedIds.map((id) => sql`${id}`), sql`, `);
-  await db.execute(sql`
+  await exec.execute(sql`
     UPDATE channels c
        SET last_message_id = (
          SELECT max(m.id) FROM messages m

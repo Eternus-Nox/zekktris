@@ -354,6 +354,8 @@ describe.runIf(dbReady)('disappearing messages: per-message timer + read paths (
     }
     // The sender's own message waits for A's read.
     expect((await row(reply.id)).expiresAt).toBeNull();
+    // An ordinary send held nothing, so no CHANNEL_ACK goes back to B.
+    expect(framesOf(bSent, 'CHANNEL_ACK').length).toBe(0);
 
     const bExp = framesOf(bSent, 'MESSAGE_EXPIRY');
     expect(bExp.length).toBe(1);
@@ -420,7 +422,7 @@ describe.runIf(dbReady)('disappearing messages: per-message timer + read paths (
     expect(framesOf(cSent, 'MESSAGE_EXPIRY').length).toBe(0);
   });
 
-  it("a forward isn't a read: it starts no clock and leaves the forwarder's marker below what waits; the next ack starts it", async () => {
+  it("a forward flagged notARead (web) isn't a read: no clock, the marker held, and the held marker goes back to the forwarder's devices", async () => {
     const a = await createUser();
     const b = await createUser();
     const dm = await createDmChannel([a, b]);
@@ -432,7 +434,8 @@ describe.runIf(dbReady)('disappearing messages: per-message timer + read paths (
     // A read up to the notice; B's message then waits for A.
     expect((await ack(a, dm, notice!.id)).status).toBe(200);
     const unread = await send(b, dm, { content: 'door code 4821' });
-    // A, reading a server channel, forwards a post from there to B.
+    // A, reading a server channel, forwards a post from there to B from
+    // web's Forward modal, which doesn't open the DM.
     const guild = await createGuild(a);
     await addMember(guild, a);
     const text = await createChannel(guild);
@@ -440,12 +443,22 @@ describe.runIf(dbReady)('disappearing messages: per-message timer + read paths (
     const aSent = connect(a, [dm]);
     const bSent = connect(b, [dm]);
 
-    const fwd = await send(a, dm, { forwardFromMessageId: source.toString() });
+    const fwd = await send(a, dm, { forwardFromMessageId: source.toString(), notARead: true });
     expect(fwd.forwardedFromMessageId).toBe(source.toString());
     expect((await row(unread.id)).expiresAt).toBeNull();
     expect(await marker(a, dm)).toBe(notice!.id);
     expect(framesOf(aSent, 'MESSAGE_EXPIRY').length).toBe(0);
     expect(framesOf(bSent, 'MESSAGE_EXPIRY').length).toBe(0);
+    // Exactly one CHANNEL_ACK, to A only, with the marker as stored, and
+    // after the echo that moved A's local marker to the forward.
+    expect(framesOf(aSent, 'CHANNEL_ACK')).toEqual([
+      { channelId: dm.toString(), lastMessageId: notice!.id.toString(), mentionCount: 0 },
+    ]);
+    expect(framesOf(bSent, 'CHANNEL_ACK').length).toBe(0);
+    const echoAt = aSent.findIndex((f) => f.t === 'MESSAGE_CREATE' && f.d?.id === fwd.id);
+    const ackAt = aSent.findIndex((f) => f.t === 'CHANNEL_ACK');
+    expect(echoAt).toBeGreaterThanOrEqual(0);
+    expect(ackAt).toBeGreaterThan(echoAt);
 
     // A opens the DM: the ack starts it.
     const t0 = Date.now();
@@ -454,20 +467,64 @@ describe.runIf(dbReady)('disappearing messages: per-message timer + read paths (
     expect(started).not.toBeNull();
     expect(Math.abs(started!.getTime() - (t0 + 30_000))).toBeLessThan(5_000);
     expect(framesOf(aSent, 'MESSAGE_EXPIRY').length).toBe(1);
+    expect(framesOf(aSent, 'CHANNEL_ACK').length).toBe(2);
 
-    // Nothing waiting any more: a forward moves the marker as a send does.
-    const fwd2 = await send(a, dm, { forwardFromMessageId: source.toString() });
+    // Nothing waiting any more: a flagged forward moves the marker as a send
+    // does, and there is nothing to send back.
+    const fwd2 = await send(a, dm, { forwardFromMessageId: source.toString(), notARead: true });
     expect(await marker(a, dm)).toBe(BigInt(fwd2.id));
+    expect(framesOf(aSent, 'CHANNEL_ACK').length).toBe(2);
 
-    // Group DM: one member's forward doesn't start the shared clock.
+    // Group DM: one member's flagged forward doesn't start the shared clock.
     const c = await createUser();
     const gdm = await createDmChannel([a, b, c], 'group_dm');
     expect((await setTimer(b, gdm, 120)).status).toBe(200);
     const groupUnread = await send(b, gdm, { content: 'group secret' });
-    await send(a, gdm, { forwardFromMessageId: source.toString() });
+    const aGroup = connect(a, [gdm]);
+    await send(a, gdm, { forwardFromMessageId: source.toString(), notARead: true });
     expect((await row(groupUnread.id)).expiresAt).toBeNull();
-    // A never opened it (no read state): the forward creates none.
+    // A never opened it (no read state): the forward creates none, and A's
+    // devices are told so (no marker), which reads as unread on every client.
     expect(await marker(a, gdm)).toBeUndefined();
+    expect(framesOf(aGroup, 'CHANNEL_ACK')).toEqual([
+      { channelId: gdm.toString(), lastMessageId: null, mentionCount: 0 },
+    ]);
+  });
+
+  it('an unflagged forward (iOS / Android, installed builds too, which jump into the DM) is a read: it starts the clock and moves the marker', async () => {
+    const a = await createUser();
+    const b = await createUser();
+    const dm = await createDmChannel([a, b]);
+    expect((await setTimer(b, dm, 30)).status).toBe(200);
+    const [notice] = await db
+      .select({ id: schema.messages.id })
+      .from(schema.messages)
+      .where(and(eq(schema.messages.channelId, dm), eq(schema.messages.type, 'system_disappearing')));
+    expect((await ack(a, dm, notice!.id)).status).toBe(200);
+    const unread = await send(b, dm, { content: 'door code 4821' });
+    const guild = await createGuild(a);
+    await addMember(guild, a);
+    const text = await createChannel(guild);
+    const source = await createMessage(text, { authorId: a, content: 'worth sharing' });
+    const aSent = connect(a, [dm]);
+    const bSent = connect(b, [dm]);
+
+    // An installed iOS build POSTs only { forwardFromMessageId }, moves its
+    // local marker to the forward on the echo and then acks nothing.
+    const t0 = Date.now();
+    const fwd = await send(a, dm, { forwardFromMessageId: source.toString() });
+    expect(fwd.forwardedFromMessageId).toBe(source.toString());
+    expect(await marker(a, dm)).toBe(BigInt(fwd.id));
+    const started = (await row(unread.id)).expiresAt;
+    expect(started).not.toBeNull();
+    expect(Math.abs(started!.getTime() - (t0 + 30_000))).toBeLessThan(5_000);
+    expect(framesOf(aSent, 'MESSAGE_EXPIRY').length).toBe(1);
+    expect(framesOf(bSent, 'MESSAGE_EXPIRY').length).toBe(1);
+    // Nothing was held, so nothing goes back.
+    expect(framesOf(aSent, 'CHANNEL_ACK').length).toBe(0);
+    // The forward itself waits for B's read, as any message does.
+    expect((await row(fwd.id)).expireAfterSeconds).toBe(30);
+    expect((await row(fwd.id)).expiresAt).toBeNull();
   });
 
   it("a send flagged notARead (Siri / Watch) isn't a read either; an unflagged or false one is", async () => {
@@ -489,6 +546,11 @@ describe.runIf(dbReady)('disappearing messages: per-message timer + read paths (
     expect(await marker(a, dm)).toBe(notice!.id);
     expect(framesOf(aSent, 'MESSAGE_EXPIRY').length).toBe(0);
     expect(framesOf(bSent, 'MESSAGE_EXPIRY').length).toBe(0);
+    // A's devices get the held marker back.
+    expect(framesOf(aSent, 'CHANNEL_ACK')).toEqual([
+      { channelId: dm.toString(), lastMessageId: notice!.id.toString(), mentionCount: 0 },
+    ]);
+    expect(framesOf(bSent, 'CHANNEL_ACK').length).toBe(0);
     // The flagged send still waits for B's read, as any message does.
     expect((await row(siri.id)).expireAfterSeconds).toBe(3600);
 
@@ -498,9 +560,11 @@ describe.runIf(dbReady)('disappearing messages: per-message timer + read paths (
 
     // notARead: false is an ordinary send — a read, like the quick reply.
     const unread2 = await send(b, dm, { content: 'second' });
+    const acksBefore = framesOf(aSent, 'CHANNEL_ACK').length;
     const reply = await send(a, dm, { content: 'quick reply', notARead: false });
     expect((await row(unread2.id)).expiresAt).not.toBeNull();
     expect(await marker(a, dm)).toBe(BigInt(reply.id));
+    expect(framesOf(aSent, 'CHANNEL_ACK').length).toBe(acksBefore);
     // Multipart sends read the flag from payload_json the same way.
     const unread3 = await send(b, dm, { content: 'third' });
     const form = new FormData();
@@ -513,6 +577,13 @@ describe.runIf(dbReady)('disappearing messages: per-message timer + read paths (
     expect(res.status).toBe(201);
     expect((await row(unread3.id)).expiresAt).toBeNull();
     expect(await marker(a, dm)).toBe(BigInt(reply.id));
+    const acks = framesOf(aSent, 'CHANNEL_ACK');
+    expect(acks.length).toBe(acksBefore + 1);
+    expect(acks[acks.length - 1]).toEqual({
+      channelId: dm.toString(),
+      lastMessageId: reply.id,
+      mentionCount: 0,
+    });
   });
 
   it("a scheduled fire isn't a read: it leaves the author's marker below unread timed messages", async () => {
@@ -523,6 +594,8 @@ describe.runIf(dbReady)('disappearing messages: per-message timer + read paths (
     const unread = await send(b, dm, { content: 'waiting for A' });
     const [channel] = await db.select().from(schema.channels).where(eq(schema.channels.id, dm));
     const [author] = await db.select().from(schema.users).where(eq(schema.users.id, a));
+    const aSent = connect(a, [dm]);
+    const acks = () => framesOf(aSent, 'CHANNEL_ACK');
     const fire = async (content: string) => {
       const scheduled = {
         id: nextSnowflake(),
@@ -551,6 +624,12 @@ describe.runIf(dbReady)('disappearing messages: per-message timer + read paths (
     expect(s1.expireAfterSeconds).toBe(3600);
     expect(await marker(a, dm)).toBeUndefined();
     expect((await row(unread.id)).expiresAt).toBeNull();
+    // A's devices moved their marker to s1 on its echo; they're told there is
+    // none, after that echo.
+    expect(acks()).toEqual([{ channelId: dm.toString(), lastMessageId: null, mentionCount: 0 }]);
+    expect(aSent.findIndex((f) => f.t === 'CHANNEL_ACK')).toBeGreaterThan(
+      aSent.findIndex((f) => f.t === 'MESSAGE_CREATE' && f.d?.id === s1.id.toString()),
+    );
 
     // A read up to the timer notice, below B's message: the marker stays there.
     const [notice] = await db
@@ -561,15 +640,24 @@ describe.runIf(dbReady)('disappearing messages: per-message timer + read paths (
     const s1b = await fire('good noon');
     expect(await marker(a, dm)).toBe(notice!.id);
     expect((await row(unread.id)).expiresAt).toBeNull();
+    // The ack's own CHANNEL_ACK, then the held one.
+    expect(acks().length).toBe(3);
+    expect(acks()[2]).toEqual({
+      channelId: dm.toString(),
+      lastMessageId: notice!.id.toString(),
+      mentionCount: 0,
+    });
 
     // A opens the DM: the ack of the newest message starts it.
     await ack(a, dm, s1b.id);
     expect((await row(unread.id)).expiresAt).not.toBeNull();
     expect(await marker(a, dm)).toBe(s1b.id);
 
-    // Nothing waiting any more: a fire moves the marker as a send does.
+    // Nothing waiting any more: a fire moves the marker as a send does, and
+    // nothing goes back (only the ack above added one).
     const s2 = await fire('good evening');
     expect(await marker(a, dm)).toBe(s2.id);
+    expect(acks().length).toBe(4);
 
     // No read state at all (never opened) and nothing timed: still moves.
     const c = await createUser();

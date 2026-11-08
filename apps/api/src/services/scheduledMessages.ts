@@ -268,6 +268,13 @@ export async function fireScheduled(args: {
       channelId: row.channelId,
     });
   }
+  // The fire held the author's marker below a timed message still waiting
+  // for them: their devices just moved theirs to this one on the echo, so
+  // send the held marker back (or the DM reads as read and is never acked).
+  if (created.authorMarkerHeld) {
+    const dms = await import('./dms');
+    await dms.notifyHeldReadMarker({ userId: row.authorId, channelId: row.channelId });
+  }
 
   // Same watch-word scan as a live send. Best-effort: the message is
   // already posted, so a scan failure must not mark the row failed (and
