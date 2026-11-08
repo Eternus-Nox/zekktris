@@ -103,7 +103,13 @@ class MainActivity : FragmentActivity() {
             }
             // Every other change (unlock, the escape hatch, turning it off):
             // the store acks the open conversation once it's on screen.
-            SideEffect { store.onAppLockChanged(locked) }
+            // `locked` is read HERE, while composing, so that a change re-runs
+            // this scope: a read inside the SideEffect isn't tracked, and the
+            // lock screen's read sits in ZkTheme's content lambda, a scope of
+            // its own. Without it an unlock never reached the store, which
+            // then stayed locked and acked nothing.
+            val lockedNow = locked
+            SideEffect { store.onAppLockChanged(lockedNow) }
             val appLock = AppLockController(
                 enabled = appLockEnabled,
                 supported = lockSupported,

@@ -26,8 +26,9 @@ import kotlinx.serialization.json.intOrNull
  *
  * Pure logic, no Android types: the presets and their labels (worded exactly
  * like web, iOS and the server's fallback text), the Custom Time picker's
- * number + unit math, the in-chat notice text, the gateway payloads, and the
- * local-deadline rules AppStore's expiry scheduler runs on.
+ * number + unit math, the in-chat notice text, the gateway payloads, the
+ * local-deadline rules AppStore's expiry scheduler runs on, and what to ack
+ * and where a conversation's newest message is once rows have gone.
  */
 object Disappearing {
     /** The Disappearing Messages screen's description (Signal's copy). */
@@ -296,6 +297,11 @@ object Disappearing {
     fun compareIds(a: String, b: String): Int =
         if (a.length != b.length) a.length.compareTo(b.length) else a.compareTo(b)
 
+    private val ID_ORDER = Comparator<String> { a, b -> compareIds(a, b) }
+
+    /** A confirmed row's id (an optimistic one is "pending-…"). */
+    private fun isServerId(id: String): Boolean = id.isNotEmpty() && id.all(Char::isDigit)
+
     /**
      * Whether acking up to [upToId] started this row's countdown on the
      * server, so the reader can hide it on its own clock when the socket
@@ -313,15 +319,71 @@ object Disappearing {
         return compareIds(m.id, upToId) <= 0
     }
 
+    /** The later of two ids, either of which may be absent. */
+    fun laterId(a: String?, b: String?): String? = when {
+        a == null -> b
+        b == null -> a
+        compareIds(a, b) >= 0 -> a
+        else -> b
+    }
+
     /**
      * The id to ack for a conversation the user has on screen, or null when
-     * its read pointer [readUpTo] already covers it. That is the newest
-     * confirmed row, the same one the ack sends. A pointer at or past it means
-     * the server recorded that read, by an ack or a send from any device, and
-     * either one started the clocks, so a resume or reconnect skips the POST.
+     * no POST is needed. That is the newest confirmed row, the same one the
+     * ack sends, whenever the read pointer [readUpTo] doesn't cover it.
+     *
+     * A pointer at or past it usually means the server recorded that read,
+     * by an ack or a send from any device, and either one started the
+     * clocks. Not always: our own row that the server doesn't count as a
+     * read (a scheduled message firing, a streak warning in our name) moves
+     * the pointer here too, while someone's timed message under it waits
+     * unstarted. So a row from someone else with a timer and no known
+     * deadline ([known], by id) is acked anyway, once per id: not when
+     * [lastAcked], this device's last ack in the conversation, is that id.
      */
-    fun ackTarget(rows: List<Message>, readUpTo: String?): String? {
+    fun ackTarget(
+        rows: List<Message>,
+        readUpTo: String?,
+        meId: String?,
+        lastAcked: String?,
+        known: (String) -> Boolean,
+    ): String? {
         val newest = rows.lastOrNull { !it.id.startsWith("pending-") }?.id ?: return null
-        return if (readUpTo == null || compareIds(newest, readUpTo) > 0) newest else null
+        if (readUpTo == null || compareIds(newest, readUpTo) > 0) return newest
+        if (newest == lastAcked) return null
+        return if (rows.any { startsOnAck(it, meId, newest, known = false) && !known(it.id) }) newest else null
+    }
+
+    /**
+     * An id past the loaded rows to ack on open, or null. [knownLast] is the
+     * conversation's newest message id as this device knew it before a
+     * latest-window fetch, and [fetched] what that fetch kept (null when it
+     * failed). The fetch began after that message existed, so a window with
+     * nothing at or past it means the message is gone (deleted, or expired
+     * and swept) and its id only marks where the conversation ended. The
+     * server takes a deleted row's id as a read marker, and acking it clears
+     * the unread dot it left, which acking the newest loaded row can't. It
+     * starts no countdown on anything unseen: every live row up to it is in
+     * the window.
+     */
+    fun pastTailAck(knownLast: String?, fetched: List<Message>?): String? {
+        if (fetched == null || knownLast == null || !isServerId(knownLast)) return null
+        val newest = fetched.asSequence().map { it.id }.filter(::isServerId).maxWithOrNull(ID_ORDER)
+        return if (newest == null || compareIds(knownLast, newest) > 0) knownLast else null
+    }
+
+    /**
+     * A conversation's newest message id once the [removed] rows (deleted,
+     * or expired) have left its loaded list, leaving [remaining]. When
+     * [lastId] was one of them it moves back to the newest confirmed row
+     * still loaded, as the server moves its own: left on a row nobody can
+     * load, it would keep an unread dot up that reading can't clear. With
+     * nothing older loaded it stays ([pastTailAck] acks past it on open).
+     */
+    fun lastAfterRemoval(lastId: String?, removed: Set<String>, remaining: List<Message>): String? {
+        if (lastId == null || lastId !in removed) return lastId
+        return remaining.asSequence().map { it.id }
+            .filter { isServerId(it) && compareIds(it, lastId) < 0 }
+            .maxWithOrNull(ID_ORDER) ?: lastId
     }
 }

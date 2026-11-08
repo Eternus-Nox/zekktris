@@ -257,19 +257,94 @@ class DisappearingTest {
 
     @Test fun resumeAcksOnlyWhatTheReadPointerDoesNotCover() {
         val rows = listOf(msg("150"), msg("200", expireAfterSeconds = 30), msg("pending-abc", authorId = "me"))
+        val started: (String) -> Boolean = { true }
+        fun target(rows: List<Message>, readUpTo: String?) = Disappearing.ackTarget(rows, readUpTo, "me", null, started)
         // A message came in while we were away: the pointer is behind it.
-        assertEquals("200", Disappearing.ackTarget(rows, "150"))
+        assertEquals("200", target(rows, "150"))
         // Never read at all.
-        assertEquals("200", Disappearing.ackTarget(rows, null))
+        assertEquals("200", target(rows, null))
         // Already read here or on another device, or we sent past it.
-        assertNull(Disappearing.ackTarget(rows, "200"))
-        assertNull(Disappearing.ackTarget(rows, "250"))
+        assertNull(target(rows, "200"))
+        assertNull(target(rows, "250"))
         // Snowflake order, not string order.
-        assertEquals("1000", Disappearing.ackTarget(listOf(msg("1000")), "999"))
-        assertNull(Disappearing.ackTarget(listOf(msg("999")), "1000"))
+        assertEquals("1000", target(listOf(msg("1000")), "999"))
+        assertNull(target(listOf(msg("999")), "1000"))
         // Nothing confirmed to ack.
-        assertNull(Disappearing.ackTarget(listOf(msg("pending-abc", authorId = "me")), null))
-        assertNull(Disappearing.ackTarget(emptyList(), null))
+        assertNull(target(listOf(msg("pending-abc", authorId = "me")), null))
+        assertNull(target(emptyList(), null))
+        // The pointer is behind: acked whatever this device acked before.
+        assertEquals("200", Disappearing.ackTarget(rows, "150", "me", "200", started))
+    }
+
+    @Test fun aCoveredTimedMessageWithNoCountdownIsAckedOncePerId() {
+        // Bob's timed message 150 waits; our scheduled message 200 fired and
+        // moved our pointer past it without being a read.
+        val rows = listOf(msg("150", authorId = "bob", expireAfterSeconds = 30), msg("200", authorId = "me"))
+        val none: (String) -> Boolean = { false }
+        assertEquals("200", Disappearing.ackTarget(rows, "200", "me", null, none))
+        assertEquals("200", Disappearing.ackTarget(rows, "200", "me", "150", none))
+        // Once per id: this device already acked 200.
+        assertNull(Disappearing.ackTarget(rows, "200", "me", "200", none))
+        // A later row is a new id, so it goes again.
+        val later = rows + msg("300", authorId = "me")
+        assertEquals("300", Disappearing.ackTarget(later, "300", "me", "200", none))
+        // Its countdown is known (MESSAGE_EXPIRY, a REST page or our own ack).
+        assertNull(Disappearing.ackTarget(rows, "200", "me", null) { it == "150" })
+        // Only someone else's timed rows count: our own wait for the reader,
+        // untimed rows have nothing to start.
+        val ours = listOf(msg("150", authorId = "me", expireAfterSeconds = 30), msg("200", authorId = "me"))
+        assertNull(Disappearing.ackTarget(ours, "200", "me", null, none))
+        assertNull(Disappearing.ackTarget(listOf(msg("150", authorId = "bob"), msg("200", authorId = "me")), "200", "me", null, none))
+        // Without knowing who we are, nothing past the pointer.
+        assertNull(Disappearing.ackTarget(rows, "200", null, null, none))
+        // A pointer past every row (snowflake order) still checks them.
+        assertEquals("200", Disappearing.ackTarget(rows, "1000", "me", null, none))
+    }
+
+    @Test fun anOpenAcksPastANewestMessageThatIsGone() {
+        val window = listOf(msg("150"), msg("200"))
+        // The DM's newest was 300 before the fetch, and the fetch has nothing
+        // at or past it: deleted, or disappeared and swept.
+        assertEquals("300", Disappearing.pastTailAck("300", window))
+        assertEquals("300", Disappearing.pastTailAck("300", emptyList()))
+        // Snowflake order, not string order.
+        assertEquals("1000", Disappearing.pastTailAck("1000", listOf(msg("999"))))
+        assertNull(Disappearing.pastTailAck("999", listOf(msg("1000"))))
+        // It is still there, or something newer came in.
+        assertNull(Disappearing.pastTailAck("200", window))
+        assertNull(Disappearing.pastTailAck("150", window))
+        // A failed fetch proves nothing; no known newest, nothing to go past.
+        assertNull(Disappearing.pastTailAck("300", null))
+        assertNull(Disappearing.pastTailAck(null, window))
+        assertNull(Disappearing.pastTailAck("", window))
+        assertNull(Disappearing.pastTailAck("pending-abc", window))
+        // Optimistic rows in the window don't count as the server's newest.
+        assertEquals("300", Disappearing.pastTailAck("300", window + msg("pending-abc")))
+    }
+
+    @Test fun theLaterOfTwoIds() {
+        assertEquals("300", Disappearing.laterId("200", "300"))
+        assertEquals("300", Disappearing.laterId("300", "200"))
+        assertEquals("1000", Disappearing.laterId("999", "1000"))
+        assertEquals("200", Disappearing.laterId("200", null))
+        assertEquals("300", Disappearing.laterId(null, "300"))
+        assertNull(Disappearing.laterId(null, null))
+    }
+
+    @Test fun removingTheNewestMessageMovesTheConversationsNewestBack() {
+        val rest = listOf(msg("150"), msg("200"), msg("pending-abc", authorId = "me"))
+        // The newest (300) was swept: back to the newest confirmed row left.
+        assertEquals("200", Disappearing.lastAfterRemoval("300", setOf("300"), rest))
+        // Out of order in the list, and across the snowflake digit rollover.
+        assertEquals("999", Disappearing.lastAfterRemoval("1000", setOf("1000"), listOf(msg("999"), msg("150"))))
+        // Something else went: unchanged.
+        assertEquals("300", Disappearing.lastAfterRemoval("300", setOf("150"), listOf(msg("200"), msg("300"))))
+        // Nothing older loaded: stays (the open acks past it).
+        assertEquals("300", Disappearing.lastAfterRemoval("300", setOf("300"), emptyList()))
+        assertEquals("300", Disappearing.lastAfterRemoval("300", setOf("300"), listOf(msg("pending-abc", authorId = "me"))))
+        // Never past where it was.
+        assertEquals("300", Disappearing.lastAfterRemoval("300", setOf("300"), listOf(msg("400"))))
+        assertNull(Disappearing.lastAfterRemoval(null, setOf("300"), rest))
     }
 
     @Test fun settingsPatchCarriesAnExplicitNullForOff() {
