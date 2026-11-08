@@ -371,6 +371,83 @@ class DisappearingTest {
         assertEquals(emptyList<String>(), Disappearing.ackCandidates(null, null))
     }
 
+    @Test fun theNewestConfirmedRowIsTheHighestIdNotTheLastRow() {
+        assertEquals("400", Disappearing.newestConfirmedId(listOf(msg("100"), msg("400"), msg("200"), msg("300"))))
+        // Snowflake order, not string order.
+        assertEquals("1000", Disappearing.newestConfirmedId(listOf(msg("1000"), msg("999"))))
+        // Optimistic rows have no server id.
+        assertEquals("200", Disappearing.newestConfirmedId(listOf(msg("200"), msg("pending-abc", authorId = "me"))))
+        assertNull(Disappearing.newestConfirmedId(listOf(msg("pending-abc", authorId = "me"))))
+        assertNull(Disappearing.newestConfirmedId(emptyList()))
+    }
+
+    @Test fun anOutOfOrderListAcksItsHighestId() {
+        // L (400) came in live while acks were skipped, then a catch-up added
+        // F1 and F2 after it; this device had already acked F2.
+        val rows = listOf(msg("100"), msg("400"), msg("200"), msg("300"))
+        val started: (String) -> Boolean = { true }
+        assertEquals("400", Disappearing.ackTarget(rows, "300", "me", "300", started))
+        assertEquals("400", Disappearing.ackTarget(rows, null, "me", null, started))
+        assertNull(Disappearing.ackTarget(rows, "400", "me", "400", started))
+        // The same rule for a covered timed row with no countdown yet.
+        val timed = listOf(msg("100", expireAfterSeconds = 30), msg("400", authorId = "me"), msg("200", authorId = "me"))
+        assertEquals("400", Disappearing.ackTarget(timed, "400", "me", "200") { false })
+    }
+
+    private fun ids(rows: List<Message>) = rows.map { it.id }
+
+    @Test fun rowsMergeInIdOrderWithSendsInFlightLast() {
+        // The newest goes last, as before.
+        assertEquals(listOf("100", "200", "300"), ids(Disappearing.upsertRow(listOf(msg("100"), msg("200")), msg("300"))))
+        // A catch-up after a live arrival: below it, in id order.
+        var rows = listOf(msg("100"), msg("400"))
+        rows = Disappearing.upsertRow(rows, msg("200"))
+        rows = Disappearing.upsertRow(rows, msg("300"))
+        assertEquals(listOf("100", "200", "300", "400"), ids(rows))
+        assertEquals("400", Disappearing.newestConfirmedId(rows))
+        // Older than everything loaded: first.
+        assertEquals(listOf("50", "100", "400"), ids(Disappearing.upsertRow(listOf(msg("100"), msg("400")), msg("50"))))
+        assertEquals(listOf("7"), ids(Disappearing.upsertRow(emptyList(), msg("7"))))
+        // Snowflake order across the digit rollover.
+        assertEquals(listOf("999", "1000"), ids(Disappearing.upsertRow(listOf(msg("1000")), msg("999"))))
+        assertEquals(listOf("999", "1000"), ids(Disappearing.upsertRow(listOf(msg("999")), msg("1000"))))
+    }
+
+    @Test fun aSendInFlightStaysLastUntilItsEchoTakesItsPlace() {
+        val sending = Message(id = "pending-a", channelId = "c1", createdAt = "", authorId = "me", nonce = "a")
+        var rows = Disappearing.upsertRow(listOf(msg("100")), sending)
+        assertEquals(listOf("100", "pending-a"), ids(rows))
+        // Someone else's message meanwhile lands above it.
+        rows = Disappearing.upsertRow(rows, msg("300"))
+        assertEquals(listOf("100", "300", "pending-a"), ids(rows))
+        // A second send goes after the first.
+        val second = sending.copy(id = "pending-b", nonce = "b")
+        rows = Disappearing.upsertRow(rows, second)
+        assertEquals(listOf("100", "300", "pending-a", "pending-b"), ids(rows))
+        // The echo replaces its optimistic row by nonce, at its id's place.
+        val earlier = Disappearing.upsertRow(rows, msg("200", authorId = "me").copy(nonce = "a"))
+        assertEquals(listOf("100", "200", "300", "pending-b"), ids(earlier))
+        val later = Disappearing.upsertRow(rows, msg("400", authorId = "me").copy(nonce = "a"))
+        assertEquals(listOf("100", "300", "400", "pending-b"), ids(later))
+        // The input list is left as it was.
+        assertEquals(listOf("100", "300", "pending-a", "pending-b"), ids(rows))
+    }
+
+    @Test fun aRowAlreadyThereIsReplacedWhereItIs() {
+        val rows = listOf(msg("100"), msg("200"), msg("300"))
+        val edited = msg("200").copy(content = "edited")
+        val next = Disappearing.upsertRow(rows, edited)
+        assertEquals(listOf("100", "200", "300"), ids(next))
+        assertEquals("edited", next[1].content)
+        // Found by id, or by the nonce of the optimistic row it echoes.
+        val sending = Message(id = "pending-a", channelId = "c1", createdAt = "", nonce = "a")
+        assertEquals(1, Disappearing.rowIndex(rows, msg("200")))
+        assertEquals(1, Disappearing.rowIndex(listOf(msg("100"), sending), msg("300").copy(nonce = "a")))
+        assertEquals(-1, Disappearing.rowIndex(rows, msg("400")))
+        // A row without a nonce never matches one by its absent nonce.
+        assertEquals(-1, Disappearing.rowIndex(listOf(msg("100")), msg("400")))
+    }
+
     @Test fun settingsPatchCarriesAnExplicitNullForOff() {
         assertEquals("""{"ttlSecondsAfterRead":null}""", Disappearing.settingsPatchBody(null).toString())
         assertEquals("""{"ttlSecondsAfterRead":2419200}""", Disappearing.settingsPatchBody(2_419_200).toString())

@@ -2374,8 +2374,7 @@ class AppStore(
 
     /** Pull messages newer than what we hold and merge them (no clobber, no scroll thrash). */
     private suspend fun syncNewMessages(channelId: String) {
-        val lastReal = _state.value.messagesByChannel[channelId]
-            ?.lastOrNull { !it.id.startsWith("pending-") }?.id
+        val lastReal = _state.value.messagesByChannel[channelId]?.let(Disappearing::newestConfirmedId)
         val fresh = runCatching { api.listMessages(channelId, limit = 50, after = lastReal) }
             .getOrDefault(emptyList())
         if (fresh.isEmpty()) return
@@ -2452,7 +2451,7 @@ class AppStore(
                 channelId, gone, pruned + fetched, reachTail = true, // the latest window is in it
             )
         }
-        fetched.forEach { upsertMessage(channelId, it) }  // add/overwrite as before
+        fetched.forEach { upsertMessage(channelId, it) }  // add in id order / overwrite
         tailGapped -= channelId                           // the loaded rows reach the tail again
         reconcilePointer(channelId, latest)               // advance unread pointer + recency
         return fetched
@@ -2472,8 +2471,8 @@ class AppStore(
      */
     private suspend fun ack(channelId: String, pastTail: String? = null) {
         if (!appForeground || appLocked) return
-        // Optimistic rows have no server id to ack.
-        val newest = _state.value.messagesByChannel[channelId]?.lastOrNull { !it.id.startsWith("pending-") }?.id
+        // The highest id, not the last row. Optimistic rows have no server id to ack.
+        val newest = _state.value.messagesByChannel[channelId]?.let(Disappearing::newestConfirmedId)
         for (last in Disappearing.ackCandidates(newest, pastTail)) {
             val rs = runCatching { api.ackMessage(channelId, last) }.getOrNull() ?: continue
             lastAckedId[channelId] = last
@@ -4372,7 +4371,11 @@ class AppStore(
                 }
             }
             "MESSAGE_CREATE", "MESSAGE_UPDATE" -> decodeMessage(d.data)?.let { m ->
-                upsertMessage(m.channelId, m)
+                // An update (an edit, an embed resolving, a poll tally) only
+                // patches a row that is loaded, as web does: one for a row
+                // older than the loaded window would otherwise land at its
+                // top, and history paging would skip everything between.
+                upsertMessage(m.channelId, m, insert = d.type == "MESSAGE_CREATE")
                 if (d.type == "MESSAGE_CREATE") {
                     // Advance the channel/DM's lastMessageId so unread state is
                     // computed against the true latest — not a pointer that only
@@ -4975,15 +4978,16 @@ class AppStore(
 
     // ---- helpers ------------------------------------------------------------
 
-    private fun upsertMessage(channelId: String, msg: Message) {
+    /** Merge [msg] into [channelId]'s rows, kept in id order with optimistic
+     *  sends last ([Disappearing.upsertRow]). [insert] false: only replace a
+     *  row that is already there. */
+    private fun upsertMessage(channelId: String, msg: Message, insert: Boolean = true) {
         // A row whose disappearing deadline has passed is gone: never
         // (re)inserted, and an existing copy goes with it.
         val expired = dropExpired(listOf(msg)).isEmpty()
         _state.update { st ->
-            val list = st.messagesByChannel[channelId] ?: emptyList()
-            val idx = list.indexOfFirst { existing ->
-                (msg.nonce != null && existing.nonce == msg.nonce) || existing.id == msg.id
-            }
+            val list = st.messagesByChannel[channelId] ?: if (insert) emptyList() else return@update st
+            val idx = Disappearing.rowIndex(list, msg)
             if (expired) {
                 if (idx < 0) return@update st
                 val rest = list.toMutableList().apply { removeAt(idx) }
@@ -4992,9 +4996,8 @@ class AppStore(
                     channelId, setOf(list[idx].id, msg.id), rest,
                 )
             }
-            val next = if (idx >= 0) list.toMutableList().apply { this[idx] = msg }
-            else list + msg
-            st.copy(messagesByChannel = st.messagesByChannel + (channelId to next))
+            if (idx < 0 && !insert) return@update st
+            st.copy(messagesByChannel = st.messagesByChannel + (channelId to Disappearing.upsertRow(list, msg)))
         }
     }
 

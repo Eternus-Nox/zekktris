@@ -27,8 +27,9 @@ import kotlinx.serialization.json.intOrNull
  * Pure logic, no Android types: the presets and their labels (worded exactly
  * like web, iOS and the server's fallback text), the Custom Time picker's
  * number + unit math, the in-chat notice text, the gateway payloads, the
- * local-deadline rules AppStore's expiry scheduler runs on, and what to ack
- * and where a conversation's newest message is once rows have gone.
+ * local-deadline rules AppStore's expiry scheduler runs on, what to ack, the
+ * order a conversation's rows are kept in, and where its newest message is
+ * once rows have gone.
  */
 object Disappearing {
     /** The Disappearing Messages screen's description (Signal's copy). */
@@ -303,6 +304,15 @@ object Disappearing {
     private fun isServerId(id: String): Boolean = id.isNotEmpty() && id.all(Char::isDigit)
 
     /**
+     * The newest confirmed row's id: the highest server id in [rows], not the
+     * last row's, so a list that ever lands out of order can't ack below what
+     * is on screen (an ack starts the countdown of only the rows it covers).
+     * Null when every row is optimistic, or there are none.
+     */
+    fun newestConfirmedId(rows: List<Message>): String? =
+        rows.asSequence().map { it.id }.filter(::isServerId).maxWithOrNull(ID_ORDER)
+
+    /**
      * Whether acking up to [upToId] started this row's countdown on the
      * server, so the reader can hide it on its own clock when the socket
      * misses MESSAGE_EXPIRY: a confirmed (non-pending) row with a timer,
@@ -348,7 +358,7 @@ object Disappearing {
         lastAcked: String?,
         known: (String) -> Boolean,
     ): String? {
-        val newest = rows.lastOrNull { !it.id.startsWith("pending-") }?.id ?: return null
+        val newest = newestConfirmedId(rows) ?: return null
         if (readUpTo == null || compareIds(newest, readUpTo) > 0) return newest
         if (newest == lastAcked) return null
         return if (rows.any { startsOnAck(it, meId, newest, known = false) && !known(it.id) }) newest else null
@@ -406,5 +416,37 @@ object Disappearing {
         return remaining.asSequence().map { it.id }
             .filter { isServerId(it) && compareIds(it, lastId) < 0 }
             .maxWithOrNull(ID_ORDER) ?: lastId
+    }
+
+    // ── Row order ─────────────────────────────────────────────────────────
+
+    /** The row [msg] stands for in [rows]: the one with its id, or the
+     *  optimistic row whose nonce it carries (its echo); -1 when none. */
+    fun rowIndex(rows: List<Message>, msg: Message): Int =
+        rows.indexOfFirst { (msg.nonce != null && it.nonce == msg.nonce) || it.id == msg.id }
+
+    /**
+     * [rows] with [msg] merged in, in the order the server lists them:
+     * confirmed rows by id ([compareIds]), optimistic ones after them in the
+     * order they were sent. A row already there under the same id is
+     * replaced where it is; an optimistic row's echo, or a new row, goes to
+     * its place. Appending instead put a row fetched after a live one below
+     * it (a catch-up after a reconnect), and the ack, which covers only up
+     * to the id it sends, then left the live one unread and its countdown
+     * unstarted.
+     */
+    fun upsertRow(rows: List<Message>, msg: Message): List<Message> {
+        val idx = rowIndex(rows, msg)
+        if (idx >= 0 && rows[idx].id == msg.id) return rows.toMutableList().apply { this[idx] = msg }
+        val next = rows.toMutableList()
+        if (idx >= 0) next.removeAt(idx)
+        var at = next.size
+        if (isServerId(msg.id)) {
+            // From the end: past the optimistic rows and every later id. A
+            // new message lands just above the sends still in flight.
+            while (at > 0 && !(isServerId(next[at - 1].id) && compareIds(next[at - 1].id, msg.id) < 0)) at--
+        }
+        next.add(at, msg)
+        return next
     }
 }

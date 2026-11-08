@@ -1201,6 +1201,10 @@ private fun MessageList(
     // Reading history must never be interrupted.
     var positionedFor by remember { mutableStateOf<String?>(null) }
     var lastSeenId by remember(channelId) { mutableStateOf<String?>(null) }
+    // Sends still in flight stay last, so someone else's message that comes
+    // in meanwhile lands just above them: the newest confirmed row is a tail
+    // too.
+    var lastSeenConfirmedId by remember(channelId) { mutableStateOf<String?>(null) }
     // Message count at the last scroll decision. Distinguishes a genuine APPEND
     // from a tail DELETION — both change `last.id`, but only one should scroll.
     var lastSeenCount by remember(channelId) { mutableStateOf(0) }
@@ -1219,25 +1223,37 @@ private fun MessageList(
     LaunchedEffect(channelId, messages.size) {
         if (messages.isEmpty()) return@LaunchedEffect
         val last = messages.last()
+        val confirmed = messages.lastOrNull { !it.id.startsWith("pending-") }
         if (positionedFor != channelId) {
             if (!isDmChannel && unreadIdx >= 0) listState.scrollToItem(unreadIdx)
             else listState.scrollToItem(messages.lastIndex)
             positionedFor = channelId
             lastSeenId = last.id
+            lastSeenConfirmedId = confirmed?.id
             lastSeenCount = messages.size
             return@LaunchedEffect
         }
-        if (last.id != lastSeenId) {
-            // A genuinely NEW tail — not an older-history prepend (size grows,
-            // last id unchanged) and not a tail deletion (size SHRINKS, last id
-            // changes). Without the count check, deleting the newest message
-            // yanked a reader in history down to the bottom.
-            val appended = messages.size > lastSeenCount
-            val mine = last.authorId != null && last.authorId == state.me?.id
+        // The new tail: the last row (our send, or a message), else the newest
+        // confirmed one when it lands above a send still in flight.
+        val tail = when {
+            last.id != lastSeenId -> last
+            confirmed != null && confirmed.id != lastSeenConfirmedId -> confirmed
+            else -> null
+        }
+        // Only a list that GREW follows, never a tail deletion (size SHRINKS,
+        // last id changes): without the count check, deleting the newest
+        // message yanked a reader in history down to the bottom. Rows a
+        // catch-up merges in below the newest move no tail but grow the list,
+        // so a reader at the bottom follows them; an older-history page grows
+        // it too, but loads only with the reader near the top.
+        val appended = messages.size > lastSeenCount
+        if (tail != null || appended) {
+            val mine = tail != null && tail.authorId != null && tail.authorId == state.me?.id
             if (appended && (mine || atBottom)) {
                 listState.animateScrollToItem(messages.lastIndex)
             }
             lastSeenId = last.id
+            lastSeenConfirmedId = confirmed?.id
             lastSeenCount = messages.size
         }
     }
