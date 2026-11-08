@@ -30,7 +30,9 @@ import { MessageItem, replyPreviewText } from './MessageItem';
 import { PinPanel } from './PinPanel';
 import { SearchPanel } from './SearchPanel';
 import { useNavigate } from 'react-router-dom';
-import { Hash, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronDown, ChevronLeft, ChevronRight, CheckCircle, Lock, Users as UsersIcon } from '../lib/icons';
+import { Hash, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronDown, ChevronLeft, ChevronRight, CheckCircle, Lock, Timer, Users as UsersIcon } from '../lib/icons';
+import { formatLong, formatShort, isDisappearingNotice } from '../lib/disappearing';
+import { isNative } from '../lib/native';
 import { SchedulePickerModal } from './SchedulePickerModal';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
@@ -44,6 +46,14 @@ const DmSettingsPanel = lazy(() =>
 // body-portaled child of the panel trips the panel's outside-click handler.
 const MediaGalleryModal = lazy(() =>
   import('./MediaGalleryModal').then((m) => ({ default: m.MediaGalleryModal })),
+);
+// Lazy-loaded: the Disappearing Messages screen (full-screen on mobile,
+// body-portaled). Hosted here for the same reason as the gallery: it opens
+// from a row inside DmSettingsPanel, whose outside-click handler would close
+// the panel — and unmount a modal portaled from inside it — on the first
+// click.
+const DisappearingMessagesModal = lazy(() =>
+  import('./DisappearingMessagesModal').then((m) => ({ default: m.DisappearingMessagesModal })),
 );
 import { connectToVoice, disconnectVoice, VoiceError, prepareVoiceAudio, claimVoiceChannel, releaseVoiceChannel } from '../lib/voice';
 import { PollComposerModal, type PollDraft } from './PollComposerModal';
@@ -95,6 +105,9 @@ export function MessageView({
   const reconcileChannel = useAppStateSelector((v) => v.reconcileChannel);
   const refreshChannelLatest = useAppStateSelector((v) => v.refreshChannelLatest);
   const ackChannel = useAppStateSelector((v) => v.ackChannel);
+  const loadDmSettings = useAppStateSelector((v) => v.loadDmSettings);
+  // The DM's disappearing-messages timer (undefined until fetched below).
+  const dmTimer = useAppStateSelector((v) => v.state.dmTimers[channel.id]);
   const clearPokePill = useAppStateSelector((v) => v.clearPokePill);
   const sendMessageOptimistic = useAppStateSelector((v) => v.sendMessageOptimistic);
   const messages = useAppStateSelector((v) => v.state.messagesByChannel[channel.id]);
@@ -294,8 +307,28 @@ export function MessageView({
   }
   const unreadBoundary = unreadBoundaryRef.current?.boundary ?? null;
 
+  // Disappearing messages start their countdown on the read ack, and the
+  // screen promises they disappear "after they have been seen" — so in a DM
+  // the ack only goes out while the conversation can actually be seen: the
+  // tab visible AND the window focused. visibilityState alone isn't enough:
+  // the desktop app (backgroundThrottling off) reports 'visible' while
+  // minimized or closed to the tray. In the Capacitor shell the web view IS
+  // the app, so visibility is the signal there. `wake` re-runs the ack when
+  // focus / visibility comes back.
+  const [wake, setWake] = useState(0);
+  useEffect(() => {
+    const bump = () => setWake((n) => n + 1);
+    document.addEventListener('visibilitychange', bump);
+    window.addEventListener('focus', bump);
+    return () => {
+      document.removeEventListener('visibilitychange', bump);
+      window.removeEventListener('focus', bump);
+    };
+  }, []);
+
   useEffect(() => {
     if (!messages || messages.length === 0) return;
+    if ((channel.type === 'dm' || channel.type === 'group_dm') && !conversationVisible()) return;
     // Walk back from the tail to find the most recent message with a
     // real (server-issued) id. Optimistic placeholders carry a
     // `local-...` id that's incompatible with bigint snowflake math —
@@ -319,12 +352,12 @@ export function MessageView({
     const rs = readStateByChannel[channel.id];
     if (rs?.lastMessageId === last.id) return; // already acked
     void ackChannel(channel.id, last.id);
-    // We intentionally only depend on the channel id and the messages array
-    // identity, not on the read-state map — the inner equality guard above
-    // handles the "already acked" case without retriggering on every state
-    // update elsewhere in the tree.
+    // We intentionally only depend on the channel id, the messages array
+    // identity and `wake`, not on the read-state map — the inner equality
+    // guard above handles the "already acked" case without retriggering on
+    // every state update elsewhere in the tree.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channel.id, messages]);
+  }, [channel.id, messages, wake]);
 
   // For DMs the channel has no name; resolve the recipient from the
   // server-supplied `recipients` field on the channel (excludes self),
@@ -352,6 +385,13 @@ export function MessageView({
   // Personal DM nickname (viewer-private) overrides the peer's real name.
   const dmNick = useDmNickname(dmRecipient?.id);
   const dmDisplayName = dmNick ?? dmRecipient?.displayName;
+  // The DM's disappearing-messages timer drives the header indicator, so
+  // fetch it on open (and when the tab comes back — a DM_SETTINGS_UPDATE can
+  // be lost with a silently dead socket). DM_SETTINGS_UPDATE keeps it live.
+  useEffect(() => {
+    if (!isDM || document.visibilityState !== 'visible') return;
+    void loadDmSettings(channel.id).catch(() => undefined);
+  }, [channel.id, isDM, loadDmSettings, wake]);
   // Thread parent — when viewing a thread, the breadcrumb in the header
   // shows the parent channel's name and lets the user navigate back. We
   // resolve via channelsByGuild so we don't need an extra REST call.
@@ -489,6 +529,16 @@ export function MessageView({
   // component instance. (When MessageView re-mounts on channel switch
   // the new instance gets its own stable identity.)
   const onReply = useCallback((m: Message) => setReplyTo(m), []);
+  // Drop the reply chip when its message leaves this channel (disappeared,
+  // swept, deleted) — not when it merely fell off the front of the loaded
+  // window (the 200-row cap trims oldest-first).
+  useEffect(() => {
+    if (!replyTo || !messages || replyTo.channelId !== channel.id) return;
+    if (messages.some((m) => m.id === replyTo.id)) return;
+    const first = messages.find((m) => isNumericId(m.id));
+    if (first && isNumericId(replyTo.id) && BigInt(first.id) > BigInt(replyTo.id)) return;
+    setReplyTo(null);
+  }, [messages, replyTo, channel.id]);
 
   // One-shot reply prefill for guild-channel message deep-links (iOS
   // parity: a notification tap both scrolls to the target message AND
@@ -533,13 +583,20 @@ export function MessageView({
   const [overlay, setOverlay] = useState<'pins' | 'search' | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
-  // ── DM auto-delete settings panel ───────────────────────────────────────
+  // ── DM settings panel ───────────────────────────────────────────────────
   // Only relevant for 1:1 DMs in v1. Group DMs (channel.type ===
-  // 'group_dm') don't expose this affordance yet — the "first viewer
-  // among any recipient" semantic gets weird with 3+ people, so we
-  // hold off until we have a clearer mental model. The cog button is
-  // hidden in that case via the isDM1to1 gate below.
+  // 'group_dm') don't expose this affordance yet — the cog button is
+  // hidden in that case via the isDM1to1 gate below. A group DM still SHOWS
+  // a disappearing-messages timer set elsewhere (header indicator, message
+  // markers); it just can't be changed from here.
   const [dmSettingsOpen, setDmSettingsOpen] = useState(false);
+  // The Disappearing Messages screen. Hosted here, not inside the panel
+  // (see the lazy import above). This view isn't remounted per channel, so
+  // close it on a switch — a staged pick must never save to another DM.
+  const [disappearingOpen, setDisappearingOpen] = useState(false);
+  useEffect(() => {
+    setDisappearingOpen(false);
+  }, [channel.id]);
   // Shared-media gallery visibility. Hosted at the MessageView level (a
   // stable parent) so the full-screen, body-portaled modal isn't a child of
   // the click-outside-trapped DmSettingsPanel.
@@ -748,6 +805,13 @@ export function MessageView({
             {isDM && typeof channel.streak === 'number' && channel.streak > 0 && (
               <DmStreakPill streak={channel.streak} />
             )}
+            {/* Disappearing-messages indicator while the timer is on. */}
+            {isDM && typeof dmTimer === 'number' && dmTimer > 0 && (
+              <DisappearingPill
+                seconds={dmTimer}
+                onClick={isDM1to1 ? () => setDisappearingOpen(true) : undefined}
+              />
+            )}
             {channel.topic && (
               <>
                 <span className="text-ink-3 shrink-0 hidden sm:inline">·</span>
@@ -801,8 +865,8 @@ export function MessageView({
                   ? 'bg-bg-3 text-ink-1'
                   : 'text-ink-3 hover:text-ink-1 hover:bg-bg-3'
               }`}
-              aria-label="DM auto-delete settings"
-              title="Auto-delete settings"
+              aria-label="Conversation settings"
+              title="Conversation settings"
               aria-expanded={dmSettingsOpen}
             >
               <SettingsIcon size={16} />
@@ -898,7 +962,21 @@ export function MessageView({
                 setDmSettingsOpen(false);
                 setMediaGalleryOpen(true);
               }}
+              onOpenDisappearing={() => {
+                // Same hand-off as Shared media: close the popover, then open
+                // the screen hosted below, outside the panel's DOM subtree.
+                setDmSettingsOpen(false);
+                setDisappearingOpen(true);
+              }}
               toggleButtonRef={dmSettingsToggleRef}
+            />
+          </Suspense>
+        )}
+        {isDM1to1 && disappearingOpen && (
+          <Suspense fallback={null}>
+            <DisappearingMessagesModal
+              channel={channel}
+              onClose={() => setDisappearingOpen(false)}
             />
           </Suspense>
         )}
@@ -1473,7 +1551,7 @@ function Scroller({
       // (a 'default' row carrying a streak_warning marker) — neither should be
       // the read-receipt anchor.
       if (m.authorId !== selfId || m.type.startsWith('system_')) continue;
-      if (m.metadata?.kind === 'streak_warning') continue;
+      if (m.metadata?.kind === 'streak_warning' || isDisappearingNotice(m)) continue;
       latest = m.id;
     }
     return latest;
@@ -1823,6 +1901,7 @@ function Scroller({
                           isDM1to1 &&
                           m.authorId === selfId &&
                           !m.type.startsWith('system_') &&
+                          !isDisappearingNotice(m) &&
                           m.id === dmReceiptAnchor
                         }
                       />
@@ -2015,8 +2094,12 @@ function groupMessages(msgs: Message[]): Message[][] {
     // row carrying metadata.kind === 'streak_warning' (not a system_ type), so
     // it must be detected separately or it would chain (it's posted under a
     // participant's authorId) and swallow the next message's avatar.
+    // The disappearing-timer notice is a 'system_disappearing' row, but its
+    // metadata kind is checked too in case a row only carries the marker.
     const isNotice = (x: Message) =>
-      x.type.startsWith('system_') || x.metadata?.kind === 'streak_warning';
+      x.type.startsWith('system_') ||
+      x.metadata?.kind === 'streak_warning' ||
+      isDisappearingNotice(x);
     const currentIsSystem = isNotice(m);
     const lastIsSystem = lastMsg ? isNotice(lastMsg) : false;
     if (
@@ -3105,6 +3188,49 @@ function DmHeaderName({ user, label }: { user: PublicUser; label: string }) {
       </button>
       {cardElement}
     </>
+  );
+}
+
+/** Whether the user can see the open conversation right now: the tab is
+    visible and the window has focus (the Capacitor shell's web view is the
+    whole app, so visibility alone counts there). Gates DM read acks, which
+    start disappearing-message countdowns. */
+function conversationVisible(): boolean {
+  if (typeof document === 'undefined') return false;
+  if (document.visibilityState !== 'visible') return false;
+  return document.hasFocus() || isNative();
+}
+
+/**
+ * Disappearing-messages indicator after the DM name: a stopwatch + the short
+ * timer ("1d", "8h", "1m 30s"). Same box metrics as DmStreakPill so the two
+ * sit as a matched pair, but neutral — it's a setting, not an achievement.
+ * Opens the Disappearing Messages screen when `onClick` is given (1:1 DMs).
+ */
+function DisappearingPill({ seconds, onClick }: { seconds: number; onClick?: () => void }) {
+  const label = `Disappearing messages: ${formatLong(seconds)}`;
+  const className =
+    'inline-flex items-center self-center gap-0.5 whitespace-nowrap rounded-md px-1.5 pt-[2.5px] pb-[1.5px] text-[10px] font-semibold leading-none border border-line bg-bg-2 text-ink-2 shrink-0';
+  const body = (
+    <>
+      <Timer size={10} className="shrink-0 relative -top-[0.5px]" />
+      {formatShort(seconds)}
+    </>
+  );
+  return onClick ? (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`${className} hover:text-ink-1 hover:bg-bg-3 transition-colors`}
+      title={label}
+      aria-label={label}
+    >
+      {body}
+    </button>
+  ) : (
+    <span className={className} title={label} aria-label={label}>
+      {body}
+    </span>
   );
 }
 

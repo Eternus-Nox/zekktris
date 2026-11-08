@@ -2547,18 +2547,20 @@ export class RestClient {
     return this.request('GET', '/users/@me/channels');
   }
 
-  // ── DM auto-delete settings ────────────────────────────────────────────
+  // ── DM disappearing messages ───────────────────────────────────────────
   //
-  // Per-DM TTL. Read with getDmSettings; set/clear with updateDmSettings.
-  // The TTL applies to BOTH recipients of the DM — it's a property of
+  // Per-DM timer. Read with getDmSettings; set/clear with updateDmSettings.
+  // The timer applies to BOTH recipients of the DM — it's a property of
   // the conversation, not a per-user preference. Either party can
   // change it; the change shows up live on the other side via the
-  // DM_SETTINGS_UPDATE gateway event.
+  // DM_SETTINGS_UPDATE gateway event (and, on current servers, a
+  // 'system_disappearing' notice in the chat). The JSON key stays
+  // `ttlSecondsAfterRead` for installed apps.
 
   /**
-   * Read the auto-delete TTL for a DM channel. Returns
-   * `{ ttlSecondsAfterRead: null }` when auto-delete is off (the
-   * default for any DM that has never been configured).
+   * Read the disappearing-messages timer for a DM channel. Returns
+   * `{ ttlSecondsAfterRead: null }` when it's off (the default for any
+   * DM that has never been configured).
    */
   getDmSettings(channelId: string): Promise<{
     ttlSecondsAfterRead: number | null;

@@ -61,6 +61,8 @@ import {
   type GuildEmoji,
   type Sticker,
   type StageParticipant,
+  type MessageExpiryPayload,
+  type DmSettingsUpdatePayload,
 } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useToasts } from './Toasts';
@@ -74,6 +76,17 @@ import {
   type PresenceUpdateFrame,
 } from '../lib/presenceActivity';
 import { selfStatusStore } from '../lib/selfStatus';
+import {
+  dropExpired,
+  harvestDeadlines,
+  isDisappearingNotice,
+  mergeDeadlines,
+  parseServerTime,
+  pruneDeadlines,
+  scheduleExpiry,
+  serverNow,
+  serverOffsetFrom,
+} from '../lib/disappearing';
 
 // ── Shape ──────────────────────────────────────────────────────────────────
 
@@ -276,6 +289,27 @@ interface State {
    * when the user toggles the bookmark.
    */
   savedMessageIds: Set<string>;
+  /**
+   * Disappearing messages: each DM's current timer for NEW messages, in
+   * seconds (null = off), keyed by channel id. Absent = not fetched yet.
+   * Not on the Channel DTO, so it lives here: fetched with getDmSettings when
+   * a DM is opened, kept live by DM_SETTINGS_UPDATE and by our own saves.
+   * Drives the header indicator and the settings row / screen.
+   */
+  dmTimers: Record<string, number | null>;
+  /**
+   * Disappearing messages whose countdown has started: message id →
+   * `expires_at` in SERVER epoch ms (compare with serverNow(offset), never
+   * the raw device clock). Fed by REST `expiresAt` and MESSAGE_EXPIRY.
+   * Deliberately NOT on the message objects: MESSAGE_UPDATE and REST
+   * refetches replace whole rows with DTOs that don't carry the deadline,
+   * and a passed deadline is remembered for a while after the row is gone
+   * so a refetch racing the server's sweep can't bring it back.
+   */
+  expiryDeadlines: Record<string, number>;
+  /** serverTime − deviceTime (ms), from the latest MESSAGE_EXPIRY's
+      `server_now`; null until one arrives (the device clock is used as-is). */
+  serverClockOffsetMs: number | null;
 }
 
 const initialState: State = {
@@ -311,6 +345,9 @@ const initialState: State = {
   supervision: null,
   familyNudge: 0,
   savedMessageIds: new Set(),
+  dmTimers: {},
+  expiryDeadlines: {},
+  serverClockOffsetMs: null,
 };
 
 // ── Actions ────────────────────────────────────────────────────────────────
@@ -422,6 +459,21 @@ type Action =
   | { type: 'DMS_SET'; channels: Channel[] }
   | { type: 'DM_UPSERT'; channel: Channel }
   | { type: 'DM_STREAK_SET'; channelId: string; streak: number }
+  /** A DM's disappearing-messages timer (null = off), from getDmSettings,
+      DM_SETTINGS_UPDATE or our own save. */
+  | { type: 'DM_TIMER_SET'; channelId: string; seconds: number | null }
+  /** MESSAGE_EXPIRY: a read started these messages' countdowns. `receivedAt`
+      is the device time the event arrived, for the server-clock offset. */
+  | {
+      type: 'EXPIRY_STAMP';
+      expiries: Array<{ id: string; expires_at: string }>;
+      serverNow: string;
+      receivedAt: number;
+    }
+  /** Drop every loaded message whose deadline has passed (one update across
+      all channels), and forget deadlines long past. Fired by the expiry
+      scheduler; a no-op (same state) when nothing is due. */
+  | { type: 'MESSAGES_EXPIRE' }
   | { type: 'VOICE_STATES_MERGE_GUILD'; guildId: string; voiceStates: VoiceState[] }
   | { type: 'POKE_PILL_SET'; channelId: string; emoji: string }
   | { type: 'POKE_PILL_CLEAR'; channelId: string }
@@ -638,6 +690,22 @@ function applyReactionDelta(
     me: meChange === null ? existing.me : meChange,
   };
   return reactions.map((r, i) => (i === idx ? next : r));
+}
+
+/**
+ * Disappearing messages on ingest (REST pages, reconciles, live appends):
+ * record any `expiresAt` the rows carry, then return them minus the ones
+ * already past their deadline — a reload, an around-window jump or a
+ * reconcile racing the server's sweep must not resurrect a disappeared
+ * message. `kept` is the same array when nothing was dropped.
+ */
+function ingestExpiry(state: State, incoming: Message[]): { state: State; kept: Message[] } {
+  const deadlines = harvestDeadlines(state.expiryDeadlines, incoming);
+  const kept = dropExpired(incoming, deadlines, serverNow(state.serverClockOffsetMs));
+  return {
+    state: deadlines === state.expiryDeadlines ? state : { ...state, expiryDeadlines: deadlines },
+    kept,
+  };
 }
 
 function reducer(state: State, action: Action): State {
@@ -918,16 +986,26 @@ function reducer(state: State, action: Action): State {
       delete nextRead[action.channelId];
       const loadedChannels = new Set(state.loadedChannels);
       loadedChannels.delete(action.channelId);
+      let dmTimers = state.dmTimers;
+      if (action.channelId in dmTimers) {
+        dmTimers = { ...dmTimers };
+        delete dmTimers[action.channelId];
+      }
       return {
         ...state,
         dmChannels: nextDm,
         messagesByChannel: nextMessages,
         readStateByChannel: nextRead,
         loadedChannels,
+        dmTimers,
       };
     }
 
     case 'MESSAGES_SET': {
+      // Disappearing messages: record the page's deadlines (REST
+      // `expiresAt`); rows already past theirs are dropped from the merged
+      // list below.
+      const deadlines = harvestDeadlines(state.expiryDeadlines, action.messages);
       const loaded = new Set(state.loadedChannels);
       loaded.add(action.channelId);
       // Reset older-exhausted on full re-fetch — if the user re-enters
@@ -957,30 +1035,38 @@ function reducer(state: State, action: Action): State {
             (m) => /^\d+$/.test(m.id) && !fetchedIds.has(m.id) && BigInt(m.id) > maxFetched,
           )
         : [];
-      const merged = survivors.length > 0 ? [...fetched, ...survivors] : fetched;
+      const merged = dropExpired(
+        survivors.length > 0 ? [...fetched, ...survivors] : fetched,
+        deadlines,
+        serverNow(state.serverClockOffsetMs),
+      );
       const next: State = {
         ...state,
         messagesByChannel: { ...state.messagesByChannel, [action.channelId]: merged },
         loadedChannels: loaded,
         olderExhausted: exhausted,
+        expiryDeadlines: deadlines,
       };
       return upsertUsersFromMessages(next, merged);
     }
     case 'MESSAGES_PREPEND': {
-      const existing = state.messagesByChannel[action.channelId] ?? [];
+      // Disappearing messages: record the page's deadlines, skip expired rows.
+      const ingest = ingestExpiry(state, action.messages);
+      const base = ingest.state;
+      const existing = base.messagesByChannel[action.channelId] ?? [];
       // Drop ids that are already present — re-entry races + WebSocket
       // races could make the same id show up twice. The Set keeps the
       // dedupe at O(1) per check.
       const seen = new Set(existing.map((m) => m.id));
-      const fresh = action.messages.filter((m) => !seen.has(m.id));
+      const fresh = ingest.kept.filter((m) => !seen.has(m.id));
       // Prepend in the order we got them (already chronological by the
       // time the loader hands them off).
       const merged = [...fresh, ...existing];
-      const exhausted = new Set(state.olderExhausted);
+      const exhausted = new Set(base.olderExhausted);
       if (action.reachedHead) exhausted.add(action.channelId);
       const next: State = {
-        ...state,
-        messagesByChannel: { ...state.messagesByChannel, [action.channelId]: merged },
+        ...base,
+        messagesByChannel: { ...base.messagesByChannel, [action.channelId]: merged },
         olderExhausted: exhausted,
       };
       return upsertUsersFromMessages(next, fresh);
@@ -998,7 +1084,13 @@ function reducer(state: State, action: Action): State {
       return { ...state, loadingOlder: s };
     }
     case 'MESSAGE_APPEND': {
-      const existing = state.messagesByChannel[action.channelId] ?? [];
+      // Disappearing messages: a reconcile / latest-window refetch re-sends
+      // rows we hold (or held), now with `expiresAt` — record it even for a
+      // duplicate, and never (re-)add a row that's already past it.
+      const ingest = ingestExpiry(state, [action.message]);
+      if (ingest.kept.length === 0) return ingest.state;
+      const base = ingest.state;
+      const existing = base.messagesByChannel[action.channelId] ?? [];
       // Reconcile a gateway echo with our own optimistic placeholder.
       // The sender's MESSAGE_CREATE carries the `nonce` we sent (the
       // placeholder's local id). If it matches a placeholder we have,
@@ -1018,27 +1110,28 @@ function reducer(state: State, action: Action): State {
               ? replaced.filter((_, i) => i !== dupIdx)
               : replaced;
           const next: State = {
-            ...state,
+            ...base,
             messagesByChannel: {
-              ...state.messagesByChannel,
+              ...base.messagesByChannel,
               [action.channelId]: cleaned,
             },
-            dmChannels: bumpDmRecency(state.dmChannels, action.channelId, action.message.id),
-            channelsByGuild: bumpGuildRecency(state.channelsByGuild, action.channelId, action.message.id),
+            dmChannels: bumpDmRecency(base.dmChannels, action.channelId, action.message.id),
+            channelsByGuild: bumpGuildRecency(base.channelsByGuild, action.channelId, action.message.id),
           };
           return upsertUsersFromMessages(next, [action.message]);
         }
       }
       // Drop dupes — REST optimism + gateway echo can both feed the same id.
-      if (existing.some((m) => m.id === action.message.id)) return state;
+      // (`base`, not `state`: keep a deadline the duplicate brought along.)
+      if (existing.some((m) => m.id === action.message.id)) return base;
       const nextList = [...existing, action.message];
       // Cap from the front so we keep the newest tail.
       const capped = nextList.length > MESSAGES_CAP ? nextList.slice(nextList.length - MESSAGES_CAP) : nextList;
       const next: State = {
-        ...state,
-        messagesByChannel: { ...state.messagesByChannel, [action.channelId]: capped },
-        dmChannels: bumpDmRecency(state.dmChannels, action.channelId, action.message.id),
-        channelsByGuild: bumpGuildRecency(state.channelsByGuild, action.channelId, action.message.id),
+        ...base,
+        messagesByChannel: { ...base.messagesByChannel, [action.channelId]: capped },
+        dmChannels: bumpDmRecency(base.dmChannels, action.channelId, action.message.id),
+        channelsByGuild: bumpGuildRecency(base.channelsByGuild, action.channelId, action.message.id),
       };
       return upsertUsersFromMessages(next, [action.message]);
     }
@@ -1127,6 +1220,10 @@ function reducer(state: State, action: Action): State {
     case 'MESSAGE_REMOVE': {
       const existing = state.messagesByChannel[action.channelId];
       if (!existing) return state;
+      // No churn for an id we don't hold: every disappearing message hidden
+      // locally at its deadline still gets the sweep's MESSAGE_DELETE a few
+      // seconds later, which would otherwise re-render the whole channel.
+      if (!existing.some((m) => m.id === action.messageId)) return state;
       return {
         ...state,
         messagesByChannel: {
@@ -1589,6 +1686,43 @@ function reducer(state: State, action: Action): State {
       next[idx] = { ...next[idx], streak: action.streak };
       return { ...state, dmChannels: next };
     }
+    case 'DM_TIMER_SET': {
+      const prev = state.dmTimers[action.channelId];
+      if (prev === action.seconds) return state; // includes null === null
+      return { ...state, dmTimers: { ...state.dmTimers, [action.channelId]: action.seconds } };
+    }
+    case 'EXPIRY_STAMP': {
+      // Ids we don't hold are recorded too: a message scrolled out of the
+      // window (or loaded later) is still known to be counting down.
+      const offset = serverOffsetFrom(action.serverNow, action.receivedAt) ?? state.serverClockOffsetMs;
+      const entries: Array<[string, number]> = [];
+      for (const e of action.expiries) {
+        const at = parseServerTime(e.expires_at);
+        if (at !== null) entries.push([e.id, at]);
+      }
+      const expiryDeadlines = mergeDeadlines(state.expiryDeadlines, entries);
+      if (expiryDeadlines === state.expiryDeadlines && offset === state.serverClockOffsetMs) return state;
+      // Removing what's already due is the scheduler's job (it re-runs
+      // whenever these deadlines change), so there's one removal path.
+      return { ...state, expiryDeadlines, serverClockOffsetMs: offset };
+    }
+    case 'MESSAGES_EXPIRE': {
+      const deadlines = state.expiryDeadlines;
+      if (Object.keys(deadlines).length === 0) return state;
+      const now = serverNow(state.serverClockOffsetMs);
+      let messagesByChannel = state.messagesByChannel;
+      for (const cid in state.messagesByChannel) {
+        const list = state.messagesByChannel[cid]!;
+        const kept = dropExpired(list, deadlines, now);
+        if (kept !== list) {
+          if (messagesByChannel === state.messagesByChannel) messagesByChannel = { ...messagesByChannel };
+          messagesByChannel[cid] = kept;
+        }
+      }
+      const expiryDeadlines = pruneDeadlines(deadlines, now);
+      if (messagesByChannel === state.messagesByChannel && expiryDeadlines === deadlines) return state;
+      return { ...state, messagesByChannel, expiryDeadlines };
+    }
 
     case 'POKE_PILL_SET':
       return {
@@ -1956,6 +2090,10 @@ function reducer(state: State, action: Action): State {
   }
 }
 
+/** The reducer and its empty state, exported only for the node unit tests
+    (test/disappearingState.test.ts); the app goes through AppStateProvider. */
+export { reducer as appStateReducer, initialState as initialAppState };
+
 // ── Context ────────────────────────────────────────────────────────────────
 
 interface AppStateValue {
@@ -2147,6 +2285,19 @@ interface AppStateValue {
    *  into the canonical message — gateway poll broadcasts carry no
    *  per-recipient vote state. */
   setPollLocal: (channelId: string, messageId: string, poll: Poll) => void;
+  /**
+   * Fetch a DM's settings (getDmSettings) and refresh its disappearing-
+   * messages timer in `state.dmTimers`. A response that raced a newer
+   * DM_SETTINGS_UPDATE or save doesn't overwrite it. Returns the response
+   * (the caller may want notificationShowContent / maxTtlSeconds).
+   */
+  loadDmSettings: (channelId: string) => ReturnType<RestClient['getDmSettings']>;
+  /**
+   * Set a DM's disappearing-messages timer (null = off). Optimistic on
+   * `state.dmTimers`, reverted when the PATCH fails (which rethrows). Resolves
+   * with the value the server confirmed.
+   */
+  saveDmTimer: (channelId: string, seconds: number | null) => Promise<number | null>;
 }
 
 const AppStateContext = createContext<AppStateValue | null>(null);
@@ -2834,6 +2985,86 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     [rest],
   );
 
+  // ── Disappearing messages: the per-DM timer ───────────────────────────
+  //
+  // Bumped per channel by every DM_SETTINGS_UPDATE and own save. A
+  // getDmSettings that started before the latest bump is stale (the event
+  // or save it raced is newer), so its value is dropped.
+  const dmTimerEpochRef = useRef(new Map<string, number>());
+  const bumpDmTimerEpoch = useCallback((channelId: string) => {
+    const m = dmTimerEpochRef.current;
+    m.set(channelId, (m.get(channelId) ?? 0) + 1);
+  }, []);
+
+  const loadDmSettings = useCallback(
+    async (channelId: string) => {
+      const epoch = dmTimerEpochRef.current.get(channelId) ?? 0;
+      const r = await rest.getDmSettings(channelId);
+      if ((dmTimerEpochRef.current.get(channelId) ?? 0) === epoch) {
+        dispatch({ type: 'DM_TIMER_SET', channelId, seconds: r.ttlSecondsAfterRead ?? null });
+      }
+      return r;
+    },
+    [rest],
+  );
+
+  const saveDmTimer = useCallback(
+    async (channelId: string, seconds: number | null) => {
+      const prev = stateRef.current.dmTimers[channelId];
+      bumpDmTimerEpoch(channelId);
+      dispatch({ type: 'DM_TIMER_SET', channelId, seconds });
+      try {
+        const r = await rest.updateDmSettings(channelId, seconds);
+        const confirmed = r.ttlSecondsAfterRead ?? null;
+        bumpDmTimerEpoch(channelId);
+        dispatch({ type: 'DM_TIMER_SET', channelId, seconds: confirmed });
+        return confirmed;
+      } catch (e) {
+        // Revert — unless a DM_SETTINGS_UPDATE landed meanwhile; that one
+        // is the server's word and stays.
+        if (stateRef.current.dmTimers[channelId] === seconds) {
+          bumpDmTimerEpoch(channelId);
+          if (prev !== undefined) dispatch({ type: 'DM_TIMER_SET', channelId, seconds: prev });
+          // Nothing known to go back to — ask the server.
+          else void loadDmSettings(channelId).catch(() => undefined);
+        }
+        throw e;
+      }
+    },
+    [rest, bumpDmTimerEpoch, loadDmSettings],
+  );
+
+  // ── Disappearing messages: local expiry ───────────────────────────────
+  //
+  // ONE timer for the whole app (scheduleExpiry), armed for the earliest
+  // future deadline; each run drops everything already due from every loaded
+  // channel in a single MESSAGES_EXPIRE (which re-checks the time itself) and
+  // re-arms. Background tabs throttle timers, so coming back to the tab runs
+  // it at once. The server's sweep MESSAGE_DELETE stays the authoritative
+  // removal (and the only one for an author whose reader has read receipts
+  // off, who never learns the deadline).
+  const expiryDeadlines = state.expiryDeadlines;
+  const serverClockOffsetMs = state.serverClockOffsetMs;
+  useEffect(() => {
+    // Nothing counting down (every chat without disappearing messages).
+    if (Object.keys(expiryDeadlines).length === 0) return;
+    const scheduler = scheduleExpiry({
+      deadlines: expiryDeadlines,
+      offsetMs: serverClockOffsetMs,
+      expire: () => dispatch({ type: 'MESSAGES_EXPIRE' }),
+    });
+    const onWake = () => {
+      if (document.visibilityState === 'visible') scheduler.recheck();
+    };
+    document.addEventListener('visibilitychange', onWake);
+    window.addEventListener('focus', onWake);
+    return () => {
+      scheduler.cancel();
+      document.removeEventListener('visibilitychange', onWake);
+      window.removeEventListener('focus', onWake);
+    };
+  }, [expiryDeadlines, serverClockOffsetMs]);
+
   // ── Optimistic message sending ────────────────────────────────────────
   //
   // The user shouldn't wait 200ms for the server before seeing their own
@@ -2965,6 +3196,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         webhookId: null,
         authorOverrideName: null,
         authorOverrideAvatar: null,
+        // Disappearing messages: the server stamps the DM's timer on the row
+        // at send time; mirror the known setting so the timer icon shows
+        // before the echo (which carries the authoritative value).
+        expireAfterSeconds: stateRef.current.dmTimers[channelId] ?? null,
         createdAt: new Date().toISOString(),
         pending: true,
       };
@@ -3355,6 +3590,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           return;
         }
 
+        // The disappearing-messages timer notice is quiet, as in Signal: no
+        // sound, no desktop notification (the server doesn't push it either).
+        if (isDisappearingNotice(m)) return;
+
         const fresh = stateRef.current;
         // @everyone/@here counts as a mention too (own messages already
         // returned above, so this can't self-badge). mentionsEveryone is only
@@ -3605,6 +3844,26 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       }),
       gateway.on<{ channel_id: string; streak: number }>(GatewayEvent.DM_STREAK_UPDATE, (d) => {
         dispatch({ type: 'DM_STREAK_SET', channelId: d.channel_id, streak: d.streak });
+      }),
+      // Disappearing-messages timer changed (either participant, any of our
+      // tabs). camelCase payload — the event predates the snake_case ones.
+      gateway.on<DmSettingsUpdatePayload>(GatewayEvent.DM_SETTINGS_UPDATE, (d) => {
+        if (!d || typeof d.channelId !== 'string') return;
+        const seconds = typeof d.ttlSecondsAfterRead === 'number' ? d.ttlSecondsAfterRead : null;
+        bumpDmTimerEpoch(d.channelId);
+        dispatch({ type: 'DM_TIMER_SET', channelId: d.channelId, seconds });
+      }),
+      // A read started disappearing messages' countdowns. Reaches the
+      // reader's own devices, and the author's only when the reader has
+      // read receipts on.
+      gateway.on<MessageExpiryPayload>(GatewayEvent.MESSAGE_EXPIRY, (d) => {
+        if (!d || !Array.isArray(d.expiries) || d.expiries.length === 0) return;
+        dispatch({
+          type: 'EXPIRY_STAMP',
+          expiries: d.expiries,
+          serverNow: d.server_now,
+          receivedAt: Date.now(),
+        });
       }),
       // Poke / nudge — an ephemeral notification (no message, no history). Show
       // a transient toast (emoji + who) AND, in the desktop app, an OS banner;
@@ -4086,12 +4345,19 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         if (openChannelId && loaded.messagesByChannel[openChannelId]?.length) {
           void resyncChannelWindow(openChannelId).catch(() => undefined);
         }
+        // A DM_SETTINGS_UPDATE missed during the drop would leave the open
+        // DM's disappearing-messages indicator stale.
+        if (openChannelId && openChannelId in loaded.dmTimers) {
+          void loadDmSettings(openChannelId).catch(() => undefined);
+        }
       }),
     );
 
       return unsubs;
     },
     [
+      bumpDmTimerEpoch,
+      loadDmSettings,
       user,
       token,
       loadChannels,
@@ -4193,8 +4459,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       toggleSavedMessage,
       hydrateSavedMembership,
       setPollLocal,
+      loadDmSettings,
+      saveDmTimer,
     }),
     [
+      loadDmSettings,
+      saveDmTimer,
       state,
       refreshGuilds,
       loadChannels,

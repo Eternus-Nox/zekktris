@@ -890,6 +890,19 @@ export function Clock(props: IconProps) {
   );
 }
 
+/** Stopwatch — disappearing messages (the DM settings row, the header
+ *  indicator, the per-message marker and the timer-change notice). Distinct
+ *  from Clock, which means "a point in time / timeout". */
+export function Timer(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <line x1="10" y1="2" x2="14" y2="2" />
+      <line x1="12" y1="14" x2="15" y2="11" />
+      <circle cx="12" cy="14" r="8" />
+    </Svg>
+  );
+}
+
 /** Wi-Fi with a slash through it — used by the PWA offline banner.
  *  Three concentric arcs (signal cone) with a diagonal line cutting
  *  across. The dot at the tip of the cone is the device. */

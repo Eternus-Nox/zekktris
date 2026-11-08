@@ -40,6 +40,10 @@
  * Mentions that have a leading glyph next to the title. On mobile
  * the leading icon is hidden when present, since the back arrow
  * already occupies the left zone.
+ *
+ * `mobileDismiss="x"` swaps the mobile back arrow for an X — for an
+ * edit screen whose dismiss means "cancel" next to its own confirm
+ * button in `rightSlot` (the Disappearing Messages screen: ✕ … ✓).
  */
 
 import { ChevronLeft, X } from './icons';
@@ -50,6 +54,8 @@ export function ModalHeader({
   icon,
   onClose,
   rightSlot,
+  mobileDismiss = 'back',
+  dismissLabel,
 }: {
   title: string;
   /** Optional secondary text shown next to the title on desktop. */
@@ -62,6 +68,11 @@ export function ModalHeader({
       desktop (e.g. a primary action button). On mobile this slot
       sits to the LEFT of where the close button would be. */
   rightSlot?: React.ReactNode;
+  /** Mobile dismiss glyph: 'back' (ChevronLeft, the default) or 'x'. */
+  mobileDismiss?: 'back' | 'x';
+  /** Accessible name for the dismiss buttons (default "Back" on mobile,
+      "Close" on desktop). */
+  dismissLabel?: string;
 }) {
   return (
     <div className="px-3 sm:px-4 h-12 border-b border-line bg-bg-2 flex items-center gap-2 sm:gap-3 shrink-0">
@@ -71,9 +82,9 @@ export function ModalHeader({
         type="button"
         onClick={onClose}
         className="sm:hidden -ml-1 w-10 h-10 flex items-center justify-center rounded-md text-ink-2 hover:text-ink-1 hover:bg-bg-3 active:bg-bg-3 transition-colors"
-        aria-label="Back"
+        aria-label={dismissLabel ?? (mobileDismiss === 'x' ? 'Close' : 'Back')}
       >
-        <ChevronLeft size={20} />
+        {mobileDismiss === 'x' ? <X size={20} /> : <ChevronLeft size={20} />}
       </button>
 
       {/* Leading icon — hidden on mobile since the back arrow
@@ -96,7 +107,7 @@ export function ModalHeader({
           type="button"
           onClick={onClose}
           className="hidden sm:flex w-8 h-8 items-center justify-center rounded text-ink-2 hover:text-ink-1 hover:bg-bg-3 transition-colors"
-          aria-label="Close"
+          aria-label={dismissLabel ?? 'Close'}
         >
           <X size={18} />
         </button>

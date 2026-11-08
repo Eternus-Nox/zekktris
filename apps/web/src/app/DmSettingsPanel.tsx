@@ -1,28 +1,17 @@
 /**
  * DmSettingsPanel
  * ---------------
- * Compact dropdown UI for the DM auto-delete TTL. Anchored to the
- * Settings cog in the DM header; closes on outside click or Escape.
+ * Compact dropdown of 1:1 DM settings, anchored to the Settings cog in the
+ * DM header; closes on outside click or Escape.
  *
- * The TTL is a property of the conversation, not the user — changing
- * it here affects both recipients. Server enforces; this UI just
- * surfaces the four canonical options (off + 30 / 60 / 120 seconds)
- * which match the user's requested values. Other values are still
- * accepted by the API (10–86400 inclusive) but we keep the UI to a
- * curated set to avoid analysis paralysis.
- *
- * Behaviour:
- *   - Opens with a brief loading state while we fetch the current
- *     TTL. Subsequent open calls in the same session start with the
- *     last-known value (the gateway DM_SETTINGS_UPDATE event keeps
- *     a cached local value in sync across tabs).
- *   - Selecting a different option PATCHes the new value immediately,
- *     optimistically updates local state, and surfaces a toast on
- *     failure with a rollback to the previous selection.
- *   - The "What does this mean?" footer is a short, plain-language
- *     explanation that the lifetime starts when the OTHER party reads
- *     the message — important to avoid the assumption that the timer
- *     starts when the message is sent.
+ * Rows: Shared media, notification previews, read receipts, Disappearing
+ * messages, E2EE, Close DM. "Disappearing messages" shows the current timer
+ * and opens the Disappearing Messages screen (Signal's model: Off, 4 weeks …
+ * 30 seconds, or a custom time; each new message disappears that long after
+ * it's been seen). The timer is a property of the conversation, not the
+ * user — changing it affects both recipients. The value lives in AppState
+ * (`dmTimers`): refreshed by the getDmSettings fetch below and by
+ * MessageView on open, and kept live by the DM_SETTINGS_UPDATE event.
  */
 
 import { useEffect, useRef, useState, type RefObject } from 'react';
@@ -30,21 +19,17 @@ import { useNavigate } from 'react-router-dom';
 import { ApiError, type Channel } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useToasts } from '../state/Toasts';
-import { Paperclip, Shield, XCircle } from '../lib/icons';
+import { useAppStateSelector } from '../state/AppState';
+import { Paperclip, Shield, Timer, XCircle } from '../lib/icons';
 import { e2eeSupported, E2EE_INSECURE_MESSAGE } from '../lib/e2eeSupport';
-
-const OPTIONS: { value: number | null; label: string; sublabel?: string }[] = [
-  { value: null, label: 'Off', sublabel: 'Messages stay forever' },
-  { value: 30, label: '30 seconds' },
-  { value: 60, label: '1 minute' },
-  { value: 120, label: '2 minutes' },
-];
+import { formatTimer } from '../lib/disappearing';
 
 export function DmSettingsPanel({
   channel,
   selfId,
   onClose,
   onOpenMedia,
+  onOpenDisappearing,
   toggleButtonRef,
 }: {
   channel: Channel;
@@ -57,6 +42,10 @@ export function DmSettingsPanel({
       handler (every click in the gallery looks "outside" the panel and
       closes it, unmounting the gallery). */
   onOpenMedia: () => void;
+  /** Open the Disappearing Messages screen. Hosted by MessageView for the
+      same reason as the gallery above (a body-portaled modal rendered from
+      inside this panel would be closed by the outside-click handler). */
+  onOpenDisappearing: () => void;
   /** Ref to the cog button that opens/closes this panel. The
       outside-click handler ignores clicks inside this element so
       that clicking the cog to close doesn't fire onClose + the
@@ -65,39 +54,33 @@ export function DmSettingsPanel({
   toggleButtonRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const channelId = channel.id;
-  const { rest } = useAuth();
-  const toasts = useToasts();
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const loadDmSettings = useAppStateSelector((v) => v.loadDmSettings);
+  // The conversation's disappearing-messages timer (undefined = not known yet).
+  const timer = useAppStateSelector((v) => v.state.dmTimers[channelId]);
 
-  const [ttl, setTtl] = useState<number | null>(null);
   // This user's explicit notification-preview choice for this DM (null = not
   // set → fall back to the E2EE-aware default in the toggle).
   const [notifShowContent, setNotifShowContent] = useState<boolean | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  const [pending, setPending] = useState(false);
 
-  // Initial fetch. Best-effort — if it fails the user sees the
-  // default ("Off") selected and any subsequent write still works.
+  // Initial fetch (also refreshes the timer in AppState). Best-effort — if it
+  // fails the toggles show their defaults and any subsequent write still
+  // works.
   useEffect(() => {
     let cancelled = false;
-    rest
-      .getDmSettings(channelId)
+    loadDmSettings(channelId)
       .then((r) => {
         if (cancelled) return;
-        setTtl(r.ttlSecondsAfterRead);
         setNotifShowContent(r.notificationShowContent);
       })
       .catch(() => {
         // Don't toast — the panel is opening, surfacing an error
-        // here would be noisy. The user can still pick an option.
-      })
-      .finally(() => {
-        if (!cancelled) setLoaded(true);
+        // here would be noisy.
       });
     return () => {
       cancelled = true;
     };
-  }, [channelId, rest]);
+  }, [channelId, loadDmSettings]);
 
   // Outside-click + Escape close. The toggle-button exception is
   // critical: clicking the cog to close fires mousedown FIRST (the
@@ -126,39 +109,13 @@ export function DmSettingsPanel({
     };
   }, [onClose, toggleButtonRef]);
 
-  async function choose(next: number | null) {
-    if (pending) return;
-    const prev = ttl;
-    // Optimistic update so the radio dot moves immediately. Rolls
-    // back below on failure.
-    setTtl(next);
-    setPending(true);
-    try {
-      await rest.updateDmSettings(channelId, next);
-      toasts.push(
-        next === null
-          ? 'Auto-delete turned off'
-          : `Auto-delete set to ${labelFor(next)}`,
-        'success',
-      );
-    } catch (e) {
-      setTtl(prev);
-      toasts.push(
-        e instanceof ApiError ? e.message : 'Failed to update setting',
-        'error',
-      );
-    } finally {
-      setPending(false);
-    }
-  }
-
   return (
     <div
       ref={panelRef}
       className="absolute right-0 top-10 z-30 w-72 bg-bg-2 border border-line rounded-lg shadow-xl overflow-hidden"
     >
-      {/* Section order mirrors iOS DmSettingsSheet:
-          Shared media → Notifications → Read receipts → Auto-delete → E2EE. */}
+      {/* Section order mirrors iOS DmSettingsSheet: Shared media →
+          Notifications → Read receipts → Disappearing messages → E2EE. */}
       <button
         type="button"
         onClick={onOpenMedia}
@@ -174,46 +131,16 @@ export function DmSettingsPanel({
         onChange={setNotifShowContent}
       />
       <ReadReceiptsToggle />
-      <header className="px-3 py-2 border-t border-b border-line">
-        <h3 className="text-sm font-semibold text-ink-1">Auto-delete messages</h3>
-        <p className="text-xs text-ink-3 mt-0.5 leading-snug">
-          Messages will be removed after this delay <span className="text-ink-2 font-medium">once the other person reads them</span>.
-        </p>
-      </header>
-      <ul className="py-1">
-        {OPTIONS.map((opt) => {
-          const selected = ttl === opt.value;
-          return (
-            <li key={String(opt.value)}>
-              <button
-                type="button"
-                onClick={() => void choose(opt.value)}
-                disabled={pending || !loaded}
-                className={`w-full text-left px-3 py-2 flex items-center gap-2.5 transition-colors disabled:opacity-60 ${
-                  selected ? 'bg-accent/10' : 'hover:bg-bg-3'
-                }`}
-              >
-                <span
-                  className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
-                    selected ? 'border-accent' : 'border-ink-3'
-                  }`}
-                  aria-hidden
-                >
-                  {selected && <span className="w-2 h-2 rounded-full bg-accent" />}
-                </span>
-                <span className="flex-1 min-w-0">
-                  <span className={`block text-sm ${selected ? 'text-ink-1 font-medium' : 'text-ink-2'}`}>
-                    {opt.label}
-                  </span>
-                  {opt.sublabel && (
-                    <span className="block text-[0.7rem] text-ink-3 mt-0.5">{opt.sublabel}</span>
-                  )}
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+      <button
+        type="button"
+        onClick={onOpenDisappearing}
+        className="w-full px-3 py-2.5 flex items-center gap-2.5 text-left text-sm text-ink-2 hover:bg-bg-3 border-t border-line"
+      >
+        <Timer size={15} className="text-accent shrink-0" />
+        <span className="flex-1">Disappearing messages</span>
+        <span className="text-ink-3">{timer === undefined ? '…' : formatTimer(timer)}</span>
+        <span className="text-ink-3">›</span>
+      </button>
       <E2eeToggle channel={channel} selfId={selfId} />
       <CloseDmRow channel={channel} />
     </div>
@@ -355,8 +282,8 @@ function NotificationPreviewToggle({
 }
 
 /**
- * Per-user read-receipts toggle. Distinct from the auto-delete TTL
- * above because its scope is the USER, not the conversation —
+ * Per-user read-receipts toggle. Distinct from the disappearing-messages
+ * timer because its scope is the USER, not the conversation —
  * flipping this affects every DM you participate in, not just
  * this one. When off, the server suppresses delivered_at + viewed_at
  * stamping for messages this user receives, so senders see "Sent"
@@ -905,10 +832,4 @@ function DisableConfirmModal({
       </div>
     </div>
   );
-}
-
-function labelFor(seconds: number): string {
-  if (seconds < 60) return `${seconds} second${seconds === 1 ? '' : 's'}`;
-  const minutes = Math.round(seconds / 60);
-  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
 }

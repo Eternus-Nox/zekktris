@@ -580,6 +580,24 @@ export interface Message {
   nonce?: string | null;
 }
 
+/** MESSAGE_EXPIRY payload (snake_case, see packages/shared events.ts): a
+ *  read started these disappearing messages' countdowns. `expires_at` and
+ *  `server_now` are ISO server times; compare `expires_at` against the
+ *  device clock shifted by (server_now − the device time it arrived). */
+export interface MessageExpiryPayload {
+  channel_id: string;
+  expiries: Array<{ id: string; expires_at: string }>;
+  server_now: string;
+}
+
+/** DM_SETTINGS_UPDATE payload. camelCase (it predates the snake_case
+ *  events); `ttlSecondsAfterRead` is the DM's disappearing-messages timer
+ *  for NEW messages, or null for off. */
+export interface DmSettingsUpdatePayload {
+  channelId: string;
+  ttlSecondsAfterRead: number | null;
+}
+
 export interface GuildMember {
   guildId: string;
   userId: string;

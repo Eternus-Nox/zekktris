@@ -35,7 +35,8 @@ import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
 import { AvatarDecoration } from '../lib/avatarDecorations';
 import { useProfileCard } from '../lib/useProfileCard';
-import { Edit, Trash, Pin, CornerUpLeft, Forward as ForwardIcon, MessageSquare, Smile, Phone, Shield, Bookmark } from '../lib/icons';
+import { Edit, Trash, Pin, CornerUpLeft, Forward as ForwardIcon, MessageSquare, Smile, Phone, Shield, Bookmark, Timer } from '../lib/icons';
+import { disappearingHint, isDisappearingNotice, noticeText } from '../lib/disappearing';
 import { useE2eeLinkPreviews, resolveE2eeLinkPreviews, cachedUnfurl } from '../lib/e2eeLinkPreviews';
 import { e2eeSupported, E2EE_INSECURE_SHORT } from '../lib/e2eeSupport';
 import { decryptForDm, peekDecryptedText, encryptForDm, isEncryptedWireFormat, hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
@@ -684,6 +685,14 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
         : undefined) ?? null,
   );
 
+  // The disappearing timer this message was sent with (null = it stays).
+  // Read off the message itself, so React.memo's message-identity check
+  // already covers it.
+  const timerSeconds =
+    typeof message.expireAfterSeconds === 'number' && message.expireAfterSeconds > 0
+      ? message.expireAfterSeconds
+      : null;
+
   // Suppress unused-channel-prop warning. Future: thread permissions
   // through here so the standalone PinPanel/SearchPanel renders use
   // the same `canPin` calculation as inline messages.
@@ -739,6 +748,46 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
       >
         <span aria-hidden>{variant.emoji}</span>
         <span>{text}</span>
+      </div>
+    );
+  }
+
+  // Disappearing-messages timer change — a 'system_disappearing' row. A
+  // centered notice with the stopwatch, never a bubble: no actions, no
+  // grouping (MessageView's isNotice), never the receipt anchor. The text is
+  // built from metadata so it reads "You set…" for the changer and uses the
+  // DM nickname for the other person; `content` is only the server's
+  // third-person fallback for clients that don't know the type (used here
+  // when a row somehow lacks the metadata).
+  if (isDisappearingNotice(message)) {
+    const meta = message.metadata?.kind === 'disappearing_timer' ? message.metadata : null;
+    const initiatorId = meta?.initiatorId ?? message.authorId;
+    const initiatorName =
+      initiatorId && author && initiatorId !== author.id
+        ? (usersById[initiatorId]?.displayName ?? usersById[initiatorId]?.username ?? 'Someone')
+        : displayName;
+    const text = meta
+      ? noticeText({
+          timerSeconds: meta.timerSeconds,
+          isSelf: selfId !== undefined && initiatorId === selfId,
+          name: initiatorName,
+        })
+      : message.content;
+    return (
+      <div
+        data-message-id={message.id}
+        className="group relative flex items-center justify-center gap-1.5 py-1.5 px-4 text-center text-xs text-ink-2"
+      >
+        <Timer size={12} className="text-ink-3 shrink-0" />
+        <span>{text}</span>
+        <span className="text-ink-3/70">·</span>
+        <time
+          dateTime={message.createdAt}
+          className="tabular-nums text-ink-3/70"
+          title={new Date(message.createdAt).toLocaleString()}
+        >
+          {formatTimestamp(message.createdAt)}
+        </time>
       </div>
     );
   }
@@ -951,6 +1000,8 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
             >
               {formatTimestamp(message.createdAt)}
             </span>
+            {/* Disappearing message: the timer it was sent with. */}
+            {timerSeconds !== null && <DisappearingMarker seconds={timerSeconds} />}
             {message.pinned && (
               <span className="inline-flex items-center gap-0.5 text-[0.6rem] uppercase tracking-wider text-amber-400" title="Pinned message">
                 <Pin size={10} />
@@ -1014,6 +1065,7 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
                   ? 'Encrypted — enter the password (banner above the message box) to read.'
                   : "Couldn't decrypt this message — the password may have changed."}
             </span>
+            {continuation && timerSeconds !== null && <DisappearingMarker seconds={timerSeconds} />}
           </div>
         ) : (
           <div className="zk-select-text text-ink-1 whitespace-pre-wrap break-words">
@@ -1022,6 +1074,11 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
               <span className="text-ink-3 text-xs ml-1" title={`edited ${new Date(message.editedAt).toLocaleString()}`}>
                 (edited)
               </span>
+            )}
+            {/* A continuation row has no timestamp, so its disappearing
+                marker sits at the end of the text instead. */}
+            {continuation && timerSeconds !== null && (
+              <DisappearingMarker seconds={timerSeconds} className="ml-1 align-[-1px]" />
             )}
           </div>
         )}
@@ -1272,6 +1329,17 @@ const TIME_FMT = new Intl.DateTimeFormat(undefined, {
   hour: 'numeric',
   minute: '2-digit',
 });
+
+/** The per-message stopwatch for a disappearing message, with its timer in
+    the tooltip ("Disappears 1 day after it's seen"). */
+function DisappearingMarker({ seconds, className = '' }: { seconds: number; className?: string }) {
+  const hint = disappearingHint(seconds);
+  return (
+    <span className={`inline-flex text-ink-3 ${className}`} title={hint} aria-label={hint} role="img">
+      <Timer size={11} />
+    </span>
+  );
+}
 
 // iOS parity (Components.swift shortTime → "h:mm a"): the header
 // timestamp is ALWAYS the short local time — the calendar day is
