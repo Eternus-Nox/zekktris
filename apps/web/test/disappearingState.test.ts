@@ -647,7 +647,7 @@ describe('AppState — disappearing messages', () => {
       const page = [msg('501', 'g', { authorId: '2' })];
       const s1 = run(
         s0,
-        { type: 'MESSAGES_MERGE', channelId: 'g', messages: page },
+        { type: 'MESSAGES_MERGE', channelId: 'g', messages: page, from: '500' },
         { type: 'TAIL_REACHED', channelId: 'g', throughId: tailJoinedAt('500', page, 50)! },
       );
       expect(s1.messagesByChannel.g!.map((m) => m.id)).toEqual(['451', '500', '501']);
@@ -669,10 +669,11 @@ describe('AppState — disappearing messages', () => {
         type: 'MESSAGES_MERGE',
         channelId: 'g',
         messages: [msg('200', 'g', { authorId: '2' }), gone, msg('150', 'g'), msg('400', 'g', { authorId: '2' })],
+        from: '150',
       });
       expect(s1.messagesByChannel.g!.map((m) => m.id)).toEqual(['100', '150', '200', '400', '1000', 'local-x']);
       // Nothing new: the same list.
-      const s2 = run(s1, { type: 'MESSAGES_MERGE', channelId: 'g', messages: [msg('200', 'g')] });
+      const s2 = run(s1, { type: 'MESSAGES_MERGE', channelId: 'g', messages: [msg('200', 'g')], from: '150' });
       expect(s2.messagesByChannel.g).toBe(s1.messagesByChannel.g);
     });
 
@@ -704,6 +705,25 @@ describe('AppState — disappearing messages', () => {
       // A frontier already past the page stays.
       const s1 = run(s0, { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('2976', 'g')] });
       expect(s1.tailFrontier.g).toBe('5000');
+    });
+
+    it('a frontier page that lands after a resync moved the frontier is dropped (no unmarked hole)', () => {
+      const s0 = run(
+        initialAppState,
+        { type: 'DMS_SET', channels: [dm('g', '5000')] },
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('1001', 'g'), msg('1050', 'g')], preserveNewerSurvivors: false },
+        { type: 'MESSAGE_APPEND', channelId: 'g', message: msg('5000', 'g', { authorId: '2' }) },
+        // The poll's 'after 1050' request is in flight when the reconnect
+        // resync lands and moves the frontier to 5000.
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('2976', 'g'), msg('3000', 'g'), msg('5000', 'g')] },
+      );
+      const stale = [msg('1051', 'g'), msg('1100', 'g')];
+      const s1 = run(s0, { type: 'MESSAGES_MERGE', channelId: 'g', messages: stale, from: '1050' });
+      expect(s1).toBe(s0);
+      expect(s1.messagesByChannel.g!.map((m) => m.id)).toEqual(['2976', '3000', '5000']);
+      // Unmarked chats drop frontier pages too.
+      const s2 = run(initialAppState, { type: 'MESSAGES_SET', channelId: 'c', messages: [msg('1', 'c')] });
+      expect(run(s2, { type: 'MESSAGES_MERGE', channelId: 'c', messages: [msg('2', 'c')], from: '1' })).toBe(s2);
     });
 
     it('tailJoinedAt: a short page, or a latest page reaching back to the newest held row', () => {

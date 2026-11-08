@@ -423,10 +423,13 @@ type Action =
       up to `to`: the frontier moves to `to`. No-op unless `from` is still the
       frontier. */
   | { type: 'TAIL_ADVANCE'; channelId: string; from: string; to: string }
-  /** Catch-up rows fetched from a jump window's frontier. They can be OLDER
-      than a live row already appended above the gap, so they are inserted in
-      snowflake order (deduped; unsent rows stay last) instead of appended. */
-  | { type: 'MESSAGES_MERGE'; channelId: string; messages: Message[] }
+  /** Catch-up rows fetched from a jump window's frontier `from`. They can be
+      OLDER than a live row already appended above the gap, so they are
+      inserted in snowflake order (deduped; unsent rows stay last) instead of
+      appended. Dropped unless `from` is still the frontier: a resync, a jump
+      or a full load that landed while the page was in flight replaced the
+      window, and merging the stale page would leave an unmarked hole. */
+  | { type: 'MESSAGES_MERGE'; channelId: string; messages: Message[]; from: string }
   | {
       type: 'MESSAGES_PREPEND';
       channelId: string;
@@ -1281,6 +1284,9 @@ function reducer(state: State, action: Action): State {
       return { ...state, tailFrontier: { ...state.tailFrontier, [action.channelId]: action.to } };
     }
     case 'MESSAGES_MERGE': {
+      // Only a page fetched from the CURRENT frontier joins the window.
+      if (!state.tailGapped.has(action.channelId)) return state;
+      if (state.tailFrontier[action.channelId] !== action.from) return state;
       // Record the page's deadlines and skip rows already past theirs, as
       // MESSAGE_APPEND does; then insert what isn't held by snowflake order.
       const ingest = ingestExpiry(state, action.messages);
@@ -2874,7 +2880,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       const cursor = reconcileCursor(stateRef.current, channelId, newest);
       if (cursor.fromFrontier) {
         const fr = await rest.listMessages(channelId, { after: cursor.after, limit: 50 });
-        dispatch({ type: 'MESSAGES_MERGE', channelId, messages: fr.messages });
+        dispatch({ type: 'MESSAGES_MERGE', channelId, messages: fr.messages, from: cursor.after });
         const reached = tailJoinedAt(cursor.after, fr.messages, 50);
         if (reached) {
           dispatch({ type: 'TAIL_REACHED', channelId, throughId: reached });
