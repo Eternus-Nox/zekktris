@@ -1534,9 +1534,11 @@ struct MessageListView: View {
         for m in rows
         where (m.authorId ?? m.author?.id) == selfId
             && m.sendState == nil
-            && m.metadata?.kind != "streak_warning" {
-            // ^ the streak-expiry notice is authored by a participant but is a
-            //   system-style row — it must not become the read-receipt anchor.
+            && m.metadata?.kind != "streak_warning"
+            && !DisappearingTimer.isNotice(m) {
+            // ^ the streak-expiry and disappearing-timer notices are authored
+            //   by a participant but are system-style rows — neither may
+            //   become the read-receipt anchor.
             latest = m
             if m.viewedAt != nil { lastRead = m }
         }
@@ -1592,10 +1594,39 @@ struct MessageListView: View {
             repliedDisplay: replied.map { masked(store.display(for: $0, in: channel)) },
             localEmbeds: store.localEmbeds(for: message.id) ?? [],
             isSaved: store.isSaved(message.id),
+            noticeText: DisappearingTimer.isNotice(message) ? disappearingNoticeText(message) : nil,
             emojiCatalogVersion: store.emojiCatalogVersion,
             mentionContextVersion: store.mentionContextVersion,
             e2eeUnlockVersion: store.e2eeUnlockVersion
         )
+    }
+
+    /// The disappearing-timer notice's line, from its metadata: "You set
+    /// disappearing messages to 1 day." for our own change, "<nickname or
+    /// name> set …" / "… turned off disappearing messages." for theirs.
+    /// Resolved here (nicknames are store state) so it's part of the row's
+    /// Equatable snapshot. Without the metadata, the server's readable
+    /// third-person content is shown as-is.
+    private func disappearingNoticeText(_ m: Message) -> String {
+        guard let seconds = m.metadata?.timerSeconds else { return m.text }
+        let initiator = m.metadata?.initiatorId ?? m.authorId ?? m.author?.id
+        if let initiator, initiator == store.currentUserId {
+            return DisappearingTimer.noticeText(timerSeconds: seconds, isSelf: true, name: "")
+        }
+        let name: String?
+        if let nick = store.dmNickname(initiator) {
+            name = nick
+        } else if let author = m.author, author.id == initiator {
+            name = author.name
+        } else {
+            name = nil
+        }
+        if let name {
+            return DisappearingTimer.noticeText(timerSeconds: seconds, isSelf: false, name: name)
+        }
+        return m.text.isEmpty
+            ? DisappearingTimer.noticeText(timerSeconds: seconds, isSelf: false, name: "Someone")
+            : m.text
     }
 
     /// Encrypted DM with no key on this device → show the unlock panel.
@@ -1651,6 +1682,23 @@ struct MessageListView: View {
                             .clipShape(Circle())
                             .overlay(Circle().strokeBorder(Theme.accent.opacity(0.45), lineWidth: 1))
                             .offset(x: 4, y: -4)
+                    }
+                }
+                // Disappearing-messages badge: the same small themed disc,
+                // bottom-left (the presence dot holds bottom-right), while the
+                // DM's timer is on. A badge rather than a chip so the
+                // lineLimit(1) title keeps its room on narrow phones.
+                .overlay(alignment: .bottomLeading) {
+                    if let timer = store.dmTimer(channel.id) {
+                        Image(systemName: "timer")
+                            .font(.system(size: 7, weight: .bold))
+                            .foregroundColor(Theme.accent)
+                            .frame(width: 13, height: 13)
+                            .background(Theme.bg2)
+                            .clipShape(Circle())
+                            .overlay(Circle().strokeBorder(Theme.accent.opacity(0.45), lineWidth: 1))
+                            .offset(x: -4, y: 4)
+                            .accessibilityLabel("Disappearing messages: \(DisappearingTimer.longLabel(timer))")
                     }
                 }
                 // Tapping the name opens the peer's profile — the SAME
@@ -2510,12 +2558,14 @@ struct MessageListView: View {
     /// who's talking.
     private let headerEveryNInRun = 6
 
-    /// A system/server NOTICE — a streak warning or a call summary — renders as
-    /// a centered line with NO avatar (see streakWarningRow / systemRow), so it
+    /// A system/server NOTICE — a streak warning, a poke, a call summary or a
+    /// disappearing-timer change — renders as a centered line with NO avatar
+    /// (see streakWarningRow / pokeRow / systemRow / disappearingNoticeRow), so it
     /// breaks the author grouping: the next real message must re-show its header
     /// and a same-author run can't be "continued" across one.
     private func isNoticeRow(_ m: Message) -> Bool {
         m.metadata?.kind == "streak_warning" || m.metadata?.kind == "poke" || m.type == "system_call"
+            || DisappearingTimer.isNotice(m)
     }
 
     /// Header and divider flags for every row, in ONE forward pass over the
@@ -2710,6 +2760,9 @@ struct MessageRowData: Equatable {
     var localEmbeds: [MessageEmbed]
     /// Save/Unsave menu label state.
     var isSaved: Bool
+    /// The disappearing-timer notice's resolved line ("You set …" / "<name>
+    /// set …"); nil for every other row.
+    var noticeText: String?
     var emojiCatalogVersion: Int
     var mentionContextVersion: Int
     var e2eeUnlockVersion: Int
@@ -2759,6 +2812,10 @@ struct MessageRow: View, Equatable {
             streakWarningRow
         } else if message.metadata?.kind == "poke" {
             pokeRow
+        } else if DisappearingTimer.isNotice(message) {
+            // Disappearing-timer change: a quiet centered notice with no
+            // context menu (nothing to edit, react to or reply to).
+            disappearingNoticeRow
         } else if message.type == "system_call" {
             systemRow
         } else {
@@ -2830,6 +2887,27 @@ struct MessageRow: View, Equatable {
         }
         .padding(.vertical, 5)
         .padding(.horizontal, gutter)
+    }
+
+    /// The disappearing-messages timer changed — a centered notice with the
+    /// timer glyph ("You set disappearing messages to 1 day.", "Alex turned
+    /// off disappearing messages."). The line is resolved in rowData from
+    /// the notice's metadata; the content is the server's fallback.
+    private var disappearingNoticeRow: some View {
+        HStack(spacing: 6) {
+            Spacer(minLength: 0)
+            Image(systemName: "timer")
+                .font(.system(size: 11))
+                .foregroundColor(Theme.ink3)
+            Text(data.noticeText ?? message.text)
+                .font(.zkSans(12))
+                .foregroundColor(Theme.ink2)
+                .multilineTextAlignment(.center)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 5)
+        .padding(.horizontal, gutter)
+        .accessibilityElement(children: .combine)
     }
 
     /// A poke / nudge — a centered notice ("👉 Alice poked you", or "👉 You
@@ -3079,6 +3157,14 @@ struct MessageRow: View, Equatable {
                 )
                 .frame(width: gutter, alignment: .leading)
                 .onTapGesture { if !isWebhook, !isServerAuthor, let a = message.author { store.openProfile(a) } }
+            } else if message.expireAfterSeconds != nil {
+                // A grouped row has no header line to carry the time, so its
+                // disappearing-timer icon sits in the gutter, under the
+                // avatar column.
+                disappearingIcon
+                    .frame(width: 40)
+                    .padding(.top, 5)
+                    .frame(width: gutter, alignment: .leading)
             } else {
                 Color.clear.frame(width: gutter)
             }
@@ -3123,6 +3209,9 @@ struct MessageRow: View, Equatable {
                                 .font(.zkSans(11))
                                 .foregroundColor(Theme.ink3)
                         }
+                        if message.expireAfterSeconds != nil {
+                            disappearingIcon
+                        }
                     }
                 }
                 if let fwd = message.forwardedFrom {
@@ -3151,6 +3240,20 @@ struct MessageRow: View, Equatable {
                 ? Color(hex: 0xF59E0B).opacity(0.04)
                 : Color.clear
         )
+    }
+
+    /// The small timer glyph on a message sent with a disappearing timer. No
+    /// countdown: a ticking row would defeat the Equatable row skipping.
+    private var disappearingIcon: some View {
+        Image(systemName: "timer")
+            .font(.system(size: 10))
+            .foregroundColor(Theme.ink3)
+            .accessibilityLabel(disappearingHint)
+    }
+
+    private var disappearingHint: String {
+        guard let s = message.expireAfterSeconds else { return "Disappearing message" }
+        return "Disappears \(DisappearingTimer.longLabel(s)) after it's seen"
     }
 
     @ViewBuilder
@@ -6841,19 +6944,17 @@ struct ScheduleSheet: View {
 
 // MARK: - DM settings
 
-/// Per-DM auto-delete TTL + close. Mirrors the web DmSettingsPanel. The
-/// TTL is a property of the conversation (affects both recipients) and
-/// counts from when the OTHER person reads the message.
+/// Per-DM settings + close. Mirrors the web DmSettingsPanel. The
+/// disappearing-messages timer is a property of the conversation (it applies
+/// to both sides' new messages, each counting from when it's read); it's
+/// changed on its own screen, DisappearingMessagesView.
 struct DmSettingsSheet: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
     let channel: Channel
     @State private var showEnableE2EE = false
     @State private var confirmDisableE2EE = false
-
-    private let options: [(String, Int?)] = [
-        ("Off", nil), ("30 seconds", 30), ("1 minute", 60), ("2 minutes", 120)
-    ]
+    @State private var showDisappearing = false
 
     /// Live channel state (E2EE flips arrive via CHANNEL_UPDATE).
     private var liveChannel: Channel {
@@ -6865,7 +6966,8 @@ struct DmSettingsSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     // Order (top→bottom): Shared media, Notifications, Read
-                    // receipts, Auto-delete, End-to-end encryption, Close DM.
+                    // receipts, Disappearing messages, End-to-end encryption,
+                    // Close DM.
                     Text("SHARED MEDIA")
                         .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
                     NavigationLink {
@@ -6901,21 +7003,9 @@ struct DmSettingsSheet: View {
 
                     Divider().overlay(Theme.line)
 
-                    Text("AUTO-DELETE MESSAGES")
+                    Text("DISAPPEARING MESSAGES")
                         .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
-                    if store.loadingDmSettings {
-                        ProgressView().tint(Theme.accent).frame(maxWidth: .infinity).padding(.vertical, 12)
-                    } else {
-                        VStack(spacing: 0) {
-                            ForEach(options.indices, id: \.self) { i in
-                                ttlRow(options[i])
-                                if i < options.count - 1 { Divider().overlay(Theme.line) }
-                            }
-                        }
-                        .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                    Text("When on, each message disappears this long after the other person reads it. This applies to both of you.")
-                        .font(.zkSans(12)).foregroundColor(Theme.ink3)
+                    disappearingRow
 
                     Divider().overlay(Theme.line)
 
@@ -6976,6 +7066,9 @@ struct DmSettingsSheet: View {
             .task { await store.loadDmSettings(channel.id) }
             .sheet(isPresented: $showEnableE2EE) {
                 EnableE2EESheet(channel: liveChannel)
+            }
+            .sheet(isPresented: $showDisappearing) {
+                DisappearingMessagesView(channel: liveChannel, current: store.dmTimer(channel.id))
             }
             .confirmationDialog(
                 "Turn off encryption?",
@@ -7060,19 +7153,315 @@ struct DmSettingsSheet: View {
     // the single unlock path (the per-DM key is re-derivable from it), so a
     // key file is redundant. See UnlockPanel.unlock() / store.unlockE2EE.
 
-    private func ttlRow(_ opt: (String, Int?)) -> some View {
-        Button { Task { await store.setDmTtl(channel.id, opt.1) } } label: {
-            HStack {
-                Text(opt.0).font(.zkSans(15)).foregroundColor(Theme.ink1)
+    /// "Disappearing messages · <current value> ›" — opens the
+    /// Disappearing Messages screen. Styled like the Photos & Files row.
+    /// Disabled until the DM's timer is known, so the screen never opens on
+    /// a guessed value.
+    private var disappearingRow: some View {
+        let known = store.isDmTimerKnown(channel.id)
+        return Button { showDisappearing = true } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "timer")
+                    .font(.system(size: 13)).foregroundColor(Theme.accent)
+                Text("Disappearing messages")
+                    .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
                 Spacer()
-                if store.dmTtl == opt.1 {
-                    Image(systemName: "checkmark").font(.system(size: 14, weight: .semibold)).foregroundColor(Theme.accent)
+                if known {
+                    Text(DisappearingTimer.label(store.dmTimer(channel.id)))
+                        .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                        .lineLimit(1)
+                } else if store.loadingDmSettings {
+                    ProgressView().tint(Theme.accent).scaleEffect(0.7)
+                } else {
+                    Text("Unavailable")
+                        .font(.zkSans(13)).foregroundColor(Theme.ink4)
                 }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.ink3)
+            }
+            .padding(12)
+            .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!known)
+    }
+}
+
+// MARK: - Disappearing messages
+
+/// Signal's "Disappearing Messages" screen: Off, the seven presets (longest
+/// first) and Custom Time, under the description. A choice is only a draft
+/// until ✓ (disabled while it equals the current setting); ✕ or a swipe down
+/// discards it. Presented as its own sheet with its own NavigationStack from
+/// DmSettingsSheet, so Custom Time can push. Mirrors the web's modal.
+struct DisappearingMessagesView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    let channel: Channel
+    /// The pending choice in seconds (nil = Off); committed only by ✓.
+    @State private var draft: Int?
+    @State private var saving = false
+    @State private var showCustom = false
+    @State private var saveError: String?
+
+    init(channel: Channel, current: Int?) {
+        self.channel = channel
+        _draft = State(initialValue: current)
+    }
+
+    /// The live setting (another device may change it while this is open).
+    private var current: Int? { store.dmTimer(channel.id) }
+    private var bounds: ClosedRange<Int> {
+        DisappearingTimer.bounds(maxTtlSeconds: store.dmMaxTtlSeconds)
+    }
+    /// The presets this server accepts (an older one takes none above 1 day).
+    private var presets: [Int] { DisappearingTimer.presets.filter { bounds.contains($0) } }
+    /// Anything on but not a listed preset (60, 120, 90 …) is Custom.
+    private var isCustom: Bool {
+        guard let d = draft else { return false }
+        return !presets.contains(d)
+    }
+    private var canSave: Bool {
+        guard !saving, draft != current else { return false }
+        if let d = draft { return bounds.contains(d) }
+        return true
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(DisappearingTimer.screenDescription)
+                        .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(spacing: 0) {
+                        optionRow("Off", value: nil)
+                        ForEach(presets, id: \.self) { seconds in
+                            Divider().overlay(Theme.line)
+                            optionRow(DisappearingTimer.longLabel(seconds), value: seconds)
+                        }
+                        Divider().overlay(Theme.line)
+                        customRow
+                    }
+                    .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
+                    if let saveError {
+                        Text(saveError)
+                            .font(.zkSans(12)).foregroundColor(Theme.danger)
+                    }
+                }
+                .padding(16)
+            }
+            .background(Theme.bg1.ignoresSafeArea())
+            .navigationTitle("Disappearing Messages").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(Theme.ink2)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .disabled(saving)
+                    .accessibilityLabel("Cancel")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button { save() } label: {
+                        if saving {
+                            ProgressView().tint(Theme.accent).frame(width: 44, height: 44)
+                        } else {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(canSave ? Theme.accent : Theme.ink4)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                    }
+                    .disabled(!canSave)
+                    .accessibilityLabel("Save")
+                }
+            }
+            .navigationDestination(isPresented: $showCustom) {
+                DisappearingCustomTimeView(draft: $draft, bounds: bounds)
+            }
+        }
+        .interactiveDismissDisabled(saving)
+    }
+
+    /// Leading-edge checkmark (as in Signal on iOS), in a fixed column so the
+    /// labels line up whichever row is selected.
+    private func checkmark(_ on: Bool) -> some View {
+        Image(systemName: "checkmark")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundColor(Theme.accent)
+            .opacity(on ? 1 : 0)
+            .frame(width: 18)
+            .accessibilityHidden(true)
+    }
+
+    private func optionRow(_ label: String, value: Int?) -> some View {
+        let selected = draft == value
+        return Button { draft = value } label: {
+            HStack(spacing: 10) {
+                checkmark(selected)
+                Text(label).font(.zkSans(15)).foregroundColor(Theme.ink1)
+                Spacer()
             }
             .contentShape(Rectangle())
             .padding(.horizontal, 12).padding(.vertical, 12)
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    /// "Custom Time · <its value> ›": selected when the draft isn't a listed
+    /// preset; pushes the number + unit wheel.
+    private var customRow: some View {
+        Button { showCustom = true } label: {
+            HStack(spacing: 10) {
+                checkmark(isCustom)
+                Text("Custom Time").font(.zkSans(15)).foregroundColor(Theme.ink1)
+                Spacer()
+                if isCustom, let d = draft {
+                    Text(DisappearingTimer.longLabel(d))
+                        .font(.zkSans(13)).foregroundColor(Theme.ink3)
+                        .lineLimit(1)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.ink3)
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 12).padding(.vertical, 12)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isCustom ? .isSelected : [])
+    }
+
+    private func save() {
+        guard canSave else { return }
+        saving = true
+        saveError = nil
+        let value = draft
+        Task {
+            let ok = await store.setDmTtl(channel.id, value)
+            saving = false
+            // The store reverted the setting; keep the draft so it can be retried.
+            if ok { dismiss() } else { saveError = store.errorText ?? "Couldn't change disappearing messages." }
+        }
+    }
+}
+
+/// Custom Time: the number + unit wheel. Seeded once from the current choice
+/// (DisappearingTimer.customInitial); moving it updates the parent's draft
+/// live, and the parent's ✓ still commits.
+private struct DisappearingCustomTimeView: View {
+    @Binding var draft: Int?
+    let bounds: ClosedRange<Int>
+    @State private var value = DisappearingTimer.Custom(count: 1, unit: .days)
+    @State private var seeded = false
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text(DisappearingTimer.longLabel(value.seconds))
+                .font(.zkSans(17, weight: .semibold)).foregroundColor(Theme.ink1)
+                .padding(.top, 8)
+            DisappearingTimeWheel(value: $value, bounds: bounds)
+                .frame(maxWidth: .infinity)
+                .frame(height: 216)
+                .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Theme.bg1.ignoresSafeArea())
+        .navigationTitle("Custom Time").navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            // Once per visit (onAppear can repeat on the same screen).
+            guard !seeded else { return }
+            seeded = true
+            value = DisappearingTimer.customInitial(draft, bounds: bounds)
+            draft = value.seconds
+        }
+        .onChange(of: value) { _, newValue in
+            draft = newValue.seconds
+        }
+    }
+}
+
+/// One UIPickerView with two components (count, unit) for Custom Time — one
+/// picker rather than two adjacent SwiftUI wheel Pickers, whose touch areas
+/// overlap. Changing the unit clamps the count to the new unit's range
+/// (DisappearingTimer.changeUnit), which reloads the count column.
+private struct DisappearingTimeWheel: UIViewRepresentable {
+    @Binding var value: DisappearingTimer.Custom
+    let bounds: ClosedRange<Int>
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> UIPickerView {
+        let picker = UIPickerView()
+        picker.dataSource = context.coordinator
+        picker.delegate = context.coordinator
+        picker.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        picker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        context.coordinator.sync(picker, to: value, bounds: bounds)
+        return picker
+    }
+
+    func updateUIView(_ picker: UIPickerView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.sync(picker, to: value, bounds: bounds)
+    }
+
+    final class Coordinator: NSObject, UIPickerViewDataSource, UIPickerViewDelegate {
+        var parent: DisappearingTimeWheel
+        /// What the two columns list right now; sync keeps them in step.
+        private var counts: ClosedRange<Int> = 1...1
+        private var units: [DisappearingTimer.Unit] = []
+
+        init(_ parent: DisappearingTimeWheel) { self.parent = parent }
+
+        /// Reload the columns only when what they list changed (the unit, or
+        /// the server's bounds), then move the wheels to `value`.
+        func sync(_ picker: UIPickerView, to value: DisappearingTimer.Custom, bounds: ClosedRange<Int>) {
+            let wantUnits = DisappearingTimer.units(within: bounds)
+            let wantCounts = DisappearingTimer.counts(for: value.unit, bounds: bounds) ?? (1...1)
+            if wantUnits != units || wantCounts != counts {
+                units = wantUnits
+                counts = wantCounts
+                picker.reloadAllComponents()
+            }
+            let countRow = min(max(value.count - counts.lowerBound, 0), counts.count - 1)
+            if picker.selectedRow(inComponent: 0) != countRow {
+                picker.selectRow(countRow, inComponent: 0, animated: false)
+            }
+            if let unitRow = units.firstIndex(of: value.unit), picker.selectedRow(inComponent: 1) != unitRow {
+                picker.selectRow(unitRow, inComponent: 1, animated: false)
+            }
+        }
+
+        func numberOfComponents(in pickerView: UIPickerView) -> Int { 2 }
+
+        func pickerView(_ pickerView: UIPickerView, numberOfRowsInComponent component: Int) -> Int {
+            component == 0 ? counts.count : units.count
+        }
+
+        func pickerView(_ pickerView: UIPickerView, titleForRow row: Int, forComponent component: Int) -> String? {
+            if component == 0 { return String(counts.lowerBound + row) }
+            return row < units.count ? units[row].label : nil
+        }
+
+        func pickerView(_ pickerView: UIPickerView, didSelectRow row: Int, inComponent component: Int) {
+            var next = parent.value
+            if component == 0 {
+                next.count = counts.lowerBound + row
+            } else {
+                guard row < units.count else { return }
+                next = DisappearingTimer.changeUnit(next, to: units[row], bounds: parent.bounds)
+            }
+            if next != parent.value { parent.value = next }
+        }
     }
 }
 

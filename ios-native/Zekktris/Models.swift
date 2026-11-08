@@ -287,6 +287,16 @@ struct Message: Codable, Identifiable, Hashable {
     /// viewed the message (drives the Sent → Delivered → Read label).
     var deliveredAt: String?
     var viewedAt: String?
+    /// Disappearing messages: the timer (seconds) this message was SENT with,
+    /// nil when it never disappears. Fixed at send time, so changing the DM's
+    /// setting only affects later messages. A JSON integer (or null).
+    var expireAfterSeconds: Int?
+    /// Disappearing messages: when it disappears (ISO server time), once a
+    /// recipient has read it. REST responses only, and hidden from the author
+    /// when the reader has read receipts off; the live value arrives in
+    /// MESSAGE_EXPIRY. AppStore keeps the deadlines in its own map, so a DTO
+    /// without this field never wipes a known one.
+    var expiresAt: String?
     /// Client-only send state for optimistic messages: "sending" | "failed" |
     /// nil (a normal/confirmed message). Absent from server JSON, so it decodes
     /// as nil and (being optional) is omitted when encoded.
@@ -304,6 +314,11 @@ struct MessageMetadata: Codable, Hashable {
     var streak: Int?
     /// kind == "poke": which variant (poke|heart|wave|like|fire).
     var pokeType: String?
+    /// kind == "disappearing_timer" (type "system_disappearing"): the DM's new
+    /// disappearing-messages timer in seconds, 0 = turned off. initiatorId is
+    /// who changed it. A NEW key on purpose: reusing an existing one with a
+    /// different JSON type would fail the whole page decode on older builds.
+    var timerSeconds: Int?
 }
 
 /// Poke/nudge variants — emoji + verb. Mirror of the server POKE_VARIANTS
@@ -381,8 +396,213 @@ extension Message {
             webhookId: nil, authorOverrideName: nil, authorOverrideAvatar: nil,
             metadata: nil,
             deliveredAt: nil, viewedAt: nil,
+            expireAfterSeconds: nil, expiresAt: nil,
             sendState: "sending"
         )
+    }
+}
+
+/// Signal-style disappearing messages: the timer presets and their labels,
+/// the Custom Time picker's number + unit math and the in-chat notice text.
+/// Pure Foundation, no store or view state. The wording matches the web
+/// (apps/web/src/lib/disappearing.ts) and the server's fallback notice text
+/// (apps/api/src/lib/disappearing.ts) word for word; keep them in sync.
+enum DisappearingTimer {
+    /// The description on the Disappearing Messages screen (Signal's copy).
+    static let screenDescription =
+        "When enabled, new messages sent and received in this chat will disappear after they have been seen."
+
+    /// The fixed choices, longest first (Signal's order). Off is separate.
+    static let presets: [Int] = [2_419_200, 604_800, 86_400, 28_800, 3_600, 300, 30]
+
+    /// A value is a preset only if it equals one of the seven; anything else
+    /// (60, 120, 90, 259200 …) is Custom.
+    static func isPreset(_ seconds: Int?) -> Bool {
+        guard let seconds else { return false }
+        return presets.contains(seconds)
+    }
+
+    /// The timers the server accepts: 1 s up to its `maxTtlSeconds` (4 weeks
+    /// today), or an older server's 10 s ... 1 day when it reports none.
+    static func bounds(maxTtlSeconds: Int?) -> ClosedRange<Int> {
+        if let maxTtlSeconds, maxTtlSeconds >= 1 { return 1...maxTtlSeconds }
+        return 10...86_400
+    }
+
+    // MARK: Labels
+
+    private struct Part {
+        let seconds: Int
+        let singular: String
+        let plural: String
+        let short: String
+    }
+
+    private static let parts: [Part] = [
+        Part(seconds: 604_800, singular: "week", plural: "weeks", short: "w"),
+        Part(seconds: 86_400, singular: "day", plural: "days", short: "d"),
+        Part(seconds: 3_600, singular: "hour", plural: "hours", short: "h"),
+        Part(seconds: 60, singular: "minute", plural: "minutes", short: "m"),
+        Part(seconds: 1, singular: "second", plural: "seconds", short: "s")
+    ]
+
+    /// Every non-zero week / day / hour / minute / second count, largest first.
+    private static func decompose(_ seconds: Int) -> [(count: Int, part: Part)] {
+        var rest = max(0, seconds)
+        var out: [(count: Int, part: Part)] = []
+        for p in parts {
+            let n = rest / p.seconds
+            if n > 0 {
+                out.append((count: n, part: p))
+                rest -= n * p.seconds
+            }
+        }
+        return out
+    }
+
+    /// "4 weeks", "1 day", "1 minute 30 seconds", "1 second".
+    static func longLabel(_ seconds: Int) -> String {
+        var words: [String] = []
+        for piece in decompose(seconds) {
+            let unit = piece.count == 1 ? piece.part.singular : piece.part.plural
+            words.append("\(piece.count) \(unit)")
+        }
+        return words.isEmpty ? "0 seconds" : words.joined(separator: " ")
+    }
+
+    /// The header form: "4w", "1d", "8h", "1m 30s".
+    static func shortLabel(_ seconds: Int) -> String {
+        var words: [String] = []
+        for piece in decompose(seconds) {
+            words.append("\(piece.count)\(piece.part.short)")
+        }
+        return words.isEmpty ? "0s" : words.joined(separator: " ")
+    }
+
+    /// A DM setting as a label: "Off" for nil (or non-positive), else the
+    /// long form.
+    static func label(_ value: Int?) -> String {
+        guard let value, value > 0 else { return "Off" }
+        return longLabel(value)
+    }
+
+    // MARK: Custom Time picker
+
+    /// The picker's unit column, smallest first.
+    enum Unit: Int, CaseIterable {
+        case seconds, minutes, hours, days, weeks
+
+        var secondsPerUnit: Int {
+            switch self {
+            case .seconds: return 1
+            case .minutes: return 60
+            case .hours: return 3_600
+            case .days: return 86_400
+            case .weeks: return 604_800
+            }
+        }
+
+        /// The largest count the picker offers in this unit.
+        var maxCount: Int {
+            switch self {
+            case .seconds: return 59
+            case .minutes: return 59
+            case .hours: return 23
+            case .days: return 6
+            case .weeks: return 4
+            }
+        }
+
+        var label: String {
+            switch self {
+            case .seconds: return "seconds"
+            case .minutes: return "minutes"
+            case .hours: return "hours"
+            case .days: return "days"
+            case .weeks: return "weeks"
+            }
+        }
+    }
+
+    /// A Custom Time value: `count` × `unit`.
+    struct Custom: Equatable {
+        var count: Int
+        var unit: Unit
+        var seconds: Int { count * unit.secondsPerUnit }
+    }
+
+    /// The counts the picker offers for `unit`, narrowed to what the server
+    /// accepts; nil when no count of that unit fits.
+    static func counts(for unit: Unit, bounds: ClosedRange<Int>) -> ClosedRange<Int>? {
+        let size = unit.secondsPerUnit
+        let lo = max(1, (bounds.lowerBound + size - 1) / size)
+        let hi = min(unit.maxCount, bounds.upperBound / size)
+        return lo <= hi ? lo...hi : nil
+    }
+
+    /// The units with at least one count the server accepts, smallest first.
+    static func units(within bounds: ClosedRange<Int>) -> [Unit] {
+        Unit.allCases.filter { counts(for: $0, bounds: bounds) != nil }
+    }
+
+    /// Keep a picker value inside the bounds: a unit with no valid count
+    /// moves to the nearest one that has some, then the count is clamped.
+    private static func fit(_ value: Custom, bounds: ClosedRange<Int>) -> Custom {
+        let available = units(within: bounds)
+        guard let smallest = available.first, let largest = available.last else { return value }
+        var unit = value.unit
+        if !available.contains(unit) {
+            unit = unit.secondsPerUnit > bounds.upperBound ? largest : smallest
+        }
+        guard let range = counts(for: unit, bounds: bounds) else { return value }
+        return Custom(count: min(max(value.count, range.lowerBound), range.upperBound), unit: unit)
+    }
+
+    /// Switching the unit keeps the count, clamped to the new unit's range
+    /// (45 minutes → hours gives 23 hours).
+    static func changeUnit(_ value: Custom, to unit: Unit, bounds: ClosedRange<Int>) -> Custom {
+        fit(Custom(count: value.count, unit: unit), bounds: bounds)
+    }
+
+    /// The Custom Time picker's starting value for the current setting:
+    /// exactly n × one unit with n inside that unit's range → that;
+    /// otherwise the largest unit u with value ≥ u and n = clamp(value / u,
+    /// 1, max(u)) — 90 s → 1 minute, 10 days → 1 week; no value → 1 day.
+    /// The unit ranges don't overlap, so the exact match is unique.
+    static func customInitial(_ value: Int?, bounds: ClosedRange<Int>) -> Custom {
+        guard let value, value >= 1 else {
+            return fit(Custom(count: 1, unit: .days), bounds: bounds)
+        }
+        let largestFirst = Array(Unit.allCases.reversed())
+        for unit in largestFirst where value % unit.secondsPerUnit == 0 {
+            let n = value / unit.secondsPerUnit
+            if n >= 1 && n <= unit.maxCount {
+                return fit(Custom(count: n, unit: unit), bounds: bounds)
+            }
+        }
+        for unit in largestFirst where value >= unit.secondsPerUnit {
+            let n = min(max(value / unit.secondsPerUnit, 1), unit.maxCount)
+            return fit(Custom(count: n, unit: unit), bounds: bounds)
+        }
+        return fit(Custom(count: 1, unit: .seconds), bounds: bounds)
+    }
+
+    // MARK: The in-chat notice
+
+    /// "You set disappearing messages to 1 day." / "Alex turned off
+    /// disappearing messages." `timerSeconds` 0 (or less) means off.
+    static func noticeText(timerSeconds: Int, isSelf: Bool, name: String) -> String {
+        let who = isSelf ? "You" : name
+        if timerSeconds > 0 {
+            return "\(who) set disappearing messages to \(longLabel(timerSeconds))."
+        }
+        return "\(who) turned off disappearing messages."
+    }
+
+    /// The timer-change notice row: type "system_disappearing", or
+    /// (defensively) any row carrying the "disappearing_timer" metadata.
+    static func isNotice(_ m: Message) -> Bool {
+        m.type == "system_disappearing" || m.metadata?.kind == "disappearing_timer"
     }
 }
 
@@ -514,10 +734,15 @@ struct MyEvent: Codable, Identifiable {
 struct MyEventsWrap: Codable { let events: [MyEvent] }
 
 struct DmSettings: Codable {
+    /// The DM's disappearing-messages timer for NEW messages (seconds), nil =
+    /// off. The key predates the Signal-style timer and stays for old builds.
     let ttlSecondsAfterRead: Int?
     /// This user's notification-preview choice for the DM. nil = not set
     /// (use the E2EE-aware default).
     var notificationShowContent: Bool?
+    /// The longest timer the server accepts (2419200 = 4 weeks; the shortest
+    /// is 1 s). Absent (nil) on older servers, which accept only 10...86400.
+    var maxTtlSeconds: Int?
 }
 
 struct StorageItem: Codable, Identifiable {

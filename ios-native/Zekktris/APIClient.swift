@@ -1718,10 +1718,14 @@ extension APIClient {
         try await sendVoid("POST", "/guilds/\(guildId)/onboarding/acknowledge")
     }
 
-    // ── DM settings (auto-delete TTL + close) ──────────────────────────────────
+    // ── DM settings (disappearing-messages timer + close) ──────────────────────
     func getDmSettings(channelId: String) async throws -> DmSettings {
         try await send("GET", "/users/@me/channels/\(channelId)/settings")
     }
+    /// Set the DM's disappearing-messages timer for NEW messages: seconds
+    /// (1...2419200 when the settings carry maxTtlSeconds, else 10...86400) or
+    /// nil for off. The key predates the Signal-style timer and stays for
+    /// installed apps; the server ignores a repeat of the current value.
     func updateDmSettings(channelId: String, ttlSecondsAfterRead: Int?) async throws {
         let body: [String: Any] = ["ttlSecondsAfterRead": ttlSecondsAfterRead ?? NSNull()]
         let data = try JSONSerialization.data(withJSONObject: body)

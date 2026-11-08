@@ -1351,6 +1351,13 @@ final class AppStore: ObservableObject {
         appInBackground = background
         if active { lastInteractionAt = Date() }
         if active { startOpenChannelPolling() } else { stopOpenChannelPolling() }
+        if active {
+            // Disappearing messages: the expiry timer doesn't fire while the
+            // app is suspended, so hide what expired meanwhile; then send the
+            // read held back while the app wasn't in use.
+            pruneExpired()
+            replayHeldAck()
+        }
         evaluateAutoPresence()
         // Re-sync the home-screen badge to true unread on every fg/bg flip (a
         // push may have set a stale number while we were away).
@@ -1755,6 +1762,15 @@ final class AppStore: ObservableObject {
         messages = []
         messageCache = [:]
         messageCacheLRU = []
+        // Disappearing messages: this account's deadlines, timers and held read.
+        expiryTimer?.invalidate()
+        expiryTimer = nil
+        expiryDeadlines = [:]
+        serverClockOffset = 0
+        heldAckChannelIds = []
+        dmTimers = [:]
+        dmTimerRevision = [:]
+        dmMaxTtlSeconds = nil
         dms = []
         relationships = []
         dmNicknames = [:]
@@ -2038,8 +2054,9 @@ final class AppStore: ObservableObject {
         selectedChannel = channel
         // Seed the new one from cache so a revisited conversation paints on THIS
         // frame (no empty→spinner→fade). loadMessages still runs below to
-        // refresh + merge server truth.
-        messages = messageCache[channel.id] ?? []
+        // refresh + merge server truth. Rows whose disappearing deadline
+        // passed while the chat was closed (or the app suspended) stay gone.
+        messages = withoutExpired(messageCache[channel.id] ?? [])
         if messageCache[channel.id] != nil { touchMessageCache(channel.id) }
         // Drop decrypted E2EE plaintext from the channel we're leaving —
         // it otherwise stayed resident for the whole session (only relock/
@@ -2073,6 +2090,9 @@ final class AppStore: ObservableObject {
         }
         Task { await loadMessages(channel); await loadSavedMembership(messages.map { $0.id }); markChannelRead(channel) }
         Task { await loadPins(channel) }
+        // The DM's disappearing-messages timer, so the header badge and the
+        // settings row know it without opening the settings sheet.
+        if channel.isDM { Task { await loadDmSettings(channel.id) } }
     }
 
     /// THE presence resolver: one map, one answer, every surface.
@@ -2579,7 +2599,10 @@ final class AppStore: ObservableObject {
             let fetched = try await api.messages(channelId: channel.id, limit: 50, around: jumpId)
             // The API returns newest-first; show oldest-first (bottom = newest).
             guard channel.id == selectedChannel?.id else { return }
-            var merged = fetched.sorted { $0.createdAt < $1.createdAt }
+            // Known deadlines live in expiryDeadlines, so this page (built
+            // before our read stamped expiresAt) can't wipe them; rows whose
+            // deadline passed are dropped even if the sweep hasn't run yet.
+            var merged = withoutExpired(fetched.sorted { $0.createdAt < $1.createdAt })
             // Keep anything that arrived over the gateway while the fetch was
             // in flight (it's in `messages` but not in the page) — replacing
             // the array outright dropped those rows.
@@ -2602,7 +2625,7 @@ final class AppStore: ObservableObject {
                     && ($0.sendState != nil || cutoff == nil || $0.createdAt > cutoff!)
             }
             if !live.isEmpty {
-                merged.append(contentsOf: live)
+                merged.append(contentsOf: withoutExpired(live))
                 merged.sort { $0.createdAt < $1.createdAt }
             }
             messages = merged
@@ -2697,7 +2720,7 @@ final class AppStore: ObservableObject {
             if older.isEmpty { hasMoreMessages = false; return }
             let sorted = older.sorted { $0.createdAt < $1.createdAt }
             let existing = Set(messages.map { $0.id })
-            let fresh = sorted.filter { !existing.contains($0.id) }
+            let fresh = withoutExpired(sorted.filter { !existing.contains($0.id) })
             if fresh.isEmpty { hasMoreMessages = false; return }
             pendingScrollAnchorId = oldest.id
             messages.insert(contentsOf: fresh, at: 0)
@@ -2793,9 +2816,41 @@ final class AppStore: ObservableObject {
     /// updates immediately (UI stays correct); the network ack trails on a
     /// short timer and always sends the NEWEST marker at fire time.
     private var pendingAckTasks: [String: Task<Void, Never>] = [:]
+    /// Channels whose read was held back because the app wasn't in use;
+    /// setAppActive(true) replays the open one's (replayHeldAck).
+    private var heldAckChannelIds: Set<String> = []
+
+    /// Whether a read may count as SEEN: the app is the active foreground
+    /// app. An ack starts disappearing messages' countdowns (and flips the
+    /// sender's "Read"), so a message that lands while the phone is in a
+    /// pocket — during a call, a background gateway, the app switcher — must
+    /// not count as read until the user is back.
+    private var readsCountAsSeen: Bool { appActive && !appInBackground }
+
+    /// An encrypted DM this device holds no key for shows the unlock panel
+    /// in place of its messages (the same test as the chat screen's lock
+    /// gate), so having it open isn't reading them: a read that would start
+    /// a disappearing message's countdown waits for the unlock. Without such
+    /// messages the read goes through as before, so a DM never unlocked on
+    /// this device still clears its unread dot.
+    private func readWouldStartUnseenTimers(_ channel: Channel) -> Bool {
+        let live = liveCopy(of: channel)
+        guard live.isE2EE, !hasE2EEKey(for: live) else { return false }
+        if dmTimer(channel.id) != nil { return true }
+        guard channel.id == selectedChannel?.id else { return false }
+        let me = currentUserId
+        return messages.contains { $0.expireAfterSeconds != nil && ($0.authorId ?? $0.author?.id) != me }
+    }
 
     /// Mark a channel read up to its newest known message and ack server-side.
+    /// Held (not dropped) while the app isn't active, or while a locked DM's
+    /// read would start disappearing timers; setAppActive(true) and
+    /// unlockE2EE replay it.
     func markChannelRead(_ channel: Channel) {
+        guard readsCountAsSeen, !readWouldStartUnseenTimers(channel) else {
+            heldAckChannelIds.insert(channel.id)
+            return
+        }
         // Opening/seeing a channel clears any of its delivered push
         // notifications from Notification Center (and the lock screen) so the
         // user isn't left staring at a banner for a conversation they've
@@ -2814,15 +2869,44 @@ final class AppStore: ObservableObject {
         if let rs = readStates[channel.id], rs.lastMessageId == last, (rs.mentionCount ?? 0) == 0 { return }
         readStates[channel.id] = ReadState(channelId: channel.id, lastMessageId: last, mentionCount: 0)
         updateAppBadge()
-        // Trailing-debounce the server ack (1s). Cancelling the prior task
-        // also removes the interleaved-response race: at most one ack per
-        // channel is in flight, carrying the newest local marker.
-        pendingAckTasks[channel.id]?.cancel()
-        let channelId = channel.id
+        scheduleAck(channel.id)
+    }
+
+    /// Back in the foreground (or just unlocked): send the read the open
+    /// conversation held back. Only that one — a chat left meanwhile wasn't
+    /// being read.
+    private func replayHeldAck() {
+        guard !heldAckChannelIds.isEmpty else { return }
+        let held = heldAckChannelIds
+        heldAckChannelIds = []
+        guard let channel = selectedChannel, held.contains(channel.id) else { return }
+        markChannelRead(channel)
+        // Still not readable (inactive again, or still locked): held again.
+        if heldAckChannelIds.contains(channel.id) { return }
+        // Held inside the debounce, the local marker had already moved, so
+        // markChannelRead found nothing new to send: send it from here.
+        if pendingAckTasks[channel.id] == nil { scheduleAck(channel.id) }
+    }
+
+    /// Send the channel's newest local read marker to the server, trailing
+    /// a 1 s debounce. Cancelling the prior task also removes the
+    /// interleaved-response race: at most one ack per channel is in flight,
+    /// carrying the newest local marker.
+    private func scheduleAck(_ channelId: String) {
+        pendingAckTasks[channelId]?.cancel()
         pendingAckTasks[channelId] = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard !Task.isCancelled, let self else { return }
             self.pendingAckTasks[channelId] = nil
+            // Left the foreground (or the DM was relocked) inside the
+            // debounce: hold it for the replay (the local marker has already
+            // moved, so the replay re-sends it from here rather than through
+            // markChannelRead).
+            let lockedOpen = self.selectedChannel.map { $0.id == channelId && self.readWouldStartUnseenTimers($0) } ?? false
+            guard self.readsCountAsSeen, !lockedOpen else {
+                self.heldAckChannelIds.insert(channelId)
+                return
+            }
             guard let marker = self.readStates[channelId]?.lastMessageId, !marker.isEmpty else { return }
             if let rs = try? await self.api.ackChannel(channelId: channelId, messageId: marker) {
                 // Only apply if the server marker is >= the local one — a slow
@@ -3814,11 +3898,14 @@ final class AppStore: ObservableObject {
 
         // Optimistic placeholder: shows instantly, keyed by the nonce so the
         // confirmed message replaces it. Plaintext is mapped so E2EE renders.
-        let placeholder = Message(
+        var placeholder = Message(
             optimisticNonce: nonce, channelId: channel.id, content: content,
             author: selfPublicUser, authorId: currentUserId,
             replyToId: replyId, createdAt: isoNow()
         )
+        // The DM's current disappearing timer, so the row's timer icon shows
+        // before the echo (the server's snapshot replaces it).
+        if channel.isDM { placeholder.expireAfterSeconds = dmTimer(channel.id) }
         decrypted[nonce] = content
         messages.append(placeholder)
         replyingTo = nil
@@ -4478,6 +4565,146 @@ final class AppStore: ObservableObject {
     private func removeMessage(id: String) {
         messages.removeAll { $0.id == id }
         decrypted[id] = nil
+    }
+
+    /// Remove rows from a closed conversation's cache (no-op when it holds
+    /// none of them).
+    private func dropFromCache(_ channelId: String, ids: Set<String>) {
+        guard let rows = messageCache[channelId], rows.contains(where: { ids.contains($0.id) }) else { return }
+        messageCache[channelId] = rows.filter { !ids.contains($0.id) }
+    }
+
+    // MARK: Disappearing messages (local expiry)
+
+    /// Message id → when it disappears, in SERVER time, from REST `expiresAt`
+    /// and MESSAGE_EXPIRY. Kept apart from the Message rows so a DTO that
+    /// lacks the field (the viewer's own first page is built before the read
+    /// stamps it, MESSAGE_UPDATE broadcasts never carry it) can't wipe a known
+    /// deadline. A passed deadline is remembered for `expiryRetain` so a
+    /// refetch racing the server sweep can't bring the row back.
+    private var expiryDeadlines: [String: Date] = [:]
+    private let expiryRetain: TimeInterval = 10 * 60
+    /// Server clock minus this device's clock, from MESSAGE_EXPIRY's
+    /// server_now (0 until one arrives). Delivery latency makes it a slight
+    /// underestimate, so a skewed device hides a message a little late, never
+    /// early.
+    private var serverClockOffset: TimeInterval = 0
+    /// ONE timer for every countdown, armed for the earliest future deadline.
+    private var expiryTimer: Timer?
+
+    /// This device's clock in server time.
+    private func serverNowDate() -> Date { Date().addingTimeInterval(serverClockOffset) }
+
+    /// A server ISO time (with or without fractional seconds).
+    private func parseServerTime(_ iso: String) -> Date? {
+        iso.isEmpty ? nil : messageDate(iso)
+    }
+
+    /// True when the message's deadline has passed on this device.
+    private func isExpiredLocally(_ id: String) -> Bool {
+        guard let at = expiryDeadlines[id] else { return false }
+        return at <= serverNowDate()
+    }
+
+    /// Record the deadlines REST rows carry; true when one was new.
+    private func harvestDeadlines(_ rows: [Message]) -> Bool {
+        var learned = false
+        for m in rows {
+            guard let iso = m.expiresAt, let at = parseServerTime(iso) else { continue }
+            if expiryDeadlines[m.id] != at {
+                expiryDeadlines[m.id] = at
+                learned = true
+            }
+        }
+        return learned
+    }
+
+    /// `rows` without the ones that have already disappeared. Every ingest
+    /// path runs through here (or upsert's own check) so the cache seed, a
+    /// page load or the 3 s poll can't resurrect an expired row before the
+    /// server's sweep deletes it. Re-arms the timer when a row carried a new
+    /// deadline.
+    private func withoutExpired(_ rows: [Message]) -> [Message] {
+        if harvestDeadlines(rows) { scheduleExpiryTimer() }
+        if expiryDeadlines.isEmpty { return rows }
+        let now = serverNowDate()
+        guard rows.contains(where: { (expiryDeadlines[$0.id] ?? .distantFuture) <= now }) else { return rows }
+        return rows.filter { (expiryDeadlines[$0.id] ?? .distantFuture) > now }
+    }
+
+    /// Hide every message whose deadline has passed — the open conversation
+    /// in ONE array assignment (one index rebuild, one list update), the
+    /// closed conversations' caches, and anything derived from those rows
+    /// (decrypted plaintext, E2EE link previews, a reply in progress) — then
+    /// re-arm the timer. Runs when the timer fires, when MESSAGE_EXPIRY lands
+    /// and on foreground (a suspended app's timer doesn't fire).
+    func pruneExpired() {
+        let now = serverNowDate()
+        // Forget long-passed deadlines; the server's reads have dropped
+        // those rows by now.
+        let forgetBefore = now.addingTimeInterval(-expiryRetain)
+        if expiryDeadlines.values.contains(where: { $0 < forgetBefore }) {
+            expiryDeadlines = expiryDeadlines.filter { $0.value >= forgetBefore }
+        }
+        var gone = Set<String>()
+        for (id, at) in expiryDeadlines where at <= now { gone.insert(id) }
+        if !gone.isEmpty {
+            let removedRows = messages.filter { gone.contains($0.id) }
+            if !removedRows.isEmpty {
+                messages = messages.filter { !gone.contains($0.id) }
+                closeLightboxShowing(removedRows)
+            }
+            for cid in Array(messageCache.keys) { dropFromCache(cid, ids: gone) }
+            if decrypted.keys.contains(where: { gone.contains($0) }) {
+                decrypted = decrypted.filter { !gone.contains($0.key) }
+            }
+            if e2eeEmbeds.keys.contains(where: { gone.contains($0) }) {
+                e2eeEmbeds = e2eeEmbeds.filter { !gone.contains($0.key) }
+            }
+            e2eeEmbedResolving.subtract(gone)
+            if let r = replyingTo, gone.contains(r.id) { replyingTo = nil }
+        }
+        scheduleExpiryTimer()
+    }
+
+    /// An open image viewer showing an attachment of one of `rows` closes
+    /// with them. Matched by attachment id (encrypted) or URL; a viewer whose
+    /// URL can't be matched stays open, as before.
+    private func closeLightboxShowing(_ rows: [Message]) {
+        guard let lb = lightbox else { return }
+        let attachments = rows.flatMap { $0.attachments ?? [] }
+        guard !attachments.isEmpty else { return }
+        let ids = Set(attachments.map { $0.id })
+        let urls = attachments.map { $0.url }.filter { !$0.isEmpty }
+        let shows = lb.items.contains { item in
+            if let enc = item.encrypted, ids.contains(enc.attachment.id) { return true }
+            guard let shown = item.url?.absoluteString else { return false }
+            return urls.contains { shown.hasSuffix($0) }
+        }
+        if shows { lightbox = nil }
+    }
+
+    /// Arm the one expiry timer for the earliest deadline still ahead (or
+    /// none). `.common` run-loop mode so it fires during a scroll, like the
+    /// open-channel poll. No clamp needed: a Timer takes a 4-week fire date.
+    private func scheduleExpiryTimer() {
+        expiryTimer?.invalidate()
+        expiryTimer = nil
+        let now = serverNowDate()
+        var earliest: Date?
+        for at in expiryDeadlines.values where at > now {
+            if let e = earliest, e <= at { continue }
+            earliest = at
+        }
+        guard let next = earliest else { return }
+        // The deadline on this device's clock, a hair late so the re-check
+        // in pruneExpired sees it as passed.
+        let fireAt = next.addingTimeInterval(0.05 - serverClockOffset)
+        let timer = Timer(fire: fireAt, interval: 0, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.pruneExpired() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        expiryTimer = timer
     }
 
     // MARK: Polls
@@ -5420,29 +5647,88 @@ final class AppStore: ObservableObject {
 
     // MARK: DM settings
 
-    @Published var dmTtl: Int?
+    /// Each DM's disappearing-messages timer for NEW messages, by channel id:
+    /// seconds, 0 = off; absent = not known yet. Fed by loadDmSettings (on DM
+    /// open and by the settings sheet), DM_SETTINGS_UPDATE, the timer-change
+    /// notice and our own save. Drives the header badge and the settings row.
+    @Published private(set) var dmTimers: [String: Int] = [:]
+    /// Bumped on every dmTimers write that isn't a settings fetch, so a fetch
+    /// that was already in flight can't overwrite a newer value with its
+    /// older answer.
+    private var dmTimerRevision: [String: Int] = [:]
+    /// The longest timer the server accepts (DmSettings.maxTtlSeconds) from
+    /// the last settings fetch; nil = an older server (10 s ... 1 day) or not
+    /// fetched yet.
+    @Published private(set) var dmMaxTtlSeconds: Int?
     /// This user's notification-preview choice for the open DM. nil = not set
     /// (use the E2EE-aware default).
     @Published var dmNotifShowContent: Bool?
     @Published var loadingDmSettings = false
+    /// The newest loadDmSettings call; only it writes the open-DM values
+    /// above (an older, slower answer may be for another DM).
+    private var dmSettingsLoadSeq = 0
+
+    /// The DM's disappearing-messages timer in seconds, nil when off or not
+    /// known yet.
+    func dmTimer(_ channelId: String) -> Int? {
+        guard let s = dmTimers[channelId], s > 0 else { return nil }
+        return s
+    }
+    /// True once the DM's timer is known (fetched, or learned from an event).
+    func isDmTimerKnown(_ channelId: String) -> Bool { dmTimers[channelId] != nil }
+
+    /// Record a DM's timer from an event or our own save (nil = off).
+    private func setDmTimer(_ channelId: String, _ seconds: Int?) {
+        let value = max(0, seconds ?? 0)
+        dmTimerRevision[channelId, default: 0] &+= 1
+        if dmTimers[channelId] != value { dmTimers[channelId] = value }
+    }
 
     func loadDmSettings(_ channelId: String) async {
+        dmSettingsLoadSeq &+= 1
+        let seq = dmSettingsLoadSeq
+        let revision = dmTimerRevision[channelId] ?? 0
         loadingDmSettings = true
-        defer { loadingDmSettings = false }
+        defer { if seq == dmSettingsLoadSeq { loadingDmSettings = false } }
         do {
             let settings = try await api.getDmSettings(channelId: channelId)
-            dmTtl = settings.ttlSecondsAfterRead
-            dmNotifShowContent = settings.notificationShowContent
+            // Per channel, so it's right whichever DM is open now; skipped
+            // only when an event or a save wrote a newer value meanwhile.
+            if (dmTimerRevision[channelId] ?? 0) == revision {
+                let value = max(0, settings.ttlSecondsAfterRead ?? 0)
+                if dmTimers[channelId] != value { dmTimers[channelId] = value }
+            }
+            if seq == dmSettingsLoadSeq {
+                dmMaxTtlSeconds = settings.maxTtlSeconds
+                dmNotifShowContent = settings.notificationShowContent
+            }
         } catch {
-            dmTtl = nil
-            dmNotifShowContent = nil
+            // Keep a known timer: a failed fetch says nothing about it.
+            if seq == dmSettingsLoadSeq { dmNotifShowContent = nil }
         }
     }
-    func setDmTtl(_ channelId: String, _ seconds: Int?) async {
-        let prev = dmTtl
-        dmTtl = seconds
-        do { try await api.updateDmSettings(channelId: channelId, ttlSecondsAfterRead: seconds) }
-        catch { dmTtl = prev; errorText = (error as? APIError)?.message ?? error.localizedDescription }
+    /// Change the DM's disappearing-messages timer (nil = off). Optimistic;
+    /// reverts and sets errorText on failure. Repeating the current value
+    /// sends nothing. Returns whether the server took it.
+    @discardableResult
+    func setDmTtl(_ channelId: String, _ seconds: Int?) async -> Bool {
+        let next = max(0, seconds ?? 0)
+        let prev = dmTimers[channelId]
+        if prev == next { return true }
+        setDmTimer(channelId, seconds)
+        let revision = dmTimerRevision[channelId] ?? 0
+        do {
+            try await api.updateDmSettings(channelId: channelId, ttlSecondsAfterRead: next > 0 ? next : nil)
+            return true
+        } catch {
+            // Revert unless something newer (an event, another save) landed.
+            if (dmTimerRevision[channelId] ?? 0) == revision {
+                dmTimerRevision[channelId, default: 0] &+= 1
+                if let prev { dmTimers[channelId] = prev } else { dmTimers.removeValue(forKey: channelId) }
+            }
+            errorText = (error as? APIError)?.message ?? error.localizedDescription
+            return false
+        }
     }
     /// Set this user's notification-preview choice for the open DM (private).
     /// Persist the notification-preview choice. The caller applies the
@@ -6120,6 +6406,12 @@ final class AppStore: ObservableObject {
                 return
             }
             bumpChannelLastMessage(message.channelId, message.id)
+            // The disappearing-timer notice also says what the timer now is:
+            // apply it in case the DM_SETTINGS_UPDATE beside it is lost.
+            let isTimerNotice = DisappearingTimer.isNotice(message)
+            if isTimerNotice, let seconds = message.metadata?.timerSeconds {
+                setDmTimer(message.channelId, seconds)
+            }
             // A user's message supersedes their typing indicator (web parity).
             if let author = message.authorId ?? message.author?.id {
                 typing.removeValue(forKey: author)
@@ -6148,7 +6440,7 @@ final class AppStore: ObservableObject {
                 // messages didn't paint until the refresh fetch landed (or, if
                 // that fetch failed right after foregrounding, until the 12s
                 // poll). Dedup by id; cap from the front to bound memory.
-                if !cached.contains(where: { $0.id == message.id }) {
+                if !cached.contains(where: { $0.id == message.id }), !isExpiredLocally(message.id) {
                     cached.append(message)
                     let cap = Self.messageCachePageSize
                     if cached.count > cap { cached.removeFirst(cached.count - cap) }
@@ -6158,8 +6450,10 @@ final class AppStore: ObservableObject {
             // Tactile feedback for a message from SOMEONE ELSE. The phone buzzes
             // (2–3 taps) when the message lands in the channel you're viewing and
             // that channel isn't muted; the watch buzzes for incoming DMs while
-            // its app is reachable (mirrors the poke relay below).
-            if let a = message.authorId ?? message.author?.id, a != currentUserId {
+            // its app is reachable (mirrors the poke relay below). The
+            // disappearing-timer notice is quiet, as in Signal (the server
+            // doesn't push it either).
+            if let a = message.authorId ?? message.author?.id, a != currentUserId, !isTimerNotice {
                 if message.channelId == selectedChannel?.id,
                    channelLevel(message.channelId, guildId: selectedChannel?.guildId) != "nothing" {
                     Haptics.incomingMessage()
@@ -6221,18 +6515,31 @@ final class AppStore: ObservableObject {
                 Haptics.poke()
             }
         case "MESSAGE_DELETE":
-            // Payload is snake_case: { id, channel_id }.
+            // Payload is snake_case: { id, channel_id }. A closed chat's cache
+            // drops it too, so reopening can't repaint it (the disappearing
+            // sweep's delete is the author's only signal when the reader has
+            // read receipts off).
             if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let cid = obj["channel_id"] as? String, cid == selectedChannel?.id,
+               let cid = obj["channel_id"] as? String,
                let id = obj["id"] as? String {
-                removeMessage(id: id)
+                if cid == selectedChannel?.id {
+                    removeMessage(id: id)
+                    if replyingTo?.id == id { replyingTo = nil }
+                } else {
+                    dropFromCache(cid, ids: [id])
+                }
             }
         case "MESSAGE_DELETE_BULK":
             // Payload is snake_case: { ids, channel_id }.
             if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let cid = obj["channel_id"] as? String, cid == selectedChannel?.id,
+               let cid = obj["channel_id"] as? String,
                let ids = obj["ids"] as? [String] {
-                for id in ids { removeMessage(id: id) }
+                if cid == selectedChannel?.id {
+                    for id in ids { removeMessage(id: id) }
+                    if let r = replyingTo, ids.contains(r.id) { replyingTo = nil }
+                } else {
+                    dropFromCache(cid, ids: Set(ids))
+                }
             }
         case "PRESENCE_UPDATE":
             // Server payload is snake_case: { user_id, guild_id, status }.
@@ -6496,11 +6803,37 @@ final class AppStore: ObservableObject {
                 if changed { messages = newMessages }
             }
         case "DM_SETTINGS_UPDATE":
-            // Cross-device sync of the DM auto-delete TTL. Payload is
-            // camelCase: { channelId, ttlSecondsAfterRead }.
-            if let d = jsonDict(data),
-               let cid = d["channelId"] as? String, cid == selectedChannel?.id {
-                dmTtl = d["ttlSecondsAfterRead"] as? Int
+            // A DM's disappearing-messages timer changed (on any device, by
+            // either side). Payload is camelCase: { channelId,
+            // ttlSecondsAfterRead } — null = off. Every DM, not just the open
+            // one: the map feeds each DM's header badge.
+            if let d = jsonDict(data), let cid = d["channelId"] as? String {
+                setDmTimer(cid, d["ttlSecondsAfterRead"] as? Int)
+            }
+        case "MESSAGE_EXPIRY":
+            // Disappearing messages started counting down: a read ack stamped
+            // their deadlines. Payload is snake_case: { channel_id,
+            // expiries: [{ id, expires_at }], server_now }. Reaches the reader's
+            // own devices, and the author's when the reader has read receipts
+            // on. Deadlines stay in server time; server_now gives the offset
+            // to this device's clock (see serverClockOffset).
+            if let d = jsonDict(data), let list = d["expiries"] as? [[String: Any]] {
+                if let nowIso = d["server_now"] as? String, let serverNow = parseServerTime(nowIso) {
+                    serverClockOffset = serverNow.timeIntervalSince(Date())
+                }
+                var learned = false
+                for e in list {
+                    guard let id = e["id"] as? String,
+                          let iso = e["expires_at"] as? String,
+                          let at = parseServerTime(iso) else { continue }
+                    if expiryDeadlines[id] != at {
+                        expiryDeadlines[id] = at
+                        learned = true
+                    }
+                }
+                // Hides anything already due (a long-backgrounded event) and
+                // re-arms the one timer for the earliest deadline.
+                if learned { pruneExpired() }
             }
         case "FAMILY_REQUEST_CREATE", "FAMILY_FLAG_CREATE":
             // Parental-controls activity: refresh the summary if it's loaded
@@ -6590,10 +6923,24 @@ final class AppStore: ObservableObject {
                 out.reactions = rs
             }
         }
+        // Disappearing messages: broadcasts (MESSAGE_UPDATE, an edit reply)
+        // never carry expiresAt, and an older server sends no timer at all.
+        // Neither is ever cleared server-side, so keep what we know.
+        if out.expiresAt == nil { out.expiresAt = prev.expiresAt }
+        if out.expireAfterSeconds == nil { out.expireAfterSeconds = prev.expireAfterSeconds }
         return out
     }
 
     private func upsert(_ message: Message) {
+        // Disappearing messages: never (re-)insert a row whose deadline has
+        // passed — the 3 s poll or a refetch racing the server's sweep would
+        // bring it back — and drop a copy we still hold.
+        if harvestDeadlines([message]) { scheduleExpiryTimer() }
+        if isExpiredLocally(message.id) {
+            if messagesById[message.id] != nil { removeMessage(id: message.id) }
+            if replyingTo?.id == message.id { replyingTo = nil }
+            return
+        }
         // If this confirmed message echoes the nonce of an optimistic
         // placeholder, replace the placeholder in place (its id == the nonce).
         if let nonce = message.nonce,
@@ -6753,6 +7100,9 @@ final class AppStore: ObservableObject {
         storeKey(key, for: channel.id)
         decryptVisible()
         registerE2EEPurgeProofIfNeeded(channel)
+        // Now the messages are readable: send the read held back while the
+        // unlock panel covered them (disappearing timers start from it).
+        if channel.id == selectedChannel?.id { replayHeldAck() }
         return true
     }
 
