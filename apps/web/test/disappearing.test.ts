@@ -11,7 +11,9 @@ import {
   clampCustomNumber,
   customInitial,
   customSeconds,
+  dateHeaderOffset,
   dropExpired,
+  effectiveOffset,
   formatLong,
   formatShort,
   formatTimer,
@@ -19,6 +21,7 @@ import {
   isDisappearingNotice,
   isPreset,
   mergeDeadlines,
+  nextDateOffset,
   nextDeadline,
   noticeText,
   presetsWithin,
@@ -268,6 +271,52 @@ describe('local deadlines', () => {
     expect(serverOffsetFrom('garbage', T0)).toBeNull();
   });
 
+  it('corrects for a skewed device clock with the HTTP Date header, as a lower bound', () => {
+    // The device clock is 60 s FAST. The response was stamped at server
+    // T0 + 0.7 s (the header says T0: whole seconds) and took 150 ms.
+    const stampedAt = T0 + 700;
+    const receivedAt = stampedAt + 60_000 + 150;
+    const offset = dateHeaderOffset(T0, receivedAt);
+    expect(offset).toBe(-60_850);
+    // Never ahead of the server, so a deadline never fires early…
+    expect(serverNow(offset, receivedAt)).toBeLessThanOrEqual(stampedAt + 150);
+    // …and behind it only by the truncation plus the latency.
+    expect(serverNow(offset, receivedAt)).toBe(stampedAt + 150 - 850);
+    // A 30 s timer read at server T0 is NOT already gone (the raw device
+    // clock would say so), and fires within about a second of its time.
+    const deadline = T0 + 30_000;
+    expect(dropExpired([{ id: 'm' }], { m: deadline }, serverNow(null, receivedAt))).toHaveLength(0);
+    expect(dropExpired([{ id: 'm' }], { m: deadline }, serverNow(offset, receivedAt))).toHaveLength(1);
+    const delay = timeoutUntil(deadline, offset, receivedAt);
+    expect(delay).toBeGreaterThan(deadline - (stampedAt + 150));
+    expect(delay).toBeLessThan(deadline - (stampedAt + 150) + 1_100);
+    expect(dateHeaderOffset(Number.NaN, receivedAt)).toBeNull();
+    expect(dateHeaderOffset(T0, Number.NaN)).toBeNull();
+  });
+
+  it('keeps a Date-header offset through jitter, takes any drop and a real rise', () => {
+    expect(nextDateOffset(null, -60_850)).toBe(-60_850);
+    // A drop is always taken: the device clock may have jumped forward, and
+    // the higher value would then hide messages early.
+    expect(nextDateOffset(-60_850, -60_900)).toBe(-60_900);
+    expect(nextDateOffset(-60_850, -120_000)).toBe(-120_000);
+    // A rise within the header's one-second resolution is noise: kept.
+    expect(nextDateOffset(-60_850, -60_850)).toBe(-60_850);
+    expect(nextDateOffset(-60_850, -60_100)).toBe(-60_850);
+    expect(nextDateOffset(-60_850, -59_850)).toBe(-60_850);
+    // More than that: the device clock jumped back, or the kept sample came
+    // from a slow or cached response.
+    expect(nextDateOffset(-60_850, -59_849)).toBe(-59_849);
+    expect(nextDateOffset(-120_000, -60_100)).toBe(-60_100);
+  });
+
+  it('prefers MESSAGE_EXPIRY’s offset, then the Date header, then the device clock', () => {
+    expect(effectiveOffset(-60_010, -60_850)).toBe(-60_010);
+    expect(effectiveOffset(0, -60_850)).toBe(0);
+    expect(effectiveOffset(null, -60_850)).toBe(-60_850);
+    expect(effectiveOffset(null, null)).toBeNull();
+  });
+
   it('never asks setTimeout for more than 2^31 − 1 ms (4 weeks would fire at once)', () => {
     const fourWeeksMs = 2_419_200 * 1000;
     expect(fourWeeksMs).toBeGreaterThan(MAX_TIMEOUT_MS);
@@ -393,6 +442,81 @@ describe('RestClient DM settings (the key installed apps depend on)', () => {
     expect(timerBoundsFor(r.maxTtlSeconds)).toEqual(TIMER_BOUNDS);
     const old = capture({ ttlSecondsAfterRead: 30, notificationShowContent: null });
     expect(timerBoundsFor((await old.client.getDmSettings('42')).maxTtlSeconds)).toEqual(LEGACY_TIMER_BOUNDS);
+  });
+});
+
+describe('RestClient.onServerDate (the Date-header clock offset)', () => {
+  const DATE = 'Sun, 08 Nov 2026 12:00:00 GMT';
+  const DATE_MS = Date.parse('2026-11-08T12:00:00.000Z');
+
+  function client(respond: () => Response) {
+    const order: string[] = [];
+    const rest = new RestClient({
+      baseUrl: 'https://example.test/api',
+      getToken: () => 't',
+      fetch: (async () => {
+        order.push('fetch');
+        return respond();
+      }) as unknown as typeof fetch,
+    } as ConstructorParameters<typeof RestClient>[0]);
+    return { rest, order };
+  }
+  const page = (headers: Record<string, string>, status = 200) =>
+    new Response(status === 204 ? null : JSON.stringify({ messages: [] }), {
+      status,
+      headers: { 'content-type': 'application/json', ...headers },
+    });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(DATE_MS + 60_400);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('reports the parsed header and the arrival time before the caller sees the response', async () => {
+    const { rest, order } = client(() => page({ Date: DATE }));
+    const seen: Array<[number, number]> = [];
+    rest.onServerDate((serverMs, receivedAt) => {
+      order.push('date');
+      seen.push([serverMs, receivedAt]);
+    });
+    await rest.listMessages('42', { limit: 50 });
+    order.push('caller');
+    expect(seen).toEqual([[DATE_MS, DATE_MS + 60_400]]);
+    expect(order).toEqual(['fetch', 'date', 'caller']);
+  });
+
+  it('reports for empty and error responses too, but not without a readable header', async () => {
+    let next = page({ Date: DATE }, 204);
+    const { rest } = client(() => next);
+    const seen: number[] = [];
+    rest.onServerDate((serverMs) => seen.push(serverMs));
+    await rest.ack('42', '1');
+    next = new Response(JSON.stringify({ error: { code: 'NOPE', message: 'no' } }), {
+      status: 403,
+      headers: { 'content-type': 'application/json', Date: DATE },
+    });
+    await expect(rest.listMessages('42')).rejects.toMatchObject({ status: 403 });
+    next = page({});
+    await rest.listMessages('42');
+    next = page({ Date: 'not a date' });
+    await rest.listMessages('42');
+    expect(seen).toEqual([DATE_MS, DATE_MS]);
+  });
+
+  it('unsubscribes, and a throwing listener does not fail the request', async () => {
+    const { rest } = client(() => page({ Date: DATE }));
+    const seen: number[] = [];
+    rest.onServerDate(() => {
+      throw new Error('listener bug');
+    });
+    const off = rest.onServerDate((serverMs) => seen.push(serverMs));
+    await expect(rest.listMessages('42')).resolves.toEqual({ messages: [] });
+    off();
+    await rest.listMessages('42');
+    expect(seen).toEqual([DATE_MS]);
   });
 });
 

@@ -132,6 +132,93 @@ describe('AppState — disappearing messages', () => {
     expect(ids(run(loaded, { type: 'MESSAGES_EXPIRE' }), 'c')).toEqual([]);
   });
 
+  describe('a fast device clock before any MESSAGE_EXPIRY (e.g. after a reload)', () => {
+    // The device clock is 60 s FAST. The message page was stamped at server
+    // T0 + 0.7 s; its Date header says T0 (whole seconds), and it arrived
+    // 150 ms later, at device T0 + 60.85 s. Re-acking rows whose countdown
+    // already started sends no MESSAGE_EXPIRY, so the Date header is all the
+    // client has.
+    const arrived = T0 + 60_850;
+    const page = () => [
+      msg('1', 'c', { expireAfterSeconds: 30, expiresAt: iso(T0 + 30_000) }),
+      msg('2', 'c', { expireAfterSeconds: 300, expiresAt: iso(T0 + 300_000) }),
+    ];
+    const serverDate: Action = { type: 'SERVER_DATE', serverMs: T0, receivedAt: arrived };
+
+    beforeEach(() => {
+      vi.setSystemTime(arrived);
+    });
+
+    it('without the Date header the raw device clock would hide a 30 s message on arrival', () => {
+      const s = run(initialAppState, { type: 'MESSAGES_SET', channelId: 'c', messages: page() });
+      expect(ids(s, 'c')).toEqual(['2']);
+    });
+
+    it('the response’s Date header seeds the offset before its page is ingested', () => {
+      const s = run(initialAppState, serverDate, { type: 'MESSAGES_SET', channelId: 'c', messages: page() });
+      expect(s.dateClockOffsetMs).toBe(-60_850);
+      expect(s.serverClockOffsetMs).toBeNull();
+      expect(ids(s, 'c')).toEqual(['1', '2']);
+      expect(run(s, { type: 'MESSAGES_EXPIRE' })).toBe(s);
+      // The lower bound fires late (by the truncation plus latency), never
+      // early: at server T0 + 30 s the device reads T0 + 90 s, and the row is
+      // still there…
+      vi.setSystemTime(T0 + 90_000);
+      expect(run(s, { type: 'MESSAGES_EXPIRE' })).toBe(s);
+      // …until 850 ms later.
+      vi.setSystemTime(T0 + 90_850);
+      expect(ids(run(s, { type: 'MESSAGES_EXPIRE' }), 'c')).toEqual(['2']);
+    });
+
+    it('older pages and reconcile appends are ingested with it too', () => {
+      const s0 = run(initialAppState, serverDate, {
+        type: 'MESSAGES_SET',
+        channelId: 'c',
+        messages: [msg('5', 'c')],
+      });
+      const s1 = run(s0, {
+        type: 'MESSAGES_PREPEND',
+        channelId: 'c',
+        messages: [msg('3', 'c', { expireAfterSeconds: 30, expiresAt: iso(T0 + 30_000) })],
+        reachedHead: false,
+      });
+      const s2 = run(s1, {
+        type: 'MESSAGE_APPEND',
+        channelId: 'c',
+        message: msg('6', 'c', { expireAfterSeconds: 30, expiresAt: iso(T0 + 30_000) }),
+      });
+      expect(ids(s2, 'c')).toEqual(['3', '5', '6']);
+    });
+
+    it('MESSAGE_EXPIRY’s server_now offset wins once known', () => {
+      const s0 = run(initialAppState, serverDate, { type: 'MESSAGES_SET', channelId: 'c', messages: page() });
+      const s1 = run(s0, {
+        type: 'EXPIRY_STAMP',
+        expiries: [{ id: '9', expires_at: iso(T0 + 600_000) }],
+        serverNow: iso(T0 + 1_000),
+        receivedAt: T0 + 61_010,
+      });
+      expect(s1.serverClockOffsetMs).toBe(-60_010);
+      // Later Date headers are ignored (no re-render)…
+      expect(run(s1, { type: 'SERVER_DATE', serverMs: T0 + 5_000, receivedAt: T0 + 70_000 })).toBe(s1);
+      // …and deadlines go by the precise offset: at device T0 + 90.5 s the
+      // server is at T0 + 30.49 s, past message 1's deadline (the Date
+      // header's offset would still say T0 + 29.65 s).
+      vi.setSystemTime(T0 + 90_500);
+      expect(ids(run(s1, { type: 'MESSAGES_EXPIRE' }), 'c')).toEqual(['2']);
+    });
+
+    it('jitter within the header’s resolution changes nothing; a drop is taken', () => {
+      const s0 = run(initialAppState, serverDate);
+      expect(run(s0, serverDate)).toBe(s0);
+      expect(run(s0, { type: 'SERVER_DATE', serverMs: T0 + 1_000, receivedAt: arrived + 300 })).toBe(s0);
+      expect(run(s0, { type: 'SERVER_DATE', serverMs: Number.NaN, receivedAt: arrived })).toBe(s0);
+      // The device clock jumped 5 s further ahead: taken at once.
+      const s1 = run(s0, { type: 'SERVER_DATE', serverMs: T0 + 1_000, receivedAt: arrived + 6_000 });
+      expect(s1.dateClockOffsetMs).toBe(-65_850);
+    });
+  });
+
   it('MESSAGES_EXPIRE removes due rows from every channel in one update, and is a no-op otherwise', () => {
     const s0 = run(
       initialAppState,

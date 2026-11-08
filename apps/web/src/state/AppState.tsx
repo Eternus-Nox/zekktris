@@ -77,10 +77,13 @@ import {
 } from '../lib/presenceActivity';
 import { selfStatusStore } from '../lib/selfStatus';
 import {
+  dateHeaderOffset,
   dropExpired,
+  effectiveOffset,
   harvestDeadlines,
   isDisappearingNotice,
   mergeDeadlines,
+  nextDateOffset,
   parseServerTime,
   pruneDeadlines,
   scheduleExpiry,
@@ -308,8 +311,17 @@ interface State {
    */
   expiryDeadlines: Record<string, number>;
   /** serverTime − deviceTime (ms), from the latest MESSAGE_EXPIRY's
-      `server_now`; null until one arrives (the device clock is used as-is). */
+      `server_now`; null until one arrives. Once known it is the offset
+      deadlines are compared with (see clockOffsetOf). */
   serverClockOffsetMs: number | null;
+  /** The same offset from REST responses' HTTP `Date` header (SERVER_DATE),
+      used until a MESSAGE_EXPIRY gives the precise one. After a reload none
+      may ever come, and without this the REST `expiresAt` deadlines would be
+      compared with a device clock that runs fast, which hides messages
+      early. It is a lower bound, so a deadline can only fire a little late.
+      null until a response with a readable `Date` arrives (until then the
+      device clock is used as-is). */
+  dateClockOffsetMs: number | null;
 }
 
 const initialState: State = {
@@ -348,6 +360,7 @@ const initialState: State = {
   dmTimers: {},
   expiryDeadlines: {},
   serverClockOffsetMs: null,
+  dateClockOffsetMs: null,
 };
 
 // ── Actions ────────────────────────────────────────────────────────────────
@@ -470,6 +483,11 @@ type Action =
       serverNow: string;
       receivedAt: number;
     }
+  /** A REST response's HTTP `Date` header (RestClient.onServerDate): a
+      lower bound on the server-clock offset, used until a MESSAGE_EXPIRY
+      gives the precise one. Dispatched just before the caller handles the
+      same response, so that page's `expiresAt` is ingested with it. */
+  | { type: 'SERVER_DATE'; serverMs: number; receivedAt: number }
   /** Drop every loaded message whose deadline has passed (one update across
       all channels), and forget deadlines long past. Fired by the expiry
       scheduler; a no-op (same state) when nothing is due. */
@@ -692,6 +710,13 @@ function applyReactionDelta(
   return reactions.map((r, i) => (i === idx ? next : r));
 }
 
+/** The server-clock offset deadlines are compared with (lib/disappearing
+    effectiveOffset): MESSAGE_EXPIRY's once known, else the HTTP Date
+    header's lower bound, else null. */
+function clockOffsetOf(state: State): number | null {
+  return effectiveOffset(state.serverClockOffsetMs, state.dateClockOffsetMs);
+}
+
 /**
  * Disappearing messages on ingest (REST pages, reconciles, live appends):
  * record any `expiresAt` the rows carry, then return them minus the ones
@@ -701,7 +726,7 @@ function applyReactionDelta(
  */
 function ingestExpiry(state: State, incoming: Message[]): { state: State; kept: Message[] } {
   const deadlines = harvestDeadlines(state.expiryDeadlines, incoming);
-  const kept = dropExpired(incoming, deadlines, serverNow(state.serverClockOffsetMs));
+  const kept = dropExpired(incoming, deadlines, serverNow(clockOffsetOf(state)));
   return {
     state: deadlines === state.expiryDeadlines ? state : { ...state, expiryDeadlines: deadlines },
     kept,
@@ -1038,7 +1063,7 @@ function reducer(state: State, action: Action): State {
       const merged = dropExpired(
         survivors.length > 0 ? [...fetched, ...survivors] : fetched,
         deadlines,
-        serverNow(state.serverClockOffsetMs),
+        serverNow(clockOffsetOf(state)),
       );
       const next: State = {
         ...state,
@@ -1706,10 +1731,20 @@ function reducer(state: State, action: Action): State {
       // whenever these deadlines change), so there's one removal path.
       return { ...state, expiryDeadlines, serverClockOffsetMs: offset };
     }
+    case 'SERVER_DATE': {
+      // MESSAGE_EXPIRY's offset wins once known; then this one goes unused
+      // and isn't worth a re-render.
+      if (state.serverClockOffsetMs !== null) return state;
+      const sample = dateHeaderOffset(action.serverMs, action.receivedAt);
+      if (sample === null) return state;
+      const dateClockOffsetMs = nextDateOffset(state.dateClockOffsetMs, sample);
+      if (dateClockOffsetMs === state.dateClockOffsetMs) return state;
+      return { ...state, dateClockOffsetMs };
+    }
     case 'MESSAGES_EXPIRE': {
       const deadlines = state.expiryDeadlines;
       if (Object.keys(deadlines).length === 0) return state;
-      const now = serverNow(state.serverClockOffsetMs);
+      const now = serverNow(clockOffsetOf(state));
       let messagesByChannel = state.messagesByChannel;
       for (const cid in state.messagesByChannel) {
         const list = state.messagesByChannel[cid]!;
@@ -3043,14 +3078,26 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   // it at once. The server's sweep MESSAGE_DELETE stays the authoritative
   // removal (and the only one for an author whose reader has read receipts
   // off, who never learns the deadline).
+  //
+  // The server-clock offset is seeded from every REST response's `Date`
+  // header (SERVER_DATE) until a MESSAGE_EXPIRY gives the precise one. The
+  // listener runs just before each request settles, so a message page's
+  // `expiresAt` is ingested with the offset its own response carried.
+  useEffect(
+    () =>
+      rest.onServerDate((serverMs, receivedAt) => {
+        dispatch({ type: 'SERVER_DATE', serverMs, receivedAt });
+      }),
+    [rest],
+  );
   const expiryDeadlines = state.expiryDeadlines;
-  const serverClockOffsetMs = state.serverClockOffsetMs;
+  const clockOffsetMs = clockOffsetOf(state);
   useEffect(() => {
     // Nothing counting down (every chat without disappearing messages).
     if (Object.keys(expiryDeadlines).length === 0) return;
     const scheduler = scheduleExpiry({
       deadlines: expiryDeadlines,
-      offsetMs: serverClockOffsetMs,
+      offsetMs: clockOffsetMs,
       expire: () => dispatch({ type: 'MESSAGES_EXPIRE' }),
     });
     const onWake = () => {
@@ -3063,7 +3110,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       document.removeEventListener('visibilitychange', onWake);
       window.removeEventListener('focus', onWake);
     };
-  }, [expiryDeadlines, serverClockOffsetMs]);
+  }, [expiryDeadlines, clockOffsetMs]);
 
   // ── Optimistic message sending ────────────────────────────────────────
   //

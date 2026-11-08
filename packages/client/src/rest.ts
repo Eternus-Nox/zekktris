@@ -155,8 +155,59 @@ function jittered(delayMs: number): number {
   return Math.round(delayMs * (0.5 + Math.random()));
 }
 
+/**
+ * Hears the server's clock from a response's HTTP `Date` header (see
+ * RestClient.onServerDate): `serverMs` is the header as epoch ms (whole
+ * seconds), `receivedAtMs` the device clock when the response arrived.
+ */
+export type ServerDateListener = (serverMs: number, receivedAtMs: number) => void;
+
+/** Epoch ms of a response's HTTP `Date` header; null when it's absent,
+    unreadable (a cross-origin API that doesn't expose it) or unparseable. */
+function responseDateMs(res: Response): number | null {
+  const raw = res.headers?.get('Date');
+  if (!raw) return null;
+  const t = Date.parse(raw);
+  return Number.isFinite(t) ? t : null;
+}
+
 export class RestClient {
   constructor(private opts: RestClientOptions) {}
+
+  private serverDateListeners = new Set<ServerDateListener>();
+
+  /**
+   * Listen to the server's clock: called for every API response that
+   * carries a readable `Date` header. `serverMs − receivedAtMs` is a LOWER
+   * BOUND on serverTime − deviceTime, because the header is truncated to
+   * the second and is stamped before the response reaches the device. A
+   * server deadline converted with it can therefore fire late, but never
+   * early. Disappearing messages use it to compare REST `expiresAt` with a
+   * device clock that may be skewed.
+   *
+   * The listener runs once the body has been read, just before the request
+   * settles. So it runs ahead of the caller's own handling of the same
+   * response, in the same task. Returns the unsubscribe function.
+   */
+  onServerDate(listener: ServerDateListener): () => void {
+    this.serverDateListeners.add(listener);
+    return () => {
+      this.serverDateListeners.delete(listener);
+    };
+  }
+
+  private reportServerDate(res: Response, receivedAtMs: number): void {
+    if (this.serverDateListeners.size === 0) return;
+    const serverMs = responseDateMs(res);
+    if (serverMs === null) return;
+    for (const listener of [...this.serverDateListeners]) {
+      try {
+        listener(serverMs, receivedAtMs);
+      } catch {
+        // A listener's bug must not fail the request it is only watching.
+      }
+    }
+  }
 
   /**
    * Single in-flight refresh promise — coalesces concurrent 401s into
@@ -281,11 +332,20 @@ export class RestClient {
       // surface a plain, actionable message instead (status 0 = no response).
       throw new ApiError(0, 'NETWORK', "Can't reach the server. Check your connection and try again.");
     }
+    // When the headers arrived (the closest device time to the server's
+    // `Date` stamp), for onServerDate.
+    const receivedAtMs = Date.now();
 
     // 204 No Content / empty body — return undefined as T.
-    if (res.status === 204) return undefined as unknown as T;
+    if (res.status === 204) {
+      this.reportServerDate(res, receivedAtMs);
+      return undefined as unknown as T;
+    }
 
     const text = await res.text();
+    // Report after the success path's last await, so the listener runs just
+    // ahead of the caller's handling of this response.
+    this.reportServerDate(res, receivedAtMs);
     let parsed: unknown;
     // Non-JSON body almost always means a gateway/proxy error page (502/503/
     // 504) or the API being down — we surface a human message rather than

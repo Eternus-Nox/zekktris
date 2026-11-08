@@ -21,8 +21,12 @@
  * Deadlines are kept in SERVER time (epoch ms of `expires_at`) and compared
  * against the device clock shifted by the server offset learned from
  * MESSAGE_EXPIRY's `server_now`, so a device whose clock is off doesn't hide
- * messages early or keep them late. Until an offset is known the device
- * clock is taken as-is.
+ * messages early or keep them late. Until a MESSAGE_EXPIRY arrives (after a
+ * reload it may never come: re-reading rows whose countdown already started
+ * sends none) the offset comes from REST responses' HTTP `Date` header.
+ * That value is a lower bound, so it can only make a deadline fire a little
+ * late. Only while no response has carried a readable `Date` is the device
+ * clock taken as-is.
  */
 
 /** The description on the Disappearing Messages screen (Signal's copy). */
@@ -285,6 +289,43 @@ export function parseServerTime(iso: string | null | undefined): number | null {
 export function serverOffsetFrom(serverNowIso: string | null | undefined, receivedAtMs: number): number | null {
   const t = parseServerTime(serverNowIso);
   return t === null || !Number.isFinite(receivedAtMs) ? null : t - receivedAtMs;
+}
+
+/** The HTTP `Date` header's resolution: whole seconds. */
+export const DATE_HEADER_RESOLUTION_MS = 1_000;
+
+/** serverTime − deviceTime from a REST response's HTTP `Date` header (epoch
+    ms) and the device time the response arrived. A LOWER BOUND: the header
+    is truncated to the second and stamped before the response travelled,
+    so a deadline converted with it fires late by up to a second plus the
+    response's latency, never early. */
+export function dateHeaderOffset(serverMs: number, receivedAtMs: number): number | null {
+  return Number.isFinite(serverMs) && Number.isFinite(receivedAtMs) ? serverMs - receivedAtMs : null;
+}
+
+/**
+ * The Date-header offset to keep after a new `sample`. Samples from a steady
+ * clock scatter over about a second (truncation plus latency), and each one
+ * is a lower bound.
+ *   - A LOWER sample is always taken. It may mean the device clock jumped
+ *     forward, and keeping the higher value would then hide messages early.
+ *   - A HIGHER one is taken only when it is more than the header's
+ *     resolution above `prev`, which means the device clock jumped back or
+ *     `prev` came from a slow (or cached) response. Within that band `prev`
+ *     is still a valid lower bound, and taking every sample would re-render
+ *     the app on each response for noise.
+ * Returns `prev` itself when it stays.
+ */
+export function nextDateOffset(prev: number | null, sample: number): number {
+  if (prev === null || sample < prev || sample - prev > DATE_HEADER_RESOLUTION_MS) return sample;
+  return prev;
+}
+
+/** The offset deadlines are compared with: MESSAGE_EXPIRY's precise one
+    once known, else the Date-header lower bound, else null (the device
+    clock as-is). */
+export function effectiveOffset(expiryOffsetMs: number | null, dateOffsetMs: number | null): number | null {
+  return expiryOffsetMs ?? dateOffsetMs;
 }
 
 /** The device clock in server time. */
