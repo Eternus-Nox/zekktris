@@ -303,10 +303,12 @@ final class AppStore: ObservableObject {
     /// Conversations whose loaded rows (the open one's `messages`, a closed
     /// one's messageCache entry) may stop short of the server's newest: a
     /// fresh READY replays nothing missed while the socket was down, so it
-    /// marks every conversation loaded before it, until a latest-window
-    /// fetch sent after it (loadMessages, refreshOpenChannelLatest) tops
-    /// that one up. A removed row never moves a marked conversation's
-    /// lastMessageId back (rollBackLastMessage). Mirrors Android's tailGapped.
+    /// marks every conversation loaded before it, and a jump open (a
+    /// mention, an older notification) marks the window it loads around
+    /// that message, until a latest-window fetch sent after it
+    /// (loadMessages, refreshOpenChannelLatest) tops that one up. A removed
+    /// row never moves a marked conversation's lastMessageId back
+    /// (rollBackLastMessage). Mirrors Android's tailGapped.
     private var tailGappedChannelIds: Set<String> = []
     /// Counts the READYs that marked tailGappedChannelIds, so a fetch sent
     /// before the latest one can't clear a mark it doesn't cover.
@@ -2654,9 +2656,15 @@ final class AppStore: ObservableObject {
                 merged.sort { $0.createdAt < $1.createdAt }
             }
             messages = merged
-            // The latest window (not a jump's): the loaded rows reach the
-            // server's newest again.
-            if jumpId == nil { noteTailReached(channel.id, epoch: gapEpoch) }
+            // The latest window: the loaded rows reach the server's newest
+            // again. A jump's window ends about 25 rows past the target, so
+            // it may stop short of the newest: mark it until a latest-window
+            // fetch tops it up.
+            if jumpId == nil {
+                noteTailReached(channel.id, epoch: gapEpoch)
+            } else {
+                tailGappedChannelIds.insert(channel.id)
+            }
             // Seed presence from the message AUTHORS. The message row's dot
             // reads the map like every other surface now, and its old
             // per-message `message.author.status` fallback was the worst of the
@@ -3162,10 +3170,11 @@ final class AppStore: ObservableObject {
     /// the loaded rows reach the server's newest, so `after` holds the tail:
     /// not while tailGappedChannelIds marks the conversation (loaded before a
     /// fresh READY, so messages missed in between may sit below the removed
-    /// row, and moving back past them would hide them as read). Otherwise
-    /// (or with no older row loaded) it stays, and loadMessages' self-heal
-    /// moves it back on open. Mirrors the web's rollbackDmRecency and
-    /// Android's rollBackLastMessage.
+    /// row; or a jump's window around an older message, so the messages
+    /// past its end were never loaded), since moving back past those would
+    /// hide them as read. Otherwise (or with no older row loaded) it stays,
+    /// and loadMessages' self-heal moves it back on open. Mirrors the web's
+    /// rollbackDmRecency and Android's rollBackLastMessage.
     private func rollBackLastMessage(_ channelId: String, before: [Message], after: [Message]) {
         guard !tailGappedChannelIds.contains(channelId) else { return }
         guard let gone = dms.first(where: { $0.id == channelId })?.lastMessageId
