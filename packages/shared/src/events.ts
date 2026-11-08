@@ -129,9 +129,11 @@ export const GatewayEvent = {
   // channelId is null). The client mirrors that into its presence map.
   VOICE_STATE_UPDATE: 'VOICE_STATE_UPDATE',
 
-  // DM auto-delete TTL changed. Payload: { channelId, ttlSecondsAfterRead }.
-  // Sent to both recipients of the DM so each side's settings UI
-  // reflects the change in real time across all connected tabs.
+  // DM disappearing-messages timer changed. Payload: { channelId,
+  // ttlSecondsAfterRead } (camelCase; the key name predates the Signal-style
+  // timer and stays for installed apps). ttlSecondsAfterRead is the timer NEW
+  // messages get (1..2419200 s) or null for off. Sent to every recipient of
+  // the DM so each side's settings UI and header indicator update live.
   DM_SETTINGS_UPDATE: 'DM_SETTINGS_UPDATE',
 
   // 1:1 DM messaging streak changed. Payload: { channel_id, streak }. Sent to
@@ -180,6 +182,19 @@ export const GatewayEvent = {
   // + poll-with-options-and-counts) per closure is wasteful when
   // only one field actually changed.
   MESSAGE_POLL_UPDATE: 'MESSAGE_POLL_UPDATE',
+
+  // MESSAGE_EXPIRY — disappearing messages started counting down. Fired when
+  // a DM / group-DM recipient acks (reads up to) messages that were sent with
+  // a disappearing timer (Message.expireAfterSeconds). Payload (snake_case):
+  //   { channel_id, expiries: [{ id, expires_at }], server_now }
+  // expires_at / server_now are ISO-8601 server times; a client converts
+  // expires_at to a local deadline with (server_now - its own clock) so a
+  // skewed device clock doesn't hide messages early or late. Audience: the
+  // reader's own connections always; in a 1:1 DM also the author, but only
+  // when the reader has read receipts on (the same gate as MESSAGE_VIEWED —
+  // expires_at minus the timer IS the read time). Everyone else's copy goes
+  // when the sweep's MESSAGE_DELETE arrives. Older clients ignore it.
+  MESSAGE_EXPIRY: 'MESSAGE_EXPIRY',
 
   // Scheduled events. Three discrete events rather than a single
   // bulk update — events change one at a time (admins create one,

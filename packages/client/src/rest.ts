@@ -2560,9 +2560,15 @@ export class RestClient {
    * `{ ttlSecondsAfterRead: null }` when auto-delete is off (the
    * default for any DM that has never been configured).
    */
-  getDmSettings(
-    channelId: string,
-  ): Promise<{ ttlSecondsAfterRead: number | null; notificationShowContent: boolean | null }> {
+  getDmSettings(channelId: string): Promise<{
+    ttlSecondsAfterRead: number | null;
+    notificationShowContent: boolean | null;
+    /** Present on servers with Signal-style disappearing messages: the
+     *  longest timer accepted (2419200 = 4 weeks; the shortest is 1 s).
+     *  Absent on older servers, which accept only 10..86400 s and apply the
+     *  timer to every read message, not just new ones. */
+    maxTtlSeconds?: number;
+  }> {
     return this.request('GET', `/users/@me/channels/${channelId}/settings`);
   }
 
@@ -2584,13 +2590,12 @@ export class RestClient {
   }
 
   /**
-   * Update the auto-delete TTL for a DM channel. Pass null to turn
-   * auto-delete off; otherwise a positive integer in [10, 86400]
-   * seconds. Returns the new value as confirmed by the server.
-   *
-   * Disabling does NOT undelete already-deleted messages or clear
-   * viewed_at timestamps — it just stops the sweep from acting on
-   * future expirations.
+   * Set the DM's disappearing-messages timer: the seconds NEW messages
+   * disappear after they've been read (1..2419200 when getDmSettings reports
+   * maxTtlSeconds, else 10..86400), or null for off. Messages already sent
+   * keep the timer they were sent with. A change posts a
+   * 'system_disappearing' notice in the DM; repeating the current value is a
+   * no-op. Returns the value as confirmed by the server.
    */
   updateDmSettings(
     channelId: string,

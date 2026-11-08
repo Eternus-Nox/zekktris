@@ -478,6 +478,18 @@ export type MessageMetadata =
       pokeType: string;
       /** The poker's user id (stringified BigInt). */
       initiatorId: string;
+    }
+  | {
+      /** The disappearing-messages timer of the DM changed. The row is type
+       *  'system_disappearing'; its `content` is a readable third-person
+       *  fallback for clients that don't know the type ("Alex set
+       *  disappearing messages to 1 day."), and new clients render "You…" /
+       *  "<name>…" from this metadata instead. */
+      kind: 'disappearing_timer';
+      /** The new timer in seconds; 0 = turned off. */
+      timerSeconds: number;
+      /** Who changed it (stringified BigInt). */
+      initiatorId: string;
     };
 
 export interface Message {
@@ -527,6 +539,16 @@ export interface Message {
       server builds that don't ship the columns. */
   deliveredAt?: string | null;
   viewedAt?: string | null;
+  /** Disappearing messages: the timer (seconds) this message was SENT with,
+      or null/absent when it never disappears. Fixed at send time, so
+      changing the DM's setting only affects later messages. */
+  expireAfterSeconds?: number | null;
+  /** Disappearing messages: when this message disappears (ISO server time),
+      once a recipient has read it. Null until then. Only present on REST
+      responses, and hidden from the author when the reader has read
+      receipts off; the live value arrives in MESSAGE_EXPIRY. Convert with
+      the server-time offset before comparing to the device clock. */
+  expiresAt?: string | null;
   /**
    * Structured metadata for special message types. NULL for ordinary
    * messages. Currently populated for `type === 'system_call'` with
