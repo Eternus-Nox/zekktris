@@ -2413,7 +2413,8 @@ class AppStore(
         does — the recovery that always works) and MERGE it via upsert, so a
         missed message surfaces even when the after-cursor [syncNewMessages]
         misses (slow/failed cursor fetch, socket-resume race). Merge, not
-        replace → never clobbers loaded history or thrashes scroll. Used at the
+        replace → never clobbers loaded history or thrashes scroll, unless the
+        window doesn't reach the cached rows (then it replaces them). Used at the
         high-stakes moments the user actually hits staleness: re-opening a
         cached conversation (incl. a notification tap) and every foreground.
         Returns the window kept (ascending), or null when the fetch failed. */
@@ -2432,6 +2433,18 @@ class AppStore(
         val maxId = fetched.last().id                     // newest in window
         _state.update { st ->
             val cur = st.messagesByChannel[channelId] ?: emptyList()
+            // More than a page missed: merged, the window sat above the cache
+            // with a hole between that no paging reaches, and the ack after
+            // this started the hidden rows' countdowns. REPLACE instead, as
+            // loadAround does (sends in flight stay), so older paging walks
+            // back from the window into what was missed.
+            if (Disappearing.latestLeavesGap(cur, latest, 50)) {
+                return@update st.copy(
+                    messagesByChannel = st.messagesByChannel +
+                        (channelId to (fetched + cur.filter { it.id.startsWith("pending-") })),
+                    hasMoreOlderByChannel = st.hasMoreOlderByChannel + (channelId to true),
+                )
+            }
             // Drop non-pending cached messages that fall inside the fetched window
             // [minId..maxId] but the server no longer returns → deleted while we
             // were disconnected. The latest-50 is a contiguous newest range, so any
@@ -4989,11 +5002,12 @@ class AppStore(
             val list = st.messagesByChannel[channelId] ?: if (insert) emptyList() else return@update st
             val idx = Disappearing.rowIndex(list, msg)
             if (expired) {
-                if (idx < 0) return@update st
-                val rest = list.toMutableList().apply { removeAt(idx) }
+                // Every row it stands for: its id's and an optimistic copy.
+                val (gone, rest) = list.partition { Disappearing.isRowOf(it, msg) }
+                if (gone.isEmpty()) return@update st
                 return@update rollBackLastMessage(
                     st.copy(messagesByChannel = st.messagesByChannel + (channelId to rest)),
-                    channelId, setOf(list[idx].id, msg.id), rest,
+                    channelId, gone.mapTo(mutableSetOf(msg.id)) { it.id }, rest,
                 )
             }
             if (idx < 0 && !insert) return@update st

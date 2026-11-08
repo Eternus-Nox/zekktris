@@ -418,12 +418,30 @@ object Disappearing {
             .maxWithOrNull(ID_ORDER) ?: lastId
     }
 
+    /**
+     * Whether the latest window [latest] (newest [pageSize] messages, any
+     * order) leaves a hole above the cached [rows]: it is full, and no
+     * confirmed row in [rows] is at or past its oldest. Messages missed in
+     * between (more than a page) may then exist that nothing loads: older
+     * paging starts below the cache and the after-cursor past the window, and
+     * acking the window's newest would start their countdowns unseen. A short
+     * window reaches back to the conversation's start.
+     */
+    fun latestLeavesGap(rows: List<Message>, latest: List<Message>, pageSize: Int): Boolean {
+        if (latest.size < pageSize) return false
+        val oldest = latest.asSequence().map { it.id }.filter(::isServerId).minWithOrNull(ID_ORDER) ?: return false
+        return rows.none { isServerId(it.id) && compareIds(it.id, oldest) >= 0 }
+    }
+
     // ── Row order ─────────────────────────────────────────────────────────
 
-    /** The row [msg] stands for in [rows]: the one with its id, or the
-     *  optimistic row whose nonce it carries (its echo); -1 when none. */
-    fun rowIndex(rows: List<Message>, msg: Message): Int =
-        rows.indexOfFirst { (msg.nonce != null && it.nonce == msg.nonce) || it.id == msg.id }
+    /** Whether [row] is one [msg] stands for: the row with its id, or the
+     *  optimistic row whose nonce it carries (its echo). */
+    fun isRowOf(row: Message, msg: Message): Boolean =
+        row.id == msg.id || (msg.nonce != null && row.nonce == msg.nonce && !isServerId(row.id))
+
+    /** The first row [msg] stands for in [rows] ([isRowOf]); -1 when none. */
+    fun rowIndex(rows: List<Message>, msg: Message): Int = rows.indexOfFirst { isRowOf(it, msg) }
 
     /**
      * [rows] with [msg] merged in, in the order the server lists them:
@@ -436,10 +454,13 @@ object Disappearing {
      * unstarted.
      */
     fun upsertRow(rows: List<Message>, msg: Message): List<Message> {
-        val idx = rowIndex(rows, msg)
-        if (idx >= 0 && rows[idx].id == msg.id) return rows.toMutableList().apply { this[idx] = msg }
-        val next = rows.toMutableList()
-        if (idx >= 0) next.removeAt(idx)
+        // The optimistic row an echo retires goes wherever it is, even when
+        // the id's row is there too: a catch-up (its rows carry no nonce) can
+        // bring the row before its echo, and the copy then stayed "Sending…"
+        // below every later message.
+        val next = rows.filterNotTo(mutableListOf()) { it.id != msg.id && isRowOf(it, msg) }
+        val same = next.indexOfFirst { it.id == msg.id }
+        if (same >= 0) return next.apply { this[same] = msg }
         var at = next.size
         if (isServerId(msg.id)) {
             // From the end: past the optimistic rows and every later id. A

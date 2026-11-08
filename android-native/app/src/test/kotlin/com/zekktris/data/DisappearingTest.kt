@@ -446,6 +446,53 @@ class DisappearingTest {
         assertEquals(-1, Disappearing.rowIndex(rows, msg("400")))
         // A row without a nonce never matches one by its absent nonce.
         assertEquals(-1, Disappearing.rowIndex(listOf(msg("100")), msg("400")))
+        // Only an optimistic row is matched by nonce, never a confirmed one.
+        assertFalse(Disappearing.isRowOf(msg("200").copy(nonce = "a"), msg("300").copy(nonce = "a")))
+        assertTrue(Disappearing.isRowOf(sending, msg("300").copy(nonce = "a")))
+        assertTrue(Disappearing.isRowOf(msg("300"), msg("300").copy(nonce = "a")))
+    }
+
+    @Test fun anEchoAfterACatchUpCopyRetiresTheSendInFlight() {
+        val sending = Message(id = "pending-n", channelId = "c1", createdAt = "", authorId = "me", nonce = "n")
+        val start = Disappearing.upsertRow(listOf(msg("100")), sending)
+        val rest = msg("101", authorId = "me")              // a catch-up's copy: no nonce
+        val echo = rest.copy(nonce = "n", content = "echo")
+        // The catch-up's copy first: it lands above the send, and the echo
+        // then replaces it and takes the optimistic row with it.
+        var rows = Disappearing.upsertRow(start, rest)
+        assertEquals(listOf("100", "101", "pending-n"), ids(rows))
+        rows = Disappearing.upsertRow(rows, echo)
+        assertEquals(listOf("100", "101"), ids(rows))
+        assertEquals("echo", rows[1].content)
+        // The echo first, then the copy: the copy replaces it where it is.
+        rows = Disappearing.upsertRow(Disappearing.upsertRow(start, echo), rest)
+        assertEquals(listOf("100", "101"), ids(rows))
+        // The echo twice (the POST response and the gateway).
+        rows = Disappearing.upsertRow(Disappearing.upsertRow(start, echo), echo)
+        assertEquals(listOf("100", "101"), ids(rows))
+        // Other sends in flight stay, in order.
+        val other = sending.copy(id = "pending-m", nonce = "m")
+        rows = Disappearing.upsertRow(Disappearing.upsertRow(Disappearing.upsertRow(start, other), rest), echo)
+        assertEquals(listOf("100", "101", "pending-m"), ids(rows))
+    }
+
+    @Test fun aFullLatestWindowThatMissesTheCacheLeavesAGap() {
+        fun page(vararg ids: String) = ids.map { msg(it) }
+        val cached = page("10", "20")
+        // Full, and everything in it is past the newest cached row.
+        assertTrue(Disappearing.latestLeavesGap(cached, page("40", "30"), pageSize = 2))
+        // It reaches the cache: no gap.
+        assertFalse(Disappearing.latestLeavesGap(cached, page("30", "20"), pageSize = 2))
+        assertFalse(Disappearing.latestLeavesGap(page("10", "35"), page("40", "30"), pageSize = 2))
+        // A short window reaches back to the start.
+        assertFalse(Disappearing.latestLeavesGap(cached, page("40"), pageSize = 2))
+        // A send in flight is not a cached row of the window's.
+        val sending = Message(id = "pending-a", channelId = "c1", createdAt = "", nonce = "a")
+        assertTrue(Disappearing.latestLeavesGap(cached + sending, page("40", "30"), pageSize = 2))
+        assertTrue(Disappearing.latestLeavesGap(listOf(sending), page("40", "30"), pageSize = 2))
+        // Snowflake order across the digit rollover.
+        assertFalse(Disappearing.latestLeavesGap(page("1000"), page("1001", "999"), pageSize = 2))
+        assertTrue(Disappearing.latestLeavesGap(page("999"), page("1001", "1000"), pageSize = 2))
     }
 
     @Test fun settingsPatchCarriesAnExplicitNullForOff() {

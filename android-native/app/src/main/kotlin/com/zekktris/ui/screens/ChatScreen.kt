@@ -101,7 +101,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -1208,6 +1210,14 @@ private fun MessageList(
     // Message count at the last scroll decision. Distinguishes a genuine APPEND
     // from a tail DELETION — both change `last.id`, but only one should scroll.
     var lastSeenCount by remember(channelId) { mutableStateOf(0) }
+    // The baseline the next decision compares against: [rows]' tails and size.
+    fun markSeen(rows: List<Message>) {
+        lastSeenId = rows.lastOrNull()?.id
+        lastSeenConfirmedId = rows.lastOrNull { !it.id.startsWith("pending-") }?.id
+        lastSeenCount = rows.size
+    }
+    // The list as last composed, for the follow below to read after its scroll.
+    val latestMessages by rememberUpdatedState(messages)
     // Derived from layoutInfo (not firstVisibleItemIndex) so the scrollback
     // spinner occupying index 0 can't skew it. This is the ONE near-bottom
     // notion in this screen: it gates the auto-follow below AND the visibility
@@ -1247,23 +1257,32 @@ private fun MessageList(
         // so a reader at the bottom follows them; an older-history page grows
         // it too, but loads only with the reader near the top.
         val appended = messages.size > lastSeenCount
-        if (tail != null || appended) {
-            val mine = tail != null && tail.authorId != null && tail.authorId == state.me?.id
-            if (appended && (mine || atBottom)) {
-                listState.animateScrollToItem(messages.lastIndex)
-            }
-            lastSeenId = last.id
-            lastSeenConfirmedId = confirmed?.id
-            lastSeenCount = messages.size
+        val mine = tail != null && tail.authorId != null && tail.authorId == state.me?.id
+        if (appended && (mine || atBottom)) {
+            listState.animateScrollToItem(messages.lastIndex)
         }
+        // Every run moves the baseline, a shrink too: left at the larger count
+        // after a row expired from the top, the next arrival didn't count as
+        // grown and stayed below the fold. From the list as it is now, so a
+        // row swapped in during the scroll (the send's echo) is the one seen.
+        markSeen(latestMessages)
     }
+    // A row replaced in place (a send's echo, an edit, a catch-up's copy)
+    // keeps the size, so the follow doesn't run: move the baseline onto it
+    // here. Left on the row it replaced, the next change in size (an older
+    // page) took it for a new tail and, ours, pulled a reader in history to
+    // the bottom. A change in size is the follow's to decide.
+    SideEffect { if (positionedFor == channelId && messages.size == lastSeenCount) markSeen(messages) }
     // Older-history pagination: prefetch the next older page when the reader
     // nears the top of the loaded window (iOS prefetch-within-10 parity).
     val nearTop by remember {
         derivedStateOf { listState.firstVisibleItemIndex <= 10 }
     }
-    LaunchedEffect(channelId, nearTop, messages.size) {
-        if (channelId != null && nearTop && messages.size >= 50) store.loadOlderMessages(channelId)
+    // A full page fetched has older history behind it even when expired rows
+    // leave fewer than a page loaded (a window that replaced a gapped cache).
+    val moreOlder = channelId != null && state.hasMoreOlderByChannel[channelId] == true
+    LaunchedEffect(channelId, nearTop, messages.size, moreOlder) {
+        if (channelId != null && nearTop && (messages.size >= 50 || moreOlder)) store.loadOlderMessages(channelId)
     }
     // Jump-to-message: tapping a reply reference scrolls to the quoted message
     // when it's in the loaded window, and flashes it. Older-history pagination
