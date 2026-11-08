@@ -1023,6 +1023,19 @@ messagesRouter.post(
       guildId: ctx.channel.guildId ?? null,
     });
 
+    // Disappearing messages: createMessage just moved the sender's read
+    // marker to this message (sending is a full ack), so start the clocks it
+    // now covers, as the ack route does. Installed apps' notification quick
+    // replies only POST the message, and every client skips the ack while
+    // the marker is current — without this, what the sender answered would
+    // never disappear. After the commit and the fan-out; no-op outside DMs.
+    await dms.startDisappearingTimersAndNotify({
+      channelId,
+      channelType: ctx.channel.type,
+      readerId: userId,
+      upToMessageId: result.message.id,
+    });
+
     // Parental controls: scan against any supervised child's watch words
     // (the author, and the other party in a 1:1 DM). Fire-and-forget so
     // it never blocks or fails the send.
@@ -2101,6 +2114,14 @@ messagesRouter.delete(
 
     const existing = await messages.getMessage(channelId, messageId);
     if (!existing) throw errors.notFound('Message');
+    // The disappearing-timer notice is how the other person learns the timer
+    // changed — on installed apps that predate the header badge it is the
+    // only sign. Its author (the changer) can't take it back: those apps
+    // offer Delete on any row you authored, within the minute. Other system
+    // rows keep today's rule (a caller may delete their own call record).
+    if (existing.type === 'system_disappearing') {
+      throw errors.forbidden("The disappearing-messages notice can't be deleted");
+    }
 
     const isOwn = existing.authorId === userId;
     if (!isOwn) {
@@ -2603,49 +2624,15 @@ messagesRouter.post(
   // acked one that was sent with a timer, isn't counting down yet and isn't
   // the reader's own gets expires_at = now() + its timer — in 1:1 AND group
   // DMs (the first reader starts the one shared clock), whatever the reader's
-  // receipts toggle. Awaited so a refetch right after the ack already carries
+  // receipts toggle; MESSAGE_EXPIRY goes to whoever may know (see the
+  // helper). Awaited so a refetch right after the ack already carries
   // expiresAt; a failure is logged and never fails the ack.
-  if (ctx.channel.type === 'dm' || ctx.channel.type === 'group_dm') {
-    try {
-      const { started, serverNow, viewerReceiptsEnabled } = await dms.startDisappearingTimers(
-        channelId,
-        userId,
-        messageId,
-      );
-      if (started.length > 0) {
-        // The reader's own devices: everything that started.
-        dispatch.messageExpiry({
-          userId,
-          channelId,
-          expiries: started.map((e) => ({ messageId: e.messageId, expiresAt: e.expiresAt })),
-          serverNow,
-        });
-        // The author learns the deadline only in a 1:1 DM and only when the
-        // reader has receipts on — the same gate as MESSAGE_VIEWED below,
-        // since expires_at minus the timer IS the read time. Group-DM
-        // authors (and receipts-off readers' peers) get the sweep's
-        // MESSAGE_DELETE instead.
-        if (ctx.channel.type === 'dm' && viewerReceiptsEnabled) {
-          const byAuthor = new Map<bigint, Array<{ messageId: bigint; expiresAt: Date }>>();
-          for (const e of started) {
-            if (e.authorId === null) continue;
-            const list = byAuthor.get(e.authorId);
-            const item = { messageId: e.messageId, expiresAt: e.expiresAt };
-            if (list) list.push(item);
-            else byAuthor.set(e.authorId, [item]);
-          }
-          for (const [authorId, expiries] of byAuthor) {
-            dispatch.messageExpiry({ userId: authorId, channelId, expiries, serverNow });
-          }
-        }
-      }
-    } catch (err) {
-      log.warn?.('disappearing timer start failed', {
-        channelId: channelId.toString(),
-        err: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
+  await dms.startDisappearingTimersAndNotify({
+    channelId,
+    channelType: ctx.channel.type,
+    readerId: userId,
+    upToMessageId: messageId,
+  });
 
   // 1:1 DM read-receipt advance. Acking through a message implicitly
   // means the user viewed it — without this stamp the receipt would

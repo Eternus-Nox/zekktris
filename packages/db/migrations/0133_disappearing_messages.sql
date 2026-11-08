@@ -56,3 +56,20 @@ UPDATE "messages" AS m
 CREATE INDEX IF NOT EXISTS "messages_expires_at_idx"
   ON "messages" ("expires_at")
   WHERE "expires_at" IS NOT NULL AND "deleted_at" IS NULL;
+--> statement-breakpoint
+-- The read ack's clock start (dms.startDisappearingTimers) and the scheduled
+-- fire's "anything from the other side still unread?" check: rows of one
+-- channel sent with a timer whose clock hasn't started yet, by id. Partial, so
+-- it only holds messages waiting for a reader — without it every ack in a DM
+-- that ever had a timer walks the channel's whole history (deleted rows
+-- included, which DMs never purge) through messages_channel_time_idx.
+--
+-- NOTE FOR LARGE DEPLOYMENTS: same write lock as the index above. Build it
+-- out-of-band BEFORE deploying this migration:
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS messages_timer_pending_idx
+--     ON messages (channel_id, id)
+--     WHERE expire_after_seconds IS NOT NULL AND expires_at IS NULL AND deleted_at IS NULL;
+-- The IF NOT EXISTS below then makes this statement a no-op.
+CREATE INDEX IF NOT EXISTS "messages_timer_pending_idx"
+  ON "messages" ("channel_id", "id")
+  WHERE "expire_after_seconds" IS NOT NULL AND "expires_at" IS NULL AND "deleted_at" IS NULL;

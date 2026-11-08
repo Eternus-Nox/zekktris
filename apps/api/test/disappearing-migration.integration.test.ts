@@ -67,6 +67,68 @@ describe.runIf(dbReady)('migration 0133 (disappearing messages)', () => {
     )) as unknown as Array<{ indexdef: string }>;
     expect(idx.length).toBe(1);
     expect(idx[0]!.indexdef).toMatch(/\(expires_at\) WHERE \(\(expires_at IS NOT NULL\) AND \(deleted_at IS NULL\)\)/);
+    // The read ack's clock start: only rows still waiting for a reader.
+    const pending = (await db.execute(
+      sql.raw(`SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'messages_timer_pending_idx'`),
+    )) as unknown as Array<{ indexdef: string }>;
+    expect(pending.length).toBe(1);
+    expect(pending[0]!.indexdef).toMatch(
+      /\(channel_id, id\) WHERE \(\(expire_after_seconds IS NOT NULL\) AND \(expires_at IS NULL\) AND \(deleted_at IS NULL\)\)/,
+    );
+  });
+
+  it("the read ack's clock start uses the partial index instead of walking the DM's history", async () => {
+    // Replayed on TEMPORARY tables (see above) so the planner sees a known
+    // shape: one long DM whose history is all soft-deleted or already
+    // counting down, plus the two messages that still wait for a reader.
+    const statements = readFileSync(FILE, 'utf8').split('--> statement-breakpoint');
+    let plan = '';
+    await db
+      .transaction(async (tx) => {
+        await tx.execute(
+          sql.raw(
+            `CREATE TEMP TABLE "dm_settings" (channel_id bigint PRIMARY KEY, ttl_seconds_after_read integer) ON COMMIT DROP`,
+          ),
+        );
+        await tx.execute(
+          sql.raw(
+            `CREATE TEMP TABLE "messages" (id bigint PRIMARY KEY, channel_id bigint NOT NULL, author_id bigint,
+               viewed_at timestamptz, deleted_at timestamptz) ON COMMIT DROP`,
+          ),
+        );
+        // Stands in for messages_channel_time_idx, the index the scan used.
+        await tx.execute(sql.raw(`CREATE INDEX ON "messages" (channel_id, id)`));
+        for (const stmt of statements) await tx.execute(sql.raw(stmt));
+        await tx.execute(
+          sql.raw(
+            `INSERT INTO "messages" (id, channel_id, author_id, deleted_at, expire_after_seconds, expires_at)
+             SELECT g, 10, 1 + g % 2,
+                    CASE WHEN g % 5 < 3 THEN now() END, 60,
+                    CASE WHEN g % 5 >= 3 THEN now() END
+               FROM generate_series(1, 20000) AS g`,
+          ),
+        );
+        await tx.execute(
+          sql.raw(
+            `INSERT INTO "messages" (id, channel_id, author_id, expire_after_seconds)
+             VALUES (20001, 10, 2, 60), (20002, 10, 2, 60)`,
+          ),
+        );
+        await tx.execute(sql.raw(`ANALYZE "messages"`));
+        const rows = (await tx.execute(
+          sql.raw(
+            `EXPLAIN UPDATE "messages" SET expires_at = now() + make_interval(secs => expire_after_seconds)
+              WHERE channel_id = 10 AND id <= 20002 AND expire_after_seconds IS NOT NULL
+                AND expires_at IS NULL AND deleted_at IS NULL AND author_id IS DISTINCT FROM 1`,
+          ),
+        )) as unknown as Array<Record<string, string>>;
+        plan = rows.map((r) => Object.values(r)[0]).join('\n');
+        throw new Rollback();
+      })
+      .catch((err: unknown) => {
+        if (!(err instanceof Rollback)) throw err;
+      });
+    expect(plan).toContain('messages_timer_pending_idx');
   });
 
   it('backfills exactly what the old sweep would delete, and re-running changes nothing', async () => {
@@ -125,7 +187,8 @@ describe.runIf(dbReady)('migration 0133 (disappearing messages)', () => {
         second = await read();
         const idx = (await tx.execute(
           sql.raw(
-            `SELECT 1 FROM pg_indexes WHERE schemaname LIKE 'pg_temp%' AND indexname = 'messages_expires_at_idx'`,
+            `SELECT 1 FROM pg_indexes WHERE schemaname LIKE 'pg_temp%'
+                AND indexname IN ('messages_expires_at_idx', 'messages_timer_pending_idx')`,
           ),
         )) as unknown as unknown[];
         tempIndex = idx.length;
@@ -148,6 +211,6 @@ describe.runIf(dbReady)('migration 0133 (disappearing messages)', () => {
       { id: '6', eas: null, ea: null },
     ]);
     expect(second).toEqual([{ id: '1', eas: 30, ea: null }, ...first.slice(1)]);
-    expect(tempIndex).toBe(1);
+    expect(tempIndex).toBe(2);
   });
 });

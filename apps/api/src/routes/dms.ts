@@ -330,6 +330,15 @@ dmsRouter.patch(
       channelId,
       guildId: null,
     });
+    // The notice moved the changer's read marker to itself (so it isn't
+    // unread for them): start the clocks of what that covers, as a read ack
+    // would — clients won't ack a marker that's already current.
+    await dms.startDisappearingTimersAndNotify({
+      channelId,
+      channelType: channel.type,
+      readerId: userId,
+      upToMessageId: result.notice.id,
+    });
     // Every recipient's settings UI / header indicator.
     dispatch.dmSettingsUpdated({
       channelId,

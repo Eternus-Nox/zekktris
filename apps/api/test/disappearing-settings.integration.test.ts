@@ -284,6 +284,54 @@ describe.runIf(dbReady)('disappearing-messages settings (integration)', () => {
     ]);
   });
 
+  it('the notice cannot be deleted, not even by its author within the minute', async () => {
+    const a = await createUser();
+    const b = await createUser();
+    const dm = await createDmChannel([a, b]);
+    expect((await patchTimer(a, dm, 30)).status).toBe(200);
+    const [notice] = await notices(dm);
+    const bSent = connect(b, [dm]);
+    const del = await call('DELETE', `/channels/${dm}/messages/${notice!.id}`, a);
+    expect(del.status).toBe(403);
+    expect((await call('DELETE', `/channels/${dm}/messages/${notice!.id}`, b)).status).toBe(403);
+    const [still] = await db.select().from(schema.messages).where(eq(schema.messages.id, notice!.id));
+    expect(still!.deletedAt).toBeNull();
+    expect(framesOf(bSent, 'MESSAGE_DELETE')).toEqual([]);
+    // An ordinary message of A's is still A's to delete.
+    const sent = await call('POST', `/channels/${dm}/messages`, a, { content: 'oops' });
+    const own = (sent.json!.message as { id: string }).id;
+    expect((await call('DELETE', `/channels/${dm}/messages/${own}`, a)).status).toBe(200);
+  });
+
+  it("a change is a read for the changer: the notice starts the clocks their marker passes", async () => {
+    const a = await createUser();
+    const b = await createUser();
+    const dm = await createDmChannel([a, b]);
+    expect((await patchTimer(a, dm, 3600)).status).toBe(200);
+    const sent = await call('POST', `/channels/${dm}/messages`, b, { content: 'timed, unread by A' });
+    const m = BigInt((sent.json!.message as { id: string }).id);
+    const aSent = connect(a, [dm]);
+    const bSent = connect(b, [dm]);
+    const t0 = Date.now();
+    // A changes the timer without having acked B's message.
+    expect((await patchTimer(a, dm, 60)).status).toBe(200);
+    const latest = (await notices(dm)).at(-1)!;
+    const [rs] = await db
+      .select({ last: schema.readStates.lastMessageId })
+      .from(schema.readStates)
+      .where(and(eq(schema.readStates.userId, a), eq(schema.readStates.channelId, dm)));
+    expect(rs!.last).toBe(latest.id);
+    const [stored] = await db.select().from(schema.messages).where(eq(schema.messages.id, m));
+    // Its own timer (1 hour), not the new one.
+    expect(Math.abs(stored!.expiresAt!.getTime() - (t0 + 3_600_000))).toBeLessThan(5_000);
+    expect(latest.expiresAt).toBeNull();
+    const aExp = framesOf(aSent, 'MESSAGE_EXPIRY');
+    expect(aExp.length).toBe(1);
+    expect((aExp[0]!.expiries as Array<{ id: string }>).map((e) => e.id)).toEqual([m.toString()]);
+    // A has receipts on, so B (the author) is told as well.
+    expect(framesOf(bSent, 'MESSAGE_EXPIRY').length).toBe(1);
+  });
+
   it('the notice cannot be edited and does not count toward message achievements', async () => {
     const a = await createUser();
     const b = await createUser();

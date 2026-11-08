@@ -250,6 +250,9 @@ export async function fireScheduled(args: {
     guildId: channel.guildId ?? null,
     attachments: [],
     allowEveryoneMention: false,
+    // Firing isn't the author reading the DM: don't mark a timed message
+    // from the other side as read (and so never acked, never disappearing).
+    notARead: true,
   });
 
   // Dispatch the messageCreate over the gateway so live clients pick it up.

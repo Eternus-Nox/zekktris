@@ -17,6 +17,7 @@ import { db, schema } from '../db';
 import { errors } from '../errors';
 import { nextSnowflake } from '../snowflake';
 import * as dispatch from '../gateway/dispatch';
+import { log } from '../log';
 import {
   DISAPPEARING_MAX_SECONDS,
   DISAPPEARING_MIN_SECONDS,
@@ -782,9 +783,13 @@ export async function closeDMForUser(input: {
 //
 //   - The clock starts when a recipient READS the message — their read ack
 //     (startDisappearingTimers, from POST .../messages/:id/ack) stamps
-//     expires_at = now() + expire_after_seconds. A plain message-list fetch
-//     does not (it only stamps viewed_at, for read receipts). Group DMs use
-//     "first reader among the non-authors": one shared clock.
+//     expires_at = now() + expire_after_seconds. So does anything else they
+//     do that moves their read marker past it: a send (a notification quick
+//     reply is just a send) and a timer change (startDisappearingTimersAndNotify
+//     covers all three). A plain message-list fetch does not (it only stamps
+//     viewed_at, for read receipts), and a scheduled message firing doesn't
+//     move the marker past one that is still waiting. Group DMs use "first
+//     reader among the non-authors": one shared clock.
 //
 //   - At expires_at the message is gone for everyone: every read path
 //     filters it out at once (messages.notExpired), and the sweep below
@@ -1171,7 +1176,9 @@ export async function startDisappearingTimers(
   // The uncorrelated EXISTS is a one-time check: a DM that never had a
   // dm_settings row can't hold a message with a timer (createMessage reads
   // the timer from that row, and it is never deleted on its own), so the
-  // common case skips scanning the channel's history on every ack.
+  // common case touches no message rows at all. Otherwise the partial
+  // messages_timer_pending_idx holds just the rows still waiting for a
+  // reader, so a long history (deleted rows included) isn't walked per ack.
   const updated = await db
     .update(schema.messages)
     .set({
@@ -1212,6 +1219,67 @@ export async function startDisappearingTimers(
     .where(eq(schema.users.id, viewerId))
     .limit(1);
   return { started, serverNow, viewerReceiptsEnabled: viewer?.enabled ?? true };
+}
+
+/**
+ * Disappearing messages: `readerId`'s read marker in a DM just moved up to
+ * `upToMessageId` by something they did — a read ack, a send (sending is a
+ * full ack: notification quick replies on installed apps only POST the
+ * message, and every client then skips the ack because the marker is
+ * already current), or a timer change (the notice is read for the changer).
+ * Wherever the server moves that marker it starts the clocks the marker now
+ * covers, or those messages would never disappear.
+ *
+ * Starts them (startDisappearingTimers) and tells who may know: the reader's
+ * own devices always; for a 1:1 'dm' also each author in the batch when the
+ * reader has read receipts on — expires_at minus the timer IS the read time,
+ * the same gate as MESSAGE_VIEWED. Group-DM authors (and a receipts-off
+ * reader's peer) get the sweep's MESSAGE_DELETE instead.
+ *
+ * No-op outside 'dm' / 'group_dm'. Never throws: a failure is logged and
+ * must not fail the ack / send / setting change that called it. Await it
+ * after that action's transaction has committed.
+ */
+export async function startDisappearingTimersAndNotify(input: {
+  channelId: bigint;
+  channelType: schema.Channel['type'];
+  readerId: bigint;
+  upToMessageId: bigint;
+}): Promise<void> {
+  const { channelId, channelType, readerId, upToMessageId } = input;
+  if (channelType !== 'dm' && channelType !== 'group_dm') return;
+  try {
+    const { started, serverNow, viewerReceiptsEnabled } = await startDisappearingTimers(
+      channelId,
+      readerId,
+      upToMessageId,
+    );
+    if (started.length === 0) return;
+    // The reader's own devices: everything that started.
+    dispatch.messageExpiry({
+      userId: readerId,
+      channelId,
+      expiries: started.map((e) => ({ messageId: e.messageId, expiresAt: e.expiresAt })),
+      serverNow,
+    });
+    if (channelType !== 'dm' || !viewerReceiptsEnabled) return;
+    const byAuthor = new Map<bigint, Array<{ messageId: bigint; expiresAt: Date }>>();
+    for (const e of started) {
+      if (e.authorId === null) continue;
+      const list = byAuthor.get(e.authorId);
+      const item = { messageId: e.messageId, expiresAt: e.expiresAt };
+      if (list) list.push(item);
+      else byAuthor.set(e.authorId, [item]);
+    }
+    for (const [authorId, expiries] of byAuthor) {
+      dispatch.messageExpiry({ userId: authorId, channelId, expiries, serverNow });
+    }
+  } catch (err) {
+    log.warn?.('disappearing timer start failed', {
+      channelId: channelId.toString(),
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 /**

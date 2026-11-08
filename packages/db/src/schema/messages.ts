@@ -213,6 +213,13 @@ export const messages = pgTable(
     expiresAtIdx: index('messages_expires_at_idx')
       .on(t.expiresAt)
       .where(sql`expires_at IS NOT NULL AND deleted_at IS NULL`),
+    /** (channel_id, id): the read ack's disappearing-clock start and the
+     *  scheduled fire's "still unread from the other side?" check — messages
+     *  sent with a timer whose clock hasn't started. Partial, so an ack in a
+     *  long DM doesn't walk its whole history. Matches migration 0133. */
+    timerPendingIdx: index('messages_timer_pending_idx')
+      .on(t.channelId, t.id)
+      .where(sql`expire_after_seconds IS NOT NULL AND expires_at IS NULL AND deleted_at IS NULL`),
   }),
 );
 

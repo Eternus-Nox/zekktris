@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterEach, afterAll } from 'vitest';
 import { Hono } from 'hono';
 import type { WebSocket } from 'ws';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db, schema } from '../src/db';
 import { dmsRouter } from '../src/routes/dms';
 import { messagesRouter } from '../src/routes/messages';
@@ -82,6 +82,13 @@ const ack = (userId: bigint, ch: bigint, mid: bigint | string) =>
 async function row(id: bigint | string) {
   const [r] = await db.select().from(schema.messages).where(eq(schema.messages.id, BigInt(id)));
   return r!;
+}
+async function marker(userId: bigint, ch: bigint): Promise<bigint | null | undefined> {
+  const [r] = await db
+    .select({ last: schema.readStates.lastMessageId })
+    .from(schema.readStates)
+    .where(and(eq(schema.readStates.userId, userId), eq(schema.readStates.channelId, ch)));
+  return r ? r.last : undefined;
 }
 async function receiptsOff(userId: bigint) {
   await db.update(schema.users).set({ dmReadReceiptsEnabled: false }).where(eq(schema.users.id, userId));
@@ -222,7 +229,9 @@ describe.runIf(dbReady)('disappearing messages: per-message timer + read paths (
     expect((await setTimer(a, dm, 300)).status).toBe(200);
     const m1 = await send(a, dm, { content: 'first' });
     const m2 = await send(a, dm, { content: 'second' });
-    const mine = await send(b, dm, { content: "reader's own" });
+    // Inserted directly: a send through the route is itself a read (see the
+    // quick-reply case below) and would start m1 / m2 before the ack.
+    const mine = await createMessage(dm, { authorId: b, content: "reader's own", expireAfterSeconds: 300 });
     const aSent = connect(a, [dm]);
     const bSent = connect(b, [dm]);
 
@@ -232,7 +241,7 @@ describe.runIf(dbReady)('disappearing messages: per-message timer + read paths (
     expect((await row(m1.id)).expiresAt).toBeNull();
 
     const t0 = Date.now();
-    const r = await ack(b, dm, m2.id);
+    const r = await ack(b, dm, mine);
     expect(r.status).toBe(200);
     for (const m of [m1, m2]) {
       const stored = await row(m.id);
@@ -240,7 +249,7 @@ describe.runIf(dbReady)('disappearing messages: per-message timer + read paths (
       expect(Math.abs(stored.expiresAt!.getTime() - (t0 + 300_000))).toBeLessThan(5_000);
     }
     // The reader's own message never counts down from their own read.
-    expect((await row(mine.id)).expiresAt).toBeNull();
+    expect((await row(mine)).expiresAt).toBeNull();
 
     const bExp = framesOf(bSent, 'MESSAGE_EXPIRY');
     expect(bExp.length).toBe(1);
@@ -322,6 +331,180 @@ describe.runIf(dbReady)('disappearing messages: per-message timer + read paths (
     expect(asA).not.toHaveProperty('expiresAt');
     const asC = (await list(c, gdm)).find((x) => x.id === m.id)!;
     expect(asC.expiresAt).toBe(first.toISOString());
+  });
+
+  it('a send is a read: a quick reply (POST, no ack) starts the clocks its marker passes, gated like the ack', async () => {
+    const a = await createUser();
+    const b = await createUser();
+    const dm = await createDmChannel([a, b]);
+    expect((await setTimer(a, dm, 3600)).status).toBe(200);
+    const m1 = await send(a, dm, { content: 'first' });
+    const m2 = await send(a, dm, { content: 'second' });
+    const aSent = connect(a, [dm]);
+    const bSent = connect(b, [dm]);
+
+    // B answers from the notification: installed apps only POST the message.
+    const t0 = Date.now();
+    const reply = await send(b, dm, { content: 'quick reply' });
+    expect(await marker(b, dm)).toBe(BigInt(reply.id));
+    for (const m of [m1, m2]) {
+      const stored = await row(m.id);
+      expect(stored.expiresAt).not.toBeNull();
+      expect(Math.abs(stored.expiresAt!.getTime() - (t0 + 3_600_000))).toBeLessThan(5_000);
+    }
+    // The sender's own message waits for A's read.
+    expect((await row(reply.id)).expiresAt).toBeNull();
+
+    const bExp = framesOf(bSent, 'MESSAGE_EXPIRY');
+    expect(bExp.length).toBe(1);
+    const expiries = bExp[0]!.expiries as Array<{ id: string; expires_at: string }>;
+    expect(expiries.map((e) => e.id).sort()).toEqual([m1.id, m2.id].sort());
+    const serverNow = Date.parse(bExp[0]!.server_now as string);
+    for (const e of expiries) {
+      expect(e.expires_at).toBe((await row(e.id)).expiresAt!.toISOString());
+      expect(Date.parse(e.expires_at) - serverNow).toBe(3_600_000);
+    }
+    // B has receipts on: A, the author, learns the deadlines too.
+    const aExp = framesOf(aSent, 'MESSAGE_EXPIRY');
+    expect(aExp.length).toBe(1);
+    expect((aExp[0]!.expiries as Array<{ id: string }>).map((e) => e.id).sort()).toEqual([m1.id, m2.id].sort());
+
+    // B opens the DM later: the marker is current, and an ack (if a client
+    // sends one) starts nothing twice.
+    await ack(b, dm, reply.id);
+    expect(framesOf(bSent, 'MESSAGE_EXPIRY').length).toBe(1);
+    expect(framesOf(aSent, 'MESSAGE_EXPIRY').length).toBe(1);
+    // A's read of the reply starts the reply's own clock, as before.
+    await ack(a, dm, reply.id);
+    expect((await row(reply.id)).expiresAt).not.toBeNull();
+  });
+
+  it('a quick reply from a receipts-off reader starts the clock but tells only the reader', async () => {
+    const a = await createUser();
+    const b = await createUser();
+    const dm = await createDmChannel([a, b]);
+    await receiptsOff(b);
+    expect((await setTimer(a, dm, 60)).status).toBe(200);
+    const m = await send(a, dm, { content: 'quietly read' });
+    const aSent = connect(a, [dm]);
+    const bSent = connect(b, [dm]);
+    await send(b, dm, { content: 'quiet reply' });
+    expect((await row(m.id)).expiresAt).not.toBeNull();
+    expect(framesOf(bSent, 'MESSAGE_EXPIRY').length).toBe(1);
+    expect(framesOf(aSent, 'MESSAGE_EXPIRY').length).toBe(0);
+    // A guild-channel send goes through the same route and starts nothing.
+    const owner = await createUser();
+    const guild = await createGuild(owner, Permissions.VIEW_CHANNEL | Permissions.SEND_MESSAGES | Permissions.READ_MESSAGE_HISTORY);
+    await addMember(guild, owner);
+    const text = await createChannel(guild);
+    const ownerSent = connect(owner, []);
+    await send(owner, text, { content: 'guild text' });
+    expect(framesOf(ownerSent, 'MESSAGE_EXPIRY').length).toBe(0);
+  });
+
+  it('a quick reply in a group DM starts the shared clock; only the sender is told', async () => {
+    const a = await createUser();
+    const b = await createUser();
+    const c = await createUser();
+    const gdm = await createDmChannel([a, b, c], 'group_dm');
+    expect((await setTimer(a, gdm, 120)).status).toBe(200);
+    const m = await send(a, gdm, { content: 'group secret' });
+    const aSent = connect(a, [gdm]);
+    const bSent = connect(b, [gdm]);
+    const cSent = connect(c, [gdm]);
+    const reply = await send(b, gdm, { content: 'group reply' });
+    expect((await row(m.id)).expiresAt).not.toBeNull();
+    expect((await row(reply.id)).expiresAt).toBeNull();
+    expect(framesOf(bSent, 'MESSAGE_EXPIRY').length).toBe(1);
+    expect(framesOf(aSent, 'MESSAGE_EXPIRY').length).toBe(0);
+    expect(framesOf(cSent, 'MESSAGE_EXPIRY').length).toBe(0);
+  });
+
+  it("a scheduled fire isn't a read: it leaves the author's marker below unread timed messages", async () => {
+    const a = await createUser();
+    const b = await createUser();
+    const dm = await createDmChannel([a, b]);
+    expect((await setTimer(b, dm, 3600)).status).toBe(200);
+    const unread = await send(b, dm, { content: 'waiting for A' });
+    const [channel] = await db.select().from(schema.channels).where(eq(schema.channels.id, dm));
+    const [author] = await db.select().from(schema.users).where(eq(schema.users.id, a));
+    const fire = async (content: string) => {
+      const scheduled = {
+        id: nextSnowflake(),
+        authorId: a,
+        channelId: dm,
+        content,
+        attachments: [],
+        replyToMessageId: null,
+        scheduledFor: new Date(),
+        attempts: 0,
+        lastError: null,
+        claimedAt: new Date(),
+        createdAt: new Date(Date.now() - 3_600_000),
+      } as unknown as schema.ScheduledMessage;
+      await fireScheduled({ row: scheduled, channel: channel!, author: author ?? null });
+      const [m] = await db
+        .select()
+        .from(schema.messages)
+        .where(and(eq(schema.messages.channelId, dm), eq(schema.messages.content, content)));
+      return m!;
+    };
+
+    // A has never opened the DM (no read state): the fire creates none, so
+    // B's message stays unread and its clock hasn't started.
+    const s1 = await fire('good morning');
+    expect(s1.expireAfterSeconds).toBe(3600);
+    expect(await marker(a, dm)).toBeUndefined();
+    expect((await row(unread.id)).expiresAt).toBeNull();
+
+    // A read up to the timer notice, below B's message: the marker stays there.
+    const [notice] = await db
+      .select({ id: schema.messages.id })
+      .from(schema.messages)
+      .where(and(eq(schema.messages.channelId, dm), eq(schema.messages.type, 'system_disappearing')));
+    expect((await ack(a, dm, notice!.id)).status).toBe(200);
+    const s1b = await fire('good noon');
+    expect(await marker(a, dm)).toBe(notice!.id);
+    expect((await row(unread.id)).expiresAt).toBeNull();
+
+    // A opens the DM: the ack of the newest message starts it.
+    await ack(a, dm, s1b.id);
+    expect((await row(unread.id)).expiresAt).not.toBeNull();
+    expect(await marker(a, dm)).toBe(s1b.id);
+
+    // Nothing waiting any more: a fire moves the marker as a send does.
+    const s2 = await fire('good evening');
+    expect(await marker(a, dm)).toBe(s2.id);
+
+    // No read state at all (never opened) and nothing timed: still moves.
+    const c = await createUser();
+    const d = await createUser();
+    const plain = await createDmChannel([c, d]);
+    await send(d, plain, { content: 'no timer here' });
+    const [plainChannel] = await db.select().from(schema.channels).where(eq(schema.channels.id, plain));
+    const [cRow] = await db.select().from(schema.users).where(eq(schema.users.id, c));
+    await fireScheduled({
+      row: {
+        id: nextSnowflake(),
+        authorId: c,
+        channelId: plain,
+        content: 'scheduled, no timer',
+        attachments: [],
+        replyToMessageId: null,
+        scheduledFor: new Date(),
+        attempts: 0,
+        lastError: null,
+        claimedAt: new Date(),
+        createdAt: new Date(Date.now() - 3_600_000),
+      } as unknown as schema.ScheduledMessage,
+      channel: plainChannel!,
+      author: cRow ?? null,
+    });
+    const [sc] = await db
+      .select()
+      .from(schema.messages)
+      .where(and(eq(schema.messages.channelId, plain), eq(schema.messages.content, 'scheduled, no timer')));
+    expect(await marker(c, plain)).toBe(sc!.id);
   });
 
   it('expiresAt reaches the author in REST only while the 1:1 reader has receipts on', async () => {

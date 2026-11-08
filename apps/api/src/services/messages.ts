@@ -224,6 +224,17 @@ export interface CreateMessageInput {
    * later by services/embeds; this is for content the caller already has.
    */
   embeds?: MessageEmbedJson[] | null;
+  /**
+   * The send isn't the author reading the conversation — a scheduled message
+   * firing on its own, possibly while they're asleep. Their read marker still
+   * moves to the new message as for any send, EXCEPT when that would pass a
+   * message from someone else that is waiting for its disappearing clock
+   * (sent with a timer, clock not started, above the marker): a marker past
+   * it means "read", clients then never ack it, and it would never
+   * disappear. The marker (and mention count) then stay put, so the DM stays
+   * unread and the author's next real open acks — and starts — it.
+   */
+  notARead?: boolean;
 }
 
 export interface NewAttachmentInput {
@@ -413,8 +424,44 @@ export async function createMessage(input: CreateMessageInput): Promise<MessageW
     // send-then-navigate race). Sending is a full ack (Discord-style):
     // advance lastMessageId and clear mention_count. GREATEST guard so an
     // out-of-order insert can't roll the marker backward. Skipped for
-    // authorless messages (system/webhook).
-    if (input.authorId) {
+    // authorless messages (system/webhook), and for a send that isn't a
+    // read (`notARead`) when it would pass someone else's message still
+    // waiting for its disappearing clock (DMs only — nothing else has one;
+    // the partial messages_timer_pending_idx serves the probe).
+    let advanceAuthorMarker = !!input.authorId;
+    if (advanceAuthorMarker && input.notARead && input.guildId === null) {
+      // Two statements, so both id bounds are plain values, and a count
+      // rather than LIMIT 1: with the marker as a sub-select the planner
+      // can't size the id range and (measured) walks the messages primary
+      // key across every channel instead of the tiny partial index, and a
+      // LIMIT 1 probe invites the same fast-start plan.
+      const [rs] = await tx
+        .select({ last: schema.readStates.lastMessageId })
+        .from(schema.readStates)
+        .where(
+          and(
+            eq(schema.readStates.userId, input.authorId),
+            eq(schema.readStates.channelId, input.channelId),
+          ),
+        )
+        .limit(1);
+      const [pending] = await tx
+        .select({ n: sql<number>`count(*)::int` })
+        .from(schema.messages)
+        .where(
+          and(
+            eq(schema.messages.channelId, input.channelId),
+            lt(schema.messages.id, messageId),
+            gt(schema.messages.id, rs?.last ?? 0n),
+            sql`${schema.messages.expireAfterSeconds} IS NOT NULL`,
+            isNull(schema.messages.expiresAt),
+            isNull(schema.messages.deletedAt),
+            sql`${schema.messages.authorId} IS DISTINCT FROM ${input.authorId}`,
+          ),
+        );
+      if ((pending?.n ?? 0) > 0) advanceAuthorMarker = false;
+    }
+    if (advanceAuthorMarker) {
       await tx
         .insert(schema.readStates)
         .values({
