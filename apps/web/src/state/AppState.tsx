@@ -1242,6 +1242,15 @@ function reducer(state: State, action: Action): State {
       } else if (action.reachesTail && tailGapped.has(action.channelId)) {
         tailGapped = new Set(tailGapped);
         tailGapped.delete(action.channelId);
+      } else if (tailGapped.has(action.channelId) && maxFetched > 0n) {
+        // A resync (an around page on the newest row) replaced the jump
+        // window with one contiguous slice: its newest row is the frontier
+        // now. Paging from the old window's frontier would pull weeks-old rows
+        // in under the newest ones.
+        const cur = tailFrontier[action.channelId];
+        if (!cur || BigInt(cur) < maxFetched) {
+          tailFrontier = { ...tailFrontier, [action.channelId]: maxFetched.toString() };
+        }
       }
       const next: State = {
         ...state,
@@ -2869,17 +2878,26 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         const reached = tailJoinedAt(cursor.after, fr.messages, 50);
         if (reached) {
           dispatch({ type: 'TAIL_REACHED', channelId, throughId: reached });
-        } else {
-          const to = newestConfirmedId(fr.messages);
-          if (to) dispatch({ type: 'TAIL_ADVANCE', channelId, from: cursor.after, to });
+          return;
         }
-        return;
+        const to = newestConfirmedId(fr.messages);
+        if (to) dispatch({ type: 'TAIL_ADVANCE', channelId, from: cursor.after, to });
+        // The gap is still filling: also page after the newest row held, so a
+        // message newer than it still shows within one poll when the socket
+        // delivers nothing (this poll is then the only path). Not from the
+        // frontier, so no TAIL_* here.
       }
       const after = newest;
       const r = await rest.listMessages(channelId, {
         after,
         limit: 50,
       });
+      if (cursor.fromFrontier) {
+        for (const m of oldestFirst(r.messages)) {
+          dispatch({ type: 'MESSAGE_APPEND', channelId, message: m });
+        }
+        return;
+      }
       // An `after`-only page comes back oldest-first (the server's ascending
       // read); sorted anyway, since MESSAGE_APPEND only appends. Reversed, a
       // burst would land newest-before-older and the open DM would ack only

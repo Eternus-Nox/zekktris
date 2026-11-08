@@ -689,6 +689,23 @@ describe('AppState — disappearing messages', () => {
       expect(s1.tailGapped.has('g')).toBe(false);
     });
 
+    it('a resync around the newest row moves the frontier to its newest row, so no old rows are pulled in under it', () => {
+      const s0 = run(
+        initialAppState,
+        { type: 'DMS_SET', channels: [dm('g', '5000')] },
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('1001', 'g'), msg('1050', 'g')], preserveNewerSurvivors: false },
+        { type: 'MESSAGE_APPEND', channelId: 'g', message: msg('5000', 'g', { authorId: '2' }) },
+        // Reconnect: resyncChannelWindow's around page on 5000 (default survivors).
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('2976', 'g'), msg('3000', 'g'), msg('5000', 'g')] },
+      );
+      expect(s0.tailGapped.has('g')).toBe(true);
+      expect(s0.tailFrontier.g).toBe('5000');
+      expect(reconcileCursor(s0, 'g', '5000')).toEqual({ after: '5000', fromFrontier: false });
+      // A frontier already past the page stays.
+      const s1 = run(s0, { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('2976', 'g')] });
+      expect(s1.tailFrontier.g).toBe('5000');
+    });
+
     it('tailJoinedAt: a short page, or a latest page reaching back to the newest held row', () => {
       const page = (ns: number[]) => ns.map((n) => ({ id: String(n) }));
       const run50 = (from: number) => Array.from({ length: 50 }, (_, i) => from + i);
