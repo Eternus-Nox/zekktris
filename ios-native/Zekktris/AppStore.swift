@@ -2681,6 +2681,17 @@ final class AppStore: ObservableObject {
                snowflakeGreater(knownLatest, than: after),
                let newer = try? await api.messages(channelId: channel.id, limit: 50, after: after),
                channel.id == selectedChannel?.id {
+                // Nothing live past the newest loaded row: the newer id the
+                // store knows was deleted or disappeared before this device
+                // loaded it (in a group DM, another member's read started the
+                // clock, and only that reader is told the deadline). The
+                // server moves its own last_message_id back to `after`; do
+                // the same, or the DM keeps an unread dot and an app badge
+                // count this open can't clear (the newest loaded row already
+                // reads current, so markChannelRead acks nothing).
+                if newer.isEmpty {
+                    moveLastMessageBack(channel.id, from: knownLatest, to: after)
+                }
                 let shown = Set(messages.map { $0.id })
                 for m in newer.sorted(by: { $0.createdAt < $1.createdAt }) { upsert(m) }
                 decryptVisible()
@@ -3119,6 +3130,61 @@ final class AppStore: ObservableObject {
                 dms = resorted
             }
         }
+    }
+
+    /// The one move back bumpChannelLastMessage never makes: when the row a
+    /// channel/DM's lastMessageId points at leaves the loaded rows (deleted,
+    /// or past its disappearing deadline) — `before` held it, `after` doesn't
+    /// — fall back to the newest server row still loaded below it. That's
+    /// what the server's own rollback (rollbackChannelWatermark) stores, and
+    /// no event tells clients. Left on a row no one can load, the DM reads
+    /// unread (dot and app badge) and opening it acks nothing, since the
+    /// newest loaded row already reads current: in a timed group DM, every
+    /// member who wasn't the first reader. Only when that row WAS loaded, so
+    /// `after` holds the tail; otherwise (or with no older row loaded) it
+    /// stays, and loadMessages' self-heal moves it back on open. Mirrors the
+    /// web's rollbackDmRecency and Android's rollBackLastMessage.
+    private func rollBackLastMessage(_ channelId: String, before: [Message], after: [Message]) {
+        guard let gone = dms.first(where: { $0.id == channelId })?.lastMessageId
+                ?? channels.first(where: { $0.id == channelId })?.lastMessageId,
+              before.contains(where: { $0.id == gone }),
+              !after.contains(where: { $0.id == gone }) else { return }
+        var back: String?
+        for m in after where m.channelId == channelId && !m.id.isEmpty
+            && m.id.allSatisfy(\.isNumber) && snowflakeGreater(gone, than: m.id) {
+            if let b = back, !snowflakeGreater(m.id, than: b) { continue }
+            back = m.id
+        }
+        if let back { moveLastMessageBack(channelId, from: gone, to: back) }
+    }
+
+    /// Set a channel/DM's lastMessageId from `gone` back to the older `back`,
+    /// only while it still reads `gone` (a newer arrival meanwhile wins), the
+    /// same in-place way bumpChannelLastMessage moves it forward. Re-sorts
+    /// the DM list (recency moved) and refreshes the app badge.
+    private func moveLastMessageBack(_ channelId: String, from gone: String, to back: String) {
+        guard snowflakeGreater(gone, than: back) else { return }
+        var moved = false
+        if let i = channels.firstIndex(where: { $0.id == channelId }), channels[i].lastMessageId == gone {
+            bumpingLastMessage = true
+            channels[i].lastMessageId = back
+            bumpingLastMessage = false
+            if let j = sortedChannels.firstIndex(where: { $0.id == channelId }) {
+                sortedChannels[j].lastMessageId = back
+            }
+            moved = true
+        }
+        if let i = dms.firstIndex(where: { $0.id == channelId }), dms[i].lastMessageId == gone {
+            dms[i].lastMessageId = back
+            let resorted = dms.sorted {
+                snowflakeGreater($0.lastMessageId ?? $0.id, than: $1.lastMessageId ?? $1.id)
+            }
+            if resorted.map(\.id) != dms.map(\.id) {
+                dms = resorted
+            }
+            moved = true
+        }
+        if moved { updateAppBadge() }
     }
 
     // MARK: Threads / forums
@@ -4628,7 +4694,11 @@ final class AppStore: ObservableObject {
         guard let channel = selectedChannel else { return }
         do {
             try await api.deleteMessage(channelId: channel.id, messageId: message.id)
+            // Removed here first, the MESSAGE_DELETE echo finds no row to
+            // move lastMessageId back from, so do it now.
+            let before = messages
             removeMessage(id: message.id)
+            rollBackLastMessage(channel.id, before: before, after: messages)
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
         }
@@ -4673,10 +4743,12 @@ final class AppStore: ObservableObject {
     }
 
     /// Remove rows from a closed conversation's cache (no-op when it holds
-    /// none of them).
+    /// none of them), moving its lastMessageId back if one was its newest.
     private func dropFromCache(_ channelId: String, ids: Set<String>) {
         guard let rows = messageCache[channelId], rows.contains(where: { ids.contains($0.id) }) else { return }
-        messageCache[channelId] = rows.filter { !ids.contains($0.id) }
+        let kept = rows.filter { !ids.contains($0.id) }
+        messageCache[channelId] = kept
+        rollBackLastMessage(channelId, before: rows, after: kept)
     }
 
     // MARK: Disappearing messages (local expiry)
@@ -4759,8 +4831,10 @@ final class AppStore: ObservableObject {
         if !gone.isEmpty {
             let removedRows = messages.filter { gone.contains($0.id) }
             if !removedRows.isEmpty {
+                let before = messages
                 messages = messages.filter { !gone.contains($0.id) }
                 closeLightboxShowing(removedRows)
+                if let cid = selectedChannel?.id { rollBackLastMessage(cid, before: before, after: messages) }
             }
             for cid in Array(messageCache.keys) { dropFromCache(cid, ids: gone) }
             if decrypted.keys.contains(where: { gone.contains($0) }) {
@@ -6665,25 +6739,32 @@ final class AppStore: ObservableObject {
             // Payload is snake_case: { id, channel_id }. A closed chat's cache
             // drops it too, so reopening can't repaint it (the disappearing
             // sweep's delete is the author's only signal when the reader has
-            // read receipts off).
+            // read receipts off). Either way, a removed newest row moves the
+            // channel's lastMessageId back (rollBackLastMessage), as the
+            // server's does.
             if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let cid = obj["channel_id"] as? String,
                let id = obj["id"] as? String {
                 if cid == selectedChannel?.id {
+                    let before = messages
                     removeMessage(id: id)
                     if replyingTo?.id == id { replyingTo = nil }
+                    rollBackLastMessage(cid, before: before, after: messages)
                 } else {
                     dropFromCache(cid, ids: [id])
                 }
             }
         case "MESSAGE_DELETE_BULK":
-            // Payload is snake_case: { ids, channel_id }.
+            // Payload is snake_case: { ids, channel_id }. Moves lastMessageId
+            // back like MESSAGE_DELETE.
             if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let cid = obj["channel_id"] as? String,
                let ids = obj["ids"] as? [String] {
                 if cid == selectedChannel?.id {
+                    let before = messages
                     for id in ids { removeMessage(id: id) }
                     if let r = replyingTo, ids.contains(r.id) { replyingTo = nil }
+                    rollBackLastMessage(cid, before: before, after: messages)
                 } else {
                     dropFromCache(cid, ids: Set(ids))
                 }
