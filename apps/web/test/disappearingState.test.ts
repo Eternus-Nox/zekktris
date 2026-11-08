@@ -380,6 +380,103 @@ describe('AppState — disappearing messages', () => {
       expect(lastOf(alone, 'g')).toBe('30');
     });
 
+    it('a reconnect drops closed chats’ caches, so a live row removed after it keeps the dot', () => {
+      // C read 'g' up to 200 and moved on; A's 300 and 400 landed while the
+      // laptop slept past the resume window. The READY's DM refetch says 400,
+      // but 'g's cache still ends at 200. A's 500 arrives live and is unsent.
+      const s0 = run(
+        initialAppState,
+        { type: 'DMS_SET', channels: [dm('g', '200'), dm('open', '7')] },
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('100', 'g'), msg('200', 'g')] },
+        { type: 'MESSAGES_SET', channelId: 'open', messages: [msg('7', 'open')] },
+        { type: 'READ_STATES_SET', readStates: [{ channelId: 'g', lastMessageId: '200', mentionCount: 0 }] },
+        { type: 'DMS_SET', channels: [dm('g', '400'), dm('open', '7')] },
+        { type: 'CLOSED_CACHES_DROP', keep: 'open' },
+      );
+      // Opening 'g' now runs a full latest-window load, not an after-200
+      // reconcile.
+      expect(s0.loadedChannels.has('g')).toBe(false);
+      expect(s0.messagesByChannel.g).toBeUndefined();
+      const s1 = run(
+        s0,
+        { type: 'MESSAGE_APPEND', channelId: 'g', message: msg('500', 'g', { authorId: '2' }) },
+        { type: 'MESSAGE_REMOVE', channelId: 'g', messageId: '500' },
+      );
+      // 300 and 400 are still unread on the server: nothing rolls back to 200.
+      expect(lastOf(s1, 'g')).toBe('500');
+      expect(unread(s1, 'g')).toBe(true);
+    });
+
+    it('CLOSED_CACHES_DROP keeps the open chat whole and is a no-op when nothing else is cached', () => {
+      const s0 = run(
+        initialAppState,
+        { type: 'MESSAGES_SET', channelId: 'open', messages: [msg('7', 'open')] },
+        { type: 'MESSAGES_PREPEND', channelId: 'open', messages: [msg('6', 'open')], reachedHead: true },
+        { type: 'MESSAGES_SET', channelId: 'a', messages: [msg('1', 'a')] },
+        { type: 'MESSAGES_PREPEND', channelId: 'a', messages: [], reachedHead: true },
+        { type: 'LOADING_OLDER_BEGIN', channelId: 'b' },
+      );
+      const s1 = run(s0, { type: 'CLOSED_CACHES_DROP', keep: 'open' });
+      expect(Object.keys(s1.messagesByChannel)).toEqual(['open']);
+      expect(s1.messagesByChannel.open).toBe(s0.messagesByChannel.open);
+      expect([...s1.loadedChannels]).toEqual(['open']);
+      expect([...s1.olderExhausted]).toEqual(['open']);
+      expect([...s1.loadingOlder]).toEqual([]);
+      expect(run(s1, { type: 'CLOSED_CACHES_DROP', keep: 'open' })).toBe(s1);
+      // No chat open (e.g. the Mentions pane): every cache goes.
+      const s2 = run(s0, { type: 'CLOSED_CACHES_DROP', keep: null });
+      expect(s2.messagesByChannel).toEqual({});
+      expect(s2.loadedChannels.size + s2.olderExhausted.size + s2.loadingOlder.size).toBe(0);
+      expect(run(initialAppState, { type: 'CLOSED_CACHES_DROP', keep: null })).toBe(initialAppState);
+    });
+
+    it('CLOSED_CACHES_DROP keeps a closed chat holding an unsent row, so its failed bubble survives', () => {
+      const s0 = run(
+        initialAppState,
+        { type: 'MESSAGES_SET', channelId: 'a', messages: [msg('1', 'a')] },
+        { type: 'MESSAGE_APPEND', channelId: 'a', message: msg('local-x', 'a', { failed: true }) },
+        { type: 'MESSAGES_SET', channelId: 'b', messages: [msg('2', 'b')] },
+      );
+      const s1 = run(s0, { type: 'CLOSED_CACHES_DROP', keep: null });
+      expect(Object.keys(s1.messagesByChannel)).toEqual(['a']);
+      expect(s1.messagesByChannel.a).toBe(s0.messagesByChannel.a);
+      expect([...s1.loadedChannels]).toEqual(['a']);
+    });
+
+    it('a jump window may stop short of the tail: removing its newest row keeps the dot until a latest load', () => {
+      const s0 = run(
+        initialAppState,
+        { type: 'READ_STATES_SET', readStates: [{ channelId: 'g', lastMessageId: '200', mentionCount: 0 }] },
+        { type: 'DMS_SET', channels: [dm('g', '400')] },
+        // A mention jump loads an older window that stops at 200 (300 and 400
+        // are unread on the server).
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('100', 'g'), msg('200', 'g')], preserveNewerSurvivors: false },
+      );
+      expect(s0.tailGapped.has('g')).toBe(true);
+      const s1 = run(
+        s0,
+        { type: 'MESSAGE_APPEND', channelId: 'g', message: msg('500', 'g', { authorId: '2' }) },
+        { type: 'MESSAGE_REMOVE', channelId: 'g', messageId: '500' },
+      );
+      expect(lastOf(s1, 'g')).toBe('500');
+      expect(unread(s1, 'g')).toBe(true);
+      // The newest window reaches the tail: the mark clears and a removal of
+      // the newest row rolls back again.
+      const s2 = run(
+        s1,
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('300', 'g'), msg('400', 'g'), msg('600', 'g')], reachesTail: true },
+        { type: 'DMS_SET', channels: [dm('g', '600')] },
+      );
+      expect(s2.tailGapped.has('g')).toBe(false);
+      const s3 = run(s2, { type: 'MESSAGE_REMOVE', channelId: 'g', messageId: '600' });
+      expect(lastOf(s3, 'g')).toBe('400');
+      // A resync window (default survivors, no reachesTail) leaves a mark alone.
+      const s4 = run(s0, { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('100', 'g'), msg('200', 'g')] });
+      expect(s4.tailGapped.has('g')).toBe(true);
+      // Dropping the closed cache drops its mark with it.
+      expect(run(s0, { type: 'CLOSED_CACHES_DROP', keep: null }).tailGapped.size).toBe(0);
+    });
+
     it('never touches guild channels’ lists', () => {
       const s0 = run(
         initialAppState,

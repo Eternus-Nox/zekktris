@@ -111,6 +111,14 @@ interface State {
    */
   olderExhausted: Set<string>;
   /**
+   * Channels whose loaded rows may stop short of the server's newest message:
+   * a jump to an older window (loadMessagesAround). Removing the newest loaded
+   * row there must not roll the DM's lastMessageId back to it — unread
+   * messages may lie between the window and the real tail. A latest-window
+   * load (loadMessages) clears the mark. Mirrors the native apps' tailGapped.
+   */
+  tailGapped: Set<string>;
+  /**
    * Channels currently fetching older messages. Used by the Scroller
    * to suppress re-entrancy (avoid firing two fetches at once when the
    * scrollTop sensor triggers twice in rapid succession).
@@ -332,6 +340,7 @@ const initialState: State = {
   messagesByChannel: {},
   loadedChannels: new Set(),
   olderExhausted: new Set(),
+  tailGapped: new Set(),
   loadingOlder: new Set(),
   usersById: {},
   userStatusById: {},
@@ -389,6 +398,9 @@ type Action =
       // arbitrary OLDER window) must NOT — unioning the newest tail onto a
       // middle window creates a disjoint list with a gap. Defaults true.
       preserveNewerSurvivors?: boolean;
+      /** The page is the channel's newest window (loadMessages), so the loaded
+       *  rows reach the server's tail: clears the channel's tailGapped mark. */
+      reachesTail?: boolean;
     }
   | {
       type: 'MESSAGES_PREPEND';
@@ -493,6 +505,12 @@ type Action =
       all channels), and forget deadlines long past. Fired by the expiry
       scheduler; a no-op (same state) when nothing is due. */
   | { type: 'MESSAGES_EXPIRE' }
+  /** Reconnect READY (a fresh IDENTIFY replays nothing): forget every
+      channel's loaded messages except `keep` (the open one, which the
+      reconnect resyncs) and any holding an unsent row, so a closed chat's
+      next open is a full latest-window load and its stale tail can't feed
+      rollbackDmRecency. */
+  | { type: 'CLOSED_CACHES_DROP'; keep: string | null }
   | { type: 'VOICE_STATES_MERGE_GUILD'; guildId: string; voiceStates: VoiceState[] }
   | { type: 'POKE_PILL_SET'; channelId: string; emoji: string }
   | { type: 'POKE_PILL_CLEAR'; channelId: string }
@@ -649,17 +667,24 @@ function bumpDmRecency(
  * tells clients about. Otherwise the DM reads unread against a message no
  * one can load, and opening it acks nothing (the newest row is already
  * read). In a group DM with a timer that's every member who wasn't the
- * first reader. Only when that row WAS loaded: then the list holds the tail,
- * so its newest remaining row is the new one; otherwise (or with no server
- * row left) the id stays, and MessageView's stale-tail ack clears it on
- * open (lib/readAck). Same array reference when nothing changes.
+ * first reader. Only when that row WAS loaded: then the list holds the tail
+ * (a reconnect READY drops closed chats' lists, CLOSED_CACHES_DROP, so none
+ * that missed the gap is left), so its newest remaining row is the new one;
+ * otherwise (or with no server row left) the id stays, and MessageView's
+ * stale-tail ack clears it on open (lib/readAck). Same array reference when
+ * nothing changes.
  */
 function rollbackDmRecency(
   channels: Channel[],
   channelId: string,
   before: Message[],
   after: Message[],
+  tailGapped: Set<string>,
 ): Channel[] {
+  // The loaded rows may not reach the tail (a jump window): the newest loaded
+  // row isn't the server's watermark, so leave lastMessageId on the removed id
+  // (the dot stays; the open's stale-tail probe clears it).
+  if (tailGapped.has(channelId)) return channels;
   const idx = channels.findIndex((c) => c.id === channelId);
   if (idx === -1) return channels;
   const ch = channels[idx]!;
@@ -1125,11 +1150,21 @@ function reducer(state: State, action: Action): State {
         deadlines,
         serverNow(clockOffsetOf(state)),
       );
+      // A jump window may stop short of the tail; the newest window reaches it.
+      let tailGapped = state.tailGapped;
+      if (!keepSurvivors && !tailGapped.has(action.channelId)) {
+        tailGapped = new Set(tailGapped);
+        tailGapped.add(action.channelId);
+      } else if (action.reachesTail && tailGapped.has(action.channelId)) {
+        tailGapped = new Set(tailGapped);
+        tailGapped.delete(action.channelId);
+      }
       const next: State = {
         ...state,
         messagesByChannel: { ...state.messagesByChannel, [action.channelId]: merged },
         loadedChannels: loaded,
         olderExhausted: exhausted,
+        tailGapped,
         expiryDeadlines: deadlines,
       };
       return upsertUsersFromMessages(next, merged);
@@ -1316,7 +1351,7 @@ function reducer(state: State, action: Action): State {
           ...state.messagesByChannel,
           [action.channelId]: kept,
         },
-        dmChannels: rollbackDmRecency(state.dmChannels, action.channelId, existing, kept),
+        dmChannels: rollbackDmRecency(state.dmChannels, action.channelId, existing, kept, state.tailGapped),
       };
     }
     case 'MESSAGES_REMOVE_BULK': {
@@ -1333,7 +1368,7 @@ function reducer(state: State, action: Action): State {
           ...state.messagesByChannel,
           [action.channelId]: next,
         },
-        dmChannels: rollbackDmRecency(state.dmChannels, action.channelId, existing, next),
+        dmChannels: rollbackDmRecency(state.dmChannels, action.channelId, existing, next, state.tailGapped),
       };
     }
     case 'MESSAGE_RECEIPT_STAMP': {
@@ -1816,12 +1851,46 @@ function reducer(state: State, action: Action): State {
         if (kept !== list) {
           if (messagesByChannel === state.messagesByChannel) messagesByChannel = { ...messagesByChannel };
           messagesByChannel[cid] = kept;
-          dmChannels = rollbackDmRecency(dmChannels, cid, list, kept);
+          dmChannels = rollbackDmRecency(dmChannels, cid, list, kept, state.tailGapped);
         }
       }
       const expiryDeadlines = pruneDeadlines(deadlines, now);
       if (messagesByChannel === state.messagesByChannel && expiryDeadlines === deadlines) return state;
       return { ...state, messagesByChannel, expiryDeadlines, dmChannels };
+    }
+    case 'CLOSED_CACHES_DROP': {
+      // A closed chat's list can stop short of the server's tail after the
+      // gap; a live row appended to it and then removed would roll the DM's
+      // lastMessageId back past unread messages. With no cache, a live row
+      // builds a list of its own and the rollback has nothing older to fall
+      // back to. A chat holding an unsent (`local-`) row is kept too: a
+      // latest-window load would lose the failed bubble and its retry. Only
+      // allocate new refs when something is dropped.
+      const drop = (cid: string) =>
+        cid !== action.keep && !state.messagesByChannel[cid]?.some((m) => m.id.startsWith('local-'));
+      const without = (set: Set<string>) =>
+        [...set].some(drop) ? new Set([...set].filter((cid) => !drop(cid))) : set;
+      let messagesByChannel = state.messagesByChannel;
+      if (Object.keys(messagesByChannel).some(drop)) {
+        messagesByChannel = {};
+        for (const cid in state.messagesByChannel) {
+          if (!drop(cid)) messagesByChannel[cid] = state.messagesByChannel[cid]!;
+        }
+      }
+      const loadedChannels = without(state.loadedChannels);
+      const olderExhausted = without(state.olderExhausted);
+      const loadingOlder = without(state.loadingOlder);
+      const tailGapped = without(state.tailGapped);
+      if (
+        messagesByChannel === state.messagesByChannel &&
+        loadedChannels === state.loadedChannels &&
+        olderExhausted === state.olderExhausted &&
+        loadingOlder === state.loadingOlder &&
+        tailGapped === state.tailGapped
+      ) {
+        return state;
+      }
+      return { ...state, messagesByChannel, loadedChannels, olderExhausted, loadingOlder, tailGapped };
     }
 
     case 'POKE_PILL_SET':
@@ -2584,7 +2653,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       const r = await rest.listMessages(channelId, { limit: 50 });
       // REST returns newest-first; reverse for chronological render.
       const ordered = [...r.messages].reverse();
-      dispatch({ type: 'MESSAGES_SET', channelId, messages: ordered });
+      dispatch({ type: 'MESSAGES_SET', channelId, messages: ordered, reachesTail: true });
       // Hydrate the saved-message set for these ids so the bookmark
       // icon renders correctly. Fire-and-forget — purely decorative
       // and fine to land a beat after the message bodies.
@@ -4408,6 +4477,17 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           readyOnceRef.current = true;
           return;
         }
+        // AppState doesn't track the active channel, so derive it from the
+        // route (the router encodes it as the last segment of
+        // /channels/<...>/<channelId>).
+        const openChannelId =
+          typeof window !== 'undefined'
+            ? window.location.pathname.match(/\/channels\/[^/]+\/([^/?#]+)/)?.[1] ?? null
+            : null;
+        // Closed chats missed everything sent during the gap, and only the
+        // open one is resynced below. Drop their caches before anything else
+        // lands, so each reopens with a full latest-window load.
+        dispatch({ type: 'CLOSED_CACHES_DROP', keep: openChannelId });
         // Reconnect — re-bootstrap. Each call below is idempotent
         // (REPLACE semantics on the reducer side) so refetching is
         // safe even if state hasn't drifted. We fan out in parallel
@@ -4459,14 +4539,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         // focus, this one heals MUTATED ROWS on reconnect, and the two
         // converge on the same server tail if they overlap.
         //
-        // AppState doesn't track the active channel, so derive it from the
-        // route (the router encodes it as the last segment of
-        // /channels/<...>/<channelId>). Guard on the channel actually being
-        // loaded so this only ever REPLACES a window the user is looking at.
-        const openChannelId =
-          typeof window !== 'undefined'
-            ? window.location.pathname.match(/\/channels\/[^/]+\/([^/?#]+)/)?.[1] ?? null
-            : null;
+        // Guard on the channel actually being loaded so this only ever
+        // REPLACES a window the user is looking at.
         if (openChannelId && loaded.messagesByChannel[openChannelId]?.length) {
           void resyncChannelWindow(openChannelId).catch(() => undefined);
         }

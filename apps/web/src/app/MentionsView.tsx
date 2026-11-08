@@ -29,6 +29,7 @@ import { useToasts } from '../state/Toasts';
 import { AtSign, X } from '../lib/icons';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
+import { useGoneMessages, withoutGone } from '../lib/useGoneMessages';
 
 /** Mention rows carry channel + guild context the augmented endpoint
     attaches, so the view doesn't need to resolve channelId → guildId
@@ -49,6 +50,10 @@ export function MentionsView() {
   const [clearing, setClearing] = useState(false);
   const inFlightRef = useRef(false);
   const toasts = useToasts();
+  // A mentioning message deleted, or a disappearing one reaching its
+  // deadline, leaves the inbox when it leaves the chat
+  // (lib/useGoneMessages); the server no longer lists it either.
+  const gone = useGoneMessages(null, (g) => setItems((prev) => withoutGone(prev, g, (m) => m.id)));
 
   // Clear handler. Server zeros mention_count across every channel
   // for this user; gateway dispatches CHANNEL_ACK per affected
@@ -80,8 +85,9 @@ export function MentionsView() {
       // not hide), so we repopulate the list with what's left.
       try {
         const r = await rest.listMentions({ limit: PAGE_LIMIT });
-        if (r.mentions.length > 0) {
-          setItems(r.mentions);
+        const kept = r.mentions.filter((m) => !gone.has(m.id));
+        if (kept.length > 0) {
+          setItems(kept);
           setHasMore(r.mentions.length === PAGE_LIMIT);
           // Quiet warning — the toast above already claimed success;
           // a second toast contradicting that would be jarring.
@@ -116,7 +122,7 @@ export function MentionsView() {
       .listMentions({ limit: PAGE_LIMIT })
       .then((r) => {
         if (cancelled) return;
-        setItems(r.mentions);
+        setItems(r.mentions.filter((m) => !gone.has(m.id)));
         setHasMore(r.mentions.length === PAGE_LIMIT);
       })
       .catch((e) => {
@@ -130,7 +136,7 @@ export function MentionsView() {
     return () => {
       cancelled = true;
     };
-  }, [rest]);
+  }, [rest, gone]);
 
   const loadMore = useCallback(async () => {
     if (inFlightRef.current || !hasMore || items.length === 0) return;
@@ -138,7 +144,7 @@ export function MentionsView() {
     try {
       const oldest = items[items.length - 1]!;
       const r = await rest.listMentions({ before: oldest.id, limit: PAGE_LIMIT });
-      setItems((prev) => [...prev, ...r.mentions]);
+      setItems((prev) => [...prev, ...r.mentions.filter((m) => !gone.has(m.id))]);
       setHasMore(r.mentions.length === PAGE_LIMIT);
     } catch {
       // Quiet — surfacing a paginator error toast is noisy and the
@@ -146,7 +152,7 @@ export function MentionsView() {
     } finally {
       inFlightRef.current = false;
     }
-  }, [hasMore, items, rest]);
+  }, [hasMore, items, rest, gone]);
 
   function onScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget;
