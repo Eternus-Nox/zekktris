@@ -181,6 +181,15 @@ dmsRouter.delete(
           channelId: result.systemCallChannelId,
           guildId: null,
         });
+        // The initiator's held read marker, as dispatchSystemCallMessage
+        // (routes/voice.ts) sends it.
+        if (m.authorId !== null) {
+          await dms.notifyHeldReadMarkerIfWaiting({
+            userId: m.authorId,
+            channelId: result.systemCallChannelId,
+            belowId: m.id,
+          });
+        }
       }
     }
 

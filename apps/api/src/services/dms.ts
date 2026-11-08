@@ -24,7 +24,12 @@ import {
   disappearingNoticeText,
 } from '../lib/disappearing';
 import { toReadState } from '../lib/dto';
-import { createSystemMessage, rollbackChannelWatermarks, type DbHandle } from './messages';
+import {
+  createSystemMessage,
+  rollbackChannelWatermarks,
+  timedMessageWaitingFor,
+  type DbHandle,
+} from './messages';
 import * as readStates from './readStates';
 
 /**
@@ -1294,13 +1299,14 @@ export async function startDisappearingTimersAndNotify(input: {
  * A send that isn't a read held `userId`'s read marker in a DM below someone
  * else's message still waiting for its clock (createMessage's
  * `authorMarkerHeld`), or a row they author left it there (the streak
- * warning; both probe with messages.timedMessageWaitingFor). Every client
- * moves its local marker to its own message when the MESSAGE_CREATE echo
- * arrives, so the DM reads as read there and its next open acks nothing —
- * installed iOS builds then never start the clock of what they show. Send
- * the stored state to the user's devices as a CHANNEL_ACK (iOS and Android
- * apply it as is) to put the marker back. Call it after the MESSAGE_CREATE:
- * one bus, so it arrives after the echo. Never throws.
+ * warning, a call record: notifyHeldReadMarkerIfWaiting; both probe with
+ * messages.timedMessageWaitingFor). Every client moves its local marker to
+ * its own message when the MESSAGE_CREATE echo arrives, so the DM reads as
+ * read there and its next open acks nothing — installed iOS builds then
+ * never start the clock of what they show. Send the stored state to the
+ * user's devices as a CHANNEL_ACK (iOS and Android apply it as is) to put
+ * the marker back. Call it after the MESSAGE_CREATE: one bus, so it arrives
+ * after the echo. Never throws.
  */
 export async function notifyHeldReadMarker(input: {
   userId: bigint;
@@ -1314,6 +1320,23 @@ export async function notifyHeldReadMarker(input: {
       channelId: input.channelId.toString(),
       err: err instanceof Error ? err.message : String(err),
     });
+  }
+}
+
+/**
+ * After the MESSAGE_CREATE of a row `userId` authors that leaves their read
+ * marker where it is (the streak warning, a system_call record authored by
+ * the call's initiator): notifyHeldReadMarker, only while a timed message
+ * from someone else waits between that marker and the row (`belowId`).
+ * Best-effort; never throws.
+ */
+export async function notifyHeldReadMarkerIfWaiting(input: {
+  userId: bigint;
+  channelId: bigint;
+  belowId: bigint;
+}): Promise<void> {
+  if (await timedMessageWaitingFor(db, input).catch(() => false)) {
+    await notifyHeldReadMarker({ userId: input.userId, channelId: input.channelId });
   }
 }
 

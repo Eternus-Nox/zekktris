@@ -5,6 +5,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, schema } from '../src/db';
 import { dmsRouter } from '../src/routes/dms';
 import { messagesRouter } from '../src/routes/messages';
+import { voiceRouter } from '../src/routes/voice';
 import { errorHandler } from '../src/middleware';
 import { createSession } from '../src/auth/sessions';
 import { signAccessToken } from '../src/auth/tokens';
@@ -51,6 +52,7 @@ const app = new Hono();
 app.onError(errorHandler);
 app.route('/users/@me/channels', dmsRouter);
 app.route('/channels', messagesRouter);
+app.route('/channels', voiceRouter);
 
 async function tokenFor(userId: bigint): Promise<string> {
   const { session } = await createSession({ userId, userAgent: 'test', ipAddress: null });
@@ -780,6 +782,89 @@ describe.runIf(dbReady)('disappearing messages: per-message timer + read paths (
     await db
       .delete(schema.dmStreaks)
       .where(inArray(schema.dmStreaks.channelId, [waiting.dm, read.dm, plain.dm]));
+  });
+
+  it("a call record (the initiator's row, marker untouched) sends the initiator's held marker back only while a timed message waits for them", async () => {
+    // A rang B from outside the DM (nothing acked), B's message waits above
+    // A's marker, and A hangs up: the system_call row is A's.
+    const ringing = async (ttl: number | null) => {
+      const a = await createUser();
+      const b = await createUser();
+      const dm = await createDmChannel([a, b]);
+      let notice: bigint | null = null;
+      if (ttl !== null) {
+        expect((await setTimer(b, dm, ttl)).status).toBe(200);
+        const [n] = await db
+          .select({ id: schema.messages.id })
+          .from(schema.messages)
+          .where(and(eq(schema.messages.channelId, dm), eq(schema.messages.type, 'system_disappearing')));
+        notice = n!.id;
+        expect((await ack(a, dm, notice)).status).toBe(200);
+      }
+      const fromB = await send(b, dm, { content: 'door code 4821' });
+      await db.insert(schema.voiceStates).values({ userId: a, channelId: dm, guildId: null, sessionId: 'test' });
+      await db
+        .update(schema.channels)
+        .set({ dmActiveCallStartedAt: new Date(Date.now() - 30_000), dmActiveCallInitiatorId: a })
+        .where(eq(schema.channels.id, dm));
+      return { a, b, dm, notice, fromB };
+    };
+    const hangUp = async (userId: bigint, dm: bigint) =>
+      expect((await call('DELETE', `/channels/${dm}/voice`, userId)).status).toBe(200);
+    const recordIn = async (dm: bigint) => {
+      const [r] = await db
+        .select()
+        .from(schema.messages)
+        .where(and(eq(schema.messages.channelId, dm), eq(schema.messages.type, 'system_call')));
+      return r!;
+    };
+
+    // B's timed message waits for A, above A's marker (the timer notice).
+    const waiting = await ringing(300);
+    // Timed, but A read it: its clock runs, nothing waits.
+    const read = await ringing(300);
+    expect((await ack(read.a, read.dm, read.fromB.id)).status).toBe(200);
+    expect((await row(read.fromB.id)).expiresAt).not.toBeNull();
+    // No timer: B's message is unread, but nothing has a clock to wait on.
+    const plain = await ringing(null);
+
+    const aWaiting = connect(waiting.a, [waiting.dm]);
+    const bWaiting = connect(waiting.b, [waiting.dm]);
+    const aRead = connect(read.a, [read.dm]);
+    const aPlain = connect(plain.a, [plain.dm]);
+
+    await hangUp(waiting.a, waiting.dm);
+    await hangUp(read.a, read.dm);
+    await hangUp(plain.a, plain.dm);
+
+    // The call record is A's, and A's marker didn't move.
+    const rec = await recordIn(waiting.dm);
+    expect(rec.authorId).toBe(waiting.a);
+    expect(await marker(waiting.a, waiting.dm)).toBe(waiting.notice);
+    expect((await row(waiting.fromB.id)).expiresAt).toBeNull();
+    // Exactly one CHANNEL_ACK, to A only, with the stored marker, after the
+    // record's echo that moved A's local marker to it.
+    expect(framesOf(aWaiting, 'CHANNEL_ACK')).toEqual([
+      { channelId: waiting.dm.toString(), lastMessageId: waiting.notice!.toString(), mentionCount: 0 },
+    ]);
+    expect(framesOf(bWaiting, 'CHANNEL_ACK').length).toBe(0);
+    const echoAt = aWaiting.findIndex((f) => f.t === 'MESSAGE_CREATE' && f.d?.id === rec.id.toString());
+    expect(echoAt).toBeGreaterThanOrEqual(0);
+    expect(aWaiting.findIndex((f) => f.t === 'CHANNEL_ACK')).toBeGreaterThan(echoAt);
+
+    // Nothing waiting: the record's echo, and nothing sent back.
+    for (const [dm, sent] of [
+      [read.dm, aRead],
+      [plain.dm, aPlain],
+    ] as const) {
+      const recNone = await recordIn(dm);
+      expect(sent.some((f) => f.t === 'MESSAGE_CREATE' && f.d?.id === recNone.id.toString())).toBe(true);
+      expect(framesOf(sent, 'CHANNEL_ACK').length).toBe(0);
+    }
+
+    // A opens the DM: the ack of the newest message (the record) starts it.
+    await ack(waiting.a, waiting.dm, rec.id);
+    expect((await row(waiting.fromB.id)).expiresAt).not.toBeNull();
   });
 
   it('expiresAt reaches the author in REST only while the 1:1 reader has receipts on', async () => {

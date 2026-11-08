@@ -299,6 +299,15 @@ export function attachGateway(httpServer: HttpServer, opts: GatewayOptions = {})
             channelId: result.systemCallChannelId,
             guildId: null,
           });
+          // The initiator's held read marker, as dispatchSystemCallMessage
+          // (routes/voice.ts) sends it.
+          if (m.authorId !== null) {
+            await dms.notifyHeldReadMarkerIfWaiting({
+              userId: m.authorId,
+              channelId: result.systemCallChannelId,
+              belowId: m.id,
+            });
+          }
         }
       } catch (err) {
         log.warn('gateway: voice cleanup on disconnect failed', {

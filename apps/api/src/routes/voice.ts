@@ -69,6 +69,18 @@ async function dispatchSystemCallMessage(
     channelId,
     guildId: null,
   });
+  // The record is the initiator's row but leaves their read marker where it
+  // is, and their clients move their local marker to it on this echo all the
+  // same (their own message). With a timed message from the other side still
+  // waiting above the marker, send the stored marker back, after the echo
+  // (one bus) — as the streak warning does.
+  if (message.authorId !== null) {
+    await dms.notifyHeldReadMarkerIfWaiting({
+      userId: message.authorId,
+      channelId,
+      belowId: message.id,
+    });
+  }
 }
 
 // ── Roster snapshot (read-only) ─────────────────────────────────────────────

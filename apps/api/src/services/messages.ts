@@ -293,12 +293,14 @@ export interface CreatedMessage extends MessageWithMentions {
  * Is a message from someone else waiting for its disappearing clock (sent
  * with a timer, clock not started, not deleted) between `userId`'s read
  * marker in this DM and `belowId`? A row `userId` authors there that doesn't
- * move their marker past it — a send that isn't a read, the streak warning —
- * makes their clients move their local marker to it on the MESSAGE_CREATE
- * echo all the same, so the DM reads as read and its next open acks nothing.
- * The callers hold the marker (createMessage) or send the stored one back
- * after the echo (dms.notifyHeldReadMarker) only when this is true. DMs only:
- * nothing else has a timer. The partial messages_timer_pending_idx serves it.
+ * move their marker past it — a send that isn't a read, the streak warning,
+ * a call record — makes their clients move their local marker to it on the
+ * MESSAGE_CREATE echo all the same, so the DM reads as read and its next
+ * open acks nothing. The callers hold the marker (createMessage) or send the
+ * stored one back after the echo (dms.notifyHeldReadMarker, or for those
+ * system rows dms.notifyHeldReadMarkerIfWaiting) only when this is true. DMs
+ * only: nothing else has a timer. The partial messages_timer_pending_idx
+ * serves it.
  */
 export async function timedMessageWaitingFor(
   exec: DbHandle,
