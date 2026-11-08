@@ -213,6 +213,9 @@ fun ChatScreen(store: AppStore, state: AppState) {
     // bytes — never plaintext URLs.
     var encLightbox by remember(channelId) { mutableStateOf<Pair<List<Attachment>, Int>?>(null) }
     var videoUrl by remember(channelId) { mutableStateOf<String?>(null) }
+    // The message whose media the open viewer (either lightbox or the video
+    // player) shows, so it closes when that message disappears.
+    var viewerOf by remember(channelId) { mutableStateOf<Message?>(null) }
     var showThreads by remember(channelId) { mutableStateOf(false) }
     var createThreadFor by remember(channelId) { mutableStateOf<Message?>(null) }
     var showSearch by remember(channelId) { mutableStateOf(false) }
@@ -221,9 +224,11 @@ fun ChatScreen(store: AppStore, state: AppState) {
     // A disappearing message vanishes from the list at its deadline (or with
     // the sweep's MESSAGE_DELETE). Nothing that holds a snapshot of it may
     // outlive it: the action sheet, the reply preview, the edit composer, the
-    // forward / delete / emoji sheets. Only timed rows are dropped this way, so
-    // a window swap (loadAround) can't take an ordinary reply target with it;
-    // an optimistic row matches its echo by nonce.
+    // forward / delete / emoji sheets, and the image or video viewer it opened
+    // (an E2EE image there is decrypted plaintext in memory). Only timed rows
+    // are dropped this way, so a window swap (loadAround) can't take an
+    // ordinary reply target or viewer with it; an optimistic row matches its
+    // echo by nonce.
     LaunchedEffect(messages) {
         val ids = messages.mapTo(HashSet()) { it.id }
         val nonces = messages.mapNotNullTo(HashSet()) { it.nonce }
@@ -235,6 +240,12 @@ fun ChatScreen(store: AppStore, state: AppState) {
         if (gone(emojiReactFor)) emojiReactFor = null
         if (gone(forwardFor)) forwardFor = null
         if (gone(confirmDelete)) confirmDelete = null
+        if (gone(viewerOf)) {
+            lightbox = null
+            encLightbox = null
+            videoUrl = null
+            viewerOf = null
+        }
     }
 
     // Notification deep-link reply prefill (guild channels, iOS openFromPush).
@@ -301,9 +312,9 @@ fun ChatScreen(store: AppStore, state: AppState) {
             MessageList(
                 store, state, channelId, messages,
                 onLongPress = { actionFor = it },
-                onImageTap = { list, i -> lightbox = list to i },
-                onVideoTap = { videoUrl = it },
-                onEncImageTap = { atts, i -> encLightbox = atts to i },
+                onImageTap = { m, list, i -> viewerOf = m; lightbox = list to i },
+                onVideoTap = { m, url -> viewerOf = m; videoUrl = url },
+                onEncImageTap = { m, atts, i -> viewerOf = m; encLightbox = atts to i },
                 modifier = Modifier.weight(1f).fillMaxWidth(),
             )
             if (channelId != null) {
@@ -479,15 +490,17 @@ fun ChatScreen(store: AppStore, state: AppState) {
         }
     }
     lightbox?.let { (urls, i) ->
-        ImageLightbox(urls, i, onDismiss = { lightbox = null })
+        ImageLightbox(urls, i, onDismiss = { lightbox = null; viewerOf = null })
     }
     encLightbox?.let { (atts, i) ->
         if (channelId != null) {
-            com.zekktris.ui.components.EncryptedImageLightbox(store, channelId, atts, i, onDismiss = { encLightbox = null })
+            com.zekktris.ui.components.EncryptedImageLightbox(
+                store, channelId, atts, i, onDismiss = { encLightbox = null; viewerOf = null },
+            )
         }
     }
     videoUrl?.let { url ->
-        VideoPlayerDialog(url, onDismiss = { videoUrl = null })
+        VideoPlayerDialog(url, onDismiss = { videoUrl = null; viewerOf = null })
     }
     emojiReactFor?.let { msg ->
         EmojiPickerSheet(
@@ -1161,9 +1174,10 @@ private fun MessageList(
     channelId: String?,
     messages: List<Message>,
     onLongPress: (Message) -> Unit,
-    onImageTap: (List<String>, Int) -> Unit,
-    onVideoTap: (String) -> Unit,
-    onEncImageTap: (List<Attachment>, Int) -> Unit,
+    // Each viewer callback carries the message it opened from (see viewerOf).
+    onImageTap: (Message, List<String>, Int) -> Unit,
+    onVideoTap: (Message, String) -> Unit,
+    onEncImageTap: (Message, List<Attachment>, Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val p = ZkTheme.palette
@@ -1408,9 +1422,9 @@ private fun MessageList(
                     msg = m,
                     grouped = grouped,
                     onLongPress = onLongPress,
-                    onImageTap = onImageTap,
-                    onVideoTap = onVideoTap,
-                    onEncImageTap = onEncImageTap,
+                    onImageTap = { urls, idx -> onImageTap(m, urls, idx) },
+                    onVideoTap = { url -> onVideoTap(m, url) },
+                    onEncImageTap = { atts, idx -> onEncImageTap(m, atts, idx) },
                     showReceipt = m.id == receiptAnchorId,
                     highlighted = m.id == highlightedId,
                     onJumpTo = onJumpTo,

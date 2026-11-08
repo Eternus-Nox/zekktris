@@ -386,10 +386,10 @@ class AppStore(
      *  ringer (the gateway already rings a foregrounded, connected client). */
     val isForeground: Boolean get() = appForeground
 
-    /** A conversation whose read ack was skipped because the app wasn't in the
-     *  foreground (see [ack]); acked on return if it's still the open one. */
+    /** MainActivity's biometric app-lock screen is up: the conversation under
+     *  it isn't being read, so [ack] waits for the unlock. */
     @Volatile
-    private var deferredAckChannelId: String? = null
+    private var appLocked = false
 
     // ---- device presence ----------------------------------------------------
     //
@@ -495,22 +495,23 @@ class AppStore(
         // Guaranteed floor: pull the LATEST window for the open chat and merge
         // it, so a message that arrived while suspended can NEVER leave the open
         // conversation stale after a resume — even if the after-cursor sync
-        // races or misses. Once now, once after the socket has settled. An ack
-        // skipped while we were in the background (a selection that landed
-        // before the activity started) goes once the window is in.
+        // races or misses. Once now, once after the socket has settled. Each
+        // then acks the chat the user is back to reading: nothing that came in
+        // while we were in the background was acked (MESSAGE_CREATE, the push
+        // sync and a selection that landed before the activity started all
+        // skip it), and the later poll finds nothing new, so it wouldn't either.
         scope.launch {
-            // Taken now: an ack is only skipped while appForeground is false,
-            // i.e. before this line, so nothing newer can be lost.
-            val deferred = deferredAckChannelId
-            deferredAckChannelId = null
             _state.value.selectedChannelId?.let { cid ->
                 refreshOpenChannelLatest(cid)
-                if (deferred == cid && _state.value.selectedChannelId == cid) ack(cid)
+                ackOpenIfUnread(cid)
             }
         }
         scope.launch {
             delay(2_500)
-            _state.value.selectedChannelId?.let { refreshOpenChannelLatest(it) }
+            _state.value.selectedChannelId?.let { cid ->
+                refreshOpenChannelLatest(cid)
+                ackOpenIfUnread(cid)
+            }
         }
     }
 
@@ -522,6 +523,17 @@ class AppStore(
         appForeground = false
         // Put away: this device is idle at once (the socket may live on).
         if (!changingConfigurations) evaluatePresence()
+    }
+
+    /** MainActivity's app lock went up or came down. It goes up on the return
+     *  to the foreground, before [onAppForeground]'s catch-up acks, which then
+     *  skip; unlocking is when the user sees the open conversation, so it is
+     *  acked here instead. */
+    fun onAppLockChanged(locked: Boolean) {
+        if (appLocked == locked) return
+        appLocked = locked
+        if (locked || _state.value.phase != Phase.Ready) return
+        _state.value.selectedChannelId?.let { cid -> scope.launch { ackOpenIfUnread(cid) } }
     }
 
     /**
@@ -2419,20 +2431,34 @@ class AppStore(
     /**
      * Mark [channelId] read up to its newest confirmed message. Reading is what
      * starts disappearing messages' countdowns on the server, so only a
-     * foreground app acks: a push sync, a resume or a selection that lands
-     * before the activity starts must never mark a message seen. A skipped
-     * ack is replayed by [onAppForeground] if the conversation is still open.
+     * foreground, unlocked app acks: a push sync, a resume, a selection that
+     * lands before the activity starts or a message that arrives behind the
+     * app-lock screen must never mark a message seen. What a skipped ack
+     * covered is acked by [onAppForeground] or [onAppLockChanged] if the
+     * conversation is still open then.
      */
     private suspend fun ack(channelId: String) {
-        if (!appForeground) {
-            deferredAckChannelId = channelId
-            return
-        }
+        if (!appForeground || appLocked) return
         // Optimistic rows have no server id to ack.
         val last = _state.value.messagesByChannel[channelId]?.lastOrNull { !it.id.startsWith("pending-") }?.id ?: return
         val rs = runCatching { api.ackMessage(channelId, last) }.getOrNull() ?: return
         _state.update { it.copy(readStates = it.readStates + (channelId to rs)) }
         startCountdownsLocally(channelId, last)
+    }
+
+    /**
+     * Ack [channelId] if it is the open conversation and shows a message its
+     * read pointer doesn't cover. For the REST catch-ups no live event acks: a
+     * resume (messages that came in while we were in the background) and a
+     * reconnect's READY (messages missed while the socket was down). A pointer
+     * that already covers it means the server recorded that read, by an ack or
+     * a send from any device, which started the clocks; then no POST is sent.
+     */
+    private suspend fun ackOpenIfUnread(channelId: String) {
+        val st = _state.value
+        if (st.selectedChannelId != channelId) return
+        val rows = st.messagesByChannel[channelId] ?: return
+        if (Disappearing.ackTarget(rows, st.readStates[channelId]?.lastMessageId) != null) ack(channelId)
     }
 
     // ---- sending ------------------------------------------------------------
@@ -4839,8 +4865,13 @@ class AppStore(
             // A fresh IDENTIFY (>60s drop) replays no MESSAGE_DELETE/UPDATE, so the
             // after-cursor sync would miss deletions/edits/reactions on already-
             // loaded rows. Route the open-channel catch-up through the latest-window
-            // reconcile (matches onAppForeground) so those heal on reconnect too.
-            _state.value.selectedChannelId?.let { refreshOpenChannelLatest(it) }
+            // reconcile (matches onAppForeground) so those heal on reconnect too,
+            // and ack what it brought in: the user is reading it (no-op in the
+            // background), and the next poll finds nothing new to ack on.
+            _state.value.selectedChannelId?.let { cid ->
+                refreshOpenChannelLatest(cid)
+                ackOpenIfUnread(cid)
+            }
         }
         val obj = d?.jsonObject ?: return
         // Our chosen status may have been changed on another device while this
@@ -4916,7 +4947,6 @@ class AppStore(
     private fun clearDisappearingState() {
         synchronized(expiryDeadlines) { expiryDeadlines.clear() }
         dmTimerGen.clear()
-        deferredAckChannelId = null
     }
 
     /** server − device clock: MESSAGE_EXPIRY's precise value, else the last

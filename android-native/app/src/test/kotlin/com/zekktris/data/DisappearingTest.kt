@@ -255,6 +255,23 @@ class DisappearingTest {
         assertFalse(Disappearing.startsOnAck(received, null, upTo, known = false))
     }
 
+    @Test fun resumeAcksOnlyWhatTheReadPointerDoesNotCover() {
+        val rows = listOf(msg("150"), msg("200", expireAfterSeconds = 30), msg("pending-abc", authorId = "me"))
+        // A message came in while we were away: the pointer is behind it.
+        assertEquals("200", Disappearing.ackTarget(rows, "150"))
+        // Never read at all.
+        assertEquals("200", Disappearing.ackTarget(rows, null))
+        // Already read here or on another device, or we sent past it.
+        assertNull(Disappearing.ackTarget(rows, "200"))
+        assertNull(Disappearing.ackTarget(rows, "250"))
+        // Snowflake order, not string order.
+        assertEquals("1000", Disappearing.ackTarget(listOf(msg("1000")), "999"))
+        assertNull(Disappearing.ackTarget(listOf(msg("999")), "1000"))
+        // Nothing confirmed to ack.
+        assertNull(Disappearing.ackTarget(listOf(msg("pending-abc", authorId = "me")), null))
+        assertNull(Disappearing.ackTarget(emptyList(), null))
+    }
+
     @Test fun settingsPatchCarriesAnExplicitNullForOff() {
         assertEquals("""{"ttlSecondsAfterRead":null}""", Disappearing.settingsPatchBody(null).toString())
         assertEquals("""{"ttlSecondsAfterRead":2419200}""", Disappearing.settingsPatchBody(2_419_200).toString())

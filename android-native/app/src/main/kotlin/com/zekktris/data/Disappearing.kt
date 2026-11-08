@@ -312,4 +312,16 @@ object Disappearing {
         if ((m.authorId ?: m.author?.id) == meId) return false
         return compareIds(m.id, upToId) <= 0
     }
+
+    /**
+     * The id to ack for a conversation the user has on screen, or null when
+     * its read pointer [readUpTo] already covers it. That is the newest
+     * confirmed row, the same one the ack sends. A pointer at or past it means
+     * the server recorded that read, by an ack or a send from any device, and
+     * either one started the clocks, so a resume or reconnect skips the POST.
+     */
+    fun ackTarget(rows: List<Message>, readUpTo: String?): String? {
+        val newest = rows.lastOrNull { !it.id.startsWith("pending-") }?.id ?: return null
+        return if (readUpTo == null || compareIds(newest, readUpTo) > 0) newest else null
+    }
 }

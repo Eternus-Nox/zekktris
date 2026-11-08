@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,6 +54,9 @@ class MainActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val store = (application as ZekApp).store
+        // A cold launch starts behind the app lock when it's on (below). Tell
+        // the store now, before the first frame: it doesn't ack under the lock.
+        store.onAppLockChanged(getSharedPreferences("zk_prefs", Context.MODE_PRIVATE).getBoolean("zk.appLock", false))
         maybeRequestNotificationPermission()
         if (!handleShareIntent(intent, store)) handleNotificationIntent(intent, store)
         setContent {
@@ -85,13 +89,21 @@ class MainActivity : FragmentActivity() {
                 val obs = LifecycleEventObserver { _, event ->
                     when (event) {
                         Lifecycle.Event.ON_STOP -> if (appLockEnabled && !authInProgress) sawBackground = true
-                        Lifecycle.Event.ON_START -> { if (appLockEnabled && sawBackground) locked = true; sawBackground = false }
+                        Lifecycle.Event.ON_START -> {
+                            // Straight to the store too, not on the next frame:
+                            // onAppForeground's catch-up acks must see the lock.
+                            if (appLockEnabled && sawBackground) { locked = true; store.onAppLockChanged(true) }
+                            sawBackground = false
+                        }
                         else -> {}
                     }
                 }
                 lifecycleOwner.lifecycle.addObserver(obs)
                 onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
             }
+            // Every other change (unlock, the escape hatch, turning it off):
+            // the store acks the open conversation once it's on screen.
+            SideEffect { store.onAppLockChanged(locked) }
             val appLock = AppLockController(
                 enabled = appLockEnabled,
                 supported = lockSupported,
