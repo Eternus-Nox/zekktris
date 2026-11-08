@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterEach, afterAll } from 'vitest';
 import { Hono } from 'hono';
 import type { WebSocket } from 'ws';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, schema } from '../src/db';
 import { dmsRouter } from '../src/routes/dms';
 import { messagesRouter } from '../src/routes/messages';
@@ -22,6 +22,7 @@ import { listSavedMessages, saveMessage } from '../src/services/savedMessages';
 import { addReaction } from '../src/services/reactions';
 import { resolveAndPersistEmbeds } from '../src/services/embeds';
 import { fireScheduled } from '../src/services/scheduledMessages';
+import { sweepStreakWarnings } from '../src/services/streaks';
 import {
   createUser,
   createGuild,
@@ -688,6 +689,97 @@ describe.runIf(dbReady)('disappearing messages: per-message timer + read paths (
       .from(schema.messages)
       .where(and(eq(schema.messages.channelId, plain), eq(schema.messages.content, 'scheduled, no timer')));
     expect(await marker(c, plain)).toBe(sc!.id);
+  });
+
+  it("the streak warning (userA's row, marker untouched) sends userA's held marker back only while a timed message waits for them", async () => {
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    // A DM with a live streak credited only yesterday, so the sweep warns it.
+    // userA, the warning's FK author, is the lower id.
+    const atRisk = async (ttl: number | null) => {
+      const x = await createUser();
+      const y = await createUser();
+      const [lo, hi] = x < y ? [x, y] : [y, x];
+      const dm = await createDmChannel([lo, hi]);
+      let notice: bigint | null = null;
+      if (ttl !== null) {
+        expect((await setTimer(hi, dm, ttl)).status).toBe(200);
+        const [n] = await db
+          .select({ id: schema.messages.id })
+          .from(schema.messages)
+          .where(and(eq(schema.messages.channelId, dm), eq(schema.messages.type, 'system_disappearing')));
+        notice = n!.id;
+        expect((await ack(lo, dm, notice)).status).toBe(200);
+      }
+      const fromB = await send(hi, dm, { content: 'door code 4821' });
+      // The send records the streak day in the background; seed over it once
+      // it has landed.
+      await waitFor(async () => {
+        const [s] = await db.select().from(schema.dmStreaks).where(eq(schema.dmStreaks.channelId, dm));
+        return !!s?.lastDayB;
+      });
+      await db
+        .update(schema.dmStreaks)
+        .set({ streak: 3, lastDayA: yesterday, lastCountedDay: yesterday, streakWarnedForDay: null })
+        .where(eq(schema.dmStreaks.channelId, dm));
+      return { lo, hi, dm, notice, fromB };
+    };
+    const warningIn = async (dm: bigint) => {
+      const [w] = await db
+        .select()
+        .from(schema.messages)
+        .where(and(eq(schema.messages.channelId, dm), sql`${schema.messages.metadata}->>'kind' = 'streak_warning'`));
+      return w!;
+    };
+
+    // B's timed message waits for A, above A's marker (the timer notice).
+    const waiting = await atRisk(300);
+    // Timed, but A read it: its clock runs, nothing waits.
+    const read = await atRisk(300);
+    expect((await ack(read.lo, read.dm, read.fromB.id)).status).toBe(200);
+    expect((await row(read.fromB.id)).expiresAt).not.toBeNull();
+    // No timer: B's message is unread, but nothing has a clock to wait on.
+    const plain = await atRisk(null);
+
+    const aWaiting = connect(waiting.lo, [waiting.dm]);
+    const bWaiting = connect(waiting.hi, [waiting.dm]);
+    const aRead = connect(read.lo, [read.dm]);
+    const aPlain = connect(plain.lo, [plain.dm]);
+
+    expect(await sweepStreakWarnings()).toBeGreaterThanOrEqual(3);
+
+    // Each DM got its warning, authored by userA, and A's marker didn't move.
+    const w = await warningIn(waiting.dm);
+    expect(w.authorId).toBe(waiting.lo);
+    expect(await marker(waiting.lo, waiting.dm)).toBe(waiting.notice);
+    expect((await row(waiting.fromB.id)).expiresAt).toBeNull();
+    // Exactly one CHANNEL_ACK, to A only, with the stored marker, after the
+    // warning's echo that moved A's local marker to it.
+    expect(framesOf(aWaiting, 'CHANNEL_ACK')).toEqual([
+      { channelId: waiting.dm.toString(), lastMessageId: waiting.notice!.toString(), mentionCount: 0 },
+    ]);
+    expect(framesOf(bWaiting, 'CHANNEL_ACK').length).toBe(0);
+    const echoAt = aWaiting.findIndex((f) => f.t === 'MESSAGE_CREATE' && f.d?.id === w.id.toString());
+    expect(echoAt).toBeGreaterThanOrEqual(0);
+    expect(aWaiting.findIndex((f) => f.t === 'CHANNEL_ACK')).toBeGreaterThan(echoAt);
+
+    // Nothing waiting: the warning's echo, and nothing sent back.
+    for (const [dm, sent] of [
+      [read.dm, aRead],
+      [plain.dm, aPlain],
+    ] as const) {
+      const wNone = await warningIn(dm);
+      expect(sent.some((f) => f.t === 'MESSAGE_CREATE' && f.d?.id === wNone.id.toString())).toBe(true);
+      expect(framesOf(sent, 'CHANNEL_ACK').length).toBe(0);
+    }
+
+    // A opens the DM: the ack of the newest message (the warning) starts it.
+    await ack(waiting.lo, waiting.dm, w.id);
+    expect((await row(waiting.fromB.id)).expiresAt).not.toBeNull();
+
+    // dm_streaks has no channel FK: the seed's cleanup doesn't reach it.
+    await db
+      .delete(schema.dmStreaks)
+      .where(inArray(schema.dmStreaks.channelId, [waiting.dm, read.dm, plain.dm]));
   });
 
   it('expiresAt reaches the author in REST only while the 1:1 reader has receipts on', async () => {

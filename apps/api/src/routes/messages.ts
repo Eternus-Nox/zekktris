@@ -817,10 +817,11 @@ messagesRouter.post(
         : [];
 
     // Disappearing messages: a send is a read of what's above it unless the
-    // client flags it `notARead`. A forward is one too: iOS and Android
-    // (installed builds included) open the destination DM right after it,
-    // so the sender is shown what waits there; web's Forward modal, which
-    // stays put, sends the flag.
+    // client flags it `notARead`. An unflagged forward is one too: installed
+    // iOS and Android builds open the destination DM right after it, so the
+    // sender is shown what waits there. Web's Forward modal (which stays put)
+    // and current iOS (whose destination may be a locked E2EE DM) send the
+    // flag, as do Siri / Shortcuts / Watch sends.
     const isRead = !payload.notARead;
 
     let result;

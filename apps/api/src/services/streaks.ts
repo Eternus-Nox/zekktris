@@ -9,7 +9,8 @@
 
 import { and, eq, gt, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
-import { createSystemMessage } from './messages';
+import { notifyHeldReadMarker } from './dms';
+import { createSystemMessage, timedMessageWaitingFor } from './messages';
 import { unreadBadgeCounts } from './readStates';
 import { toMessage } from '../lib/dto';
 import * as dispatch from '../gateway/dispatch';
@@ -218,6 +219,19 @@ export async function sweepStreakWarnings(): Promise<number> {
         selfId: row.userAId,
       });
       dispatch.messageCreate({ messageDTO, channelId: row.channelId, guildId: null });
+      // The warning is userA's row (the FK author) but leaves userA's read
+      // marker where it is, and their clients move their local marker to it
+      // on this echo all the same (their own message). With a timed message
+      // from userB still waiting above the marker, the DM then reads as read
+      // on those devices, their next open acks nothing and it never
+      // disappears — so send the stored marker back, after the echo (one
+      // bus). Best-effort, like the push.
+      const held = await timedMessageWaitingFor(db, {
+        userId: row.userAId,
+        channelId: row.channelId,
+        belowId: inserted.id,
+      }).catch(() => false);
+      if (held) await notifyHeldReadMarker({ userId: row.userAId, channelId: row.channelId });
 
       // Push BOTH participants so the warning reaches a fully-closed app — the
       // in-chat message + unread only nudges someone who reopens. Unlike a

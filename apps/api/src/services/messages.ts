@@ -289,6 +289,53 @@ export interface CreatedMessage extends MessageWithMentions {
   authorMarkerHeld: boolean;
 }
 
+/**
+ * Is a message from someone else waiting for its disappearing clock (sent
+ * with a timer, clock not started, not deleted) between `userId`'s read
+ * marker in this DM and `belowId`? A row `userId` authors there that doesn't
+ * move their marker past it — a send that isn't a read, the streak warning —
+ * makes their clients move their local marker to it on the MESSAGE_CREATE
+ * echo all the same, so the DM reads as read and its next open acks nothing.
+ * The callers hold the marker (createMessage) or send the stored one back
+ * after the echo (dms.notifyHeldReadMarker) only when this is true. DMs only:
+ * nothing else has a timer. The partial messages_timer_pending_idx serves it.
+ */
+export async function timedMessageWaitingFor(
+  exec: DbHandle,
+  input: { userId: bigint; channelId: bigint; belowId: bigint },
+): Promise<boolean> {
+  // Two statements, so both id bounds are plain values, and a count rather
+  // than LIMIT 1: with the marker as a sub-select the planner can't size the
+  // id range and (measured) walks the messages primary key across every
+  // channel instead of the tiny partial index, and a LIMIT 1 probe invites
+  // the same fast-start plan.
+  const [rs] = await exec
+    .select({ last: schema.readStates.lastMessageId })
+    .from(schema.readStates)
+    .where(
+      and(
+        eq(schema.readStates.userId, input.userId),
+        eq(schema.readStates.channelId, input.channelId),
+      ),
+    )
+    .limit(1);
+  const [pending] = await exec
+    .select({ n: sql<number>`count(*)::int` })
+    .from(schema.messages)
+    .where(
+      and(
+        eq(schema.messages.channelId, input.channelId),
+        lt(schema.messages.id, input.belowId),
+        gt(schema.messages.id, rs?.last ?? 0n),
+        sql`${schema.messages.expireAfterSeconds} IS NOT NULL`,
+        isNull(schema.messages.expiresAt),
+        isNull(schema.messages.deletedAt),
+        sql`${schema.messages.authorId} IS DISTINCT FROM ${input.userId}`,
+      ),
+    );
+  return (pending?.n ?? 0) > 0;
+}
+
 export async function createMessage(input: CreateMessageInput): Promise<CreatedMessage> {
   // Sanity check: empty message with no attachments is rejected. (The DB
   // would happily store it, but it's not useful.) An attached poll
@@ -442,43 +489,20 @@ export async function createMessage(input: CreateMessageInput): Promise<CreatedM
     // out-of-order insert can't roll the marker backward. Skipped for
     // authorless messages (system/webhook), and for a send that isn't a
     // read (`notARead`) when it would pass someone else's message still
-    // waiting for its disappearing clock (DMs only — nothing else has one;
-    // the partial messages_timer_pending_idx serves the probe).
+    // waiting for its disappearing clock (DMs only — nothing else has one).
     let advanceAuthorMarker = !!input.authorId;
-    if (advanceAuthorMarker && input.notARead && input.guildId === null) {
-      // Two statements, so both id bounds are plain values, and a count
-      // rather than LIMIT 1: with the marker as a sub-select the planner
-      // can't size the id range and (measured) walks the messages primary
-      // key across every channel instead of the tiny partial index, and a
-      // LIMIT 1 probe invites the same fast-start plan.
-      const [rs] = await tx
-        .select({ last: schema.readStates.lastMessageId })
-        .from(schema.readStates)
-        .where(
-          and(
-            eq(schema.readStates.userId, input.authorId),
-            eq(schema.readStates.channelId, input.channelId),
-          ),
-        )
-        .limit(1);
-      const [pending] = await tx
-        .select({ n: sql<number>`count(*)::int` })
-        .from(schema.messages)
-        .where(
-          and(
-            eq(schema.messages.channelId, input.channelId),
-            lt(schema.messages.id, messageId),
-            gt(schema.messages.id, rs?.last ?? 0n),
-            sql`${schema.messages.expireAfterSeconds} IS NOT NULL`,
-            isNull(schema.messages.expiresAt),
-            isNull(schema.messages.deletedAt),
-            sql`${schema.messages.authorId} IS DISTINCT FROM ${input.authorId}`,
-          ),
-        );
-      if ((pending?.n ?? 0) > 0) {
-        advanceAuthorMarker = false;
-        authorMarkerHeld = true;
-      }
+    if (
+      advanceAuthorMarker &&
+      input.notARead &&
+      input.guildId === null &&
+      (await timedMessageWaitingFor(tx as DbHandle, {
+        userId: input.authorId,
+        channelId: input.channelId,
+        belowId: messageId,
+      }))
+    ) {
+      advanceAuthorMarker = false;
+      authorMarkerHeld = true;
     }
     if (advanceAuthorMarker) {
       await tx
