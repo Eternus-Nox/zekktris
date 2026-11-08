@@ -487,10 +487,21 @@ data class Message(
     val nonce: String? = null,
     val metadata: MessageMetadata? = null,
     val poll: Poll? = null,
+    /** Disappearing messages: the timer (seconds) this message was SENT with;
+     *  null when it never disappears (and on servers without the feature). */
+    val expireAfterSeconds: Int? = null,
+    /** Disappearing messages: when it disappears (ISO server time), once a
+     *  recipient has read it. REST only, and hidden from the author when the
+     *  reader has read receipts off. AppStore keeps the deadlines it learns in
+     *  its own map, so a later DTO without this can't cancel a countdown. */
+    val expiresAt: String? = null,
 )
 
-/** Free-form message metadata; `kind` marks notice rows (poke / streak_warning).
- *  system_call messages carry `missed` / `durationMs` / `initiatorId`. */
+/** Free-form message metadata; `kind` marks notice rows (poke / streak_warning /
+ *  disappearing_timer). system_call messages carry `missed` / `durationMs` /
+ *  `initiatorId`; the disappearing-messages notice (type
+ *  'system_disappearing') carries `timerSeconds` (0 = turned off) and
+ *  `initiatorId`. */
 @Serializable
 data class MessageMetadata(
     val kind: String? = null,
@@ -498,6 +509,7 @@ data class MessageMetadata(
     val initiatorId: String? = null,
     val missed: Boolean? = null,
     val durationMs: Long? = null,
+    val timerSeconds: Int? = null,
 )
 
 @Serializable

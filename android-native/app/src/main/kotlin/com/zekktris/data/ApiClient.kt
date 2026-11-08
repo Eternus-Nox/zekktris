@@ -719,9 +719,19 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
             after?.let { add("after=$it") }
             around?.let { add("around=$it") }
         }.joinToString("&")
-        return authorized(HttpMethod.Get, "/channels/$channelId/messages?$q")
-            .decodeOrThrow<MessagesWrap>().messages
+        val resp = authorized(HttpMethod.Get, "/channels/$channelId/messages?$q")
+        Disappearing.offsetFromDateHeader(resp.headers[HttpHeaders.Date], System.currentTimeMillis())
+            ?.let { dateClockOffsetMs = it }
+        return resp.decodeOrThrow<MessagesWrap>().messages
     }
+
+    /** server − device clock from the last message page's `Date` header (a
+     *  lower bound, see [Disappearing.offsetFromDateHeader]); null until one
+     *  arrived. Shifts the pages' disappearing deadlines ([Message.expiresAt])
+     *  onto the device clock until a MESSAGE_EXPIRY gives a precise offset. */
+    @Volatile
+    var dateClockOffsetMs: Long? = null
+        private set
 
     /** Shared-media gallery: a channel's attachments newest-first, paginated by
      *  attachment id (`before` cursor). `kind` = "media" (image/video) or
@@ -1072,16 +1082,20 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
     suspend fun getDmSettings(channelId: String): com.zekktris.data.model.DmChannelSettings =
         authorized(HttpMethod.Get, "/users/@me/channels/$channelId/settings").decodeOrThrow()
 
-    /** Auto-delete after read: 30 / 60 / 120 seconds, or null = off. The null
-        must be EXPLICIT in the JSON (clearing the TTL), so build it by hand. */
+    /** The DM's disappearing-messages timer for NEW messages: 1..2419200
+        seconds (10..86400 on a server without `maxTtlSeconds`), or null = off,
+        sent with an EXPLICIT null ([Disappearing.settingsPatchBody]). Non-2xx
+        throws with the server's reason: an older server's 400 for an
+        out-of-range value, a block, a mute or the rate limit must never read
+        as saved. */
     suspend fun setDmTtl(channelId: String, ttlSeconds: Int?) {
-        val body = buildJsonObject {
-            put("ttlSecondsAfterRead", ttlSeconds?.let { JsonPrimitive(it) } ?: JsonNull)
-        }
-        authorized(HttpMethod.Patch, "/users/@me/channels/$channelId/settings") {
-            contentType(ContentType.Application.Json)
-            setBody(body.toString())
-        }
+        val body = Disappearing.settingsPatchBody(ttlSeconds)
+        expectOk(
+            authorized(HttpMethod.Patch, "/users/@me/channels/$channelId/settings") {
+                contentType(ContentType.Application.Json)
+                setBody(body.toString())
+            },
+        )
     }
 
     /** Whether pushes for this DM show message content; explicit null = account default. */

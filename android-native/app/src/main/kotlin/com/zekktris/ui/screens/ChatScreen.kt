@@ -67,7 +67,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -92,6 +91,7 @@ import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -136,6 +136,7 @@ import com.zekktris.AppState
 import com.zekktris.AppStore
 import com.zekktris.data.ApiClient
 import com.zekktris.data.Config
+import com.zekktris.data.Disappearing
 import com.zekktris.data.model.Attachment
 import com.zekktris.data.model.Channel
 import com.zekktris.data.model.ForwardSource
@@ -202,6 +203,9 @@ fun ChatScreen(store: AppStore, state: AppState) {
     var confirmDelete by remember(channelId) { mutableStateOf<Message?>(null) }
     var showPokeSheet by remember(channelId) { mutableStateOf(false) }
     var showDmSettings by remember(channelId) { mutableStateOf(false) }
+    // The Disappearing Messages screen, opened from the header's timer pill
+    // (the settings sheet opens its own copy over itself).
+    var showDisappearing by remember(channelId) { mutableStateOf(false) }
     var showPins by remember(channelId) { mutableStateOf(false) }
     var showMembers by remember(channelId) { mutableStateOf(false) }
     var lightbox by remember(channelId) { mutableStateOf<Pair<List<String>, Int>?>(null) }
@@ -213,6 +217,25 @@ fun ChatScreen(store: AppStore, state: AppState) {
     var createThreadFor by remember(channelId) { mutableStateOf<Message?>(null) }
     var showSearch by remember(channelId) { mutableStateOf(false) }
     val isForum = channel?.isForum == true
+
+    // A disappearing message vanishes from the list at its deadline (or with
+    // the sweep's MESSAGE_DELETE). Nothing that holds a snapshot of it may
+    // outlive it: the action sheet, the reply preview, the edit composer, the
+    // forward / delete / emoji sheets. Only timed rows are dropped this way, so
+    // a window swap (loadAround) can't take an ordinary reply target with it;
+    // an optimistic row matches its echo by nonce.
+    LaunchedEffect(messages) {
+        val ids = messages.mapTo(HashSet()) { it.id }
+        val nonces = messages.mapNotNullTo(HashSet()) { it.nonce }
+        fun gone(m: Message?): Boolean =
+            m != null && m.expireAfterSeconds != null && m.id !in ids && (m.nonce == null || m.nonce !in nonces)
+        if (gone(replyTo)) replyTo = null
+        if (gone(editing)) editing = null
+        if (gone(actionFor)) actionFor = null
+        if (gone(emojiReactFor)) emojiReactFor = null
+        if (gone(forwardFor)) forwardFor = null
+        if (gone(confirmDelete)) confirmDelete = null
+    }
 
     // Notification deep-link reply prefill (guild channels, iOS openFromPush).
     // Keyed on messages.size — and consuming the target only AFTER the lookup
@@ -262,6 +285,7 @@ fun ChatScreen(store: AppStore, state: AppState) {
             onBack = { store.closeChannel() },
             onPoke = { showPokeSheet = true },
             onSettings = { showDmSettings = true },
+            onDisappearing = { showDisappearing = true },
             onPins = { showPins = true },
             onMembers = { showMembers = true },
             onThreads = { showThreads = true },
@@ -443,6 +467,9 @@ fun ChatScreen(store: AppStore, state: AppState) {
     if (showDmSettings && channelId != null) {
         DmSettingsSheet(store, state, channelId, onDismiss = { showDmSettings = false })
     }
+    if (showDisappearing && channelId != null) {
+        DisappearingMessagesDialog(store, state, channelId, onDismiss = { showDisappearing = false })
+    }
     if (showPins && channelId != null) {
         PinsSheet(store, channelId, onDismiss = { showPins = false })
     }
@@ -608,10 +635,11 @@ private fun DmSettingsSheet(store: AppStore, state: AppState, channelId: String,
     var e2eeErr by remember(channelId) { mutableStateOf<String?>(null) }
     var confirmDisableE2EE by remember(channelId) { mutableStateOf(false) }
     var showMediaGallery by remember(channelId) { mutableStateOf(false) }
+    var showDisappearing by remember(channelId) { mutableStateOf(false) }
 
     // Order (top→bottom, mirrors iOS DmSettingsSheet): Shared media,
-    // Notifications, Read receipts, Auto-delete, End-to-end encryption,
-    // Close DM.
+    // Notifications, Read receipts, Disappearing messages, End-to-end
+    // encryption, Close DM.
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = p.bg2) {
         Column(
             Modifier
@@ -716,35 +744,33 @@ private fun DmSettingsSheet(store: AppStore, state: AppState, channelId: String,
 
             Box(Modifier.fillMaxWidth().height(1.dp).background(p.line))
 
-            // Auto-delete after read: full-width stacked rows (radio style),
-            // not the old pill row — matches the iOS list layout.
-            Text("AUTO-DELETE MESSAGES", color = ZkInk.ink3, fontFamily = ZkSans, fontWeight = FontWeight.Bold, fontSize = 11.sp, letterSpacing = 0.6.sp)
-            val ttlOptions = listOf<Pair<String, Int?>>("Off" to null, "30 seconds" to 30, "1 minute" to 60, "2 minutes" to 120)
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(p.bg2)) {
-                ttlOptions.forEachIndexed { i, (label, secs) ->
-                    val selected = settings?.ttlSecondsAfterRead == secs
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                settings = (settings ?: com.zekktris.data.model.DmChannelSettings()).copy(ttlSecondsAfterRead = secs)
-                                scope.launch { store.setDmTtl(channelId, secs) }
-                            }
-                            .padding(horizontal = 12.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(label, color = ZkInk.ink1, fontFamily = ZkSans, fontSize = 15.sp, modifier = Modifier.weight(1f))
-                        if (selected) {
-                            Icon(Icons.Filled.Check, null, tint = p.accent, modifier = Modifier.size(16.dp))
-                        }
-                    }
-                    if (i < ttlOptions.size - 1) Box(Modifier.fillMaxWidth().height(1.dp).background(p.line))
-                }
+            // Disappearing messages: one row with the current value, opening
+            // the full-screen Disappearing Messages screen (Signal's layout),
+            // the way Photos & Files opens the gallery. The value comes from
+            // the store (the GET above refreshes it; live changes land there).
+            Text("DISAPPEARING MESSAGES", color = ZkInk.ink3, fontFamily = ZkSans, fontWeight = FontWeight.Bold, fontSize = 11.sp, letterSpacing = 0.6.sp)
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(p.bg2)
+                    .clickable { showDisappearing = true }
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.Timer, null, tint = p.accent, modifier = Modifier.size(16.dp))
+                Text(
+                    "Disappearing messages", color = ZkInk.ink1, fontFamily = ZkSans, fontWeight = FontWeight.Medium, fontSize = 14.sp,
+                    modifier = Modifier.weight(1f).padding(start = 8.dp),
+                )
+                Text(
+                    Disappearing.label(state.dmTimerByChannel[channelId]),
+                    color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 13.sp,
+                    modifier = Modifier.padding(start = 8.dp, end = 4.dp),
+                )
+                Icon(Icons.Filled.ChevronRight, null, tint = ZkInk.ink3, modifier = Modifier.size(16.dp))
             }
-            Text(
-                "When on, each message disappears this long after the other person reads it. This applies to both of you.",
-                color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 12.sp,
-            )
+            Text(Disappearing.DESCRIPTION, color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 12.sp)
 
             Box(Modifier.fillMaxWidth().height(1.dp).background(p.line))
 
@@ -822,6 +848,10 @@ private fun DmSettingsSheet(store: AppStore, state: AppState, channelId: String,
 
     if (showMediaGallery) {
         MediaGalleryDialog(store, state, channelId, onDismiss = { showMediaGallery = false })
+    }
+
+    if (showDisappearing) {
+        DisappearingMessagesDialog(store, state, channelId, onDismiss = { showDisappearing = false })
     }
 
     if (confirmDisableE2EE) {
@@ -928,6 +958,7 @@ private fun ChatHeader(
     onMembers: () -> Unit,
     onThreads: () -> Unit,
     onCall: () -> Unit,
+    onDisappearing: () -> Unit = {},
     onSearch: () -> Unit = {},
     onOpenProfile: (com.zekktris.data.model.PublicUser) -> Unit = {},
 ) {
@@ -1026,6 +1057,12 @@ private fun ChatHeader(
                     (channel.streak ?: 0).takeIf { it > 0 }?.let {
                         Spacer(Modifier.width(6.dp)); StreakPill(it)
                     }
+                    // Disappearing messages on: timer + short value ("1d",
+                    // "30s"); tapping it opens the Disappearing Messages screen,
+                    // as in Signal.
+                    state.dmTimerByChannel[channel.id]?.let { secs ->
+                        Spacer(Modifier.width(6.dp)); DisappearingPill(secs, onDisappearing)
+                    }
                 }
                 // Search leads the trailing action group; hidden for E2EE
                 // channels (iOS MessageViews.swift:493-500).
@@ -1094,6 +1131,26 @@ private fun ChatHeader(
                 )
             }
         }
+    }
+}
+
+/** The header's disappearing-messages indicator: StreakPill's shape in the
+ *  theme's neutral tones instead of amber. */
+@Composable
+private fun DisappearingPill(seconds: Int, onClick: () -> Unit) {
+    val p = ZkTheme.palette
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(p.bg3)
+            .border(1.dp, p.line, RoundedCornerShape(6.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 2.5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Icon(Icons.Outlined.Timer, "Disappearing messages", tint = ZkInk.ink2, modifier = Modifier.size(10.dp))
+        Text(Disappearing.formatShort(seconds), color = ZkInk.ink1, fontFamily = ZkMono, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, maxLines = 1)
     }
 }
 
@@ -1292,6 +1349,13 @@ private fun MessageList(
                     CallNoticeRow(state.me, m)
                     return@itemsIndexed
                 }
+                // Disappearing-messages timer change → centered quiet notice
+                // drawn from its metadata, never the fallback content as an
+                // authored bubble. No long-press: it can't be edited or deleted.
+                if (Disappearing.isNotice(m)) {
+                    DisappearingNoticeRow(state.me, store.dmNickname(m.metadata?.initiatorId ?: m.authorId), m)
+                    return@itemsIndexed
+                }
                 var grouped = !newDay && prev != null &&
                     m.type == "default" &&
                     prev.type == "default" &&
@@ -1461,6 +1525,34 @@ private fun CallNoticeRow(me: com.zekktris.data.model.SelfUser?, msg: Message) {
     }
 }
 
+/** The disappearing-messages notice: "You set disappearing messages to 1
+ *  day." / "<nickname or name> turned off disappearing messages." A row
+ *  without the metadata (never sent by the server) falls back to its content,
+ *  which the server writes as that same sentence in the third person. */
+@Composable
+private fun DisappearingNoticeRow(me: com.zekktris.data.model.SelfUser?, nickname: String?, msg: Message) {
+    val timer = Disappearing.noticeTimer(msg)
+    val initiator = msg.metadata?.initiatorId ?: msg.authorId
+    val text = if (timer == null) msg.content
+    else Disappearing.noticeText(
+        timerSeconds = timer,
+        isSelf = initiator != null && initiator == me?.id,
+        name = nickname ?: msg.author?.bestName ?: "Someone",
+    )
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 5.dp, horizontal = 14.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Outlined.Timer, null, tint = ZkInk.ink3, modifier = Modifier.size(13.dp))
+        Text(
+            text, color = ZkInk.ink2, fontFamily = ZkSans, fontSize = 12.sp,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier.padding(start = 6.dp),
+        )
+    }
+}
+
 /** Legacy persisted pokes (metadata.kind == "poke") render as a centered
  *  notice line — no avatar — and break author grouping (iOS parity). */
 @Composable
@@ -1545,6 +1637,8 @@ private fun MessageRow(
     val avatarUrl = joinGuild?.iconUrl ?: msg.authorOverrideAvatar ?: msg.author?.avatarUrl
     val pending = msg.id.startsWith("pending-")
     val failed = pending && isFailed
+    // Sent with a disappearing timer → a small timer icon by the time.
+    val disappears = msg.expireAfterSeconds != null
     val profileTapEnabled = msg.author != null && joinGuild == null
     // Parental control: one flag for BOTH the body and the reply quote, matching
     // iOS rowData (display + repliedDisplay are masked together).
@@ -1653,6 +1747,7 @@ private fun MessageRow(
                             fontSize = 11.sp,
                             modifier = Modifier.padding(start = 8.dp, bottom = 1.dp),
                         )
+                        if (disappears) DisappearingBadge(Modifier.align(Alignment.CenterVertically).padding(start = 4.dp))
                     }
                 }
                 msg.forwardedFrom?.let { ForwardedBlock(it) }
@@ -1684,6 +1779,9 @@ private fun MessageRow(
                                 modifier = Modifier.padding(start = 5.dp, bottom = 1.dp),
                             )
                         }
+                        // A grouped row has no header time: the timer rides
+                        // after the text instead.
+                        if (disappears && grouped) DisappearingBadge(Modifier.padding(start = 5.dp, bottom = 3.dp))
                     }
                 }
                 msg.sticker?.let { StickerView(it) }
@@ -1694,6 +1792,11 @@ private fun MessageRow(
                     onImageTap = onImageTap, onVideoTap = onVideoTap, onEncImageTap = onEncImageTap,
                 )
                 msg.embeds?.takeIf { it.isNotEmpty() }?.forEach { EmbedView(it) }
+                // A grouped row with no text (attachments, a sticker, a poll):
+                // the timer goes under its content.
+                if (disappears && grouped && msg.content.isBlank()) {
+                    DisappearingBadge(Modifier.padding(top = 2.dp))
+                }
                 if (msg.reactions.isNotEmpty()) {
                     ReactionChips(msg, guildEmojis) { emoji -> store.toggleReaction(msg.channelId, msg.id, emoji) }
                 }
@@ -1735,6 +1838,12 @@ private fun MessageRow(
             }
         }
     }
+}
+
+/** The per-message disappearing-timer icon (message meta, ink4). */
+@Composable
+private fun DisappearingBadge(modifier: Modifier = Modifier) {
+    Icon(Icons.Outlined.Timer, "Disappearing message", tint = ZkInk.ink4, modifier = modifier.size(11.dp))
 }
 
 private val CUSTOM_REACTION = Regex("^:([a-zA-Z0-9_]{2,32}):$")

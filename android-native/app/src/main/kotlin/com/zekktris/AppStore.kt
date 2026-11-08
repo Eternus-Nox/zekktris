@@ -1,6 +1,7 @@
 package com.zekktris
 
 import com.zekktris.data.ApiClient
+import com.zekktris.data.Disappearing
 import com.zekktris.data.Gateway
 import com.zekktris.data.LoginResult
 import com.zekktris.data.RefreshOutcome
@@ -38,6 +39,7 @@ import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
@@ -168,6 +170,14 @@ data class AppState(
     val myEvents: List<MyEventItem> = emptyList(),
     // userId → the viewer's personal nickname for that user (DM-only, private).
     val dmNicknames: Map<String, String> = emptyMap(),
+    // DM channelId → its disappearing-messages timer in seconds (absent = off
+    // or not fetched yet). Drives the header indicator, the settings row and
+    // the optimistic send's timer icon. Fed by the settings GET on open,
+    // DM_SETTINGS_UPDATE, the notice's MESSAGE_CREATE and our own saves.
+    val dmTimerByChannel: Map<String, Int> = emptyMap(),
+    // The timer values this server accepts (GET settings' maxTtlSeconds, or
+    // the older 10..86400 without it); null until a settings fetch answered.
+    val dmTimerBounds: Disappearing.Bounds? = null,
     // The bots the current user owns (Settings → Bots).
     val bots: List<com.zekktris.data.model.Bot> = emptyList(),
     val selectedGuildId: String? = null, // null = DM/home
@@ -258,6 +268,33 @@ class AppStore(
      *  outlive the key, and must never be written to disk. */
     private val mediaCache = com.zekktris.crypto.DecryptedMediaCache()
 
+    // ---- disappearing messages: state ----------------------------------------
+    //
+    // Declared ABOVE init on purpose: the expiry scheduler that init launches
+    // runs on Main.immediate, i.e. synchronously during construction, and
+    // reads these before its first suspension.
+
+    /** messageId → when that row disappears (device clock). Kept HERE, not on
+     *  the Message: every upsert replaces the whole row, and a later DTO
+     *  without expiresAt (a POST echo, an edit, a reaction, the poll) must not
+     *  cancel a countdown we already know. Passed deadlines stay for
+     *  [Disappearing.RETAIN_MS] so a fetch in flight can't resurrect the row.
+     *  Guarded by itself (written from Main and the Default-dispatched
+     *  gateway decode). */
+    private val expiryDeadlines = HashMap<String, Disappearing.Deadline>()
+
+    /** Wakes the expiry scheduler to re-plan (a new deadline, the foreground). */
+    private val expiryWake = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
+
+    /** server − device clock from the last MESSAGE_EXPIRY's server_now. */
+    @Volatile
+    private var expiryClockOffsetMs: Long? = null
+
+    /** Per-DM change counter for [AppState.dmTimerByChannel]: a settings GET
+     *  that started before a live change (or our own save) must not write
+     *  its older answer over it. */
+    private val dmTimerGen = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
     init {
         // Fan gateway connection-state + dispatches into the store.
         scope.launch { gateway.state.collect { s -> _state.update { it.copy(gatewayState = s) } } }
@@ -314,6 +351,25 @@ class AppStore(
                 if (appForeground) evaluatePresence()
             }
         }
+        // Disappearing messages: ONE scheduler for every countdown. It sleeps
+        // until the earliest known deadline (or until a new deadline wakes
+        // it), then removes whatever is due. The delay is uptime-based and
+        // stalls in deep sleep, so it's only a trigger: [pruneExpired] reads
+        // the wall clock, and the foreground wakes it too.
+        scope.launch {
+            while (true) {
+                val next = synchronized(expiryDeadlines) {
+                    Disappearing.nextDeadline(expiryDeadlines.values.map { it.atMs }, System.currentTimeMillis())
+                }
+                if (next == null) {
+                    expiryWake.receive()
+                } else {
+                    val wait = (next - System.currentTimeMillis()).coerceAtLeast(0) + EXPIRY_SLACK_MS
+                    withTimeoutOrNull(wait) { expiryWake.receive() }
+                }
+                pruneExpired()
+            }
+        }
     }
 
     /** Foreground/background flag fed by MainActivity (no AppState churn).
@@ -329,6 +385,11 @@ class AppStore(
      *  a call push doesn't raise the full-screen ring on top of the in-app
      *  ringer (the gateway already rings a foregrounded, connected client). */
     val isForeground: Boolean get() = appForeground
+
+    /** A conversation whose read ack was skipped because the app wasn't in the
+     *  foreground (see [ack]); acked on return if it's still the open one. */
+    @Volatile
+    private var deferredAckChannelId: String? = null
 
     // ---- device presence ----------------------------------------------------
     //
@@ -428,11 +489,25 @@ class AppStore(
             _state.value.channelsByGuild.keys.toList().forEach { reloadGuildChannelsSafe(it) }
             if (gid != null) loadMembers(gid)
         }
+        // Disappearing messages: the scheduler's delay doesn't run in deep
+        // sleep, so anything that came due while we were away goes now.
+        expiryWake.trySend(Unit)
         // Guaranteed floor: pull the LATEST window for the open chat and merge
         // it, so a message that arrived while suspended can NEVER leave the open
         // conversation stale after a resume — even if the after-cursor sync
-        // races or misses. Once now, once after the socket has settled.
-        scope.launch { _state.value.selectedChannelId?.let { refreshOpenChannelLatest(it) } }
+        // races or misses. Once now, once after the socket has settled. An ack
+        // skipped while we were in the background (a selection that landed
+        // before the activity started) goes once the window is in.
+        scope.launch {
+            // Taken now: an ack is only skipped while appForeground is false,
+            // i.e. before this line, so nothing newer can be lost.
+            val deferred = deferredAckChannelId
+            deferredAckChannelId = null
+            _state.value.selectedChannelId?.let { cid ->
+                refreshOpenChannelLatest(cid)
+                if (deferred == cid && _state.value.selectedChannelId == cid) ack(cid)
+            }
+        }
         scope.launch {
             delay(2_500)
             _state.value.selectedChannelId?.let { refreshOpenChannelLatest(it) }
@@ -568,6 +643,7 @@ class AppStore(
             // Same reasoning one step further in: a half-typed message is
             // plaintext on disk and must not be waiting for whoever signs in next.
             com.zekktris.ui.screens.Drafts.clearAll(appContext)
+            clearDisappearingState()
             _state.value = AppState(phase = Phase.Auth)
         }
     }
@@ -906,6 +982,7 @@ class AppStore(
             // this account's contacts in the system share sheet.
             clearShareShortcuts()
             com.zekktris.ui.screens.Drafts.clearAll(appContext)
+            clearDisappearingState()
             _state.value = AppState(phase = Phase.Auth)
         }
     }
@@ -1547,8 +1624,36 @@ class AppStore(
         if (banner.channelId.isNotEmpty()) poke(banner.channelId, banner.pokeType)
     }
 
-    suspend fun getDmSettings(channelId: String) =
-        runCatching { api.getDmSettings(channelId) }.getOrNull()
+    /** The DM's settings (null = request failed). Also refreshes the
+     *  disappearing timer the header shows and the bounds the Disappearing
+     *  Messages screen offers. */
+    suspend fun getDmSettings(channelId: String): com.zekktris.data.model.DmChannelSettings? {
+        val gen = dmTimerGen[channelId] ?: 0
+        val s = runCatching { api.getDmSettings(channelId) }.getOrNull() ?: return null
+        // A live change (or our own save) since the request left is newer.
+        if ((dmTimerGen[channelId] ?: 0) == gen) setDmTimer(channelId, s.ttlSecondsAfterRead)
+        val bounds = Disappearing.boundsFor(s.maxTtlSeconds)
+        if (_state.value.dmTimerBounds != bounds) _state.update { it.copy(dmTimerBounds = bounds) }
+        return s
+    }
+
+    /** Record a DM's disappearing timer; null / non-positive = off. */
+    private fun setDmTimer(channelId: String, seconds: Int?) {
+        val next = seconds?.takeIf { it > 0 }
+        _state.update { st ->
+            if (st.dmTimerByChannel[channelId] == next) st
+            else st.copy(
+                dmTimerByChannel = if (next == null) st.dmTimerByChannel - channelId
+                else st.dmTimerByChannel + (channelId to next),
+            )
+        }
+    }
+
+    /** A live change to [channelId]'s timer: supersedes any settings GET in flight. */
+    private fun noteDmTimerChange(channelId: String, seconds: Int?) {
+        dmTimerGen.merge(channelId, 1, Int::plus)
+        setDmTimer(channelId, seconds)
+    }
 
     /** One page of the shared-media gallery (newest-first; null = request
      *  failed). `kind` = "media"/"files" server-filters by content type; E2EE
@@ -1561,8 +1666,41 @@ class AppStore(
     ): List<com.zekktris.data.model.Attachment>? =
         runCatching { api.listChannelAttachments(channelId, before = before, kind = kind) }.getOrNull()
 
-    suspend fun setDmTtl(channelId: String, ttlSeconds: Int?): Boolean =
-        runCatching { api.setDmTtl(channelId, ttlSeconds) }.isSuccess
+    /**
+     * Set the DM's disappearing-messages timer for NEW messages (seconds, null
+     * = off). The header updates at once and rolls back if the server refuses
+     * it; [onDone] gets null on success, else the reason to show. Runs on the
+     * store's scope, so closing the screen mid-save doesn't cut it short. The
+     * notice row is the server's: it arrives as MESSAGE_CREATE, never posted
+     * here.
+     */
+    fun setDisappearingTimer(channelId: String, seconds: Int?, onDone: (String?) -> Unit = {}) {
+        val before = _state.value.dmTimerByChannel[channelId]
+        val wanted = seconds?.takeIf { it > 0 }
+        noteDmTimerChange(channelId, wanted)
+        scope.launch {
+            val error = try {
+                api.setDmTtl(channelId, wanted)
+                null
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                (e as? com.zekktris.data.ApiException)?.message
+                    ?: "Couldn't change disappearing messages. Check your connection and try again."
+            }
+            if (error != null) {
+                // Back to what it was, unless a live update replaced our value meanwhile.
+                _state.update { st ->
+                    if (st.dmTimerByChannel[channelId] != wanted) st
+                    else st.copy(
+                        dmTimerByChannel = if (before == null) st.dmTimerByChannel - channelId
+                        else st.dmTimerByChannel + (channelId to before),
+                    )
+                }
+            }
+            onDone(error)
+        }
+    }
 
     suspend fun setNotificationPreview(channelId: String, showContent: Boolean?): Boolean =
         runCatching { api.setNotificationPreview(channelId, showContent) }.isSuccess
@@ -2048,7 +2186,12 @@ class AppStore(
         // Opening a conversation reads it — dismiss any lingering notifications.
         push.clearChannelNotifications(channelId)
         // Opening a DM is a strong recency signal for the system share sheet.
-        if (_state.value.dms.any { it.id == channelId }) refreshShareShortcuts()
+        if (_state.value.dms.any { it.id == channelId }) {
+            refreshShareShortcuts()
+            // Its disappearing timer, for the header (a change made while we
+            // were away arrives only through this).
+            scope.launch { getDmSettings(channelId) }
+        }
         scope.launch {
             if (_state.value.messagesByChannel[channelId] == null) {
                 loadMessages(channelId)
@@ -2078,6 +2221,7 @@ class AppStore(
             }
             if (thenCall) requestVoice(ch.id)
             refreshShareShortcuts()
+            scope.launch { getDmSettings(ch.id) } // the header's disappearing timer
             if (_state.value.messagesByChannel[ch.id] == null) loadMessages(ch.id)
             else refreshOpenChannelLatest(ch.id)
             ack(ch.id) // opening a DM reads it (selectChannel does this; openDM must too)
@@ -2086,7 +2230,7 @@ class AppStore(
 
     private suspend fun loadMessages(channelId: String) {
         // API returns newest-first; store ascending (oldest→newest) for the chat view.
-        val msgs = runCatching { api.listMessages(channelId, limit = 50) }.getOrDefault(emptyList()).reversed()
+        val msgs = dropExpired(runCatching { api.listMessages(channelId, limit = 50) }.getOrDefault(emptyList()).reversed())
         _state.update { it.copy(messagesByChannel = it.messagesByChannel + (channelId to msgs)) }
     }
 
@@ -2107,10 +2251,10 @@ class AppStore(
         _state.update { it.copy(loadingOlderChannelIds = it.loadingOlderChannelIds + channelId) }
         scope.launch {
             val older = runCatching { api.listMessages(channelId, limit = 50, before = oldest) }.getOrNull()
+            val ascending = older?.let { dropExpired(it.reversed()) } // API is newest-first
             _state.update { s ->
                 var next = s.copy(loadingOlderChannelIds = s.loadingOlderChannelIds - channelId)
-                if (older != null) {
-                    val ascending = older.reversed() // API is newest-first
+                if (older != null && ascending != null) {
                     val cur = next.messagesByChannel[channelId] ?: emptyList()
                     val have = cur.mapTo(HashSet()) { it.id }
                     val merged = ascending.filter { it.id !in have } + cur
@@ -2150,7 +2294,7 @@ class AppStore(
         // reason (AppStore.swift:1836). Snowflakes grew a digit in Oct 2024, so
         // order by length first — a bare string compare comes apart across that
         // rollover.
-        val window = batch.sortedWith(compareBy({ it.id.length }, { it.id }))
+        val window = dropExpired(batch.sortedWith(compareBy({ it.id.length }, { it.id })))
         // The fetch suspends, so the user may have switched channels meanwhile.
         // Committing anyway would swap a live conversation for a mid-history
         // slice of a different one (iOS guards the same way at AppStore.swift:1835).
@@ -2242,7 +2386,13 @@ class AppStore(
     private suspend fun refreshOpenChannelLatest(channelId: String) {
         val latest = runCatching { api.listMessages(channelId, limit = 50) }.getOrDefault(emptyList())
         if (latest.isEmpty()) return
-        val fetched = latest.reversed()                  // API is newest-first → ascending
+        // Disappeared rows are dropped BEFORE the window is computed, so a
+        // cached copy inside it is pruned below like any other deletion.
+        val fetched = dropExpired(latest.reversed())     // API is newest-first → ascending
+        if (fetched.isEmpty()) {
+            reconcilePointer(channelId, latest)
+            return
+        }
         val fetchedIds = fetched.mapTo(HashSet()) { it.id }
         val minId = fetched.first().id                    // oldest in window
         val maxId = fetched.last().id                     // newest in window
@@ -2266,10 +2416,23 @@ class AppStore(
         reconcilePointer(channelId, latest)               // advance unread pointer + recency
     }
 
+    /**
+     * Mark [channelId] read up to its newest confirmed message. Reading is what
+     * starts disappearing messages' countdowns on the server, so only a
+     * foreground app acks: a push sync, a resume or a selection that lands
+     * before the activity starts must never mark a message seen. A skipped
+     * ack is replayed by [onAppForeground] if the conversation is still open.
+     */
     private suspend fun ack(channelId: String) {
-        val last = _state.value.messagesByChannel[channelId]?.lastOrNull()?.id ?: return
+        if (!appForeground) {
+            deferredAckChannelId = channelId
+            return
+        }
+        // Optimistic rows have no server id to ack.
+        val last = _state.value.messagesByChannel[channelId]?.lastOrNull { !it.id.startsWith("pending-") }?.id ?: return
         val rs = runCatching { api.ackMessage(channelId, last) }.getOrNull() ?: return
         _state.update { it.copy(readStates = it.readStates + (channelId to rs)) }
+        startCountdownsLocally(channelId, last)
     }
 
     // ---- sending ------------------------------------------------------------
@@ -2297,6 +2460,9 @@ class AppStore(
             content = text,
             replyToId = replyToId,
             nonce = nonce,
+            // The server stamps the DM's timer at send; mirror the known one so
+            // the timer icon shows before the echo (which replaces it by nonce).
+            expireAfterSeconds = _state.value.dmTimerByChannel[channelId],
         )
         upsertMessage(channelId, optimistic)
         bumpRecency(channelId)
@@ -2374,6 +2540,7 @@ class AppStore(
             content = content.trim(),
             replyToId = replyToId,
             nonce = nonce,
+            expireAfterSeconds = _state.value.dmTimerByChannel[channelId],
         )
         upsertMessage(channelId, optimistic)
         bumpRecency(channelId)
@@ -4145,6 +4312,11 @@ class AppStore(
                     // unread because the read-state was ahead of the stale channel.
                     advanceLastMessage(m.channelId, m.id)
                     bumpRecency(m.channelId)
+                    // A disappearing-timer notice carries the new value: keeps
+                    // the header right even if DM_SETTINGS_UPDATE was missed.
+                    if (Disappearing.isNotice(m)) {
+                        Disappearing.noticeTimer(m)?.let { noteDmTimerChange(m.channelId, it) }
+                    }
                     val authorId = m.authorId ?: m.author?.id
                     // A user's message supersedes their typing indicator.
                     authorId?.let { uid -> clearTyping(m.channelId, uid) }
@@ -4556,6 +4728,32 @@ class AppStore(
                     st.copy(messagesByChannel = st.messagesByChannel + (cid to next))
                 }
             }
+            "DM_SETTINGS_UPDATE" -> {
+                // camelCase { channelId, ttlSecondsAfterRead } (older than the
+                // snake_case events): the disappearing timer NEW messages get,
+                // changed by either side on any device. null = off.
+                val u = Disappearing.parseSettingsUpdate(d.data) ?: return
+                noteDmTimerChange(u.channelId, u.seconds)
+            }
+            "MESSAGE_EXPIRY" -> {
+                // Snake_case { channel_id, expiries: [{ id, expires_at }],
+                // server_now }: a read started these messages' countdowns. Ours
+                // always (we read them, here or on another device); the
+                // author's only when the reader has read receipts on.
+                val ev = Disappearing.parseExpiry(d.data) ?: return
+                Disappearing.offsetFrom(ev.serverNow, System.currentTimeMillis())?.let { expiryClockOffsetMs = it }
+                val offset = clockOffsetMs()
+                synchronized(expiryDeadlines) {
+                    ev.expiries.forEach { (id, iso) ->
+                        // The server's time is the truth; it replaces a local
+                        // estimate made after our own ack.
+                        Disappearing.localDeadline(iso, offset)?.let { at ->
+                            expiryDeadlines[id] = Disappearing.Deadline(ev.channelId, at)
+                        }
+                    }
+                }
+                expiryWake.trySend(Unit)
+            }
             "DM_STREAK_UPDATE" -> {
                 // Snake_case: { channel_id, streak }. Update the streak chip live.
                 val obj = d.data?.jsonObject ?: return
@@ -4692,14 +4890,115 @@ class AppStore(
     // ---- helpers ------------------------------------------------------------
 
     private fun upsertMessage(channelId: String, msg: Message) {
+        // A row whose disappearing deadline has passed is gone: never
+        // (re)inserted, and an existing copy goes with it.
+        val expired = dropExpired(listOf(msg)).isEmpty()
         _state.update { st ->
             val list = st.messagesByChannel[channelId] ?: emptyList()
             val idx = list.indexOfFirst { existing ->
                 (msg.nonce != null && existing.nonce == msg.nonce) || existing.id == msg.id
             }
+            if (expired) {
+                if (idx < 0) return@update st
+                return@update st.copy(
+                    messagesByChannel = st.messagesByChannel + (channelId to list.toMutableList().apply { removeAt(idx) }),
+                )
+            }
             val next = if (idx >= 0) list.toMutableList().apply { this[idx] = msg }
             else list + msg
             st.copy(messagesByChannel = st.messagesByChannel + (channelId to next))
+        }
+    }
+
+    // ---- disappearing messages: local expiry ---------------------------------
+
+    /** Sign-out: the countdowns belong to that account's conversations. */
+    private fun clearDisappearingState() {
+        synchronized(expiryDeadlines) { expiryDeadlines.clear() }
+        dmTimerGen.clear()
+        deferredAckChannelId = null
+    }
+
+    /** server − device clock: MESSAGE_EXPIRY's precise value, else the last
+     *  message page's Date header, else none. */
+    private fun clockOffsetMs(): Long = expiryClockOffsetMs ?: api.dateClockOffsetMs ?: 0L
+
+    /**
+     * Ingest filter for every path that writes rows: record the deadlines REST
+     * rows carry ([Message.expiresAt], the server's truth) and drop the rows
+     * whose deadline has passed.
+     */
+    private fun dropExpired(list: List<Message>): List<Message> {
+        if (list.isEmpty()) return list
+        val now = System.currentTimeMillis()
+        var learned = false
+        val offset = if (list.any { it.expiresAt != null }) clockOffsetMs() else 0L
+        val kept = synchronized(expiryDeadlines) {
+            list.filter { m ->
+                Disappearing.localDeadline(m.expiresAt, offset)?.let { at ->
+                    if (expiryDeadlines[m.id]?.atMs != at) {
+                        expiryDeadlines[m.id] = Disappearing.Deadline(m.channelId, at)
+                        learned = true
+                    }
+                }
+                !Disappearing.isExpired(expiryDeadlines[m.id]?.atMs, now)
+            }
+        }
+        if (learned) expiryWake.trySend(Unit)
+        return if (kept.size == list.size) list else kept
+    }
+
+    /**
+     * Our ack started the countdown of every timed message up to [upToId]
+     * that someone else sent. MESSAGE_EXPIRY brings the server's deadlines
+     * within moments; this covers a socket that misses it, with device-now +
+     * the timer — taken after the ack answered, so never before the server's.
+     */
+    private fun startCountdownsLocally(channelId: String, upToId: String) {
+        val meId = _state.value.me?.id ?: return
+        val rows = _state.value.messagesByChannel[channelId] ?: return
+        val now = System.currentTimeMillis()
+        var added = false
+        synchronized(expiryDeadlines) {
+            rows.forEach { m ->
+                if (Disappearing.startsOnAck(m, meId, upToId, known = expiryDeadlines.containsKey(m.id))) {
+                    expiryDeadlines[m.id] = Disappearing.Deadline(channelId, now + m.expireAfterSeconds!! * 1000L)
+                    added = true
+                }
+            }
+        }
+        if (added) expiryWake.trySend(Unit)
+    }
+
+    /**
+     * Remove every row whose deadline has passed — across all conversations,
+     * in ONE state update — and forget deadlines that passed long ago. The
+     * open chat's sheets and composer drop a vanished row on their own
+     * (ChatScreen watches the list).
+     */
+    private fun pruneExpired() {
+        val now = System.currentTimeMillis()
+        val due = HashMap<String, MutableSet<String>>()
+        synchronized(expiryDeadlines) {
+            val iter = expiryDeadlines.entries.iterator()
+            while (iter.hasNext()) {
+                val (id, d) = iter.next()
+                if (d.atMs > now) continue
+                due.getOrPut(d.channelId) { HashSet() } += id
+                if (d.atMs < now - Disappearing.RETAIN_MS) iter.remove()
+            }
+        }
+        if (due.isEmpty()) return
+        _state.update { st ->
+            var changed = false
+            val next = st.messagesByChannel.toMutableMap()
+            for ((cid, ids) in due) {
+                val list = next[cid] ?: continue
+                if (list.none { it.id in ids }) continue
+                next[cid] = list.filterNot { it.id in ids }
+                changed = true
+            }
+            if (changed) st.copy(messagesByChannel = next) else st
         }
     }
 
@@ -4797,6 +5096,10 @@ class AppStore(
 
     private companion object {
         const val OPEN_CHANNEL_POLL_MS = 3_000L
+
+        /** The expiry scheduler wakes a hair after a deadline, so the
+         *  wall-clock re-check in [pruneExpired] sees it as passed. */
+        const val EXPIRY_SLACK_MS = 50L
 
         /**
          * How long [refreshShareShortcuts] waits before republishing. Every

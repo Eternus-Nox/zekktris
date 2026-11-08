@@ -445,8 +445,13 @@ data class PokeHistoryEntry(
 // ── Per-DM settings ──────────────────────────────────────────────────────────
 @Serializable
 data class DmChannelSettings(
+    /** The disappearing-messages timer NEW messages get (seconds), null = off.
+     *  The wire name predates Signal-style timers and stays for installed apps. */
     val ttlSecondsAfterRead: Int? = null,
     val notificationShowContent: Boolean? = null,
+    /** The longest timer the server accepts (2419200 = 4 weeks; the shortest
+     *  is 1 s). Absent on older servers, which take only 10..86400 s. */
+    val maxTtlSeconds: Int? = null,
 )
 
 @Serializable data class DmTtlPatch(val ttlSecondsAfterRead: Int?)
