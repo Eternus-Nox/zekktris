@@ -120,6 +120,14 @@ interface State {
    */
   tailGapped: Set<string>;
   /**
+   * For a tailGapped channel: the newest row known to be contiguous with its
+   * jump window. Fetched pages that continue from it move it on
+   * (TAIL_ADVANCE); a live MESSAGE_APPEND does not, because a row that lands
+   * above the gap says nothing about the rows below it. Only a fetch that
+   * joins THIS row to the tail clears the mark.
+   */
+  tailFrontier: Record<string, string>;
+  /**
    * Channels currently fetching older messages. Used by the Scroller
    * to suppress re-entrancy (avoid firing two fetches at once when the
    * scrollTop sensor triggers twice in rapid succession).
@@ -342,6 +350,7 @@ const initialState: State = {
   loadedChannels: new Set(),
   olderExhausted: new Set(),
   tailGapped: new Set(),
+  tailFrontier: {},
   loadingOlder: new Set(),
   usersById: {},
   userStatusById: {},
@@ -403,12 +412,17 @@ type Action =
        *  rows reach the server's tail: clears the channel's tailGapped mark. */
       reachesTail?: boolean;
     }
-  /** A fetch showed the loaded rows reach the server's newest message: an
-      after-cursor page from `throughId` came back short (reconcileChannel),
-      or a latest page reached back to `throughId` (refreshChannelLatest).
-      Clears the channel's tailGapped mark, unless the list no longer holds
-      `throughId` (a jump replaced the window during the fetch). */
+  /** A fetch showed the rows from `throughId` on reach the server's newest
+      message: an after-cursor page from `throughId` came back short
+      (reconcileChannel), or a latest page reached back to `throughId`
+      (refreshChannelLatest). Clears the channel's tailGapped mark only when
+      `throughId` is its frontier — not when it is a live row above the gap,
+      and not after a jump replaced the window (and the frontier) meanwhile. */
   | { type: 'TAIL_REACHED'; channelId: string; throughId: string }
+  /** A full after-cursor page fetched from the frontier `from` joined the rows
+      up to `to`: the frontier moves to `to`. No-op unless `from` is still the
+      frontier. */
+  | { type: 'TAIL_ADVANCE'; channelId: string; from: string; to: string }
   | {
       type: 'MESSAGES_PREPEND';
       channelId: string;
@@ -1188,10 +1202,20 @@ function reducer(state: State, action: Action): State {
         serverNow(clockOffsetOf(state)),
       );
       // A jump window may stop short of the tail; the newest window reaches it.
+      // The jump window's newest row is the frontier later pages join from.
       let tailGapped = state.tailGapped;
-      if (!keepSurvivors && !tailGapped.has(action.channelId)) {
-        tailGapped = new Set(tailGapped);
-        tailGapped.add(action.channelId);
+      let tailFrontier = state.tailFrontier;
+      if (!keepSurvivors) {
+        if (!tailGapped.has(action.channelId)) {
+          tailGapped = new Set(tailGapped);
+          tailGapped.add(action.channelId);
+        }
+        const front = maxFetched > 0n ? maxFetched.toString() : null;
+        if (front !== (tailFrontier[action.channelId] ?? null)) {
+          tailFrontier = { ...tailFrontier };
+          if (front) tailFrontier[action.channelId] = front;
+          else delete tailFrontier[action.channelId];
+        }
       } else if (action.reachesTail && tailGapped.has(action.channelId)) {
         tailGapped = new Set(tailGapped);
         tailGapped.delete(action.channelId);
@@ -1202,20 +1226,27 @@ function reducer(state: State, action: Action): State {
         loadedChannels: loaded,
         olderExhausted: exhausted,
         tailGapped,
+        tailFrontier,
         expiryDeadlines: deadlines,
       };
       return upsertUsersFromMessages(next, merged);
     }
     case 'TAIL_REACHED': {
       if (!state.tailGapped.has(action.channelId)) return state;
-      // The fetch joined the rows from `throughId` on; a jump that replaced
-      // the window meanwhile may not hold it, and keeps its mark.
-      if (!state.messagesByChannel[action.channelId]?.some((m) => m.id === action.throughId)) {
-        return state;
-      }
+      // Only a fetch that joins the FRONTIER to the tail proves the newest
+      // loaded rows are contiguous with it. A live row appended above the gap
+      // isn't the frontier, and a jump that replaced the window meanwhile set
+      // a new one: both keep the mark.
+      if (state.tailFrontier[action.channelId] !== action.throughId) return state;
       const tailGapped = new Set(state.tailGapped);
       tailGapped.delete(action.channelId);
       return { ...state, tailGapped };
+    }
+    case 'TAIL_ADVANCE': {
+      if (!state.tailGapped.has(action.channelId)) return state;
+      if (state.tailFrontier[action.channelId] !== action.from) return state;
+      if (!/^\d+$/.test(action.to) || BigInt(action.to) <= BigInt(action.from)) return state;
+      return { ...state, tailFrontier: { ...state.tailFrontier, [action.channelId]: action.to } };
     }
     case 'MESSAGES_PREPEND': {
       // Disappearing messages: record the page's deadlines, skip expired rows.
@@ -2798,9 +2829,16 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'MESSAGE_APPEND', channelId, message: m });
       }
       // A short page leaves nothing newer: the rows from `after` on now reach
-      // the tail, so a jump window paged up to it is no longer short of it.
+      // the tail, so a jump window paged up to it is no longer short of it. A
+      // full page moves a jump window's frontier on. Both are no-ops unless
+      // `after` is the frontier (not a live row that landed above the gap).
       const through = tailJoinedAt(after, r.messages, 50);
-      if (through) dispatch({ type: 'TAIL_REACHED', channelId, throughId: through });
+      if (through) {
+        dispatch({ type: 'TAIL_REACHED', channelId, throughId: through });
+      } else {
+        const to = newestConfirmedId(r.messages);
+        if (to) dispatch({ type: 'TAIL_ADVANCE', channelId, from: after, to });
+      }
     },
     [loadMessages, rest],
   );
@@ -2823,15 +2861,19 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         await loadMessages(channelId);
         return;
       }
-      const newest = newestConfirmedId(existing);
+      // A jump window's frontier (its newest row contiguous with the window),
+      // not the newest row held: a live row above the gap is no anchor.
+      const frontier = stateRef.current.tailGapped.has(channelId)
+        ? (stateRef.current.tailFrontier[channelId] ?? null)
+        : null;
       const r = await rest.listMessages(channelId, { limit: 50 });
       for (const m of [...r.messages].reverse()) {
         dispatch({ type: 'MESSAGE_APPEND', channelId, message: m });
       }
-      // The latest page is the tail. It joins the loaded rows when it is the
-      // whole channel (short) or reaches back to the newest row we held; a
-      // full page that doesn't leaves a gap, so the mark stays.
-      const through = tailJoinedAt(newest, r.messages, 50);
+      // The latest page is the tail. It joins the frontier to it when it is
+      // the whole channel (short) or reaches back to the frontier; a full page
+      // that doesn't leaves a gap, so the mark stays.
+      const through = tailJoinedAt(frontier, r.messages, 50);
       if (through) dispatch({ type: 'TAIL_REACHED', channelId, throughId: through });
     },
     [loadMessages, rest],

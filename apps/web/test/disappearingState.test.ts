@@ -586,6 +586,51 @@ describe('AppState — disappearing messages', () => {
       expect(run(s2, { type: 'TAIL_REACHED', channelId: 'c', throughId: '1' })).toBe(s2);
     });
 
+    it('a live row above a jump window’s gap is no anchor: its empty after-page keeps the mark', () => {
+      // A mention jump loads 100–150; the server's tail is 900.
+      const s0 = run(
+        initialAppState,
+        { type: 'READ_STATES_SET', readStates: [{ channelId: 'g', lastMessageId: '150', mentionCount: 0 }] },
+        { type: 'DMS_SET', channels: [dm('g', '900')] },
+        {
+          type: 'MESSAGES_SET',
+          channelId: 'g',
+          messages: [msg('100', 'g'), msg('120', 'g'), msg('150', 'g')],
+          preserveNewerSurvivors: false,
+        },
+      );
+      expect(s0.tailFrontier.g).toBe('150');
+      // 1000 lands live above the gap; reopening reconciles after it and the
+      // page comes back empty.
+      const s1 = run(
+        s0,
+        { type: 'MESSAGE_APPEND', channelId: 'g', message: msg('1000', 'g', { authorId: '2' }) },
+        { type: 'TAIL_REACHED', channelId: 'g', throughId: tailJoinedAt('1000', [], 50)! },
+      );
+      expect(s1.tailGapped.has('g')).toBe(true);
+      expect(s1.tailFrontier.g).toBe('150');
+      // 1000 is unsent: the DM keeps it as its last message, not 150.
+      const s2 = run(s1, { type: 'MESSAGE_REMOVE', channelId: 'g', messageId: '1000' });
+      expect(lastOf(s2, 'g')).toBe('1000');
+    });
+
+    it('TAIL_ADVANCE moves the frontier only from the frontier; TAIL_REACHED then clears from the new one', () => {
+      const s0 = run(
+        initialAppState,
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('100', 'g'), msg('150', 'g')], preserveNewerSurvivors: false },
+      );
+      // Not from the frontier, or not newer: no change.
+      expect(run(s0, { type: 'TAIL_ADVANCE', channelId: 'g', from: '999', to: '1200' })).toBe(s0);
+      expect(run(s0, { type: 'TAIL_ADVANCE', channelId: 'g', from: '150', to: '120' })).toBe(s0);
+      const s1 = run(s0, { type: 'TAIL_ADVANCE', channelId: 'g', from: '150', to: '250' });
+      expect(s1.tailFrontier.g).toBe('250');
+      expect(run(s1, { type: 'TAIL_REACHED', channelId: 'g', throughId: '150' }).tailGapped.has('g')).toBe(true);
+      expect(run(s1, { type: 'TAIL_REACHED', channelId: 'g', throughId: '250' }).tailGapped.has('g')).toBe(false);
+      // Unmarked channels ignore both.
+      const s2 = run(initialAppState, { type: 'MESSAGES_SET', channelId: 'c', messages: [msg('1', 'c')] });
+      expect(run(s2, { type: 'TAIL_ADVANCE', channelId: 'c', from: '1', to: '2' })).toBe(s2);
+    });
+
     it('tailJoinedAt: a short page, or a latest page reaching back to the newest held row', () => {
       const page = (ns: number[]) => ns.map((n) => ({ id: String(n) }));
       const run50 = (from: number) => Array.from({ length: 50 }, (_, i) => from + i);
