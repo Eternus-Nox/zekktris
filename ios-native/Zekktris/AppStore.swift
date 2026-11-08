@@ -300,6 +300,17 @@ final class AppStore: ObservableObject {
     /// 100 Message structs). The selected channel is never evicted.
     private var messageCacheLRU: [String] = []
     private let messageCacheMax = 48
+    /// Conversations whose loaded rows (the open one's `messages`, a closed
+    /// one's messageCache entry) may stop short of the server's newest: a
+    /// fresh READY replays nothing missed while the socket was down, so it
+    /// marks every conversation loaded before it, until a latest-window
+    /// fetch sent after it (loadMessages, refreshOpenChannelLatest) tops
+    /// that one up. A removed row never moves a marked conversation's
+    /// lastMessageId back (rollBackLastMessage). Mirrors Android's tailGapped.
+    private var tailGappedChannelIds: Set<String> = []
+    /// Counts the READYs that marked tailGappedChannelIds, so a fetch sent
+    /// before the latest one can't clear a mark it doesn't cover.
+    private var tailGapEpoch = 0
     /// True for the single render in which we open a channel we already have
     /// cached — lets MainView skip the route cross-fade so a cached open POPS
     /// instead of fading. Set in selectChannel before the push, reset in openChannel.
@@ -1773,6 +1784,7 @@ final class AppStore: ObservableObject {
         messages = []
         messageCache = [:]
         messageCacheLRU = []
+        tailGappedChannelIds = []
         // Disappearing messages: this account's deadlines, timers and held read.
         expiryTimer?.invalidate()
         expiryTimer = nil
@@ -2607,6 +2619,7 @@ final class AppStore: ObservableObject {
         let jumpId = pendingJumpMessageId
         pendingJumpMessageId = nil
         let presenceBefore = presenceSnapshot()
+        let gapEpoch = tailGapEpoch
         do {
             let fetched = try await api.messages(channelId: channel.id, limit: 50, around: jumpId)
             // The API returns newest-first; show oldest-first (bottom = newest).
@@ -2641,6 +2654,9 @@ final class AppStore: ObservableObject {
                 merged.sort { $0.createdAt < $1.createdAt }
             }
             messages = merged
+            // The latest window (not a jump's): the loaded rows reach the
+            // server's newest again.
+            if jumpId == nil { noteTailReached(channel.id, epoch: gapEpoch) }
             // Seed presence from the message AUTHORS. The message row's dot
             // reads the map like every other surface now, and its old
             // per-message `message.author.status` fallback was the worst of the
@@ -2824,10 +2840,12 @@ final class AppStore: ObservableObject {
         // loads a window AROUND the id); a latest-window merge would append a
         // disjoint block and yank the view. Every other case wants the latest.
         if pendingJumpMessageId != nil { return }
+        let gapEpoch = tailGapEpoch
         guard let latest = try? await api.messages(channelId: channel.id, limit: 50) else { return }
         guard channel.id == selectedChannel?.id, pendingJumpMessageId == nil else { return }
         let shown = Set(messages.map { $0.id })
         for m in latest.sorted(by: { $0.createdAt < $1.createdAt }) { upsert(m) }
+        noteTailReached(channel.id, epoch: gapEpoch)
         ackCaughtUpRows(channel, shownBefore: shown)
     }
 
@@ -3140,11 +3158,16 @@ final class AppStore: ObservableObject {
     /// no event tells clients. Left on a row no one can load, the DM reads
     /// unread (dot and app badge) and opening it acks nothing, since the
     /// newest loaded row already reads current: in a timed group DM, every
-    /// member who wasn't the first reader. Only when that row WAS loaded, so
-    /// `after` holds the tail; otherwise (or with no older row loaded) it
-    /// stays, and loadMessages' self-heal moves it back on open. Mirrors the
-    /// web's rollbackDmRecency and Android's rollBackLastMessage.
+    /// member who wasn't the first reader. Only when that row WAS loaded and
+    /// the loaded rows reach the server's newest, so `after` holds the tail:
+    /// not while tailGappedChannelIds marks the conversation (loaded before a
+    /// fresh READY, so messages missed in between may sit below the removed
+    /// row, and moving back past them would hide them as read). Otherwise
+    /// (or with no older row loaded) it stays, and loadMessages' self-heal
+    /// moves it back on open. Mirrors the web's rollbackDmRecency and
+    /// Android's rollBackLastMessage.
     private func rollBackLastMessage(_ channelId: String, before: [Message], after: [Message]) {
+        guard !tailGappedChannelIds.contains(channelId) else { return }
         guard let gone = dms.first(where: { $0.id == channelId })?.lastMessageId
                 ?? channels.first(where: { $0.id == channelId })?.lastMessageId,
               before.contains(where: { $0.id == gone }),
@@ -3185,6 +3208,14 @@ final class AppStore: ObservableObject {
             moved = true
         }
         if moved { updateAppBadge() }
+    }
+
+    /// `channelId`'s loaded rows hold its latest window again: clear its
+    /// tailGappedChannelIds mark. `epoch` is tailGapEpoch when that window's
+    /// fetch went out; one sent before the READY that marked it may still
+    /// miss what the socket dropped, so it clears nothing.
+    private func noteTailReached(_ channelId: String, epoch: Int) {
+        if epoch == tailGapEpoch { tailGappedChannelIds.remove(channelId) }
     }
 
     // MARK: Threads / forums
@@ -4734,6 +4765,7 @@ final class AppStore: ObservableObject {
             guard let victim = messageCacheLRU.first(where: { $0 != selectedChannel?.id }) else { break }
             messageCacheLRU.removeAll { $0 == victim }
             messageCache.removeValue(forKey: victim)
+            tailGappedChannelIds.remove(victim)
         }
     }
 
@@ -6447,10 +6479,19 @@ final class AppStore: ObservableObject {
 
     /// Forward a message into another channel, then jump there so the
     /// forward is visible. Targets are limited to channels we can reach.
+    ///
+    /// Sent `notARead`: it's picked from another chat, and the destination
+    /// can be an encrypted DM this device holds no key for, where the unlock
+    /// panel stands in for what waits there. Counted as a read, it started
+    /// those disappearing countdowns unseen. The open that follows reads the
+    /// DM like any other (behind that panel, once unlockE2EE replays the
+    /// held read), and the server's held-marker CHANNEL_ACK sets back the
+    /// marker our own echo moved. The flag changes nothing outside DMs.
     func forwardMessage(_ message: Message, to channel: Channel) async {
         do {
             _ = try await api.sendMessage(channelId: channel.id, content: "",
-                                          nonce: UUID().uuidString, forwardFromMessageId: message.id)
+                                          nonce: UUID().uuidString, forwardFromMessageId: message.id,
+                                          notARead: true)
             selectChannel(channel)
         } catch { errorText = (error as? APIError)?.message ?? error.localizedDescription }
     }
@@ -6565,6 +6606,14 @@ final class AppStore: ObservableObject {
                 // A READY after the first one means we reconnected following a
                 // drop. Re-sync state, since dispatch events were missed while
                 // the socket was down (the web client re-bootstraps here too).
+                // Every conversation loaded so far may stop short of the
+                // server's newest: mark them now, before any later dispatch
+                // is handled, so a row removed meanwhile can't move
+                // lastMessageId back past what was missed (the open one's
+                // reload below clears its own mark).
+                tailGappedChannelIds.formUnion(messageCache.keys)
+                if let c = selectedChannel { tailGappedChannelIds.insert(c.id) }
+                tailGapEpoch += 1
                 Task { await loadGuilds() }
                 Task { await loadDMs() }
                 Task { await loadReadStates() }

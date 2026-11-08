@@ -669,8 +669,8 @@ final class APIClient {
     }
 
     /// `notARead`: the conversation wasn't on screen when this was composed
-    /// (Siri, Shortcuts), so the server neither counts the send as reading it
-    /// nor starts a disappearing message's countdown.
+    /// (Siri, Shortcuts, a forward), so the server neither counts the send as
+    /// reading it nor starts a disappearing message's countdown.
     func sendMessage(channelId: String, content: String, nonce: String, replyToId: String? = nil, forwardFromMessageId: String? = nil, stickerId: String? = nil, notARead: Bool = false) async throws -> Message {
         var body: [String: Any] = ["content": content, "nonce": nonce]
         if let rid = replyToId { body["replyToId"] = rid }
