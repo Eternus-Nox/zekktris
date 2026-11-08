@@ -15,6 +15,7 @@
 import { and, asc, eq, gt, isNull } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors } from '../errors';
+import { notExpired } from './messages';
 
 const EMOJI_MAX_BYTES = 64;
 
@@ -38,11 +39,12 @@ export async function addReaction(
   // was missing from the WHERE until this round; the comment promised
   // it but the predicate didn't enforce it. Clients normally don't
   // surface react UI for deleted messages, but a cached client (or a
-  // determined attacker with the message id) could still POST.
+  // determined attacker with the message id) could still POST. Same for a
+  // disappearing message past its deadline that the sweep hasn't reached.
   const m = await db
     .select({ id: schema.messages.id })
     .from(schema.messages)
-    .where(and(eq(schema.messages.id, messageId), isNull(schema.messages.deletedAt)))
+    .where(and(eq(schema.messages.id, messageId), isNull(schema.messages.deletedAt), notExpired()))
     .limit(1);
   if (!m[0]) throw errors.notFound('Message');
 

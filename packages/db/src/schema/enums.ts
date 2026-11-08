@@ -66,6 +66,9 @@ export const messageTypeEnum = pgEnum('message_type', [
   'system_recipient_add',
   'system_recipient_remove',
   'system_call',
+  // Disappearing-messages timer changed (migration 0133). Its metadata is
+  // { kind: 'disappearing_timer', timerSeconds, initiatorId }.
+  'system_disappearing',
 ]);
 
 export const auditTargetEnum = pgEnum('audit_target', [

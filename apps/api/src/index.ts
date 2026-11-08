@@ -162,20 +162,21 @@ async function main(): Promise<void> {
     log.info('inactivity sweep disabled (INACTIVITY_TTL_DAYS=0)');
   }
 
-  // ── DM auto-delete sweep timer ──────────────────────────────────────────
-  // Finer-grained than the inactivity sweep — every 60 s. The minimum
-  // configurable TTL is 10 s but in practice users will set 30 s / 60 s /
-  // 120 s; a 60 s sweep cadence keeps the actual lifetime within one
-  // tick of the configured value without burning resources. The sweep
-  // service is bounded internally at 1000 rows per call so a sudden
-  // burst doesn't lock the messages table. Same error-isolation
-  // pattern as the inactivity sweep: log + continue, never crash.
+  // ── DM disappearing-messages sweep timer ────────────────────────────────
+  // Soft-deletes messages whose expires_at has passed and sends their
+  // MESSAGE_DELETE. Every 10 s: timers go down to 1 s, and installed apps
+  // that don't hide messages locally show one until its delete arrives (read
+  // paths already hide it at the deadline). Cheap when idle — one probe of
+  // the partial messages_expires_at_idx. Bounded internally (500-row batches,
+  // at most 10 per tick) so a burst doesn't hold locks on messages for long.
+  // Same error-isolation pattern as the inactivity sweep: log + continue,
+  // never crash.
   const dmSweepTimer = leaderInterval(() => {
     void sweepExpiredDmMessages().catch((err) =>
-      log.error('DM auto-delete sweep failed', { err }),
+      log.error('DM disappearing-messages sweep failed', { err }),
     );
-  }, 60_000);
-  log.info('DM auto-delete sweep scheduled', { intervalSeconds: 60 });
+  }, 10_000);
+  log.info('DM disappearing-messages sweep scheduled', { intervalSeconds: 10 });
 
   // ── DM streak-expiry warning sweep ──────────────────────────────────────
   // Post a one-time "your streak ends soon" notice into each at-risk DM in the

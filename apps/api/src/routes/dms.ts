@@ -23,7 +23,11 @@ import * as supervision from '../services/supervision';
 import * as voice from '../services/voice';
 import * as dispatch from '../gateway/dispatch';
 import { db, schema } from '../db';
-import { errors } from '../errors';
+import { errors, AppError } from '../errors';
+import { assertNotInstanceMuted } from '../services/instanceMutes';
+import { isBlockedEitherWay } from '../services/relationships';
+import { RateLimiter } from '../lib/rateLimit';
+import { DISAPPEARING_MAX_SECONDS, DISAPPEARING_MIN_SECONDS } from '../lib/disappearing';
 
 export const dmsRouter = new Hono();
 dmsRouter.use('*', requireAuth);
@@ -190,16 +194,22 @@ dmsRouter.delete(
   },
 );
 
-// ── DM auto-delete settings ───────────────────────────────────────────────
+// ── DM disappearing-messages settings ─────────────────────────────────────
 //
-// Per-DM auto-delete TTL. Either recipient can read or change the
-// setting; the change applies to both sides (it's a property of the
-// conversation, not a per-user preference). When the TTL is set,
-// messages get a `viewed_at` stamp the first time the OTHER recipient
-// fetches them, and the periodic sweep deletes any whose viewed_at
-// age exceeds the TTL.
+// Per-DM disappearing-messages timer (Signal-style; services/dms.ts has the
+// model). Either recipient can read or change it; the change applies to both
+// sides (it's a property of the conversation, not a per-user preference) but
+// only to messages sent afterwards. The wire key stays `ttlSecondsAfterRead`
+// for installed apps.
 
-/** GET — current TTL for this DM. null means auto-delete is off. */
+// A change posts a notice into the DM, so changing it is a way to put
+// messages in front of the other party: throttle it per user. Generous for
+// someone trying out values, useless for flooding. Fail-open on Redis.
+const disappearingChangeLimiter = new RateLimiter(10, 60_000, 'dm-disappearing');
+
+/** GET — current timer for this DM. null means disappearing messages are
+    off. `maxTtlSeconds` marks a server with per-message timers (clients
+    offer 1 s .. 4 weeks only when it's present). */
 dmsRouter.get(
   '/:channelId/settings',
   validate('param', z.object({ channelId: snowflakeSchema })),
@@ -215,6 +225,7 @@ dmsRouter.get(
     return c.json({
       ttlSecondsAfterRead: settings.ttlSecondsAfterRead,
       notificationShowContent,
+      maxTtlSeconds: DISAPPEARING_MAX_SECONDS,
     });
   },
 );
@@ -236,11 +247,18 @@ dmsRouter.patch(
   },
 );
 
-/** PATCH — update the TTL. Pass null to disable auto-delete; otherwise
-    a positive integer in [10, 86400] seconds. The service enforces the
-    bounds and 400s on out-of-range values. */
+/** PATCH — set the timer NEW messages get. Pass null to turn disappearing
+    messages off; otherwise whole seconds in [1, 2419200] (4 weeks). The old
+    [10, 86400] range is a subset, so installed apps keep working. Repeating
+    the current value is a no-op (no write, no notice, no event). A change
+    posts a 'system_disappearing' notice and fires DM_SETTINGS_UPDATE. */
 const updateDmSettingsSchema = z.object({
-  ttlSecondsAfterRead: z.number().int().min(10).max(86_400).nullable(),
+  ttlSecondsAfterRead: z
+    .number()
+    .int()
+    .min(DISAPPEARING_MIN_SECONDS)
+    .max(DISAPPEARING_MAX_SECONDS)
+    .nullable(),
 });
 
 dmsRouter.patch(
@@ -252,11 +270,67 @@ dmsRouter.patch(
     const channelId = BigInt(c.req.valid('param').channelId);
     await dms.ensureRecipient(channelId, userId);
     const { ttlSecondsAfterRead } = c.req.valid('json');
-    await dms.updateDmSettings({ channelId, ttlSecondsAfterRead });
-    // Notify the other party. We reuse the generic dmChannelClosedForUser
-    // pathway intentionally NOT here — that's a leave event. Instead,
-    // emit a lightweight DM_SETTINGS_UPDATE event keyed on the channel
-    // so connected recipients refetch their settings panel.
+
+    // Unchanged → nothing at all. Every installed client re-PATCHes the
+    // current value when its row is tapped; that must not post a notice.
+    const current = await dms.getDmSettings(channelId);
+    if (current.ttlSecondsAfterRead === ttlSecondsAfterRead) {
+      return c.json({ ttlSecondsAfterRead });
+    }
+
+    // A change posts a message into the DM, so it faces the send route's
+    // gates (routes/messages.ts POST /:channelId/messages), in its order and
+    // error style: instance mute, then — for a 1:1 DM — a block either way
+    // (notFound, so the block direction doesn't leak) and the supervision DM
+    // policy. Then the per-user throttle.
+    await assertNotInstanceMuted(userId);
+    const channel = await channelsSvc.getChannel(channelId);
+    if (!channel) throw errors.notFound('Channel');
+    if (channel.type === 'dm') {
+      const other = await dms.getOtherRecipient(channelId, userId);
+      if (other !== null) {
+        if (await isBlockedEitherWay(userId, other)) {
+          throw errors.notFound('Channel');
+        }
+        if (await supervision.dmBlockedBySupervision(userId, other)) {
+          throw new AppError(
+            'FORBIDDEN',
+            'Direct messages are restricted — connect a guardian to continue',
+            { supervisionRestricted: 'dm' },
+          );
+        }
+      }
+    }
+    const rl = await disappearingChangeLimiter.consume(userId.toString());
+    if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
+
+    const result = await dms.updateDmSettings({ channelId, ttlSecondsAfterRead, changedBy: userId });
+    // A concurrent identical change got there first: it posts the notice.
+    if (!result.changed) return c.json({ ttlSecondsAfterRead });
+
+    // The notice, the way system rows reach the DM (cf. dispatchSystemCallMessage
+    // in routes/voice.ts). Re-subscribe every recipient's live connections
+    // first, as the send route does, so a drifted connection still gets it.
+    // createSystemMessage sends no push, and the notice never has a timer.
+    try {
+      dispatch.dmSubscribeRecipients({
+        channelId,
+        recipientIds: await dms.listAllRecipients(channelId),
+      });
+    } catch {
+      // Best-effort: the REST refetch still covers a stale connection.
+    }
+    const [author] = await db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, userId))
+      .limit(1);
+    dispatch.messageCreate({
+      messageDTO: toMessage({ message: result.notice, author: author ?? null }),
+      channelId,
+      guildId: null,
+    });
+    // Every recipient's settings UI / header indicator.
     dispatch.dmSettingsUpdated({
       channelId,
       ttlSecondsAfterRead,

@@ -414,20 +414,24 @@ export const stageParticipants = pgTable(
 );
 
 /**
- * Per-DM settings. Currently only carries the auto-delete TTL; the
- * row exists for any DM channel where any setting has ever been
- * non-default. A missing row means "all defaults" — auto-delete off,
- * etc. Either recipient can mutate the row; the change applies to
- * both sides since it's a property of the conversation.
+ * Per-DM settings. Currently only carries the disappearing-messages
+ * timer; the row exists for any DM channel where any setting has ever
+ * been non-default. A missing row means "all defaults" — disappearing
+ * messages off, etc. Either recipient can mutate the row; the change
+ * applies to both sides since it's a property of the conversation.
  */
 export const dmSettings = pgTable('dm_settings', {
   channelId: bigint('channel_id', { mode: 'bigint' })
     .primaryKey()
     .references(() => channels.id, { onDelete: 'cascade' }),
   /**
-   * NULL = no auto-delete (default). Positive integer = seconds after
-   * the first non-author recipient views the message before the sweep
-   * soft-deletes it. Typical values: 30, 60, 120.
+   * Disappearing-messages timer for NEW messages: NULL = off (default),
+   * else 1..2419200 seconds (up to 4 weeks) after a recipient reads a
+   * message before it disappears for everyone. It applies only to messages
+   * sent after the change — each message snapshots it at send time into
+   * messages.expire_after_seconds, and messages.expires_at holds its own
+   * deadline once read. The column name predates the Signal-style timer
+   * and stays for installed apps (`ttlSecondsAfterRead` on the wire).
    */
   ttlSecondsAfterRead: integer('ttl_seconds_after_read'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

@@ -9,6 +9,7 @@
 import { db, schema } from '../db';
 import { and, eq, desc, lt, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { Permissions, listViewableGuildChannelIds } from './permissions';
+import { notExpired } from './messages';
 
 export interface SearchMessagesOptions {
   query: string;
@@ -52,6 +53,7 @@ export async function searchGuildMessages(
   const conds = [
     inArray(schema.messages.channelId, channelScope),
     isNull(schema.messages.deletedAt),
+    notExpired(),
     // Full-text match. Parameterized — websearch_to_tsquery safely parses
     // arbitrary user input (won't throw on stray operators the way
     // to_tsquery does).

@@ -49,7 +49,7 @@
  * own alt) is usually the one a threshold invites.
  */
 
-import { and, count, eq, isNull, sql } from 'drizzle-orm';
+import { and, count, eq, isNull, ne, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 
 export interface Achievement {
@@ -243,7 +243,15 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
       nightOwl: sql<number>`COUNT(*) FILTER (WHERE EXTRACT(HOUR FROM ${schema.messages.createdAt}) BETWEEN 1 AND 4)`,
     })
     .from(schema.messages)
-    .where(and(eq(schema.messages.authorId, userId), isNull(schema.messages.deletedAt)));
+    .where(
+      and(
+        eq(schema.messages.authorId, userId),
+        isNull(schema.messages.deletedAt),
+        // The disappearing-timer notice is authored by whoever changed the
+        // setting; toggling it must not farm Chatterbox / Night Owl.
+        ne(schema.messages.type, 'system_disappearing'),
+      ),
+    );
   const totalMsgs = num(msgCounts?.total);
   const nightMsgs = num(msgCounts?.nightOwl);
   for (const tier of CHATTERBOX_TIERS) {

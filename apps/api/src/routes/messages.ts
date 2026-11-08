@@ -661,13 +661,16 @@ messagesRouter.post(
           id: schema.messages.id,
           channelId: schema.messages.channelId,
           deletedAt: schema.messages.deletedAt,
+          // A disappearing message past its deadline is gone for everyone,
+          // even before the sweep marks it deleted.
+          expired: sql<boolean>`NOT ${messages.notExpired()}`,
         })
         .from(schema.messages)
         .where(eq(schema.messages.id, sourceId))
         .limit(1);
       const source = sourceRows[0];
       if (!source) throw errors.notFound('Source message');
-      if (source.deletedAt) {
+      if (source.deletedAt || source.expired) {
         throw errors.badRequest('Cannot forward a deleted message');
       }
       // Forward chains: forwarding a forward should snapshot the
@@ -1559,10 +1562,9 @@ messagesRouter.get(
     // DM viewed-at stamping. Stamps `viewed_at` on each non-self
     // message in the page that's still NULL, then dispatches
     // MESSAGE_VIEWED to the message author so their UI flips
-    // "Delivered" → "Read". Drives both:
-    //   - DM auto-delete (TTL clock starts on first view; sweep
-    //     deletes after dm_settings.ttl_seconds_after_read)
-    //   - Read-receipt UI (1:1 DMs only; group DMs skip)
+    // "Delivered" → "Read" (1:1 DMs only; group DMs skip). It does
+    // NOT start disappearing-message timers: a page fetch isn't a
+    // read (background sync, scroll-back) — only the read ack is.
     //
     // Constraints:
     //   - Channel must be a DM (guild messages never carry these
@@ -1571,8 +1573,7 @@ messagesRouter.get(
     //     'group_dm' is excluded since "read by whom" is ambiguous
     //     with > 2 recipients.
     //   - The viewer's dmReadReceiptsEnabled toggle gates the
-    //     stamp inside markMessagesViewed; if off, the function
-    //     returns [] and we dispatch nothing.
+    //     MESSAGE_VIEWED dispatch (not the stamp itself).
     //
     // Fire-and-forget: a failed stamp doesn't block the list
     // response. The next list call retries whatever's still NULL.
@@ -1583,19 +1584,17 @@ messagesRouter.get(
             .filter((m) => m.authorId !== userId && m.viewedAt === null)
             .map((m) => m.id);
           if (idsForCallerNotAuthor.length === 0) return;
-          const { stamped, viewerReceiptsEnabled } = await dms.markMessagesViewed(
+          const { stamped, viewedAt, viewerReceiptsEnabled } = await dms.markMessagesViewed(
             channelId,
             userId,
             idsForCallerNotAuthor,
           );
           if (stamped.length === 0) return;
           // Dispatch MESSAGE_VIEWED only if the viewer has receipts
-          // on. The stamp on viewed_at always lands (needed for the
-          // auto-delete sweep) but the visible-to-sender effect is
-          // gated. Group DMs are skipped entirely — the receipt
-          // model only makes sense for 1:1.
+          // on. The stamp on viewed_at always lands but the
+          // visible-to-sender effect is gated. Group DMs are skipped
+          // entirely — the receipt model only makes sense for 1:1.
           if (viewerReceiptsEnabled && ctx.channel.type === 'dm') {
-            const now = new Date();
             const byAuthor = new Map<bigint, bigint[]>();
             for (const s of stamped) {
               const list = byAuthor.get(s.authorId);
@@ -1607,7 +1606,7 @@ messagesRouter.get(
                 authorId,
                 channelId,
                 messageIds,
-                viewedAt: now,
+                viewedAt,
               });
             }
           }
@@ -1686,10 +1685,10 @@ messagesRouter.get(
 
     // For 1:1 DMs, load both recipients' receipt toggles so we can
     // gate the DTO surface per-message. The timestamps stay in the
-    // DB regardless (auto-delete depends on them) but a viewer who
-    // has receipts off has their reads stripped from outgoing
-    // responses. For each message in the page, the gating user is
-    // the non-author (whose view the timestamp represents).
+    // DB regardless but a viewer who has receipts off has their reads
+    // stripped from outgoing responses. For each message in the page,
+    // the gating user is the non-author (whose view the timestamp
+    // represents).
     let receiptsByUser: Map<bigint, boolean> | null = null;
     if (ctx.isDM && ctx.channel.type === 'dm') {
       const recipients = await dms.listAllRecipients(channelId);
@@ -1703,6 +1702,17 @@ messagesRouter.get(
           .where(inArray(schema.users.id, recipients));
         receiptsByUser = new Map(toggleRows.map((r) => [r.id, r.enabled]));
       }
+    }
+
+    // Disappearing messages: may the requester see expiresAt on their OWN
+    // messages? Only in a 1:1 DM whose other recipient has read receipts on —
+    // expiresAt minus the timer is that recipient's read time. (Separate from
+    // the viewedAt strip below: that one also blanks the reader's own reads,
+    // and the reader needs expiresAt to hide what they read on time.)
+    let ownExpiryVisible = false;
+    if (receiptsByUser) {
+      const other = Array.from(receiptsByUser.keys()).find((uid) => uid !== userId);
+      ownExpiryVisible = other !== undefined && receiptsByUser.get(other) === true;
     }
 
     return c.json({
@@ -1738,21 +1748,26 @@ messagesRouter.get(
             messageRow = { ...m, deliveredAt: null, viewedAt: null };
           }
         }
-        return toMessage({
-          message: messageRow,
-          author: m.authorId ? authorMap.get(m.authorId) ?? null : null,
-          attachments: attachmentMap.get(m.id) ?? [],
-          reactions: reactionsByMessage.get(m.id) ?? [],
-          mentionedUserIds: userMentionMap.get(m.id) ?? [],
-          mentionedRoleIds: roleMentionMap.get(m.id) ?? [],
-          poll: pollEntry ? toPoll(pollEntry) : null,
-          sticker: m.stickerId ? (() => {
-            const sr = stickerMap.get(m.stickerId);
-            return sr ? toSticker(sr) : null;
-          })() : null,
-          forwardedFrom,
-          selfId: userId,
-        });
+        return withExpiresAt(
+          toMessage({
+            message: messageRow,
+            author: m.authorId ? authorMap.get(m.authorId) ?? null : null,
+            attachments: attachmentMap.get(m.id) ?? [],
+            reactions: reactionsByMessage.get(m.id) ?? [],
+            mentionedUserIds: userMentionMap.get(m.id) ?? [],
+            mentionedRoleIds: roleMentionMap.get(m.id) ?? [],
+            poll: pollEntry ? toPoll(pollEntry) : null,
+            sticker: m.stickerId ? (() => {
+              const sr = stickerMap.get(m.stickerId);
+              return sr ? toSticker(sr) : null;
+            })() : null,
+            forwardedFrom,
+            selfId: userId,
+          }),
+          m,
+          userId,
+          ownExpiryVisible,
+        );
       }),
     });
   },
@@ -1846,20 +1861,27 @@ messagesRouter.get(
 
     // These three hydration queries are independent — run them in parallel
     // instead of serially (3 round-trips → 1).
-    const [author, attachmentMap, reactionAgg] = await Promise.all([
+    const [author, attachmentMap, reactionAgg, ownExpiryVisible] = await Promise.all([
       m.authorId ? loadUser(m.authorId) : Promise.resolve(null),
       messages.loadAttachments([m.id]),
       reactions.aggregateReactions(m.id),
+      // Only consulted for the requester's own message (see withExpiresAt).
+      m.authorId === userId ? ownExpiryVisibleInDm(ctx, userId) : Promise.resolve(false),
     ]);
 
     return c.json({
-      message: toMessage({
-        message: m,
-        author,
-        attachments: attachmentMap.get(m.id) ?? [],
-        reactions: reactionAgg,
-        selfId: userId,
-      }),
+      message: withExpiresAt(
+        toMessage({
+          message: m,
+          author,
+          attachments: attachmentMap.get(m.id) ?? [],
+          reactions: reactionAgg,
+          selfId: userId,
+        }),
+        m,
+        userId,
+        ownExpiryVisible,
+      ),
     });
   },
 );
@@ -1890,6 +1912,12 @@ messagesRouter.patch(
     // in someone else's mouth. Mods can delete others' messages, not edit them.
     if (existing.authorId !== userId) {
       throw errors.forbidden('You can only edit your own messages');
+    }
+    // System rows (call records, the disappearing-timer notice…) carry their
+    // author for attribution only — they're not the author's words. Installed
+    // apps still offer Edit on any row you authored.
+    if (existing.type.startsWith('system_')) {
+      throw errors.forbidden("System messages can't be edited");
     }
     // Edits are normally only allowed within a short grace window after posting.
     // A moderator (MANAGE_MESSAGES) may edit their OWN message at any time — the
@@ -2571,6 +2599,54 @@ messagesRouter.post(
   });
   dispatch.channelAck({ userId, readState: dto });
 
+  // Disappearing messages: reading starts the clock. Every message up to the
+  // acked one that was sent with a timer, isn't counting down yet and isn't
+  // the reader's own gets expires_at = now() + its timer — in 1:1 AND group
+  // DMs (the first reader starts the one shared clock), whatever the reader's
+  // receipts toggle. Awaited so a refetch right after the ack already carries
+  // expiresAt; a failure is logged and never fails the ack.
+  if (ctx.channel.type === 'dm' || ctx.channel.type === 'group_dm') {
+    try {
+      const { started, serverNow, viewerReceiptsEnabled } = await dms.startDisappearingTimers(
+        channelId,
+        userId,
+        messageId,
+      );
+      if (started.length > 0) {
+        // The reader's own devices: everything that started.
+        dispatch.messageExpiry({
+          userId,
+          channelId,
+          expiries: started.map((e) => ({ messageId: e.messageId, expiresAt: e.expiresAt })),
+          serverNow,
+        });
+        // The author learns the deadline only in a 1:1 DM and only when the
+        // reader has receipts on — the same gate as MESSAGE_VIEWED below,
+        // since expires_at minus the timer IS the read time. Group-DM
+        // authors (and receipts-off readers' peers) get the sweep's
+        // MESSAGE_DELETE instead.
+        if (ctx.channel.type === 'dm' && viewerReceiptsEnabled) {
+          const byAuthor = new Map<bigint, Array<{ messageId: bigint; expiresAt: Date }>>();
+          for (const e of started) {
+            if (e.authorId === null) continue;
+            const list = byAuthor.get(e.authorId);
+            const item = { messageId: e.messageId, expiresAt: e.expiresAt };
+            if (list) list.push(item);
+            else byAuthor.set(e.authorId, [item]);
+          }
+          for (const [authorId, expiries] of byAuthor) {
+            dispatch.messageExpiry({ userId: authorId, channelId, expiries, serverNow });
+          }
+        }
+      }
+    } catch (err) {
+      log.warn?.('disappearing timer start failed', {
+        channelId: channelId.toString(),
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // 1:1 DM read-receipt advance. Acking through a message implicitly
   // means the user viewed it — without this stamp the receipt would
   // stick at "Delivered" until the next listMessages call (page
@@ -2584,10 +2660,9 @@ messagesRouter.post(
   if (ctx.channel.type === 'dm') {
     void (async () => {
       try {
-        const { stamped, viewerReceiptsEnabled } =
+        const { stamped, viewedAt, viewerReceiptsEnabled } =
           await dms.markMessagesViewedUpTo(channelId, userId, messageId);
         if (stamped.length === 0 || !viewerReceiptsEnabled) return;
-        const now = new Date();
         const byAuthor = new Map<bigint, bigint[]>();
         for (const s of stamped) {
           const list = byAuthor.get(s.authorId);
@@ -2599,7 +2674,7 @@ messagesRouter.post(
             authorId,
             channelId,
             messageIds,
-            viewedAt: now,
+            viewedAt,
           });
         }
       } catch {
@@ -2618,6 +2693,38 @@ messagesRouter.post(
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ── helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Disappearing messages: add `expiresAt` to a per-requester REST DTO (message
+ * list, single GET — never a broadcast; toMessage leaves it out). Present for
+ * anyone but the author; for the author only when `ownExpiryVisible` — a 1:1
+ * DM whose other recipient has read receipts on — because expiresAt minus
+ * the timer is the reader's read time. Hidden means the key is absent, never
+ * a null that would itself say "not read yet".
+ */
+function withExpiresAt<T extends object>(
+  dto: T,
+  m: Pick<schema.Message, 'authorId' | 'expiresAt'>,
+  requesterId: bigint,
+  ownExpiryVisible: boolean,
+): T | (T & { expiresAt: string | null }) {
+  if (m.authorId === requesterId && !ownExpiryVisible) return dto;
+  return { ...dto, expiresAt: m.expiresAt ? m.expiresAt.toISOString() : null };
+}
+
+/** ownExpiryVisible for a single message: the requester's 1:1 DM peer has
+ *  read receipts on. Group DMs never show the author the deadline. */
+async function ownExpiryVisibleInDm(ctx: ChannelContext, requesterId: bigint): Promise<boolean> {
+  if (ctx.channel.type !== 'dm') return false;
+  const other = await dms.getOtherRecipient(ctx.channel.id, requesterId);
+  if (other === null) return false;
+  const [row] = await db
+    .select({ enabled: schema.users.dmReadReceiptsEnabled })
+    .from(schema.users)
+    .where(eq(schema.users.id, other))
+    .limit(1);
+  return row?.enabled === true;
+}
 
 async function loadUser(userId: bigint): Promise<User | null> {
   const r = await db
@@ -3031,10 +3138,12 @@ void MESSAGE_CONTENT_MAX_LENGTH;
 // poll block in place; React diffs on poll.options[*].voteCount.
 
 async function broadcastPollUpdate(channelId: bigint, messageId: bigint) {
+  // A deleted or disappeared message is never re-broadcast: clients upsert on
+  // MESSAGE_UPDATE, so it would come back on screen.
   const messageRows = await db
     .select()
     .from(schema.messages)
-    .where(eq(schema.messages.id, messageId))
+    .where(and(eq(schema.messages.id, messageId), isNull(schema.messages.deletedAt), messages.notExpired()))
     .limit(1);
   const m = messageRows[0];
   if (!m) return;

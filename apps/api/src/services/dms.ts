@@ -17,6 +17,12 @@ import { db, schema } from '../db';
 import { errors } from '../errors';
 import { nextSnowflake } from '../snowflake';
 import * as dispatch from '../gateway/dispatch';
+import {
+  DISAPPEARING_MAX_SECONDS,
+  DISAPPEARING_MIN_SECONDS,
+  disappearingNoticeText,
+} from '../lib/disappearing';
+import { createSystemMessage, rollbackChannelWatermarks, type DbHandle } from './messages';
 
 /**
  * Find an existing 1:1 DM channel between two users, or create one.
@@ -763,42 +769,35 @@ export async function closeDMForUser(input: {
   if (removed.length === 0) throw errors.notFound('DM channel');
 }
 
-// ── Auto-delete (per-DM TTL on viewed messages) ─────────────────────────────
+// ── Disappearing messages (Signal-style, per message) ──────────────────────
 //
-// The DM auto-delete feature lets either recipient configure a TTL on
-// the conversation. Once configured, messages get a `viewed_at`
-// timestamp the first time the OTHER recipient fetches them (stamped
-// by markMessageViewed below, called from the message-list route in a
-// DM channel). A periodic sweep finds messages whose `viewed_at` is
-// older than the configured TTL and soft-deletes them — same delete
-// path other messages take, so reactions/threads/embeds all clean up
-// via existing cascade rules.
+// Either recipient sets a timer on the conversation (dm_settings
+// .ttl_seconds_after_read, 1 s .. 4 weeks, or off). The timer belongs to
+// each MESSAGE, not to the conversation:
 //
-// Design choices:
+//   - createMessage snapshots the timer in force into
+//     messages.expire_after_seconds. Changing the setting only affects
+//     later messages; turning it off doesn't save messages already sent
+//     with one. System rows never get one.
 //
-//   - TTL is per-channel, not per-user. The change affects both sides
-//     because it's a property of the conversation. (Alternative: each
-//     user has their own copy of every message with independent
-//     TTLs. Way too much state for v1; everyone would need to
-//     re-index the whole DM on every change.)
+//   - The clock starts when a recipient READS the message — their read ack
+//     (startDisappearingTimers, from POST .../messages/:id/ack) stamps
+//     expires_at = now() + expire_after_seconds. A plain message-list fetch
+//     does not (it only stamps viewed_at, for read receipts). Group DMs use
+//     "first reader among the non-authors": one shared clock.
 //
-//   - We don't bump viewed_at after the first view. A slow reader
-//     scrolling through old messages shouldn't extend their lifetime.
+//   - At expires_at the message is gone for everyone: every read path
+//     filters it out at once (messages.notExpired), and the sweep below
+//     soft-deletes it and sends MESSAGE_DELETE. Soft delete, like every
+//     delete: read-state acks tolerate tombstones, and parental supervision
+//     reads deleted content on purpose.
 //
-//   - Sweep is best-effort + idempotent. Failures get logged and
-//     retried next interval. Soft-delete leaves the row for thread
-//     navigation continuity (matches the regular delete flow).
-//
-//   - Group DMs use "first viewer among any non-author recipient" —
-//     we don't track per-user view timestamps. This matches the
-//     conceptual model of disappearing messages: as soon as any
-//     other party has read it, the clock starts.
+//   - A change posts a 'system_disappearing' notice in the DM (in the same
+//     transaction as the setting), which never has a timer itself.
 
 /**
- * Read the auto-delete TTL for a DM channel. Returns the configured
- * seconds value, or null if no auto-delete is set. Callers can treat
- * a null as "no auto-delete in effect" and skip the markMessageViewed
- * stamping path entirely.
+ * Read the disappearing-messages timer for a DM channel: the seconds new
+ * messages get, or null when it is off.
  */
 export async function getDmSettings(channelId: bigint): Promise<{
   ttlSecondsAfterRead: number | null;
@@ -812,36 +811,93 @@ export async function getDmSettings(channelId: bigint): Promise<{
 }
 
 /**
- * Upsert the auto-delete TTL for a DM channel. Pass null to disable.
- * Accepts only sensible values (30, 60, 120 are the documented set in
- * the UI, but we accept anything in [10, 86400] to give power users
- * room to experiment). Disabling does NOT clear viewed_at on existing
- * messages — they'll just no longer be swept.
+ * Set a DM's disappearing-messages timer: whole seconds in
+ * [1, 2419200], or null to turn it off. It applies to messages sent
+ * from now on only.
+ *
+ * Only an actual change writes anything: repeating the current value (every
+ * installed client re-PATCHes when a row is tapped) returns
+ * `{ changed: false }` with no write and no notice. The compare is part of
+ * the write itself, so two identical concurrent changes post ONE notice. On
+ * a change, the 'system_disappearing' notice is inserted in the same
+ * transaction — the channel's newest message, and read for the changer —
+ * and returned for the caller to dispatch. The caller runs the send gates
+ * (mute, block, rate limit) before calling this.
  */
 export async function updateDmSettings(input: {
   channelId: bigint;
   ttlSecondsAfterRead: number | null;
-}): Promise<void> {
+  /** The recipient making the change; the notice is authored by them. */
+  changedBy: bigint;
+}): Promise<{ changed: false } | { changed: true; notice: schema.Message }> {
+  const ttl = input.ttlSecondsAfterRead;
   if (
-    input.ttlSecondsAfterRead !== null &&
-    (input.ttlSecondsAfterRead < 10 || input.ttlSecondsAfterRead > 86_400)
+    ttl !== null &&
+    (!Number.isInteger(ttl) || ttl < DISAPPEARING_MIN_SECONDS || ttl > DISAPPEARING_MAX_SECONDS)
   ) {
-    throw errors.badRequest('TTL must be between 10 and 86400 seconds, or null');
+    throw errors.badRequest(
+      `The timer must be a whole number of seconds from ${DISAPPEARING_MIN_SECONDS} to ${DISAPPEARING_MAX_SECONDS}, or null`,
+    );
   }
-  await db
-    .insert(schema.dmSettings)
-    .values({
-      channelId: input.channelId,
-      ttlSecondsAfterRead: input.ttlSecondsAfterRead,
-      updatedAt: new Date(),
-    })
-    .onConflictDoUpdate({
-      target: schema.dmSettings.channelId,
-      set: {
-        ttlSecondsAfterRead: input.ttlSecondsAfterRead,
-        updatedAt: new Date(),
+  // The changer's display name for the fallback text old apps show as-is.
+  const [actor] = await db
+    .select({ displayName: schema.users.displayName, username: schema.users.username })
+    .from(schema.users)
+    .where(eq(schema.users.id, input.changedBy))
+    .limit(1);
+  const actorName = actor?.displayName || actor?.username || 'Someone';
+
+  return db.transaction(async (tx) => {
+    let changed: boolean;
+    if (ttl === null) {
+      // Off: only an existing row with a timer changes. No row = already off,
+      // and creating an all-defaults row would be a write for nothing.
+      const r = await tx
+        .update(schema.dmSettings)
+        .set({ ttlSecondsAfterRead: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(schema.dmSettings.channelId, input.channelId),
+            sql`${schema.dmSettings.ttlSecondsAfterRead} IS NOT NULL`,
+          ),
+        )
+        .returning({ channelId: schema.dmSettings.channelId });
+      changed = r.length > 0;
+    } else {
+      // The setWhere makes an unchanged value a no-op (no row returned). A
+      // concurrent identical change waits on the row lock, then re-checks
+      // against the committed value and also comes back empty.
+      const r = await tx
+        .insert(schema.dmSettings)
+        .values({ channelId: input.channelId, ttlSecondsAfterRead: ttl, updatedAt: new Date() })
+        .onConflictDoUpdate({
+          target: schema.dmSettings.channelId,
+          set: { ttlSecondsAfterRead: ttl, updatedAt: new Date() },
+          setWhere: sql`${schema.dmSettings.ttlSecondsAfterRead} IS DISTINCT FROM ${ttl}`,
+        })
+        .returning({ channelId: schema.dmSettings.channelId });
+      changed = r.length > 0;
+    }
+    if (!changed) return { changed: false as const };
+    const notice = await createSystemMessage(
+      {
+        channelId: input.channelId,
+        guildId: null,
+        authorId: input.changedBy,
+        content: disappearingNoticeText(actorName, ttl),
+        type: 'system_disappearing',
+        mentionedUserIds: [],
+        metadata: {
+          kind: 'disappearing_timer',
+          timerSeconds: ttl ?? 0,
+          initiatorId: input.changedBy.toString(),
+        },
+        advanceReadMarkers: true,
       },
-    });
+      tx as DbHandle,
+    );
+    return { changed: true as const, notice };
+  });
 }
 
 // ── Per-recipient DM notification preview preference ────────────────────────
@@ -962,11 +1018,10 @@ export async function getDmNotificationPrefsForChannel(
  *   - has viewed_at still NULL.
  *
  * Stamping is UNCONDITIONAL — even when the viewer has read receipts
- * disabled, the column gets written. This is because viewed_at is
- * shared infrastructure with the auto-delete sweep (which decides
- * when to purge based on "viewed_at + ttl_seconds_after_read"); a
- * privacy gate on the stamp would silently break TTL DMs sent to
- * users who turned receipts off.
+ * disabled, the column gets written (it keeps the column reliable for
+ * anything that depends on it; the disappearing-messages clock is the
+ * separate expires_at, started only by a read ack — see
+ * startDisappearingTimers).
  *
  * Receipt visibility — the actual "the sender's UI sees Read" effect
  * — is gated separately at the dispatch + DTO layers. This function
@@ -982,10 +1037,13 @@ export async function markMessagesViewed(
   messageIds: bigint[],
 ): Promise<{
   stamped: Array<{ messageId: bigint; authorId: bigint }>;
+  /** The stored viewed_at (one value for the whole batch). */
+  viewedAt: Date;
   viewerReceiptsEnabled: boolean;
 }> {
+  const viewedAt = new Date();
   if (messageIds.length === 0) {
-    return { stamped: [], viewerReceiptsEnabled: true };
+    return { stamped: [], viewedAt, viewerReceiptsEnabled: true };
   }
   // Read the viewer's toggle so the caller can gate dispatch. We do
   // NOT use it to gate the stamp — see the comment above.
@@ -1002,7 +1060,7 @@ export async function markMessagesViewed(
   // each author without a second SELECT.
   const updated = await db
     .update(schema.messages)
-    .set({ viewedAt: new Date() })
+    .set({ viewedAt })
     .where(
       and(
         eq(schema.messages.channelId, channelId),
@@ -1018,7 +1076,7 @@ export async function markMessagesViewed(
   const stamped = updated
     .filter((r): r is { id: bigint; authorId: bigint } => r.authorId !== null)
     .map((r) => ({ messageId: r.id, authorId: r.authorId }));
-  return { stamped, viewerReceiptsEnabled };
+  return { stamped, viewedAt, viewerReceiptsEnabled };
 }
 
 /**
@@ -1033,8 +1091,9 @@ export async function markMessagesViewed(
  * listMessages call (page refresh).
  *
  * Same privacy semantics as markMessagesViewed: stamping is
- * unconditional (auto-delete sweep depends on viewed_at), the
- * caller gates dispatch + DTO surface on the viewer's toggle.
+ * unconditional, the caller gates dispatch + DTO surface on the
+ * viewer's toggle. (The disappearing-messages clock is separate:
+ * startDisappearingTimers below.)
  */
 export async function markMessagesViewedUpTo(
   channelId: bigint,
@@ -1042,6 +1101,8 @@ export async function markMessagesViewedUpTo(
   upToMessageId: bigint,
 ): Promise<{
   stamped: Array<{ messageId: bigint; authorId: bigint }>;
+  /** The stored viewed_at (one value for the whole batch). */
+  viewedAt: Date;
   viewerReceiptsEnabled: boolean;
 }> {
   const [viewer] = await db
@@ -1059,9 +1120,10 @@ export async function markMessagesViewedUpTo(
   // that was scrolled-away-from for a while it could be larger.
   // No artificial cap: the user explicitly opened the channel, so
   // marking all prior unviewed messages is the desired semantic.
+  const viewedAt = new Date();
   const updated = await db
     .update(schema.messages)
-    .set({ viewedAt: new Date() })
+    .set({ viewedAt })
     .where(
       and(
         eq(schema.messages.channelId, channelId),
@@ -1077,7 +1139,79 @@ export async function markMessagesViewedUpTo(
   const stamped = updated
     .filter((r): r is { id: bigint; authorId: bigint } => r.authorId !== null)
     .map((r) => ({ messageId: r.id, authorId: r.authorId }));
-  return { stamped, viewerReceiptsEnabled };
+  return { stamped, viewedAt, viewerReceiptsEnabled };
+}
+
+/**
+ * Disappearing messages: start the clock on everything the reader just read.
+ * Driven by the read ack (POST /channels/:id/messages/:mid/ack) in 1:1 and
+ * group DMs — NOT by a message-list fetch — for every message up to and
+ * including `upToMessageId` that was sent with a timer, isn't counting down
+ * yet, and wasn't written by the reader:
+ *
+ *   expires_at = now() + expire_after_seconds   (DB clock)
+ *
+ * Unconditional on the reader's read-receipts toggle — the timer is the
+ * conversation's, and a receipts-off reader must not keep messages forever.
+ * The toggle only decides who may LEARN expires_at (it minus the timer is
+ * the read time); the caller gates the dispatch on `viewerReceiptsEnabled`.
+ *
+ * `serverNow` is the DB's now() for this stamp, so `expiresAt - serverNow`
+ * is exactly each message's timer.
+ */
+export async function startDisappearingTimers(
+  channelId: bigint,
+  viewerId: bigint,
+  upToMessageId: bigint,
+): Promise<{
+  started: Array<{ messageId: bigint; authorId: bigint | null; expiresAt: Date }>;
+  serverNow: Date;
+  viewerReceiptsEnabled: boolean;
+}> {
+  // The uncorrelated EXISTS is a one-time check: a DM that never had a
+  // dm_settings row can't hold a message with a timer (createMessage reads
+  // the timer from that row, and it is never deleted on its own), so the
+  // common case skips scanning the channel's history on every ack.
+  const updated = await db
+    .update(schema.messages)
+    .set({
+      expiresAt: sql`now() + make_interval(secs => ${schema.messages.expireAfterSeconds})`,
+    })
+    .where(
+      and(
+        eq(schema.messages.channelId, channelId),
+        sql`${schema.messages.id} <= ${upToMessageId}`,
+        sql`${schema.messages.expireAfterSeconds} IS NOT NULL`,
+        isNull(schema.messages.expiresAt),
+        isNull(schema.messages.deletedAt),
+        sql`${schema.messages.authorId} IS DISTINCT FROM ${viewerId}`,
+        sql`EXISTS (SELECT 1 FROM dm_settings s WHERE s.channel_id = ${channelId})`,
+      ),
+    )
+    .returning({
+      id: schema.messages.id,
+      authorId: schema.messages.authorId,
+      expiresAt: schema.messages.expiresAt,
+      expireAfterSeconds: schema.messages.expireAfterSeconds,
+    });
+  const started = updated
+    .filter((r): r is typeof r & { expiresAt: Date } => r.expiresAt !== null)
+    .map((r) => ({ messageId: r.id, authorId: r.authorId, expiresAt: r.expiresAt }));
+  const first = updated[0];
+  // now() is the same for every row of one statement: recover it from any.
+  const serverNow =
+    first && first.expiresAt && first.expireAfterSeconds !== null
+      ? new Date(first.expiresAt.getTime() - first.expireAfterSeconds * 1000)
+      : new Date();
+  if (started.length === 0) {
+    return { started, serverNow, viewerReceiptsEnabled: true };
+  }
+  const [viewer] = await db
+    .select({ enabled: schema.users.dmReadReceiptsEnabled })
+    .from(schema.users)
+    .where(eq(schema.users.id, viewerId))
+    .limit(1);
+  return { started, serverNow, viewerReceiptsEnabled: viewer?.enabled ?? true };
 }
 
 /**
@@ -1122,81 +1256,81 @@ export async function markMessageDelivered(
   return { stamped: updated.length > 0, recipientReceiptsEnabled };
 }
 
+/** Rows per sweep UPDATE, and the most batches one tick drains. */
+const SWEEP_BATCH = 500;
+const SWEEP_MAX_BATCHES = 10;
+
 /**
- * Periodic sweep: soft-delete every message whose viewed_at is older
- * than its channel's configured TTL. Runs alongside the inactivity
- * sweep on the API's interval timer; safe to call repeatedly.
+ * Periodic sweep: soft-delete every message whose disappearing deadline
+ * (`expires_at`) has passed. Runs on the leader every 10 s; safe to call
+ * repeatedly. Rows with a NULL expires_at are never touched — the old rule
+ * (viewed_at + the conversation's CURRENT timer) wiped history viewed before
+ * a timer was even turned on.
  *
- * Returns the number of messages soft-deleted. Bounded per-call at
- * 1000 rows so a sudden burst of expirations doesn't lock the
- * messages table for too long; the next interval picks up the rest.
+ * Batches of 500 in deadline order (the partial messages_expires_at_idx),
+ * looping while a batch comes back full, at most 10 per call so one tick
+ * stays bounded; the next tick picks up the rest. For each batch: one
+ * MESSAGE_DELETE per row (installed apps predate MESSAGE_DELETE_BULK), and
+ * each affected channel's last_message_id rolled back like deleteMessage
+ * does, so an unread dot never points at a message nobody can load.
  *
- * Implementation: subquery-join on dm_settings to read each channel's
- * TTL, then filter messages whose viewed_at age exceeds it. Soft-
- * delete by setting deleted_at; existing delete-related cleanup paths
- * (reaction cascades, thread invalidation, etc.) cascade through the
- * regular delete flow.
+ * Returns the number of messages soft-deleted.
  */
 export async function sweepExpiredDmMessages(): Promise<number> {
-  // Limit the per-call work so a sudden burst of expirations doesn't
-  // lock the messages table. We RETURN the affected ids + channels so
-  // we can fire MESSAGE_DELETE for each — without that fanout,
-  // connected clients would keep showing already-deleted messages
-  // until they refetch (next channel switch, next reconnect, etc).
-  // The UX of disappearing messages requires the gateway delivery.
-  const rows = await db.execute<{
-    id: string;
-    channel_id: string;
-  }>(sql`
-    UPDATE messages m
-    SET deleted_at = now()
-    FROM dm_settings s
-    WHERE m.channel_id = s.channel_id
-      AND s.ttl_seconds_after_read IS NOT NULL
-      AND m.viewed_at IS NOT NULL
-      AND m.deleted_at IS NULL
-      AND m.viewed_at < (now() - (s.ttl_seconds_after_read || ' seconds')::interval)
-      AND m.id IN (
-        SELECT id FROM messages mi
-        JOIN dm_settings si ON si.channel_id = mi.channel_id
-        WHERE si.ttl_seconds_after_read IS NOT NULL
-          AND mi.viewed_at IS NOT NULL
-          AND mi.deleted_at IS NULL
-          AND mi.viewed_at < (now() - (si.ttl_seconds_after_read || ' seconds')::interval)
-        LIMIT 1000
-      )
-    RETURNING m.id, m.channel_id
-  `);
-  // The drizzle execute() shape varies by adapter — node-postgres
-  // returns an object with a `rows` array, while neon-http returns
-  // the array directly. Normalize both.
-  const affected = Array.isArray(rows)
-    ? rows
-    : (rows as { rows?: { id: string; channel_id: string }[] }).rows ?? [];
-  for (const r of affected) {
-    // BigInt coercion: ids come back as numeric strings from PG.
-    // DMs always have null guildId (the audience is the channel's
-    // dm_recipients set, walked inside dispatch). messageDelete fires
-    // one MESSAGE_DELETE per row to every connection of every
-    // recipient.
-    //
-    // Per-row try/catch: if any one publish throws (e.g. a registry
-    // bug, a transient bus failure), we don't want it to abort the
-    // whole fanout — every subsequent row would skip its dispatch
-    // and clients would keep rendering already-deleted messages
-    // until they next refetch. Swallow + log + continue.
+  let total = 0;
+  for (let batch = 0; batch < SWEEP_MAX_BATCHES; batch++) {
+    // SKIP LOCKED: a row some other writer holds right now (an edit, a manual
+    // delete) is simply taken next tick instead of stalling the sweep.
+    const rows = await db.execute<{ id: string; channel_id: string }>(sql`
+      UPDATE messages
+         SET deleted_at = now()
+       WHERE id IN (
+               SELECT id FROM messages
+                WHERE expires_at IS NOT NULL
+                  AND expires_at <= now()
+                  AND deleted_at IS NULL
+                ORDER BY expires_at
+                LIMIT ${SWEEP_BATCH}
+                FOR UPDATE SKIP LOCKED
+             )
+         AND deleted_at IS NULL
+      RETURNING id, channel_id
+    `);
+    // The drizzle execute() shape varies by adapter — node-postgres
+    // returns an object with a `rows` array, postgres-js the array
+    // directly. Normalize both.
+    const affected = Array.isArray(rows)
+      ? rows
+      : (rows as { rows?: { id: string; channel_id: string }[] }).rows ?? [];
+    if (affected.length === 0) break;
+    total += affected.length;
+
+    const deletedIds = affected.map((r) => BigInt(r.id));
+    const channelIds = [...new Set(affected.map((r) => r.channel_id))].map((c) => BigInt(c));
     try {
-      dispatch.messageDelete({
-        messageId: BigInt(r.id),
-        channelId: BigInt(r.channel_id),
-        guildId: null,
-      });
+      await rollbackChannelWatermarks(channelIds, deletedIds);
     } catch {
-      // Best-effort. The DB delete already committed; clients will
-      // catch up on next listMessages.
+      // Best-effort: the rows are already gone; a stale watermark only
+      // leaves an unread dot until the next message.
     }
+    for (const r of affected) {
+      // DMs have no guild, so the audience is the channel's dm_recipients.
+      // Per-row try/catch: one failed publish must not skip the rest — those
+      // clients would keep showing deleted messages until they refetch.
+      try {
+        dispatch.messageDelete({
+          messageId: BigInt(r.id),
+          channelId: BigInt(r.channel_id),
+          guildId: null,
+        });
+      } catch {
+        // Best-effort. The DB delete already committed; clients will
+        // catch up on next listMessages.
+      }
+    }
+    if (affected.length < SWEEP_BATCH) break;
   }
-  return affected.length;
+  return total;
 }
 
 /**
@@ -1258,7 +1392,7 @@ export async function backfillPendingDeliveries(
     RETURNING id, channel_id, author_id
   `);
   // Adapter normalization (postgres-js vs node-postgres) — same
-  // pattern used in the auto-delete sweep above.
+  // pattern used in the disappearing-messages sweep above.
   const affected = Array.isArray(rows)
     ? (rows as Array<{ id: string; channel_id: string; author_id: string | null }>)
     : ((rows as unknown as { rows?: Array<{ id: string; channel_id: string; author_id: string | null }> }).rows ?? []);

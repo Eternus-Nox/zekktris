@@ -17,6 +17,7 @@ import { db, schema } from '../db';
 import { errors } from '../errors';
 import { hasPermission, Permissions } from '@zekktris/shared/permissions';
 import * as channels from './channels';
+import { notExpired } from './messages';
 import { computeMemberChannelPermissions } from './permissions';
 
 const PAGE_SIZE = 25;
@@ -76,12 +77,14 @@ export async function saveMessage(
       .select({
         channelId: schema.messages.channelId,
         deletedAt: schema.messages.deletedAt,
+        // A disappeared message (deadline passed, sweep not run yet) is gone.
+        expired: sql<boolean>`NOT ${notExpired()}`,
       })
       .from(schema.messages)
       .where(eq(schema.messages.id, messageId))
       .limit(1)
   )[0];
-  if (!msgRow || msgRow.deletedAt) throw errors.notFound('Message');
+  if (!msgRow || msgRow.deletedAt || msgRow.expired) throw errors.notFound('Message');
   const channel = await channels.getChannel(msgRow.channelId);
   if (!channel || !(await canViewChannelRow(userId, channel))) {
     throw errors.notFound('Message');
@@ -177,8 +180,9 @@ export async function listSavedMessages(
     eq(schema.savedMessages.userId, userId),
     // Saved-then-deleted messages must tombstone like every other read
     // path; without this the bookmark list kept serving full deleted
-    // content.
+    // content. Same for a disappeared message whose sweep hasn't run yet.
     isNull(schema.messages.deletedAt),
+    notExpired(),
   ];
   if (opts?.before) {
     // saved_at is a NOW()-stamped microsecond timestamptz, but the cursor came

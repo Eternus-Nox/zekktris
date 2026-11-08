@@ -41,7 +41,7 @@
 
 import { promises as dns } from 'node:dns';
 import { Agent, fetch as undiciFetch } from 'undici';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { log } from '../log';
 import * as dispatch from '../gateway/dispatch';
@@ -764,11 +764,26 @@ export async function resolveAndPersistEmbeds(args: {
     resolved = [];
   }
 
+  // The resolve above takes 100-2000 ms. A message deleted in the meantime —
+  // or a disappearing one whose deadline passed (1 s timers exist) — must not
+  // be written to or re-broadcast: clients upsert on MESSAGE_UPDATE, so the
+  // broadcast below would bring it back on screen.
+  const live = () =>
+    and(
+      eq(schema.messages.id, args.messageId),
+      isNull(schema.messages.deletedAt),
+      sql`(${schema.messages.expiresAt} IS NULL OR ${schema.messages.expiresAt} > now())`,
+    )!;
   try {
-    await db
+    const persisted = await db
       .update(schema.messages)
       .set({ embeds: resolved })
-      .where(eq(schema.messages.id, args.messageId));
+      .where(live())
+      .returning({ id: schema.messages.id });
+    if (persisted.length === 0) {
+      log.info('embed pipeline: message gone, skipped', { messageId: args.messageId.toString() });
+      return;
+    }
     log.info('embed pipeline: persisted', {
       messageId: args.messageId.toString(),
       count: resolved.length,
@@ -789,10 +804,12 @@ export async function resolveAndPersistEmbeds(args: {
     const messages = await import('./messages');
     const polls = await import('./polls');
 
+    // Re-checked here too: the row may have been deleted or have expired
+    // between the persist and this reload.
     const rows = await db
       .select()
       .from(schema.messages)
-      .where(eqOp(schema.messages.id, args.messageId))
+      .where(live())
       .limit(1);
     const m = rows[0];
     if (!m) return;

@@ -13,6 +13,7 @@ import { eq } from 'drizzle-orm';
 import { db, schema } from '../src/db';
 import { nextSnowflake } from '../src/snowflake';
 import { Permissions } from '@zekktris/shared/permissions';
+import type { MessageMetadataJson } from '@zekktris/db';
 
 const _guilds: bigint[] = [];
 const _users: bigint[] = [];
@@ -110,14 +111,20 @@ export async function cleanupAll(): Promise<void> {
 
 export { Permissions };
 
-/** Insert a bare message. Optionally set authorId / createdAt / content / type. */
+/** Insert a bare message. Optionally set authorId / createdAt / content / type,
+ *  and the receipt / disappearing-message columns. */
 export async function createMessage(
   channelId: bigint,
   opts: {
     authorId?: bigint;
     createdAt?: Date;
     content?: string;
-    type?: 'default' | 'reply' | 'system_join' | 'system_call';
+    type?: 'default' | 'reply' | 'system_join' | 'system_call' | 'system_disappearing';
+    expireAfterSeconds?: number | null;
+    viewedAt?: Date | null;
+    expiresAt?: Date | null;
+    deletedAt?: Date | null;
+    metadata?: MessageMetadataJson | null;
   } = {},
 ): Promise<bigint> {
   const id = nextSnowflake();
@@ -128,15 +135,23 @@ export async function createMessage(
     ...(opts.createdAt !== undefined ? { createdAt: opts.createdAt } : {}),
     ...(opts.content !== undefined ? { content: opts.content } : {}),
     ...(opts.type !== undefined ? { type: opts.type } : {}),
+    ...(opts.expireAfterSeconds !== undefined ? { expireAfterSeconds: opts.expireAfterSeconds } : {}),
+    ...(opts.viewedAt !== undefined ? { viewedAt: opts.viewedAt } : {}),
+    ...(opts.expiresAt !== undefined ? { expiresAt: opts.expiresAt } : {}),
+    ...(opts.deletedAt !== undefined ? { deletedAt: opts.deletedAt } : {}),
+    ...(opts.metadata !== undefined ? { metadata: opts.metadata } : {}),
   });
   return id;
 }
 
 /** Create a 1:1/group DM channel (no guild) with the given recipients. Tracked
  *  for cleanup (cascades dm_recipients on delete). */
-export async function createDmChannel(recipientIds: bigint[]): Promise<bigint> {
+export async function createDmChannel(
+  recipientIds: bigint[],
+  type: 'dm' | 'group_dm' = 'dm',
+): Promise<bigint> {
   const id = nextSnowflake();
-  await db.insert(schema.channels).values({ id, type: 'dm', guildId: null, position: 0 });
+  await db.insert(schema.channels).values({ id, type, guildId: null, position: 0 });
   await db.insert(schema.dmRecipients).values(recipientIds.map((userId) => ({ channelId: id, userId })));
   _dmChannels.push(id);
   return id;

@@ -49,15 +49,28 @@ export const messages = pgTable(
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     /**
      * First time a non-author participant in this DM channel viewed the
-     * message. Only stamped for messages in DMs that have an auto-delete
-     * TTL configured (see dm_settings). NULL means either:
-     *   - the message lives in a channel without auto-delete, OR
-     *   - the message lives in an auto-delete DM but the other party
-     *     hasn't fetched it yet.
-     * Once stamped, the sweep deletes the message after
-     * `dm_settings.ttl_seconds_after_read` seconds have elapsed.
+     * message (a message-list fetch or a read ack), in every DM. NULL until
+     * the other party has fetched it. Drives the "Read" receipt only; the
+     * disappearing-messages clock is `expiresAt` below, which only a read
+     * ack starts.
      */
     viewedAt: timestamp('viewed_at', { withTimezone: true }),
+    /**
+     * Disappearing messages: the timer (seconds) this message was SENT with —
+     * the DM's dm_settings.ttl_seconds_after_read at insert time — or NULL
+     * when it never disappears. Fixed at send time, so changing the setting
+     * only affects later messages and turning it off doesn't save these.
+     * System rows (call records, the timer-change notice…) never get one.
+     */
+    expireAfterSeconds: integer('expire_after_seconds'),
+    /**
+     * Disappearing messages: when this message disappears for everyone —
+     * stamped `now() + expireAfterSeconds` (DB clock) by the first non-author
+     * recipient's read ack. NULL until then. Read paths hide the row once it
+     * has passed and the DM sweep soft-deletes it. Minus the timer this IS
+     * the read time, so it is gated from the author like viewedAt.
+     */
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
     /**
      * DM delivery tracking. Stamped once when the recipient's first
      * gateway connection receives the MESSAGE_CREATE dispatch — or, if
@@ -152,6 +165,8 @@ export const messages = pgTable(
      *     where `durationMs` is the answered-to-ended span in
      *     milliseconds (0 when missed=true), and `initiatorId` is the
      *     caller's user id stringified (BigInts don't survive JSON).
+     *   - system_disappearing: { kind: 'disappearing_timer',
+     *                            timerSeconds, initiatorId }
      *
      * Future system messages should reuse this column rather than
      * adding new typed columns — keeps the schema narrow and the
@@ -192,6 +207,12 @@ export const messages = pgTable(
     replyToIdx: index('messages_reply_to_idx')
       .on(t.replyToId)
       .where(sql`reply_to_id IS NOT NULL`),
+    /** (expires_at): the disappearing-messages sweep finds rows whose
+     *  deadline has passed, oldest first. Partial — only messages that are
+     *  counting down. Matches migration 0133. */
+    expiresAtIdx: index('messages_expires_at_idx')
+      .on(t.expiresAt)
+      .where(sql`expires_at IS NOT NULL AND deleted_at IS NULL`),
   }),
 );
 
@@ -501,6 +522,19 @@ export type MessageMetadataJson =
       /** Which variant was sent — drives the emoji + verb the clients show. */
       pokeType: PokeMetaType;
       /** The poker's user id (stringified BigInt). */
+      initiatorId: string;
+    }
+  | {
+      /** The DM's disappearing-messages timer changed. The row is type
+       *  'system_disappearing'; its `content` is a readable third-person
+       *  fallback for clients that don't know the type ("Alex set
+       *  disappearing messages to 1 day."), and new clients render "You…" /
+       *  "<name>…" from this instead. Keep IN SYNC with the client
+       *  `MessageMetadata`. */
+      kind: 'disappearing_timer';
+      /** The new timer in seconds; 0 = turned off. */
+      timerSeconds: number;
+      /** Who changed it (stringified BigInt). */
       initiatorId: string;
     };
 

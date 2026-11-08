@@ -761,10 +761,12 @@ export function dmChannelClosedForUser(args: {
 }
 
 /**
- * A DM's auto-delete TTL was changed. Notifies the channel audience —
- * which for a DM means every connected client of every recipient — so
- * each side's settings UI updates without a refetch. Payload carries
- * the channel id + the new TTL (or null when turned off).
+ * A DM's disappearing-messages timer was changed. Notifies the channel
+ * audience — which for a DM means every connected client of every
+ * recipient — so each side's settings UI and header indicator update
+ * without a refetch. Payload carries the channel id + the timer new
+ * messages get (or null when turned off), camelCase as installed apps
+ * expect.
  *
  * The audience is { kind: 'channel', channelId } and registry walks
  * the dm_recipients membership to fan to the right user sockets. We
@@ -943,6 +945,39 @@ export function messageViewed(args: {
       viewed_at: args.viewedAt.toISOString(),
     },
     { kind: 'user', userId: args.authorId },
+  );
+}
+
+/**
+ * Disappearing messages started counting down: a DM / group-DM recipient's
+ * read ack stamped `expires_at` on messages sent with a timer. Snake_case
+ * like the other MESSAGE_* receipt events. `server_now` lets the client turn
+ * the server-clock deadlines into local ones despite a skewed device clock.
+ *
+ * Audience is ONE user's connections — the caller fires it for the reader
+ * (all the batch's expiries), and in a 1:1 DM also for each author (only
+ * their own messages) when the reader has read receipts on: expires_at minus
+ * the timer is the read time, so it is gated exactly like MESSAGE_VIEWED.
+ * Never the channel audience.
+ */
+export function messageExpiry(args: {
+  userId: bigint;
+  channelId: bigint;
+  expiries: Array<{ messageId: bigint; expiresAt: Date }>;
+  serverNow: Date;
+}): void {
+  if (args.expiries.length === 0) return;
+  publish(
+    GatewayEvent.MESSAGE_EXPIRY,
+    {
+      channel_id: args.channelId.toString(),
+      expiries: args.expiries.map((e) => ({
+        id: e.messageId.toString(),
+        expires_at: e.expiresAt.toISOString(),
+      })),
+      server_now: args.serverNow.toISOString(),
+    },
+    { kind: 'user', userId: args.userId },
   );
 }
 

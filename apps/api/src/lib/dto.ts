@@ -935,15 +935,29 @@ export interface MessageDTO {
    * `deliveredAt` is set when at least one of the recipient's gateway
    * connections receives the MESSAGE_CREATE — i.e. the message landed
    * on a recipient device. `viewedAt` is set when the recipient
-   * actually opens the channel and lists this message (already wired
-   * up server-side for the auto-delete feature; we now also surface
-   * it for receipt rendering).
+   * actually opens the channel and lists (or acks) this message.
    *
    * Clients render Sent → Delivered → Read under the sender's last
    * own message in a 1:1 DM, mirroring iMessage / WhatsApp.
    */
   deliveredAt: string | null;
   viewedAt: string | null;
+  /**
+   * Disappearing messages: the timer (seconds) this message was SENT with,
+   * or null when it never disappears. Always serialized — it is fixed at
+   * send time and reveals nothing about the recipient.
+   */
+  expireAfterSeconds: number | null;
+  /**
+   * Disappearing messages: when this message disappears (ISO server time),
+   * once a recipient has read it; null until then. NEVER set by toMessage —
+   * gateway broadcasts go to the whole DM, and expiresAt minus the timer is
+   * the read time. Only per-requester REST responses add it (message list,
+   * single GET; see withExpiresAt in routes/messages.ts), and only where the
+   * requester may know the read time. The live value goes out in
+   * MESSAGE_EXPIRY.
+   */
+  expiresAt?: string | null;
   /**
    * Structured metadata payload for special message types. NULL for
    * ordinary messages. Currently only `system_call` populates this,
@@ -1030,6 +1044,7 @@ export function toMessage(args: {
     authorOverrideAvatar: proxiedImageUrl(m.authorOverrideAvatar),
     deliveredAt: isoDate(m.deliveredAt),
     viewedAt: isoDate(m.viewedAt),
+    expireAfterSeconds: m.expireAfterSeconds ?? null,
     metadata: m.metadata ?? null,
     createdAt: isoDate(m.createdAt),
   };

@@ -24,7 +24,19 @@ import { listViewableGuildChannelIdsByGuild } from './permissions';
 import { deleteStorageItem } from './uploads';
 import type { Database, MessageEmbedJson } from '@zekktris/db';
 
-type DbHandle = Omit<Database, '$client'>;
+export type DbHandle = Omit<Database, '$client'>;
+
+/**
+ * Disappearing messages: a row whose deadline (`expires_at`) has passed is
+ * gone for everyone, even before the DM sweep soft-deletes it (the sweep runs
+ * every 10 s; old clients only drop a message when its MESSAGE_DELETE
+ * arrives). Every read path that filters `deleted_at IS NULL` adds this next
+ * to it — in SQL, not as a post-filter, so LIMIT pages stay full and a client
+ * that stops paging on a short page doesn't think history ended.
+ */
+export function notExpired(): SQL {
+  return sql`(${schema.messages.expiresAt} IS NULL OR ${schema.messages.expiresAt} > now())`;
+}
 
 // ── Slowmode ───────────────────────────────────────────────────────────────
 
@@ -316,11 +328,12 @@ export async function createMessage(input: CreateMessageInput): Promise<MessageW
           id: schema.messages.id,
           channelId: schema.messages.channelId,
           deletedAt: schema.messages.deletedAt,
+          expired: sql<boolean>`NOT ${notExpired()}`,
         })
         .from(schema.messages)
         .where(eq(schema.messages.id, input.replyToId))
         .limit(1);
-      if (!ref[0] || ref[0].channelId !== input.channelId || ref[0].deletedAt) {
+      if (!ref[0] || ref[0].channelId !== input.channelId || ref[0].deletedAt || ref[0].expired) {
         throw errors.badRequest('replyToId does not refer to a message in this channel');
       }
     }
@@ -347,6 +360,19 @@ export async function createMessage(input: CreateMessageInput): Promise<MessageW
         forwardedAttachments: input.forwardSnapshot?.attachments ?? null,
         stickerId: input.stickerId ?? null,
         embeds: input.embeds ?? null,
+        // Disappearing messages: snapshot the DM's timer as it stands NOW, so
+        // a later change of the setting only affects later messages. Read in
+        // the insert itself, so every user-content path gets it — plain, E2EE,
+        // attachments, voice messages, polls, forwards into a DM, scheduled
+        // messages (at fire time) and sends from installed old apps. NULL for
+        // guild channels and DMs with the timer off.
+        expireAfterSeconds: sql`(
+          SELECT s.ttl_seconds_after_read
+            FROM dm_settings s
+            JOIN channels c ON c.id = s.channel_id
+           WHERE s.channel_id = ${input.channelId}
+             AND c.type IN ('dm', 'group_dm')
+        )`,
       })
       .returning();
     if (!inserted) throw errors.internal('Message insert returned no row');
@@ -479,15 +505,23 @@ export async function createSystemMessage(input: {
   // 'default' is allowed so an automated notice (e.g. the DM streak-expiry
   // warning) can ride a normal-type row + a metadata marker the clients render
   // specially — avoiding a message_type enum migration.
-  type: 'system_join' | 'system_call' | 'default';
+  type: 'system_join' | 'system_call' | 'system_disappearing' | 'default';
   mentionedUserIds: bigint[];
   /** Structured metadata for system messages that need it. Currently
    *  used by system_call to carry { missed, durationMs, initiatorId }.
    *  Stored as-is in the JSONB metadata column. */
   metadata?: import('@zekktris/db').MessageMetadataJson | null;
-}): Promise<typeof schema.messages.$inferSelect> {
+  /** Make the row the channel's newest message (last_message_id) and advance
+   *  the author's own read marker to it, as createMessage does for a send.
+   *  Without the read-marker half the author's own notice would show as
+   *  unread to them on every device. Off by default (the original callers
+   *  bump nothing, or bump the watermark themselves). */
+  advanceReadMarkers?: boolean;
+}, outerTx?: DbHandle): Promise<typeof schema.messages.$inferSelect> {
   const messageId = nextSnowflake();
-  return await db.transaction(async (tx) => {
+  // Never sets expire_after_seconds: system rows (call records, streak
+  // notices, the disappearing-timer notice itself) don't disappear.
+  const run = async (tx: DbHandle) => {
     const [inserted] = await tx
       .insert(schema.messages)
       .values({
@@ -510,8 +544,36 @@ export async function createSystemMessage(input: {
         })),
       );
     }
+    if (input.advanceReadMarkers) {
+      // GREATEST guards, same as createMessage / the streak notice: an
+      // out-of-order insert can't roll either marker backward.
+      await tx
+        .update(schema.channels)
+        .set({
+          lastMessageId: sql`GREATEST(COALESCE(${schema.channels.lastMessageId}, 0), ${messageId})`,
+        })
+        .where(eq(schema.channels.id, input.channelId));
+      await tx
+        .insert(schema.readStates)
+        .values({
+          userId: input.authorId,
+          channelId: input.channelId,
+          lastMessageId: messageId,
+          mentionCount: 0,
+        })
+        .onConflictDoUpdate({
+          target: [schema.readStates.userId, schema.readStates.channelId],
+          set: {
+            lastMessageId: sql`GREATEST(${schema.readStates.lastMessageId}, ${messageId})`,
+            mentionCount: 0,
+            updatedAt: new Date(),
+          },
+        });
+    }
     return inserted;
-  });
+  };
+  if (outerTx) return run(outerTx);
+  return await db.transaction(async (tx) => run(tx as DbHandle));
 }
 
 // ── List ───────────────────────────────────────────────────────────────────
@@ -552,6 +614,7 @@ export async function listMessages(channelId: bigint, opts: ListMessagesOptions)
     const baseConditions = [
       eq(schema.messages.channelId, channelId),
       isNull(schema.messages.deletedAt),
+      notExpired(),
     ];
     // The anchor is fetched explicitly so it doesn't consume one of the
     // "older" slots (which skewed the context window) — and so the page
@@ -586,7 +649,9 @@ export async function listMessages(channelId: bigint, opts: ListMessagesOptions)
   const useAsc = opts.after !== undefined && opts.before === undefined;
 
   const conditions = [eq(schema.messages.channelId, channelId)];
-  if (!opts.includeDeleted) conditions.push(isNull(schema.messages.deletedAt));
+  // The supervision reader (includeDeleted) also keeps seeing expired rows —
+  // disappearing is a soft delete, and the guardian reads those on purpose.
+  if (!opts.includeDeleted) conditions.push(isNull(schema.messages.deletedAt), notExpired());
   if (opts.before !== undefined) conditions.push(lt(schema.messages.id, opts.before));
   if (opts.after !== undefined) conditions.push(gt(schema.messages.id, opts.after));
 
@@ -608,6 +673,7 @@ export async function getMessage(channelId: bigint, messageId: bigint) {
         eq(schema.messages.id, messageId),
         eq(schema.messages.channelId, channelId),
         isNull(schema.messages.deletedAt),
+        notExpired(),
       ),
     )
     .limit(1);
@@ -660,6 +726,7 @@ export async function listChannelAttachments(
   const conds: SQL[] = [
     eq(schema.messages.channelId, channelId),
     isNull(schema.messages.deletedAt),
+    notExpired(),
     eq(schema.attachments.isVoiceMessage, false),
     eq(schema.attachments.isThumbnail, false),
   ];
@@ -848,7 +915,11 @@ export async function editMessage(input: EditMessageInput): Promise<MessageWithM
         editedAt: now,
       })
       .where(
-        and(eq(schema.messages.id, input.messageId), isNull(schema.messages.deletedAt)),
+        and(
+          eq(schema.messages.id, input.messageId),
+          isNull(schema.messages.deletedAt),
+          notExpired(),
+        ),
       )
       .returning();
     if (!updated) throw errors.notFound('Message');
@@ -899,6 +970,30 @@ async function rollbackChannelWatermark(channelId: bigint, deletedId: bigint): P
           WHERE channel_id = ${channelId} AND deleted_at IS NULL
        )
      WHERE id = ${channelId} AND last_message_id = ${deletedId}
+  `);
+}
+
+/**
+ * Batch form of rollbackChannelWatermark for the disappearing-messages sweep:
+ * every channel in `channelIds` whose watermark is one of `deletedIds` moves
+ * back to its newest message that is neither deleted nor already past its
+ * deadline (or NULL when none is left). One statement per sweep batch.
+ */
+export async function rollbackChannelWatermarks(
+  channelIds: bigint[],
+  deletedIds: bigint[],
+): Promise<void> {
+  if (channelIds.length === 0 || deletedIds.length === 0) return;
+  const chList = sql.join(channelIds.map((id) => sql`${id}`), sql`, `);
+  const delList = sql.join(deletedIds.map((id) => sql`${id}`), sql`, `);
+  await db.execute(sql`
+    UPDATE channels c
+       SET last_message_id = (
+         SELECT max(m.id) FROM messages m
+          WHERE m.channel_id = c.id AND m.deleted_at IS NULL
+            AND (m.expires_at IS NULL OR m.expires_at > now())
+       )
+     WHERE c.id IN (${chList}) AND c.last_message_id IN (${delList})
   `);
 }
 
@@ -998,6 +1093,7 @@ export async function setPinned(
         eq(schema.messages.id, messageId),
         eq(schema.messages.channelId, channelId),
         isNull(schema.messages.deletedAt),
+        notExpired(),
       ),
     )
     .returning();
@@ -1020,6 +1116,7 @@ export async function listPinned(channelId: bigint) {
         eq(schema.messages.channelId, channelId),
         eq(schema.messages.pinned, true),
         isNull(schema.messages.deletedAt),
+        notExpired(),
       ),
     )
     .orderBy(desc(schema.messages.id))
@@ -1077,6 +1174,7 @@ export async function searchMessages(
   const conds: SQL[] = [
     eq(schema.messages.channelId, channelId),
     isNull(schema.messages.deletedAt),
+    notExpired(),
   ];
   if (trimmed.length > 0) {
     conds.push(
@@ -1139,6 +1237,7 @@ export async function searchDirectMessages(
   // the migration-0002 GIN index.
   const conds: SQL[] = [
     isNull(schema.messages.deletedAt),
+    notExpired(),
     exists(
       db
         .select({ one: sql`1` })
@@ -1364,6 +1463,7 @@ export async function listUserMentions(
   const conds = [
     eq(schema.messageUserMentions.userId, userId),
     isNull(schema.messages.deletedAt),
+    notExpired(),
   ];
   if (opts.before !== undefined) {
     conds.push(lt(schema.messages.id, opts.before));

@@ -925,6 +925,13 @@
       "when": 1785291530000,
       "tag": "0132_voice_moved_from",
       "breakpoints": true
+    },
+    {
+      "idx": 132,
+      "version": "7",
+      "when": 1785377930000,
+      "tag": "0133_disappearing_messages",
+      "breakpoints": true
     }
   ]
 }
