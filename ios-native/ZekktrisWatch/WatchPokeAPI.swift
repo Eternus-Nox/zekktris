@@ -75,6 +75,12 @@ enum WatchPokeAPI {
     /// When `e2eeKey` is set the content is encrypted with the channel key
     /// FIRST — so an E2EE DM never receives plaintext. If encryption fails we
     /// abort (return false) rather than leak plaintext to the server.
+    ///
+    /// Always flagged `notARead`: every wrist send — the composer, Siri's
+    /// intent, the App Intent — is written without the conversation on screen
+    /// and the watch never acks, so the send must not start the countdown of a
+    /// disappearing message the user hasn't seen. Their next open on the phone
+    /// (or anywhere else) acks it.
     static func sendMessage(baseURL: String, token: String, channelId: String, content: String, e2ee: Bool, e2eeKey: Data?) async -> Bool {
         var payload = content
         if e2ee {
@@ -84,7 +90,7 @@ enum WatchPokeAPI {
             payload = enc
         }
         return await post(baseURL: baseURL, token: token, path: "/channels/\(channelId)/messages",
-                          body: ["content": payload])
+                          body: ["content": payload, "notARead": true])
     }
 
     /// Fetch the most recent messages in a DM so they can be READ on the wrist.

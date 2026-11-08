@@ -44,7 +44,9 @@ struct SendMessageAppIntent: AppIntent {
         // nil means the published entry predates the flag. Unknown is treated
         // as encrypted, never as plaintext.
         let isE2EE = dm.isE2EE ?? true
-        switch await QuickReply.deliver(channelId: dm.id, text: message, isE2EE: isE2EE) {
+        // Not a read: Siri or a Shortcuts automation sends without the
+        // conversation on screen (see QuickReply.deliver).
+        switch await QuickReply.deliver(channelId: dm.id, text: message, isE2EE: isE2EE, notARead: true) {
         case .sent:
             return .result(dialog: "Sent to \(recipient.name).")
         case .empty:

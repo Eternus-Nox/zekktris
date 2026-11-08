@@ -320,10 +320,17 @@ enum SiriSendAPI {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: [
+        let body: [String: Any] = [
             "content": wire,
             "nonce": UUID().uuidString,
-        ])
+            // Dictated to Siri (or CarPlay, which runs this same intent) with
+            // the conversation never on screen, so this send isn't a read: it
+            // must not start the countdown of a disappearing message the user
+            // hasn't seen. Unlike QuickReply.send, whose notification showed
+            // the message being answered.
+            "notARead": true,
+        ]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         guard let (_, response) = try? await URLSession.shared.data(for: req),
               let http = response as? HTTPURLResponse else {
             siriLog.error("send request never completed")

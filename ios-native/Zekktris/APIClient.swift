@@ -668,11 +668,15 @@ final class APIClient {
         return wrap.embed
     }
 
-    func sendMessage(channelId: String, content: String, nonce: String, replyToId: String? = nil, forwardFromMessageId: String? = nil, stickerId: String? = nil) async throws -> Message {
+    /// `notARead`: the conversation wasn't on screen when this was composed
+    /// (Siri, Shortcuts), so the server neither counts the send as reading it
+    /// nor starts a disappearing message's countdown.
+    func sendMessage(channelId: String, content: String, nonce: String, replyToId: String? = nil, forwardFromMessageId: String? = nil, stickerId: String? = nil, notARead: Bool = false) async throws -> Message {
         var body: [String: Any] = ["content": content, "nonce": nonce]
         if let rid = replyToId { body["replyToId"] = rid }
         if let fid = forwardFromMessageId { body["forwardFromMessageId"] = fid }
         if let sid = stickerId { body["stickerId"] = sid }
+        if notARead { body["notARead"] = true }
         let data = try JSONSerialization.data(withJSONObject: body)
         let wrap: MessageWrap = try await send("POST", "/channels/\(channelId)/messages", bodyData: data)
         return wrap.message

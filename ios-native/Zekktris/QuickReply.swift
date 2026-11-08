@@ -45,7 +45,12 @@ enum QuickReply {
     /// The send itself. Shared by the notification reply and by Siri, so both
     /// refuse a locked encrypted conversation the same way rather than each
     /// re-deriving that rule.
-    static func deliver(channelId: String, text: String, isE2EE: Bool) async -> Outcome {
+    ///
+    /// `notARead`: Siri / Shortcuts pass true — nothing of the conversation
+    /// was on screen, so the send must not start the countdown of a
+    /// disappearing message the user hasn't seen. The notification reply
+    /// leaves it false: the notification showed the message being answered.
+    static func deliver(channelId: String, text: String, isE2EE: Bool, notARead: Bool = false) async -> Outcome {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .empty }
 
@@ -76,7 +81,7 @@ enum QuickReply {
 
         do {
             _ = try await api.sendMessage(
-                channelId: channelId, content: wire, nonce: UUID().uuidString)
+                channelId: channelId, content: wire, nonce: UUID().uuidString, notARead: notARead)
             return .sent
         } catch {
             return .failed("Couldn't send your reply — tap to open Zekktris.")
