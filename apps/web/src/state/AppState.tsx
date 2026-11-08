@@ -423,6 +423,10 @@ type Action =
       up to `to`: the frontier moves to `to`. No-op unless `from` is still the
       frontier. */
   | { type: 'TAIL_ADVANCE'; channelId: string; from: string; to: string }
+  /** Catch-up rows fetched from a jump window's frontier. They can be OLDER
+      than a live row already appended above the gap, so they are inserted in
+      snowflake order (deduped; unsent rows stay last) instead of appended. */
+  | { type: 'MESSAGES_MERGE'; channelId: string; messages: Message[] }
   | {
       type: 'MESSAGES_PREPEND';
       channelId: string;
@@ -796,6 +800,25 @@ export function tailJoinedAt(
   if (page.length < limit) return anchor;
   const n = BigInt(anchor);
   return page.some((m) => /^\d+$/.test(m.id) && BigInt(m.id) <= n) ? anchor : null;
+}
+
+/**
+ * The cursor a reconcile of `channelId` should page `after`. Normally the
+ * newest held row; while the channel is tail-gapped and its frontier isn't
+ * that row (a live row landed above the gap, the frontier row was removed, or
+ * a resync moved the newest row on), the frontier — so the pages fill the gap
+ * and the mark clears once they reach the tail. The frontier is a plain
+ * cursor id: the server pages after a removed snowflake just the same.
+ */
+export function reconcileCursor(
+  state: Pick<State, 'tailGapped' | 'tailFrontier'>,
+  channelId: string,
+  newest: string,
+): { after: string; fromFrontier: boolean } {
+  const frontier = state.tailGapped.has(channelId) ? state.tailFrontier[channelId] : undefined;
+  return frontier && frontier !== newest
+    ? { after: frontier, fromFrontier: true }
+    : { after: newest, fromFrontier: false };
 }
 
 function applyReactionDelta(
@@ -1247,6 +1270,27 @@ function reducer(state: State, action: Action): State {
       if (state.tailFrontier[action.channelId] !== action.from) return state;
       if (!/^\d+$/.test(action.to) || BigInt(action.to) <= BigInt(action.from)) return state;
       return { ...state, tailFrontier: { ...state.tailFrontier, [action.channelId]: action.to } };
+    }
+    case 'MESSAGES_MERGE': {
+      // Record the page's deadlines and skip rows already past theirs, as
+      // MESSAGE_APPEND does; then insert what isn't held by snowflake order.
+      const ingest = ingestExpiry(state, action.messages);
+      const base = ingest.state;
+      const existing = base.messagesByChannel[action.channelId] ?? [];
+      const have = new Set(existing.map((m) => m.id));
+      const fresh = ingest.kept.filter((m) => /^\d+$/.test(m.id) && !have.has(m.id));
+      if (fresh.length === 0) return base;
+      // oldestFirst is stable and keeps non-snowflake (unsent) rows last.
+      const sorted = oldestFirst([...existing, ...fresh]);
+      const capped = sorted.length > MESSAGES_CAP ? sorted.slice(sorted.length - MESSAGES_CAP) : sorted;
+      const newestFresh = newestConfirmedId(fresh)!;
+      const next: State = {
+        ...base,
+        messagesByChannel: { ...base.messagesByChannel, [action.channelId]: capped },
+        dmChannels: bumpDmRecency(base.dmChannels, action.channelId, newestFresh),
+        channelsByGuild: bumpGuildRecency(base.channelsByGuild, action.channelId, newestFresh),
+      };
+      return upsertUsersFromMessages(next, fresh);
     }
     case 'MESSAGES_PREPEND': {
       // Disappearing messages: record the page's deadlines, skip expired rows.
@@ -2811,11 +2855,27 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       // Newest message with a real (server snowflake) id, by value — skip
       // optimistic `local-` placeholders, which the server cursor wouldn't
       // understand.
-      const after = newestConfirmedId(existing);
-      if (!after) {
+      const newest = newestConfirmedId(existing);
+      if (!newest) {
         await loadMessages(channelId);
         return;
       }
+      // A tail-gapped chat whose frontier isn't the newest row pages from the
+      // frontier: that fills the gap below a live row and lets the mark clear.
+      const cursor = reconcileCursor(stateRef.current, channelId, newest);
+      if (cursor.fromFrontier) {
+        const fr = await rest.listMessages(channelId, { after: cursor.after, limit: 50 });
+        dispatch({ type: 'MESSAGES_MERGE', channelId, messages: fr.messages });
+        const reached = tailJoinedAt(cursor.after, fr.messages, 50);
+        if (reached) {
+          dispatch({ type: 'TAIL_REACHED', channelId, throughId: reached });
+        } else {
+          const to = newestConfirmedId(fr.messages);
+          if (to) dispatch({ type: 'TAIL_ADVANCE', channelId, from: cursor.after, to });
+        }
+        return;
+      }
+      const after = newest;
       const r = await rest.listMessages(channelId, {
         after,
         limit: 50,

@@ -7,6 +7,7 @@ import {
   isChannelUnread,
   oldestFirst,
   tailJoinedAt,
+  reconcileCursor,
 } from '../src/state/AppState';
 import { newestConfirmedId, planReadAck } from '../src/lib/readAck';
 import { showsUnstartedTimer } from '../src/lib/disappearing';
@@ -629,6 +630,63 @@ describe('AppState — disappearing messages', () => {
       // Unmarked channels ignore both.
       const s2 = run(initialAppState, { type: 'MESSAGES_SET', channelId: 'c', messages: [msg('1', 'c')] });
       expect(run(s2, { type: 'TAIL_ADVANCE', channelId: 'c', from: '1', to: '2' })).toBe(s2);
+    });
+
+    it('a jump window that reaches the tail clears through its frontier even after a live row landed', () => {
+      // A Mentions jump loads 451–500, which already is the tail; 501 lands
+      // live before the first poll.
+      const s0 = run(
+        initialAppState,
+        { type: 'DMS_SET', channels: [dm('g', '500')] },
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('451', 'g'), msg('500', 'g')], preserveNewerSurvivors: false },
+        { type: 'MESSAGE_APPEND', channelId: 'g', message: msg('501', 'g', { authorId: '2' }) },
+      );
+      // The poll pages from the frontier, not after 501.
+      expect(reconcileCursor(s0, 'g', '501')).toEqual({ after: '500', fromFrontier: true });
+      // Its page is [501] (held): merged without a duplicate, and short.
+      const page = [msg('501', 'g', { authorId: '2' })];
+      const s1 = run(
+        s0,
+        { type: 'MESSAGES_MERGE', channelId: 'g', messages: page },
+        { type: 'TAIL_REACHED', channelId: 'g', throughId: tailJoinedAt('500', page, 50)! },
+      );
+      expect(s1.messagesByChannel.g!.map((m) => m.id)).toEqual(['451', '500', '501']);
+      expect(s1.tailGapped.has('g')).toBe(false);
+      // Unmarked, the cursor is the newest row again.
+      expect(reconcileCursor(s1, 'g', '501')).toEqual({ after: '501', fromFrontier: false });
+    });
+
+    it('MESSAGES_MERGE fills a gap below a live row in order, dedupes, keeps unsent rows last, skips expired', () => {
+      const s0 = run(
+        initialAppState,
+        { type: 'DMS_SET', channels: [dm('g', '1000')] },
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('100', 'g'), msg('150', 'g')], preserveNewerSurvivors: false },
+        { type: 'MESSAGE_APPEND', channelId: 'g', message: msg('1000', 'g', { authorId: '2' }) },
+        { type: 'MESSAGE_APPEND', channelId: 'g', message: msg('local-x', 'g', { failed: true }) },
+      );
+      const gone = msg('300', 'g', { authorId: '2', expireAfterSeconds: 30, expiresAt: iso(Date.now() - 60_000) });
+      const s1 = run(s0, {
+        type: 'MESSAGES_MERGE',
+        channelId: 'g',
+        messages: [msg('200', 'g', { authorId: '2' }), gone, msg('150', 'g'), msg('400', 'g', { authorId: '2' })],
+      });
+      expect(s1.messagesByChannel.g!.map((m) => m.id)).toEqual(['100', '150', '200', '400', '1000', 'local-x']);
+      // Nothing new: the same list.
+      const s2 = run(s1, { type: 'MESSAGES_MERGE', channelId: 'g', messages: [msg('200', 'g')] });
+      expect(s2.messagesByChannel.g).toBe(s1.messagesByChannel.g);
+    });
+
+    it('the frontier is a cursor: removing its row keeps it, and paging from it still clears the mark', () => {
+      const s0 = run(
+        initialAppState,
+        { type: 'DMS_SET', channels: [dm('g', '150')] },
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('95', 'g'), msg('150', 'g')], preserveNewerSurvivors: false },
+        { type: 'MESSAGE_REMOVE', channelId: 'g', messageId: '150' },
+      );
+      expect(s0.tailFrontier.g).toBe('150');
+      expect(reconcileCursor(s0, 'g', '95')).toEqual({ after: '150', fromFrontier: true });
+      const s1 = run(s0, { type: 'TAIL_REACHED', channelId: 'g', throughId: tailJoinedAt('150', [], 50)! });
+      expect(s1.tailGapped.has('g')).toBe(false);
     });
 
     it('tailJoinedAt: a short page, or a latest page reaching back to the newest held row', () => {
