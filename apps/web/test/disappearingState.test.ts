@@ -6,6 +6,7 @@ import {
   initialAppState,
   isChannelUnread,
   oldestFirst,
+  tailJoinedAt,
 } from '../src/state/AppState';
 import { newestConfirmedId, planReadAck } from '../src/lib/readAck';
 import { showsUnstartedTimer } from '../src/lib/disappearing';
@@ -430,17 +431,74 @@ describe('AppState — disappearing messages', () => {
       expect(run(initialAppState, { type: 'CLOSED_CACHES_DROP', keep: null })).toBe(initialAppState);
     });
 
-    it('CLOSED_CACHES_DROP keeps a closed chat holding an unsent row, so its failed bubble survives', () => {
+    it('CLOSED_CACHES_DROP keeps only a closed chat’s unsent rows; its next full load carries them on', () => {
+      // C's send in 'd' failed during the outage and she moved to 'open'. A's
+      // 300 and 400 landed in the gap; the READY's DM refetch says 400.
       const s0 = run(
         initialAppState,
-        { type: 'MESSAGES_SET', channelId: 'a', messages: [msg('1', 'a')] },
-        { type: 'MESSAGE_APPEND', channelId: 'a', message: msg('local-x', 'a', { failed: true }) },
-        { type: 'MESSAGES_SET', channelId: 'b', messages: [msg('2', 'b')] },
+        { type: 'DMS_SET', channels: [dm('d', '200', 'dm'), dm('open', '7')] },
+        { type: 'MESSAGES_SET', channelId: 'd', messages: [msg('100', 'd'), msg('200', 'd')], reachesTail: true },
+        { type: 'MESSAGE_APPEND', channelId: 'd', message: msg('local-x', 'd', { failed: true }) },
+        { type: 'MESSAGES_PREPEND', channelId: 'd', messages: [], reachedHead: true },
+        { type: 'LOADING_OLDER_BEGIN', channelId: 'd' },
+        { type: 'MESSAGES_SET', channelId: 'open', messages: [msg('7', 'open')] },
+        { type: 'READ_STATES_SET', readStates: [{ channelId: 'd', lastMessageId: '200', mentionCount: 0 }] },
+        { type: 'CLOSED_CACHES_DROP', keep: 'open' },
+        { type: 'DMS_SET', channels: [dm('d', '400', 'dm'), dm('open', '7')] },
       );
-      const s1 = run(s0, { type: 'CLOSED_CACHES_DROP', keep: null });
-      expect(Object.keys(s1.messagesByChannel)).toEqual(['a']);
-      expect(s1.messagesByChannel.a).toBe(s0.messagesByChannel.a);
-      expect([...s1.loadedChannels]).toEqual(['a']);
+      expect(ids(s0, 'd')).toEqual(['local-x']);
+      expect(s0.loadedChannels.has('d') || s0.olderExhausted.has('d') || s0.loadingOlder.has('d')).toBe(false);
+      // Opening 'd' runs a full load: no server row is left to reconcile after
+      // (the stale 200 would ack 500 over the unseen 300 and 400).
+      expect(newestConfirmedId(s0.messagesByChannel.d!)).toBeNull();
+      // A's 500 arrives live and is unsent: nothing older to roll back to.
+      const s1 = run(
+        s0,
+        { type: 'MESSAGE_APPEND', channelId: 'd', message: msg('500', 'd', { authorId: '2' }) },
+        { type: 'MESSAGE_REMOVE', channelId: 'd', messageId: '500' },
+      );
+      expect(lastOf(s1, 'd')).toBe('500');
+      expect(unread(s1, 'd')).toBe(true);
+      // The full load keeps the failed bubble (and its Retry), after the page.
+      const s2 = run(s0, {
+        type: 'MESSAGES_SET',
+        channelId: 'd',
+        messages: [msg('200', 'd'), msg('300', 'd'), msg('400', 'd')],
+        reachesTail: true,
+      });
+      expect(ids(s2, 'd')).toEqual(['200', '300', '400', 'local-x']);
+      expect(s2.messagesByChannel.d![3]!.failed).toBe(true);
+      // A closed chat holding nothing but unsent rows is left as it is.
+      const s3 = run(s0, { type: 'CLOSED_CACHES_DROP', keep: null });
+      expect(s3.messagesByChannel.d).toBe(s0.messagesByChannel.d);
+      expect(Object.keys(s3.messagesByChannel)).toEqual(['d']);
+    });
+
+    it('MESSAGES_SET carries unsent rows the page doesn’t echo after it, but not onto a jump window', () => {
+      const s0 = run(
+        initialAppState,
+        { type: 'MESSAGES_SET', channelId: 'c', messages: [msg('1', 'c')] },
+        { type: 'MESSAGE_APPEND', channelId: 'c', message: msg('local-a', 'c', { failed: true }) },
+        { type: 'MESSAGE_APPEND', channelId: 'c', message: msg('local-b', 'c', { pending: true }) },
+        { type: 'MESSAGE_APPEND', channelId: 'c', message: msg('5', 'c') },
+      );
+      // The newest window: live survivors, then unsent rows; one the page
+      // echoes (by id or nonce) isn't doubled.
+      const s1 = run(s0, {
+        type: 'MESSAGES_SET',
+        channelId: 'c',
+        messages: [msg('1', 'c'), msg('3', 'c'), msg('4', 'c', { nonce: 'local-b' })],
+        reachesTail: true,
+      });
+      expect(ids(s1, 'c')).toEqual(['1', '3', '4', '5', 'local-a']);
+      // A jump to an older window takes neither.
+      const s2 = run(s0, {
+        type: 'MESSAGES_SET',
+        channelId: 'c',
+        messages: [msg('1', 'c')],
+        preserveNewerSurvivors: false,
+      });
+      expect(ids(s2, 'c')).toEqual(['1']);
     });
 
     it('a jump window may stop short of the tail: removing its newest row keeps the dot until a latest load', () => {
@@ -475,6 +533,72 @@ describe('AppState — disappearing messages', () => {
       expect(s4.tailGapped.has('g')).toBe(true);
       // Dropping the closed cache drops its mark with it.
       expect(run(s0, { type: 'CLOSED_CACHES_DROP', keep: null }).tailGapped.size).toBe(0);
+    });
+
+    it('a jump window paged up to the tail loses its mark, so a removed newest row rolls back again', () => {
+      // A mention jump into group DM 'g' (read up to 150) loads a window that
+      // ends at 200; the server's tail is 400.
+      const s0 = run(
+        initialAppState,
+        { type: 'READ_STATES_SET', readStates: [{ channelId: 'g', lastMessageId: '150', mentionCount: 0 }] },
+        { type: 'DMS_SET', channels: [dm('g', '400')] },
+        {
+          type: 'MESSAGES_SET',
+          channelId: 'g',
+          messages: [msg('100', 'g'), msg('150', 'g'), msg('200', 'g')],
+          preserveNewerSurvivors: false,
+        },
+      );
+      expect(s0.tailGapped.has('g')).toBe(true);
+      // The open view's poll pages on from 200; the page comes back short.
+      const page = [msg('300', 'g', { authorId: '2' }), msg('400', 'g', { authorId: '2' })];
+      const through = tailJoinedAt('200', page, 50);
+      expect(through).toBe('200');
+      const s1 = run(
+        s0,
+        ...page.map((message): Action => ({ type: 'MESSAGE_APPEND', channelId: 'g', message })),
+        { type: 'TAIL_REACHED', channelId: 'g', throughId: through! },
+        { type: 'READ_STATE_UPSERT', readState: { channelId: 'g', lastMessageId: '400', mentionCount: 0 } },
+      );
+      expect(s1.tailGapped.has('g')).toBe(false);
+      // C moves on. A's timed 500 lands, B reads it first, the sweep deletes it.
+      const s2 = run(
+        s1,
+        { type: 'MESSAGE_APPEND', channelId: 'g', message: msg('500', 'g', { authorId: '2', expireAfterSeconds: 300 }) },
+        { type: 'MESSAGE_REMOVE', channelId: 'g', messageId: '500' },
+      );
+      expect(lastOf(s2, 'g')).toBe('400');
+      expect(unread(s2, 'g')).toBe(false);
+    });
+
+    it('TAIL_REACHED keeps the mark of a jump that replaced the window during the fetch', () => {
+      const s0 = run(
+        initialAppState,
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('100', 'g'), msg('200', 'g')], preserveNewerSurvivors: false },
+        // A poll from 200 is in flight when another jump lands on 10–20.
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('10', 'g'), msg('20', 'g')], preserveNewerSurvivors: false },
+      );
+      const s1 = run(s0, { type: 'TAIL_REACHED', channelId: 'g', throughId: '200' });
+      expect(s1).toBe(s0);
+      expect(s1.tailGapped.has('g')).toBe(true);
+      // Nothing marked: nothing to do.
+      const s2 = run(initialAppState, { type: 'MESSAGES_SET', channelId: 'c', messages: [msg('1', 'c')] });
+      expect(run(s2, { type: 'TAIL_REACHED', channelId: 'c', throughId: '1' })).toBe(s2);
+    });
+
+    it('tailJoinedAt: a short page, or a latest page reaching back to the newest held row', () => {
+      const page = (ns: number[]) => ns.map((n) => ({ id: String(n) }));
+      const run50 = (from: number) => Array.from({ length: 50 }, (_, i) => from + i);
+      // An after-cursor page from 200 (oldest first).
+      expect(tailJoinedAt('200', page([300, 400]), 50)).toBe('200');
+      expect(tailJoinedAt('200', [], 50)).toBe('200');
+      expect(tailJoinedAt('200', page(run50(201)), 50)).toBeNull();
+      // A full latest page (newest first): reaching back to 200, or not.
+      expect(tailJoinedAt('200', page(run50(180).reverse()), 50)).toBe('200');
+      expect(tailJoinedAt('200', page(run50(200).reverse()), 50)).toBe('200');
+      expect(tailJoinedAt('200', page(run50(201).reverse()), 50)).toBeNull();
+      // No server row held.
+      expect(tailJoinedAt(null, page([1]), 50)).toBeNull();
     });
 
     it('never touches guild channels’ lists', () => {

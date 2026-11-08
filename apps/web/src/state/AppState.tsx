@@ -115,7 +115,8 @@ interface State {
    * a jump to an older window (loadMessagesAround). Removing the newest loaded
    * row there must not roll the DM's lastMessageId back to it — unread
    * messages may lie between the window and the real tail. A latest-window
-   * load (loadMessages) clears the mark. Mirrors the native apps' tailGapped.
+   * load (loadMessages), or a fetch that joins the loaded rows to the tail
+   * (TAIL_REACHED), clears the mark. Mirrors the native apps' tailGapped.
    */
   tailGapped: Set<string>;
   /**
@@ -402,6 +403,12 @@ type Action =
        *  rows reach the server's tail: clears the channel's tailGapped mark. */
       reachesTail?: boolean;
     }
+  /** A fetch showed the loaded rows reach the server's newest message: an
+      after-cursor page from `throughId` came back short (reconcileChannel),
+      or a latest page reached back to `throughId` (refreshChannelLatest).
+      Clears the channel's tailGapped mark, unless the list no longer holds
+      `throughId` (a jump replaced the window during the fetch). */
+  | { type: 'TAIL_REACHED'; channelId: string; throughId: string }
   | {
       type: 'MESSAGES_PREPEND';
       channelId: string;
@@ -507,9 +514,10 @@ type Action =
   | { type: 'MESSAGES_EXPIRE' }
   /** Reconnect READY (a fresh IDENTIFY replays nothing): forget every
       channel's loaded messages except `keep` (the open one, which the
-      reconnect resyncs) and any holding an unsent row, so a closed chat's
-      next open is a full latest-window load and its stale tail can't feed
-      rollbackDmRecency. */
+      reconnect resyncs), so a closed chat's next open is a full
+      latest-window load and its stale tail can't feed rollbackDmRecency.
+      A closed chat keeps only its unsent (`local-`) rows, which that load
+      carries forward. */
   | { type: 'CLOSED_CACHES_DROP'; keep: string | null }
   | { type: 'VOICE_STATES_MERGE_GUILD'; guildId: string; voiceStates: VoiceState[] }
   | { type: 'POKE_PILL_SET'; channelId: string; emoji: string }
@@ -668,8 +676,8 @@ function bumpDmRecency(
  * one can load, and opening it acks nothing (the newest row is already
  * read). In a group DM with a timer that's every member who wasn't the
  * first reader. Only when that row WAS loaded: then the list holds the tail
- * (a reconnect READY drops closed chats' lists, CLOSED_CACHES_DROP, so none
- * that missed the gap is left), so its newest remaining row is the new one;
+ * (a reconnect READY drops closed chats' server rows, CLOSED_CACHES_DROP, so
+ * none that missed the gap is left), so its newest remaining row is the new one;
  * otherwise (or with no server row left) the id stays, and MessageView's
  * stale-tail ack clears it on open (lib/readAck). Same array reference when
  * nothing changes.
@@ -755,6 +763,25 @@ export function oldestFirst<T extends { id: string }>(messages: readonly T[]): T
       return a.k < b.k ? -1 : a.k > b.k ? 1 : 0;
     })
     .map((x) => x.m);
+}
+
+/**
+ * Where a fetched page of `limit` joins the loaded rows to the server's tail
+ * (TAIL_REACHED's `throughId`), or null when it doesn't. `anchor` is the
+ * newest row held before the fetch. An `after: anchor` page that comes back
+ * short leaves nothing newer; the latest page is the tail, and joins the held
+ * rows when it is the whole channel (short) or reaches back to the anchor. A
+ * full page that doesn't leaves a gap.
+ */
+export function tailJoinedAt(
+  anchor: string | null,
+  page: ReadonlyArray<{ id: string }>,
+  limit: number,
+): string | null {
+  if (!anchor) return null;
+  if (page.length < limit) return anchor;
+  const n = BigInt(anchor);
+  return page.some((m) => /^\d+$/.test(m.id) && BigInt(m.id) <= n) ? anchor : null;
 }
 
 function applyReactionDelta(
@@ -1127,8 +1154,8 @@ function reducer(state: State, action: Action): State {
       // BEFORE its response lands isn't in `action.messages`, and a blind
       // replace would drop it (invisible until the next reconcile poll). Union
       // any existing row STRICTLY NEWER than the newest fetched row (by numeric
-      // snowflake, deduped) back onto the tail. Optimistic `local-` ids are
-      // ignored — they reconcile via their own nonce path.
+      // snowflake, deduped) back onto the tail. Optimistic `local-` rows are
+      // carried separately below.
       const fetched = action.messages;
       let maxFetched = 0n;
       for (const m of fetched) {
@@ -1145,8 +1172,18 @@ function reducer(state: State, action: Action): State {
             (m) => /^\d+$/.test(m.id) && !fetchedIds.has(m.id) && BigInt(m.id) > maxFetched,
           )
         : [];
+      // Unsent rows (`local-`) the page doesn't echo ride along after it too,
+      // so a mid-flight send or a failed bubble and its Retry survive a full
+      // load. Not onto a jump window, for the same reason as above.
+      const unsent = keepSurvivors
+        ? prior.filter(
+            (m) =>
+              m.id.startsWith('local-') && !fetched.some((f) => f.id === m.id || f.nonce === m.id),
+          )
+        : [];
+      const tail = unsent.length > 0 ? [...survivors, ...unsent] : survivors;
       const merged = dropExpired(
-        survivors.length > 0 ? [...fetched, ...survivors] : fetched,
+        tail.length > 0 ? [...fetched, ...tail] : fetched,
         deadlines,
         serverNow(clockOffsetOf(state)),
       );
@@ -1168,6 +1205,17 @@ function reducer(state: State, action: Action): State {
         expiryDeadlines: deadlines,
       };
       return upsertUsersFromMessages(next, merged);
+    }
+    case 'TAIL_REACHED': {
+      if (!state.tailGapped.has(action.channelId)) return state;
+      // The fetch joined the rows from `throughId` on; a jump that replaced
+      // the window meanwhile may not hold it, and keeps its mark.
+      if (!state.messagesByChannel[action.channelId]?.some((m) => m.id === action.throughId)) {
+        return state;
+      }
+      const tailGapped = new Set(state.tailGapped);
+      tailGapped.delete(action.channelId);
+      return { ...state, tailGapped };
     }
     case 'MESSAGES_PREPEND': {
       // Disappearing messages: record the page's deadlines, skip expired rows.
@@ -1861,21 +1909,24 @@ function reducer(state: State, action: Action): State {
     case 'CLOSED_CACHES_DROP': {
       // A closed chat's list can stop short of the server's tail after the
       // gap; a live row appended to it and then removed would roll the DM's
-      // lastMessageId back past unread messages. With no cache, a live row
-      // builds a list of its own and the rollback has nothing older to fall
-      // back to. A chat holding an unsent (`local-`) row is kept too: a
-      // latest-window load would lose the failed bubble and its retry. Only
+      // lastMessageId back past unread messages. With no server rows cached,
+      // a live row builds a list of its own and the rollback has nothing
+      // older to fall back to. A closed chat keeps only its unsent (`local-`)
+      // rows, so the failed bubble and its retry survive; the next open's
+      // latest-window load carries them forward (MESSAGES_SET). Only
       // allocate new refs when something is dropped.
-      const drop = (cid: string) =>
-        cid !== action.keep && !state.messagesByChannel[cid]?.some((m) => m.id.startsWith('local-'));
+      const drop = (cid: string) => cid !== action.keep;
       const without = (set: Set<string>) =>
         [...set].some(drop) ? new Set([...set].filter((cid) => !drop(cid))) : set;
       let messagesByChannel = state.messagesByChannel;
-      if (Object.keys(messagesByChannel).some(drop)) {
-        messagesByChannel = {};
-        for (const cid in state.messagesByChannel) {
-          if (!drop(cid)) messagesByChannel[cid] = state.messagesByChannel[cid]!;
-        }
+      for (const cid in state.messagesByChannel) {
+        if (!drop(cid)) continue;
+        const list = state.messagesByChannel[cid]!;
+        const unsent = list.filter((m) => m.id.startsWith('local-'));
+        if (unsent.length > 0 && unsent.length === list.length) continue;
+        if (messagesByChannel === state.messagesByChannel) messagesByChannel = { ...messagesByChannel };
+        if (unsent.length > 0) messagesByChannel[cid] = unsent;
+        else delete messagesByChannel[cid];
       }
       const loadedChannels = without(state.loadedChannels);
       const olderExhausted = without(state.olderExhausted);
@@ -2746,6 +2797,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       for (const m of oldestFirst(r.messages)) {
         dispatch({ type: 'MESSAGE_APPEND', channelId, message: m });
       }
+      // A short page leaves nothing newer: the rows from `after` on now reach
+      // the tail, so a jump window paged up to it is no longer short of it.
+      const through = tailJoinedAt(after, r.messages, 50);
+      if (through) dispatch({ type: 'TAIL_REACHED', channelId, throughId: through });
     },
     [loadMessages, rest],
   );
@@ -2768,10 +2823,16 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         await loadMessages(channelId);
         return;
       }
+      const newest = newestConfirmedId(existing);
       const r = await rest.listMessages(channelId, { limit: 50 });
       for (const m of [...r.messages].reverse()) {
         dispatch({ type: 'MESSAGE_APPEND', channelId, message: m });
       }
+      // The latest page is the tail. It joins the loaded rows when it is the
+      // whole channel (short) or reaches back to the newest row we held; a
+      // full page that doesn't leaves a gap, so the mark stays.
+      const through = tailJoinedAt(newest, r.messages, 50);
+      if (through) dispatch({ type: 'TAIL_REACHED', channelId, throughId: through });
     },
     [loadMessages, rest],
   );
@@ -2800,13 +2861,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
    * want here (unlike loadMessagesAround's jump to an older window, which
    * opts out): any REAL row newer than the fetched tail that landed during the
    * round trip is unioned back by the reducer, so we don't re-implement that.
-   * What the reducer deliberately does NOT keep is optimistic `local-`
-   * placeholders, so we carry those forward explicitly: a send whose REST 201
-   * hasn't landed would otherwise vanish from the list mid-flight (and lose the
-   * nonce row its echo reconciles against). Re-reads the live list after the
-   * await so a placeholder created during the round trip is included. No-op
-   * when nothing is loaded (a normal first open handles that) or only
-   * optimistic rows exist.
+   * Optimistic `local-` placeholders are carried forward explicitly, right
+   * after the page (MESSAGES_SET would keep them too, after the survivors): a
+   * send whose REST 201 hasn't landed would otherwise vanish from the list
+   * mid-flight (and lose the nonce row its echo reconciles against). Re-reads
+   * the live list after the await so a placeholder created during the round
+   * trip is included. No-op when nothing is loaded (a normal first open
+   * handles that) or only optimistic rows exist.
    */
   const resyncChannelWindow = useCallback(
     async (channelId: string) => {
