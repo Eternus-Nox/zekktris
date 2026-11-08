@@ -2894,6 +2894,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         // frontier, so no TAIL_* here.
       }
       const after = newest;
+      // A tail-gapped chat whose frontier IS the newest row pages from the
+      // frontier here too, so its page takes the same guarded merge: dropped
+      // if a resync, jump or full load moved the frontier while it was in
+      // flight, and sorted below a live row that landed meanwhile.
+      const atFrontier =
+        !cursor.fromFrontier &&
+        stateRef.current.tailGapped.has(channelId) &&
+        stateRef.current.tailFrontier[channelId] === after;
       const r = await rest.listMessages(channelId, {
         after,
         limit: 50,
@@ -2909,8 +2917,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       // burst would land newest-before-older and the open DM would ack only
       // the oldest of it — the newer rows on screen would never start their
       // countdown.
-      for (const m of oldestFirst(r.messages)) {
-        dispatch({ type: 'MESSAGE_APPEND', channelId, message: m });
+      if (atFrontier) {
+        dispatch({ type: 'MESSAGES_MERGE', channelId, messages: r.messages, from: after });
+      } else {
+        for (const m of oldestFirst(r.messages)) {
+          dispatch({ type: 'MESSAGE_APPEND', channelId, message: m });
+        }
       }
       // A short page leaves nothing newer: the rows from `after` on now reach
       // the tail, so a jump window paged up to it is no longer short of it. A

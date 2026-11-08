@@ -726,6 +726,30 @@ describe('AppState — disappearing messages', () => {
       expect(run(s2, { type: 'MESSAGES_MERGE', channelId: 'c', messages: [msg('2', 'c')], from: '1' })).toBe(s2);
     });
 
+    it('a page fetched from the frontier as the newest row is dropped after a resync moved the frontier', () => {
+      // Jump to 1000–1049 (no newer row held): the poll pages after 1049,
+      // which is both the newest row and the frontier.
+      const s0 = run(
+        initialAppState,
+        { type: 'DMS_SET', channels: [dm('g', '5000')] },
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('1000', 'g'), msg('1049', 'g')], preserveNewerSurvivors: false },
+      );
+      expect(reconcileCursor(s0, 'g', '1049')).toEqual({ after: '1049', fromFrontier: false });
+      // While that request is in flight, 5000 becomes held and a reconnect
+      // resync anchored on it lands, moving the frontier to 5000.
+      const s1 = run(
+        s0,
+        { type: 'MESSAGE_APPEND', channelId: 'g', message: msg('5000', 'g', { authorId: '2' }) },
+        { type: 'MESSAGES_SET', channelId: 'g', messages: [msg('2976', 'g'), msg('3000', 'g'), msg('5000', 'g')] },
+      );
+      // The stale page merges nothing (no 50 old rows below the newest).
+      const s2 = run(s1, { type: 'MESSAGES_MERGE', channelId: 'g', messages: [msg('1050', 'g'), msg('1099', 'g')], from: '1049' });
+      expect(s2.messagesByChannel.g!.map((m) => m.id)).toEqual(['2976', '3000', '5000']);
+      // The next poll is from 5000 (frontier and newest); a short page clears the mark.
+      const s3 = run(s2, { type: 'TAIL_REACHED', channelId: 'g', throughId: tailJoinedAt('5000', [], 50)! });
+      expect(s3.tailGapped.has('g')).toBe(false);
+    });
+
     it('tailJoinedAt: a short page, or a latest page reaching back to the newest held row', () => {
       const page = (ns: number[]) => ns.map((n) => ({ id: String(n) }));
       const run50 = (from: number) => Array.from({ length: 50 }, (_, i) => from + i);
