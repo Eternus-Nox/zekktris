@@ -2276,7 +2276,9 @@ class AppStore(
 
     /** Prepend the next older page (before the oldest confirmed id). Re-entrant
      *  calls and exhausted channels are no-ops; dedup by id so an overlap can't
-     *  double-insert. LazyColumn keyed items keep the scroll anchored. */
+     *  double-insert. A page that lands after the list was replaced is dropped
+     *  and paging restarts from the new list. LazyColumn keyed items keep the
+     *  scroll anchored. */
     fun loadOlderMessages(channelId: String) {
         val st = _state.value
         if (st.loadingOlderChannelIds.contains(channelId)) return
@@ -2286,19 +2288,29 @@ class AppStore(
         scope.launch {
             val older = runCatching { api.listMessages(channelId, limit = 50, before = oldest) }.getOrNull()
             val ascending = older?.let { dropExpired(it.reversed()) } // API is newest-first
+            var stale = false
             _state.update { s ->
                 var next = s.copy(loadingOlderChannelIds = s.loadingOlderChannelIds - channelId)
+                stale = false
                 if (older != null && ascending != null) {
                     val cur = next.messagesByChannel[channelId] ?: emptyList()
-                    val have = cur.mapTo(HashSet()) { it.id }
-                    val merged = ascending.filter { it.id !in have } + cur
-                    next = next.copy(
-                        messagesByChannel = next.messagesByChannel + (channelId to merged),
-                        hasMoreOlderByChannel = next.hasMoreOlderByChannel + (channelId to (older.size >= 50)),
-                    )
+                    // Null when the list was replaced meanwhile: the page is
+                    // dropped, and hasMore stays as the replace set it.
+                    val merged = Disappearing.prependOlderPage(cur, oldest, ascending)
+                    if (merged == null) {
+                        stale = true
+                    } else {
+                        next = next.copy(
+                            messagesByChannel = next.messagesByChannel + (channelId to merged),
+                            hasMoreOlderByChannel = next.hasMoreOlderByChannel + (channelId to (older.size >= 50)),
+                        )
+                    }
                 }
                 next
             }
+            // Page again from the new list's oldest row: dropping the page
+            // changed nothing the paging effect watches, so it won't.
+            if (stale) loadOlderMessages(channelId)
         }
     }
 
@@ -2438,7 +2450,7 @@ class AppStore(
             // this started the hidden rows' countdowns. REPLACE instead, as
             // loadAround does (sends in flight stay), so older paging walks
             // back from the window into what was missed.
-            if (Disappearing.latestLeavesGap(cur, latest, 50)) {
+            if (Disappearing.latestLeavesGap(cur, latest, 50, kept = fetched)) {
                 return@update st.copy(
                     messagesByChannel = st.messagesByChannel +
                         (channelId to (fetched + cur.filter { it.id.startsWith("pending-") })),

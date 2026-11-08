@@ -483,16 +483,62 @@ class DisappearingTest {
         assertTrue(Disappearing.latestLeavesGap(cached, page("40", "30"), pageSize = 2))
         // It reaches the cache: no gap.
         assertFalse(Disappearing.latestLeavesGap(cached, page("30", "20"), pageSize = 2))
-        assertFalse(Disappearing.latestLeavesGap(page("10", "35"), page("40", "30"), pageSize = 2))
+        // A cached row inside it (one that arrived live after a reconnect)
+        // sits above the hole and doesn't close it.
+        assertTrue(Disappearing.latestLeavesGap(page("10", "35"), page("40", "30"), pageSize = 2))
+        // Nothing confirmed below it: no hole to leave.
+        assertFalse(Disappearing.latestLeavesGap(page("35"), page("40", "30"), pageSize = 2))
         // A short window reaches back to the start.
         assertFalse(Disappearing.latestLeavesGap(cached, page("40"), pageSize = 2))
         // A send in flight is not a cached row of the window's.
         val sending = Message(id = "pending-a", channelId = "c1", createdAt = "", nonce = "a")
         assertTrue(Disappearing.latestLeavesGap(cached + sending, page("40", "30"), pageSize = 2))
-        assertTrue(Disappearing.latestLeavesGap(listOf(sending), page("40", "30"), pageSize = 2))
+        assertFalse(Disappearing.latestLeavesGap(listOf(sending), page("40", "30"), pageSize = 2))
         // Snowflake order across the digit rollover.
         assertFalse(Disappearing.latestLeavesGap(page("1000"), page("1001", "999"), pageSize = 2))
         assertTrue(Disappearing.latestLeavesGap(page("999"), page("1001", "1000"), pageSize = 2))
+    }
+
+    @Test fun aRowThatArrivedLiveDoesNotHideTheGapBelowIt() {
+        fun page(vararg ids: String) = ids.map { msg(it) }
+        fun range(from: Int, to: Int) = (from..to).map { msg(it.toString()) }
+        // Missed 1001..1070 offline, then 1071 arrived live: the newest 50
+        // (1022..1071, API order) reach 1071 but not 1000.
+        val latest = range(1022, 1071).reversed()
+        assertTrue(Disappearing.latestLeavesGap(range(951, 1000) + msg("1071"), latest, pageSize = 50))
+        assertTrue(Disappearing.latestLeavesGap(range(951, 1000), latest, pageSize = 50))
+        // The cache holds the window's oldest: it reaches the window, with or
+        // without a live row above.
+        val reaching = range(1030, 1079).reversed()
+        assertFalse(Disappearing.latestLeavesGap(range(981, 1030), reaching, pageSize = 50))
+        assertFalse(Disappearing.latestLeavesGap(range(981, 1030) + msg("1079"), reaching, pageSize = 50))
+        // The window still counts as full, and its oldest kept row decides.
+        // Expired here, 20 is gone from the cache: 30 reaches it.
+        assertFalse(Disappearing.latestLeavesGap(
+            page("10", "30"), page("40", "30", "20"), pageSize = 3, kept = page("30", "40")))
+        assertTrue(Disappearing.latestLeavesGap(
+            page("10", "25"), page("40", "30", "20"), pageSize = 3, kept = page("30", "40")))
+    }
+
+    @Test fun anOlderPageLandsOnlyBelowTheRowItPagedFrom() {
+        fun range(from: Int, to: Int) = (from..to).map { msg(it.toString()) }
+        val sending = Message(id = "pending-a", channelId = "c1", createdAt = "", nonce = "a")
+        // Fetched before 200, which still starts the list: put in front,
+        // without the rows already loaded.
+        assertEquals(
+            (150..202).map { it.toString() } + "pending-a",
+            ids(Disappearing.prependOlderPage(range(200, 202) + sending, "200", range(150, 200))!!),
+        )
+        // A send in flight is not where paging starts.
+        assertEquals(listOf("1", "2", "pending-a", "3"),
+            ids(Disappearing.prependOlderPage(listOf(sending) + range(3, 3), "3", range(1, 2))!!))
+        // A catch-up window that left a gap replaced the list meanwhile
+        // (1022..1071): the page from below 200 is dropped, not put in front.
+        assertNull(Disappearing.prependOlderPage(range(1022, 1071) + sending, "200", range(150, 199)))
+        // A jump window that reaches below 200 replaced it.
+        assertNull(Disappearing.prependOlderPage(range(180, 230), "200", range(150, 199)))
+        // The list was emptied (the cache dropped).
+        assertNull(Disappearing.prependOlderPage(emptyList(), "200", range(150, 199)))
     }
 
     @Test fun settingsPatchCarriesAnExplicitNullForOff() {

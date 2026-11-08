@@ -420,17 +420,42 @@ object Disappearing {
 
     /**
      * Whether the latest window [latest] (newest [pageSize] messages, any
-     * order) leaves a hole above the cached [rows]: it is full, and no
-     * confirmed row in [rows] is at or past its oldest. Messages missed in
-     * between (more than a page) may then exist that nothing loads: older
-     * paging starts below the cache and the after-cursor past the window, and
-     * acking the window's newest would start their countdowns unseen. A short
-     * window reaches back to the conversation's start.
+     * order) leaves a hole above the cached [rows]: it is full, [rows] don't
+     * hold its oldest row, and they hold confirmed rows below it. Messages
+     * missed in between (more than a page) may then exist that nothing loads:
+     * older paging starts below the cache and the after-cursor past the
+     * window, and acking the window's newest would start their countdowns
+     * unseen. A cached row inside the window proves nothing: one that arrived
+     * live after a reconnect sits above the hole. [kept] is the window less
+     * the rows expired here (the cache has dropped their copies), and its
+     * oldest is the row the cache must hold. A short window reaches back to
+     * the conversation's start.
      */
-    fun latestLeavesGap(rows: List<Message>, latest: List<Message>, pageSize: Int): Boolean {
+    fun latestLeavesGap(
+        rows: List<Message>,
+        latest: List<Message>,
+        pageSize: Int,
+        kept: List<Message> = latest,
+    ): Boolean {
         if (latest.size < pageSize) return false
-        val oldest = latest.asSequence().map { it.id }.filter(::isServerId).minWithOrNull(ID_ORDER) ?: return false
-        return rows.none { isServerId(it.id) && compareIds(it.id, oldest) >= 0 }
+        val oldest = kept.asSequence().map { it.id }.filter(::isServerId).minWithOrNull(ID_ORDER) ?: return false
+        return rows.none { it.id == oldest } && rows.any { isServerId(it.id) && compareIds(it.id, oldest) < 0 }
+    }
+
+    /**
+     * [rows] with an older [page] (ascending) put in front, or null when the
+     * page no longer belongs there: it was fetched before [before], and the
+     * list's oldest row that isn't a send in flight, the one older paging
+     * starts below, has changed since. A list replaced while the page was in
+     * flight (a catch-up window that left a gap, a jump) starts elsewhere,
+     * and rows from below the old list put in front of it would leave a hole
+     * between them that no paging reaches. Rows already loaded aren't added
+     * twice.
+     */
+    fun prependOlderPage(rows: List<Message>, before: String, page: List<Message>): List<Message>? {
+        if (rows.firstOrNull { !it.id.startsWith("pending-") }?.id != before) return null
+        val have = rows.mapTo(HashSet()) { it.id }
+        return page.filter { it.id !in have } + rows
     }
 
     // ── Row order ─────────────────────────────────────────────────────────
