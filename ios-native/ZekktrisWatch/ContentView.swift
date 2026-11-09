@@ -218,7 +218,7 @@ struct MessageComposer: View {
                 return
             }
             let ok = await WatchPokeAPI.sendMessage(
-                baseURL: creds.base, token: creds.token, channelId: target.id, content: body,
+                baseURL: creds.base, authorizations: creds.authorizations, channelId: target.id, content: body,
                 e2ee: target.e2ee, e2eeKey: target.e2eeKey
             )
             await MainActor.run {
@@ -343,7 +343,8 @@ struct PokePager: View {
                 return
             }
             let ok = await WatchPokeAPI.poke(
-                baseURL: creds.base, token: creds.token, channelId: target.id, pokeType: variant.rawValue
+                baseURL: creds.base, authorizations: creds.authorizations, channelId: target.id,
+                pokeType: variant.rawValue
             )
             await MainActor.run {
                 sending = false

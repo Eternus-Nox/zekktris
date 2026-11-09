@@ -40,45 +40,56 @@ struct WatchSendMessageAppIntent: AppIntent {
     }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else {
-            return .result(dialog: "There was nothing to send.")
-        }
-        guard let token = WatchWidgetBridge.token(), let base = WatchWidgetBridge.baseURL() else {
-            // The watch only has credentials once the phone app has run and
-            // synced them, so this is "open Zekktris on your phone", not an error.
-            return .result(dialog: "Open Zekktris on your iPhone first, then try again.")
-        }
-        guard let dm = WatchWidgetBridge.dms().first(where: { $0.id == recipient.channelId }) else {
-            return .result(dialog: "I couldn't find that conversation.")
-        }
-        // An encrypted DM without a key must fail, never fall back to plaintext.
-        // The phone publishes per-DM keys into the watch keychain; a DM that
-        // predates that write has none yet.
-        guard let encrypted = dm.e2ee else {
-            return .result(dialog: "Open Zekktris on your watch once, then try again.")
-        }
-        let key = encrypted ? WatchWidgetBridge.e2eeKey(forChannel: dm.id) : nil
-        if encrypted, key == nil {
-            return .result(dialog: "That chat is encrypted. Open it on your watch once, then try again.")
-        }
-        let ok = await WatchPokeAPI.sendMessage(
-            baseURL: base, token: token, channelId: dm.id,
-            content: text, e2ee: encrypted, e2eeKey: key,
-        )
         // Names spoken INSIDE a phrase are matched against an index Siri holds,
         // refreshed only when told. The provider lives in this extension, so
         // the watch app can't ask for that — refresh here instead, so anyone
         // added since the last refresh is sayable by name next time. (A phrase
         // without a name never depends on it: Siri asks who, and the answer
-        // goes through entities(matching:) below.)
-        ZekktrisWatchShortcuts.updateAppShortcutParameters()
+        // goes through entities(matching:) below.) On every way out, a failed
+        // one included: "I couldn't find that conversation" is exactly when
+        // the index is likely stale.
+        defer { ZekktrisWatchShortcuts.updateAppShortcutParameters() }
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            return .result(dialog: "There was nothing to send.")
+        }
+        // The intent token, then the access token (see WatchWidgetBridge.perform).
+        let authorizations = WatchWidgetBridge.authorizations()
+        guard !authorizations.isEmpty, let base = WatchWidgetBridge.baseURL(), !base.isEmpty else {
+            // The watch only has credentials once the phone app has run and
+            // synced them, so this is "open Zekktris on your phone", not an error.
+            return .result(dialog: "Open Zekktris on your iPhone first, then try again.")
+        }
+        guard let dm = WatchWidgetBridge.siriDMs().first(where: { $0.id == recipient.channelId }) else {
+            return .result(dialog: "I couldn't find that conversation.")
+        }
+        // An encrypted DM without a key must fail, never fall back to plaintext.
+        guard let encrypted = dm.e2ee else {
+            return .result(dialog: "Open Zekktris on your watch once, then try again.")
+        }
+        let key = encrypted ? WatchWidgetBridge.e2eeKey(forChannel: dm.id) : nil
+        if encrypted, key == nil {
+            // Keys come only from the phone, and only for the 12 most recent
+            // DMs it relays as poke targets. For one of those the key was
+            // locked on the phone; opening the chat there unlocks it and sends
+            // it over. A DM known only from the directory never gets a key
+            // here, so sending it from the phone is the only honest answer.
+            let relayed = WatchWidgetBridge.dms().contains { $0.id == dm.id }
+            return .result(dialog: relayed
+                ? "Open that chat in Zekktris on your iPhone, then try again."
+                : "That chat is encrypted. Send it from Zekktris on your iPhone.")
+        }
+        let ok = await WatchPokeAPI.sendMessage(
+            baseURL: base, authorizations: authorizations, channelId: dm.id,
+            content: text, e2ee: encrypted, e2eeKey: key,
+        )
         return .result(dialog: ok ? "Sent to \(recipient.name)." : "That didn't send.")
     }
 }
 
-/// A DM the watch can send to. Backed by the same App Group list the poke
-/// complication reads, so Siri offers exactly the people the watch knows about.
+/// A DM the watch can send to. Backed by the App Group: the list the poke
+/// complication reads plus the Siri directory of every other 1:1 DM
+/// (WatchWidgetBridge.siriDMs), so Siri offers everyone the phone knows about.
 ///
 /// CONTACT LINKING. The phone relays the name on the linked Contacts card with
 /// each DM, and that name is what this presents when there is one — because a
@@ -122,7 +133,7 @@ struct WatchSiriPeerQuery: EntityStringQuery {
     }
 
     func entities(matching string: String) async throws -> [WatchSiriPeer] {
-        let dms = WatchWidgetBridge.dms()
+        let dms = WatchWidgetBridge.siriDMs()
         let candidates = dms.map {
             SiriCandidate(id: $0.id, names: [$0.contactName, $0.name, $0.username].compactMap { $0 })
         }
@@ -138,7 +149,7 @@ struct WatchSiriPeerQuery: EntityStringQuery {
     /// card name differs — so both "message Sam Rivera on Zekktris" and
     /// "message SRivera1337 on Zekktris" are understood.
     static func all() -> [WatchSiriPeer] {
-        let dms = WatchWidgetBridge.dms()
+        let dms = WatchWidgetBridge.siriDMs()
         var peers = dms.flatMap { dm -> [WatchSiriPeer] in
             guard let card = dm.contactName, !card.isEmpty,
                   card.caseInsensitiveCompare(dm.name) != .orderedSame else {
@@ -177,9 +188,14 @@ struct WatchSiriPeerQuery: EntityStringQuery {
 /// they invoke — an App Intents extension may own its App Shortcuts, and there
 /// must be only one provider per app, so the watch app itself declares none.
 ///
-/// Every phrase has to contain `\(.applicationName)` — that is the framework's
-/// rule, and it is also what makes "with Zekktris" the thing that routes a
-/// plain "send a message" to us instead of to Messages.
+/// Every phrase has to contain `\(.applicationName)`, exactly once — that is
+/// the framework's rule, and it is also what makes "with Zekktris" the thing
+/// that routes a plain "send a message" to us instead of to Messages.
+///
+/// The wrist matches these EXACTLY, so a word order that isn't listed gets
+/// "You'll need an app for me to help with that". That is what "Send a message
+/// on Zekktris to Sam" got, so the orders people actually say are listed too.
+/// Keep this list the same as the iPhone's (ZekktrisShortcuts).
 struct ZekktrisWatchShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
@@ -196,9 +212,15 @@ struct ZekktrisWatchShortcuts: AppShortcutsProvider {
                 "Send a message to \(\.$recipient) on \(.applicationName)",
                 "Message \(\.$recipient) on \(.applicationName)",
                 "Tell \(\.$recipient) something on \(.applicationName)",
+                "Send a message on \(.applicationName) to \(\.$recipient)",
+                "Send a message to \(.applicationName) to \(\.$recipient)",
+                "Send \(\.$recipient) a message on \(.applicationName)",
+                "Send a message to \(\.$recipient) with \(.applicationName)",
+                "Message \(\.$recipient) with \(.applicationName)",
                 // And without a name, for "send a message" then being asked who.
                 "Send a message with \(.applicationName)",
                 "Send a \(.applicationName) message",
+                "Send a message on \(.applicationName)",
             ],
             shortTitle: "Send a Message",
             systemImageName: "bubble.left.and.bubble.right.fill",

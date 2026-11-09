@@ -76,22 +76,25 @@ struct WatchPokeActionIntent: AppIntent {
     }
 
     func perform() async throws -> some IntentResult {
-        if !channelId.isEmpty, let token = WatchWidgetBridge.token(), let base = WatchWidgetBridge.baseURL() {
-            await WatchWidgetPokeAPI.poke(baseURL: base, token: token, channelId: channelId, pokeType: pokeType)
+        if !channelId.isEmpty, let base = WatchWidgetBridge.baseURL() {
+            await WatchWidgetPokeAPI.poke(baseURL: base, channelId: channelId, pokeType: pokeType)
         }
         return .result()
     }
 }
 
+/// The complication's one-tap poke. Authorized like the watch app's own
+/// (WatchWidgetBridge.perform): the intent token when the phone has relayed
+/// one, so the poke still lands long after the 15-minute access token
+/// expired, then the access token on a 401. No credential, no request.
 enum WatchWidgetPokeAPI {
-    static func poke(baseURL: String, token: String, channelId: String, pokeType: String) async {
+    static func poke(baseURL: String, channelId: String, pokeType: String) async {
         guard let url = URL(string: "\(baseURL)/channels/\(channelId)/poke") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["pokeType": pokeType])
-        _ = try? await URLSession.shared.data(for: req)
+        _ = await WatchWidgetBridge.perform(req, authorizations: WatchWidgetBridge.authorizations())
     }
 }

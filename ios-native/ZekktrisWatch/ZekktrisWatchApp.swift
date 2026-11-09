@@ -16,6 +16,12 @@ struct ZekktrisWatchApp: App {
                 .onOpenURL { sync.handleURL($0) }
                 .task { requestSiriAuthorizationIfNeeded() }
         }
+        // The phone pushed a context while this app wasn't running: take it
+        // now, so the tokens, DM list and keys the Siri extensions and the
+        // complications read are current without anyone opening the app.
+        .backgroundTask(.watchConnectivity) {
+            await sync.applyReceivedContext()
+        }
     }
 
     /// Siri authorisation is PER DEVICE: granting it on the iPhone does not

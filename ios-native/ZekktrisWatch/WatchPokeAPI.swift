@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import os.log
 
 /// Watch-side E2EE — a byte-for-byte port of the phone's `E2EE` text path
 /// (ios-native/Zekktris/E2EE.swift), so a message the watch encrypts decrypts
@@ -62,12 +63,23 @@ struct WatchMessage: Identifiable {
     let content: String
 }
 
-/// Minimal API caller for the watch — POSTs with the bearer token synced from
-/// the phone. No refresh/retry: if the token has expired the call just fails
-/// (the phone re-syncs a fresh token on its next foreground).
+/// Console.app: the subsystem is whichever process sent it (the watch app or
+/// one of its Siri extensions). The HTTP status is the one thing that tells a
+/// refused credential (401) from a refused route (403) or a dead server.
+private let watchAPILog = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "com.zekktris.native.watchkitapp", category: "api"
+)
+
+/// Minimal API caller for the watch. Sends and pokes are authorized by
+/// WatchWidgetBridge.perform: the intent token the phone relays when it has
+/// one, so they still work long after the 15-minute access token expired,
+/// then the access token on a 401. The message read is a route the intent
+/// token can't open, so it stays on the access token. No refresh: an expired
+/// access token just fails (the phone re-syncs a fresh one on its next
+/// foreground).
 enum WatchPokeAPI {
-    static func poke(baseURL: String, token: String, channelId: String, pokeType: String) async -> Bool {
-        await post(baseURL: baseURL, token: token, path: "/channels/\(channelId)/poke",
+    static func poke(baseURL: String, authorizations: [String], channelId: String, pokeType: String) async -> Bool {
+        await post(baseURL: baseURL, authorizations: authorizations, path: "/channels/\(channelId)/poke",
                    body: ["pokeType": pokeType])
     }
 
@@ -81,7 +93,9 @@ enum WatchPokeAPI {
     /// and the watch never acks, so the send must not start the countdown of a
     /// disappearing message the user hasn't seen. Their next open on the phone
     /// (or anywhere else) acks it.
-    static func sendMessage(baseURL: String, token: String, channelId: String, content: String, e2ee: Bool, e2eeKey: Data?) async -> Bool {
+    static func sendMessage(
+        baseURL: String, authorizations: [String], channelId: String, content: String, e2ee: Bool, e2eeKey: Data?
+    ) async -> Bool {
         var payload = content
         if e2ee {
             // E2EE DM: encrypt or REFUSE. Never POST plaintext to an encrypted
@@ -89,7 +103,7 @@ enum WatchPokeAPI {
             guard let key = e2eeKey, let enc = WatchE2EE.encrypt(content, key: key) else { return false }
             payload = enc
         }
-        return await post(baseURL: baseURL, token: token, path: "/channels/\(channelId)/messages",
+        return await post(baseURL: baseURL, authorizations: authorizations, path: "/channels/\(channelId)/messages",
                           body: ["content": payload, "notARead": true])
     }
 
@@ -137,20 +151,22 @@ enum WatchPokeAPI {
         }
     }
 
-    private static func post(baseURL: String, token: String, path: String, body: [String: Any]) async -> Bool {
+    private static func post(baseURL: String, authorizations: [String], path: String, body: [String: Any]) async -> Bool {
         guard let url = URL(string: "\(baseURL)\(path)") else { return false }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = 8 // don't hang the wrist on a wedged network
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        guard
-            let (_, resp) = try? await URLSession.shared.data(for: req),
-            let http = resp as? HTTPURLResponse,
-            (200..<300).contains(http.statusCode)
-        else { return false }
+        guard let http = await WatchWidgetBridge.perform(req, authorizations: authorizations)?.response else {
+            watchAPILog.error("POST never completed (no credential, or no network)")
+            return false
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            watchAPILog.error("POST answered \(http.statusCode, privacy: .public)")
+            return false
+        }
         return true
     }
 }

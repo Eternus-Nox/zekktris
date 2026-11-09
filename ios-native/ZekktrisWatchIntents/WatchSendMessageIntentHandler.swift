@@ -9,10 +9,11 @@ private let watchSiriLog = Logger(subsystem: "com.zekktris.native.watchkitapp.in
 /// Resolve + send for Siri on the watch.
 ///
 /// Everything it needs is published by the watch app to the watch App Group:
-/// the DM list (with each conversation's encryption flag and the names it goes
-/// by), the token, the API base URL, and — in the app-group keychain — the
-/// per-DM keys. Matching is SiriMatching, the same code the iPhone uses, so a
-/// name resolves to the same person on both.
+/// the DM list and the Siri directory of every 1:1 DM (each with its
+/// encryption flag and the names it goes by), the intent token and the access
+/// token, the API base URL, and — in the app-group keychain — the per-DM keys.
+/// Matching is SiriMatching, the same code the iPhone uses, so a name resolves
+/// to the same person on both.
 ///
 /// THE RULE: never plaintext into an encrypted conversation. WatchPokeAPI's
 /// send already refuses that on its own; this handler additionally refuses when
@@ -29,7 +30,8 @@ final class WatchSendMessageIntentHandler: NSObject, INSendMessageIntentHandling
             completion([INSendMessageRecipientResolutionResult.needsValue()])
             return
         }
-        let dms = WatchWidgetBridge.dms()
+        // Every DM the phone knows, not only the 12 the watch can poke.
+        let dms = WatchWidgetBridge.siriDMs()
         completion(people.map { person in
             let matches = WatchSiri.matches(for: person, in: dms)
             if matches.isEmpty { return .unsupported(forReason: .noValidHandle) }
@@ -50,7 +52,7 @@ final class WatchSendMessageIntentHandler: NSObject, INSendMessageIntentHandling
         intent: INSendMessageIntent,
         completion: @escaping (INSendMessageIntentResponse) -> Void
     ) {
-        let ready = WatchWidgetBridge.token()?.isEmpty == false
+        let ready = !WatchWidgetBridge.authorizations().isEmpty
             && WatchWidgetBridge.baseURL()?.isEmpty == false
         if !ready {
             // The watch app publishes these once the phone has synced to it.
@@ -71,13 +73,15 @@ final class WatchSendMessageIntentHandler: NSObject, INSendMessageIntentHandling
             completion(INSendMessageIntentResponse(code: .failure, userActivity: nil))
             return
         }
-        guard let token = WatchWidgetBridge.token(), !token.isEmpty,
+        // The intent token, then the access token (see WatchWidgetBridge.perform).
+        let authorizations = WatchWidgetBridge.authorizations()
+        guard !authorizations.isEmpty,
               let baseURL = WatchWidgetBridge.baseURL(), !baseURL.isEmpty else {
             watchSiriLog.error("no token or base URL — cannot send without the app")
             completion(INSendMessageIntentResponse(code: .failureRequiringAppLaunch, userActivity: nil))
             return
         }
-        guard let dm = WatchSiri.target(for: intent, in: WatchWidgetBridge.dms()) else {
+        guard let dm = WatchSiri.target(for: intent, in: WatchWidgetBridge.siriDMs()) else {
             watchSiriLog.error("no conversation matched")
             completion(INSendMessageIntentResponse(code: .failure, userActivity: nil))
             return
@@ -89,6 +93,8 @@ final class WatchSendMessageIntentHandler: NSObject, INSendMessageIntentHandling
             completion(INSendMessageIntentResponse(code: .failureRequiringAppLaunch, userActivity: nil))
             return
         }
+        // Keys come only from the phone, and only for its 12 most recent DMs,
+        // so an encrypted DM found in the directory alone lands here too.
         let key = isE2EE ? WatchWidgetBridge.e2eeKey(forChannel: dm.id) : nil
         if isE2EE && key == nil {
             watchSiriLog.error("encrypted conversation with no key on the watch")
@@ -99,7 +105,7 @@ final class WatchSendMessageIntentHandler: NSObject, INSendMessageIntentHandling
         let channelId = dm.id
         Task {
             let sent = await WatchPokeAPI.sendMessage(
-                baseURL: baseURL, token: token, channelId: channelId,
+                baseURL: baseURL, authorizations: authorizations, channelId: channelId,
                 content: text, e2ee: isE2EE, e2eeKey: key,
             )
             if !sent { watchSiriLog.error("send failed") }

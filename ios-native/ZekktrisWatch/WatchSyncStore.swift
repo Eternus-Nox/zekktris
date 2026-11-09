@@ -41,9 +41,10 @@ struct PokeFlash: Identifiable, Equatable {
 }
 
 /// Receives the auth token + API base URL + poke targets from the paired
-/// iPhone over WatchConnectivity. `applicationContext` is persisted by the
-/// system (the LATEST one is redelivered on activation), and `publishToWidget`
-/// writes the token and the per-DM E2EE keys to the watch's app-group keychain
+/// iPhone over WatchConnectivity, plus the intent token and the Siri directory
+/// (see WatchWidgetBridge). `applicationContext` is persisted by the system
+/// (the LATEST one is redelivered on activation), and `publishToWidget` writes
+/// the tokens and the per-DM E2EE keys to the watch's app-group keychain
 /// (after-first-unlock) so the complications and Siri extensions can use them.
 /// So the credentials live on the watch's storage, not only in memory.
 @MainActor
@@ -51,6 +52,17 @@ final class WatchSyncStore: NSObject, ObservableObject {
     @Published var token: String?
     @Published var apiBaseURL: String?
     @Published var targets: [PokeTarget] = []
+    /// The long-lived token sends and pokes carry as `Authorization: Intent`
+    /// (nil from a server without them), and when it expires. No view shows
+    /// them, so they aren't published.
+    private var intentToken: String?
+    private var intentTokenExpiresAt: String?
+    /// Every 1:1 DM, for Siri only (see WatchDirectoryEntry).
+    private var siriDirectory: [WatchDirectoryEntry] = []
+    /// Whether a context with targets has been applied in this process. Until
+    /// one has, `targets` is only the empty placeholder, and publishing it
+    /// would wipe the DM list and keys the extensions already have.
+    private var targetsReceived = false
     /// Set when the phone relays an incoming poke (only while the watch app is
     /// reachable). Drives the on-top emoji flash + the haptic wave.
     @Published var incomingPoke: PokeFlash?
@@ -75,46 +87,73 @@ final class WatchSyncStore: NSObject, ObservableObject {
         // no e2ee flag, and PokeTarget.e2ee defaults to false — seeding from it
         // would mark every encrypted DM as plaintext and let the watch send
         // unencrypted into an E2EE channel, which is the exact leak that flag
-        // exists to prevent. Targets stay authoritative from the phone.
+        // exists to prevent. Targets stay authoritative from the phone (and
+        // publishToWidget leaves the stored ones alone until they arrive).
+        // The Siri directory is safe to seed: it keeps its own flag and no keys.
         token = WatchWidgetBridge.token()
         apiBaseURL = WatchWidgetBridge.baseURL()
+        intentToken = WatchWidgetBridge.intentToken()
+        intentTokenExpiresAt = WatchWidgetBridge.intentTokenExpiresAt()
+        siriDirectory = WatchWidgetBridge.directory()
 
         guard WCSession.isSupported() else { return }
         WCSession.default.delegate = self
         WCSession.default.activate()
     }
 
+    /// Each field is replaced only when the context carries its key, so a
+    /// partial context (from an older phone build, say) can't clear what it
+    /// doesn't mention. A sign-out still clears everything: the phone sends
+    /// every key, empty.
     private func apply(_ ctx: [String: Any]) {
+        // Empty is not "signed out" — it is no context at all: an activation
+        // before the phone has ever pushed one (a fresh install, an update),
+        // or a reply with nothing in it. Applying it used to publish an empty
+        // DM list and delete every key, which left Siri on the wrist unable
+        // to find anyone until the watch app happened to run again.
+        guard !ctx.isEmpty else { return }
         if let t = ctx["token"] as? String { token = t.isEmpty ? nil : t }
         if let u = ctx["apiBaseURL"] as? String, !u.isEmpty { apiBaseURL = u }
+        if let t = ctx["intentToken"] as? String { intentToken = t.isEmpty ? nil : t }
+        if let e = ctx["intentTokenExpiresAt"] as? String { intentTokenExpiresAt = e.isEmpty ? nil : e }
         if let data = ctx["targets"] as? Data,
            let list = try? JSONDecoder().decode([PokeTarget].self, from: data) {
             targets = list
+            targetsReceived = true
+        }
+        if let data = ctx["siriDirectory"] as? Data,
+           let list = try? JSONDecoder().decode([WatchDirectoryEntry].self, from: data) {
+            siriDirectory = list
         }
         publishToWidget()
     }
 
-    /// Mirror the latest token + API base URL + DM list to the watch App Group
-    /// so the widget/complication can poke + open DMs without the app running,
-    /// then reload its timelines. The token lands in the app-group keychain
-    /// (encrypted) — the price of one-tap-from-the-face.
+    /// Mirror the latest tokens + API base URL + DM list + Siri directory to the
+    /// watch App Group so the widget/complication and the Siri extensions can
+    /// poke, open DMs and send without the app running, then reload its
+    /// timelines. The tokens land in the app-group keychain (encrypted) — the
+    /// price of one-tap-from-the-face.
     private func publishToWidget() {
-        let dms = targets.map {
-            WatchWidgetDM(
-                id: $0.id, name: $0.name, streak: $0.streak,
-                e2ee: $0.e2ee, username: $0.username, contactName: $0.contactName,
+        WatchWidgetBridge.publish(baseURL: apiBaseURL, token: token)
+        WatchWidgetBridge.publishIntentToken(intentToken, expiresAt: intentTokenExpiresAt)
+        WatchWidgetBridge.publishDirectory(siriDirectory)
+        if targetsReceived {
+            WatchWidgetBridge.publishDMs(targets.map {
+                WatchWidgetDM(
+                    id: $0.id, name: $0.name, streak: $0.streak,
+                    e2ee: $0.e2ee, username: $0.username, contactName: $0.contactName,
+                )
+            })
+            // The Siri extension is its own process and can't read this app's
+            // memory, so the per-DM keys it needs to encrypt go to the app-group
+            // keychain — the same arrangement the phone uses for its notification
+            // extension. Keys for DMs no longer in the list are removed.
+            WatchWidgetBridge.publishKeys(
+                Dictionary(uniqueKeysWithValues: targets.compactMap { t in
+                    t.e2eeKeyBase64.map { (t.id, $0) }
+                })
             )
         }
-        WatchWidgetBridge.publish(dms: dms, baseURL: apiBaseURL, token: token)
-        // The Siri extension is its own process and can't read this app's
-        // memory, so the per-DM keys it needs to encrypt go to the app-group
-        // keychain — the same arrangement the phone uses for its notification
-        // extension. Keys for DMs no longer in the list are removed.
-        WatchWidgetBridge.publishKeys(
-            Dictionary(uniqueKeysWithValues: targets.compactMap { t in
-                t.e2eeKeyBase64.map { (t.id, $0) }
-            })
-        )
         WidgetCenter.shared.reloadAllTimelines()
         // The Siri phrases and the person list they match against live in the
         // ZekktrisWatchAppIntents extension, which reads this same App Group —
@@ -173,10 +212,35 @@ final class WatchSyncStore: NSObject, ObservableObject {
     /// Pull a fresh token from the phone, then hand back the current
     /// (token, base) — or nil if we still have none (phone never synced and is
     /// unreachable). The one call a wrist action awaits before hitting the API.
-    func credentials() async -> (token: String, base: String)? {
+    /// `authorizations` is what a send or poke carries: the intent token
+    /// first, so it still goes through when the phone is out of reach and the
+    /// access token has expired, then the token just pulled.
+    func credentials() async -> (token: String, base: String, authorizations: [String])? {
         await requestFreshSync()
         guard let t = token, let b = apiBaseURL else { return nil }
-        return (t, b)
+        return (t, b, WatchWidgetBridge.authorizations(intentToken: intentToken, accessToken: t))
+    }
+
+    /// watchOS's WatchConnectivity background task (ZekktrisWatchApp): the
+    /// phone pushed a context while this app wasn't running, and the system
+    /// woke it to take delivery. Without this, a new token, DM list or key
+    /// reached the App Group — where Siri and the complications read them —
+    /// only the next time someone opened the watch app, so after a sign-in
+    /// Siri on the wrist kept failing until then. Waits, bounded, for
+    /// activation and the pending delivery, then applies the latest context
+    /// itself: the task ends, and the app may be suspended, once this returns.
+    func applyReceivedContext() async {
+        guard WCSession.isSupported() else { return }
+        let session = WCSession.default
+        // Well inside the wall-clock allowance a background launch gets (see
+        // the watchdog note on ContentView's .task).
+        var waited: TimeInterval = 0
+        while session.activationState != .activated || session.hasContentPending, waited < 5 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            waited += 0.1
+        }
+        guard session.activationState == .activated else { return }
+        apply(session.receivedApplicationContext)
     }
 
     /// Flash the full-screen emoji on top + play a three-beat haptic wave when
