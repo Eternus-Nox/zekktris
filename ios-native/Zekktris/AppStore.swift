@@ -1789,8 +1789,12 @@ final class AppStore: ObservableObject {
         intentTokenTask = nil
         intentTokenAttemptAt = nil
         WidgetBridge.publish(dms: [], token: nil)
+        WidgetBridge.publishSiriDirectory([])
         WidgetBridge.publishIntentToken(nil, expiresAt: nil)
         WidgetCenter.shared.reloadAllTimelines()
+        // Siri's phrase index still holds this account's contacts by name
+        // until it is rebuilt from the now-empty lists.
+        ZekktrisShortcuts.updateAppShortcutParameters()
         WatchSync.shared.sync(.signedOut)
         // Opened attachments, decrypted ones included, belong to this account.
         OpenedFileCopies.sweep(includingPlayback: true)
@@ -2477,17 +2481,18 @@ final class AppStore: ObservableObject {
     /// nudge WidgetKit to reload. Cheap + idempotent (latest-wins).
     func syncWidgets() {
         // 30 rather than 12: the widget only ever shows a handful, but this is
-        // also the list Siri resolves "message <name>" against, and a voice
-        // request for someone you spoke to last week should still find them.
+        // also the list the SiriKit extension resolves "message <name>"
+        // against first, and a voice request for someone you spoke to last
+        // week should still find them. The App Intent reads the directory of
+        // every 1:1 DM published below.
         //
-        // The `type == "dm"` filter is load-bearing beyond the widget: this list
-        // is the ONLY thing the Siri extension can address, so one-to-one DMs
-        // are the only conversations Siri can send to. Group DMs and server
-        // channels are unaddressable by construction, not by a check that could
-        // be forgotten.
-        let items = dms
+        // The `type == "dm"` filter is load-bearing beyond the widget: these
+        // lists are the ONLY thing Siri can address, so one-to-one DMs are the
+        // only conversations Siri can send to. Group DMs and server channels
+        // are unaddressable by construction, not by a check that could be
+        // forgotten.
+        let all = dms
             .filter { $0.type == "dm" }
-            .prefix(30)
             .map { channel -> WidgetDM in
                 let peer = channel.dmAvatarUser
                 // The name on a linked Contacts card, when there is one: what
@@ -2507,7 +2512,16 @@ final class AppStore: ObservableObject {
                     contactName: linkedName,
                 )
             }
-        WidgetBridge.publish(dms: Array(items), token: api.token)
+        WidgetBridge.publish(dms: Array(all.prefix(30)), token: api.token)
+        // Siri's directory: every 1:1 DM, newest first, names only. How many
+        // of them are offered to Siri's phrase index is budgeted on the
+        // reading side (ZekktrisPeerQuery.suggested); a spoken answer is
+        // searched against all of them.
+        WidgetBridge.publishSiriDirectory(all.map { dm -> WidgetDM in
+            var entry = dm
+            entry.avatarURL = nil
+            return entry
+        })
         WidgetCenter.shared.reloadAllTimelines()
         // A name spoken inside an App Shortcut phrase is matched against an
         // index Siri holds, not by asking the app, and that index is only

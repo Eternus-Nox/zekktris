@@ -37,6 +37,12 @@ struct WidgetDM: Codable, Identifiable, Hashable {
 /// declares the entitlement; it must also be on the App ID in the portal.
 enum WidgetBridge {
     static let recentDMsKey = "widget.recentDMs"
+    /// EVERY 1:1 DM, newest first, for the App Intent's Siri entity. The list
+    /// above stays at the 30 the widget needs, but a name spoken to Siri on a
+    /// phone that routes through App Intents is matched only against what the
+    /// app hands it, so anyone outside those 30 got "you'll need an app for
+    /// that". Names only: no avatar, no key.
+    static let siriDirectoryKey = "widget.siriDirectory"
     /// Keychain account for the token COPY the widget reads (kept distinct from
     /// the app's own token entry so clearing one never disturbs the other).
     static let tokenKey = "widget.authToken"
@@ -76,6 +82,26 @@ enum WidgetBridge {
         guard let data = defaults?.data(forKey: recentDMsKey),
               let list = try? JSONDecoder().decode([WidgetDM].self, from: data) else { return [] }
         return list
+    }
+
+    /// Publish the Siri directory (see `siriDirectoryKey`); empty on sign-out.
+    static func publishSiriDirectory(_ dms: [WidgetDM]) {
+        if let data = try? JSONEncoder().encode(dms) {
+            defaults?.set(data, forKey: siriDirectoryKey)
+        }
+    }
+
+    /// Every DM Siri can address, newest first: the recent list, then the rest
+    /// of the directory. Reading both means a directory not yet written (an
+    /// app that hasn't run since updating) still leaves the 30 recent ones.
+    static func siriDMs() -> [WidgetDM] {
+        var out = recentDMs()
+        var seen = Set(out.map(\.id))
+        if let data = defaults?.data(forKey: siriDirectoryKey),
+           let directory = try? JSONDecoder().decode([WidgetDM].self, from: data) {
+            for dm in directory where seen.insert(dm.id).inserted { out.append(dm) }
+        }
+        return out
     }
 
     static func token() -> String? { keychain.get(tokenKey) }

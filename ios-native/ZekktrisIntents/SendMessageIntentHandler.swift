@@ -262,10 +262,15 @@ enum SiriDirectory {
     /// snapshot has nobody by that name.
     static func matches(candidates: [String], in all: [WidgetDM]) -> [WidgetDM] {
         for candidate in candidates {
-            // A donated conversation carries our own handle, so this is exact.
+            // Our own handle (a donation, or a recipient resolved earlier)
+            // names the peer outright: exact or nobody, never a name guess.
+            // Siri resolves a recipient again after the user picks one, and
+            // someone found on the server comes back with their display name
+            // — which must not land on a similar name in the snapshot. An
+            // empty answer sends resolveRecipients to the server, which finds
+            // them by this same id.
             if let id = userId(fromHandle: candidate) {
-                let byId = all.filter { $0.peerUserId == id }
-                if !byId.isEmpty { return byId }
+                return all.filter { $0.peerUserId == id }
             }
             let hits = rank(heard: candidate, in: all)
             if !hits.isEmpty { return hits }

@@ -37,6 +37,7 @@
 		45CBA0EA8048F14DBAF07740 /* AppGroupConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 434FBD6DE9C340459E70525C /* AppGroupConfig.swift */; };
 		46BE11148DE40BA2B0C8E075 /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FC2ECC7C7A8019B6C7482EF /* WidgetShared.swift */; };
 		4A157541F71EEB8CB62501A6 /* ZekktrisWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 8CD61D15591F11BF7866AFF1 /* ZekktrisWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		4BF0691D77D2DE7954FC2B3E /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42797CA878D26DB332BEF804 /* Config.swift */; };
 		4D498E1525844A5D4C185BC1 /* CallManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D62C793B7AAB9778AA116F /* CallManager.swift */; };
 		4E98C4C4898973F36A45B4FC /* NotificationMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = F044CCA495FD5434BA02A43A /* NotificationMedia.swift */; };
 		52C7268DCE951A927EA1438C /* SiriMatching.swift in Sources */ = {isa = PBXBuildFile; fileRef = F95659B3908C06735E72CF67 /* SiriMatching.swift */; };
@@ -892,6 +893,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				2F6F138EE71E68A44DC859A1 /* AppGroupConfig.swift in Sources */,
+				4BF0691D77D2DE7954FC2B3E /* Config.swift in Sources */,
 				D16F8E1428D264004E7C88E7 /* DevicePresence.swift in Sources */,
 				DE8699F057E3EEE58013A978 /* DevicePresenceTests.swift in Sources */,
 				C234B5240DBA7B0A01661E94 /* E2EE.swift in Sources */,

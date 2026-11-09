@@ -1,5 +1,8 @@
 import XCTest
-@testable import Zekktris
+
+// Host-less logic test: SendMessageIntentHandler.swift, SiriMatching.swift and
+// WidgetShared.swift are compiled into this bundle directly (project.yml ›
+// targets › ZekktrisTests), so there is no app module to import.
 
 /// Who Siri sends to when you don't say the whole username.
 ///
@@ -93,5 +96,21 @@ final class SiriRecipientTests: XCTestCase {
     func testTheUsernameIsMatchedEvenWhenTheDisplayNameIsNothingLike() {
         let alias = dm("7", "🌙 moonlight", username: "danielle")
         XCTAssertEqual(SiriDirectory.rank(heard: "Danielle", in: [alias]).map(\.id), ["7"])
+    }
+
+    /// Siri resolves a recipient again after the user picks one. Someone found
+    /// on the server comes back with our handle and their display name, and
+    /// neither may land on a similar name in the snapshot of recent DMs.
+    func testOurHandleIsFinalAndNeverFallsBackToTheName() {
+        let dan = dm("1", "Dan Rivera")
+        let sam = dm("2", "Sam Rivera")
+        // Not in the snapshot: nobody, so the server is asked next.
+        XCTAssertTrue(SiriDirectory.matches(candidates: ["zekktris:u-2", "Sam Rivera"], in: [dan]).isEmpty)
+        // In it: exactly them, by id.
+        XCTAssertEqual(
+            SiriDirectory.matches(candidates: ["zekktris:u-2", "Sam Rivera"], in: [dan, sam]).map(\.id), ["2"],
+        )
+        // Without our handle, the spoken name is ranked as before.
+        XCTAssertEqual(SiriDirectory.matches(candidates: ["Dan Rivera"], in: [dan, sam]).map(\.id), ["1"])
     }
 }

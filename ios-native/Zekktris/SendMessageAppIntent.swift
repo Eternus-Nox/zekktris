@@ -38,7 +38,7 @@ struct SendMessageAppIntent: AppIntent {
     }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        guard let dm = WidgetBridge.recentDMs().first(where: { $0.id == recipient.channelId }) else {
+        guard let dm = WidgetBridge.siriDMs().first(where: { $0.id == recipient.channelId }) else {
             return .result(dialog: "I couldn't find that conversation.")
         }
         // nil means the published entry predates the flag. Unknown is treated
@@ -65,8 +65,8 @@ struct SendMessageAppIntent: AppIntent {
 /// contact linking exists for the SiriKit path — there it feeds
 /// `INPerson.contactIdentifier`; here it feeds what gets published.
 ///
-/// A linked DM is published twice (see `all()`): under the card name and under
-/// the Zekktris name, so either is understood. A unique first name is
+/// A linked DM is published twice (see `groups()`): under the card name and
+/// under the Zekktris name, so either is understood. A unique first name is
 /// published as well. The aliases carry a suffixed id and `channelId` strips
 /// it back off.
 struct ZekktrisPeer: AppEntity, Identifiable {
@@ -98,8 +98,11 @@ struct ZekktrisPeerQuery: EntityStringQuery {
         Self.all().filter { identifiers.contains($0.id) }
     }
 
+    /// Searches EVERY 1:1 DM (WidgetBridge.siriDMs), not only the ones
+    /// offered in `suggestedEntities`: the answer to "Who do you want to
+    /// message?" comes here. `entities(for:)` covers them all as well.
     func entities(matching string: String) async throws -> [ZekktrisPeer] {
-        let dms = WidgetBridge.recentDMs()
+        let dms = WidgetBridge.siriDMs()
         let candidates = dms.map {
             SiriCandidate(id: $0.id, names: [$0.contactName, $0.name, $0.peerUsername].compactMap { $0 })
         }
@@ -107,13 +110,36 @@ struct ZekktrisPeerQuery: EntityStringQuery {
         return SiriMatching.rank(heard: string, in: candidates).compactMap { byChannel[$0.id]?.first }
     }
 
-    func suggestedEntities() async throws -> [ZekktrisPeer] { Self.all() }
+    func suggestedEntities() async throws -> [ZekktrisPeer] { Self.suggested() }
 
-    /// One entry per DM, plus a second under the Zekktris name when a linked
-    /// card name differs — so both are understood.
-    static func all() -> [ZekktrisPeer] {
-        let dms = WidgetBridge.recentDMs()
-        var peers = dms.flatMap { dm -> [ZekktrisPeer] in
+    /// How many entities Siri's phrase index is offered. Apple allows about
+    /// 1000 App Shortcut phrases per locale, and a phrase that names the
+    /// recipient counts once for every suggested entity — 9 of them do (see
+    /// ZekktrisShortcuts), so 9 x 70 = 630 plus the 3 without a name: well
+    /// short of the limit however many DMs there are. Change this with the
+    /// phrase list.
+    static let suggestionLimit = 70
+
+    /// Every DM, ready for `entities(for:)`.
+    static func all() -> [ZekktrisPeer] { groups().flatMap { $0 } }
+
+    /// The most recent DMs that fit `suggestionLimit`, each with all of its
+    /// names or not at all, so whichever one is spoken works.
+    static func suggested() -> [ZekktrisPeer] {
+        var out: [ZekktrisPeer] = []
+        for group in groups() {
+            guard out.count + group.count <= suggestionLimit else { break }
+            out += group
+        }
+        return out
+    }
+
+    /// One group per DM, newest first: the card name (or the display name),
+    /// the Zekktris name when a linked card's differs — so both are
+    /// understood — and a first name.
+    static func groups() -> [[ZekktrisPeer]] {
+        let dms = WidgetBridge.siriDMs()
+        let named = dms.map { dm -> [ZekktrisPeer] in
             guard let card = dm.contactName, !card.isEmpty,
                   card.caseInsensitiveCompare(dm.name) != .orderedSame else {
                 return [ZekktrisPeer(id: dm.id, name: dm.name)]
@@ -123,27 +149,37 @@ struct ZekktrisPeerQuery: EntityStringQuery {
                 ZekktrisPeer(id: dm.id + ZekktrisPeer.aliasSuffix, name: dm.name),
             ]
         }
-        // FIRST NAMES, the same rule as the watch (WatchSiriPeerQuery.all).
-        // A name spoken inside a phrase is matched against this published
+        // FIRST NAMES. Stricter than the watch, whose recent poke targets keep
+        // a first name even when an older DM shares it (WatchSiriPeerQuery
+        // .groups) because the watch confirms before sending to anyone else:
+        // this intent has no such confirmation, so here a first name must be
+        // unique across every DM. A name spoken inside a phrase is matched against this published
         // list, so "Send a message on Zekktris to Sam" found nothing for a DM
         // published only as "Sam Rivera". A linked card's first name is
         // published too (or the display name's, when it is a real two-word
         // name), but only when no other DM shares it: an ambiguous first name
-        // would send to whichever one Siri picked.
-        let firstNames = dms.compactMap { dm -> (String, String)? in
-            let full = (dm.contactName?.isEmpty == false ? dm.contactName : nil) ?? dm.name
-            guard let first = full.split(separator: " ").first.map(String.init),
-                  first.count >= 2,
-                  first.caseInsensitiveCompare(full) != .orderedSame else { return nil }
-            return (first, dm.id)
+        // would send to whichever one Siri picked. Counted over EVERY DM, not
+        // only the suggested ones: a first name no other suggested DM has is
+        // still ambiguous when an older DM shares it.
+        let counts = Dictionary(grouping: dms.compactMap(firstName(of:)), by: { $0.lowercased() })
+            .mapValues(\.count)
+        let taken = Set(named.joined().map { $0.name.lowercased() })
+        return zip(dms, named).map { dm, peers -> [ZekktrisPeer] in
+            guard let first = firstName(of: dm),
+                  counts[first.lowercased()] == 1,
+                  !taken.contains(first.lowercased()) else { return peers }
+            return peers + [ZekktrisPeer(id: dm.id + ZekktrisPeer.firstNameSuffix, name: first)]
         }
-        let counts = Dictionary(grouping: firstNames, by: { $0.0.lowercased() }).mapValues(\.count)
-        let taken = Set(peers.map { $0.name.lowercased() })
-        for (first, channelId) in firstNames
-        where counts[first.lowercased()] == 1 && !taken.contains(first.lowercased()) {
-            peers.append(ZekktrisPeer(id: channelId + ZekktrisPeer.firstNameSuffix, name: first))
-        }
-        return peers
+    }
+
+    /// The first word of the name a DM is published under, when it is a real
+    /// first name rather than the whole name.
+    private static func firstName(of dm: WidgetDM) -> String? {
+        let full = (dm.contactName?.isEmpty == false ? dm.contactName : nil) ?? dm.name
+        guard let first = full.split(separator: " ").first.map(String.init),
+              first.count >= 2,
+              first.caseInsensitiveCompare(full) != .orderedSame else { return nil }
+        return first
     }
 }
 
@@ -162,6 +198,10 @@ struct ZekktrisPeerQuery: EntityStringQuery {
 /// message on Zekktris to Sam" got, so the word orders people actually use are
 /// listed too, not only the ones Apple's examples suggest. Keep this list the
 /// same as the watch's (ZekktrisWatchShortcuts).
+///
+/// Each phrase that names the recipient counts against Apple's phrase limit
+/// once per suggested person, so adding one means revisiting
+/// `ZekktrisPeerQuery.suggestionLimit`.
 struct ZekktrisShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
