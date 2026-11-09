@@ -41,6 +41,23 @@ struct SendMessageAppIntent: AppIntent {
         guard let dm = WidgetBridge.siriDMs().first(where: { $0.id == recipient.channelId }) else {
             return .result(dialog: "I couldn't find that conversation.")
         }
+        // A recent DM keeps its first name even when an older DM shares it
+        // (see ZekktrisPeerQuery.groups), so a bare first name, or anyone
+        // outside the recent list, is confirmed by name before sending, as the
+        // watch does. "No" ends the intent without sending.
+        let recent = Set(WidgetBridge.recentDMs().map(\.id))
+        let spokenFirst = recipient.id.hasSuffix(ZekktrisPeer.firstNameSuffix)
+        let firstKey = ZekktrisPeerQuery.firstName(of: dm)?.lowercased()
+        let sharedFirst = spokenFirst && firstKey != nil && WidgetBridge.siriDMs().contains {
+            $0.id != dm.id && ZekktrisPeerQuery.firstName(of: $0)?.lowercased() == firstKey
+        }
+        if !recent.contains(dm.id) || sharedFirst {
+            let fullName = dm.contactName ?? dm.name
+            try await requestConfirmation(
+                result: .result(dialog: "Send it to \(fullName)?"),
+                confirmationActionName: .send,
+            )
+        }
         // nil means the published entry predates the flag. Unknown is treated
         // as encrypted, never as plaintext.
         let isE2EE = dm.isE2EE ?? true
@@ -115,21 +132,30 @@ struct ZekktrisPeerQuery: EntityStringQuery {
     /// How many entities Siri's phrase index is offered. Apple allows about
     /// 1000 App Shortcut phrases per locale, and a phrase that names the
     /// recipient counts once for every suggested entity — 9 of them do (see
-    /// ZekktrisShortcuts), so 9 x 70 = 630 plus the 3 without a name: well
-    /// short of the limit however many DMs there are. Change this with the
-    /// phrase list.
-    static let suggestionLimit = 70
+    /// ZekktrisShortcuts), so 9 x 90 = 810 plus the 3 without a name stays
+    /// under it however many DMs there are. 90 is also the most the 30 recent
+    /// DMs can need (3 names each), so they always fit whole and the rest of
+    /// the directory fills what is left. Change this with the phrase list.
+    static let suggestionLimit = 90
 
     /// Every DM, ready for `entities(for:)`.
     static func all() -> [ZekktrisPeer] { groups().flatMap { $0 } }
 
     /// The most recent DMs that fit `suggestionLimit`, each with all of its
-    /// names or not at all, so whichever one is spoken works.
+    /// names or not at all, so whichever one is spoken works. The recent DMs
+    /// come first and are offered as they are; a directory DM is offered
+    /// without any name already given out, so an older DM titled "Sam" can't
+    /// take "Sam" from a recent Sam Rivera.
     static func suggested() -> [ZekktrisPeer] {
+        let recent = Set(WidgetBridge.recentDMs().map(\.id))
         var out: [ZekktrisPeer] = []
+        var published = Set<String>()
         for group in groups() {
-            guard out.count + group.count <= suggestionLimit else { break }
-            out += group
+            let isRecent = group.first.map { recent.contains($0.channelId) } ?? false
+            let kept = isRecent ? group : group.filter { !published.contains($0.name.lowercased()) }
+            guard out.count + kept.count <= suggestionLimit else { break }
+            out += kept
+            published.formUnion(kept.map { $0.name.lowercased() })
         }
         return out
     }
@@ -139,6 +165,7 @@ struct ZekktrisPeerQuery: EntityStringQuery {
     /// understood — and a first name.
     static func groups() -> [[ZekktrisPeer]] {
         let dms = WidgetBridge.siriDMs()
+        let recent = Set(WidgetBridge.recentDMs().map(\.id))
         let named = dms.map { dm -> [ZekktrisPeer] in
             guard let card = dm.contactName, !card.isEmpty,
                   card.caseInsensitiveCompare(dm.name) != .orderedSame else {
@@ -149,32 +176,38 @@ struct ZekktrisPeerQuery: EntityStringQuery {
                 ZekktrisPeer(id: dm.id + ZekktrisPeer.aliasSuffix, name: dm.name),
             ]
         }
-        // FIRST NAMES. Stricter than the watch, whose recent poke targets keep
-        // a first name even when an older DM shares it (WatchSiriPeerQuery
-        // .groups) because the watch confirms before sending to anyone else:
-        // this intent has no such confirmation, so here a first name must be
-        // unique across every DM. A name spoken inside a phrase is matched against this published
+        // FIRST NAMES, in two tiers like the watch (WatchSiriPeerQuery.groups).
+        // A name spoken inside a phrase is matched against this published
         // list, so "Send a message on Zekktris to Sam" found nothing for a DM
         // published only as "Sam Rivera". A linked card's first name is
         // published too (or the display name's, when it is a real two-word
-        // name), but only when no other DM shares it: an ambiguous first name
-        // would send to whichever one Siri picked. Counted over EVERY DM, not
-        // only the suggested ones: a first name no other suggested DM has is
-        // still ambiguous when an older DM shares it.
-        let counts = Dictionary(grouping: dms.compactMap(firstName(of:)), by: { $0.lowercased() })
-            .mapValues(\.count)
-        let taken = Set(named.joined().map { $0.name.lowercased() })
-        return zip(dms, named).map { dm, peers -> [ZekktrisPeer] in
-            guard let first = firstName(of: dm),
-                  counts[first.lowercased()] == 1,
-                  !taken.contains(first.lowercased()) else { return peers }
+        // name). A RECENT DM gets it when no other recent DM shares it or uses
+        // it as a name — an older DM sharing it doesn't take it away, and
+        // perform() confirms by full name when one does. Any other DM gets it
+        // only when no DM at all shares it.
+        let isRecent = dms.map { recent.contains($0.id) }
+        func key(_ s: String) -> String { s.lowercased() }
+        let recentCounts = Dictionary(
+            grouping: zip(dms, isRecent).filter(\.1).compactMap { firstName(of: $0.0) }, by: key,
+        ).mapValues(\.count)
+        let recentTaken = Set(zip(named, isRecent).filter(\.1).flatMap { $0.0 }.map { key($0.name) })
+        let allCounts = Dictionary(grouping: dms.compactMap(firstName(of:)), by: key).mapValues(\.count)
+        let allTaken = Set(named.joined().map { key($0.name) })
+        return zip(zip(dms, named), isRecent).map { pair, recentDM -> [ZekktrisPeer] in
+            let (dm, peers) = pair
+            guard let first = firstName(of: dm) else { return peers }
+            let k = key(first)
+            let unique = recentDM
+                ? recentCounts[k] == 1 && !recentTaken.contains(k)
+                : allCounts[k] == 1 && !allTaken.contains(k)
+            guard unique else { return peers }
             return peers + [ZekktrisPeer(id: dm.id + ZekktrisPeer.firstNameSuffix, name: first)]
         }
     }
 
     /// The first word of the name a DM is published under, when it is a real
     /// first name rather than the whole name.
-    private static func firstName(of dm: WidgetDM) -> String? {
+    fileprivate static func firstName(of dm: WidgetDM) -> String? {
         let full = (dm.contactName?.isEmpty == false ? dm.contactName : nil) ?? dm.name
         guard let first = full.split(separator: " ").first.map(String.init),
               first.count >= 2,
