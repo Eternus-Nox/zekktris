@@ -16,13 +16,18 @@
  * DB hit — and it fails open so a Redis blip degrades to the old
  * expire-on-TTL behaviour rather than locking everyone out. See
  * ./session-blacklist.ts.
+ *
+ * The one exception is an intent token (`Authorization: Intent …`, see
+ * signIntentToken): it lives 30 days, so its session row IS read on each use,
+ * and it only opens the few routes the native Siri / widget / watch senders
+ * call. See authenticateIntent.
  */
 
-import type { MiddlewareHandler } from 'hono';
+import type { Context, MiddlewareHandler } from 'hono';
 import { eq } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors } from '../errors';
-import { verifyAccessToken } from './tokens';
+import { verifyAccessToken, verifyIntentToken } from './tokens';
 import { isSessionBlacklisted } from './session-blacklist';
 import { isCurrentlyBanned } from '../services/instanceBans';
 
@@ -49,6 +54,15 @@ export const requireAuth: MiddlewareHandler = async (c, next) => {
     return;
   }
 
+  // Intent path: `Authorization: Intent <token>`, the long-lived, narrowly
+  // scoped token the native Siri / widget / watch senders use. See
+  // authenticateIntent below.
+  if (header.startsWith('Intent ')) {
+    await authenticateIntent(c, header.slice(7).trim());
+    await next();
+    return;
+  }
+
   // Human path: JWT access token.
   if (!header.startsWith('Bearer ')) {
     throw errors.unauthenticated();
@@ -69,6 +83,87 @@ export const requireAuth: MiddlewareHandler = async (c, next) => {
 
   await next();
 };
+
+/**
+ * Everything an intent token may do: list the DMs, send a message, poke. That
+ * is all Siri, the widgets and the watch send. Anchored and matched against
+ * c.req.path, which is the same decoded path the router dispatched on.
+ */
+const INTENT_ROUTES: ReadonlyArray<{ method: string; path: RegExp }> = [
+  { method: 'GET', path: /^\/api\/v1\/users\/@me\/channels$/ },
+  { method: 'POST', path: /^\/api\/v1\/channels\/\d+\/messages$/ },
+  { method: 'POST', path: /^\/api\/v1\/channels\/\d+\/poke$/ },
+];
+
+/**
+ * The Intent half of requireAuth. Unlike the Bearer path this looks the
+ * session up in the DB: the token lives 30 days and the revocation blacklist
+ * only spans the 15-minute access window, so the sessions row is what makes a
+ * logout or revoke end it. One small indexed read, only on these few routes.
+ *
+ * requireAuth runs once per router a path is mounted under (a /channels/* path
+ * passes through four), so the verify + lookup happen on the first pass only;
+ * authScope can't be set any other way. The route checks run every pass.
+ */
+async function authenticateIntent(c: Context, token: string): Promise<void> {
+  if (!token) throw errors.unauthenticated();
+
+  if (c.get('authScope') !== 'intents') {
+    const claims = await verifyIntentToken(token);
+    if (await isSessionBlacklisted(claims.sessionId)) {
+      throw errors.tokenInvalid('Session revoked');
+    }
+    await assertSessionLive(claims.userId, claims.sessionId);
+    c.set('userId', claims.userId);
+    c.set('sessionId', claims.sessionId);
+    c.set('authScope', 'intents');
+  }
+
+  const method = c.req.method;
+  const path = c.req.path;
+  if (!INTENT_ROUTES.some((r) => r.method === method && r.path.test(path))) {
+    throw errors.forbidden('An intent token can only list DMs, send a DM or poke');
+  }
+  // Text only: no uploads. Matched loosely (any case, anywhere in the header)
+  // so no spelling of a multipart body gets past it.
+  if (/multipart\//i.test(c.req.header('content-type') ?? '')) {
+    throw errors.forbidden('An intent token can only send a JSON message');
+  }
+}
+
+/**
+ * Throws 401 unless `sessionId` is a live session of `userId`: present, not
+ * revoked, not expired, and its user neither banned nor deleted (the refresh
+ * route's own predicate, which an access token gets from refreshing every 15
+ * minutes and a 30-day token would otherwise skip). Used by the Intent path
+ * and by the route that mints intent tokens.
+ */
+export async function assertSessionLive(userId: bigint, sessionId: bigint): Promise<void> {
+  const rows = await db
+    .select({
+      userId: schema.sessions.userId,
+      revokedAt: schema.sessions.revokedAt,
+      expiresAt: schema.sessions.expiresAt,
+      bannedAt: schema.users.bannedAt,
+      bannedUntil: schema.users.bannedUntil,
+      deletedAt: schema.users.deletedAt,
+    })
+    .from(schema.sessions)
+    .innerJoin(schema.users, eq(schema.users.id, schema.sessions.userId))
+    .where(eq(schema.sessions.id, sessionId))
+    .limit(1);
+  const s = rows[0];
+  if (
+    !s ||
+    s.userId !== userId ||
+    s.revokedAt !== null ||
+    s.expiresAt <= new Date() ||
+    isCurrentlyBanned(s) ||
+    s.deletedAt !== null
+  ) {
+    throw errors.tokenInvalid('Session revoked');
+  }
+}
 
 /**
  * Helper for handlers running under requireAuth. Throws if somehow called

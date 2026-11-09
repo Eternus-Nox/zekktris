@@ -502,6 +502,12 @@ messagesRouter.post(
     await assertNotInstanceMuted(userId);
     const channelId = BigInt(c.req.valid('param').channelId);
     const ctx = await loadChannelContext(channelId, userId);
+    // An intent token (Siri / widget / watch, see auth/middleware.ts) sends
+    // into DMs and group DMs only, and JSON only: requireAuth already refused
+    // its multipart bodies.
+    if (c.get('authScope') === 'intents' && !ctx.isDM) {
+      throw errors.forbidden('An intent token can only send direct messages');
+    }
 
     // ── Parse body: JSON or multipart ────────────────────────────────────
     const contentType = c.req.header('content-type') ?? '';
@@ -559,6 +565,12 @@ messagesRouter.post(
     } else {
       const json = (await c.req.json().catch(() => ({}))) as unknown;
       payload = sendMessageSchema.parse(json);
+    }
+    // An intent token can't forward: a forward copies a message from any
+    // channel the user can read into this DM, and the token is meant to read
+    // nothing but the DM list.
+    if (c.get('authScope') === 'intents' && payload.forwardFromMessageId !== undefined) {
+      throw errors.forbidden('An intent token cannot forward messages');
     }
 
     // ── Permission gating (guild channels only) ──────────────────────────

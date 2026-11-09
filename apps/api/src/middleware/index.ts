@@ -24,6 +24,10 @@ declare module 'hono' {
     /** Set by the auth middleware when the caller is authenticated. */
     userId?: bigint;
     sessionId?: bigint;
+    /** Set by the auth middleware when the caller presented an intent token
+     *  (`Authorization: Intent …`): the request may only do what Siri, the
+     *  widgets and the watch do. See requireAuth. */
+    authScope?: 'intents';
     /** Set by requireNodeUser (node mode) when a backbone token is verified. */
     nodeUser?: { userId: bigint; guildId: bigint; roleIds: bigint[] };
     /** Set by requireStaff: true = full admin, false = moderator. */

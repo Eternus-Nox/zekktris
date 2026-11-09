@@ -18,7 +18,7 @@ import { log } from '../log';
 import { nextSnowflake } from '../snowflake';
 import { hashPassword, verifyPassword } from '../auth/passwords';
 import { assertStepUpPassword } from '../auth/stepUp';
-import { signAccessToken } from '../auth/tokens';
+import { signAccessToken, signIntentToken } from '../auth/tokens';
 import * as twoFactor from '../services/twoFactor';
 import {
   createSession,
@@ -39,7 +39,13 @@ import {
 import { gateSignup, refundSignupCode } from '../auth/signup';
 import { toSelfUser } from '../lib/dto';
 import { getClientIp, getUserAgent } from '../lib/request';
-import { requireAuth, requireUserId, requireHumanSession } from '../auth/middleware';
+import {
+  requireAuth,
+  requireUserId,
+  requireSessionId,
+  requireHumanSession,
+  assertSessionLive,
+} from '../auth/middleware';
 import { snowflakeSchema } from '../lib/validation';
 import {
   rpID,
@@ -1022,6 +1028,38 @@ authRouter.post('/refresh', async (c) => {
     accessToken,
     expiresIn: env.ACCESS_TOKEN_TTL_SECONDS,
   });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// POST /intent-token
+// ───────────────────────────────────────────────────────────────────────────
+// Mints the long-lived, narrowly scoped token the native app hands its Siri
+// extensions, widgets and watch (see signIntentToken and requireAuth's Intent
+// path). Those can't refresh, so a copy of the 15-minute access token left
+// them failing once the app had been idle that long. The token is bound to the
+// caller's session and dies with it.
+//
+// Needs a human Bearer session: requireAuth refuses an intent token here (this
+// path isn't one it allows), and requireHumanSession refuses a bot. Clients
+// call it after sign-in and on foreground when their token is missing or close
+// to expiry, so 30 an hour is plenty. An older server answers 404, and the
+// client keeps sending the access-token copy.
+const intentTokenByUser = new RateLimiter(30, 60 * 60_000, 'intent-token-user');
+
+authRouter.post('/intent-token', requireAuth, requireHumanSession, async (c) => {
+  if (c.get('authScope') === 'intents') {
+    throw errors.forbidden('An intent token cannot mint another');
+  }
+  const userId = requireUserId(c);
+  const sessionId = requireSessionId(c);
+  const rl = await intentTokenByUser.consume(userId.toString());
+  if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
+  // The Bearer path doesn't read the session row, and the blacklist fails
+  // open: don't hand a 30-day token to a session revoked a moment ago.
+  await assertSessionLive(userId, sessionId);
+  const { token, expiresAt } = await signIntentToken({ userId, sessionId });
+  // Never log the token: it is a bearer credential.
+  return c.json({ token, expiresAt: expiresAt.toISOString() });
 });
 
 // ───────────────────────────────────────────────────────────────────────────
