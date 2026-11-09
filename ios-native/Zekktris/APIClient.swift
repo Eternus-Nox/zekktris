@@ -512,6 +512,16 @@ final class APIClient {
         }
     }
 
+    // ── Intent token (Siri, widget, watch) ──────────────────────────────────
+    /// [authed] Mint the long-lived token the extensions send as
+    /// `Authorization: Intent <token>` — they cannot refresh, so the access
+    /// token's copy died 15 minutes after the app was last used. Needs this
+    /// normal Bearer session; an older server answers 404. Another authed
+    /// route under `/auth/`, hence the explicit refresh-and-replay.
+    func mintIntentToken() async throws -> IntentTokenGrant {
+        try await sendAuthRouteAuthorized("/auth/intent-token", bodyData: Data("{}".utf8))
+    }
+
     // ── Quick login (log in on another device) ──────────────────────────────
     // DEPRECATED direction (the code was the whole credential) — superseded by
     // the device-approval calls above. Delete alongside the

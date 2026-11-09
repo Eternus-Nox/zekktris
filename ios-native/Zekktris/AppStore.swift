@@ -946,6 +946,12 @@ final class AppStore: ObservableObject {
     @Published var notificationOverrides: [String: String] = [:]
     /// One-shot guard so the token-refresh→watch-resync observer is added once.
     private var watchTokenObserverInstalled = false
+    /// The intent-token mint in flight (cancelled by stop(), so a late answer
+    /// can't write a signed-out account's token back), and when one was last
+    /// tried, so foreground and refresh bursts don't hammer an older server
+    /// that answers 404, or a rate limit. See ensureIntentToken.
+    private var intentTokenTask: Task<Void, Never>?
+    private var intentTokenAttemptAt: Date?
     /// Frozen last-read message id for the open channel, captured before acking,
     /// so the "New messages" divider stays put where the user left off.
     @Published var unreadBoundaryId: String?
@@ -1177,8 +1183,8 @@ final class AppStore: ObservableObject {
         // we last pushed. Answers with the current token + the same DM targets
         // syncWatch() builds, so a rotated/stale token never blocks a wrist send.
         WatchSync.shared.snapshotProvider = { [weak self] in
-            guard let self else { return (nil, []) }
-            return (self.api.token, self.watchTargets())
+            guard let self else { return .signedOut }
+            return self.watchSnapshot()
         }
         // Premium camera-quality gate: give the voice layer a LIVE read of
         // the admin-configured monetization matrix vs the signed-in tier, so
@@ -1197,9 +1203,16 @@ final class AppStore: ObservableObject {
             NotificationCenter.default.addObserver(
                 forName: APIClient.tokenRefreshedNotification, object: nil, queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in self?.syncWatch() }
+                Task { @MainActor in
+                    self?.syncWatch()
+                    self?.ensureIntentToken()
+                }
             }
         }
+        // Siri, the widget and the watch: the credential that outlives the
+        // 15-minute access token (mint on sign-in; renewed below on
+        // foreground and refresh).
+        ensureIntentToken()
         gateway.onEvent = { [weak self] name, data in
             self?.handleEvent(name, data)
         }
@@ -1315,6 +1328,9 @@ final class AppStore: ObservableObject {
         // window the reconnect is a fresh READY), which left the header
         // badge on the old value until the DM was re-entered.
         if let c = selectedChannel, c.isDM { Task { await refreshDmTimer(c.id) } }
+        // Renew Siri's intent token when it's missing or within a week of
+        // expiring (it then re-syncs on its own).
+        ensureIntentToken()
         // Refresh the watch with the freshest token + targets on foreground.
         syncWatch()
     }
@@ -1766,9 +1782,16 @@ final class AppStore: ObservableObject {
         // The widget and the watch each hold a COPY of the token. Drop both,
         // or a signed-out phone keeps poking from the Home Screen — and after
         // a server switch they'd send the old server's token to the new one.
+        // The intent token too: the server kills it with the session, but it
+        // must not sit in the App Group, or on the watch, past sign-out. A
+        // mint still in flight is cancelled so its answer can't put it back.
+        intentTokenTask?.cancel()
+        intentTokenTask = nil
+        intentTokenAttemptAt = nil
         WidgetBridge.publish(dms: [], token: nil)
+        WidgetBridge.publishIntentToken(nil, expiresAt: nil)
         WidgetCenter.shared.reloadAllTimelines()
-        WatchSync.shared.sync(token: nil, targets: [])
+        WatchSync.shared.sync(.signedOut)
         // Opened attachments, decrypted ones included, belong to this account.
         OpenedFileCopies.sweep(includingPlayback: true)
         // A share still waiting for a conversation belongs to this account.
@@ -2411,10 +2434,39 @@ final class AppStore: ObservableObject {
             }
     }
 
+    /// EVERY 1:1 DM, for Siri on the watch: the 12 targets above are what the
+    /// watch can poke and read, but a voice message should reach anyone the
+    /// phone can. Names only, never a key.
+    func watchDirectory() -> [WatchDirectoryEntry] {
+        dms
+            .filter { $0.type == "dm" }
+            .compactMap { dm -> WatchDirectoryEntry? in
+                guard let peer = dm.dmAvatarUser else { return nil }
+                return WatchDirectoryEntry(
+                    channelId: dm.id, userId: peer.id, name: dm.dmTitle,
+                    username: peer.username ?? "",
+                    contactName: ContactLinks.contactName(forUserId: peer.id),
+                    e2ee: dm.isE2EE,
+                )
+            }
+    }
+
+    /// What the watch is sent, push and pull alike. The intent token is read
+    /// back from the App Group, where ensureIntentToken keeps the one copy.
+    func watchSnapshot() -> WatchSnapshot {
+        WatchSnapshot(
+            token: api.token,
+            intentToken: WidgetBridge.intentToken(),
+            intentTokenExpiresAt: WidgetBridge.intentTokenExpiresAt(),
+            targets: watchTargets(),
+            directory: watchDirectory(),
+        )
+    }
+
     /// Push the current auth token + recent 1:1 DM peers to the Apple Watch
     /// poke app over WatchConnectivity. Cheap + coalesced (latest-wins).
     func syncWatch() {
-        WatchSync.shared.sync(token: api.token, targets: watchTargets())
+        WatchSync.shared.sync(watchSnapshot())
         // The Home/Lock-Screen widget shares the same trigger (DM list / token
         // changed) — publish to the App Group + reload its timeline.
         syncWidgets()
@@ -2463,6 +2515,49 @@ final class AppStore: ObservableObject {
         // name — is heard and dropped. (The SiriKit path uses donations
         // instead; this is the App Intents equivalent.)
         ZekktrisShortcuts.updateAppShortcutParameters()
+    }
+
+    /// Keep an intent token in the App Group for Siri, the widget and the
+    /// watch: mint one when there is none or it expires within 7 days.
+    ///
+    /// Those processes can't refresh, so the access-token copy they were
+    /// given died 15 minutes after the app was last used, and Siri sends
+    /// failed with "continue in Zekktris". The intent token lasts 30 days and
+    /// can only list DMs, send in a DM and poke. Minted with this session's
+    /// normal Bearer token (refreshing it first if needed); an older server
+    /// answers 404, which leaves it absent, and the extensions keep sending
+    /// the access-token copy as before. Called on sign-in, on foreground and
+    /// after a token refresh; at most one try per 10 minutes unless one
+    /// succeeds.
+    func ensureIntentToken() {
+        guard api.token?.isEmpty == false else { return }
+        if WidgetBridge.intentToken() != nil,
+           let expiry = WidgetBridge.intentTokenExpiry(),
+           expiry.timeIntervalSinceNow > 7 * 86_400 {
+            return
+        }
+        if let last = intentTokenAttemptAt, Date().timeIntervalSince(last) < 10 * 60 { return }
+        intentTokenAttemptAt = Date()
+        let api = self.api
+        intentTokenTask = Task { [weak self] in
+            do {
+                let grant = try await api.mintIntentToken()
+                // Signed out while it was in flight: stop() cancelled this,
+                // and has already wiped the App Group.
+                guard !Task.isCancelled, let self else { return }
+                WidgetBridge.publishIntentToken(grant.token, expiresAt: grant.expiresAt)
+                // The watch gets it in the same context as everything else.
+                self.syncWatch()
+            } catch let err as APIError where err.status == 404 {
+                // A server without intent tokens. One left from before a
+                // downgrade would only be refused, so don't keep it.
+                guard !Task.isCancelled else { return }
+                WidgetBridge.publishIntentToken(nil, expiresAt: nil)
+            } catch {
+                // Offline, rate-limited, 5xx: keep whatever is stored; the
+                // next foreground or refresh tries again.
+            }
+        }
     }
 
     // MARK: Share Suggestions (system share sheet)
@@ -7386,6 +7481,10 @@ final class AppStore: ObservableObject {
         storeKey(key, for: channel.id)
         decryptVisible()
         registerE2EEPurgeProofIfNeeded(channel)
+        // The watch encrypts with keys relayed from here, and its Siri refuses
+        // an encrypted DM it has no key for; send this one now rather than at
+        // the next DM load.
+        syncWatch()
         // Now the messages are readable: send the read held back while the
         // unlock panel covered them (disappearing timers start from it).
         if channel.id == selectedChannel?.id { replayHeldAck() }
@@ -7437,6 +7536,9 @@ final class AppStore: ObservableObject {
             try await api.enableDmE2EE(channelId: channel.id, salt: salt, verifier: verifier, purgeProof: purgeProof)
             storeKey(key, for: channel.id)
             applyE2EEState(channelId: channel.id, enabled: true, salt: salt, verifier: verifier)
+            // After the state, which is what makes watchTargets relay the key
+            // (see unlockE2EE).
+            syncWatch()
             return true
         } catch {
             e2eeError = (error as? APIError)?.message ?? error.localizedDescription

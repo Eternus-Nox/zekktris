@@ -33,21 +33,38 @@ final class SendMessageIntentHandler: NSObject, INSendMessageIntentHandling {
             completion([INSendMessageRecipientResolutionResult.needsValue()])
             return
         }
-        var results: [INSendMessageRecipientResolutionResult] = []
-        for person in people {
-            let matches = SiriDirectory.matches(for: person)
-            if matches.isEmpty {
-                // Nobody by that name in the conversations this device knows
-                // about. `noValidHandle` is what makes Siri say it can't find
-                // them, rather than silently sending to the wrong person.
-                results.append(.unsupported(forReason: .noValidHandle))
-            } else if matches.count == 1 {
-                results.append(.success(with: SiriDirectory.person(for: matches[0])))
-            } else {
-                results.append(.disambiguation(with: matches.map { SiriDirectory.person(for: $0) }))
-            }
+        let local = people.map { SiriDirectory.matches(for: $0) }
+        guard local.contains(where: \.isEmpty) else {
+            completion(local.map(Self.resolution(for:)))
+            return
         }
-        completion(results)
+        // Someone the snapshot doesn't know. It holds only the 30 most recent
+        // DMs, as of the app's last run, so ask the server before telling the
+        // user there's nobody by that name. Only value types cross into the
+        // task (see handle).
+        let spoken = people.map { SiriDirectory.spokenCandidates(for: $0) }
+        Task {
+            let remote = await SiriRemote.directMessages().map(\.asWidgetDM)
+            let results = zip(local, spoken).map { matches, candidates in
+                Self.resolution(for: matches.isEmpty
+                    ? SiriDirectory.matches(candidates: candidates, in: remote)
+                    : matches)
+            }
+            completion(results)
+        }
+    }
+
+    private static func resolution(for matches: [WidgetDM]) -> INSendMessageRecipientResolutionResult {
+        if matches.isEmpty {
+            // Nobody by that name in the conversations this device knows
+            // about. `noValidHandle` is what makes Siri say it can't find
+            // them, rather than silently sending to the wrong person.
+            return .unsupported(forReason: .noValidHandle)
+        }
+        if matches.count == 1 {
+            return .success(with: SiriDirectory.person(for: matches[0]))
+        }
+        return .disambiguation(with: matches.map { SiriDirectory.person(for: $0) })
     }
 
     func resolveContent(
@@ -62,14 +79,15 @@ final class SendMessageIntentHandler: NSObject, INSendMessageIntentHandling {
         intent: INSendMessageIntent,
         completion: @escaping (INSendMessageIntentResponse) -> Void
     ) {
-        // No token means signed out (or the app has never published one) —
-        // say so now rather than after Siri has read the message back.
-        let signedIn = (WidgetBridge.token()?.isEmpty == false)
+        // No credential means signed out (or the app has never published one)
+        // — say so now rather than after Siri has read the message back.
+        let signedIn = !WidgetBridge.authorizations().isEmpty
         if !signedIn {
-            // The app publishes the token to the app-group keychain on sign-in,
-            // on foreground and on every refresh. Missing here means either the
-            // user is signed out, or this extension cannot read the App Group —
-            // check that `group.com.zekktris.native` is on the App ID for
+            // The app publishes the intent token and the access-token copy to
+            // the app-group keychain on sign-in, on foreground and on every
+            // refresh. Missing here means either the user is signed out, or
+            // this extension cannot read the App Group — check that
+            // `group.com.zekktris.native` is on the App ID for
             // com.zekktris.native.intents, not just on the app's.
             siriLog.error("no token in the app group — cannot send without the app")
         }
@@ -88,7 +106,7 @@ final class SendMessageIntentHandler: NSObject, INSendMessageIntentHandling {
             completion(INSendMessageIntentResponse(code: .failure, userActivity: nil))
             return
         }
-        guard let token = WidgetBridge.token(), !token.isEmpty else {
+        guard !WidgetBridge.authorizations().isEmpty else {
             siriLog.error("no token in the app group — cannot send without the app")
             completion(INSendMessageIntentResponse(code: .failureRequiringAppLaunch, userActivity: nil))
             return
@@ -101,14 +119,14 @@ final class SendMessageIntentHandler: NSObject, INSendMessageIntentHandling {
             .map { SiriDirectory.spokenCandidates(for: $0) } ?? []
         Task {
             guard let target = await SiriDirectory.resolve(
-                conversationId: conversationId, candidates: candidates, token: token,
+                conversationId: conversationId, candidates: candidates,
             ) else {
                 siriLog.error("nothing matched \(candidates.joined(separator: "/"), privacy: .private)")
                 completion(INSendMessageIntentResponse(code: .failure, userActivity: nil))
                 return
             }
             let result = await SiriSendAPI.send(
-                channelId: target.id, text: text, isE2EE: target.isE2EE, token: token,
+                channelId: target.id, text: text, isE2EE: target.isE2EE,
             )
             switch result {
             case .sent:
@@ -158,31 +176,46 @@ enum SiriDirectory {
     /// open the app" for something it could have simply sent. So when the
     /// snapshot can't answer confidently, ask the server: the token is right
     /// here, and the channel list says which DMs exist and which are encrypted.
-    static func resolve(conversationId: String?, candidates: [String], token: String) async -> Target? {
+    static func resolve(conversationId: String?, candidates: [String]) async -> Target? {
         let snapshot = WidgetBridge.recentDMs()
+        // Fetched at most once, and only when the snapshot can't answer.
+        var fetched: [SiriRemote.Conversation]?
         if let conversationId {
             // A donated conversation. Trust it only when the snapshot also
             // knows the encryption state, since guessing that is unsafe.
             if let hit = snapshot.first(where: { $0.id == conversationId }), let e2ee = hit.isE2EE {
                 return Target(id: hit.id, isE2EE: e2ee)
             }
-            if let remote = await SiriRemote.directMessages(token: token)
-                .first(where: { $0.id == conversationId }) {
+            let list = await SiriRemote.directMessages()
+            fetched = list
+            if let remote = list.first(where: { $0.id == conversationId }) {
+                return Target(id: remote.id, isE2EE: remote.isE2EE)
+            }
+        }
+        // A handle we issued (a donation, or a recipient resolved above) names
+        // the peer outright, so settle it by id, from the server if the
+        // snapshot doesn't have them, BEFORE ranking any name: a recipient
+        // found on the server comes back with its display name, and that name
+        // must not land on someone similar in the snapshot instead.
+        if let id = candidates.lazy.compactMap({ userId(fromHandle: $0) }).first {
+            if let hit = snapshot.first(where: { $0.peerUserId == id }), let e2ee = hit.isE2EE {
+                return Target(id: hit.id, isE2EE: e2ee)
+            }
+            let list: [SiriRemote.Conversation]
+            if let fetched { list = fetched } else { list = await SiriRemote.directMessages() }
+            fetched = list
+            if let remote = list.first(where: { $0.peerUserId == id }) {
                 return Target(id: remote.id, isE2EE: remote.isE2EE)
             }
         }
         for candidate in candidates {
-            // A donated handle names the peer outright.
-            if let id = userId(fromHandle: candidate),
-               let hit = snapshot.first(where: { $0.peerUserId == id }), let e2ee = hit.isE2EE {
-                return Target(id: hit.id, isE2EE: e2ee)
-            }
             if let hit = rank(heard: candidate, in: snapshot).first, let e2ee = hit.isE2EE {
                 return Target(id: hit.id, isE2EE: e2ee)
             }
         }
         // Nothing usable locally — the server knows.
-        let remote = await SiriRemote.directMessages(token: token)
+        let remote: [SiriRemote.Conversation]
+        if let fetched { remote = fetched } else { remote = await SiriRemote.directMessages() }
         for candidate in candidates {
             if let hit = rank(heard: candidate, in: remote.map(\.asWidgetDM)).first,
                let match = remote.first(where: { $0.id == hit.id }) {
@@ -222,8 +255,13 @@ enum SiriDirectory {
     /// `type == "dm"` filter (see AppStore.syncWidgets), so group DMs and
     /// server channels cannot be addressed by voice at all.
     static func matches(for person: INPerson) -> [WidgetDM] {
-        let all = WidgetBridge.recentDMs()
-        for candidate in spokenCandidates(for: person) {
+        matches(candidates: spokenCandidates(for: person), in: WidgetBridge.recentDMs())
+    }
+
+    /// The same, over any list: the snapshot, or the server's when the
+    /// snapshot has nobody by that name.
+    static func matches(candidates: [String], in all: [WidgetDM]) -> [WidgetDM] {
+        for candidate in candidates {
             // A donated conversation carries our own handle, so this is exact.
             if let id = userId(fromHandle: candidate) {
                 let byId = all.filter { $0.peerUserId == id }
@@ -298,8 +336,9 @@ enum SiriSendAPI {
 
     /// POST the message. Mirrors QuickReply.send (the notification reply path),
     /// including its refusal to put plaintext in an encrypted conversation, but
-    /// with a standalone URLSession call rather than the app's APIClient.
-    static func send(channelId: String, text: String, isE2EE: Bool, token: String) async -> Outcome {
+    /// with a standalone URLSession call rather than the app's APIClient,
+    /// authorized by WidgetBridge.perform (the intent token, else the copy).
+    static func send(channelId: String, text: String, isE2EE: Bool) async -> Outcome {
         var wire = text
         if isE2EE {
             guard let key = e2eeKey(forChannel: channelId) else {
@@ -319,7 +358,6 @@ enum SiriSendAPI {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let body: [String: Any] = [
             "content": wire,
             "nonce": UUID().uuidString,
@@ -331,14 +369,14 @@ enum SiriSendAPI {
             "notARead": true,
         ]
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        guard let (_, response) = try? await URLSession.shared.data(for: req),
-              let http = response as? HTTPURLResponse else {
+        guard let http = await WidgetBridge.perform(req)?.response else {
             siriLog.error("send request never completed")
             return .failed
         }
         if (200..<300).contains(http.statusCode) { return .sent }
-        // A stale published token: the app refreshes it on foreground, and
-        // nothing out here can.
+        // Neither credential was accepted: the intent token is gone (sign-out,
+        // revoked) and the access-token copy is stale. The app mints and
+        // refreshes them on foreground, and nothing out here can.
         if http.statusCode == 401 {
             siriLog.error("token rejected — the app needs to refresh it")
             return .needsApp
@@ -390,13 +428,11 @@ enum SiriRemote {
 
     /// One-to-one DMs only — `type == "dm"` excludes group DMs, and server
     /// channels are not in this endpoint's response at all.
-    static func directMessages(token: String) async -> [Conversation] {
+    static func directMessages() async -> [Conversation] {
         guard let url = URL(string: "\(Config.apiBaseURL)/users/@me/channels") else { return [] }
         var req = URLRequest(url: url)
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        guard let (data, response) = try? await URLSession.shared.data(for: req),
-              let http = response as? HTTPURLResponse,
+        guard let (data, http) = await WidgetBridge.perform(req),
               (200..<300).contains(http.statusCode),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let channels = root["channels"] as? [[String: Any]] else {

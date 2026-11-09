@@ -168,6 +168,8 @@ struct RootView: View {
                     if u != session.currentUser { session.currentUser = u }
                 }
                 PushManager.shared.requestAuthorizationAndRegister()
+                // Siri on its own, whatever the notification answer is.
+                PushManager.requestSiriAuthorizationIfNeeded()
                 PushManager.shared.registerWithServerIfPossible()
                 VoipPushHandler.shared.registerWithServerIfPossible()
                 // A cold launch from the share sheet becomes active before the

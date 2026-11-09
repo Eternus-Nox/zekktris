@@ -878,6 +878,15 @@ struct AuthSession: Codable {
     let accessToken: String
 }
 
+/// `POST /auth/intent-token`: the scoped, 30-day credential the Siri
+/// extension, the widget and the watch send instead of a copy of the
+/// 15-minute access token. `expiresAt` is ISO-8601, kept as the server wrote
+/// it (see WidgetBridge.intentTokenExpiry).
+struct IntentTokenGrant: Codable {
+    let token: String
+    let expiresAt: String
+}
+
 /// A short-lived, single-use quick-login code for signing in on another
 /// device (shown as digits + encoded in a QR). `expiresIn` is seconds.
 ///

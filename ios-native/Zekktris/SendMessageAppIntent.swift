@@ -66,16 +66,23 @@ struct SendMessageAppIntent: AppIntent {
 /// `INPerson.contactIdentifier`; here it feeds what gets published.
 ///
 /// A linked DM is published twice (see `all()`): under the card name and under
-/// the Zekktris name, so either is understood. The alias carries a suffixed id
-/// and `channelId` strips it back off.
+/// the Zekktris name, so either is understood. A unique first name is
+/// published as well. The aliases carry a suffixed id and `channelId` strips
+/// it back off.
 struct ZekktrisPeer: AppEntity, Identifiable {
-    /// The DM channel id, or "<channel id>|zk" for the alias.
+    /// The DM channel id, "<channel id>|zk" for the Zekktris-name alias, or
+    /// "<channel id>|fn" for the first-name alias.
     let id: String
     let name: String
 
     static let aliasSuffix = "|zk"
+    static let firstNameSuffix = "|fn"
+    /// The DM this refers to, whichever of the names was spoken.
     var channelId: String {
-        id.hasSuffix(Self.aliasSuffix) ? String(id.dropLast(Self.aliasSuffix.count)) : id
+        for suffix in [Self.aliasSuffix, Self.firstNameSuffix] where id.hasSuffix(suffix) {
+            return String(id.dropLast(suffix.count))
+        }
+        return id
     }
 
     static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Person")
@@ -105,7 +112,8 @@ struct ZekktrisPeerQuery: EntityStringQuery {
     /// One entry per DM, plus a second under the Zekktris name when a linked
     /// card name differs — so both are understood.
     static func all() -> [ZekktrisPeer] {
-        WidgetBridge.recentDMs().flatMap { dm -> [ZekktrisPeer] in
+        let dms = WidgetBridge.recentDMs()
+        var peers = dms.flatMap { dm -> [ZekktrisPeer] in
             guard let card = dm.contactName, !card.isEmpty,
                   card.caseInsensitiveCompare(dm.name) != .orderedSame else {
                 return [ZekktrisPeer(id: dm.id, name: dm.name)]
@@ -115,6 +123,27 @@ struct ZekktrisPeerQuery: EntityStringQuery {
                 ZekktrisPeer(id: dm.id + ZekktrisPeer.aliasSuffix, name: dm.name),
             ]
         }
+        // FIRST NAMES, the same rule as the watch (WatchSiriPeerQuery.all).
+        // A name spoken inside a phrase is matched against this published
+        // list, so "Send a message on Zekktris to Sam" found nothing for a DM
+        // published only as "Sam Rivera". A linked card's first name is
+        // published too (or the display name's, when it is a real two-word
+        // name), but only when no other DM shares it: an ambiguous first name
+        // would send to whichever one Siri picked.
+        let firstNames = dms.compactMap { dm -> (String, String)? in
+            let full = (dm.contactName?.isEmpty == false ? dm.contactName : nil) ?? dm.name
+            guard let first = full.split(separator: " ").first.map(String.init),
+                  first.count >= 2,
+                  first.caseInsensitiveCompare(full) != .orderedSame else { return nil }
+            return (first, dm.id)
+        }
+        let counts = Dictionary(grouping: firstNames, by: { $0.0.lowercased() }).mapValues(\.count)
+        let taken = Set(peers.map { $0.name.lowercased() })
+        for (first, channelId) in firstNames
+        where counts[first.lowercased()] == 1 && !taken.contains(first.lowercased()) {
+            peers.append(ZekktrisPeer(id: channelId + ZekktrisPeer.firstNameSuffix, name: first))
+        }
+        return peers
     }
 }
 
@@ -122,10 +151,17 @@ struct ZekktrisPeerQuery: EntityStringQuery {
 /// en.lproj/AppIntentVocabulary.plist so the same sentences keep working
 /// whichever Siri the phone is running.
 ///
-/// Every phrase must contain `\(.applicationName)`, which is also what routes
-/// "message Sam" to Zekktris rather than to Messages. The message body cannot
-/// be spoken inline — App Shortcuts take one parameter per phrase, and only
-/// from a published list — so Siri asks for it after the name.
+/// Every phrase must contain `\(.applicationName)`, exactly once, which is
+/// also what routes "message Sam" to Zekktris rather than to Messages. The
+/// message body cannot be spoken inline — App Shortcuts take one parameter per
+/// phrase, and only from a published list — so Siri asks for it after the
+/// name.
+///
+/// A sentence that matches none of these, on a Siri that only routes through
+/// App Intents, gets "you'll need an app for that". That is what "Send a
+/// message on Zekktris to Sam" got, so the word orders people actually use are
+/// listed too, not only the ones Apple's examples suggest. Keep this list the
+/// same as the watch's (ZekktrisWatchShortcuts).
 struct ZekktrisShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
@@ -135,8 +171,14 @@ struct ZekktrisShortcuts: AppShortcutsProvider {
                 "Send a message to \(\.$recipient) on \(.applicationName)",
                 "Message \(\.$recipient) on \(.applicationName)",
                 "Tell \(\.$recipient) something on \(.applicationName)",
+                "Send a message on \(.applicationName) to \(\.$recipient)",
+                "Send a message to \(.applicationName) to \(\.$recipient)",
+                "Send \(\.$recipient) a message on \(.applicationName)",
+                "Send a message to \(\.$recipient) with \(.applicationName)",
+                "Message \(\.$recipient) with \(.applicationName)",
                 "Send a message with \(.applicationName)",
                 "Send a \(.applicationName) message",
+                "Send a message on \(.applicationName)",
             ],
             shortTitle: "Send a Message",
             systemImageName: "bubble.left.and.bubble.right.fill",

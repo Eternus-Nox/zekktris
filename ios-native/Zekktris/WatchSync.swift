@@ -29,9 +29,45 @@ typealias WatchTargetTuple = (
     username: String?, contactName: String?
 )
 
+/// One entry of the watch's Siri directory (context key "siriDirectory"):
+/// EVERY 1:1 DM, not only the 12 poke targets, so Siri on the wrist can reach
+/// anyone the phone can. Never a key: keys ride only with the targets, and a
+/// directory DM that is encrypted and has none still refuses to send.
+struct WatchDirectoryEntry: Codable {
+    let channelId: String
+    let userId: String
+    let name: String
+    let username: String
+    var contactName: String?
+    let e2ee: Bool
+}
+
+/// Everything the phone hands the watch. Built by the app (AppStore
+/// .watchSnapshot) for both the push and the pull, so they never differ.
+struct WatchSnapshot {
+    /// The 15-minute access token: the watch app's own sends refresh it by
+    /// pulling, and it is the fallback for a server without intent tokens.
+    var token: String?
+    /// The long-lived token the watch's Siri extensions and complication send
+    /// as `Authorization: Intent`, and when it expires (ISO-8601). nil when
+    /// the server predates them.
+    var intentToken: String?
+    var intentTokenExpiresAt: String?
+    var targets: [WatchTargetTuple]
+    var directory: [WatchDirectoryEntry]
+
+    /// What a sign-out sends: every credential and list emptied.
+    static var signedOut: WatchSnapshot {
+        WatchSnapshot(token: nil, intentToken: nil, intentTokenExpiresAt: nil, targets: [], directory: [])
+    }
+}
+
 /// Pushes the auth token + API base URL + recent DM targets to the paired
 /// Apple Watch over WatchConnectivity, so the "Zekktris" watch app can message
-/// or nudge a DM peer without the phone in the loop.
+/// or nudge a DM peer without the phone in the loop. Alongside them: the
+/// intent token (the credential the watch's Siri extensions and complication
+/// can keep using once the access token has expired) and the Siri directory
+/// of every 1:1 DM.
 ///
 /// Two delivery paths, both required for reliability:
 ///   • PUSH  — `updateApplicationContext` (latest-wins, persisted + redelivered
@@ -56,10 +92,17 @@ final class WatchSync: NSObject {
     /// watch "refresh" pull always answers with live values (not a stale cache),
     /// even if the phone hasn't pushed a context in a while or its token rotated
     /// since the last push. The single source of truth for the pull path.
-    var snapshotProvider: (@MainActor () -> (token: String?, targets: [WatchTargetTuple]))?
+    var snapshotProvider: (@MainActor () -> WatchSnapshot)?
 
-    /// The last context we built — the fallback reply if no provider is wired.
+    /// The last context we built — the fallback reply if no provider is wired,
+    /// and what is resent once activation completes.
     private var lastContext: [String: Any] = [:]
+
+    /// Ceiling on the encoded directory. The context also answers the watch's
+    /// "refresh" pull, as a message reply, and those are capped at about 64 KB;
+    /// past that the reply fails outright and the watch loses its token too.
+    /// At about 150 bytes an entry this is some 200 DMs, newest first.
+    private static let directoryByteBudget = 30_000
 
     /// Activate the WCSession once (no-op if the device has no watch support).
     func start() {
@@ -71,13 +114,17 @@ final class WatchSync: NSObject {
 
     /// Build the WatchConnectivity payload — shared by the proactive push
     /// (`sync`) and the on-demand pull (refresh reply) so both are identical.
-    private func buildContext(token: String?, targets: [WatchTargetTuple]) -> [String: Any] {
+    private func buildContext(_ snapshot: WatchSnapshot) -> [String: Any] {
         var ctx: [String: Any] = [
-            "token": token ?? "",
+            "token": snapshot.token ?? "",
             "apiBaseURL": Config.apiBaseURL,
+            // Always present, "" when there is none, so a sign-out or an older
+            // server clears the watch's copy rather than leaving it in place.
+            "intentToken": snapshot.intentToken ?? "",
+            "intentTokenExpiresAt": snapshot.intentTokenExpiresAt ?? "",
         ]
         if let data = try? JSONEncoder().encode(
-            targets.map {
+            snapshot.targets.map {
                 WatchPokeTarget(
                     id: $0.id, name: $0.name, streak: $0.streak, e2ee: $0.e2ee,
                     e2eeKeyBase64: $0.e2eeKeyBase64,
@@ -87,15 +134,31 @@ final class WatchSync: NSObject {
         ) {
             ctx["targets"] = data
         }
+        if let data = Self.encodeDirectory(snapshot.directory) {
+            ctx["siriDirectory"] = data
+        }
         return ctx
     }
 
-    /// Sync the current token + poke targets to the watch. Cheap + coalesced —
-    /// safe to call on login, foreground, DM-list changes, and token refresh.
-    func sync(token: String?, targets: [WatchTargetTuple]) {
+    /// The directory as JSON, trimmed from the oldest end until it fits the
+    /// budget (see `directoryByteBudget`).
+    private static func encodeDirectory(_ entries: [WatchDirectoryEntry]) -> Data? {
+        var list = entries
+        var data = try? JSONEncoder().encode(list)
+        while let encoded = data, encoded.count > directoryByteBudget, !list.isEmpty {
+            list.removeLast(max(1, list.count / 10))
+            data = try? JSONEncoder().encode(list)
+        }
+        return data
+    }
+
+    /// Sync the current tokens + poke targets + Siri directory to the watch.
+    /// Cheap + coalesced — safe to call on login, foreground, DM-list changes,
+    /// and token refresh.
+    func sync(_ snapshot: WatchSnapshot) {
         guard WCSession.isSupported() else { return }
         let session = WCSession.default
-        let ctx = buildContext(token: token, targets: targets)
+        let ctx = buildContext(snapshot)
         lastContext = ctx
         guard session.activationState == .activated else { return }
         try? session.updateApplicationContext(ctx)
@@ -144,7 +207,7 @@ extension WatchSync: WCSessionDelegate {
         Task { @MainActor in
             let ctx: [String: Any]
             if let snap = self.snapshotProvider?() {
-                ctx = self.buildContext(token: snap.token, targets: snap.targets)
+                ctx = self.buildContext(snap)
                 self.lastContext = ctx
                 let s = WCSession.default
                 if s.activationState == .activated {
@@ -157,11 +220,21 @@ extension WatchSync: WCSessionDelegate {
         }
     }
 
+    // A sync() made before activation finished was only remembered (it can't
+    // be sent until then), so send it now. Without this, a sign-in on a cold
+    // launch could leave the watch on the previous context until the next
+    // foreground or DM load.
     nonisolated func session(
         _ session: WCSession,
         activationDidCompleteWith activationState: WCSessionActivationState,
         error: Error?
-    ) {}
+    ) {
+        guard activationState == .activated else { return }
+        Task { @MainActor in
+            guard !self.lastContext.isEmpty else { return }
+            try? WCSession.default.updateApplicationContext(self.lastContext)
+        }
+    }
     // iOS-only delegate methods (required to compile on iOS). On a watch swap,
     // re-activate so the new watch resumes receiving context.
     nonisolated func sessionDidBecomeInactive(_ session: WCSession) {}

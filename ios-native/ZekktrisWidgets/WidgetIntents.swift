@@ -84,25 +84,25 @@ struct QuickPokeIntent: AppIntent {
     }
 
     func perform() async throws -> some IntentResult {
-        if !channelId.isEmpty, let token = WidgetBridge.token() {
-            await WidgetPokeAPI.poke(channelId: channelId, token: token, pokeType: pokeType)
+        if !channelId.isEmpty {
+            await WidgetPokeAPI.poke(channelId: channelId, pokeType: pokeType)
         }
         return .result()
     }
 }
 
-/// Minimal bearer-token POST for the widget — mirrors the watch's WatchPokeAPI
-/// (no refresh/retry; an expired token just fails and the app re-publishes a
-/// fresh one on its next foreground).
+/// Minimal POST for the widget — mirrors the watch's WatchPokeAPI. Authorized
+/// by WidgetBridge.perform: the long-lived intent token when the app has
+/// minted one, else the access-token copy, which has no refresh here (an
+/// expired one just fails and the app re-publishes on its next foreground).
 enum WidgetPokeAPI {
-    static func poke(channelId: String, token: String, pokeType: String) async {
+    static func poke(channelId: String, pokeType: String) async {
         guard let url = URL(string: "\(Config.apiBaseURL)/channels/\(channelId)/poke") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["pokeType": pokeType])
-        _ = try? await URLSession.shared.data(for: req)
+        _ = await WidgetBridge.perform(req)
     }
 }

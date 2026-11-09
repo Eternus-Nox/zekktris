@@ -40,6 +40,16 @@ enum WidgetBridge {
     /// Keychain account for the token COPY the widget reads (kept distinct from
     /// the app's own token entry so clearing one never disturbs the other).
     static let tokenKey = "widget.authToken"
+    /// Keychain accounts for the INTENT token and when it expires (ISO-8601,
+    /// as the server sent it). The copy above is the 15-minute access token,
+    /// and nothing outside the app can refresh it, so Siri and the widget
+    /// failed once the app had been idle that long. The intent token is what
+    /// the server mints for exactly these processes: 30 days, good only for
+    /// the DM list, a DM send and a poke, and dead the moment the session is.
+    /// The app keeps it fresh (AppStore.ensureIntentToken); an older server
+    /// has no such token, and then only the copy above is sent.
+    static let intentTokenKey = "widget.intentToken"
+    static let intentTokenExpiresAtKey = "widget.intentTokenExpiresAt"
 
     private static var defaults: UserDefaults? {
         UserDefaults(suiteName: AppGroupConfig.identifier)
@@ -69,6 +79,86 @@ enum WidgetBridge {
     }
 
     static func token() -> String? { keychain.get(tokenKey) }
+
+    /// Store the intent token, or with nil delete it (sign-out, an older
+    /// server). Written by the app; an extension only ever deletes one the
+    /// server has refused (see `perform`).
+    static func publishIntentToken(_ token: String?, expiresAt: String?) {
+        if let token, !token.isEmpty {
+            keychain.set(token, for: intentTokenKey)
+            if let expiresAt, !expiresAt.isEmpty {
+                keychain.set(expiresAt, for: intentTokenExpiresAtKey)
+            } else {
+                keychain.delete(intentTokenExpiresAtKey)
+            }
+        } else {
+            keychain.delete(intentTokenKey)
+            keychain.delete(intentTokenExpiresAtKey)
+        }
+    }
+
+    static func intentToken() -> String? {
+        guard let t = keychain.get(intentTokenKey), !t.isEmpty else { return nil }
+        return t
+    }
+
+    /// When the intent token expires, exactly as the server wrote it.
+    static func intentTokenExpiresAt() -> String? { keychain.get(intentTokenExpiresAtKey) }
+
+    /// The same, as a date. nil when there is no token or the stamp can't be
+    /// read, which the app treats as "mint a new one".
+    static func intentTokenExpiry() -> Date? {
+        guard let stamp = intentTokenExpiresAt() else { return nil }
+        // The server writes Date.toISOString(), which has milliseconds;
+        // accept the plain form too.
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = iso.date(from: stamp) { return date }
+        iso.formatOptions = [.withInternetDateTime]
+        return iso.date(from: stamp)
+    }
+
+    /// The `Authorization` values an extension can send, best first: the
+    /// intent token, then the access-token copy. Empty means signed out, or
+    /// that this process can't read the App Group.
+    static func authorizations() -> [String] {
+        var out: [String] = []
+        if let t = intentToken() { out.append("Intent \(t)") }
+        if let t = token(), !t.isEmpty { out.append("Bearer \(t)") }
+        return out
+    }
+
+    /// One request from an extension or widget, authorized with the best
+    /// credential the App Group holds. An intent token answered 401 (expired,
+    /// revoked, or a server that no longer knows the scheme) is retried once
+    /// with the Bearer copy, and deleted, so the app mints a fresh one on its
+    /// next foreground instead of keeping a dead one until it nears expiry.
+    /// nil means there was no credential, or the request never completed.
+    static func perform(_ request: URLRequest) async -> (data: Data, response: HTTPURLResponse)? {
+        let auths = authorizations()
+        guard let first = auths.first,
+              let answer = await attempt(request, authorization: first) else { return nil }
+        guard answer.response.statusCode == 401, first.hasPrefix("Intent ") else { return answer }
+        // Only the token that was refused: the app may have stored a new one
+        // while this request was out.
+        if let stored = intentToken(), first == "Intent \(stored)" {
+            publishIntentToken(nil, expiresAt: nil)
+        }
+        guard auths.count > 1, let retry = await attempt(request, authorization: auths[1]) else {
+            return answer
+        }
+        return retry
+    }
+
+    private static func attempt(
+        _ request: URLRequest, authorization: String
+    ) async -> (data: Data, response: HTTPURLResponse)? {
+        var req = request
+        req.setValue(authorization, forHTTPHeaderField: "Authorization")
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse else { return nil }
+        return (data, http)
+    }
 }
 
 /// Which Contacts card a Zekktris account was linked to.
