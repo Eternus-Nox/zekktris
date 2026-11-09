@@ -118,8 +118,12 @@ enum WatchWidgetBridge {
     /// are the most recent, and the only ones with keys), then the rest of the
     /// directory. Both Siri paths match against this, not `dms()` alone, which
     /// left anyone outside the 12 most recent conversations unreachable.
-    static func siriDMs() -> [WatchWidgetDM] {
-        var out = dms()
+    static func siriDMs() -> [WatchWidgetDM] { siriDMs(targets: dms()) }
+
+    /// The same, from a `dms()` the caller already read — so it can tell the
+    /// poke targets from the rest without a second read that might differ.
+    static func siriDMs(targets: [WatchWidgetDM]) -> [WatchWidgetDM] {
+        var out = targets
         var seen = Set(out.map(\.id))
         for entry in directory() where seen.insert(entry.channelId).inserted {
             out.append(WatchWidgetDM(

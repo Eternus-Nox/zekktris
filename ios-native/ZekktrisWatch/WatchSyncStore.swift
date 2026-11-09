@@ -156,9 +156,16 @@ final class WatchSyncStore: NSObject, ObservableObject {
         }
         WidgetCenter.shared.reloadAllTimelines()
         // The Siri phrases and the person list they match against live in the
-        // ZekktrisWatchAppIntents extension, which reads this same App Group —
-        // so publishing here is all the app has to do. (The app cannot refresh
-        // Siri's name index directly: the provider type is the extension's.)
+        // ZekktrisWatchAppIntents extension, which reads this same App Group.
+        // That is enough for a phrase without a name (Siri asks who, and the
+        // answer is looked up in what was published here) and for the send.
+        // It is NOT enough for a name spoken inside the phrase: that is
+        // matched against an index Siri keeps, which only the extension can
+        // refresh (the provider type is the extension's, so this app has no
+        // way to), and the extension does so each time the intent runs.
+        // Someone who first arrives here becomes sayable by name once Siri
+        // has next run the send on the watch (whether or not it sent), not
+        // before.
     }
 
     /// Handle a `zekktris://friend/<id>` (or `/dm/<id>`) deep link from a
