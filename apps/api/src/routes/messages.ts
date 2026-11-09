@@ -833,8 +833,11 @@ messagesRouter.post(
     // iOS and Android builds open the destination DM right after it, so the
     // sender is shown what waits there. Web's Forward modal (which stays put)
     // and current iOS (whose destination may be a locked E2EE DM) send the
-    // flag, as do Siri / Shortcuts / Watch sends.
-    const isRead = !payload.notARead;
+    // flag, as do Siri / Shortcuts / Watch sends. An intent token's send is
+    // never a read, whatever the body says: the scope is denied the ack
+    // route, so a copied token mustn't get its side effects (moving the read
+    // marker, starting every waiting clock) by leaving the flag out.
+    const isRead = c.get('authScope') === 'intents' ? false : !payload.notARead;
 
     let result;
     try {

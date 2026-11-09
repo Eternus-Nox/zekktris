@@ -8,6 +8,8 @@
  *   - it lists DMs, sends a JSON message into a DM / group DM, and pokes;
  *   - it opens nothing else: other routes, a guild channel send, a multipart
  *     send;
+ *   - its send is never a read, notARead or not: no disappearing clock starts
+ *     and the read marker stays below what is waiting;
  *   - it dies with its session (logout), even once the 15-minute blacklist
  *     entry is gone, and survives a refresh rotation (same session);
  *   - an expired, forged or wrong-audience token is a 401, and neither token
@@ -15,7 +17,7 @@
  */
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { SignJWT, decodeJwt } from 'jose';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { DEFAULT_EVERYONE_PERMISSIONS } from '@zekktris/shared/permissions';
 import { createApp } from '../src/server';
 import { db, schema } from '../src/db';
@@ -328,6 +330,54 @@ describe.runIf(dbReady)('intent tokens', () => {
       body: form(),
     });
     expect(bearer.status).toBe(201);
+  });
+
+  it('a send without notARead is still not a read: no clock starts and the marker holds', async () => {
+    const me = await signIn(await createUser());
+    const peer = await signIn(await createUser());
+    const dm = await createDmChannel([me.userId, peer.userId]);
+    const timer = await call('PATCH', `/users/@me/channels/${dm}/settings`, peer.bearer, {
+      ttlSecondsAfterRead: 30,
+    });
+    expect(timer.status).toBe(200);
+    const [notice] = await db
+      .select({ id: schema.messages.id })
+      .from(schema.messages)
+      .where(and(eq(schema.messages.channelId, dm), eq(schema.messages.type, 'system_disappearing')));
+    expect((await call('POST', `/channels/${dm}/messages/${notice!.id}/ack`, me.bearer)).status).toBe(200);
+    const waiting = await call('POST', `/channels/${dm}/messages`, peer.bearer, { content: 'waiting for you' });
+    expect(waiting.status).toBe(201);
+    const waitingId = BigInt(waiting.json.message.id);
+    const timed = async () => {
+      const [r] = await db
+        .select({
+          expireAfterSeconds: schema.messages.expireAfterSeconds,
+          expiresAt: schema.messages.expiresAt,
+        })
+        .from(schema.messages)
+        .where(eq(schema.messages.id, waitingId));
+      return r!;
+    };
+    const marker = async () => {
+      const [r] = await db
+        .select({ last: schema.readStates.lastMessageId })
+        .from(schema.readStates)
+        .where(and(eq(schema.readStates.userId, me.userId), eq(schema.readStates.channelId, dm)));
+      return r?.last;
+    };
+    expect(await timed()).toEqual({ expireAfterSeconds: 30, expiresAt: null });
+
+    // No notARead in the body: the token's scope decides, not the client.
+    const r = await call('POST', `/channels/${dm}/messages`, await intentFor(me), { content: 'hi' });
+    expect(r.status).toBe(201);
+    expect((await timed()).expiresAt).toBeNull();
+    expect(await marker()).toBe(notice!.id);
+
+    // The same body with the Bearer session is a read.
+    const read = await call('POST', `/channels/${dm}/messages`, me.bearer, { content: 'read it' });
+    expect(read.status).toBe(201);
+    expect((await timed()).expiresAt).not.toBeNull();
+    expect(await marker()).toBe(BigInt(read.json.message.id));
   });
 
   // ── Revocation ──────────────────────────────────────────────────────────────
