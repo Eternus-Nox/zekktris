@@ -1109,6 +1109,36 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
         }
     }
 
+    // Zekk Pet (1:1 DMs; servers with READY features.zekk_pet). Non-2xx throws
+    // with the server's reason: a 409 (not eligible, an invite already open,
+    // nothing to rename), a block, a mute or the rate limit is never a success.
+
+    /** The DM's pet (null when none) and whether either person may invite. */
+    suspend fun getDmPet(channelId: String): com.zekktris.data.model.DmPetState =
+        authorized(HttpMethod.Get, "/users/@me/channels/$channelId/pet").decodeOrThrow()
+
+    /** Invite the other person to adopt a pet. */
+    suspend fun inviteDmPet(channelId: String): com.zekktris.data.model.PetDTO? =
+        authorized(HttpMethod.Post, "/users/@me/channels/$channelId/pet/invite")
+            .decodeOrThrow<com.zekktris.data.model.DmPetWrap>().pet
+
+    /** Accept the other person's invite; the egg appears. Invitee only. */
+    suspend fun acceptDmPet(channelId: String): com.zekktris.data.model.PetDTO? =
+        authorized(HttpMethod.Post, "/users/@me/channels/$channelId/pet/accept")
+            .decodeOrThrow<com.zekktris.data.model.DmPetWrap>().pet
+
+    /** Decline the invite (invitee) or cancel it (inviter); answers `{ pet: null }`. */
+    suspend fun declineDmPet(channelId: String): com.zekktris.data.model.PetDTO? =
+        authorized(HttpMethod.Post, "/users/@me/channels/$channelId/pet/decline")
+            .decodeOrThrow<com.zekktris.data.model.DmPetWrap>().pet
+
+    /** Rename the pet (1–24 characters once normalised); posts a notice. */
+    suspend fun renameDmPet(channelId: String, name: String): com.zekktris.data.model.PetDTO? =
+        authorized(HttpMethod.Patch, "/users/@me/channels/$channelId/pet") {
+            contentType(ContentType.Application.Json)
+            setBody(com.zekktris.data.model.PetRenameBody(name))
+        }.decodeOrThrow<com.zekktris.data.model.DmPetWrap>().pet
+
     suspend fun closeDm(channelId: String) {
         authorized(HttpMethod.Delete, "/users/@me/channels/$channelId") {}
     }

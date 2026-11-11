@@ -139,6 +139,7 @@ import com.zekktris.AppStore
 import com.zekktris.data.ApiClient
 import com.zekktris.data.Config
 import com.zekktris.data.Disappearing
+import com.zekktris.data.ZekkPet
 import com.zekktris.data.model.Attachment
 import com.zekktris.data.model.Channel
 import com.zekktris.data.model.ForwardSource
@@ -154,6 +155,8 @@ import com.zekktris.ui.components.PrimaryButton
 import com.zekktris.ui.components.NameTag
 import com.zekktris.ui.components.StaffName
 import com.zekktris.ui.components.StreakPill
+import com.zekktris.ui.components.DmPetButton
+import com.zekktris.ui.components.ZekkPetArt
 import com.zekktris.ui.components.VideoPlayerDialog
 import com.zekktris.ui.components.VoiceMessageView
 import com.zekktris.ui.components.dayLabel
@@ -208,6 +211,8 @@ fun ChatScreen(store: AppStore, state: AppState) {
     // The Disappearing Messages screen, opened from the header's timer pill
     // (the settings sheet opens its own copy over itself).
     var showDisappearing by remember(channelId) { mutableStateOf(false) }
+    // The Zekk Pet card, opened from the header pet.
+    var showPet by remember(channelId) { mutableStateOf(false) }
     var showPins by remember(channelId) { mutableStateOf(false) }
     var showMembers by remember(channelId) { mutableStateOf(false) }
     var lightbox by remember(channelId) { mutableStateOf<Pair<List<String>, Int>?>(null) }
@@ -222,6 +227,22 @@ fun ChatScreen(store: AppStore, state: AppState) {
     var createThreadFor by remember(channelId) { mutableStateOf<Message?>(null) }
     var showSearch by remember(channelId) { mutableStateOf(false) }
     val isForum = channel?.isForum == true
+
+    // Zekk Pet: 1:1 DMs only, and only when the server's READY advertised the
+    // feature. The store fetches it on open, reconnect and foreground, and
+    // DM_PET_UPDATE keeps it live; the mood also turns on the clock alone
+    // (18:00 UTC, midnight UTC), so the open DM refetches at the next of those.
+    val petsHere = state.zekkPetEnabled && channel?.type == "dm"
+    val petState = if (petsHere) channelId?.let { state.dmPets[it] } else null
+    val pet = petState?.pet
+    val petPeerName = petPeerNameFor(store, state, channel)
+    val petRefreshAt = pet?.takeIf { it.status != "invited" }?.let { ZekkPet.nextRefreshAt(it, System.currentTimeMillis()) }
+    LaunchedEffect(channelId, petRefreshAt) {
+        val cid = channelId ?: return@LaunchedEffect
+        val at = petRefreshAt ?: return@LaunchedEffect
+        kotlinx.coroutines.delay((at - System.currentTimeMillis()).coerceAtLeast(0L))
+        store.refreshDmPet(cid)
+    }
 
     // A disappearing message vanishes from the list at its deadline (or with
     // the sweep's MESSAGE_DELETE). Nothing that holds a snapshot of it may
@@ -305,8 +326,16 @@ fun ChatScreen(store: AppStore, state: AppState) {
             onCall = { channelId?.let { store.requestVoice(it) } },
             onSearch = { showSearch = true },
             onOpenProfile = { store.openProfile(it) },
+            onPet = { showPet = true },
         )
         Box(Modifier.fillMaxWidth().height(1.dp).background(p.line))
+        // Zekk Pet adopt / invite bar (dismissible for the session). Keyed by
+        // channel so a pending action never carries over to another DM.
+        if (petsHere && channelId != null) {
+            ZekkPet.banner(petState, state.me?.id, petPeerName)
+                ?.takeIf { ZekkPet.bannerKey(channelId, it.kind) !in state.petBannersDismissed }
+                ?.let { banner -> androidx.compose.runtime.key(channelId) { PetAdoptBanner(store, channelId, banner) } }
+        }
         if (isForum && channelId != null) {
             // A forum channel shows its posts (each a thread), not a message list.
             ForumPane(store, state, channelId, modifier = Modifier.weight(1f).fillMaxWidth())
@@ -482,6 +511,9 @@ fun ChatScreen(store: AppStore, state: AppState) {
     }
     if (showDisappearing && channelId != null) {
         DisappearingMessagesDialog(store, state, channelId, onDismiss = { showDisappearing = false })
+    }
+    if (showPet && petsHere && channelId != null) {
+        PetSheet(store, state, channelId, petPeerName, onDismiss = { showPet = false })
     }
     if (showPins && channelId != null) {
         PinsSheet(store, channelId, onDismiss = { showPins = false })
@@ -976,6 +1008,7 @@ private fun ChatHeader(
     onDisappearing: () -> Unit = {},
     onSearch: () -> Unit = {},
     onOpenProfile: (com.zekktris.data.model.PublicUser) -> Unit = {},
+    onPet: () -> Unit = {},
 ) {
     val p = ZkTheme.palette
     val isDm = channel?.isDM == true
@@ -1077,6 +1110,13 @@ private fun ChatHeader(
                     // as in Signal.
                     state.dmTimerByChannel[channel.id]?.let { secs ->
                         Spacer(Modifier.width(6.dp)); DisappearingPill(secs, onDisappearing)
+                    }
+                    // Zekk Pet next to the streak (an egg while the invite is
+                    // open); tapping it opens the pet card. 1:1 DMs only.
+                    if (state.zekkPetEnabled && channel.type == "dm") {
+                        state.dmPets[channel.id]?.pet?.let { pet ->
+                            Spacer(Modifier.width(6.dp)); DmPetButton(pet, onPet)
+                        }
                     }
                 }
                 // Search leads the trailing action group; hidden for E2EE
@@ -1362,6 +1402,9 @@ private fun MessageList(
             // message (DMs only), mirroring iOS — notice rows (poke /
             // streak_warning / system_*) never anchor it.
             val isDm = state.currentChannel?.isDM == true
+            // The other person, for the Zekk Pet notices' names.
+            val petPeer = state.currentChannel?.let { c -> c.recipients?.firstOrNull { it.id != state.me?.id } ?: c.recipients?.firstOrNull() }
+            val petPeerName = petPeerNameFor(store, state, state.currentChannel)
             val receiptAnchorId = if (isDm) {
                 messages.lastOrNull {
                     it.authorId == state.me?.id && !it.id.startsWith("pending-") &&
@@ -1403,6 +1446,22 @@ private fun MessageList(
                 // authored bubble. No long-press: it can't be edited or deleted.
                 if (Disappearing.isNotice(m)) {
                     DisappearingNoticeRow(state.me, store.dmNickname(m.metadata?.initiatorId ?: m.authorId), m)
+                    return@itemsIndexed
+                }
+                // Zekk Pet event → the same quiet notice with a small pet,
+                // built from its metadata so it reads "You…" for the viewer.
+                if (ZekkPet.isNotice(m)) {
+                    val authorId = m.authorId ?: m.author?.id
+                    PetNoticeRow(
+                        text = ZekkPet.noticeLine(
+                            m,
+                            selfId = state.me?.id,
+                            peerId = petPeer?.id,
+                            peerName = petPeerName,
+                            authorName = store.dmNickname(authorId) ?: m.author?.bestName,
+                        ),
+                        msg = m,
+                    )
                     return@itemsIndexed
                 }
                 var grouped = !newDay && prev != null &&
@@ -1594,6 +1653,27 @@ private fun DisappearingNoticeRow(me: com.zekktris.data.model.SelfUser?, nicknam
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(Icons.Outlined.Timer, null, tint = ZkInk.ink3, modifier = Modifier.size(13.dp))
+        Text(
+            text, color = ZkInk.ink2, fontFamily = ZkSans, fontSize = 12.sp,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier.padding(start = 6.dp),
+        )
+    }
+}
+
+/** A Zekk Pet notice ('system_pet'): centered and quiet like the timer
+ *  notice, with a small still pet of the stage it reached (asleep for the
+ *  asleep notice, lonely when it ran away). No long-press: it can't be edited
+ *  or deleted, and it's never grouped or a receipt anchor. */
+@Composable
+private fun PetNoticeRow(text: String, msg: Message) {
+    val (stage, mood) = ZekkPet.noticeArt(msg)
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 5.dp, horizontal = 14.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ZekkPetArt(stage = stage, mood = mood, size = 16.dp, animated = false)
         Text(
             text, color = ZkInk.ink2, fontFamily = ZkSans, fontSize = 12.sp,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,

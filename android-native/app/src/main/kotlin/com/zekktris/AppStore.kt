@@ -5,6 +5,7 @@ import com.zekktris.data.Disappearing
 import com.zekktris.data.Gateway
 import com.zekktris.data.LoginResult
 import com.zekktris.data.RefreshOutcome
+import com.zekktris.data.ZekkPet
 import com.zekktris.data.model.AdminGuild
 import com.zekktris.data.model.AdminStats
 import com.zekktris.data.model.AdminStorage
@@ -178,6 +179,16 @@ data class AppState(
     // The timer values this server accepts (GET settings' maxTtlSeconds, or
     // the older 10..86400 without it); null until a settings fetch answered.
     val dmTimerBounds: Disappearing.Bounds? = null,
+    // The server has Zekk Pets (READY features.zekk_pet). False before the
+    // first READY and on servers without them: no pet UI at all then.
+    val zekkPetEnabled: Boolean = false,
+    // 1:1 DM channelId → its Zekk Pet (pet null = none) with whether the DM
+    // may adopt one and its streak (absent = not fetched yet). Fed by GET /pet
+    // when the DM opens, DM_PET_UPDATE (the pet alone: the eligibility from
+    // the last fetch stays) and our own invite / accept / decline / rename.
+    val dmPets: Map<String, com.zekktris.data.model.DmPetState> = emptyMap(),
+    // Adopt / invite bars dismissed this session ([ZekkPet.bannerKey]).
+    val petBannersDismissed: Set<String> = emptySet(),
     // The bots the current user owns (Settings → Bots).
     val bots: List<com.zekktris.data.model.Bot> = emptyList(),
     val selectedGuildId: String? = null, // null = DM/home
@@ -294,6 +305,11 @@ class AppStore(
      *  that started before a live change (or our own save) must not write
      *  its older answer over it. */
     private val dmTimerGen = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** Per-DM change counter for [AppState.dmPets], the same rule: a GET /pet
+     *  that started before a DM_PET_UPDATE (or our own change) keeps the
+     *  newer pet and takes only its eligibility and streak. */
+    private val dmPetGen = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
     /** channelId → the id this device last acked there: [ackOpenIfUnread]'s
      *  ack for a timed message whose countdown never started goes once per id. */
@@ -502,6 +518,9 @@ class AppStore(
         // Disappearing messages: the scheduler's delay doesn't run in deep
         // sleep, so anything that came due while we were away goes now.
         expiryWake.trySend(Unit)
+        // The open DM's Zekk Pet: an event can be lost with a silently dead
+        // socket, and its mood may have turned with the clock meanwhile.
+        _state.value.selectedChannelId?.let { refreshDmPet(it) }
         // Guaranteed floor: pull the LATEST window for the open chat and merge
         // it, so a message that arrived while suspended can NEVER leave the open
         // conversation stale after a resume — even if the after-cursor sync
@@ -1677,6 +1696,89 @@ class AppStore(
         setDmTimer(channelId, seconds)
     }
 
+    // ---- Zekk Pet ------------------------------------------------------------
+    //
+    // The shared pet of a 1:1 DM (never a group DM), on a server whose READY
+    // has features.zekk_pet. The server decides everything (ZekkPet.kt has the
+    // words); the store only keeps what it last said, per DM.
+
+    /** Whether [channelId] is a 1:1 DM on a server with Zekk Pets. */
+    private fun petsIn(channelId: String): Boolean {
+        val st = _state.value
+        return st.zekkPetEnabled && st.dms.any { it.id == channelId && it.type == "dm" }
+    }
+
+    /** Fetch a 1:1 DM's pet into [AppState.dmPets] (null = request failed). */
+    suspend fun loadDmPet(channelId: String): com.zekktris.data.model.DmPetState? {
+        val gen = dmPetGen[channelId] ?: 0
+        val s = runCatching { api.getDmPet(channelId) }.getOrNull() ?: return null
+        // A DM_PET_UPDATE (or our own change) since the request left is newer.
+        val keepPet = (dmPetGen[channelId] ?: 0) != gen
+        _state.update { st ->
+            val prev = st.dmPets[channelId]
+            val next = if (keepPet && prev != null) s.copy(pet = prev.pet) else s
+            if (prev == next) st else st.copy(dmPets = st.dmPets + (channelId to next))
+        }
+        return s
+    }
+
+    /** [loadDmPet] on the store's scope, when [channelId] can have a pet: on
+     *  open, on reconnect and foreground, when the streak moves, at the clock
+     *  boundaries the mood turns on. */
+    fun refreshDmPet(channelId: String) {
+        if (petsIn(channelId)) scope.launch { loadDmPet(channelId) }
+    }
+
+    /** A DM's pet from DM_PET_UPDATE or our own change (null = no pet any
+     *  more). Not fetched yet: whether the DM may adopt is unknown until GET
+     *  /pet answers, so it reads as not eligible (no bar) rather than a guess. */
+    private fun setDmPet(channelId: String, pet: com.zekktris.data.model.PetDTO?) {
+        dmPetGen.merge(channelId, 1, Int::plus)
+        _state.update { st ->
+            val prev = st.dmPets[channelId]
+                ?: com.zekktris.data.model.DmPetState(pet = null, eligible = false, streak = 0, minStreak = ZekkPet.MIN_STREAK)
+            if (prev.pet == pet) st else st.copy(dmPets = st.dmPets + (channelId to prev.copy(pet = pet)))
+        }
+    }
+
+    /**
+     * Invite the other person to adopt, accept their invite, decline / cancel
+     * it, or rename the pet. The server's answer goes into [AppState.dmPets];
+     * [onDone] gets null on success, else the reason to show. A failure
+     * (409 / 404: this view was behind — the other person invited or
+     * accepted first, the invite expired) resyncs first. Runs on the store's
+     * scope, so closing the sheet mid-change doesn't cut it short.
+     */
+    fun changeDmPet(channelId: String, change: ZekkPet.Change, onDone: (String?) -> Unit = {}) {
+        scope.launch {
+            val error = try {
+                val pet = when (change) {
+                    ZekkPet.Change.Invite -> api.inviteDmPet(channelId)
+                    ZekkPet.Change.Accept -> api.acceptDmPet(channelId)
+                    ZekkPet.Change.Decline -> api.declineDmPet(channelId)
+                    is ZekkPet.Change.Rename -> api.renameDmPet(channelId, change.name)
+                }
+                setDmPet(channelId, pet)
+                // No pet any more: whether the DM may invite again (and its
+                // streak) only comes with a fetch.
+                if (pet == null) scope.launch { loadDmPet(channelId) }
+                null
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                scope.launch { loadDmPet(channelId) }
+                (e as? com.zekktris.data.ApiException)?.message ?: ZekkPet.failedMessage(change)
+            }
+            onDone(error)
+        }
+    }
+
+    /** Hide an adopt / invite bar for the rest of the session. */
+    fun dismissPetBanner(channelId: String, kind: ZekkPet.BannerKind) {
+        val key = ZekkPet.bannerKey(channelId, kind)
+        _state.update { if (key in it.petBannersDismissed) it else it.copy(petBannersDismissed = it.petBannersDismissed + key) }
+    }
+
     /** One page of the shared-media gallery (newest-first; null = request
      *  failed). `kind` = "media"/"files" server-filters by content type; E2EE
      *  channels pass null (ciphertext hides the real type) and the gallery
@@ -2213,6 +2315,8 @@ class AppStore(
             // Its disappearing timer, for the header (a change made while we
             // were away arrives only through this).
             scope.launch { getDmSettings(channelId) }
+            // Its Zekk Pet (1:1 DMs on a server with them).
+            refreshDmPet(channelId)
         }
         scope.launch {
             val fetched = if (_state.value.messagesByChannel[channelId] == null) {
@@ -2250,6 +2354,7 @@ class AppStore(
             if (thenCall) requestVoice(ch.id)
             refreshShareShortcuts()
             scope.launch { getDmSettings(ch.id) } // the header's disappearing timer
+            refreshDmPet(ch.id) // and its Zekk Pet
             val fetched = if (_state.value.messagesByChannel[ch.id] == null) loadMessages(ch.id)
             else refreshOpenChannelLatest(ch.id)
             // opening a DM reads it (selectChannel does this; openDM must too)
@@ -4839,6 +4944,16 @@ class AppStore(
                 val u = Disappearing.parseSettingsUpdate(d.data) ?: return
                 noteDmTimerChange(u.channelId, u.seconds)
             }
+            "DM_PET_UPDATE" -> {
+                // camelCase { channelId, pet } like DM_SETTINGS_UPDATE: the
+                // DM's Zekk Pet changed (either person, the server's daily
+                // check, another device of ours). null = no pet any more.
+                val u = ZekkPet.parseUpdate(d.data, api.json) ?: return
+                val loaded = _state.value.dmPets.containsKey(u.channelId)
+                setDmPet(u.channelId, u.pet)
+                // Gone (declined, expired, ran away): may the DM adopt again?
+                if (u.pet == null && loaded) refreshDmPet(u.channelId)
+            }
             "MESSAGE_EXPIRY" -> {
                 // Snake_case { channel_id, expiries: [{ id, expires_at }],
                 // server_now }: a read started these messages' countdowns. Ours
@@ -4869,6 +4984,12 @@ class AppStore(
                     val next = st.dms.toMutableList().also { it[idx] = it[idx].copy(streak = streak) }
                     st.copy(dms = next)
                 }
+                // A DM without a pet may just have become able to adopt one
+                // (or the adopt bar's streak count moved). DM_PET_UPDATE
+                // doesn't cover that, so refetch the eligibility of a DM
+                // already loaded.
+                val petState = _state.value.dmPets[cid]
+                if (petState != null && petState.pet == null) refreshDmPet(cid)
             }
             "FAMILY_REQUEST_CREATE", "FAMILY_FLAG_CREATE" -> {
                 // Parental-controls activity dispatched to the parent's user
@@ -4957,6 +5078,15 @@ class AppStore(
             }
         }
         val obj = d?.jsonObject ?: return
+        // Capabilities come with every READY (a RESUMED keeps the last): a
+        // server without Zekk Pets shows no pet UI. On a reconnect the open
+        // DM's pet is refetched — a DM_PET_UPDATE may have been missed, and a
+        // DM selected before the first READY couldn't fetch it yet.
+        val petsOn = obj["features"]
+            ?.let { runCatching { api.json.decodeFromJsonElement<com.zekktris.data.model.ReadyFeatures>(it) }.getOrNull() }
+            ?.zekkPet == true
+        if (_state.value.zekkPetEnabled != petsOn) _state.update { it.copy(zekkPetEnabled = petsOn) }
+        _state.value.selectedChannelId?.let { refreshDmPet(it) }
         // Our chosen status may have been changed on another device while this
         // one was away. Only the choice: READY's `effectiveStatus` can predate
         // this connection's own recompute, whose PRESENCE_UPDATE follows.

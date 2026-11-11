@@ -457,6 +457,11 @@ data class DmChannelSettings(
 @Serializable data class DmTtlPatch(val ttlSecondsAfterRead: Int?)
 @Serializable data class NotificationPreviewPatch(val showContent: Boolean?)
 
+// ── Zekk Pet (the DTOs are in Models.kt) ─────────────────────────────────────
+/** The invite / accept / decline / rename answers: `{ pet }` (null after a decline). */
+@Serializable data class DmPetWrap(val pet: PetDTO? = null)
+@Serializable data class PetRenameBody(val name: String)
+
 // ── Account security ─────────────────────────────────────────────────────────
 @Serializable data class ChangePasswordBody(val currentPassword: String, val newPassword: String)
 @Serializable data class ChangeUsernameBody(val username: String, val currentPassword: String)

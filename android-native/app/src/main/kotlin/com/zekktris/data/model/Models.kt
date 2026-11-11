@@ -119,6 +119,9 @@ data class ReadyFeatures(
     /** The server derives presence from per-device activity: report it
      *  (IDENTIFY/RESUME `presence`, op 3) and never PATCH status on our own. */
     @SerialName("presence_activity") val presenceActivity: Boolean = false,
+    /** Zekk Pets (GET/POST /users/@me/channels/:id/pet…, DM_PET_UPDATE,
+     *  'system_pet' notices). No pet UI at all without it. */
+    @SerialName("zekk_pet") val zekkPet: Boolean = false,
 )
 
 @Serializable
@@ -498,10 +501,12 @@ data class Message(
 )
 
 /** Free-form message metadata; `kind` marks notice rows (poke / streak_warning /
- *  disappearing_timer). system_call messages carry `missed` / `durationMs` /
- *  `initiatorId`; the disappearing-messages notice (type
+ *  disappearing_timer / pet). system_call messages carry `missed` /
+ *  `durationMs` / `initiatorId`; the disappearing-messages notice (type
  *  'system_disappearing') carries `timerSeconds` (0 = turned off) and
- *  `initiatorId`. */
+ *  `initiatorId`; the Zekk Pet notice (type 'system_pet', kind 'pet')
+ *  carries `event`, `petName`, `stage` and `actorId` (null for what the
+ *  server's daily check caused: asleep, ran_away). */
 @Serializable
 data class MessageMetadata(
     val kind: String? = null,
@@ -510,6 +515,85 @@ data class MessageMetadata(
     val missed: Boolean? = null,
     val durationMs: Long? = null,
     val timerSeconds: Int? = null,
+    val event: String? = null,
+    val petName: String? = null,
+    val stage: String? = null,
+    val actorId: String? = null,
+)
+
+// ── Zekk Pet ─────────────────────────────────────────────────────────────────
+// The shared pet of a 1:1 DM (packages/client/src/types.ts PetDTO & co).
+// Server-authoritative: the app shows these values and never works out
+// points, level, status or mood itself. status / stage / mood / task keys stay
+// plain strings so a value a newer server adds can't fail the decode;
+// com.zekktris.data.ZekkPet maps them (unknown → egg / happy / skipped).
+
+/** One person's `chatty` count today, capped at the goal. */
+@Serializable
+data class PetTaskCount(val userId: String, val count: Int = 0)
+
+/** `chatty` only: each person's message count today and the goal (10). */
+@Serializable
+data class PetTaskProgress(
+    val a: PetTaskCount? = null,
+    val b: PetTaskCount? = null,
+    val goal: Int = 10,
+)
+
+/** One of today's care tasks: both_hi | chatty | voice | photo | poke. */
+@Serializable
+data class PetTask(
+    val key: String = "",
+    /** Completed in the current UTC day. */
+    val done: Boolean = false,
+    /** Points it awards (once per day). */
+    val points: Int = 0,
+    val progress: PetTaskProgress? = null,
+)
+
+@Serializable
+data class PetDTO(
+    val channelId: String,
+    /** invited | active | asleep. */
+    val status: String = "active",
+    /** Who sent the adoption invite. */
+    val invitedBy: String? = null,
+    val name: String = "Zekk",
+    val level: Int = 0,
+    /** egg | baby | kid | teen | adult | legendary. */
+    val stage: String = "egg",
+    /** Total points earned. */
+    val points: Int = 0,
+    /** Total points at which the current level started. */
+    val levelFloor: Int = 0,
+    /** Total points at which the next level starts. */
+    val nextLevelAt: Int = 0,
+    /** thriving | happy | lonely | hungry | grumpy | asleep. */
+    val mood: String = "happy",
+    /** None on an invited pet. */
+    val tasks: List<PetTask> = emptyList(),
+    /** Both people messaged today (UTC): the pet was fed. */
+    val fedToday: Boolean = false,
+    /** Last UTC day (YYYY-MM-DD) it was fed. */
+    val lastFedDay: String? = null,
+    /** Asleep only: the last UTC day on which feeding still wakes it. */
+    val wakeBy: String? = null,
+    val adoptedAt: String? = null,
+    /** The server's current UTC day (YYYY-MM-DD). */
+    val today: String = "",
+    /** ISO time the current UTC day ends (the next midnight UTC). */
+    val dayEndsAt: String = "",
+)
+
+/** GET /users/@me/channels/:id/pet. [eligible]: the streak is alive and at
+ *  least [minStreak] days, so either person may invite (meaningful only
+ *  while [pet] is null). */
+@Serializable
+data class DmPetState(
+    val pet: PetDTO? = null,
+    val eligible: Boolean = false,
+    val streak: Int = 0,
+    val minStreak: Int = 3,
 )
 
 @Serializable
