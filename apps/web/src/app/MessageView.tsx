@@ -38,6 +38,8 @@ import { SchedulePickerModal } from './SchedulePickerModal';
 import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
 import { DmStreakPill } from './DMList';
+import { DmPetButton, PetAdoptBanner } from './ZekkPet';
+import { isPetNotice, petBanner, petNextRefreshAt } from '../lib/zekkPet';
 // Lazy-loaded: the DM settings/privacy panel only mounts when opened.
 const DmSettingsPanel = lazy(() =>
   import('./DmSettingsPanel').then((m) => ({ default: m.DmSettingsPanel })),
@@ -56,6 +58,8 @@ const MediaGalleryModal = lazy(() =>
 const DisappearingMessagesModal = lazy(() =>
   import('./DisappearingMessagesModal').then((m) => ({ default: m.DisappearingMessagesModal })),
 );
+// Lazy-loaded: the Zekk Pet card (body-portaled) only mounts when opened.
+const ZekkPetModal = lazy(() => import('./ZekkPetModal').then((m) => ({ default: m.ZekkPetModal })));
 import { connectToVoice, disconnectVoice, VoiceError, prepareVoiceAudio, claimVoiceChannel, releaseVoiceChannel } from '../lib/voice';
 import { PollComposerModal, type PollDraft } from './PollComposerModal';
 import { StickerPicker } from './StickerPicker';
@@ -109,6 +113,11 @@ export function MessageView({
   const loadDmSettings = useAppStateSelector((v) => v.loadDmSettings);
   // The DM's disappearing-messages timer (undefined until fetched below).
   const dmTimer = useAppStateSelector((v) => v.state.dmTimers[channel.id]);
+  // The DM's Zekk Pet (undefined until fetched below; 1:1 DMs on a server
+  // with the feature only).
+  const zekkPetEnabled = useAppStateSelector((v) => v.state.zekkPetEnabled);
+  const loadDmPet = useAppStateSelector((v) => v.loadDmPet);
+  const petState = useAppStateSelector((v) => v.state.dmPets[channel.id]);
   const clearPokePill = useAppStateSelector((v) => v.clearPokePill);
   const sendMessageOptimistic = useAppStateSelector((v) => v.sendMessageOptimistic);
   const messages = useAppStateSelector((v) => v.state.messagesByChannel[channel.id]);
@@ -626,6 +635,34 @@ export function MessageView({
   useEffect(() => {
     setDisappearingOpen(false);
   }, [channel.id]);
+  // ── Zekk Pet ──────────────────────────────────────────────────────────
+  // 1:1 DMs only, and only when the server's READY advertised the feature.
+  // Fetched on open and when the tab comes back (an event can be lost with
+  // a silently dead socket); DM_PET_UPDATE keeps it live. The mood also
+  // turns on the clock (18:00 UTC, midnight UTC) with no event, so the open
+  // DM refetches at the next of those.
+  const petsHere = isDM1to1 && zekkPetEnabled;
+  const pet = petsHere ? (petState?.pet ?? null) : null;
+  const [petOpen, setPetOpen] = useState(false);
+  const closePet = useCallback(() => setPetOpen(false), []);
+  useEffect(() => {
+    setPetOpen(false);
+  }, [channel.id]);
+  const petBannerView = petsHere ? petBanner(petState, user?.id, headerLabel) : null;
+  useEffect(() => {
+    if (!petsHere || document.visibilityState !== 'visible') return;
+    void loadDmPet(channel.id).catch(() => undefined);
+  }, [channel.id, petsHere, loadDmPet, wake]);
+  const petRefreshAt = pet && pet.status !== 'invited' ? petNextRefreshAt(pet, Date.now()) : null;
+  useEffect(() => {
+    if (!petsHere || petRefreshAt === null) return;
+    // setTimeout fires at once past ~24.8 days; this is at most a day out.
+    const t = window.setTimeout(
+      () => void loadDmPet(channel.id).catch(() => undefined),
+      Math.max(0, petRefreshAt - Date.now()),
+    );
+    return () => window.clearTimeout(t);
+  }, [channel.id, petsHere, petRefreshAt, loadDmPet]);
   // Shared-media gallery visibility. Hosted at the MessageView level (a
   // stable parent) so the full-screen, body-portaled modal isn't a child of
   // the click-outside-trapped DmSettingsPanel.
@@ -834,6 +871,8 @@ export function MessageView({
             {isDM && typeof channel.streak === 'number' && channel.streak > 0 && (
               <DmStreakPill streak={channel.streak} />
             )}
+            {/* Zekk Pet next to the streak (an egg while the invite is open). */}
+            {pet && <DmPetButton pet={pet} onOpen={() => setPetOpen(true)} />}
             {/* Disappearing-messages indicator while the timer is on. */}
             {isDM && typeof dmTimer === 'number' && dmTimer > 0 && (
               <DisappearingPill
@@ -1017,7 +1056,22 @@ export function MessageView({
             />
           </Suspense>
         )}
+        {petsHere && petOpen && user && (
+          <Suspense fallback={null}>
+            <ZekkPetModal
+              channelId={channel.id}
+              peerName={headerLabel}
+              selfId={user.id}
+              onClose={closePet}
+            />
+          </Suspense>
+        )}
       </header>
+      {/* Zekk Pet adopt / invite bar. Keyed by channel so a pending action
+          never carries over to another DM. */}
+      {petsHere && petBannerView && (
+        <PetAdoptBanner key={channel.id} channelId={channel.id} banner={petBannerView} />
+      )}
 
       <div className="flex-1 min-h-0 flex relative">
         <div className="flex-1 min-w-0 flex flex-col">
@@ -1580,7 +1634,7 @@ function Scroller({
       // (a 'default' row carrying a streak_warning marker) — neither should be
       // the read-receipt anchor.
       if (m.authorId !== selfId || m.type.startsWith('system_')) continue;
-      if (m.metadata?.kind === 'streak_warning' || isDisappearingNotice(m)) continue;
+      if (m.metadata?.kind === 'streak_warning' || isDisappearingNotice(m) || isPetNotice(m)) continue;
       latest = m.id;
     }
     return latest;
@@ -1931,6 +1985,7 @@ function Scroller({
                           m.authorId === selfId &&
                           !m.type.startsWith('system_') &&
                           !isDisappearingNotice(m) &&
+                          !isPetNotice(m) &&
                           m.id === dmReceiptAnchor
                         }
                       />
@@ -2125,10 +2180,12 @@ function groupMessages(msgs: Message[]): Message[][] {
     // participant's authorId) and swallow the next message's avatar.
     // The disappearing-timer notice is a 'system_disappearing' row, but its
     // metadata kind is checked too in case a row only carries the marker.
+    // Same for the Zekk Pet notices ('system_pet').
     const isNotice = (x: Message) =>
       x.type.startsWith('system_') ||
       x.metadata?.kind === 'streak_warning' ||
-      isDisappearingNotice(x);
+      isDisappearingNotice(x) ||
+      isPetNotice(x);
     const currentIsSystem = isNotice(m);
     const lastIsSystem = lastMsg ? isNotice(lastMsg) : false;
     if (

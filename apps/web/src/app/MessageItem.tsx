@@ -37,6 +37,8 @@ import { AvatarDecoration } from '../lib/avatarDecorations';
 import { useProfileCard } from '../lib/useProfileCard';
 import { Edit, Trash, Pin, CornerUpLeft, Forward as ForwardIcon, MessageSquare, Smile, Phone, Shield, Bookmark, Timer } from '../lib/icons';
 import { disappearingHint, isDisappearingNotice, noticeText } from '../lib/disappearing';
+import { isPetNotice, petNoticeArt, petNoticeMeta, petNoticeText } from '../lib/zekkPet';
+import { ZekkPetArt } from '../lib/ZekkPetArt';
 import { useE2eeLinkPreviews, resolveE2eeLinkPreviews, cachedUnfurl } from '../lib/e2eeLinkPreviews';
 import { e2eeSupported, E2EE_INSECURE_SHORT } from '../lib/e2eeSupport';
 import { decryptForDm, peekDecryptedText, encryptForDm, isEncryptedWireFormat, hasLocalKey, subscribeToKeyChanges, getKeyVersion } from '../lib/e2ee';
@@ -792,6 +794,13 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
     );
   }
 
+  // Zekk Pet notice — a 'system_pet' row: a centered notice with a small pet,
+  // like the timer notice above (no actions, no grouping, never the receipt
+  // anchor). Built from metadata so it reads "You…" for the viewer.
+  if (isPetNotice(message)) {
+    return <PetNotice message={message} channel={channel} selfId={selfId} authorName={displayName} />;
+  }
+
   // System call messages — render as a compact inline notice rather
   // than the regular message bubble. The metadata payload carries the
   // call summary (missed flag + duration); the rendered string is
@@ -1329,6 +1338,72 @@ const TIME_FMT = new Intl.DateTimeFormat(undefined, {
   hour: 'numeric',
   minute: '2-digit',
 });
+
+/**
+ * A Zekk Pet notice ("You and Sam adopted a Zekk Pet! 🥚", "Zekk grew into a
+ * Kid!"). The text is built from the row's metadata: "You" when the viewer
+ * caused it, the other person's name (their DM nickname when set) otherwise.
+ * `content` is the server's third-person fallback, used for an event this
+ * client doesn't know or a row that somehow lacks the metadata. Its own
+ * component so the peer's nickname can be read with a hook.
+ */
+function PetNotice({
+  message,
+  channel,
+  selfId,
+  authorName,
+}: {
+  message: Message;
+  channel?: Channel;
+  selfId: string | undefined;
+  /** The row author's display name (nickname-aware), from the parent. */
+  authorName: string;
+}) {
+  const usersById = useAppStateSelector((v) => v.state.usersById);
+  const meta = petNoticeMeta(message);
+  // The other person in the DM (recipients never include the viewer).
+  const peer = channel?.recipients?.find((u) => u.id !== selfId) ?? null;
+  const peerNick = useDmNickname(peer?.id);
+  const peerName = peerNick ?? peer?.displayName ?? peer?.username ?? 'them';
+  const actorId = meta?.actorId ?? null;
+  const actorName =
+    actorId === null
+      ? null
+      : actorId === peer?.id
+        ? peerName
+        : actorId === message.authorId
+          ? authorName
+          : (usersById[actorId]?.displayName ?? usersById[actorId]?.username ?? 'Someone');
+  const text =
+    (meta &&
+      petNoticeText({
+        event: meta.event,
+        petName: meta.petName,
+        stage: meta.stage,
+        actorIsSelf: selfId !== undefined && actorId === selfId,
+        actorName,
+        peerName,
+      })) ||
+    message.content;
+  const art = meta ? petNoticeArt(meta) : ({ stage: 'egg', mood: 'happy' } as const);
+  return (
+    <div
+      data-message-id={message.id}
+      className="group relative flex items-center justify-center gap-1.5 py-1.5 px-4 text-center text-xs text-ink-2"
+    >
+      <ZekkPetArt stage={art.stage} mood={art.mood} size={16} animated={false} />
+      <span>{text}</span>
+      <span className="text-ink-3/70">·</span>
+      <time
+        dateTime={message.createdAt}
+        className="tabular-nums text-ink-3/70"
+        title={new Date(message.createdAt).toLocaleString()}
+      >
+        {formatTimestamp(message.createdAt)}
+      </time>
+    </div>
+  );
+}
 
 /** The per-message stopwatch for a disappearing message, with its timer in
     the tooltip ("Disappears 1 day after it's seen"). */

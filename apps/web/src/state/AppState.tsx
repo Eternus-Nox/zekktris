@@ -63,6 +63,10 @@ import {
   type StageParticipant,
   type MessageExpiryPayload,
   type DmSettingsUpdatePayload,
+  type DmPetState,
+  type DmPetUpdatePayload,
+  type PetDTO,
+  PET_MIN_STREAK,
 } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useToasts } from './Toasts';
@@ -91,6 +95,7 @@ import {
   serverOffsetFrom,
 } from '../lib/disappearing';
 import { newestConfirmedId } from '../lib/readAck';
+import { isPetNotice } from '../lib/zekkPet';
 
 // ── Shape ──────────────────────────────────────────────────────────────────
 
@@ -319,6 +324,18 @@ interface State {
    */
   dmTimers: Record<string, number | null>;
   /**
+   * Zekk Pets: each 1:1 DM's pet (null = none) with whether the DM may adopt
+   * one and its streak, keyed by channel id. Absent = not fetched yet.
+   * Fetched with getDmPet when a 1:1 DM is opened (only on a server whose
+   * READY has features.zekk_pet), kept live by DM_PET_UPDATE — which carries
+   * the pet alone, so the eligibility from the last fetch stays — and by our
+   * own invite / accept / decline / rename answers.
+   */
+  dmPets: Record<string, DmPetState>;
+  /** The server has Zekk Pets (READY features.zekk_pet). False before the
+      first READY and on servers without them: no pet UI at all then. */
+  zekkPetEnabled: boolean;
+  /**
    * Disappearing messages whose countdown has started: message id →
    * `expires_at` in SERVER epoch ms (compare with serverNow(offset), never
    * the raw device clock). Fed by REST `expiresAt` and MESSAGE_EXPIRY.
@@ -378,6 +395,8 @@ const initialState: State = {
   familyNudge: 0,
   savedMessageIds: new Set(),
   dmTimers: {},
+  dmPets: {},
+  zekkPetEnabled: false,
   expiryDeadlines: {},
   serverClockOffsetMs: null,
   dateClockOffsetMs: null,
@@ -516,6 +535,15 @@ type Action =
   /** A DM's disappearing-messages timer (null = off), from getDmSettings,
       DM_SETTINGS_UPDATE or our own save. */
   | { type: 'DM_TIMER_SET'; channelId: string; seconds: number | null }
+  /** getDmPet's answer. `keepPet`: a DM_PET_UPDATE or our own change landed
+      while it was in flight, so its `pet` is older than ours — keep ours and
+      take only the eligibility and streak. */
+  | { type: 'DM_PET_STATE_SET'; channelId: string; petState: DmPetState; keepPet?: boolean }
+  /** A DM's pet from DM_PET_UPDATE or our own invite / accept / decline /
+      rename (null = no pet any more). */
+  | { type: 'DM_PET_SET'; channelId: string; pet: PetDTO | null }
+  /** READY's features.zekk_pet. */
+  | { type: 'ZEKK_PET_FEATURE_SET'; enabled: boolean }
   /** MESSAGE_EXPIRY: a read started these messages' countdowns. `receivedAt`
       is the device time the event arrived, for the server-clock offset. */
   | {
@@ -1168,6 +1196,11 @@ function reducer(state: State, action: Action): State {
         dmTimers = { ...dmTimers };
         delete dmTimers[action.channelId];
       }
+      let dmPets = state.dmPets;
+      if (action.channelId in dmPets) {
+        dmPets = { ...dmPets };
+        delete dmPets[action.channelId];
+      }
       return {
         ...state,
         dmChannels: nextDm,
@@ -1175,6 +1208,7 @@ function reducer(state: State, action: Action): State {
         readStateByChannel: nextRead,
         loadedChannels,
         dmTimers,
+        dmPets,
       };
     }
 
@@ -1952,6 +1986,24 @@ function reducer(state: State, action: Action): State {
       if (prev === action.seconds) return state; // includes null === null
       return { ...state, dmTimers: { ...state.dmTimers, [action.channelId]: action.seconds } };
     }
+    case 'DM_PET_STATE_SET': {
+      const prev = state.dmPets[action.channelId];
+      const next = action.keepPet && prev ? { ...action.petState, pet: prev.pet } : action.petState;
+      return { ...state, dmPets: { ...state.dmPets, [action.channelId]: next } };
+    }
+    case 'DM_PET_SET': {
+      // Not fetched yet: whether the DM may adopt is unknown until getDmPet
+      // answers, so assume not (no banner) rather than guess.
+      const prev = state.dmPets[action.channelId] ?? {
+        pet: null,
+        eligible: false,
+        streak: 0,
+        minStreak: PET_MIN_STREAK,
+      };
+      return { ...state, dmPets: { ...state.dmPets, [action.channelId]: { ...prev, pet: action.pet } } };
+    }
+    case 'ZEKK_PET_FEATURE_SET':
+      return state.zekkPetEnabled === action.enabled ? state : { ...state, zekkPetEnabled: action.enabled };
     case 'EXPIRY_STAMP': {
       // Ids we don't hold are recorded too: a message scrolled out of the
       // window (or loaded later) is still known to be counting down.
@@ -2619,7 +2671,26 @@ interface AppStateValue {
    * with the value the server confirmed.
    */
   saveDmTimer: (channelId: string, seconds: number | null) => Promise<number | null>;
+  /**
+   * Fetch a 1:1 DM's Zekk Pet (getDmPet) into `state.dmPets`. A response
+   * that raced a newer DM_PET_UPDATE or change keeps the newer pet.
+   */
+  loadDmPet: (channelId: string) => Promise<DmPetState>;
+  /**
+   * Invite the other person to adopt, accept their invite, decline / cancel
+   * the invite, or rename the pet. The server's answer goes into
+   * `state.dmPets`; failures rethrow (after a refetch, since a 409 means
+   * this view was behind).
+   */
+  changeDmPet: (channelId: string, change: DmPetChange) => Promise<PetDTO | null>;
 }
+
+/** What changeDmPet does. */
+export type DmPetChange =
+  | { kind: 'invite' }
+  | { kind: 'accept' }
+  | { kind: 'decline' }
+  | { kind: 'rename'; name: string };
 
 const AppStateContext = createContext<AppStateValue | null>(null);
 
@@ -3412,6 +3483,55 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     [rest, bumpDmTimerEpoch, loadDmSettings],
   );
 
+  // ── Zekk Pet: the per-DM pet ──────────────────────────────────────────
+  //
+  // Same staleness rule as the timer: bumped per channel by every
+  // DM_PET_UPDATE and own change, and a getDmPet that started before the
+  // latest bump keeps the newer pet (its eligibility and streak still apply).
+  const dmPetEpochRef = useRef(new Map<string, number>());
+  const bumpDmPetEpoch = useCallback((channelId: string) => {
+    const m = dmPetEpochRef.current;
+    m.set(channelId, (m.get(channelId) ?? 0) + 1);
+  }, []);
+
+  const loadDmPet = useCallback(
+    async (channelId: string) => {
+      const epoch = dmPetEpochRef.current.get(channelId) ?? 0;
+      const r = await rest.getDmPet(channelId);
+      const keepPet = (dmPetEpochRef.current.get(channelId) ?? 0) !== epoch;
+      dispatch({ type: 'DM_PET_STATE_SET', channelId, petState: r, keepPet });
+      return r;
+    },
+    [rest],
+  );
+
+  const changeDmPet = useCallback(
+    async (channelId: string, change: DmPetChange) => {
+      try {
+        const r =
+          change.kind === 'invite'
+            ? await rest.inviteDmPet(channelId)
+            : change.kind === 'accept'
+              ? await rest.acceptDmPet(channelId)
+              : change.kind === 'decline'
+                ? await rest.declineDmPet(channelId)
+                : await rest.renameDmPet(channelId, change.name);
+        bumpDmPetEpoch(channelId);
+        dispatch({ type: 'DM_PET_SET', channelId, pet: r.pet });
+        // No pet any more: whether the DM may invite again (and its streak)
+        // only comes with a fetch.
+        if (r.pet === null) void loadDmPet(channelId).catch(() => undefined);
+        return r.pet;
+      } catch (e) {
+        // A 409 / 404 means this view was behind (the other person invited
+        // or accepted first, the invite expired …): resync, then report.
+        void loadDmPet(channelId).catch(() => undefined);
+        throw e;
+      }
+    },
+    [rest, bumpDmPetEpoch, loadDmPet],
+  );
+
   // ── Disappearing messages: local expiry ───────────────────────────────
   //
   // ONE timer for the whole app (scheduleExpiry), armed for the earliest
@@ -3985,7 +4105,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
 
         // The disappearing-messages timer notice is quiet, as in Signal: no
         // sound, no desktop notification (the server doesn't push it either).
-        if (isDisappearingNotice(m)) return;
+        // So are the Zekk Pet notices.
+        if (isDisappearingNotice(m) || isPetNotice(m)) return;
 
         const fresh = stateRef.current;
         // @everyone/@here counts as a mention too (own messages already
@@ -4237,6 +4358,25 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       }),
       gateway.on<{ channel_id: string; streak: number }>(GatewayEvent.DM_STREAK_UPDATE, (d) => {
         dispatch({ type: 'DM_STREAK_SET', channelId: d.channel_id, streak: d.streak });
+        // A DM without a pet may just have become able to adopt one (or the
+        // banner's streak count moved). The pet event doesn't cover that, so
+        // refetch the eligibility of a DM we've already loaded.
+        const fresh = stateRef.current;
+        const petState = fresh.dmPets[d.channel_id];
+        if (fresh.zekkPetEnabled && petState && !petState.pet) {
+          void loadDmPet(d.channel_id).catch(() => undefined);
+        }
+      }),
+      // Zekk Pet changed (either participant, the server's daily check, any
+      // of our tabs). camelCase payload like DM_SETTINGS_UPDATE.
+      gateway.on<DmPetUpdatePayload>(GatewayEvent.DM_PET_UPDATE, (d) => {
+        if (!d || typeof d.channelId !== 'string') return;
+        const pet = d.pet && typeof d.pet === 'object' ? d.pet : null;
+        const loaded = d.channelId in stateRef.current.dmPets;
+        bumpDmPetEpoch(d.channelId);
+        dispatch({ type: 'DM_PET_SET', channelId: d.channelId, pet });
+        // Gone (declined, expired, ran away): may the DM adopt again?
+        if (!pet && loaded) void loadDmPet(d.channelId).catch(() => undefined);
       }),
       // Disappearing-messages timer changed (either participant, any of our
       // tabs). camelCase payload — the event predates the snake_case ones.
@@ -4672,6 +4812,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         if (payload?.voice_states) {
           dispatch({ type: 'VOICE_STATES_SET', voiceStates: payload.voice_states });
         }
+        // Capabilities come with every READY (the gateway client has already
+        // stored them); a server without Zekk Pets hides the pet UI.
+        dispatch({ type: 'ZEKK_PET_FEATURE_SET', enabled: gateway.getFeatures().zekk_pet === true });
         if (!readyOnceRef.current) {
           readyOnceRef.current = true;
           return;
@@ -4748,14 +4891,23 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         if (openChannelId && openChannelId in loaded.dmTimers) {
           void loadDmSettings(openChannelId).catch(() => undefined);
         }
+        // Likewise a DM_PET_UPDATE for the open DM's pet.
+        if (openChannelId && openChannelId in loaded.dmPets && gateway.getFeatures().zekk_pet === true) {
+          void loadDmPet(openChannelId).catch(() => undefined);
+        }
       }),
     );
+    // A READY that landed before this subscription (the gateway connects
+    // in AuthProvider) isn't replayed, so take its features now.
+    dispatch({ type: 'ZEKK_PET_FEATURE_SET', enabled: gateway.getFeatures().zekk_pet === true });
 
       return unsubs;
     },
     [
       bumpDmTimerEpoch,
       loadDmSettings,
+      bumpDmPetEpoch,
+      loadDmPet,
       user,
       token,
       loadChannels,
@@ -4859,10 +5011,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       setPollLocal,
       loadDmSettings,
       saveDmTimer,
+      loadDmPet,
+      changeDmPet,
     }),
     [
       loadDmSettings,
       saveDmTimer,
+      loadDmPet,
+      changeDmPet,
       state,
       refreshGuilds,
       loadChannels,

@@ -1042,7 +1042,6 @@ export {
   PET_STAGES,
   PET_TASKS,
   normalizePetName,
-  petHueForChannel,
   petLevelFloor,
   petLevelForPoints,
   petPointsForNextLevel,

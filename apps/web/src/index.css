@@ -1206,3 +1206,72 @@ body.is-resizing *::after {
   animation: message-flash 1.6s ease-out;
   border-radius: 0.375rem;
 }
+
+/* ── Zekk Pet ──────────────────────────────────────────────────────────────
+ * The pet wears the viewer's theme: body = the accent, belly = the accent
+ * mixed 55% toward white, outline = 60% toward black, antenna tips = the
+ * theme's second colour (lib/petArt.ts; the iOS and Android apps compute the
+ * same values). Defined on :root from the theme channels, so a theme switch
+ * recolours every pet on screen at once. */
+:root {
+  --zk-pet-body: rgb(var(--c-accent));
+  --zk-pet-belly: color-mix(in srgb, rgb(var(--c-accent)) 45%, white);
+  --zk-pet-outline: color-mix(in srgb, rgb(var(--c-accent)) 40%, black);
+  --zk-pet-accent: rgb(var(--c-accent-2));
+}
+
+/* Motion (lib/ZekkPetArt.tsx). Transforms are in the art's 100-unit box and
+ * turn about the ground point under the feet (50, 88). */
+.zk-pet-motion {
+  transform-box: view-box;
+  transform-origin: 50% 88%;
+}
+/* Idle: a gentle bob of ±2 units. */
+.zk-pet-bob {
+  animation: zk-pet-bob 2.4s ease-in-out infinite;
+}
+@keyframes zk-pet-bob {
+  0%, 100% { transform: translateY(-2px); }
+  50% { transform: translateY(2px); }
+}
+/* Asleep: slow breathing instead of the bob. */
+.zk-pet-breathe {
+  animation: zk-pet-breathe 3.2s ease-in-out infinite;
+}
+@keyframes zk-pet-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.03); }
+}
+/* Egg: one little wobble (±4°) every 3 s, still the rest of the time. */
+.zk-pet-wobble {
+  animation: zk-pet-wobble 3s ease-in-out infinite;
+}
+@keyframes zk-pet-wobble {
+  0%, 24%, 100% { transform: rotate(0deg); }
+  6% { transform: rotate(-4deg); }
+  12% { transform: rotate(4deg); }
+  18% { transform: rotate(-4deg); }
+}
+/* Tap: a quick squash, and a heart that rises 20 units as it fades. */
+.zk-pet-squash {
+  animation: zk-pet-squash 0.15s ease-out;
+}
+@keyframes zk-pet-squash {
+  0%, 100% { transform: scale(1, 1); }
+  50% { transform: scale(1.04, 0.94); }
+}
+.zk-pet-heart {
+  animation: zk-pet-heart 0.8s ease-out forwards;
+}
+@keyframes zk-pet-heart {
+  from { transform: translateY(0); opacity: 1; }
+  to { transform: translateY(-20px); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .zk-pet-bob,
+  .zk-pet-breathe,
+  .zk-pet-wobble,
+  .zk-pet-squash {
+    animation: none;
+  }
+}
