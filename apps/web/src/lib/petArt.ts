@@ -500,9 +500,9 @@ export function petShapes({
   if (g.crown) out.push(polygon('crown', g.crown, PET_INK.gold, PET_INK.goldDark, 1.5));
   for (const s of g.sparkles) out.push(polygon('sparkle', sparklePoints(s.x, s.y, s.r), PET_INK.sparkle));
   if (mood === 'asleep') {
-    out.push(polyline('zzz', zPoints(66, 30, 6), c.outline, 2));
-    out.push(polyline('zzz', zPoints(74, 20, 8), c.outline, 2));
-    out.push(polyline('zzz', zPoints(84, 8, 10), c.outline, 2));
+    out.push(polyline('zzz', zPoints(74, 26, 6), c.belly, 2));
+    out.push(polyline('zzz', zPoints(80, 14, 8), c.belly, 2));
+    out.push(polyline('zzz', zPoints(88, 2, 10), c.belly, 2));
   }
   return out;
 }

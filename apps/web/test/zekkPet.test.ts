@@ -454,11 +454,11 @@ describe('art: faces', () => {
     expect(f.find((s) => s.tag === 'circle')?.attrs).toMatchObject({ cx: 50, cy: 67, r: 2, fill: PET_INK.mouth });
     const zs = petShapes({ stage: 'kid', mood: 'asleep' }).filter((s) => s.part === 'zzz');
     expect(zs.map((s) => s.attrs.points)).toEqual([
-      '66,30 72,30 66,36 72,36',
-      '74,20 82,20 74,28 82,28',
-      '84,8 94,8 84,18 94,18',
+      '74,26 80,26 74,32 80,32',
+      '80,14 88,14 80,22 88,22',
+      '88,2 98,2 88,12 98,12',
     ]);
-    expect(zs.every((s) => s.attrs.strokeWidth === 2 && s.attrs.stroke === PET_COLORS.outline)).toBe(true);
+    expect(zs.every((s) => s.attrs.strokeWidth === 2 && s.attrs.stroke === PET_COLORS.belly)).toBe(true);
   });
 
   it('scales the face with the eye size', () => {
