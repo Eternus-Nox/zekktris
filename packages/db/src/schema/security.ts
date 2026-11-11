@@ -1,4 +1,4 @@
-import { pgTable, bigint, text, boolean, integer, smallint, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, bigint, text, boolean, integer, timestamp, index } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import type { PetStatus } from '@zekktris/shared/pets';
 import { users } from './users';
@@ -152,8 +152,6 @@ export const dmPets = pgTable(
     status: text('status').notNull().$type<PetStatus>(),
     invitedBy: bigint('invited_by', { mode: 'bigint' }),
     name: text('name').notNull().default('Zekk'),
-    /** 0–359, fixed per DM (petHueForChannel). */
-    hue: smallint('hue').notNull(),
     points: integer('points').notNull().default(0),
     level: integer('level').notNull().default(0),
     adoptedAt: timestamp('adopted_at', { withTimezone: true }),

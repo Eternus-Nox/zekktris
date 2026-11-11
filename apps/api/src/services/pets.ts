@@ -3,7 +3,7 @@
  * ---------
  * A shared virtual pet two people raise in their 1:1 DM by keeping their
  * messaging streak going. The rules — level curve, stages, daily tasks and
- * their points, the mood words, name rules, the per-DM hue — live in
+ * their points, the mood words and the name rules — live in
  * @zekktris/shared/pets so the server and the web client can't drift; this
  * module applies them to the `dm_pets` row and is its only writer.
  *
@@ -39,7 +39,6 @@ import {
   PET_MIN_STREAK,
   PET_TASKS,
   normalizePetName,
-  petHueForChannel,
   petLevelFloor,
   petLevelForPoints,
   petStageForLevel,
@@ -76,7 +75,6 @@ export interface PetDTO {
   status: PetStatus;
   invitedBy: string | null;
   name: string;
-  hue: number;
   level: number;
   stage: PetStage;
   points: number;
@@ -187,7 +185,6 @@ export function petDTO(row: PetRow, now: Date = clock()): PetDTO {
     status: row.status,
     invitedBy: row.invitedBy?.toString() ?? null,
     name: row.name,
-    hue: row.hue,
   };
   const tail = { today, dayEndsAt: nextUtcMidnight(now).toISOString() };
   if (row.status === 'invited') {
@@ -527,7 +524,6 @@ export async function invitePet(input: {
         status: 'invited',
         invitedBy: input.inviterId,
         name: PET_DEFAULT_NAME,
-        hue: petHueForChannel(input.channelId),
         createdAt: now,
         updatedAt: now,
       })

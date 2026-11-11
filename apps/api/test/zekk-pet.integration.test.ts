@@ -21,7 +21,6 @@ import {
 } from '../src/services/pets';
 import {
   PET_TASKS,
-  petHueForChannel,
   petLevelFloor,
   petLevelForPoints,
 } from '@zekktris/shared/pets';
@@ -255,7 +254,6 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
       ['status', 'text', 'NO'],
       ['invited_by', 'bigint', 'YES'],
       ['name', 'text', 'NO'],
-      ['hue', 'smallint', 'NO'],
       ['points', 'integer', 'NO'],
       ['level', 'integer', 'NO'],
       ['adopted_at', 'timestamp with time zone', 'YES'],
@@ -279,10 +277,9 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
         userAId: p.lo,
         userBId: p.hi,
         status: 'hatching' as never,
-        hue: 1,
       }),
     ).rejects.toThrow();
-    await db.insert(schema.dmPets).values({ channelId: p.dm, userAId: p.lo, userBId: p.hi, status: 'invited', hue: 1 });
+    await db.insert(schema.dmPets).values({ channelId: p.dm, userAId: p.lo, userBId: p.hi, status: 'invited' });
     expect((await petRow(p.dm))!.name).toBe('Zekk');
   });
 
@@ -358,7 +355,6 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
       status: 'invited',
       invitedBy: p.a.toString(),
       name: 'Zekk',
-      hue: petHueForChannel(p.dm),
       level: 0,
       stage: 'egg',
       points: 0,

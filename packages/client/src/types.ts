@@ -651,8 +651,6 @@ export interface PetDTO {
   /** Who sent the adoption invite (stringified BigInt). */
   invitedBy: string | null;
   name: string;
-  /** 0–359; the hue of the pet's colours, fixed per DM. */
-  hue: number;
   level: number;
   stage: PetStage;
   /** Total points earned. */

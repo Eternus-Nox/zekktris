@@ -108,8 +108,3 @@ export function normalizePetName(raw: string): string | null {
   if (/[\u0000-\u001f\u007f-\u009f]/.test(name)) return null;
   return name;
 }
-
-/** Hue (0–359) of a pet's colours, fixed per DM channel. */
-export function petHueForChannel(channelId: string | bigint): number {
-  return Number(BigInt(channelId) % 360n);
-}

@@ -35,7 +35,6 @@ CREATE TABLE IF NOT EXISTS "dm_pets" (
 	"status" text NOT NULL,
 	"invited_by" bigint,
 	"name" text DEFAULT 'Zekk' NOT NULL,
-	"hue" smallint NOT NULL,
 	"points" integer DEFAULT 0 NOT NULL,
 	"level" integer DEFAULT 0 NOT NULL,
 	"adopted_at" timestamp with time zone,
